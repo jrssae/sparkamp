@@ -1,0 +1,220 @@
+/* GnomAmp — Winamp-inspired dark skin */
+
+window {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+}
+
+.np-title {
+    font-weight: bold;
+    font-size: 13px;
+    color: #00ccff;
+    padding: 2px 0px;
+}
+
+.np-artist {
+    font-size: 11px;
+    color: #888888;
+    padding: 0px 0px 2px 0px;
+}
+
+.time-label {
+    font-family: monospace;
+    font-size: 11px;
+    color: #aaaaaa;
+}
+
+.vol-label {
+    font-family: monospace;
+    font-size: 10px;
+    color: #666666;
+    min-width: 28px;
+}
+
+button.transport {
+    background-color: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    color: #cccccc;
+    border-radius: 3px;
+    padding: 3px 10px;
+    min-height: 0;
+    min-width: 0;
+}
+
+button.transport:hover {
+    background-color: #3a3a3a;
+    color: #ffffff;
+    border-color: #555555;
+}
+
+button.transport:active {
+    background-color: #444444;
+}
+
+button.transport-play {
+    background-color: #004455;
+    color: #00ccff;
+    border-color: #006688;
+}
+
+button.transport-play:hover {
+    background-color: #005566;
+    color: #33ddff;
+}
+
+/* ── Seek / progress bar (prominent) ─────────────────────────────────── */
+scale.seek-scale trough {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    min-height: 8px;
+}
+
+scale.seek-scale highlight {
+    background-color: #0099bb;
+    border-radius: 3px;
+}
+
+scale.seek-scale slider {
+    background-color: #00ccff;
+    min-width: 12px;
+    min-height: 12px;
+    border-radius: 6px;
+    border: none;
+}
+
+/* ── Volume bar (compact, subordinate to seek bar) ────────────────────── */
+scale.vol-scale trough {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    min-height: 3px;
+}
+
+scale.vol-scale highlight {
+    background-color: #005566;
+    border-radius: 2px;
+}
+
+scale.vol-scale slider {
+    background-color: #00aacc;
+    min-width: 7px;
+    min-height: 7px;
+    border-radius: 4px;
+    border: none;
+}
+
+.playlist {
+    background-color: #141414;
+}
+
+.playlist row {
+    padding: 3px 6px;
+    border-bottom: 1px solid #222222;
+}
+
+.playlist row label {
+    color: #cccccc;
+    font-size: 12px;
+}
+
+.playlist row:selected {
+    background-color: #002233;
+}
+
+.playlist row:selected label {
+    color: #00ccff;
+}
+
+.playlist row.playing label {
+    color: #00ff88;
+    font-weight: bold;
+}
+
+.status-label {
+    font-size: 10px;
+    color: #666666;
+    font-family: monospace;
+}
+
+/* Time display above the mini visualizer — large Winamp-style digital clock */
+.time-disp {
+    font-family: monospace;
+    font-size: 26px;
+    font-weight: bold;
+    color: #00ccff;
+    padding: 2px 0px;
+}
+
+/* Mini visualizer embedded beside the song title */
+.mini-viz {
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 2px;
+}
+
+/* PL / EQ mode-toggle buttons in the transport row */
+button.mode-btn {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    color: #888888;
+    border-radius: 2px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: bold;
+    min-height: 0;
+    min-width: 0;
+}
+
+button.mode-btn:hover {
+    background-color: #2a2a2a;
+    color: #bbbbbb;
+    border-color: #444444;
+}
+
+button.mode-btn.active {
+    background-color: #003344;
+    color: #00ccff;
+    border-color: #005566;
+}
+
+/* Playlist window — track count label */
+.pl-count-label {
+    font-size: 10px;
+    color: #666666;
+    font-family: monospace;
+    padding: 2px 6px;
+}
+
+/* Playlist window — add / remove action buttons */
+button.pl-btn {
+    background-color: #222222;
+    border: 1px solid #333333;
+    color: #aaaaaa;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    min-height: 0;
+    min-width: 0;
+}
+
+button.pl-btn:hover {
+    background-color: #2e2e2e;
+    color: #dddddd;
+    border-color: #555555;
+}
+
+button.pl-btn.destructive {
+    color: #ff6666;
+    border-color: #552222;
+}
+
+button.pl-btn.destructive:hover {
+    background-color: #3a1a1a;
+    color: #ff8888;
+    border-color: #773333;
+}
+
+/* Playlist row being dragged during drag-and-drop reordering */
+.playlist row.dragging {
+    opacity: 0.5;
+    background-color: #002233;
+}

@@ -1,0 +1,40 @@
+[package]
+name = "sparkamp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "sparkamp"
+path = "src/main.rs"
+
+[dependencies]
+# Audio backend
+gstreamer = "0.22"
+gstreamer-pbutils = "0.22"
+
+# ID3 metadata
+id3 = "1"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# GTK4 GUI
+gtk4 = { version = "0.9", features = ["v4_10"] }
+
+# Config & playlist persistence
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Duration probing (reads container headers without decoding audio)
+symphonia = "0.5"
+
+# Parallel probing thread pool
+rayon = "1"
+
+# Utilities
+dirs = "5"
+anyhow = "1"

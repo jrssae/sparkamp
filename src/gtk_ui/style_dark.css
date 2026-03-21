@@ -1,0 +1,271 @@
+/* SparkAmp — Dark skin. @accent_bg_color resolves from the active GTK/Adwaita
+   theme, automatically picking up the user's system accent colour choice. */
+
+window {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+}
+
+.np-title {
+    font-weight: bold;
+    font-size: 13px;
+    color: @accent_bg_color;
+    padding: 2px 0px;
+}
+
+.np-artist {
+    font-size: 11px;
+    color: #888888;
+    padding: 0px 0px 2px 0px;
+}
+
+.vol-label {
+    font-family: monospace;
+    font-size: 10px;
+    color: #666666;
+    min-width: 28px;
+}
+
+button.transport {
+    background-color: #2a2a2a;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #3a3a3a;
+    color: #cccccc;
+    border-radius: 3px;
+    font-size: 14px;
+    padding: 2px 10px;
+    min-height: 0;
+    min-width: 0;
+}
+
+button.transport:hover {
+    background-color: #3a3a3a;
+    background-image: none;
+    color: #ffffff;
+    border-color: #555555;
+}
+
+button.transport:active {
+    background-color: #444444;
+    background-image: none;
+}
+
+button.transport-play {
+    background-color: alpha(@accent_bg_color, 0.2);
+    background-image: none;
+    color: @accent_bg_color;
+    border-color: alpha(@accent_bg_color, 0.45);
+}
+
+button.transport-play:hover {
+    background-color: alpha(@accent_bg_color, 0.32);
+    background-image: none;
+    color: @accent_fg_color;
+}
+
+/* ── Seek / progress bar ──────────────────────────────────────────────── */
+scale.seek-scale trough {
+    background-color: #1e1e1e;
+    background-image: none;
+    border: 1px solid #333333;
+    min-height: 8px;
+}
+
+scale.seek-scale highlight {
+    background-color: @accent_bg_color;
+    background-image: none;
+    border-radius: 3px;
+}
+
+scale.seek-scale slider {
+    background-color: @accent_bg_color;
+    background-image: none;
+    min-width: 18px;
+    min-height: 18px;
+    border-radius: 9px;
+    border: none;
+    margin: -7px;
+}
+
+/* ── Volume bar ───────────────────────────────────────────────────────── */
+scale.vol-scale trough {
+    background-color: #1a1a1a;
+    background-image: none;
+    border: 1px solid #2a2a2a;
+    min-height: 3px;
+}
+
+scale.vol-scale highlight {
+    background-color: alpha(@accent_bg_color, 0.6);
+    background-image: none;
+    border-radius: 2px;
+}
+
+scale.vol-scale slider {
+    background-color: @accent_bg_color;
+    background-image: none;
+    min-width: 11px;
+    min-height: 11px;
+    border-radius: 6px;
+    border: none;
+    margin: -4px;
+}
+
+.playlist {
+    background-color: #141414;
+}
+
+.playlist row {
+    padding: 3px 6px;
+    border-bottom: 1px solid #222222;
+}
+
+.playlist row label {
+    color: #cccccc;
+    font-size: 12px;
+}
+
+.playlist row:selected {
+    background-color: alpha(@accent_bg_color, 0.2);
+}
+
+.playlist row:selected label {
+    color: @accent_bg_color;
+}
+
+.playlist row.playing label {
+    color: @accent_bg_color;
+    font-weight: bold;
+}
+
+.status-label {
+    font-size: 10px;
+    color: #666666;
+    font-family: monospace;
+}
+
+/* Info / keyboard-shortcuts window body text — matches playlist row size. */
+.info-text {
+    font-size: 12px;
+    font-family: monospace;
+    color: #cccccc;
+}
+
+/* Time display — large Winamp-style digital clock */
+.time-disp {
+    font-family: monospace;
+    font-size: 26px;
+    font-weight: bold;
+    color: @accent_bg_color;
+    padding: 2px 0px;
+}
+
+/* Mini visualizer */
+.mini-viz {
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 2px;
+}
+
+/* PL mode-toggle button */
+button.mode-btn {
+    background-color: #1e1e1e;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #333333;
+    color: #888888;
+    border-radius: 2px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: bold;
+    min-height: 0;
+    min-width: 0;
+}
+
+button.mode-btn:hover {
+    background-color: #2a2a2a;
+    background-image: none;
+    color: #bbbbbb;
+    border-color: #444444;
+}
+
+button.mode-btn.active {
+    background-color: alpha(@accent_bg_color, 0.2);
+    background-image: none;
+    color: @accent_bg_color;
+    border-color: alpha(@accent_bg_color, 0.45);
+}
+
+/* Playlist window — track count label */
+.pl-count-label {
+    font-size: 10px;
+    color: #666666;
+    font-family: monospace;
+    padding: 2px 6px;
+}
+
+/* Playlist window — add / remove buttons */
+button.pl-btn {
+    background-color: #222222;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #333333;
+    color: #aaaaaa;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    min-height: 0;
+    min-width: 0;
+}
+
+button.pl-btn:hover {
+    background-color: #2e2e2e;
+    background-image: none;
+    color: #dddddd;
+    border-color: #555555;
+}
+
+button.pl-btn.destructive {
+    color: #ff6666;
+    border-color: #552222;
+}
+
+button.pl-btn.destructive:hover {
+    background-color: #3a1a1a;
+    color: #ff8888;
+    border-color: #773333;
+}
+
+/* Playlist row drag-in-progress */
+.playlist row.dragging {
+    opacity: 0.5;
+    background-color: alpha(@accent_bg_color, 0.2);
+}
+
+/* Playlist drag-reorder drop indicator */
+.playlist row.drop-target {
+    border-top: 2px solid @accent_bg_color;
+}
+
+/* Marquee / now-playing frame — subtle border around the scrolling title area */
+.np-frame {
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+/* Broken / unavailable playlist row */
+.playlist row.broken label {
+    color: #884444;
+    font-style: italic;
+}
+
+/* Playlist duration column — right-aligned, dimmed */
+.pl-dur-label {
+    font-family: monospace;
+    font-size: 11px;
+    color: #666666;
+    min-width: 36px;
+    margin-left: 6px;
+}

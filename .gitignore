@@ -1,6 +1,12 @@
-__pycache__/
-*.py[cod]
-*.class
-.venv/
-build/
-dist/
+# Rust build artifacts (~1.7 GB — never commit these)
+/target
+
+# Development / scratch files
+dev.txt
+
+# Test media and skin files (large binaries, not needed in the repo)
+*.wsz
+*.mp3
+*.jpg
+*.png
+!square logo.png
