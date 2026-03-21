@@ -38,3 +38,13 @@ rayon = "1"
 # Utilities
 dirs = "5"
 anyhow = "1"
+
+# Random number generation (shuffle)
+rand = "0.8"
+
+# Dynamic library loading (visualizer + filetype plugins)
+libloading = "0.8"
+
+[dev-dependencies]
+# Temporary files for ID3 editor tests
+tempfile = "3"

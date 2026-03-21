@@ -197,6 +197,21 @@ button.mode-btn.active {
     border-color: alpha(@accent_bg_color, 0.45);
 }
 
+/* mode-btn-active: programmatically set on repeat/shuffle buttons when "on".
+   Distinct from :active (the momentary press state) — this persists while
+   the feature is enabled so the user can see it at a glance. */
+button.mode-btn-active {
+    background-color: alpha(@accent_bg_color, 0.18);
+    background-image: none;
+    color: @accent_bg_color;
+    border-color: alpha(@accent_bg_color, 0.5);
+}
+
+button.mode-btn-active:hover {
+    background-color: alpha(@accent_bg_color, 0.28);
+    background-image: none;
+}
+
 /* Playlist window — track count label */
 .pl-count-label {
     font-size: 10px;

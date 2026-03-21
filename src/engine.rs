@@ -58,6 +58,11 @@ pub enum PlayerState {
 /// is shared for the lifetime of the application; tracks are loaded by calling
 /// `load()` before `play()`.
 ///
+/// When the `equalizer-10bands` GStreamer element is available it is
+/// automatically inserted into the audio processing chain via `playbin`'s
+/// `audio-filter` property.  EQ band gains can then be adjusted at any time
+/// (even during playback) via [`Player::set_eq_band`].
+///
 /// ## Thread safety
 /// GStreamer itself is thread-safe, but `Player` is not `Send`.  It must be
 /// used on the thread where `gstreamer::init()` was called (typically the
@@ -69,6 +74,9 @@ pub struct Player {
     /// Our local view of the pipeline state, updated synchronously on every
     /// transport method call.
     state: PlayerState,
+    /// The GStreamer `equalizer-10bands` element injected via `audio-filter`,
+    /// or `None` if the element plugin is not installed.
+    eq: Option<gst::Element>,
 }
 
 impl Player {
@@ -85,9 +93,30 @@ impl Player {
             .build()
             .context("Failed to create GStreamer playbin. Ensure GStreamer and MP3 plugins are installed.")?;
 
+        // Try to insert a 10-band equalizer into the playbin audio chain.
+        // The `audio-filter` property accepts a GstElement that gets spliced
+        // between the decoder and the audio sink.  If the plugin is missing
+        // (gstreamer-plugins-good not installed) we silently skip it.
+        //
+        // Skipped in test builds: the GLib type system for `GstIirEqualizerBand`
+        // is not safe to register from multiple threads simultaneously, which
+        // happens when cargo runs tests in parallel.  Tests verify config/state
+        // logic; the GStreamer element is exercised by running the actual app.
+        #[cfg(not(test))]
+        let eq = match gst::ElementFactory::make("equalizer-10bands").build() {
+            Ok(eq_elem) => {
+                pipeline.set_property("audio-filter", &eq_elem);
+                Some(eq_elem)
+            }
+            Err(_) => None,
+        };
+        #[cfg(test)]
+        let eq: Option<gst::Element> = None;
+
         Ok(Player {
             pipeline,
             state: PlayerState::Stopped,
+            eq,
         })
     }
 
@@ -193,6 +222,55 @@ impl Player {
     /// we restrict to `1.0` to prevent accidental over-amplification.
     pub fn set_volume(&mut self, vol: f64) {
         self.pipeline.set_property("volume", vol.clamp(0.0, 1.0));
+    }
+
+    /// Returns `true` if the `equalizer-10bands` element was successfully
+    /// created at startup.  The EQ methods are no-ops when this returns `false`.
+    #[allow(dead_code)]
+    pub fn has_eq(&self) -> bool {
+        self.eq.is_some()
+    }
+
+    /// Set the gain for a single EQ band.
+    ///
+    /// `band` must be in `0..10`; values outside that range are silently
+    /// ignored.  `gain_db` is clamped to `[-24.0, +12.0]` dB before being
+    /// applied — the valid range of the `equalizer-10bands` element.
+    ///
+    /// The change takes effect immediately, even during playback.
+    pub fn set_eq_band(&self, band: usize, gain_db: f64) {
+        if let Some(eq) = &self.eq {
+            if band < 10 {
+                let prop = format!("band{}", band);
+                eq.set_property(&prop, gain_db.clamp(-24.0, 12.0));
+            }
+        }
+    }
+
+    /// Read back the current gain for a single EQ band.
+    ///
+    /// Returns `0.0` if the EQ element is not available or `band` is out of
+    /// range.
+    #[allow(dead_code)]
+    pub fn get_eq_band(&self, band: usize) -> f64 {
+        if let Some(eq) = &self.eq {
+            if band < 10 {
+                let prop = format!("band{}", band);
+                return eq.property::<f64>(&prop);
+            }
+        }
+        0.0
+    }
+
+    /// Apply all 10 band gains from a slice in one call.
+    ///
+    /// Convenient for bulk-applying a preset or a restored config.  Silently
+    /// ignores extra elements if `bands` has more than 10 entries; bands not
+    /// covered by a short slice are left unchanged.
+    pub fn apply_eq_bands(&self, bands: &[f64]) {
+        for (i, &gain) in bands.iter().take(10).enumerate() {
+            self.set_eq_band(i, gain);
+        }
     }
 
     /// Non-blocking bus poll.  Returns `Some(BusEvent)` when the current track

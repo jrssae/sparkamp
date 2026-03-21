@@ -36,8 +36,13 @@ use ratatui::{
 };
 use std::time::Duration;
 
-use super::{App, Mode};
-use crate::{config::VisualizerMode, engine::PlayerState, model::fmt_duration};
+use super::{id3_genre_matches, App, EqState, Id3EditorState, Mode, SettingsState};
+use crate::{
+    config::{EQ_BAND_FREQS, ThemeChoice, VisualizerMode},
+    engine::PlayerState,
+    model::fmt_duration,
+    shuffle::RepeatMode,
+};
 
 // ---------------------------------------------------------------------------
 // Colour palette — centralised so re-skinning only needs edits here
@@ -101,7 +106,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::AddFile { .. }     => draw_add_file_overlay(frame, app, area),
         Mode::MoveTrack { .. }   => draw_move_track_overlay(frame, app, area),
         Mode::RemoveTrack { .. } => draw_remove_track_overlay(frame, app, area),
-        Mode::Help               => draw_help_overlay(frame, area),
+        Mode::Help               => draw_help_overlay(frame, app, area),
+        Mode::Id3Editor(state)   => draw_id3_editor_overlay(frame, state, area),
+        Mode::Settings(state)    => draw_settings_overlay(frame, app, state, area),
+        Mode::Equalizer(state)   => draw_eq_overlay(frame, app, state, area),
         Mode::Normal             => {}
     }
 }
@@ -205,13 +213,29 @@ fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    // Two-line content: scrolling title on top, state + index below.
+    // Repeat indicator: only shown when not Off so it stays unobtrusive.
+    let repeat_span = match app.config.playback.repeat_mode {
+        RepeatMode::Off      => Span::raw(""),
+        RepeatMode::Song     => Span::styled(" 🔂", Style::default().fg(C_ACCENT)),
+        RepeatMode::Playlist => Span::styled(" 🔁", Style::default().fg(C_ACCENT)),
+    };
+
+    // Shuffle indicator: shown with accent colour when enabled.
+    let shuffle_span = if app.shuffle_state.enabled {
+        Span::styled(" 🔀", Style::default().fg(C_ACCENT))
+    } else {
+        Span::raw("")
+    };
+
+    // Two-line content: scrolling title on top, state + index + indicators below.
     let marquee_line = Line::from(
         Span::styled(marquee, Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD))
     );
     let state_line = Line::from(vec![
         Span::styled(format!("{} ", state_icon), Style::default().fg(state_color)),
         Span::styled(index_label, Style::default().fg(C_DIM)),
+        repeat_span,
+        shuffle_span,
     ]);
 
     // [q] quit lives in the upper-right corner of the player box; [p] toggle
@@ -706,8 +730,16 @@ fn draw_remove_track_overlay(frame: &mut Frame, app: &App, area: Rect) {
 // Help overlay
 // ---------------------------------------------------------------------------
 
-/// Render a full keyboard-shortcut reference overlay.  Any key dismisses it.
-fn draw_help_overlay(frame: &mut Frame, area: Rect) {
+/// Render the full keyboard-shortcut reference overlay.
+///
+/// Receives `app` so it can display the current repeat/shuffle state inline,
+/// making it easy for users to confirm what mode they are in.  Any key
+/// dismisses the overlay.
+fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    // Build repeat/shuffle status strings for the live-state display.
+    let repeat_status = app.config.playback.repeat_mode.label();
+    let shuffle_status = if app.shuffle_state.enabled { "Shuffle: On" } else { "Shuffle: Off" };
+
     let lines: Vec<Line> = vec![
         Line::from(Span::styled("── Playback ─────────────────────────────────────────", Style::default().fg(C_DIM))),
         Line::from(vec![Span::styled("  z", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Previous / restart")]),
@@ -716,6 +748,11 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![Span::styled("  v", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Stop")]),
         Line::from(vec![Span::styled("  b", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Next track")]),
         Line::from(vec![Span::styled("  ← →", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" Seek −5 s / +5 s")]),
+        Line::from(vec![
+            Span::styled("  r", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
+            Span::raw("   Cycle repeat  "),
+            Span::styled(format!("(now: {})", repeat_status), Style::default().fg(C_DIM)),
+        ]),
         Line::from(""),
         Line::from(Span::styled("── Volume ────────────────────────────────────────────", Style::default().fg(C_DIM))),
         Line::from(vec![Span::styled("  -", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Volume down 5 %")]),
@@ -735,14 +772,24 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled("── View / Other ──────────────────────────────────────", Style::default().fg(C_DIM))),
         Line::from(vec![Span::styled("  a", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Cycle visualizer mode")]),
+        Line::from(vec![Span::styled("  d", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   View/Edit ID3 tags for highlighted track")]),
+        Line::from(vec![Span::styled("  u", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Open equalizer")]),
         Line::from(vec![Span::styled("  i", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Show this help")]),
-        Line::from(vec![Span::styled("  q / Esc", Style::default().fg(C_WARN  ).add_modifier(Modifier::BOLD)), Span::raw(" Quit")]),
+        Line::from(vec![Span::styled("  q / Esc", Style::default().fg(C_WARN).add_modifier(Modifier::BOLD)), Span::raw(" Quit")]),
+        Line::from(""),
+        Line::from(Span::styled("── Hidden shortcuts (shown here only) ────────────────", Style::default().fg(C_DIM))),
+        Line::from(vec![
+            Span::styled("  s", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
+            Span::raw("   Toggle shuffle  "),
+            Span::styled(format!("(now: {})", shuffle_status), Style::default().fg(C_DIM)),
+        ]),
+        Line::from(vec![Span::styled("  e", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Open settings")]),
         Line::from(""),
         Line::from(Span::styled("  (any key closes this overlay)", Style::default().fg(C_DIM))),
     ];
 
     let h = (lines.len() as u16 + 4).min(area.height.saturating_sub(4));
-    let popup = centered_popup(area, 60, h);
+    let popup = centered_popup(area, 62, h);
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
@@ -755,6 +802,584 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
             .style(Style::default().fg(C_TEXT)),
         popup,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Settings overlay
+// ---------------------------------------------------------------------------
+
+/// Names for the four settings tabs, shown in the tab bar.
+const SETTINGS_TABS: [&str; 4] = ["Appearance", "Behavior", "Visualizer", "Filetypes"];
+
+/// Render the full settings overlay with four tabs.
+///
+/// Layout (inside the popup border):
+///   Row 0   — tab bar (highlighted tab shown in accent colour)
+///   Row 1   — horizontal separator
+///   Rows 2+ — setting rows for the active tab (label · value/toggle)
+///   Last row — hint line: arrows=navigate, space=toggle, Esc=save & close
+fn draw_settings_overlay(frame: &mut Frame, app: &App, state: &SettingsState, area: Rect) {
+    // The popup is 62 columns wide and tall enough for the longest tab.
+    let popup = centered_popup(area, 62, 14);
+    frame.render_widget(Clear, popup);
+
+    // ── outer border ─────────────────────────────────────────────────────
+    let block = Block::default()
+        .title(Span::styled(
+            " Settings ",
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    frame.render_widget(block, popup);
+
+    // Inner area (inside the border, 2 cells padding on left).
+    let inner = Rect {
+        x:      popup.x + 2,
+        y:      popup.y + 1,
+        width:  popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+    if inner.height == 0 { return; }
+
+    // ── tab bar ───────────────────────────────────────────────────────────
+    let tab_spans: Vec<Span> = SETTINGS_TABS.iter().enumerate().map(|(i, name)| {
+        if i == state.tab {
+            Span::styled(
+                format!(" {name} "),
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            )
+        } else {
+            Span::styled(format!(" {name} "), Style::default().fg(C_DIM))
+        }
+    }).collect();
+
+    let tab_line = Line::from(tab_spans);
+    frame.render_widget(
+        Paragraph::new(vec![tab_line]).style(Style::default()),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+
+    // Separator below the tab bar.
+    let sep = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(sep, Style::default().fg(C_DIM))),
+        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+    );
+
+    // ── settings rows ─────────────────────────────────────────────────────
+    let rows_area = Rect {
+        x:      inner.x,
+        y:      inner.y + 2,
+        width:  inner.width,
+        height: inner.height.saturating_sub(3),
+    };
+
+    let rows = settings_rows_for_tab(app, state);
+    let items: Vec<ListItem> = rows.iter().enumerate().map(|(i, (label, value))| {
+        let focused = i == state.cursor;
+        let label_span = Span::styled(
+            format!("{label:<24}"),
+            Style::default().fg(if focused { C_ACCENT } else { C_TEXT }),
+        );
+        let value_span = Span::styled(
+            value.clone(),
+            Style::default().fg(if focused { C_ACCENT } else { C_TEXT })
+                .add_modifier(if focused { Modifier::BOLD } else { Modifier::empty() }),
+        );
+        // Prefix focused row with a pointer character.
+        let prefix = if focused {
+            Span::styled("▶ ", Style::default().fg(C_ACCENT))
+        } else {
+            Span::raw("  ")
+        };
+        ListItem::new(Line::from(vec![prefix, label_span, value_span]))
+    }).collect();
+
+    frame.render_widget(List::new(items), rows_area);
+
+    // ── hint line ─────────────────────────────────────────────────────────
+    let hint_y = popup.y + popup.height.saturating_sub(2);
+    let hint = if state.edit_buf.is_some() {
+        "  Type · Backspace=delete · Enter=confirm · Esc=cancel"
+    } else {
+        "  ←/→=tab  ↑/↓=item  Space/Enter=toggle  Esc=save & close"
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(hint, Style::default().fg(C_DIM))),
+        Rect { x: popup.x + 1, y: hint_y, width: popup.width.saturating_sub(2), height: 1 },
+    );
+}
+
+/// Build the (label, display-value) pairs for the currently active settings tab.
+///
+/// For the Filetypes tab, if `state.edit_buf` is Some, the active item shows
+/// the in-progress edit buffer (with a cursor block appended).
+fn settings_rows_for_tab<'a>(app: &'a App, state: &'a SettingsState) -> Vec<(&'static str, String)> {
+    match state.tab {
+        // ── Appearance ────────────────────────────────────────────────────
+        0 => vec![
+            (
+                "Theme",
+                match app.config.appearance.theme {
+                    ThemeChoice::Dark  => "[ Dark  / Light ]  ●  Dark".to_string(),
+                    ThemeChoice::Light => "[ Dark  / Light ]  ●  Light".to_string(),
+                },
+            ),
+            (
+                "Custom skin name",
+                if state.tab == 0 && state.cursor == 1 {
+                    if let Some(buf) = &state.edit_buf {
+                        format!("{buf}▌")
+                    } else {
+                        let v = &app.config.appearance.custom_skin;
+                        if v.is_empty() { "(none — uses Theme above)".to_string() } else { v.clone() }
+                    }
+                } else {
+                    let v = &app.config.appearance.custom_skin;
+                    if v.is_empty() { "(none — uses Theme above)".to_string() } else { v.clone() }
+                },
+            ),
+        ],
+
+        // ── Behavior ─────────────────────────────────────────────────────
+        1 => vec![(
+            "Autoplay on add",
+            if app.config.behavior.autoplay_on_add {
+                "[ On  / Off ]  ●  On".to_string()
+            } else {
+                "[ On  / Off ]  ●  Off".to_string()
+            },
+        )],
+
+        // ── Visualizer ────────────────────────────────────────────────────
+        2 => vec![(
+            "Visualizer mode",
+            match app.config.visualizer.mode {
+                VisualizerMode::Bars        => "[ Bars / Oscilloscope ]  ●  Bars".to_string(),
+                VisualizerMode::Oscilloscope => "[ Bars / Oscilloscope ]  ●  Oscilloscope".to_string(),
+            },
+        )],
+
+        // ── Filetypes ─────────────────────────────────────────────────────
+        3 => {
+            let viz_val = if state.cursor == 0 {
+                if let Some(buf) = &state.edit_buf {
+                    format!("{buf}▌")       // show cursor block in edit mode
+                } else {
+                    let v = &app.config.plugins.visualizer_dir;
+                    if v.is_empty() { "(none)".to_string() } else { v.clone() }
+                }
+            } else {
+                let v = &app.config.plugins.visualizer_dir;
+                if v.is_empty() { "(none)".to_string() } else { v.clone() }
+            };
+            let ft_val = if state.cursor == 1 {
+                if let Some(buf) = &state.edit_buf {
+                    format!("{buf}▌")
+                } else {
+                    let v = &app.config.plugins.filetype_dir;
+                    if v.is_empty() { "(none)".to_string() } else { v.clone() }
+                }
+            } else {
+                let v = &app.config.plugins.filetype_dir;
+                if v.is_empty() { "(none)".to_string() } else { v.clone() }
+            };
+            vec![
+                ("Visualizer plugin dir", viz_val),
+                ("Filetype plugin dir",   ft_val),
+            ]
+        }
+
+        _ => vec![],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ID3 tag editor overlay
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Equalizer overlay
+// ---------------------------------------------------------------------------
+
+/// Render the 10-band equalizer overlay.
+///
+/// Layout: a popup centred on the screen containing —
+/// - Title bar: "10-Band Equalizer  [enabled/disabled]  preset name"
+/// - Band columns: 10 narrow columns, each showing a vertical gain bar
+///   (heights represent the –24 to +12 dB range) plus the frequency label
+///   and numeric gain value below.
+/// - Hint bar at the bottom.
+fn draw_eq_overlay(frame: &mut Frame, app: &App, state: &EqState, area: Rect) {
+    // Popup dimensions: needs at least 10 * 5 + borders for the band columns.
+    let popup_w = (area.width).min(80).max(64);
+    let popup_h = 14u16;
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+        width:  popup_w,
+        height: popup_h,
+    };
+    frame.render_widget(Clear, popup);
+
+    let eq = &app.config.equalizer;
+    let enabled_str = if eq.enabled { "ON " } else { "OFF" };
+    let preset_str  = if eq.preset.is_empty() { "Custom" } else { &eq.preset };
+    let title = format!(" EQ [{enabled_str}]  {preset_str} ");
+
+    let border_style = if eq.enabled {
+        Style::default().fg(C_ACCENT)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let block = Block::default()
+        .title(title.as_str())
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    frame.render_widget(block, popup);
+
+    // Inner area (inside the border).
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width:  popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+
+    // Ensure we have 10 band values (pad with 0 if config is short).
+    let mut gains = [0.0f64; 10];
+    for (i, &v) in eq.bands.iter().take(10).enumerate() {
+        gains[i] = v;
+    }
+
+    // Each band column gets equal width.
+    let col_w = (inner.width / 10).max(1);
+    let bar_h = inner.height.saturating_sub(3); // rows for the gain bar
+
+    for i in 0..10 {
+        let col_x = inner.x + (i as u16) * col_w;
+        let selected = i == state.selected_band;
+        let gain = gains[i];
+
+        let col_style = if !eq.enabled {
+            Style::default().fg(Color::DarkGray)
+        } else if selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(C_ACCENT)
+        };
+
+        // Draw the vertical gain bar.
+        // Map gain from [-24, +12] to bar_h rows.
+        // Zero line at row: bar_h * 24/36 (2/3 down).
+        let range = 36.0f64; // 24 + 12
+        let filled = ((gain + 24.0) / range * bar_h as f64).round() as u16;
+        let filled = filled.clamp(0, bar_h);
+        let zero_row = ((24.0 / range) * bar_h as f64).round() as u16;
+
+        for row in 0..bar_h {
+            // Row 0 = top (+12), row bar_h-1 = bottom (-24).
+            let display_row = bar_h - 1 - row;
+            let ch = if display_row < filled {
+                if display_row >= zero_row { '█' } else { '▒' }
+            } else if display_row == zero_row {
+                '─'  // zero-line marker
+            } else {
+                ' '
+            };
+            let span = Span::styled(ch.to_string(), col_style);
+            let line = Line::from(vec![span]);
+            frame.render_widget(
+                Paragraph::new(vec![line]),
+                Rect { x: col_x, y: inner.y + row, width: col_w.min(1), height: 1 },
+            );
+        }
+
+        // Frequency label (below the bar).
+        let freq = EQ_BAND_FREQS[i];
+        let freq_label = Span::styled(
+            format!("{:>4}", freq),
+            if selected { Style::default().fg(Color::Yellow) }
+            else        { Style::default().fg(Color::Gray) },
+        );
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(vec![freq_label])]),
+            Rect { x: col_x, y: inner.y + bar_h, width: col_w.max(4), height: 1 },
+        );
+
+        // Gain value label (below frequency).
+        let gain_text = if gain == 0.0 {
+            format!("{:>4}", "0")
+        } else {
+            format!("{:>+4.0}", gain)
+        };
+        let gain_label = Span::styled(
+            gain_text,
+            if selected { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) }
+            else        { Style::default().fg(Color::White) },
+        );
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(vec![gain_label])]),
+            Rect { x: col_x, y: inner.y + bar_h + 1, width: col_w.max(4), height: 1 },
+        );
+    }
+
+    // Hint line at the very bottom.
+    let hint = " ←/→ band  ↑/↓ ±1dB  PgUp/PgDn ±3dB  p preset  r flat  t toggle  u close ";
+    let hint_line = Line::from(vec![Span::styled(hint, Style::default().fg(Color::DarkGray))]);
+    frame.render_widget(
+        Paragraph::new(vec![hint_line]),
+        Rect { x: inner.x, y: inner.y + inner.height.saturating_sub(1), width: inner.width, height: 1 },
+    );
+}
+
+/// Render the ID3 tag editor overlay.
+///
+/// When `state.show_extra` is false, shows the standard two-column form for
+/// the 12 default tag fields.  When true, shows the Customize sub-panel
+/// listing all other ID3v2 frames present in the file.
+fn draw_id3_editor_overlay(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
+    // Use most of the screen for the editor — leave a 2-row gutter top/bottom.
+    let popup_h = area.height.saturating_sub(4);
+    let popup = centered_popup(area, 100, popup_h);
+    frame.render_widget(Clear, popup);
+
+    if state.show_extra {
+        draw_id3_extra_panel(frame, state, popup);
+    } else {
+        draw_id3_main_panel(frame, state, popup);
+    }
+}
+
+/// Render the 12-field two-column editor form.
+fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
+    // Filename shown in the title bar for quick reference.
+    let fname = state.path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("(unknown)");
+
+    let outer = Block::default()
+        .title(Span::styled(
+            format!(" ID3 Tag Editor — {} ", fname),
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    // Split inner vertically: fields area + bottom hint line.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),     // two-column field form
+            Constraint::Length(1),  // status message (if any)
+            Constraint::Length(1),  // bottom hint bar
+        ])
+        .split(inner);
+
+    // The fields area is split into two equal columns.
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[0]);
+
+    let pairs = state.fields.field_pairs();  // 12 (label, value) pairs
+    let mid = pairs.len() / 2;              // 6 in each column
+
+    // Render each column.
+    draw_id3_field_column(frame, state, &pairs[..mid],    0,   cols[0]);
+    draw_id3_field_column(frame, state, &pairs[mid..], mid as usize, cols[1]);
+
+    // Genre typeahead popup (only when genre field is focused and has matches).
+    if state.focused == 4 {
+        let matches = id3_genre_matches(&state.fields.genre);
+        if !matches.is_empty() {
+            // Show the dropdown below the genre row in the left column.
+            // Genre is row index 4 within the left column (0-based), so the
+            // dropdown starts at inner.y + 4 (+ 1 for 0-offset).
+            let drop_y = cols[0].y + 4 + 1; // approximate position
+            let drop_h = (matches.len() as u16 + 2).min(area.height.saturating_sub(drop_y));
+            if drop_y < area.y + area.height && drop_h > 2 {
+                let drop = Rect {
+                    x:      cols[0].x,
+                    y:      drop_y,
+                    width:  cols[0].width.min(30),
+                    height: drop_h,
+                };
+                frame.render_widget(Clear, drop);
+                let items: Vec<Line> = matches
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| {
+                        if i == state.genre_sel {
+                            Line::from(Span::styled(
+                                format!(" ▶ {}", g),
+                                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                            ))
+                        } else {
+                            Line::from(format!("   {}", g))
+                        }
+                    })
+                    .collect();
+                let dropdown = Paragraph::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(C_ACCENT)),
+                    )
+                    .style(Style::default().fg(C_TEXT));
+                frame.render_widget(dropdown, drop);
+            }
+        }
+    }
+
+    // Status / error message.
+    if let Some(ref msg) = state.status {
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg.as_str(), Style::default().fg(C_ERR))),
+            rows[1],
+        );
+    }
+
+    // Bottom hint bar.
+    let hints = Line::from(vec![
+        hint("Tab", " next field"),
+        sep(),
+        hint("↑↓", " nav / genre"),
+        sep(),
+        hint("c", " Customize"),
+        sep(),
+        hint("^S", " save"),
+        sep(),
+        Span::styled("[Esc] cancel", Style::default().fg(C_WARN)),
+    ]);
+    frame.render_widget(Paragraph::new(hints), rows[2]);
+}
+
+/// Render one column of the ID3 field form.
+///
+/// `pairs` is a slice of `(label, value)` from `field_pairs()`.
+/// `offset` is the index of `pairs[0]` within the full 12-field list, used
+/// to determine which field is highlighted.
+fn draw_id3_field_column(
+    frame: &mut Frame,
+    state: &Id3EditorState,
+    pairs: &[(&'static str, String)],
+    offset: usize,
+    area: Rect,
+) {
+    // Build one text line per field.
+    let lines: Vec<Line> = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let field_idx = offset + i;
+            let focused   = field_idx == state.focused;
+
+            // Label: right-aligned in a 13-char column; value follows.
+            let label_text = format!("{:>13}: ", label);
+            // Show a cursor marker at the end of the value when focused.
+            let value_text = if focused {
+                format!("{}▌", value)
+            } else {
+                value.clone()
+            };
+
+            let label_span = Span::styled(
+                label_text,
+                Style::default().fg(if focused { C_ACCENT } else { C_DIM }),
+            );
+            let value_span = Span::styled(
+                value_text,
+                if focused {
+                    Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(C_TEXT)
+                },
+            );
+            Line::from(vec![label_span, value_span])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines).style(Style::default().fg(C_TEXT)), area);
+}
+
+/// Render the Customize (extra frames) sub-panel.
+fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
+    let outer = Block::default()
+        .title(Span::styled(
+            " ID3 Extra Frames — Customize ",
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    if state.extra_frames.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  (no extra frames found in this file)",
+                Style::default().fg(C_DIM),
+            )),
+            rows[0],
+        );
+    } else if state.extra_editing {
+        // Show the editing buffer for the focused frame.
+        let frame_ref = state.extra_frames.get(state.extra_focused);
+        let id = frame_ref.map(|f| f.id.as_str()).unwrap_or("???");
+        let label_line = Line::from(vec![
+            Span::styled(format!("  Editing frame {} — new value: ", id), Style::default().fg(C_DIM)),
+            Span::styled(format!("{}▌", state.extra_input), Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)),
+        ]);
+        frame.render_widget(Paragraph::new(vec![label_line]), rows[0]);
+    } else {
+        // List all extra frames; highlight the focused one.
+        let items: Vec<Line> = state
+            .extra_frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let focused = i == state.extra_focused;
+                let row = format!("  {:4}  {}", f.id, f.value);
+                if focused {
+                    Line::from(Span::styled(row, Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)))
+                } else {
+                    Line::from(row)
+                }
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(items).style(Style::default().fg(C_TEXT)), rows[0]);
+    }
+
+    // Bottom hint bar.
+    let hints = if state.extra_editing {
+        Line::from(vec![
+            hint("Enter", " save frame"),
+            sep(),
+            Span::styled("[Esc] discard", Style::default().fg(C_WARN)),
+        ])
+    } else {
+        Line::from(vec![
+            hint("↑↓", " navigate"),
+            sep(),
+            hint("Enter", " edit value"),
+            sep(),
+            hint("^S", " save all"),
+            sep(),
+            Span::styled("[Esc] back to fields", Style::default().fg(C_WARN)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(hints), rows[1]);
 }
 
 // ---------------------------------------------------------------------------

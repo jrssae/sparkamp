@@ -19,9 +19,14 @@ mod config;
 mod duration_cache;
 mod duration_probe;
 mod engine;
+mod filetype_plugin;
 mod gtk_ui;
+mod id3_editor;
 mod model;
+mod shuffle;
+mod skin;
 mod tui;
+mod viz_plugin;
 
 /// Command-line arguments parsed by [`clap`].
 #[derive(Parser)]

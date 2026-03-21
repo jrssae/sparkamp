@@ -17,7 +17,14 @@ use crate::{
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player, PlayerState},
+    filetype_plugin::{self, FiletypePlugin},
+    id3_editor::{
+        read_extra_frames, read_tag_fields, write_extra_frame, write_tag_fields, ExtraFrame,
+        TagFields, ID3V1_GENRES,
+    },
     model::{Playlist, Track},
+    shuffle::ShuffleState,
+    viz_plugin::{load_plugins_from_dir, VizPlugin},
 };
 
 mod ui;
@@ -49,6 +56,89 @@ pub enum Mode {
     },
     /// i key: display keyboard shortcut reference; Esc to close.
     Help,
+    /// d key: open the ID3 tag editor for the highlighted playlist track.
+    Id3Editor(Id3EditorState),
+    /// e key: open the settings overlay.
+    Settings(SettingsState),
+    /// u key: open the 10-band equalizer overlay.
+    Equalizer(EqState),
+}
+
+// ---------------------------------------------------------------------------
+// Id3EditorState
+// ---------------------------------------------------------------------------
+
+/// All state required by the ID3 tag editor overlay.
+///
+/// The editor shows 12 default fields in a two-column layout.  A "Customize"
+/// sub-panel (toggled with `c`) lists any additional ID3v2 frames present in
+/// the file.
+pub struct Id3EditorState {
+    /// Path to the audio file being edited.
+    pub path: std::path::PathBuf,
+    /// Live copies of the standard tag fields — mutated as the user types.
+    pub fields: TagFields,
+    /// Which of the 12 default fields currently has focus (0–11).
+    pub focused: usize,
+    /// Index into the genre typeahead suggestions while the genre field is active.
+    pub genre_sel: usize,
+    /// True when the Customize (extra frames) sub-panel is visible.
+    pub show_extra: bool,
+    /// Extra ID3v2 frames loaded from the file (all frames not in `TagFields`).
+    pub extra_frames: Vec<ExtraFrame>,
+    /// Which extra frame row is focused inside the Customize panel.
+    pub extra_focused: usize,
+    /// True when the user is typing a new value for the focused extra frame.
+    pub extra_editing: bool,
+    /// Edit buffer for the extra-frame value being modified.
+    pub extra_input: String,
+    /// Status / error message shown at the bottom of the editor.
+    pub status: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// SettingsState
+// ---------------------------------------------------------------------------
+
+/// All state required by the settings overlay.
+///
+/// Four tabs: Appearance, Behavior, Visualizer, Filetypes.  Each tab has
+/// between one and two settings.  String-valued settings (Filetypes paths)
+/// enter an inline text-edit mode when the user presses Enter.
+pub struct SettingsState {
+    /// Active tab: 0 = Appearance, 1 = Behavior, 2 = Visualizer, 3 = Filetypes.
+    pub tab: usize,
+    /// Which item inside the active tab is highlighted (0-based).
+    pub cursor: usize,
+    /// When Some, the user is editing a Filetypes string field; holds the
+    /// in-progress text.  None means normal navigation mode.
+    pub edit_buf: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// EqState
+// ---------------------------------------------------------------------------
+
+/// State for the 10-band equalizer overlay (Mode::Equalizer).
+#[derive(Debug, Clone)]
+pub struct EqState {
+    /// Which band (0–9) is currently selected for adjustment.
+    pub selected_band: usize,
+}
+
+/// Returns the number of configurable items for the given tab index.
+pub(super) fn settings_tab_len(tab: usize) -> usize {
+    match tab {
+        // Appearance: 2 items (theme, custom_skin)
+        0 => 2,
+        // Behavior: 1 item (autoplay_on_add)
+        1 => 1,
+        // Visualizer: 1 item (mode)
+        2 => 1,
+        // Filetypes: 2 items (visualizer_dir, filetype_dir)
+        3 => 2,
+        _ => 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +163,10 @@ pub struct App {
     pub marquee_tick: u32,
     /// Persistent cache mapping file path → duration (loaded at startup, saved on quit).
     pub duration_cache: DurationCache,
+    /// Shuffle / repeat state (session-only; not persisted).
+    /// Tracks which songs have been played this pass and the full playback
+    /// history so the previous button works correctly in shuffle mode.
+    pub shuffle_state: ShuffleState,
     /// Receiving end of the async duration-probe channel.
     /// The tick loop drains this every 100 ms and writes results back to the playlist.
     probe_rx: mpsc::Receiver<(PathBuf, Duration)>,
@@ -82,6 +176,15 @@ pub struct App {
     broken_rx: mpsc::Receiver<PathBuf>,
     /// Sending end — cloned into `duration_probe::spawn_probes` calls.
     broken_tx: mpsc::Sender<PathBuf>,
+    /// Visualizer plugins loaded from `config.plugins.visualizer_dir` at startup.
+    /// Empty when no directory is configured or no valid plugins were found.
+    pub viz_plugins: Vec<VizPlugin>,
+    /// Index into `viz_plugins` of the currently active plugin.
+    /// `None` means use the built-in visualizer mode from `config.visualizer.mode`.
+    pub active_plugin_idx: Option<usize>,
+    /// Filetype plugins loaded from `config.plugins.filetype_dir` at startup.
+    /// Empty when no directory is configured or no valid plugins were found.
+    pub filetype_plugins: Vec<FiletypePlugin>,
 }
 
 impl App {
@@ -112,9 +215,20 @@ impl App {
             duration_probe::spawn_probes(uncached, probe_tx.clone(), broken_tx.clone());
         }
 
+        // Load visualizer and filetype plugins from their configured directories
+        // (best-effort; failures produce warnings but never prevent startup).
+        let viz_plugins      = load_plugins_from_dir(&config.plugins.visualizer_dir);
+        let filetype_plugins = filetype_plugin::load_plugins_from_dir(&config.plugins.filetype_dir);
+
+        // Create the player and apply the saved EQ config immediately so the
+        // correct settings are in effect from the very first track.
+        let player = Player::new()?;
+        let eq_bands = config.equalizer.effective_bands();
+        player.apply_eq_bands(&eq_bands);
+
         Ok(App {
             playlist,
-            player: Player::new()?,
+            player,
             config,
             mode: Mode::Normal,
             playlist_cursor: cursor,
@@ -125,10 +239,14 @@ impl App {
             marquee_offset: 0,
             marquee_tick: 0,
             duration_cache,
+            shuffle_state: ShuffleState::new(),
             probe_rx,
             probe_tx,
             broken_rx,
             broken_tx,
+            viz_plugins,
+            active_plugin_idx: None,
+            filetype_plugins,
         })
     }
 
@@ -212,7 +330,10 @@ impl App {
             self.status_message = Some(format!("Play error: {e}"));
             return;
         }
-        self.playlist_cursor = self.playlist.current_index;
+        // Record this track in shuffle history so the previous button works.
+        let idx = self.playlist.current_index;
+        self.shuffle_state.record_played(idx);
+        self.playlist_cursor = idx;
         self.status_message = None;
         self.visualizer_active = true;
         // Reset marquee so the new title scrolls from the beginning.
@@ -220,30 +341,48 @@ impl App {
         self.marquee_tick = 0;
     }
 
-    /// Advance to the next non-broken track and play it.
+    /// Auto-advance after end-of-stream, respecting repeat and shuffle modes.
     ///
-    /// Skips over tracks already flagged `broken`.  Also handles any new sync
-    /// failures encountered along the way (marking those broken too).  The loop
-    /// is bounded by the playlist length so it cannot infinitely recurse even
-    /// if every remaining track is unavailable.
+    /// Determines the next track index via [`ShuffleState::next_index`], then
+    /// attempts to play it.  Skips tracks flagged `broken`.  The loop is
+    /// bounded by the playlist length to avoid infinite recursion when all
+    /// remaining tracks are unavailable.
     fn advance_to_next_playable(&mut self) {
         let total = self.playlist.len();
+        let current = self.playlist.current_index;
+        let repeat = self.config.playback.repeat_mode;
+
+        // Ask the shuffle/repeat engine for the next index.
+        let next_idx = self.shuffle_state.next_index(current, total, repeat);
+
+        let Some(mut idx) = next_idx else {
+            // No more tracks (end of playlist with repeat off).
+            let _ = self.player.stop();
+            self.visualizer_active = false;
+            return;
+        };
+
+        // Try up to `total` times to find a non-broken track.
         for _ in 0..total {
-            if self.playlist.next().is_none() {
-                // Reached the end without finding a playable track.
-                self.visualizer_active = false;
-                return;
-            }
-            let idx = self.playlist.current_index;
             if self.playlist.tracks.get(idx).map(|t| t.broken).unwrap_or(false) {
-                continue; // already known broken — skip silently
+                // This index is broken — skip it and ask for the next one.
+                self.shuffle_state.record_played(idx); // mark played so it won't repeat
+                match self.shuffle_state.next_index(idx, total, repeat) {
+                    Some(i) => { idx = i; continue; }
+                    None    => {
+                        let _ = self.player.stop();
+                        self.visualizer_active = false;
+                        return;
+                    }
+                }
             }
-            // Try to play; on sync failure mark broken and keep looping.
-            let Some(track) = self.playlist.current() else { break };
-            let uri = track.uri();
+
+            // Attempt to load and play the chosen track.
+            self.playlist.jump_to(idx);
+            let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
             let ok = self.player.load(&uri).is_ok() && self.player.play().is_ok();
             if ok {
-                let idx = self.playlist.current_index;
+                self.shuffle_state.record_played(idx);
                 self.playlist_cursor = idx;
                 self.status_message = None;
                 self.visualizer_active = true;
@@ -251,32 +390,50 @@ impl App {
                 self.marquee_tick = 0;
                 return;
             }
-            let idx = self.playlist.current_index;
+            // Load/play failed — mark broken and try the next index.
             self.playlist.tracks[idx].broken = true;
+            match self.shuffle_state.next_index(idx, total, repeat) {
+                Some(i) => idx = i,
+                None    => break,
+            }
         }
+
         let _ = self.player.stop();
         self.visualizer_active = false;
     }
 
+    /// Manual "next" (b key) — advance one step using shuffle/repeat logic.
     pub fn play_next(&mut self) {
-        if self.playlist.next().is_some() {
+        let total = self.playlist.len();
+        let current = self.playlist.current_index;
+        let repeat = self.config.playback.repeat_mode;
+
+        if let Some(idx) = self.shuffle_state.next_index(current, total, repeat) {
+            self.playlist.jump_to(idx);
             self.play_current();
         }
-        // No next track — do nothing. The b key has no effect at the end of the playlist.
+        // At end of playlist with repeat off — do nothing.
     }
 
-    /// Back button logic per PRD:
+    /// Back button logic:
     /// - If more than 2 s have elapsed → restart the current track.
-    /// - If ≤ 2 s → go to the previous track.
+    /// - If ≤ 2 s and shuffle has history → step back through session history.
+    /// - If ≤ 2 s and no history → use linear previous (or stay at start).
     pub fn play_prev(&mut self) {
         let pos = self.player.position().unwrap_or(Duration::ZERO);
         if pos > Duration::from_secs(2) {
+            // Restart the current track rather than going to the previous one.
             if let Some(track) = self.playlist.current() {
                 let uri = track.uri();
                 let _ = self.player.load(&uri);
                 let _ = self.player.play();
             }
+        } else if let Some(idx) = self.shuffle_state.prev_from_history() {
+            // Step back through shuffle/playback history.
+            self.playlist.jump_to(idx);
+            self.play_current();
         } else {
+            // No history yet (beginning of session) — fall back to linear prev.
             self.playlist.previous();
             self.play_current();
         }
@@ -316,6 +473,14 @@ impl App {
             .position()
             .unwrap_or(std::time::Duration::ZERO)
             .as_secs_f64();
+
+        // If a plugin is selected, delegate to it; otherwise use the built-in mode.
+        if let Some(idx) = self.active_plugin_idx {
+            if let Some(plugin) = self.viz_plugins.get(idx) {
+                return plugin.render(pos, self.visualizer_active, count);
+            }
+        }
+
         match self.config.visualizer.mode {
             VisualizerMode::Bars => (0..count)
                 .map(|i| {
@@ -336,6 +501,51 @@ impl App {
                     (std::f64::consts::TAU * t + pos * 4.0).sin() * 0.5 + 0.5
                 })
                 .collect(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Visualizer mode cycling
+    // -----------------------------------------------------------------------
+
+    /// Advance the visualizer to the next available mode.
+    ///
+    /// Cycle order: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars.
+    /// When no plugins are loaded the cycle is simply Bars ↔ Oscilloscope.
+    fn cycle_visualizer_mode(&mut self) {
+        self.visualizer_active = true;
+        self.status_message = None;
+        match self.active_plugin_idx {
+            None => {
+                // Currently showing a built-in mode.
+                match self.config.visualizer.mode {
+                    VisualizerMode::Bars => {
+                        // Bars → Oscilloscope (or jump straight to first plugin
+                        // if there are no more built-in modes after this one).
+                        self.config.visualizer.mode = VisualizerMode::Oscilloscope;
+                    }
+                    VisualizerMode::Oscilloscope => {
+                        if !self.viz_plugins.is_empty() {
+                            // Oscilloscope → first plugin.
+                            self.active_plugin_idx = Some(0);
+                        } else {
+                            // No plugins — wrap back to Bars.
+                            self.config.visualizer.mode = VisualizerMode::Bars;
+                        }
+                    }
+                }
+            }
+            Some(idx) => {
+                // Currently showing a plugin.
+                if idx + 1 < self.viz_plugins.len() {
+                    // Advance to the next plugin.
+                    self.active_plugin_idx = Some(idx + 1);
+                } else {
+                    // Last plugin → wrap back to Bars.
+                    self.active_plugin_idx = None;
+                    self.config.visualizer.mode = VisualizerMode::Bars;
+                }
+            }
         }
     }
 
@@ -366,9 +576,15 @@ impl App {
             let path = std::path::Path::new(part);
 
             if path.is_dir() {
-                let (added, errors) = self.playlist.add_paths(&[path]);
-                total_added  += added;
-                total_errors += errors.len();
+                // Use extended scan so filetype plugins' formats are included.
+                let extra = filetype_plugin::extra_extensions(&self.filetype_plugins);
+                let audio_files = Playlist::collect_audio_files_extended(path, &extra);
+                for audio_path in audio_files {
+                    match Track::from_path(&audio_path) {
+                        Ok(track) => { total_added += 1; self.playlist.add(track); }
+                        Err(_)    => total_errors += 1,
+                    }
+                }
             } else {
                 match Track::from_path(path) {
                     Ok(track) => {
@@ -378,6 +594,11 @@ impl App {
                     Err(_) => total_errors += 1,
                 }
             }
+        }
+
+        // Any playlist mutation resets shuffle history (new playlist = fresh draw).
+        if total_added > 0 {
+            self.shuffle_state.reset();
         }
 
         // Human-readable status feedback.
@@ -448,6 +669,8 @@ impl App {
         let idx = pos_1 - 1;
         let was_current = idx == self.playlist.current_index;
         self.playlist.remove(idx);
+        // Shuffle history is no longer valid after a playlist mutation.
+        self.shuffle_state.reset();
         self.playlist_cursor = self.playlist.current_index;
         if was_current && !self.playlist.is_empty() {
             self.play_current();
@@ -461,7 +684,7 @@ impl App {
     // Input handling
     // -----------------------------------------------------------------------
 
-    pub fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
+    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match self.mode {
             Mode::Normal => self.handle_normal(code),
             Mode::Jump { .. } => self.handle_jump(code),
@@ -472,6 +695,9 @@ impl App {
                 // Any key dismisses the help overlay.
                 self.mode = Mode::Normal;
             }
+            Mode::Id3Editor(..)  => self.handle_id3_editor(code, modifiers),
+            Mode::Settings(..)   => self.handle_settings(code),
+            Mode::Equalizer(..)  => self.handle_equalizer(code),
         }
     }
 
@@ -549,14 +775,9 @@ impl App {
             KeyCode::Left  => self.seek_delta_secs(-5.0),
             KeyCode::Right => self.seek_delta_secs(5.0),
 
-            // Visualizer mode cycle
+            // Visualizer mode cycle: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                self.config.visualizer.mode = match self.config.visualizer.mode {
-                    VisualizerMode::Bars => VisualizerMode::Oscilloscope,
-                    VisualizerMode::Oscilloscope => VisualizerMode::Bars,
-                };
-                self.visualizer_active = true;
-                self.status_message = None;
+                self.cycle_visualizer_mode();
             }
 
             // Playlist navigation
@@ -586,12 +807,71 @@ impl App {
                 self.playlist.tracks.clear();
                 self.playlist.current_index = 0;
                 self.playlist_cursor = 0;
+                self.shuffle_state.reset(); // fresh playlist → fresh shuffle draw
                 self.status_message = Some("Playlist cleared".to_string());
             }
 
             // i / I — show keyboard shortcut reference overlay.
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.mode = Mode::Help;
+            }
+
+            // r — cycle repeat mode: Off → Song → Playlist → Off.
+            // Current mode is shown in the header track-info area.
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                let new_mode = self.config.playback.repeat_mode.cycle();
+                self.config.playback.repeat_mode = new_mode;
+                self.status_message = Some(new_mode.label().to_string());
+            }
+
+            // s — toggle shuffle on/off (hidden shortcut; only shown in help).
+            // Resets the shuffle history so the new setting takes effect cleanly.
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.shuffle_state.toggle();
+                if self.shuffle_state.enabled {
+                    self.status_message = Some("Shuffle: On".to_string());
+                } else {
+                    self.status_message = Some("Shuffle: Off".to_string());
+                }
+            }
+
+            // d — open the ID3 tag editor for the currently highlighted track.
+            // Reads the tag fields and extra frames from the file, then switches
+            // to the Id3Editor overlay.
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if let Some(track) = self.playlist.tracks.get(self.playlist_cursor) {
+                    let path = track.path.clone();
+                    let fields = read_tag_fields(&path);
+                    let extra_frames = read_extra_frames(&path);
+                    self.mode = Mode::Id3Editor(Id3EditorState {
+                        path,
+                        fields,
+                        focused: 0,
+                        genre_sel: 0,
+                        show_extra: false,
+                        extra_frames,
+                        extra_focused: 0,
+                        extra_editing: false,
+                        extra_input: String::new(),
+                        status: None,
+                    });
+                } else {
+                    self.status_message = Some("No track selected".to_string());
+                }
+            }
+
+            // e — open the settings overlay.
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                self.mode = Mode::Settings(SettingsState {
+                    tab:      0,
+                    cursor:   0,
+                    edit_buf: None,
+                });
+            }
+
+            // u — open the 10-band equalizer overlay.
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                self.mode = Mode::Equalizer(EqState { selected_band: 0 });
             }
 
             _ => {}
@@ -799,6 +1079,554 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // ID3 editor key handler
+    // -----------------------------------------------------------------------
+
+    /// Handle a key press when the ID3 editor overlay is open.
+    ///
+    /// The editor has two sub-modes:
+    /// - **Main fields** (`show_extra == false`): the default 12-field form.
+    /// - **Customize panel** (`show_extra == true`): a scrollable list of any
+    ///   additional ID3v2 frames already present in the file, with in-place
+    ///   editing.
+    fn handle_id3_editor(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // --- Customize (extra frames) sub-panel ---
+        if let Mode::Id3Editor(ref state) = self.mode {
+            if state.show_extra {
+                self.handle_id3_extra(code, modifiers);
+                return;
+            }
+        }
+
+        // --- Main fields panel ---
+        match code {
+            // Esc: close the editor without saving.
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+
+            // Tab / Shift-Tab: advance/retreat through the 12 fields.
+            KeyCode::Tab => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.focused = (s.focused + 1) % 12;
+                    s.genre_sel = 0;
+                    s.status = None;
+                }
+            }
+            KeyCode::BackTab => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.focused = if s.focused == 0 { 11 } else { s.focused - 1 };
+                    s.genre_sel = 0;
+                    s.status = None;
+                }
+            }
+
+            // Up / Down: navigate genre suggestions when on the genre field
+            // (field index 4), otherwise navigate between fields.
+            KeyCode::Down => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    if s.focused == 4 {
+                        let n = id3_genre_matches(&s.fields.genre).len();
+                        if n > 0 {
+                            s.genre_sel = (s.genre_sel + 1).min(n - 1);
+                        }
+                    } else {
+                        s.focused = (s.focused + 1) % 12;
+                        s.genre_sel = 0;
+                    }
+                }
+            }
+            KeyCode::Up => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    if s.focused == 4 {
+                        s.genre_sel = s.genre_sel.saturating_sub(1);
+                    } else {
+                        s.focused = if s.focused == 0 { 11 } else { s.focused - 1 };
+                        s.genre_sel = 0;
+                    }
+                }
+            }
+
+            // Enter: if genre field has suggestions, accept the highlighted one;
+            // otherwise advance to the next field.
+            KeyCode::Enter => {
+                let accept = if let Mode::Id3Editor(ref s) = self.mode {
+                    if s.focused == 4 {
+                        let matches = id3_genre_matches(&s.fields.genre);
+                        matches.get(s.genre_sel).map(|g| g.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    if let Some(chosen) = accept {
+                        s.fields.genre = chosen;
+                        s.focused = (s.focused + 1) % 12;
+                        s.genre_sel = 0;
+                    } else {
+                        s.focused = (s.focused + 1) % 12;
+                        s.genre_sel = 0;
+                    }
+                }
+            }
+
+            // Ctrl+S: save tags and close the editor.
+            KeyCode::Char('s') | KeyCode::Char('S')
+                if modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.id3_save_and_close();
+            }
+
+            // c / C: open the Customize (extra frames) sub-panel.
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.show_extra = true;
+                    s.extra_focused = 0;
+                    s.extra_editing = false;
+                    s.extra_input.clear();
+                }
+            }
+
+            // Backspace: delete the last character in the focused field.
+            KeyCode::Backspace => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    id3_field_value_mut(&mut s.fields, s.focused).pop();
+                    s.genre_sel = 0;
+                }
+            }
+
+            // Any printable character: append to the focused field.
+            KeyCode::Char(ch) => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    id3_field_value_mut(&mut s.fields, s.focused).push(ch);
+                    s.genre_sel = 0;
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    /// Handle a key press inside the Customize (extra frames) sub-panel.
+    ///
+    /// When `extra_editing` is true, keystrokes go to the text buffer for the
+    /// currently selected frame.  When false, Up/Down navigate frames and
+    /// Enter starts editing the selected frame.
+    fn handle_id3_extra(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // Editing mode: keys modify the extra_input buffer.
+        let editing = if let Mode::Id3Editor(ref s) = self.mode {
+            s.extra_editing
+        } else {
+            return;
+        };
+
+        if editing {
+            match code {
+                // Esc: abandon the edit.
+                KeyCode::Esc => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        s.extra_editing = false;
+                        s.extra_input.clear();
+                    }
+                }
+                // Enter / Ctrl+S: write the edited value back to the file.
+                KeyCode::Enter |
+                KeyCode::Char('s') | KeyCode::Char('S')
+                    if code == KeyCode::Enter
+                    || modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    let (path, frame_id, value, idx) =
+                        if let Mode::Id3Editor(ref s) = self.mode {
+                            let frame = s.extra_frames.get(s.extra_focused);
+                            if let Some(f) = frame {
+                                (s.path.clone(), f.id.clone(),
+                                 s.extra_input.clone(), s.extra_focused)
+                            } else {
+                                return;
+                            }
+                        } else {
+                            return;
+                        };
+
+                    match write_extra_frame(&path, &frame_id, &value) {
+                        Ok(()) => {
+                            if let Mode::Id3Editor(ref mut s) = self.mode {
+                                // Update the in-memory list so the display refreshes.
+                                if let Some(f) = s.extra_frames.get_mut(idx) {
+                                    f.value = value;
+                                }
+                                s.extra_editing = false;
+                                s.extra_input.clear();
+                                s.status = Some("Frame saved".to_string());
+                            }
+                        }
+                        Err(e) => {
+                            if let Mode::Id3Editor(ref mut s) = self.mode {
+                                s.status = Some(format!("Save error: {e}"));
+                                s.extra_editing = false;
+                            }
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        s.extra_input.pop();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        s.extra_input.push(ch);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Navigation mode.
+        match code {
+            // Esc: close the Customize panel and return to the main fields.
+            KeyCode::Esc => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.show_extra = false;
+                }
+            }
+
+            KeyCode::Up => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.extra_focused = s.extra_focused.saturating_sub(1);
+                }
+            }
+            KeyCode::Down => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    let max = s.extra_frames.len().saturating_sub(1);
+                    s.extra_focused = (s.extra_focused + 1).min(max);
+                }
+            }
+
+            // Enter: start editing the value of the focused extra frame.
+            KeyCode::Enter => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    if !s.extra_frames.is_empty() {
+                        let current_val = s.extra_frames[s.extra_focused].value.clone();
+                        s.extra_input = current_val;
+                        s.extra_editing = true;
+                    }
+                }
+            }
+
+            // Ctrl+S from the Customize panel saves the main fields and closes.
+            KeyCode::Char('s') | KeyCode::Char('S')
+                if modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.show_extra = false; // return to main panel first
+                }
+                self.id3_save_and_close();
+            }
+
+            _ => {}
+        }
+    }
+
+    /// Write the current `TagFields` back to disk, refresh the in-playlist
+    /// track metadata, then close the editor.
+    fn id3_save_and_close(&mut self) {
+        let (path, fields) = if let Mode::Id3Editor(ref s) = self.mode {
+            (s.path.clone(), s.fields.clone())
+        } else {
+            return;
+        };
+
+        match write_tag_fields(&path, &fields) {
+            Ok(()) => {
+                // Refresh the in-memory track so the playlist shows updated metadata.
+                for track in &mut self.playlist.tracks {
+                    if track.path == path {
+                        if let Ok(fresh) = Track::from_path(&path) {
+                            track.title = fresh.title;
+                            track.artist = fresh.artist;
+                        }
+                        break;
+                    }
+                }
+                self.mode = Mode::Normal;
+                self.status_message = Some("Tags saved".to_string());
+            }
+            Err(e) => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.status = Some(format!("Save error: {e}"));
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings overlay
+    // -----------------------------------------------------------------------
+
+    /// Handle a key press inside the settings overlay.
+    ///
+    /// Key map (normal navigation):
+    ///   Left / Right (or h / l) — switch tabs
+    ///   Up / Down (or k / j)   — move cursor within the active tab
+    ///   Space / Enter          — toggle a bool, cycle an enum, or enter
+    ///                            text-edit mode for a string field
+    ///   Esc / e                — save config to disk and close the overlay
+    ///
+    /// Key map (text-edit mode for Filetypes paths):
+    ///   Any printable char     — append to the edit buffer
+    ///   Backspace              — delete the last character
+    ///   Enter                  — confirm and write the value back to config
+    ///   Esc                    — abandon the edit (revert to previous value)
+    fn handle_settings(&mut self, code: KeyCode) {
+        use crate::config::{ThemeChoice, VisualizerMode};
+
+        // Snapshot the read-only fields we need before any mutable borrow.
+        let (tab, cursor, in_edit) = match &self.mode {
+            Mode::Settings(s) => (s.tab, s.cursor, s.edit_buf.is_some()),
+            _ => return,
+        };
+
+        // ── Text-edit mode (Filetypes string fields) ──────────────────────
+        if in_edit {
+            match code {
+                // Esc: abandon the edit, restore the previous value.
+                KeyCode::Esc => {
+                    if let Mode::Settings(s) = &mut self.mode {
+                        s.edit_buf = None;
+                    }
+                }
+                // Enter: commit the typed value back to config.
+                KeyCode::Enter => {
+                    let val = match &mut self.mode {
+                        Mode::Settings(s) => s.edit_buf.take().unwrap_or_default(),
+                        _ => return,
+                    };
+                    // Dispatch by (tab, cursor).
+                    match (tab, cursor) {
+                        (0, 1) => self.config.appearance.custom_skin    = val,
+                        (3, 0) => self.config.plugins.visualizer_dir    = val,
+                        (3, 1) => self.config.plugins.filetype_dir      = val,
+                        _      => {}
+                    }
+                }
+                // Backspace: delete last character from the buffer.
+                KeyCode::Backspace => {
+                    if let Mode::Settings(s) = &mut self.mode {
+                        if let Some(buf) = &mut s.edit_buf { buf.pop(); }
+                    }
+                }
+                // Any printable character: append to the buffer.
+                KeyCode::Char(ch) => {
+                    if let Mode::Settings(s) = &mut self.mode {
+                        if let Some(buf) = &mut s.edit_buf { buf.push(ch); }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Normal navigation ─────────────────────────────────────────────
+        match code {
+            // Esc / e: save config and close.
+            KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('E') => {
+                let _ = self.config.save();
+                self.mode = Mode::Normal;
+            }
+
+            // Left / h: go to the previous tab.
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Mode::Settings(s) = &mut self.mode {
+                    s.tab = s.tab.saturating_sub(1);
+                    s.cursor = 0;
+                }
+            }
+            // Right / l: go to the next tab.
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Mode::Settings(s) = &mut self.mode {
+                    if s.tab < 3 { s.tab += 1; }
+                    s.cursor = 0;
+                }
+            }
+
+            // Up / k: move cursor up within the active tab.
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Mode::Settings(s) = &mut self.mode {
+                    s.cursor = s.cursor.saturating_sub(1);
+                }
+            }
+            // Down / j: move cursor down within the active tab.
+            KeyCode::Down | KeyCode::Char('j') => {
+                let tab_len = settings_tab_len(tab);
+                if let Mode::Settings(s) = &mut self.mode {
+                    if s.cursor + 1 < tab_len { s.cursor += 1; }
+                }
+            }
+
+            // Space / Enter: act on the focused setting.
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                match tab {
+                    // Appearance: row 0 = cycle theme; row 1 = edit custom skin name.
+                    0 => {
+                        match cursor {
+                            0 => {
+                                self.config.appearance.theme = match self.config.appearance.theme {
+                                    ThemeChoice::Dark  => ThemeChoice::Light,
+                                    ThemeChoice::Light => ThemeChoice::Dark,
+                                };
+                            }
+                            1 => {
+                                // Enter text-edit mode for the custom skin name.
+                                let current = self.config.appearance.custom_skin.clone();
+                                if let Mode::Settings(s) = &mut self.mode {
+                                    s.edit_buf = Some(current);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Behavior: toggle autoplay-on-add.
+                    1 => {
+                        self.config.behavior.autoplay_on_add =
+                            !self.config.behavior.autoplay_on_add;
+                    }
+                    // Visualizer: cycle between Bars and Oscilloscope.
+                    2 => {
+                        self.config.visualizer.mode = match self.config.visualizer.mode {
+                            VisualizerMode::Bars        => VisualizerMode::Oscilloscope,
+                            VisualizerMode::Oscilloscope => VisualizerMode::Bars,
+                        };
+                    }
+                    // Filetypes: enter text-edit mode for the focused path field.
+                    3 => {
+                        let current = match cursor {
+                            0 => self.config.plugins.visualizer_dir.clone(),
+                            1 => self.config.plugins.filetype_dir.clone(),
+                            _ => String::new(),
+                        };
+                        if let Mode::Settings(s) = &mut self.mode {
+                            s.edit_buf = Some(current);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Equalizer handler
+    // -----------------------------------------------------------------------
+
+    /// Handle key events while the equalizer overlay is open.
+    ///
+    /// Key map:
+    ///   ←/→ (h/l)     — select previous / next band
+    ///   ↑/↓ (+/-)     — raise / lower the selected band by 1 dB
+    ///   PgUp/PgDn     — raise / lower by 3 dB (coarse)
+    ///   p             — cycle to the next EQ preset
+    ///   r             — reset all bands to flat (0 dB)
+    ///   t             — toggle EQ enabled / disabled
+    ///   Esc / u       — close the overlay (saves config)
+    fn handle_equalizer(&mut self, code: KeyCode) {
+        use crate::config::EQ_PRESETS;
+
+        // ── Snapshot band index ──────────────────────────────────────────────
+        let band = match &self.mode {
+            Mode::Equalizer(s) => s.selected_band,
+            _ => return,
+        };
+
+        // ── Helpers: adjust gain for the selected band ────────────────────
+        let adjust_band = |app: &mut App, delta: f64| {
+            if app.config.equalizer.bands.len() < 10 {
+                app.config.equalizer.bands.resize(10, 0.0);
+            }
+            let b = match &app.mode { Mode::Equalizer(s) => s.selected_band, _ => return };
+            let new_gain = (app.config.equalizer.bands[b] + delta).clamp(-24.0, 12.0);
+            app.config.equalizer.bands[b] = new_gain;
+            // Mark as custom preset.
+            app.config.equalizer.preset = String::new();
+            // Apply immediately to the engine.
+            app.player.set_eq_band(b, new_gain);
+        };
+
+        match code {
+            // Close and save.
+            KeyCode::Esc | KeyCode::Char('u') | KeyCode::Char('U') => {
+                let _ = self.config.save();
+                self.mode = Mode::Normal;
+                return;
+            }
+
+            // Navigate bands.
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Mode::Equalizer(s) = &mut self.mode {
+                    s.selected_band = s.selected_band.saturating_sub(1);
+                }
+                return;
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Mode::Equalizer(s) = &mut self.mode {
+                    if s.selected_band < 9 { s.selected_band += 1; }
+                }
+                return;
+            }
+
+            // Fine gain adjustment (1 dB).
+            KeyCode::Up    | KeyCode::Char('+') => adjust_band(self, 1.0),
+            KeyCode::Down  | KeyCode::Char('-') => adjust_band(self, -1.0),
+
+            // Coarse gain adjustment (3 dB).
+            KeyCode::PageUp   => adjust_band(self, 3.0),
+            KeyCode::PageDown => adjust_band(self, -3.0),
+
+            // Cycle presets: find the current preset, advance to the next.
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                let current_preset = self.config.equalizer.preset.clone();
+                let idx = EQ_PRESETS.iter().position(|(n, _)| *n == current_preset);
+                let next_idx = match idx {
+                    Some(i) => (i + 1) % EQ_PRESETS.len(),
+                    None    => 0,  // "Custom" → first preset
+                };
+                let (name, bands) = EQ_PRESETS[next_idx];
+                self.config.equalizer.preset = name.to_string();
+                self.config.equalizer.bands  = bands.to_vec();
+                // Apply all band gains to the engine.
+                if self.config.equalizer.enabled {
+                    self.player.apply_eq_bands(&bands);
+                }
+            }
+
+            // Reset to flat.
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.config.equalizer.preset = "Flat".to_string();
+                let flat = vec![0.0f64; 10];
+                self.config.equalizer.bands = flat.clone();
+                self.player.apply_eq_bands(&flat);
+            }
+
+            // Toggle enabled / disabled.
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                self.config.equalizer.enabled = !self.config.equalizer.enabled;
+                let effective = self.config.equalizer.effective_bands();
+                self.player.apply_eq_bands(&effective);
+            }
+
+            _ => {}
+        }
+
+        // Keep the band index in the unused variable to suppress warning
+        let _ = band;
+    }
+
+    // -----------------------------------------------------------------------
     // Tick
     // -----------------------------------------------------------------------
 
@@ -860,6 +1688,49 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
+// ID3 editor free-function helpers
+// ---------------------------------------------------------------------------
+
+/// Return a mutable reference to the `TagFields` field at the given index.
+///
+/// Indices correspond to the `field_pairs()` order:
+/// 0=Title, 1=Artist, 2=Album, 3=Album Artist, 4=Genre, 5=Year,
+/// 6=Track#, 7=Track Total, 8=Disc#, 9=Disc Total, 10=BPM, 11=Comment.
+pub fn id3_field_value_mut(fields: &mut TagFields, index: usize) -> &mut String {
+    match index {
+        0  => &mut fields.title,
+        1  => &mut fields.artist,
+        2  => &mut fields.album,
+        3  => &mut fields.album_artist,
+        4  => &mut fields.genre,
+        5  => &mut fields.year,
+        6  => &mut fields.track_number,
+        7  => &mut fields.track_total,
+        8  => &mut fields.disc_number,
+        9  => &mut fields.disc_total,
+        10 => &mut fields.bpm,
+        _  => &mut fields.comment,
+    }
+}
+
+/// Return up to 6 genre suggestions that start with `query` (case-insensitive).
+///
+/// Returns an empty vec when `query` is empty so the typeahead popup only
+/// appears once the user has started typing.
+pub fn id3_genre_matches(query: &str) -> Vec<&'static str> {
+    if query.is_empty() {
+        return vec![];
+    }
+    let q = query.to_lowercase();
+    ID3V1_GENRES
+        .iter()
+        .filter(|g| g.to_lowercase().starts_with(&q))
+        .copied()
+        .take(6)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------------
 
@@ -905,6 +1776,9 @@ pub fn run(playlist: Playlist, config: Config) -> Result<()> {
 
         if app.should_quit {
             let _ = app.playlist.save_last();
+            // Persist the config so volume, repeat-mode, window geometry, and
+            // any settings-overlay changes survive to the next session.
+            let _ = app.config.save();
             // Flush any pending duration-cache writes so probed data survives
             // to the next session (DurationCache::drop also does this, but
             // an explicit call here makes the intent visible).
@@ -1894,5 +2768,151 @@ mod tests {
         app.visualizer_active = true;
         app.advance_to_next_playable();
         assert!(!app.visualizer_active);
+    }
+
+    // -----------------------------------------------------------------------
+    // Equalizer
+    // -----------------------------------------------------------------------
+
+    /// `u` key opens the equalizer overlay.
+    #[test]
+    fn u_key_opens_equalizer_overlay() {
+        let mut app = make_app();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::NONE);
+        assert!(matches!(app.mode, Mode::Equalizer(..)), "mode should be Equalizer after u key");
+    }
+
+    /// Esc closes the equalizer overlay and returns to Normal.
+    #[test]
+    fn esc_closes_equalizer_overlay() {
+        let mut app = make_app();
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// Up key raises the selected band by 1 dB.
+    #[test]
+    fn eq_up_key_raises_band_by_1db() {
+        let mut app = make_app();
+        app.config.equalizer.bands = vec![0.0; 10];
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.config.equalizer.bands[0], 1.0);
+    }
+
+    /// Down key lowers the selected band by 1 dB.
+    #[test]
+    fn eq_down_key_lowers_band_by_1db() {
+        let mut app = make_app();
+        app.config.equalizer.bands = vec![0.0; 10];
+        app.mode = Mode::Equalizer(EqState { selected_band: 3 });
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.config.equalizer.bands[3], -1.0);
+    }
+
+    /// Band gain is clamped to the maximum (+12 dB).
+    #[test]
+    fn eq_gain_clamped_at_max() {
+        let mut app = make_app();
+        app.config.equalizer.bands = vec![12.0; 10];
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.config.equalizer.bands[0], 12.0, "gain should not exceed +12 dB");
+    }
+
+    /// Band gain is clamped to the minimum (-24 dB).
+    #[test]
+    fn eq_gain_clamped_at_min() {
+        let mut app = make_app();
+        app.config.equalizer.bands = vec![-24.0; 10];
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.config.equalizer.bands[0], -24.0, "gain should not go below -24 dB");
+    }
+
+    /// Right arrow advances the selected band.
+    #[test]
+    fn eq_right_key_advances_selected_band() {
+        let mut app = make_app();
+        app.mode = Mode::Equalizer(EqState { selected_band: 2 });
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert!(matches!(&app.mode, Mode::Equalizer(s) if s.selected_band == 3));
+    }
+
+    /// Left arrow decrements the selected band (clamped at 0).
+    #[test]
+    fn eq_left_key_decrements_selected_band_clamped() {
+        let mut app = make_app();
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert!(matches!(&app.mode, Mode::Equalizer(s) if s.selected_band == 0));
+    }
+
+    /// Right arrow at band 9 does not overflow.
+    #[test]
+    fn eq_right_key_clamped_at_band_9() {
+        let mut app = make_app();
+        app.mode = Mode::Equalizer(EqState { selected_band: 9 });
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert!(matches!(&app.mode, Mode::Equalizer(s) if s.selected_band == 9));
+    }
+
+    /// `p` key cycles to the first EQ preset.
+    #[test]
+    fn eq_p_key_cycles_to_first_preset() {
+        use crate::config::EQ_PRESETS;
+        let mut app = make_app();
+        app.config.equalizer.preset = String::new(); // start on Custom
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        // Custom → first preset (index 0).
+        assert_eq!(app.config.equalizer.preset, EQ_PRESETS[0].0);
+    }
+
+    /// `r` key resets all bands to flat.
+    #[test]
+    fn eq_r_key_resets_to_flat() {
+        let mut app = make_app();
+        app.config.equalizer.bands = vec![6.0, 3.0, -3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(app.config.equalizer.bands.iter().all(|&v| v == 0.0), "all bands should be 0 after reset");
+        assert_eq!(app.config.equalizer.preset, "Flat");
+    }
+
+    /// `t` key toggles EQ enabled/disabled.
+    #[test]
+    fn eq_t_key_toggles_enabled() {
+        let mut app = make_app();
+        app.config.equalizer.enabled = true;
+        app.mode = Mode::Equalizer(EqState { selected_band: 0 });
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert!(!app.config.equalizer.enabled);
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert!(app.config.equalizer.enabled);
+    }
+
+    /// `EqConfig::effective_bands` returns zeros when disabled.
+    #[test]
+    fn eq_effective_bands_returns_zeros_when_disabled() {
+        let mut cfg = crate::config::EqConfig::default();
+        cfg.enabled = false;
+        cfg.bands   = vec![6.0; 10];
+        let eff = cfg.effective_bands();
+        assert!(eff.iter().all(|&v| v == 0.0));
+    }
+
+    /// `EqConfig::effective_bands` returns stored gains when enabled.
+    #[test]
+    fn eq_effective_bands_returns_gains_when_enabled() {
+        let cfg = crate::config::EqConfig {
+            enabled: true,
+            preset:  "Rock".to_string(),
+            bands:   vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        };
+        let eff = cfg.effective_bands();
+        assert_eq!(eff[0], 1.0);
+        assert_eq!(eff[9], 10.0);
     }
 }

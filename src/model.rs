@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::{MetadataOptions, StandardTagKey, Value};
+use symphonia::core::probe::Hint;
+
 // ---------------------------------------------------------------------------
 // Audio file extension detection
 // ---------------------------------------------------------------------------
@@ -39,6 +44,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// assert!(!is_audio_file(Path::new("cover.jpg")));
 /// assert!(!is_audio_file(Path::new("README")));
 /// ```
+#[allow(dead_code)]
 pub fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -47,6 +53,89 @@ pub fn is_audio_file(path: &Path) -> bool {
             AUDIO_EXTENSIONS.contains(&lower.as_str())
         })
         .unwrap_or(false)
+}
+
+/// Like [`is_audio_file`] but also accepts any extension in `extra_extensions`.
+///
+/// `extra_extensions` contains lower-case extension strings without the
+/// leading dot (e.g. `"xyz"`).  This is used at runtime to include extensions
+/// registered by loaded filetype plugins without modifying the static
+/// [`AUDIO_EXTENSIONS`] slice.
+#[allow(dead_code)]
+pub fn is_audio_file_extended(path: &Path, extra_extensions: &[String]) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let lower = ext.to_lowercase();
+            AUDIO_EXTENSIONS.contains(&lower.as_str())
+                || extra_extensions.iter().any(|e| e == &lower)
+        })
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Symphonia metadata fallback
+// ---------------------------------------------------------------------------
+
+/// Try to read title, artist, album-artist, and album from a file using
+/// Symphonia's generic tag reader.
+///
+/// This succeeds for formats that don't use ID3 tags but are supported by
+/// Symphonia — in particular OGG/Vorbis (Vorbis Comments), FLAC, and Opus.
+/// Returns `None` when the file cannot be opened, the format is unrecognised,
+/// or no relevant tags are present.
+pub fn read_symphonia_metadata(path: &Path) -> Option<(String, String, String, String)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mss  = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .ok()?;
+
+    // Symphonia can surface tags from two places:
+    // 1. The outer container metadata log (e.g. ID3 tags in MP3 streams).
+    // 2. The format reader's internal metadata (Vorbis Comments, FLAC tags).
+    // We try both and merge, giving the format-reader priority.
+    let mut title        = String::new();
+    let mut artist       = String::new();
+    let mut album_artist = String::new();
+    let mut album        = String::new();
+
+    let apply_tags = |tags: &[symphonia::core::meta::Tag],
+                      title: &mut String,
+                      artist: &mut String,
+                      album_artist: &mut String,
+                      album: &mut String| {
+        for tag in tags {
+            let text = match &tag.value {
+                Value::String(s) => s.as_str(),
+                _ => continue,
+            };
+            match tag.std_key {
+                Some(StandardTagKey::TrackTitle)  => *title        = text.to_string(),
+                Some(StandardTagKey::Artist)      => *artist       = text.to_string(),
+                Some(StandardTagKey::AlbumArtist) => *album_artist = text.to_string(),
+                Some(StandardTagKey::Album)       => *album        = text.to_string(),
+                _ => {}
+            }
+        }
+    };
+
+    // Pass 1: format-reader metadata (Vorbis Comments, FLAC tags, etc.).
+    if let Some(rev) = probed.format.metadata().current() {
+        apply_tags(rev.tags(), &mut title, &mut artist, &mut album_artist, &mut album);
+    }
+
+    if title.is_empty() {
+        None
+    } else {
+        Some((title, artist, album_artist, album))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +187,10 @@ impl Track {
             .canonicalize()
             .with_context(|| format!("Cannot resolve path: {}", path.display()))?;
 
+        // Strategy: try ID3 tags first (fast, works for MP3).  Fall back to
+        // Symphonia's generic reader for formats that use Vorbis Comments or
+        // other non-ID3 tag containers (OGG/Vorbis, FLAC, Opus).  If neither
+        // succeeds, use the filename stem as a last resort.
         let (title, artist, album_artist, album) = match id3::Tag::read_from_path(&path) {
             Ok(tag) => {
                 let title        = tag.title().unwrap_or("").to_string();
@@ -116,13 +209,28 @@ impl Track {
                 (title, artist, album_artist, album)
             }
             Err(_) => {
-                // No readable ID3 tag — use the filename stem as the display name.
-                let title = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Unknown")
-                    .to_string();
-                (title, String::new(), String::new(), String::new())
+                // No readable ID3 tag — try Symphonia for Vorbis Comments,
+                // FLAC tags, etc.  This handles OGG/Vorbis, FLAC, and Opus
+                // files which store metadata in format-specific tag blocks.
+                if let Some((t, ar, aa, al)) = read_symphonia_metadata(&path) {
+                    let title = if t.is_empty() {
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Unknown")
+                            .to_string()
+                    } else {
+                        t
+                    };
+                    (title, ar, aa, al)
+                } else {
+                    // No metadata at all — use the filename stem.
+                    let title = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    (title, String::new(), String::new(), String::new())
+                }
             }
         };
 
@@ -236,6 +344,7 @@ impl Playlist {
     ///
     /// Returns `None` without changing the index if we are already at the
     /// last track (no wrap-around).
+    #[allow(dead_code)]
     pub fn next(&mut self) -> Option<&Track> {
         if self.current_index + 1 < self.tracks.len() {
             self.current_index += 1;
@@ -402,7 +511,15 @@ impl Playlist {
     /// (case-insensitively) are included.
     pub fn collect_audio_files(dir: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
-        Self::collect_audio_files_inner(dir, &mut files);
+        Self::collect_audio_files_inner(dir, &[], &mut files);
+        files
+    }
+
+    /// Like [`collect_audio_files`] but also recognises extensions registered
+    /// by filetype plugins at runtime.
+    pub fn collect_audio_files_extended(dir: &Path, extra_exts: &[String]) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        Self::collect_audio_files_inner(dir, extra_exts, &mut files);
         files
     }
 
@@ -410,8 +527,10 @@ impl Playlist {
     ///
     /// Populates `files` with audio file paths found under `dir`.  Entries in
     /// each directory are sorted alphabetically before recursion so that the
-    /// final order is stable across runs and platforms.
-    fn collect_audio_files_inner(dir: &Path, files: &mut Vec<PathBuf>) {
+    /// final order is stable across runs and platforms.  `extra_exts` contains
+    /// additional lower-case extension strings (without dots) to recognise
+    /// beyond the built-in [`AUDIO_EXTENSIONS`] list.
+    fn collect_audio_files_inner(dir: &Path, extra_exts: &[String], files: &mut Vec<PathBuf>) {
         // Attempt to read the directory; silently skip on any error (e.g.
         // permission denied) to keep the scan robust.
         let read_dir = match std::fs::read_dir(dir) {
@@ -431,9 +550,10 @@ impl Playlist {
         for path in entries {
             if path.is_dir() {
                 // Recurse depth-first into sub-directories.
-                Self::collect_audio_files_inner(&path, files);
-            } else if is_audio_file(&path) {
-                // Only include files whose extension is a known audio type.
+                Self::collect_audio_files_inner(&path, extra_exts, files);
+            } else if is_audio_file_extended(&path, extra_exts) {
+                // Include files whose extension is a known audio type, plus
+                // any extra extensions contributed by filetype plugins.
                 files.push(path);
             }
         }
