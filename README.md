@@ -155,4 +155,4 @@ Please open an issue before starting large feature work so we can coordinate.
 
 ## License
 
-TBD — will be an OSI-approved open source license before the first public release.
+[GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) (AGPL-3.0)
