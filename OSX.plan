@@ -1,0 +1,717 @@
+# Sparkamp macOS Port Plan
+
+## Overview
+
+Port Sparkamp to macOS using SwiftUI while keeping the Rust core. The TUI already works on macOS (cross-platform via ratatui + crossterm). Only the GTK4 GUI needs replacement.
+
+---
+
+## Constraints
+
+- **Audio**: GStreamer via Homebrew (`brew install gstreamer`) — no AVFoundation rewrite
+- **Target**: macOS 13.0+
+- **Windows**: Native floating windows (separate windows, not tabbed/sidebar)
+- **Plugins**: Skipped for v1 (can add later)
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  UI Layer                                               │
+│  ┌─────────────────────┐  ┌─────────────────────────┐  │
+│  │  GTK4 (Linux)      │  │  SwiftUI (macOS)       │  │
+│  │  ~5500 lines       │  │  ~3700 lines           │  │
+│  └─────────────────────┘  └─────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  TUI (cross-platform — already works on macOS)   │   │
+│  └─────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────┤
+│  Core / FFI Layer                                      │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  core/ (new Rust library — extracts from src/)    │   │
+│  │  Builds as .dylib, linked by SwiftUI app         │   │
+│  └─────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────┤
+│  Audio Engine                                          │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  GStreamer (no changes — works on macOS via      │   │
+│  │  Homebrew)                                       │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## What Already Works on macOS
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| TUI | Ready | ratatui + crossterm are cross-platform |
+| Core logic | Ready | model, controller, config, media_library, shuffle, skin |
+| Plugin system | Ready | libloading works; skip for now |
+| SQLite media library | Ready | rusqlite is cross-platform |
+| Config/playlist persistence | Ready | dirs crate works |
+| ID3/metadata reading | Ready | id3 + symphonia are cross-platform |
+
+---
+
+## Phase 1: Extract Core as FFI Library
+
+### Duration: 2-3 days
+
+### New Structure
+
+```
+core/
+├── src/
+│   ├── lib.rs              # exports all modules
+│   ├── engine.rs           # GStreamer (no changes)
+│   ├── controller.rs
+│   ├── model.rs
+│   ├── config.rs
+│   ├── media_library.rs
+│   ├── shuffle.rs
+│   ├── duration_cache.rs
+│   └── ffi.rs              # NEW: C FFI bindings
+├── include/
+│   └── sparkamp.h          # NEW: C header for Swift
+└── build.rs                # builds as .dylib
+```
+
+### Steps
+
+1. Create `core/` as a separate Cargo workspace member in `Cargo.toml`
+2. Move from `src/` → `core/src/`:
+   - `engine.rs` — GStreamer (no changes needed)
+   - `controller.rs` — playback state machine
+   - `model.rs` — Track, Playlist, shuffle logic
+   - `config.rs` — TOML config
+   - `media_library.rs` — SQLite
+   - `shuffle.rs` — shuffle history
+   - `duration_cache.rs` — duration persistence
+   - `duration_probe.rs` — background duration probing
+   - `skin.rs` — CSS loading (cross-platform)
+3. Skip plugin-related files (deferred):
+   - `plugin_abi.rs`
+   - `plugin_manager.rs`
+   - `loaded_plugin.rs`
+   - `plugin_settings.rs`
+   - `viz_plugin.rs`
+   - `filetype_plugin.rs`
+4. Write `include/sparkamp.h` C header
+5. Write `core/src/ffi.rs` implementing the FFI
+6. Build as `.dylib` (macOS dynamic library)
+7. Write `core/build.rs` to handle GStreamer linking
+
+### C Header Design
+
+```c
+// include/sparkamp.h
+
+#ifndef SPARKAMP_H
+#define SPARKAMP_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ── Lifecycle ───────────────────────────────────────────────────────────────
+
+void spark_init(void);
+void spark_shutdown(void);
+
+// ── Player Controls ───────────────────────────────────────────────────────
+
+int  spark_load(const char* uri);
+int  spark_play(void);
+int  spark_pause(void);
+int  spark_stop(void);
+void spark_seek(double seconds);
+void spark_set_volume(double vol);              // 0.0–1.0
+void spark_set_eq_band(int band, double db);   // band 0-9, db -24 to +12
+void spark_set_preamp(double mult);             // 0.5–1.5
+void spark_set_eq_enabled(bool enabled);
+
+// ── Queries ────────────────────────────────────────────────────────────────
+
+double spark_position(void);    // seconds
+double spark_duration(void);    // seconds
+int    spark_state(void);      // 0=stopped, 1=playing, 2=paused
+int    spark_poll_bus(void);   // 0=none, 1=EOS, 2=error, 3=duration-changed
+
+// ── Playlist ──────────────────────────────────────────────────────────────
+
+void spark_pl_clear(void);
+void spark_pl_add(const char* path);
+void spark_pl_remove(int index);
+void spark_pl_reorder(int from, int to);
+int  spark_pl_len(void);
+int  spark_pl_current(void);
+void spark_pl_set_current(int index);
+
+// ── Track Info (caller must free returned strings) ────────────────────────
+
+char* spark_track_title(int index);
+char* spark_track_artist(int index);
+char* spark_track_album(int index);
+char* spark_track_path(int index);
+double spark_track_duration(int index);
+void   spark_free_string(char* s);
+
+// ── Config ────────────────────────────────────────────────────────────────
+
+void spark_config_load(void);
+int  spark_config_save(void);
+
+// ── Callbacks (Swift registers these) ────────────────────────────────────
+
+typedef void (*SparkPositionCallback)(double position, double duration, void* ctx);
+typedef void (*SparkEOCallback)(void* ctx);
+typedef void (*SparkErrorCallback)(const char* error, void* ctx);
+typedef void (*SparkDurationCallback)(double duration, void* ctx);
+
+void spark_set_position_callback(SparkPositionCallback cb, void* ctx);
+void spark_set_eocallback(SparkEOCallback cb, void* ctx);
+void spark_set_error_callback(SparkErrorCallback cb, void* ctx);
+void spark_set_duration_callback(SparkDurationCallback cb, void* ctx);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // SPARKAMP_H
+```
+
+### FFI Implementation Pattern
+
+Follow existing patterns from `src/plugin_abi.rs`:
+
+```rust
+// core/src/ffi.rs
+
+use std::os::raw::{c_char, c_double, c_int, void as c_void};
+use std::ffi::{CStr, CString};
+
+// Re-export all core types
+pub use crate::engine::Player;
+pub use crate::controller::Controller;
+pub use crate::model::Playlist;
+pub use crate::config::Config;
+
+static mut PLAYER: Option<Player> = None;
+static mut PLAYLIST: Option<Playlist> = None;
+static mut CONFIG: Option<Config> = None;
+
+static mut POSITION_CALLBACK: Option<unsafe extern "C" fn(c_double, c_double, *mut c_void)> = None;
+static mut POSITION_CALLBACK_CTX: *mut c_void = std::ptr::null_mut();
+
+#[no_mangle]
+pub unsafe extern "C" fn spark_init() {
+    // Initialize GStreamer, load config, playlist
+    gstreamer::init().ok();
+    // ... rest of init
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spark_load(uri: *const c_char) -> c_int {
+    let uri_str = CStr::from_ptr(uri).to_string_lossy();
+    PLAYER.as_mut().unwrap().load(&uri_str)
+}
+```
+
+---
+
+## Phase 2: Swift Package Setup
+
+### Duration: 0.5 day
+
+### Project Structure
+
+```
+platforms/
+└── macos/
+    ├── Package.swift
+    ├── Sparkamp/
+    │   ├── App.swift                    # @main, lifecycle
+    │   ├── Bridge/
+    │   │   └── SparkampBridge.swift    # FFI bindings + ObservableObject
+    │   ├── Views/
+    │   │   ├── MainPlayerView.swift
+    │   │   ├── PlaylistView.swift
+    │   │   ├── MediaLibraryView.swift
+    │   │   ├── EQView.swift
+    │   │   ├── SettingsView.swift
+    │   │   ├── ID3EditorView.swift
+    │   │   └── JumpWindow.swift
+    │   └── Assets.xcassets/
+    └── project.yml                     # XcodeGen (optional)
+```
+
+### Package.swift
+
+```swift
+// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "Sparkamp",
+    platforms: [.macOS(.v13)],
+    products: [
+        .executable(
+            name: "sparkamp",
+            targets: ["Sparkamp"]
+        )
+    ],
+    dependencies: [],
+    targets: [
+        .executableTarget(
+            "Sparkamp",
+            path: "Sparkamp",
+            sources: ["."]
+        )
+    ]
+)
+```
+
+### Swift FFI Bridge
+
+```swift
+// Sparkamp/Bridge/SparkampBridge.swift
+
+import Foundation
+import Combine
+
+final class SparkampBridge: ObservableObject {
+    static let shared = SparkampBridge()
+    
+    private var lib: UnsafeMutableRawPointer?
+    private var timer: Timer?
+    
+    // ── FFI Function Pointers ─────────────────────────────────────────────
+    private var sparkInit: (@convention(c) () -> Void)?
+    private var sparkPlay: (@convention(c) () -> Int32)?
+    // ... etc
+    
+    private init() {
+        loadLibrary()
+    }
+    
+    private func loadLibrary() {
+        // Try Homebrew prefix first, then bundle
+        let prefixes = [
+            "/opt/homebrew/lib/",
+            "/usr/local/lib/",
+            Bundle.main.bundlePath + "/Contents/Frameworks/"
+        ]
+        
+        for prefix in prefixes {
+            let path = prefix + "libsparkamp.dylib"
+            if FileManager.default.fileExists(atPath: path) {
+                lib = dlopen(path, RTLD_NOW)
+                break
+            }
+        }
+        
+        guard let lib = lib else {
+            // Show error: GStreamer not installed
+            return
+        }
+        
+        // Load symbols
+        sparkInit = dlsym(lib, "spark_init")
+        sparkPlay = dlsym(lib, "spark_play")
+        // ... etc
+    }
+    
+    // ── Swift API ─────────────────────────────────────────────────────────
+    
+    func play() {
+        sparkPlay?()
+    }
+    
+    // ... etc
+}
+```
+
+---
+
+## Phase 3: SwiftUI Windows
+
+### Duration: 7 days
+
+### Window Breakdown
+
+| Window | SwiftUI | Complexity | Lines |
+|--------|---------|-----------|-------|
+| Main Player | ZStack, HStack, VStack | High | ~800 |
+| Playlist | List + @State | Medium | ~600 |
+| Media Library | Table (macOS 13+) | High | ~900 |
+| EQ | HStack of Sliders | Medium | ~400 |
+| Settings | TabView + Form | Medium | ~500 |
+| ID3 Editor | Form + TextField | Low | ~300 |
+| Jump/Search | SearchField + filtered List | Low | ~200 |
+| **Total** | | | **~3700** |
+
+### Main Player View Pattern
+
+```swift
+// Sparkamp/Views/MainPlayerView.swift
+
+import SwiftUI
+
+struct MainPlayerView: View {
+    @ObservedObject var bridge = SparkampBridge.shared
+    @State private var position: Double = 0
+    @State private var isPlaying = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Visualizer
+            Canvas { ctx, size in
+                // Draw bars/oscilloscope from bridge.vizData
+            }
+            .frame(height: 100)
+            
+            // Marquee
+            MarqueeText(text: bridge.currentTrackTitle)
+                .frame(height: 30)
+            
+            // Seek bar
+            Slider(value: $position, in: 0...bridge.duration) { editing in
+                if !editing {
+                    bridge.seek(position)
+                }
+            }
+            
+            // Transport controls
+            HStack {
+                Button(action: { bridge.previous() }) { Image(systemName: "backward.fill") }
+                Button(action: { bridge.togglePlay() }) {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                }
+                Button(action: { bridge.stop() }) { Image(systemName: "stop.fill") }
+                Button(action: { bridge.next() }) { Image(systemName: "forward.fill") }
+            }
+            
+            // Volume
+            HStack {
+                Image(systemName: "speaker.fill")
+                Slider(value: $bridge.volume, in: 0...1)
+            }
+        }
+        .frame(width: 520, height: 200)
+        .onAppear { startTick() }
+    }
+    
+    private func startTick() {
+        Timer.publish(every: 0.1, on: .main, in: .common)
+            .autoconnect()
+            .sink { _ in
+                position = bridge.position
+                isPlaying = bridge.isPlaying
+            }
+    }
+}
+```
+
+### Media Library View (macOS 13+ Table)
+
+```swift
+// Sparkamp/Views/MediaLibraryView.swift
+
+import SwiftUI
+
+struct MediaLibraryView: View {
+    @ObservedObject var bridge = SparkampBridge.shared
+    @State private var searchText = ""
+    @State private var sortOrder = [KeyPathComparator(\MLTrack.title)]
+    
+    var body: some View {
+        NavigationSplitView {
+            List {
+                Button("Files") { }
+                Button("Playlists") { }
+            }
+            .frame(width: 130)
+        } detail: {
+            VStack {
+                TextField("Search...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding()
+                
+                Table(filteredTracks, sortOrder: $sortOrder) {
+                    TableColumn("#", value: \.trackNum) { track in
+                        Text("\(track.trackNum)")
+                    }
+                    TableColumn("Title", value: \.title)
+                    TableColumn("Artist", value: \.artist)
+                    TableColumn("Album", value: \.album)
+                    TableColumn("Duration", value: \.duration) { track in
+                        Text(formatDuration(track.duration))
+                    }
+                }
+            }
+        }
+    }
+    
+    var filteredTracks: [MLTrack] {
+        bridge.mlTracks.filter {
+            searchText.isEmpty ||
+            $0.title.localizedCaseInsensitiveContains(searchText) ||
+            $0.artist.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+    
+    func formatDuration(_ secs: Double) -> String {
+        let m = Int(secs) / 60
+        let s = Int(secs) % 60
+        return "\(m):\(String(format: "%02d", s))"
+    }
+}
+```
+
+### Window Management
+
+Use multiple `WindowGroup` or `NSWindow` with `WindowStyle`:
+
+```swift
+// Sparkamp/App.swift
+
+import SwiftUI
+
+@main
+struct SparkampApp: App {
+    var body: some Scene {
+        MainWindow()
+        WindowGroup("Playlist") { PlaylistView() }
+        WindowGroup("Media Library") { MediaLibraryView() }
+        WindowGroup("Equalizer") { EQView() }
+        WindowGroup("Settings") { SettingsView() }
+    }
+}
+```
+
+---
+
+## Phase 4: Polish
+
+### Duration: 2 days
+
+1. **App Icon**: Use existing `square logo.png` (resized to 512x512 for macOS)
+2. **Menu Bar**: Standard macOS File, Edit, View, Window, Help menus
+3. **File Association**: Register for .mp3, .flac, .ogg, .opus, .wav, .m4a
+4. **GStreamer Detection**: On launch, check for GStreamer. If missing, show alert with Homebrew install command
+5. **MPRIS**: Not in v1 (Linux-specific)
+6. **Test**: Build and test on clean macOS 13 VM
+
+---
+
+## Effort Summary
+
+| Phase | Duration |
+|-------|----------|
+| Phase 1: Extract Core + FFI | 2-3 days |
+| Phase 2: Swift Package Setup | 0.5 day |
+| Phase 3: SwiftUI Windows | 7 days |
+| Phase 4: Polish | 2 days |
+| **Total** | **~12-13 days** |
+
+---
+
+## GStreamer on macOS
+
+### Installation
+
+```bash
+brew install gstreamer gst-plugins-base gst-plugins-good
+```
+
+### Bundle vs Homebrew
+
+| Option | Pros | Cons |
+|--------|-------|------|
+| **Homebrew** (chosen) | Simpler bundle (~2MB), updates with system | Extra setup step |
+| **Bundle .dylibs** | One-click install, offline | Larger bundle (~50MB) |
+
+For v1: require Homebrew installation. Can bundle later.
+
+### GStreamer Components Needed
+
+- `gstreamer` — core
+- `gst-plugins-base` — playbin, audioconvert, volume
+- `gst-plugins-good` — equalizer-10bands, MP3 (libmad)
+- `gst-plugins-bad` — additional formats
+
+---
+
+## Files to Create/Modify
+
+### New Files
+
+```
+core/
+├── Cargo.toml
+├── build.rs
+├── src/
+│   ├── lib.rs
+│   ├── engine.rs          # move from src/
+│   ├── controller.rs     # move from src/
+│   ├── model.rs          # move from src/
+│   ├── config.rs         # move from src/
+│   ├── media_library.rs   # move from src/
+│   ├── shuffle.rs        # move from src/
+│   ├── duration_cache.rs  # move from src/
+│   ├── duration_probe.rs  # move from src/
+│   ├── skin.rs           # move from src/
+│   └── ffi.rs            # NEW
+└── include/
+    └── sparkamp.h        # NEW
+
+platforms/
+└── macos/
+    ├── Package.swift
+    ├── Sparkamp/
+    │   ├── App.swift
+    │   ├── Bridge/
+    │   │   └── SparkampBridge.swift
+    │   └── Views/
+    │       ├── MainPlayerView.swift
+    │       ├── PlaylistView.swift
+    │       ├── MediaLibraryView.swift
+    │       ├── EQView.swift
+    │       ├── SettingsView.swift
+    │       ├── ID3EditorView.swift
+    │       └── JumpWindow.swift
+    └── Assets.xcassets/
+```
+
+### Modify
+
+```
+Cargo.toml                    # add core/ workspace member
+sparkamp/
+├── src/                     # remove moved core files
+└── frontends/              # unchanged
+```
+
+---
+
+## Key Technical Decisions
+
+### State Management
+
+Use `ObservableObject` (macOS 13 compatible, not `@Observable` which requires macOS 14+):
+
+```swift
+final class SparkampBridge: ObservableObject {
+    @Published var position: Double = 0
+    @Published var duration: Double = 0
+    @Published var isPlaying: Bool = false
+    @Published var currentTrack: Track?
+    // ...
+}
+```
+
+### Tick Loop
+
+Replace GTK's `glib::timeout_add_local` with Swift `Timer`:
+
+```swift
+Timer.publish(every: 0.1, on: .main, in: .common)
+    .autoconnect()
+    .sink { _ in
+        bridge.refresh()
+    }
+```
+
+### ColumnView → Table
+
+`ColumnView` (GTK4) maps to SwiftUI `Table` (macOS 13+):
+
+```swift
+Table(tracks, selection: $selected, sortOrder: $sortOrder) {
+    TableColumn("#", value: \.trackNum)
+    TableColumn("Title", value: \.title)
+    // ...
+}
+```
+
+### Cairo → Canvas
+
+GTK Cairo drawing maps to SwiftUI `Canvas`:
+
+```swift
+Canvas { ctx, size in
+    for (i, bar) in vizData.enumerated() {
+        let rect = CGRect(x: x(i), y: y(bar), width: barWidth, height: height(bar))
+        ctx.fill(Path(rect), with: .color(.green))
+    }
+}
+```
+
+### File Dialogs
+
+GTK `FileDialog` maps to `NSOpenPanel`:
+
+```swift
+import UniformTypeIdentifiers
+
+func selectFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.runModal()
+}
+```
+
+### Keyboard Shortcuts
+
+GTK `EventControllerKey` maps to SwiftUI `.onKeyPress`:
+
+```swift
+.onKeyPress(.space) {
+    bridge.togglePlay()
+    return .handled
+}
+.onKeyPress(.leftArrow) {
+    bridge.seekBackward()
+    return .handled
+}
+```
+
+---
+
+## Testing
+
+1. **Unit tests**: Move existing `src/model.rs` tests → `core/src/model.rs`
+2. **Integration tests**: Test FFI boundary
+3. **UI tests**: SwiftUI view tests
+4. **Manual**: Test on clean macOS 13 VM with Homebrew GStreamer
+
+---
+
+## Out of Scope (v1)
+
+- Plugin support (can add via separate plugin bundle)
+- MPRIS (Linux-specific)
+- Bundle GStreamer .dylibs (Homebrew only)
+- macOS App Store distribution
+- Retina/HiDPI visualizer optimization
+- Touch Bar support
+- Apple Music/Spotify integration
+
+---
+
+## References
+
+- Existing GTK implementation: `frontends/gtk/window.rs` (~5500 lines)
+- Existing FFI patterns: `src/plugin_abi.rs`
+- macOS 13 Table: https://developer.apple.com/documentation/swiftui/table
+- Swift FFI: https://doc.rust-lang.org/nomicon/ffi.html
+- GStreamer on macOS: https://gstreamer.freedesktop.org/documentation/installing/on-mac-osx.html
