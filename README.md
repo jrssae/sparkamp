@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop — built in Rust with GTK4.
 
-> **v0.2.0 benchmark commit** — see [What's New](#whats-new) for everything added in this release.
+> **v0.2.0 benchmark commit** — see [What's New](#whats-new-v020) for everything added in this release.
 
 ---
 
