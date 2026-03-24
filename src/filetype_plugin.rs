@@ -2,7 +2,7 @@
 // Public API intended for external plugin authors and future internal use.
 #![allow(dead_code)]
 //!
-//! Filetype plugins extend SparkAmp with support for additional audio file
+//! Filetype plugins extend Sparkamp with support for additional audio file
 //! formats.  A plugin is a shared library (`.so` on Linux) that exports one
 //! C function:
 //!
@@ -63,7 +63,7 @@ use libloading::{Library, Symbol};
 // ABI version
 // ---------------------------------------------------------------------------
 
-/// ABI version this build of SparkAmp understands.
+/// ABI version this build of Sparkamp understands.
 ///
 /// Plugins compiled against a different version will be rejected at load time.
 pub const SPARKAMP_FILETYPE_ABI_VERSION: u32 = 1;
@@ -82,7 +82,7 @@ pub struct SparkFiletypePluginAbi {
     pub abi_version: u32,
 
     /// Human-readable plugin name — null-terminated UTF-8.  May be null;
-    /// SparkAmp falls back to the file stem.
+    /// Sparkamp falls back to the file stem.
     pub name: *const std::os::raw::c_char,
 
     /// Null-terminated array of file extension strings (without the leading
@@ -145,7 +145,7 @@ pub struct FiletypePlugin {
     _lib: Library,
 }
 
-// SAFETY: SparkAmp is single-threaded at the plugin call layer.  Send/Sync
+// SAFETY: Sparkamp is single-threaded at the plugin call layer.  Send/Sync
 // are required because FiletypePlugin lives in AppState which may be moved
 // during construction; we never call plugin functions from multiple threads.
 unsafe impl Send for FiletypePlugin {}
@@ -336,7 +336,7 @@ pub fn load_plugins_from_dir(dir: &str) -> Vec<FiletypePlugin> {
 ///
 /// Returns a deduplicated, sorted list of extension strings (lower-case,
 /// without leading dots) from all loaded filetype plugins.  Used to extend
-/// SparkAmp's built-in [`AUDIO_EXTENSIONS`] list at runtime.
+/// Sparkamp's built-in [`AUDIO_EXTENSIONS`] list at runtime.
 ///
 /// [`AUDIO_EXTENSIONS`]: crate::model::AUDIO_EXTENSIONS
 pub fn extra_extensions(plugins: &[FiletypePlugin]) -> Vec<String> {

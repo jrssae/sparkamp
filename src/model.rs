@@ -17,10 +17,35 @@ use symphonia::core::meta::{MetadataOptions, StandardTagKey, Value};
 use symphonia::core::probe::Hint;
 
 // ---------------------------------------------------------------------------
+// String sanitization
+// ---------------------------------------------------------------------------
+
+/// Remove NUL bytes from a string.
+///
+/// ID3 tags can contain malformed data with embedded NUL bytes.  These cause
+/// crashes when passed to GTK APIs which use C-style NUL-terminated strings.
+/// This function strips any NUL bytes so the string is safe for UI display.
+fn sanitize(s: &str) -> String {
+    // First, remove any actual NUL bytes
+    let result = if s.contains('\0') {
+        s.replace('\0', "")
+    } else {
+        s.to_owned()
+    };
+    // Also remove the TOML escape sequence \u0000 which becomes NUL on deserialization
+    // Check if the string contains literal "\u0000" as text
+    if result.contains("\\u0000") {
+        result.replace("\\u0000", "")
+    } else {
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Audio file extension detection
 // ---------------------------------------------------------------------------
 
-/// All audio file extensions SparkAmp will recognise when scanning directories.
+/// All audio file extensions Sparkamp will recognise when scanning directories.
 ///
 /// The list covers the formats most commonly encountered in personal music
 /// libraries.  Matching is done case-insensitively so `.MP3`, `.Flac`, etc.
@@ -28,8 +53,8 @@ use symphonia::core::probe::Hint;
 /// truly playable; this list is only used to filter out obvious non-audio
 /// files (images, playlists, lyrics, etc.) during directory scans.
 pub const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "ogg", "opus", "wav", "aac", "m4a",
-    "wma", "ape", "mpc", "tta", "wv", "aiff", "aif",
+    "mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "wma", "ape", "mpc", "tta", "wv", "aiff",
+    "aif",
 ];
 
 /// Return `true` if `path`'s extension (case-insensitive) is in
@@ -86,7 +111,7 @@ pub fn is_audio_file_extended(path: &Path, extra_extensions: &[String]) -> bool 
 /// or no relevant tags are present.
 pub fn read_symphonia_metadata(path: &Path) -> Option<(String, String, String, String)> {
     let file = std::fs::File::open(path).ok()?;
-    let mss  = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -94,17 +119,22 @@ pub fn read_symphonia_metadata(path: &Path) -> Option<(String, String, String, S
     }
 
     let mut probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .ok()?;
 
     // Symphonia can surface tags from two places:
     // 1. The outer container metadata log (e.g. ID3 tags in MP3 streams).
     // 2. The format reader's internal metadata (Vorbis Comments, FLAC tags).
     // We try both and merge, giving the format-reader priority.
-    let mut title        = String::new();
-    let mut artist       = String::new();
+    let mut title = String::new();
+    let mut artist = String::new();
     let mut album_artist = String::new();
-    let mut album        = String::new();
+    let mut album = String::new();
 
     let apply_tags = |tags: &[symphonia::core::meta::Tag],
                       title: &mut String,
@@ -116,11 +146,13 @@ pub fn read_symphonia_metadata(path: &Path) -> Option<(String, String, String, S
                 Value::String(s) => s.as_str(),
                 _ => continue,
             };
+            // Sanitize to remove NUL bytes that can crash GTK.
+            let safe_text = sanitize(text);
             match tag.std_key {
-                Some(StandardTagKey::TrackTitle)  => *title        = text.to_string(),
-                Some(StandardTagKey::Artist)      => *artist       = text.to_string(),
-                Some(StandardTagKey::AlbumArtist) => *album_artist = text.to_string(),
-                Some(StandardTagKey::Album)       => *album        = text.to_string(),
+                Some(StandardTagKey::TrackTitle) => *title = safe_text,
+                Some(StandardTagKey::Artist) => *artist = safe_text,
+                Some(StandardTagKey::AlbumArtist) => *album_artist = safe_text,
+                Some(StandardTagKey::Album) => *album = safe_text,
                 _ => {}
             }
         }
@@ -128,7 +160,13 @@ pub fn read_symphonia_metadata(path: &Path) -> Option<(String, String, String, S
 
     // Pass 1: format-reader metadata (Vorbis Comments, FLAC tags, etc.).
     if let Some(rev) = probed.format.metadata().current() {
-        apply_tags(rev.tags(), &mut title, &mut artist, &mut album_artist, &mut album);
+        apply_tags(
+            rev.tags(),
+            &mut title,
+            &mut artist,
+            &mut album_artist,
+            &mut album,
+        );
     }
 
     if title.is_empty() {
@@ -193,10 +231,10 @@ impl Track {
         // succeeds, use the filename stem as a last resort.
         let (title, artist, album_artist, album) = match id3::Tag::read_from_path(&path) {
             Ok(tag) => {
-                let title        = tag.title().unwrap_or("").to_string();
-                let artist       = tag.artist().unwrap_or("").to_string();
-                let album_artist = tag.album_artist().unwrap_or("").to_string();
-                let album        = tag.album().unwrap_or("").to_string();
+                let title = sanitize(tag.title().unwrap_or(""));
+                let artist = sanitize(tag.artist().unwrap_or(""));
+                let album_artist = sanitize(tag.album_artist().unwrap_or(""));
+                let album = sanitize(tag.album().unwrap_or(""));
                 // Fall back to filename stem only if the title tag is also empty.
                 let title = if title.is_empty() {
                     path.file_stem()
@@ -234,7 +272,15 @@ impl Track {
             }
         };
 
-        Ok(Track { path, title, artist, album_artist, album, duration: None, broken: false })
+        Ok(Track {
+            path,
+            title,
+            artist,
+            album_artist,
+            album,
+            duration: None,
+            broken: false,
+        })
     }
 
     /// Return a single human-readable label for the track.
@@ -275,6 +321,22 @@ impl Track {
             .replace('#', "%23")
             .replace('?', "%3F");
         format!("file://{}", encoded)
+    }
+}
+
+/// Create a Track from a media library LibTrack, copying the duration directly
+/// without re-probing the file. This is much faster when adding tracks from ML.
+impl From<&crate::media_library::LibTrack> for Track {
+    fn from(lib: &crate::media_library::LibTrack) -> Self {
+        Track {
+            path: PathBuf::from(&lib.path),
+            title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
+            artist: lib.artist.clone().unwrap_or_default(),
+            album_artist: String::new(),
+            album: lib.album.clone().unwrap_or_default(),
+            duration: lib.length_secs.map(Duration::from_secs_f64),
+            broken: false,
+        }
     }
 }
 
@@ -424,8 +486,16 @@ impl Playlist {
             to
         } else {
             // Another track was playing.  Figure out where it went.
-            let after_remove = if current_was > from { current_was - 1 } else { current_was };
-            if after_remove >= to { after_remove + 1 } else { after_remove }
+            let after_remove = if current_was > from {
+                current_was - 1
+            } else {
+                current_was
+            };
+            if after_remove >= to {
+                after_remove + 1
+            } else {
+                after_remove
+            }
         };
         true
     }
@@ -467,7 +537,15 @@ impl Playlist {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        // Sanitize all track metadata before saving to prevent corrupted data
+        let mut clean_self = self.clone();
+        for track in &mut clean_self.tracks {
+            track.title = sanitize(&track.title);
+            track.artist = sanitize(&track.artist);
+            track.album_artist = sanitize(&track.album_artist);
+            track.album = sanitize(&track.album);
+        }
+        std::fs::write(&path, toml::to_string_pretty(&clean_self)?)?;
         Ok(())
     }
 
@@ -476,7 +554,7 @@ impl Playlist {
     /// Returns an error if the file does not exist or cannot be parsed.
     /// Callers should treat an error as "no saved playlist" and start empty.
     ///
-    /// On the first run after the GnomAmp → SparkAmp rename, migrates the
+    /// On the first run after the GnomAmp → Sparkamp rename, migrates the
     /// saved playlist from the old `gnomamp` data directory automatically.
     pub fn load_last() -> Result<Self> {
         let path = Self::data_path();
@@ -488,7 +566,16 @@ impl Playlist {
             crate::config::migrate_legacy_file(&old, &path);
         }
         let content = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&content)?)
+        let mut playlist: Self = toml::from_str(&content)?;
+        // Sanitize all track metadata to remove NUL bytes that may have been
+        // stored by older versions or corrupted ID3 tags.
+        for track in &mut playlist.tracks {
+            track.title = sanitize(&track.title);
+            track.artist = sanitize(&track.artist);
+            track.album_artist = sanitize(&track.album_artist);
+            track.album = sanitize(&track.album);
+        }
+        Ok(playlist)
     }
 
     // -----------------------------------------------------------------------
@@ -539,9 +626,7 @@ impl Playlist {
         };
 
         // Collect all valid entries first so we can sort them.
-        let mut entries: Vec<PathBuf> = read_dir
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .collect();
+        let mut entries: Vec<PathBuf> = read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
 
         // Sort alphabetically by the full path so sub-directories and files
         // are ordered consistently regardless of filesystem traversal order.
@@ -591,11 +676,7 @@ impl Playlist {
                         }
                         Err(e) => {
                             // Record the error but continue scanning the rest.
-                            errors.push(format!(
-                                "Cannot load '{}': {}",
-                                audio_path.display(),
-                                e
-                            ));
+                            errors.push(format!("Cannot load '{}': {}", audio_path.display(), e));
                         }
                     }
                 }
@@ -624,6 +705,98 @@ impl Playlist {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_passes_through_normal_strings() {
+        assert_eq!(sanitize("hello world"), "hello world");
+        assert_eq!(sanitize(""), "");
+        assert_eq!(sanitize("🎵 Artist — Album"), "🎵 Artist — Album");
+    }
+
+    #[test]
+    fn sanitize_removes_nul_bytes() {
+        assert_eq!(sanitize("hello\x00world"), "helloworld");
+        assert_eq!(sanitize("\x00start"), "start");
+        assert_eq!(sanitize("end\x00"), "end");
+        assert_eq!(sanitize("\x00\x00\x00"), "");
+    }
+
+    #[test]
+    fn sanitize_removes_toml_unicode_escape() {
+        assert_eq!(sanitize("hello\\u0000world"), "helloworld");
+        assert_eq!(sanitize("\\u0000start"), "start");
+        assert_eq!(sanitize("end\\u0000"), "end");
+        assert_eq!(sanitize("\\u0000"), "");
+    }
+
+    #[test]
+    fn sanitize_handles_both_nul_and_toml_escape() {
+        assert_eq!(sanitize("a\x00b\\u0000c"), "abc");
+    }
+
+    #[test]
+    fn track_from_libtrack_copies_all_fields() {
+        use crate::media_library::LibTrack;
+
+        let lib = LibTrack {
+            id: 42,
+            path: "/music/test.mp3".into(),
+            artist: Some("Test Artist".into()),
+            title: Some("Test Title".into()),
+            album: Some("Test Album".into()),
+            track_num: Some(3),
+            genre: Some("Rock".into()),
+            year: Some(2024),
+            bpm: Some("120".into()),
+            length_secs: Some(180.5),
+            bitrate: Some(320),
+            channels: Some(2),
+            filetype: Some("mp3".into()),
+            filename: "test.mp3".into(),
+            play_count: 5,
+            last_played: Some("2024-01-15T10:30:00".into()),
+        };
+
+        let track = Track::from(&lib);
+
+        assert_eq!(track.path, PathBuf::from("/music/test.mp3"));
+        assert_eq!(track.title, "Test Title");
+        assert_eq!(track.artist, "Test Artist");
+        assert_eq!(track.album, "Test Album");
+        assert_eq!(track.duration, Some(Duration::from_secs_f64(180.5)));
+        assert!(!track.broken);
+    }
+
+    #[test]
+    fn track_from_libtrack_falls_back_to_filename_when_title_is_none() {
+        use crate::media_library::LibTrack;
+
+        let lib = LibTrack {
+            id: 1,
+            path: "/music/no_tags.mp3".into(),
+            artist: None,
+            title: None,
+            album: None,
+            track_num: None,
+            genre: None,
+            year: None,
+            bpm: None,
+            length_secs: Some(60.0),
+            bitrate: None,
+            channels: None,
+            filetype: None,
+            filename: "no_tags.mp3".into(),
+            play_count: 0,
+            last_played: None,
+        };
+
+        let track = Track::from(&lib);
+
+        assert_eq!(track.title, "no_tags.mp3");
+        assert_eq!(track.artist, "");
+        assert_eq!(track.album, "");
+        assert_eq!(track.duration, Some(Duration::from_secs_f64(60.0)));
+    }
 
     fn make_track(title: &str) -> Track {
         Track {
@@ -685,8 +858,39 @@ mod tests {
 
     #[test]
     fn collect_audio_files_on_nonexistent_dir_returns_empty() {
-        let files = Playlist::collect_audio_files(Path::new("/nonexistent_dir_that_does_not_exist"));
+        let files =
+            Playlist::collect_audio_files(Path::new("/nonexistent_dir_that_does_not_exist"));
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn collect_audio_files_extended_includes_extra_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("song.mp3"), b"mp3").unwrap();
+        std::fs::write(dir.path().join("song.ogg"), b"ogg").unwrap();
+        std::fs::write(dir.path().join("song.custom"), b"custom").unwrap();
+        std::fs::write(dir.path().join("song.unknown"), b"unknown").unwrap();
+
+        let built_in = Playlist::collect_audio_files(dir.path());
+        assert!(
+            built_in.iter().all(|p| p.extension().unwrap() != "custom"),
+            "built-in scan must not include .custom files"
+        );
+
+        let with_extra =
+            Playlist::collect_audio_files_extended(dir.path(), &["custom".to_string()]);
+        assert!(
+            with_extra
+                .iter()
+                .any(|p| p.extension().unwrap() == "custom"),
+            "extended scan must include .custom files"
+        );
+        assert!(
+            with_extra
+                .iter()
+                .all(|p| p.extension().unwrap() != "unknown"),
+            "extended scan must not include unknown extensions"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -721,7 +925,13 @@ mod tests {
         let mut p = playlist_of(&["A", "B", "C"]);
         let removed = p.remove(1).unwrap();
         assert_eq!(removed.title, "B");
-        assert_eq!(p.tracks.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["A", "C"]);
+        assert_eq!(
+            p.tracks
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "C"]
+        );
     }
 
     #[test]
@@ -785,7 +995,10 @@ mod tests {
         let mut p = playlist_of(&["A", "B", "C", "D", "E"]);
         assert!(p.move_track(1, 3)); // move B to position 3
         assert_eq!(
-            p.tracks.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            p.tracks
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>(),
             ["A", "C", "D", "B", "E"]
         );
     }
@@ -795,7 +1008,10 @@ mod tests {
         let mut p = playlist_of(&["A", "B", "C", "D", "E"]);
         assert!(p.move_track(3, 1)); // move D to position 1
         assert_eq!(
-            p.tracks.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            p.tracks
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>(),
             ["A", "D", "B", "C", "E"]
         );
     }
@@ -805,7 +1021,10 @@ mod tests {
         let mut p = playlist_of(&["A", "B", "C"]);
         assert!(p.move_track(1, 1));
         assert_eq!(
-            p.tracks.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            p.tracks
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>(),
             ["A", "B", "C"]
         );
     }

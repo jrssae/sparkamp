@@ -405,7 +405,7 @@ pub fn frame_label<'a>(id: &'a str) -> &'a str {
     }
 }
 
-/// Return all "extra" (non-default) text frame IDs that SparkAmp knows about,
+/// Return all "extra" (non-default) text frame IDs that Sparkamp knows about,
 /// paired with their human-readable label.  Used to populate the "Customize"
 /// panel's "add frame" picker.
 #[allow(dead_code)]

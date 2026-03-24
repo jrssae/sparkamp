@@ -19,22 +19,25 @@ use crate::shuffle::RepeatMode;
 /// the TOML file is organised under `[display]`, `[playback]`, etc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub display:    DisplayConfig,
-    pub playback:   PlaybackConfig,
+    pub display: DisplayConfig,
+    pub playback: PlaybackConfig,
     pub visualizer: VisualizerConfig,
-    pub window:     WindowConfig,
+    pub window: WindowConfig,
     /// Visual appearance settings (theme choice etc.).
     #[serde(default)]
     pub appearance: AppearanceConfig,
     /// Behaviour tweaks that do not belong under playback or visualizer.
     #[serde(default)]
-    pub behavior:   BehaviorConfig,
+    pub behavior: BehaviorConfig,
     /// Paths searched for dynamic plugin libraries (`.so` files).
     #[serde(default)]
-    pub plugins:    PluginsConfig,
+    pub plugins: PluginsConfig,
     /// 10-band parametric equalizer settings.
     #[serde(default)]
-    pub equalizer:  EqConfig,
+    pub equalizer: EqConfig,
+    /// Media library scanning and database settings.
+    #[serde(default)]
+    pub media_library: MediaLibraryConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +69,10 @@ pub struct PlaybackConfig {
     /// setting is restored on the next launch.
     #[serde(default)]
     pub repeat_mode: RepeatMode,
+    /// Whether shuffle was active when the app last exited.  Persisted so the
+    /// user's last setting is restored on the next launch.
+    #[serde(default)]
+    pub shuffle_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,25 +122,37 @@ pub struct WindowConfig {
     /// Whether the playlist window was open when the application last exited.
     #[serde(default)]
     pub playlist_visible: bool,
+    /// Whether the media library window was open when the application last exited.
+    #[serde(default)]
+    pub ml_visible: bool,
 }
 
 impl Default for WindowConfig {
     fn default() -> Self {
         WindowConfig {
-            player_width:     Self::default_player_width(),
-            player_height:    Self::default_player_height(),
-            playlist_width:   Self::default_playlist_width(),
-            playlist_height:  Self::default_playlist_height(),
+            player_width: Self::default_player_width(),
+            player_height: Self::default_player_height(),
+            playlist_width: Self::default_playlist_width(),
+            playlist_height: Self::default_playlist_height(),
             playlist_visible: false,
+            ml_visible: false,
         }
     }
 }
 
 impl WindowConfig {
-    pub fn default_player_width()    -> i32 { 520 }
-    pub fn default_player_height()   -> i32 { 200 }
-    pub fn default_playlist_width()  -> i32 { 400 }
-    pub fn default_playlist_height() -> i32 { 500 }
+    pub fn default_player_width() -> i32 {
+        520
+    }
+    pub fn default_player_height() -> i32 {
+        200
+    }
+    pub fn default_playlist_width() -> i32 {
+        400
+    }
+    pub fn default_playlist_height() -> i32 {
+        500
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -164,13 +183,22 @@ pub struct AppearanceConfig {
     /// the `theme` field.  Empty string means "use the built-in theme".
     #[serde(default)]
     pub custom_skin: String,
+
+    /// Skin names that have been removed from the Skins picker.
+    ///
+    /// These skins are hidden in the UI but their `.css` files are not
+    /// deleted — they can be re-added via "Add Skin…" at any time.
+    /// Built-in skins (`"dark"`, `"light"`) are never added here.
+    #[serde(default)]
+    pub hidden_skins: Vec<String>,
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         AppearanceConfig {
-            theme:       ThemeChoice::Dark,
+            theme: ThemeChoice::Dark,
             custom_skin: String::new(),
+            hidden_skins: Vec::new(),
         }
     }
 }
@@ -190,7 +218,9 @@ pub struct BehaviorConfig {
 
 impl Default for BehaviorConfig {
     fn default() -> Self {
-        BehaviorConfig { autoplay_on_add: false }
+        BehaviorConfig {
+            autoplay_on_add: false,
+        }
     }
 }
 
@@ -216,7 +246,7 @@ impl Default for PluginsConfig {
     fn default() -> Self {
         PluginsConfig {
             visualizer_dir: String::new(),
-            filetype_dir:   String::new(),
+            filetype_dir: String::new(),
         }
     }
 }
@@ -234,13 +264,28 @@ pub const EQ_BAND_FREQS: [&str; 10] = [
 /// Named EQ presets as (name, [band0..band9]) pairs.  Band gains are in dB.
 /// All values are in the range accepted by `equalizer-10bands` (−24 to +12).
 pub const EQ_PRESETS: &[(&str, [f64; 10])] = &[
-    ("Flat",         [ 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0]),
-    ("Rock",         [-1.0,  0.0,  2.0,  4.0, -2.0, -3.0,  0.0,  2.0,  5.0,  5.0]),
-    ("Pop",          [-1.0, -1.0,  0.0,  2.0,  4.0,  4.0,  2.0,  0.0, -1.0, -1.0]),
-    ("Jazz",         [ 0.0,  0.0,  0.0,  2.0,  4.0,  4.0,  3.0,  2.0,  2.0,  3.0]),
-    ("Classical",    [ 0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -2.0, -3.0, -3.0, -4.0]),
-    ("Bass Boost",   [ 6.0,  5.0,  4.0,  3.0,  2.0,  0.0,  0.0,  0.0,  0.0,  0.0]),
-    ("Treble Boost", [ 0.0,  0.0,  0.0,  0.0,  0.0,  2.0,  3.0,  4.0,  5.0,  6.0]),
+    ("Flat", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    (
+        "Rock",
+        [-1.0, 0.0, 2.0, 4.0, -2.0, -3.0, 0.0, 2.0, 5.0, 5.0],
+    ),
+    (
+        "Pop",
+        [-1.0, -1.0, 0.0, 2.0, 4.0, 4.0, 2.0, 0.0, -1.0, -1.0],
+    ),
+    ("Jazz", [0.0, 0.0, 0.0, 2.0, 4.0, 4.0, 3.0, 2.0, 2.0, 3.0]),
+    (
+        "Classical",
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, -3.0, -3.0, -4.0],
+    ),
+    (
+        "Bass Boost",
+        [6.0, 5.0, 4.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ),
+    (
+        "Treble Boost",
+        [0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    ),
 ];
 
 /// 10-band equalizer configuration under `[equalizer]` in the TOML.
@@ -257,17 +302,34 @@ pub struct EqConfig {
     pub preset: String,
 
     /// Per-band gain in dB, indices 0–9 (29 Hz → 15 kHz).
-    /// Each value is clamped to `[-24.0, +12.0]` before being applied.
+    /// Each value is clamped to `[-12.0, +12.0]` before being applied.
+    /// GStreamer's `equalizer-10bands` element supports up to -24/+12, but we
+    /// use a symmetric range for a more predictable user experience.
     /// Defaults to ten zeros (flat response).
     #[serde(default = "EqConfig::default_bands")]
     pub bands: Vec<f64>,
+
+    /// Pre-amplifier gain multiplier applied before the EQ bands.
+    ///
+    /// Stored as a linear multiplier in `[0.5, 1.5]` (50 % – 150 %).
+    /// Only active when `enabled` is `true`; the engine resets it to 1.0
+    /// when the EQ is disabled.  Defaults to 1.0 (no change).
+    #[serde(default = "EqConfig::default_preamp")]
+    pub preamp: f64,
 }
 
 impl EqConfig {
-    fn default_enabled() -> bool { true }
+    fn default_enabled() -> bool {
+        true
+    }
+    fn default_preamp() -> f64 {
+        1.0
+    }
 
     /// Default bands: ten zeros (flat response).
-    pub fn default_bands() -> Vec<f64> { vec![0.0; 10] }
+    pub fn default_bands() -> Vec<f64> {
+        vec![0.0; 10]
+    }
 
     /// Return the effective band gains as an array.
     ///
@@ -282,15 +344,139 @@ impl EqConfig {
         }
         arr
     }
+
+    /// Return the effective pre-amp multiplier.
+    ///
+    /// Returns the stored value when EQ is enabled, or 1.0 (neutral) when
+    /// the EQ is disabled so the pre-amp does not colour the signal.
+    pub fn effective_preamp(&self) -> f64 {
+        if self.enabled {
+            self.preamp.clamp(0.5, 1.5)
+        } else {
+            1.0
+        }
+    }
 }
 
 impl Default for EqConfig {
     fn default() -> Self {
         EqConfig {
             enabled: true,
-            preset:  String::new(),
-            bands:   EqConfig::default_bands(),
+            preset: String::new(),
+            bands: EqConfig::default_bands(),
+            preamp: EqConfig::default_preamp(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MediaLibraryConfig
+// ---------------------------------------------------------------------------
+
+/// Media library behaviour settings under `[media_library]` in the TOML.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaLibraryConfig {
+    /// When `true`, rescan all watched folders on every application startup.
+    /// Defaults to `false` (scan must be triggered manually or periodically).
+    #[serde(default)]
+    pub rescan_on_startup: bool,
+
+    /// When `true`, rescan watched folders on a timer while the app is running.
+    /// The interval is controlled by [`rescan_interval_mins`].
+    #[serde(default)]
+    pub periodic_rescan: bool,
+
+    /// How often (in minutes) to perform an automatic rescan.
+    /// Only used when `periodic_rescan` is `true`.  Defaults to 30 minutes.
+    #[serde(default = "MediaLibraryConfig::default_interval_mins")]
+    pub rescan_interval_mins: u64,
+
+    /// Ordered list of column IDs shown in the Files view.
+    /// Available IDs: "num", "title", "artist", "album", "duration",
+    /// "filename", "year", "genre", "bitrate".
+    #[serde(default = "MediaLibraryConfig::default_visible_columns")]
+    pub visible_columns: Vec<String>,
+}
+
+impl MediaLibraryConfig {
+    /// Default rescan interval: 30 minutes.
+    pub fn default_interval_mins() -> u64 {
+        30
+    }
+
+    /// Default column set shown in the Files view.
+    pub fn default_visible_columns() -> Vec<String> {
+        ["title", "artist", "album", "duration"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+}
+
+impl Default for MediaLibraryConfig {
+    fn default() -> Self {
+        MediaLibraryConfig {
+            rescan_on_startup: false,
+            periodic_rescan: false,
+            rescan_interval_mins: Self::default_interval_mins(),
+            visible_columns: Self::default_visible_columns(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Business-logic helpers on config structs
+// ---------------------------------------------------------------------------
+
+impl PlaybackConfig {
+    /// Adjust volume by `delta` (positive to increase, negative to decrease),
+    /// clamped to [0.0, 1.0].  Updates `self.volume` and returns the new value
+    /// so the caller can pass it straight to `player.set_volume()`.
+    pub fn adjust_volume(&mut self, delta: f64) -> f64 {
+        self.volume = (self.volume + delta).clamp(0.0, 1.0);
+        self.volume
+    }
+}
+
+impl EqConfig {
+    /// Set the gain for band `index` (0–9) to `new_gain` dB, clamped to
+    /// [-12.0, +12.0].  Marks the EQ as "custom" by clearing `self.preset`.
+    /// Returns the clamped gain so the caller can pass it to
+    /// `player.set_eq_band()`.  Resizes `bands` to 10 if necessary.
+    pub fn set_band_gain(&mut self, index: usize, new_gain: f64) -> f64 {
+        if self.bands.len() < 10 {
+            self.bands.resize(10, 0.0);
+        }
+        let clamped = new_gain.clamp(-12.0, 12.0);
+        self.bands[index] = clamped;
+        self.preset.clear();
+        clamped
+    }
+
+    /// Advance to the next EQ preset in `EQ_PRESETS`, wrapping after the last
+    /// one.  When the current preset name is not found (custom state), selects
+    /// the first preset.  Updates `self.preset` and `self.bands`, and returns
+    /// a reference to the new band gains so the caller can pass them to
+    /// `player.apply_eq_bands()`.
+    pub fn cycle_preset(&mut self) -> &[f64] {
+        let idx = EQ_PRESETS
+            .iter()
+            .position(|(n, _)| *n == self.preset.as_str());
+        let next_idx = match idx {
+            Some(i) => (i + 1) % EQ_PRESETS.len(),
+            None => 0,
+        };
+        let (name, bands) = EQ_PRESETS[next_idx];
+        self.preset = name.to_string();
+        self.bands = bands.to_vec();
+        &self.bands
+    }
+}
+
+impl MediaLibraryConfig {
+    /// Set the rescan interval, enforcing a minimum of 1 minute.
+    pub fn set_rescan_interval_mins(&mut self, mins: u64) {
+        self.rescan_interval_mins = mins.max(1);
     }
 }
 
@@ -308,15 +494,17 @@ impl Default for Config {
                 volume: 0.8,
                 start_paused: false,
                 repeat_mode: RepeatMode::Off,
+                shuffle_enabled: false,
             },
             visualizer: VisualizerConfig {
                 mode: VisualizerMode::Bars,
             },
-            window:     WindowConfig::default(),
+            window: WindowConfig::default(),
             appearance: AppearanceConfig::default(),
-            behavior:   BehaviorConfig::default(),
-            plugins:    PluginsConfig::default(),
-            equalizer:  EqConfig::default(),
+            behavior: BehaviorConfig::default(),
+            plugins: PluginsConfig::default(),
+            equalizer: EqConfig::default(),
+            media_library: MediaLibraryConfig::default(),
         }
     }
 }
@@ -340,14 +528,17 @@ impl Config {
     /// the file does not exist.  Returns an error only if the file exists but
     /// cannot be parsed (e.g., corrupted TOML).
     ///
-    /// On the first run after the rename from GnomAmp → SparkAmp, migrates
+    /// On the first run after the rename from GnomAmp → Sparkamp, migrates
     /// the existing config file from `~/.config/gnomamp/` to
     /// `~/.config/sparkamp/` so the user's settings are preserved.
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
         if !path.exists() {
             migrate_legacy_file(
-                &dirs::config_dir().unwrap_or_default().join("gnomamp").join("config.toml"),
+                &dirs::config_dir()
+                    .unwrap_or_default()
+                    .join("gnomamp")
+                    .join("config.toml"),
                 &path,
             );
         }
@@ -375,7 +566,7 @@ impl Config {
 }
 
 // ---------------------------------------------------------------------------
-// One-time migration helper (GnomAmp → SparkAmp rename)
+// One-time migration helper (GnomAmp → Sparkamp rename)
 // ---------------------------------------------------------------------------
 
 /// Copy `old` to `new` (creating the destination directory) if `old` exists
@@ -390,5 +581,156 @@ pub(crate) fn migrate_legacy_file(old: &std::path::Path, new: &std::path::Path) 
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::copy(old, new);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── PlaybackConfig::adjust_volume ─────────────────────────────────────────
+
+    #[test]
+    fn adjust_volume_clamps_to_zero() {
+        let mut cfg = Config::default();
+        cfg.playback.volume = 0.02;
+        let v = cfg.playback.adjust_volume(-0.05);
+        assert_eq!(v, 0.0);
+        assert_eq!(cfg.playback.volume, 0.0);
+    }
+
+    #[test]
+    fn adjust_volume_clamps_to_one() {
+        let mut cfg = Config::default();
+        cfg.playback.volume = 0.98;
+        let v = cfg.playback.adjust_volume(0.05);
+        assert_eq!(v, 1.0);
+        assert_eq!(cfg.playback.volume, 1.0);
+    }
+
+    #[test]
+    fn adjust_volume_midrange() {
+        let mut cfg = Config::default();
+        cfg.playback.volume = 0.5;
+        let v = cfg.playback.adjust_volume(0.05);
+        assert!((v - 0.55).abs() < 1e-10);
+        assert_eq!(cfg.playback.volume, v);
+    }
+
+    // ── EqConfig::set_band_gain ───────────────────────────────────────────────
+
+    #[test]
+    fn set_band_gain_clamps_above_12() {
+        let mut cfg = EqConfig::default();
+        let v = cfg.set_band_gain(0, 15.0);
+        assert_eq!(v, 12.0);
+        assert_eq!(cfg.bands[0], 12.0);
+        assert!(cfg.preset.is_empty());
+    }
+
+    #[test]
+    fn set_band_gain_clamps_below_minus_12() {
+        let mut cfg = EqConfig::default();
+        let v = cfg.set_band_gain(0, -20.0);
+        assert_eq!(v, -12.0);
+        assert_eq!(cfg.bands[0], -12.0);
+        assert!(cfg.preset.is_empty());
+    }
+
+    #[test]
+    fn set_band_gain_clears_preset_name() {
+        let mut cfg = EqConfig::default();
+        cfg.preset = "Rock".to_string();
+        cfg.set_band_gain(3, 4.0);
+        assert!(cfg.preset.is_empty());
+    }
+
+    #[test]
+    fn set_band_gain_resizes_short_bands_vec() {
+        let mut cfg = EqConfig::default();
+        cfg.bands.clear();
+        cfg.set_band_gain(5, 3.0);
+        assert_eq!(cfg.bands.len(), 10);
+        assert_eq!(cfg.bands[5], 3.0);
+    }
+
+    // ── EqConfig::cycle_preset ────────────────────────────────────────────────
+
+    #[test]
+    fn cycle_preset_from_custom_goes_to_first() {
+        let mut cfg = EqConfig::default(); // preset is ""
+        cfg.cycle_preset();
+        assert_eq!(cfg.preset, EQ_PRESETS[0].0);
+        assert_eq!(cfg.bands, EQ_PRESETS[0].1.to_vec());
+    }
+
+    #[test]
+    fn cycle_preset_advances_through_presets() {
+        let mut cfg = EqConfig::default();
+        cfg.preset = EQ_PRESETS[0].0.to_string();
+        cfg.cycle_preset();
+        assert_eq!(cfg.preset, EQ_PRESETS[1].0);
+        assert_eq!(cfg.bands, EQ_PRESETS[1].1.to_vec());
+    }
+
+    #[test]
+    fn cycle_preset_wraps_from_last_to_first() {
+        let mut cfg = EqConfig::default();
+        let last = EQ_PRESETS.last().unwrap();
+        cfg.preset = last.0.to_string();
+        cfg.bands = last.1.to_vec();
+        cfg.cycle_preset();
+        assert_eq!(cfg.preset, EQ_PRESETS[0].0);
+    }
+
+    // ── MediaLibraryConfig::set_rescan_interval_mins ─────────────────────────
+
+    #[test]
+    fn set_rescan_interval_mins_enforces_minimum_of_1() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.set_rescan_interval_mins(0);
+        assert_eq!(cfg.rescan_interval_mins, 1);
+    }
+
+    #[test]
+    fn set_rescan_interval_mins_accepts_valid_value() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.set_rescan_interval_mins(60);
+        assert_eq!(cfg.rescan_interval_mins, 60);
+    }
+
+    // ── AppearanceConfig ──────────────────────────────────────────────────────
+
+    #[test]
+    fn appearance_config_default_has_empty_hidden_skins() {
+        let cfg = AppearanceConfig::default();
+        assert!(cfg.hidden_skins.is_empty());
+        assert_eq!(cfg.custom_skin, "");
+        assert_eq!(cfg.theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn appearance_config_hidden_skins_roundtrips_through_toml() {
+        let mut cfg = AppearanceConfig::default();
+        cfg.hidden_skins.push("my-skin".to_string());
+        cfg.hidden_skins.push("old-theme".to_string());
+
+        // Serialize to a mini TOML table and deserialize back.
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: AppearanceConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(back.hidden_skins, vec!["my-skin", "old-theme"]);
+    }
+
+    #[test]
+    fn appearance_config_without_hidden_skins_key_deserializes_with_empty_vec() {
+        // A config written before hidden_skins was added should deserialize cleanly.
+        let toml_str = r#"custom_skin = "dark""#;
+        let cfg: AppearanceConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(cfg.hidden_skins.is_empty());
+        assert_eq!(cfg.custom_skin, "dark");
     }
 }

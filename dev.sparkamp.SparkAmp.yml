@@ -1,0 +1,77 @@
+app-id: dev.sparkamp.SparkAmp
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+command: sparkamp
+
+finish-args:
+  # Wayland and X11 display access
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # Audio playback via PulseAudio / PipeWire
+  - --socket=pulseaudio
+  # Read access to the user's home directory (music files)
+  - --filesystem=home:ro
+  # Write access to config and data dirs (config, playlists, media library)
+  - --filesystem=xdg-config/sparkamp:create
+  - --filesystem=xdg-data/sparkamp:create
+  - --filesystem=xdg-cache/sparkamp:create
+  # DBus for system integration (media keys, MPRIS if added later)
+  - --talk-name=org.freedesktop.portal.Desktop
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/sparkamp/cargo-home
+    RUST_BACKTRACE: '1'
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/debug
+  - /share/doc
+  - /share/man
+  - '*.a'
+  - '*.la'
+
+modules:
+
+  # ── GStreamer core and plugins ─────────────────────────────────────────────
+  # The freedesktop runtime (23.08) ships GStreamer 1.22.x.  We need:
+  #   gstreamer-plugins-base  — playbin, audioconvert, volume
+  #   gstreamer-plugins-good  — equalizer-10bands (in gst-plugins-good)
+  #   gstreamer-plugins-ugly  — MP3 decoding via libmad / lame (if not in good)
+  #   gstreamer-plugins-bad   — additional format support
+  # These are all bundled in the freedesktop runtime; no extra build needed.
+
+  # ── GTK4 ──────────────────────────────────────────────────────────────────
+  # GTK4 4.12 is available in the freedesktop 23.08 runtime; no extra build.
+
+  # ── SparkAmp ──────────────────────────────────────────────────────────────
+  - name: sparkamp
+    buildsystem: simple
+    build-commands:
+      # Build the release binary using the rust-stable SDK extension.
+      # The vendor directory (created by `cargo vendor`) is checked into the repo,
+      # so no network access is needed at build time.
+      - cargo build --release
+      # Install the binary.
+      - install -Dm755 target/release/sparkamp /app/bin/sparkamp
+      # Install the desktop entry.
+      - install -Dm644 packaging/dev.sparkamp.SparkAmp.desktop
+          /app/share/applications/dev.sparkamp.SparkAmp.desktop
+      # Install the application icon (use the square logo).
+      - install -Dm644 "square logo.png"
+          /app/share/icons/hicolor/512x512/apps/dev.sparkamp.SparkAmp.png
+      # Install the AppStream metainfo file.
+      - install -Dm644 packaging/dev.sparkamp.SparkAmp.metainfo.xml
+          /app/share/metainfo/dev.sparkamp.SparkAmp.metainfo.xml
+
+    sources:
+      # The application source tree (includes .cargo/config.toml and vendor/).
+      - type: dir
+        path: .

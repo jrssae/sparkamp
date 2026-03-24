@@ -23,7 +23,7 @@ mod window;
 /// application itself exits with a non-zero status.
 pub fn run(playlist: Playlist, config: Config) -> Result<()> {
     let app = Application::builder()
-        .application_id("dev.sparkamp.SparkAmp")
+        .application_id("dev.sparkamp.Sparkamp")
         .build();
 
     app.connect_activate(move |app| {

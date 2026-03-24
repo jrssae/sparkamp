@@ -10,7 +10,7 @@
 //! ```
 //!
 //! The returned struct must remain valid for the lifetime of the library.
-//! SparkAmp copies the name string out on load so the plugin only needs to
+//! Sparkamp copies the name string out on load so the plugin only needs to
 //! keep the function pointers valid.
 //!
 //! # Writing a plugin (C example)
@@ -54,7 +54,7 @@ use libloading::{Library, Symbol};
 // ABI version
 // ---------------------------------------------------------------------------
 
-/// ABI version this build of SparkAmp understands.
+/// ABI version this build of Sparkamp understands.
 ///
 /// Plugins compiled against a different version will be rejected at load time.
 /// The version is incremented whenever the [`SparkVizPluginAbi`] layout or
@@ -78,7 +78,7 @@ pub struct SparkVizPluginAbi {
     pub abi_version: u32,
 
     /// Human-readable plugin name — null-terminated UTF-8.  May be null;
-    /// SparkAmp falls back to the file stem in that case.
+    /// Sparkamp falls back to the file stem in that case.
     pub name: *const std::os::raw::c_char,
 
     /// Called once immediately after the plugin is loaded.  Returns an opaque
@@ -100,7 +100,7 @@ pub struct SparkVizPluginAbi {
     /// | `out`                | Caller-allocated buffer of `count` doubles.              |
     /// | `count`              | Number of samples requested.                             |
     ///
-    /// The plugin must write `count` values into `out`.  SparkAmp clamps every
+    /// The plugin must write `count` values into `out`.  Sparkamp clamps every
     /// value to `[0.0, 1.0]` after the call, so out-of-range outputs are safe
     /// (but will look wrong).  Must not be null.
     pub render: Option<
@@ -150,7 +150,7 @@ pub struct VizPlugin {
     _lib: Library,
 }
 
-// SAFETY: SparkAmp runs its visualizer callbacks on the same thread that
+// SAFETY: Sparkamp runs its visualizer callbacks on the same thread that
 // created the plugin (GTK's main thread or the TUI render thread).  We
 // implement Send/Sync only so VizPlugin can live in structs that are moved
 // during construction; we never actually share the raw pointer across threads.
@@ -206,7 +206,7 @@ impl Drop for VizPlugin {
 /// - the returned pointer is null, or
 /// - `abi_version` does not match [`SPARKAMP_VIZ_ABI_VERSION`].
 pub fn load_plugin(path: &Path) -> Option<VizPlugin> {
-    // SAFETY: dlopen-ing arbitrary .so files is inherently unsafe.  SparkAmp
+    // SAFETY: dlopen-ing arbitrary .so files is inherently unsafe.  Sparkamp
     // only loads files from a directory the user explicitly configured.
     let lib = unsafe { Library::new(path) }.map_err(|e| {
         eprintln!("viz_plugin: cannot open {:?}: {}", path, e);
@@ -233,7 +233,7 @@ pub fn load_plugin(path: &Path) -> Option<VizPlugin> {
     // Verify ABI compatibility before touching any other fields.
     if abi.abi_version != SPARKAMP_VIZ_ABI_VERSION {
         eprintln!(
-            "viz_plugin: {:?} reports ABI version {} but this SparkAmp expects {}; skipping",
+            "viz_plugin: {:?} reports ABI version {} but this Sparkamp expects {}; skipping",
             path, abi.abi_version, SPARKAMP_VIZ_ABI_VERSION
         );
         return None;

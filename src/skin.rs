@@ -5,13 +5,13 @@
 //! ## Skin discovery
 //!
 //! Skins are identified by their **stem name** (lower-case, no path, no
-//! extension).  SparkAmp looks for a matching skin in this order:
+//! extension).  Sparkamp looks for a matching skin in this order:
 //!
 //! 1. **User-provided** — a `.css` file in `~/.config/sparkamp/skins/` whose
 //!    stem equals the requested name.  If found, it takes priority over the
 //!    built-in skin with the same name.
 //! 2. **Built-in** — `"dark"` or `"light"`, embedded in the binary at compile
-//!    time from `src/gtk_ui/style_dark.css` and `src/gtk_ui/style_light.css`.
+//!    time from `frontends/gtk/style_dark.css` and `frontends/gtk/style_light.css`.
 //!
 //! ## Accent-colour injection
 //!
@@ -26,8 +26,8 @@
 //!
 //! ## CSS class reference
 //!
-//! See `src/gtk_ui/style_dark.css` for a full annotated list of every CSS
-//! class name used by SparkAmp.  User skins that target the same class names
+//! See `frontends/gtk/style_dark.css` for a full annotated list of every CSS
+//! class name used by Sparkamp.  User skins that target the same class names
 //! will override the default values.  The canonical list:
 //!
 //! | Class / selector                   | Widget                                          |
@@ -66,10 +66,10 @@ use std::path::{Path, PathBuf};
 
 /// Raw CSS for the built-in dark skin.  Accent colours are resolved at
 /// runtime by [`prepare_css`] before the CSS is loaded into GTK.
-pub const DARK_CSS_RAW: &str = include_str!("gtk_ui/style_dark.css");
+pub const DARK_CSS_RAW: &str = include_str!("../frontends/gtk/style_dark.css");
 
 /// Raw CSS for the built-in light skin.
-pub const LIGHT_CSS_RAW: &str = include_str!("gtk_ui/style_light.css");
+pub const LIGHT_CSS_RAW: &str = include_str!("../frontends/gtk/style_light.css");
 
 /// All built-in skins as `(name, raw_css)` pairs.
 pub const BUILTIN_SKINS: &[(&str, &str)] = &[

@@ -176,6 +176,22 @@ button.mode-btn.active {
     border-color: #005566;
 }
 
+button.mode-btn-active {
+    background-color: #005577;
+    color: #e0ffff;
+    border-color: #0077aa;
+}
+
+button.mode-btn-active:hover {
+    background-color: #006688;
+}
+
+button.mode-btn-compact {
+    padding-top: 0px;
+    padding-bottom: 0px;
+    font-size: 11px;
+}
+
 /* Playlist window — track count label */
 .pl-count-label {
     font-size: 10px;
@@ -213,8 +229,58 @@ button.pl-btn.destructive:hover {
     border-color: #773333;
 }
 
+/* Media library sidebar navigation */
+.ml-sidebar {
+    background-color: #111111;
+    border-right: 1px solid #2a2a2a;
+}
+
+.ml-sidebar row {
+    padding: 2px 0px;
+    border-bottom: 1px solid #1e1e1e;
+}
+
+.ml-sidebar row label {
+    color: #aaaaaa;
+    font-size: 12px;
+}
+
+.ml-sidebar row:selected {
+    background-color: #002233;
+}
+
+.ml-sidebar row:selected label {
+    color: #00ccff;
+    font-weight: bold;
+}
+
 /* Playlist row being dragged during drag-and-drop reordering */
 .playlist row.dragging {
     opacity: 0.5;
     background-color: #002233;
+}
+
+/* Play/pause/stop state indicator to the left of the time display.
+   These classes are toggled by the tick loop so the colour tracks the engine.
+   Override them in a custom skin to match your preferred palette. */
+.state-playing {
+    color: #00ff88;
+}
+.state-paused {
+    color: #ffaa00;
+}
+.state-stopped {
+    color: #888888;
+}
+
+/* Media library column cell labels — slightly smaller than the playlist to
+   fit more data on screen without overwhelming the view. */
+.ml-col-label {
+    font-size: 9px;
+}
+
+/* Drop-target highlight when hovering over a playlist row during DnD */
+.playlist row.drop-target {
+    background-color: #003344;
+    border-top: 2px solid #00ccff;
 }

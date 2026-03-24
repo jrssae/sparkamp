@@ -1,3 +1,11 @@
+# Workspace root — includes the main Sparkamp binary and all plugin crates.
+[workspace]
+members = [
+    ".",                     # sparkamp main binary
+    "plugins/viz_granite",   # Granite OpenGL visualizer plugin
+]
+resolver = "2"
+
 [package]
 name = "sparkamp"
 version = "0.1.0"
@@ -45,6 +53,9 @@ rand = "0.8"
 
 # Dynamic library loading (visualizer + filetype plugins)
 libloading = "0.8"
+
+# Media library database (SQLite, bundled so no system dep needed)
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
 # Temporary files for ID3 editor tests

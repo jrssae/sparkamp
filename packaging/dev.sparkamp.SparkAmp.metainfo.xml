@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.sparkamp.SparkAmp</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <name>SparkAmp</name>
+  <summary>Winamp-style audio player for Linux</summary>
+  <description>
+    <p>
+      SparkAmp is an open-source, keyboard-centric audio player for Linux and
+      GNOME inspired by the classic Winamp interface.  It supports MP3, OGG,
+      FLAC and other common audio formats, and includes a full-featured 10-band
+      equalizer, a media library, visualizer plugins, and custom CSS skinning.
+    </p>
+    <p>
+      Launch with <code>sparkamp --ui</code> for the GTK4 graphical interface
+      or just <code>sparkamp</code> for the terminal (TUI) mode.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.sparkamp.SparkAmp.desktop</launchable>
+  <url type="homepage">https://github.com/sparkamp/sparkamp</url>
+  <url type="bugtracker">https://github.com/sparkamp/sparkamp/issues</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+  </categories>
+  <provides>
+    <binary>sparkamp</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-03-22">
+      <description>
+        <p>Initial public release featuring GStreamer audio backend, GTK4 GUI,
+        TUI mode, 10-band EQ with pre-amp, media library, visualizer plugins,
+        and CSS skinning.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

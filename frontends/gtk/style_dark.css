@@ -199,17 +199,28 @@ button.mode-btn.active {
 
 /* mode-btn-active: programmatically set on repeat/shuffle buttons when "on".
    Distinct from :active (the momentary press state) — this persists while
-   the feature is enabled so the user can see it at a glance. */
+   the feature is enabled so the user can see it at a glance.
+   Background is filled with the accent colour (high alpha) so the button
+   reads as clearly "on" at a glance; text switches to accent foreground
+   (white on most themes) for contrast. */
 button.mode-btn-active {
-    background-color: alpha(@accent_bg_color, 0.18);
+    background-color: alpha(@accent_bg_color, 0.7);
     background-image: none;
-    color: @accent_bg_color;
-    border-color: alpha(@accent_bg_color, 0.5);
+    color: @accent_fg_color;
+    border-color: alpha(@accent_bg_color, 0.85);
 }
 
 button.mode-btn-active:hover {
-    background-color: alpha(@accent_bg_color, 0.28);
+    background-color: alpha(@accent_bg_color, 0.82);
     background-image: none;
+}
+
+/* Compact variant used for repeat/shuffle — larger font than the PL/EQ row
+   so the emoji and label read clearly despite the smaller button height. */
+button.mode-btn-compact {
+    padding-top: 0px;
+    padding-bottom: 0px;
+    font-size: 11px;
 }
 
 /* Playlist window — track count label */
@@ -276,6 +287,31 @@ button.pl-btn.destructive:hover {
     font-style: italic;
 }
 
+/* Media library sidebar navigation */
+.ml-sidebar {
+    background-color: #111111;
+    border-right: 1px solid #2a2a2a;
+}
+
+.ml-sidebar row {
+    padding: 2px 0px;
+    border-bottom: 1px solid #1e1e1e;
+}
+
+.ml-sidebar row label {
+    color: #aaaaaa;
+    font-size: 12px;
+}
+
+.ml-sidebar row:selected {
+    background-color: alpha(@accent_bg_color, 0.25);
+}
+
+.ml-sidebar row:selected label {
+    color: @accent_bg_color;
+    font-weight: bold;
+}
+
 /* Playlist duration column — right-aligned, dimmed */
 .pl-dur-label {
     font-family: monospace;
@@ -284,3 +320,9 @@ button.pl-btn.destructive:hover {
     min-width: 36px;
     margin-left: 6px;
 }
+
+.state-playing { color: #00ff88; }
+.state-paused  { color: #ffaa00; }
+.state-stopped { color: #888888; }
+.ml-col-label  { font-size: 9px; }
+.playlist row.drop-target { background-color: #003344; border-top: 2px solid #00ccff; }

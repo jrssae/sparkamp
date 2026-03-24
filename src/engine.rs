@@ -60,8 +60,14 @@ pub enum PlayerState {
 ///
 /// When the `equalizer-10bands` GStreamer element is available it is
 /// automatically inserted into the audio processing chain via `playbin`'s
-/// `audio-filter` property.  EQ band gains can then be adjusted at any time
-/// (even during playback) via [`Player::set_eq_band`].
+/// `audio-filter` property, chained behind a pre-amp `volume` element:
+///
+/// ```text
+/// playbin → [GstBin: volume (pre-amp) → equalizer-10bands] → audio sink
+/// ```
+///
+/// EQ band gains and the pre-amp multiplier can be adjusted at any time
+/// (even during playback) via the respective methods.
 ///
 /// ## Thread safety
 /// GStreamer itself is thread-safe, but `Player` is not `Send`.  It must be
@@ -77,6 +83,16 @@ pub struct Player {
     /// The GStreamer `equalizer-10bands` element injected via `audio-filter`,
     /// or `None` if the element plugin is not installed.
     eq: Option<gst::Element>,
+    /// A GStreamer `volume` element inserted before the EQ for pre-amplification.
+    /// Stored so that `set_preamp` can update it live during playback.
+    /// `None` when the EQ is unavailable.
+    preamp_elem: Option<gst::Element>,
+    /// Shadow copy of the current band gains, used to compute auto-compensation.
+    eq_bands: [f64; 10],
+    /// User-requested pre-amp multiplier (0.5–1.5).
+    /// The value actually sent to the hardware is `user_preamp * compensation`
+    /// where compensation counters any positive-dB band boost to prevent clipping.
+    user_preamp: f64,
 }
 
 impl Player {
@@ -93,30 +109,59 @@ impl Player {
             .build()
             .context("Failed to create GStreamer playbin. Ensure GStreamer and MP3 plugins are installed.")?;
 
-        // Try to insert a 10-band equalizer into the playbin audio chain.
-        // The `audio-filter` property accepts a GstElement that gets spliced
-        // between the decoder and the audio sink.  If the plugin is missing
-        // (gstreamer-plugins-good not installed) we silently skip it.
+        // Try to insert a pre-amp volume element and a 10-band equalizer into
+        // the playbin audio chain via the `audio-filter` property.  Both
+        // elements are wrapped in a GstBin so playbin sees them as one unit.
+        //
+        // Chain: [GstBin: volume (pre-amp) → equalizer-10bands]
         //
         // Skipped in test builds: the GLib type system for `GstIirEqualizerBand`
         // is not safe to register from multiple threads simultaneously, which
         // happens when cargo runs tests in parallel.  Tests verify config/state
-        // logic; the GStreamer element is exercised by running the actual app.
+        // logic; the GStreamer elements are exercised by running the actual app.
         #[cfg(not(test))]
-        let eq = match gst::ElementFactory::make("equalizer-10bands").build() {
-            Ok(eq_elem) => {
-                pipeline.set_property("audio-filter", &eq_elem);
-                Some(eq_elem)
+        let (eq, preamp_elem) = {
+            match (
+                gst::ElementFactory::make("volume").build(),
+                gst::ElementFactory::make("equalizer-10bands").build(),
+            ) {
+                (Ok(vol), Ok(eq_elem)) => {
+                    // Wrap both in a bin so playbin treats them as a single
+                    // audio-filter element.
+                    let bin = gst::Bin::new();
+                    let _ = bin.add_many([&vol, &eq_elem]);
+                    let _ = vol.link(&eq_elem);
+                    // Expose the bin's sink (from vol) and src (from eq) as
+                    // ghost pads so playbin can connect to them.
+                    if let Some(sink_pad) = vol.static_pad("sink") {
+                        if let Ok(ghost) = gst::GhostPad::with_target(&sink_pad) {
+                            let _ = bin.add_pad(&ghost);
+                        }
+                    }
+                    if let Some(src_pad) = eq_elem.static_pad("src") {
+                        if let Ok(ghost) = gst::GhostPad::with_target(&src_pad) {
+                            let _ = bin.add_pad(&ghost);
+                        }
+                    }
+                    // Set the bin as the audio-filter for playbin.
+                    pipeline.set_property("audio-filter", &bin);
+                    (Some(eq_elem), Some(vol))
+                }
+                // If either element is unavailable (missing GStreamer plugin),
+                // skip both silently — the player works without EQ/pre-amp.
+                _ => (None, None),
             }
-            Err(_) => None,
         };
         #[cfg(test)]
-        let eq: Option<gst::Element> = None;
+        let (eq, preamp_elem): (Option<gst::Element>, Option<gst::Element>) = (None, None);
 
         Ok(Player {
             pipeline,
             state: PlayerState::Stopped,
             eq,
+            preamp_elem,
+            eq_bands:    [0.0; 10],
+            user_preamp: 1.0,
         })
     }
 
@@ -182,6 +227,14 @@ impl Player {
         &self.state
     }
 
+    /// Force the player into a specific state without touching GStreamer.
+    /// Only available in tests — used to simulate paused/playing conditions
+    /// without needing a real audio pipeline.
+    #[cfg(test)]
+    pub fn set_state_for_test(&mut self, s: PlayerState) {
+        self.state = s;
+    }
+
     /// Return the current playback position, or `None` if no track is loaded.
     ///
     /// The position is queried directly from the GStreamer pipeline clock and
@@ -234,42 +287,71 @@ impl Player {
     /// Set the gain for a single EQ band.
     ///
     /// `band` must be in `0..10`; values outside that range are silently
-    /// ignored.  `gain_db` is clamped to `[-24.0, +12.0]` dB before being
-    /// applied — the valid range of the `equalizer-10bands` element.
+    /// ignored.  `gain_db` is clamped to `[-12.0, +12.0]` dB — a symmetric
+    /// range that fits within GStreamer's `equalizer-10bands` hardware limit.
+    ///
+    /// After setting the band, the pre-amp volume is automatically adjusted
+    /// downward to compensate for any positive boost, preventing clipping.
     ///
     /// The change takes effect immediately, even during playback.
-    pub fn set_eq_band(&self, band: usize, gain_db: f64) {
-        if let Some(eq) = &self.eq {
-            if band < 10 {
-                let prop = format!("band{}", band);
-                eq.set_property(&prop, gain_db.clamp(-24.0, 12.0));
+    pub fn set_eq_band(&mut self, band: usize, gain_db: f64) {
+        if band < 10 {
+            let clamped = gain_db.clamp(-12.0, 12.0);
+            if let Some(eq) = &self.eq {
+                let prop = format!("band{band}");
+                eq.set_property(&prop, clamped);
             }
+            self.eq_bands[band] = clamped;
+            self.apply_preamp_compensation();
         }
     }
 
-    /// Read back the current gain for a single EQ band.
+    /// Read back the current gain for a single EQ band from the shadow copy.
     ///
-    /// Returns `0.0` if the EQ element is not available or `band` is out of
-    /// range.
+    /// Returns `0.0` if `band` is out of range.
     #[allow(dead_code)]
     pub fn get_eq_band(&self, band: usize) -> f64 {
-        if let Some(eq) = &self.eq {
-            if band < 10 {
-                let prop = format!("band{}", band);
-                return eq.property::<f64>(&prop);
-            }
-        }
-        0.0
+        if band < 10 { self.eq_bands[band] } else { 0.0 }
     }
 
     /// Apply all 10 band gains from a slice in one call.
     ///
     /// Convenient for bulk-applying a preset or a restored config.  Silently
     /// ignores extra elements if `bands` has more than 10 entries; bands not
-    /// covered by a short slice are left unchanged.
-    pub fn apply_eq_bands(&self, bands: &[f64]) {
+    /// covered by a short slice are left unchanged.  Pre-amp compensation is
+    /// recalculated once after all bands are applied.
+    pub fn apply_eq_bands(&mut self, bands: &[f64]) {
         for (i, &gain) in bands.iter().take(10).enumerate() {
-            self.set_eq_band(i, gain);
+            let clamped = gain.clamp(-12.0, 12.0);
+            if let Some(eq) = &self.eq {
+                let prop = format!("band{i}");
+                eq.set_property(&prop, clamped);
+            }
+            self.eq_bands[i] = clamped;
+        }
+        self.apply_preamp_compensation();
+    }
+
+    /// Set the user-requested pre-amplifier gain applied before the EQ bands.
+    ///
+    /// `multiplier` is a linear scale factor in `[0.5, 1.5]` (50 %–150 %).
+    /// Pass `1.0` for unity gain.  The value actually written to the hardware
+    /// is reduced automatically when any band has a positive boost, so the
+    /// combined output never clips.  This is a no-op when the EQ plugin is
+    /// unavailable.
+    pub fn set_preamp(&mut self, multiplier: f64) {
+        self.user_preamp = multiplier.clamp(0.5, 1.5);
+        self.apply_preamp_compensation();
+    }
+
+    /// Apply the user pre-amp multiplier directly to the volume element.
+    ///
+    /// EQ band boosts are left to the equalizer element — no auto-compensation
+    /// is applied here, as that was silently dropping volume whenever any band
+    /// was boosted, which is the wrong behaviour for an EQ.
+    fn apply_preamp_compensation(&self) {
+        if let Some(vol) = &self.preamp_elem {
+            vol.set_property("volume", self.user_preamp);
         }
     }
 

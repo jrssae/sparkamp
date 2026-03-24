@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────┐
-//! │ [mini viz box (22 cols)] │ SparkAmp — ▶ Title — Artist [n/N] │  ← header (4 rows)
+//! │ [mini viz box (22 cols)] │ Sparkamp — ▶ Title — Artist [n/N] │  ← header (4 rows)
 //! ├──────────────────────────────────────────────────────────────┤
 //! │ ████████░░░░░░  0:45 / 3:22                                  │  ← seek (2 rows)
 //! ├──────────────────────────────────────────────────────────────┤
@@ -29,16 +29,17 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph,
-    },
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph},
     Frame,
 };
 use std::time::Duration;
 
-use super::{id3_genre_matches, App, EqState, Id3EditorState, Mode, SettingsState};
+use super::{
+    id3_genre_matches, App, EqState, Id3EditorState, MediaLibraryState, MediaLibraryTab, Mode,
+    SettingsState,
+};
 use crate::{
-    config::{EQ_BAND_FREQS, ThemeChoice, VisualizerMode},
+    config::{ThemeChoice, VisualizerMode},
     engine::PlayerState,
     model::fmt_duration,
     shuffle::RepeatMode,
@@ -101,16 +102,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     // Modal overlays — rendered on top of everything else.
+    // MediaLibrary is a full-screen view, not an overlay.
     match &app.mode {
-        Mode::Jump { .. }        => draw_jump_overlay(frame, app, area),
-        Mode::AddFile { .. }     => draw_add_file_overlay(frame, app, area),
-        Mode::MoveTrack { .. }   => draw_move_track_overlay(frame, app, area),
+        Mode::Jump { .. } => draw_jump_overlay(frame, app, area),
+        Mode::AddFile { .. } => draw_add_file_overlay(frame, app, area),
+        Mode::MoveTrack { .. } => draw_move_track_overlay(frame, app, area),
         Mode::RemoveTrack { .. } => draw_remove_track_overlay(frame, app, area),
-        Mode::Help               => draw_help_overlay(frame, app, area),
-        Mode::Id3Editor(state)   => draw_id3_editor_overlay(frame, state, area),
-        Mode::Settings(state)    => draw_settings_overlay(frame, app, state, area),
-        Mode::Equalizer(state)   => draw_eq_overlay(frame, app, state, area),
-        Mode::Normal             => {}
+        Mode::Help { .. } => draw_help_overlay(frame, app, area),
+        Mode::Id3Editor(state) => draw_id3_editor_overlay(frame, state, area),
+        Mode::Settings(state) => draw_settings_overlay(frame, app, state, area),
+        Mode::Equalizer(state) => draw_eq_overlay(frame, app, state, area),
+        Mode::MediaLibrary(state) => {
+            draw_media_library(frame, state, app.status_message.as_deref(), area)
+        }
+        Mode::Normal => {}
     }
 }
 
@@ -124,7 +129,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 /// - **Left 22 columns**: a small bordered box containing the visualizer
 ///   (bars or oscilloscope), labelled with the current mode name.
 /// - **Right (remainder)**: now-playing information — state icon, title,
-///   artist and track index — inside a bordered box titled "SparkAmp".
+///   artist and track index — inside a bordered box titled "Sparkamp".
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     // Split the header horizontally: small fixed-width viz column on the left,
     // all remaining space for the track-info column on the right.
@@ -146,7 +151,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 /// full-size standalone visualizer so the rendering logic stays in one place.
 fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let mode_label = match app.config.visualizer.mode {
-        VisualizerMode::Bars        => "▲",
+        VisualizerMode::Bars => "▲",
         VisualizerMode::Oscilloscope => "~",
     };
 
@@ -167,7 +172,11 @@ fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
         let mid_y = inner.y + inner.height.saturating_sub(1) / 2;
         frame.render_widget(
             Paragraph::new(Span::styled(flat, Style::default().fg(C_DIM))),
-            Rect { y: mid_y, height: 1, ..inner },
+            Rect {
+                y: mid_y,
+                height: 1,
+                ..inner
+            },
         );
         return;
     }
@@ -178,7 +187,7 @@ fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let n_rows = inner.height as usize;
 
     let lines: Vec<Line> = match app.config.visualizer.mode {
-        VisualizerMode::Bars        => render_bars(&data, n_rows),
+        VisualizerMode::Bars => render_bars(&data, n_rows),
         VisualizerMode::Oscilloscope => render_oscilloscope(&data, n_rows),
     };
 
@@ -194,7 +203,7 @@ fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
     let (state_icon, state_color) = match app.player.state() {
         PlayerState::Playing => ("▶", C_PLAYING),
-        PlayerState::Paused  => ("⏸", C_WARN),
+        PlayerState::Paused => ("⏸", C_WARN),
         PlayerState::Stopped => ("⏹", C_DIM),
     };
 
@@ -208,15 +217,19 @@ fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let index_label = if !app.playlist.is_empty() {
-        format!(" [{}/{}]", app.playlist.current_index + 1, app.playlist.len())
+        format!(
+            " [{}/{}]",
+            app.playlist.current_index + 1,
+            app.playlist.len()
+        )
     } else {
         String::new()
     };
 
     // Repeat indicator: only shown when not Off so it stays unobtrusive.
     let repeat_span = match app.config.playback.repeat_mode {
-        RepeatMode::Off      => Span::raw(""),
-        RepeatMode::Song     => Span::styled(" 🔂", Style::default().fg(C_ACCENT)),
+        RepeatMode::Off => Span::raw(""),
+        RepeatMode::Song => Span::styled(" 🔂", Style::default().fg(C_ACCENT)),
         RepeatMode::Playlist => Span::styled(" 🔁", Style::default().fg(C_ACCENT)),
     };
 
@@ -228,9 +241,10 @@ fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Two-line content: scrolling title on top, state + index + indicators below.
-    let marquee_line = Line::from(
-        Span::styled(marquee, Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD))
-    );
+    let marquee_line = Line::from(Span::styled(
+        marquee,
+        Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+    ));
     let state_line = Line::from(vec![
         Span::styled(format!("{} ", state_icon), Style::default().fg(state_color)),
         Span::styled(index_label, Style::default().fg(C_DIM)),
@@ -240,28 +254,30 @@ fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
 
     // [q] quit lives in the upper-right corner of the player box; [p] toggle
     // in the lower-right so it is always discoverable from the player view.
-    let pl_hint = if app.playlist_visible { " [p] hide " } else { " [p] show " };
+    let pl_hint = if app.playlist_visible {
+        " [p] hide "
+    } else {
+        " [p] show "
+    };
     let block = Block::default()
         .title_top(
             Line::from(Span::styled(
-                " SparkAmp ",
+                " ⚡🎧 SPARKAMP ",
                 Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
             ))
             .centered(),
         )
         .title_top(
-            Line::from(Span::styled(" [q] quit ", Style::default().fg(C_DIM)))
-                .right_aligned(),
+            Line::from(Span::styled(" [q] quit ", Style::default().fg(C_DIM))).right_aligned(),
         )
-        .title_bottom(
-            Line::from(Span::styled(pl_hint, Style::default().fg(C_DIM)))
-                .right_aligned(),
-        )
+        .title_bottom(Line::from(Span::styled(pl_hint, Style::default().fg(C_DIM))).right_aligned())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(C_ACCENT));
 
     frame.render_widget(
-        Paragraph::new(vec![marquee_line, state_line]).block(block).alignment(Alignment::Center),
+        Paragraph::new(vec![marquee_line, state_line])
+            .block(block)
+            .alignment(Alignment::Center),
         area,
     );
 }
@@ -281,7 +297,11 @@ fn draw_progress(frame: &mut Frame, app: &App, area: Rect) {
         (pos.as_secs_f64() / dur.as_secs_f64()).clamp(0.0, 1.0)
     };
 
-    let label = format!("{}  /  {}", fmt_duration(Some(pos)), fmt_duration(Some(dur)));
+    let label = format!(
+        "{}  /  {}",
+        fmt_duration(Some(pos)),
+        fmt_duration(Some(dur))
+    );
 
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::NONE))
@@ -330,10 +350,7 @@ fn draw_transport_hints(frame: &mut Frame, app: &App, area: Rect) {
         ])
     };
 
-    frame.render_widget(
-        Paragraph::new(content).alignment(Alignment::Center),
-        area,
-    );
+    frame.render_widget(Paragraph::new(content).alignment(Alignment::Center), area);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +368,7 @@ fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
     const DUR_COL: usize = 5;
     // Inner width = total - 2 border chars.  The track name gets the rest.
     let inner_w = area.width.saturating_sub(2) as usize;
-    let name_w  = inner_w.saturating_sub(DUR_COL + 1);
+    let name_w = inner_w.saturating_sub(DUR_COL + 1);
 
     let items: Vec<ListItem> = app
         .playlist
@@ -360,23 +377,27 @@ fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, track)| {
             let is_current = i == app.playlist.current_index;
-            let is_broken  = track.broken;
-            let dur_str    = fmt_duration(track.duration);
+            let is_broken = track.broken;
+            let dur_str = fmt_duration(track.duration);
 
             // Prefix: ▶ for current, ⚠ for broken (⚠▶ when both).
             let prefix = match (is_current, is_broken) {
-                (true,  true)  => "⚠▶",
-                (true,  false) => "▶ ",
-                (false, true)  => "⚠ ",
+                (true, true) => "⚠▶",
+                (true, false) => "▶ ",
+                (false, true) => "⚠ ",
                 (false, false) => "  ",
             };
 
             // Build the left portion truncated to name_w.
-            let index_part  = format!("{}{}. ", prefix, i + 1);
+            let index_part = format!("{}{}. ", prefix, i + 1);
             let avail_title = name_w.saturating_sub(index_part.chars().count());
-            let display     = track.display_name();
+            let display = track.display_name();
             let shown_title = if display.chars().count() > avail_title {
-                display.chars().take(avail_title.saturating_sub(1)).collect::<String>() + "…"
+                display
+                    .chars()
+                    .take(avail_title.saturating_sub(1))
+                    .collect::<String>()
+                    + "…"
             } else {
                 display
             };
@@ -394,7 +415,10 @@ fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(left, main_style),
                 Span::raw(" "),
-                Span::styled(format!("{:>width$}", dur_str, width = DUR_COL), Style::default().fg(C_DIM)),
+                Span::styled(
+                    format!("{:>width$}", dur_str, width = DUR_COL),
+                    Style::default().fg(C_DIM),
+                ),
             ]))
         })
         .collect();
@@ -404,7 +428,7 @@ fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.playlist_cursor));
     }
 
-    // Title shows track count; [p] is in the SparkAmp player box (lower right).
+    // Title shows track count; [p] is in the Sparkamp player box (lower right).
     let title = format!(" Playlist  ({} tracks) ", app.playlist.len());
     let block = Block::default()
         .title(Span::styled(title, Style::default().fg(C_DIM)))
@@ -443,10 +467,7 @@ fn draw_playlist_hints(frame: &mut Frame, _app: &App, area: Rect) {
         hint("Enter", "play"),
     ]);
 
-    frame.render_widget(
-        Paragraph::new(content).alignment(Alignment::Center),
-        area,
-    );
+    frame.render_widget(Paragraph::new(content).alignment(Alignment::Center), area);
 }
 
 // ---------------------------------------------------------------------------
@@ -548,10 +569,7 @@ fn render_oscilloscope(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
                         Span::styled("●", Style::default().fg(C_ACCENT))
                     } else if connects_to_next {
                         // Vertical bridge between two non-adjacent samples.
-                        Span::styled(
-                            "│",
-                            Style::default().fg(Color::Rgb(0, 100, 130)),
-                        )
+                        Span::styled("│", Style::default().fg(Color::Rgb(0, 100, 130)))
                     } else if row == center_row {
                         // Reference baseline — always visible as orientation aid.
                         Span::styled("─", Style::default().fg(Color::Rgb(20, 60, 70)))
@@ -575,10 +593,21 @@ fn render_oscilloscope(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
 /// results below.  The selected result is highlighted in yellow.  Navigation
 /// is via `↑` / `↓`; `Enter` plays the highlighted track.
 fn draw_jump_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let Mode::Jump { query, results, selected } = &app.mode else { return };
+    let Mode::Jump {
+        query,
+        results,
+        selected,
+        ..
+    } = &app.mode
+    else {
+        return;
+    };
 
     let h = area.height.saturating_sub(4).min(22).max(8);
-    let popup = Rect { height: h, ..centered_popup(area, 70, h) };
+    let popup = Rect {
+        height: h,
+        ..centered_popup(area, 70, h)
+    };
 
     frame.render_widget(Clear, popup);
 
@@ -646,7 +675,9 @@ fn draw_jump_overlay(frame: &mut Frame, app: &App, area: Rect) {
 /// audio files beneath it are added recursively.  Single-file paths are added
 /// directly.  This behaviour mirrors the GUI's "Add Folder" button.
 fn draw_add_file_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let Mode::AddFile { input } = &app.mode else { return };
+    let Mode::AddFile { input, .. } = &app.mode else {
+        return;
+    };
 
     let popup = centered_popup(area, 72, 5);
     frame.render_widget(Clear, popup);
@@ -673,13 +704,15 @@ fn draw_add_file_overlay(frame: &mut Frame, app: &App, area: Rect) {
 /// Step 1 asks for the source position; step 2 asks for the destination.
 /// Both are 1-based track numbers matching what is displayed in the playlist.
 fn draw_move_track_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let Mode::MoveTrack { input, from } = &app.mode else { return };
+    let Mode::MoveTrack { input, from } = &app.mode else {
+        return;
+    };
 
     let popup = centered_popup(area, 50, 5);
     frame.render_widget(Clear, popup);
 
     let (title, prompt) = match from {
-        None    => (
+        None => (
             " Move track — step 1 of 2  (Esc: cancel) ",
             "From position: ".to_string(),
         ),
@@ -708,7 +741,9 @@ fn draw_move_track_overlay(frame: &mut Frame, app: &App, area: Rect) {
 /// Asks for a 1-based track number to remove from the playlist.  The actual
 /// file on disk is **not** deleted; only the playlist entry is removed.
 fn draw_remove_track_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let Mode::RemoveTrack { input } = &app.mode else { return };
+    let Mode::RemoveTrack { input } = &app.mode else {
+        return;
+    };
 
     let popup = centered_popup(area, 44, 5);
     frame.render_widget(Clear, popup);
@@ -736,70 +771,174 @@ fn draw_remove_track_overlay(frame: &mut Frame, app: &App, area: Rect) {
 /// making it easy for users to confirm what mode they are in.  Any key
 /// dismisses the overlay.
 fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let scroll = if let Mode::Help { scroll } = app.mode {
+        scroll
+    } else {
+        0
+    };
+
     // Build repeat/shuffle status strings for the live-state display.
     let repeat_status = app.config.playback.repeat_mode.label();
-    let shuffle_status = if app.shuffle_state.enabled { "Shuffle: On" } else { "Shuffle: Off" };
+    let shuffle_status = if app.shuffle_state.enabled {
+        "Shuffle: On"
+    } else {
+        "Shuffle: Off"
+    };
+
+    let key = |s: &'static str| {
+        Span::styled(
+            s,
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
+    let dim = |s: &'static str| Span::styled(s, Style::default().fg(C_DIM));
+    let sep = |s: &'static str| Line::from(dim(s));
 
     let lines: Vec<Line> = vec![
-        Line::from(Span::styled("── Playback ─────────────────────────────────────────", Style::default().fg(C_DIM))),
-        Line::from(vec![Span::styled("  z", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Previous / restart")]),
-        Line::from(vec![Span::styled("  x", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Play")]),
-        Line::from(vec![Span::styled("  c", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Pause / resume")]),
-        Line::from(vec![Span::styled("  v", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Stop")]),
-        Line::from(vec![Span::styled("  b", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Next track")]),
-        Line::from(vec![Span::styled("  ← →", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" Seek −5 s / +5 s")]),
+        sep("── Playback ─────────────────────────────────────────"),
+        Line::from(vec![key("  z"), Span::raw("      Previous / restart")]),
+        Line::from(vec![key("  x"), Span::raw("      Play")]),
+        Line::from(vec![key("  c"), Span::raw("      Pause / resume")]),
+        Line::from(vec![key("  v"), Span::raw("      Stop")]),
+        Line::from(vec![key("  b"), Span::raw("      Next track")]),
+        Line::from(vec![key("  ← →"), Span::raw("    Seek −5 s / +5 s")]),
         Line::from(vec![
-            Span::styled("  r", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
-            Span::raw("   Cycle repeat  "),
-            Span::styled(format!("(now: {})", repeat_status), Style::default().fg(C_DIM)),
+            key("  r"),
+            Span::raw("      Cycle repeat  "),
+            Span::styled(
+                format!("(now: {repeat_status})"),
+                Style::default().fg(C_DIM),
+            ),
         ]),
         Line::from(""),
-        Line::from(Span::styled("── Volume ────────────────────────────────────────────", Style::default().fg(C_DIM))),
-        Line::from(vec![Span::styled("  -", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Volume down 5 %")]),
-        Line::from(vec![Span::styled("  =", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Volume up 5 %")]),
+        sep("── Volume ────────────────────────────────────────────"),
+        Line::from(vec![key("  -"), Span::raw("      Volume down 5 %")]),
+        Line::from(vec![key("  ="), Span::raw("      Volume up 5 %")]),
         Line::from(""),
-        Line::from(Span::styled("── Playlist ──────────────────────────────────────────", Style::default().fg(C_DIM))),
-        Line::from(vec![Span::styled("  n", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Add file(s) / folder(s)  (comma-separated list ok)")]),
-        Line::from(vec![Span::styled("  ,", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Move track (enter from → to positions)")]),
-        Line::from(vec![Span::styled("  .", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Remove track by number")]),
-        Line::from(vec![Span::styled("  /", Style::default().fg(C_ERR  ).add_modifier(Modifier::BOLD)), Span::raw("   Clear all tracks")]),
-        Line::from(vec![Span::styled("  j", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Jump / search")]),
-        Line::from(vec![Span::styled("  ↑ k", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" Browse up")]),
-        Line::from(vec![Span::styled("  ↓ l", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" Browse down")]),
-        Line::from(vec![Span::styled("  Enter", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" Play selected")]),
-        Line::from(vec![Span::styled("  Del", Style::default().fg(C_ERR  ).add_modifier(Modifier::BOLD)), Span::raw("   Remove highlighted track")]),
-        Line::from(vec![Span::styled("  p", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Toggle playlist panel")]),
-        Line::from(""),
-        Line::from(Span::styled("── View / Other ──────────────────────────────────────", Style::default().fg(C_DIM))),
-        Line::from(vec![Span::styled("  a", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Cycle visualizer mode")]),
-        Line::from(vec![Span::styled("  d", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   View/Edit ID3 tags for highlighted track")]),
-        Line::from(vec![Span::styled("  u", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Open equalizer")]),
-        Line::from(vec![Span::styled("  i", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Show this help")]),
-        Line::from(vec![Span::styled("  q / Esc", Style::default().fg(C_WARN).add_modifier(Modifier::BOLD)), Span::raw(" Quit")]),
-        Line::from(""),
-        Line::from(Span::styled("── Hidden shortcuts (shown here only) ────────────────", Style::default().fg(C_DIM))),
+        sep("── Playlist ──────────────────────────────────────────"),
         Line::from(vec![
-            Span::styled("  s", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
-            Span::raw("   Toggle shuffle  "),
-            Span::styled(format!("(now: {})", shuffle_status), Style::default().fg(C_DIM)),
+            key("  n"),
+            Span::raw("      Add file(s) / folder(s)  (comma-separated ok)"),
         ]),
-        Line::from(vec![Span::styled("  e", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   Open settings")]),
+        Line::from(vec![
+            key("  ,"),
+            Span::raw("      Move track (enter from → to positions)"),
+        ]),
+        Line::from(vec![key("  ."), Span::raw("      Remove track by number")]),
+        Line::from(vec![
+            Span::styled(
+                "  /",
+                Style::default().fg(C_ERR).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("      Clear all tracks"),
+        ]),
+        Line::from(vec![key("  j"), Span::raw("      Jump / search")]),
+        Line::from(vec![key("  ↑  k"), Span::raw("    Browse up")]),
+        Line::from(vec![key("  ↓  l"), Span::raw("    Browse down")]),
+        Line::from(vec![key("  Enter"), Span::raw("   Play selected")]),
+        Line::from(vec![
+            Span::styled(
+                "  Del",
+                Style::default().fg(C_ERR).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("    Remove highlighted track"),
+        ]),
+        Line::from(vec![key("  p"), Span::raw("      Toggle playlist panel")]),
         Line::from(""),
-        Line::from(Span::styled("  (any key closes this overlay)", Style::default().fg(C_DIM))),
+        sep("── Equalizer (u to open) ─────────────────────────────"),
+        Line::from(vec![
+            key("  ← →"),
+            Span::raw("    Select band (→ past band 9 = pre-amp)"),
+        ]),
+        Line::from(vec![key("  ↑ ↓"), Span::raw("    ±1 dB / ±5 % pre-amp")]),
+        Line::from(vec![
+            key("  PgUp PgDn"),
+            Span::raw(" ±3 dB / ±15 % pre-amp"),
+        ]),
+        Line::from(vec![key("  p"), Span::raw("      Cycle preset")]),
+        Line::from(vec![key("  r"), Span::raw("      Reset to flat")]),
+        Line::from(vec![key("  t"), Span::raw("      Toggle EQ on/off")]),
+        Line::from(vec![key("  u / Esc"), Span::raw("  Close equalizer")]),
+        Line::from(""),
+        sep("── Media Library ─────────────────────────────────────"),
+        Line::from(vec![key("  m"), Span::raw("      Open media library")]),
+        Line::from(vec![
+            key("  ↑ ↓"),
+            Span::raw("    Navigate tracks / playlists"),
+        ]),
+        Line::from(vec![
+            key("  Tab"),
+            Span::raw("    Switch Files / Playlists tab"),
+        ]),
+        Line::from(vec![
+            key("  Enter"),
+            Span::raw("   Add selected to playlist & play"),
+        ]),
+        Line::from(vec![key("  /  Ctrl+f"), Span::raw(" Activate search")]),
+        Line::from(vec![key("  Esc"), Span::raw("    Close media library")]),
+        Line::from(""),
+        sep("── View / Other ──────────────────────────────────────"),
+        Line::from(vec![key("  a"), Span::raw("      Cycle visualizer mode")]),
+        Line::from(vec![
+            key("  d"),
+            Span::raw("      View/Edit ID3 tags for highlighted track"),
+        ]),
+        Line::from(vec![key("  i"), Span::raw("      Show this help")]),
+        Line::from(vec![key("  q / Esc"), Span::raw("  Quit")]),
+        Line::from(""),
+        sep("── Hidden shortcuts ──────────────────────────────────"),
+        Line::from(vec![
+            key("  s"),
+            Span::raw("      Toggle shuffle  "),
+            Span::styled(
+                format!("(now: {shuffle_status})"),
+                Style::default().fg(C_DIM),
+            ),
+        ]),
+        Line::from(vec![key("  e"), Span::raw("      Open settings")]),
+        Line::from(vec![key("  u"), Span::raw("      Open equalizer")]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ↑/↓ scroll  ·  z/x/c/v/b/j work here  ·  Esc closes",
+            Style::default().fg(C_DIM),
+        )),
     ];
 
-    let h = (lines.len() as u16 + 4).min(area.height.saturating_sub(4));
-    let popup = centered_popup(area, 62, h);
+    // Popup fills most of the terminal height so all content is reachable.
+    let popup_h = area.height.saturating_sub(4).max(6);
+    let popup = centered_popup(area, 62, popup_h);
+
+    // Visible content rows = popup height minus the two border rows.
+    let visible = popup_h.saturating_sub(2) as usize;
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(visible) as u16;
+    let clamped_scroll = scroll.min(max_scroll);
+
+    // Scroll hint appended to the title when the content overflows.
+    let title = if total > visible {
+        format!(
+            " Keyboard Shortcuts  [{}/{}] ",
+            clamped_scroll + 1,
+            max_scroll + 1
+        )
+    } else {
+        " Keyboard Shortcuts ".to_string()
+    };
+
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(Span::styled(" Keyboard Shortcuts ", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)))
+                    .title(Span::styled(
+                        title,
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(C_ACCENT)),
             )
-            .style(Style::default().fg(C_TEXT)),
+            .style(Style::default().fg(C_TEXT))
+            .scroll((clamped_scroll, 0)),
         popup,
     );
 }
@@ -809,7 +948,13 @@ fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 /// Names for the four settings tabs, shown in the tab bar.
-const SETTINGS_TABS: [&str; 4] = ["Appearance", "Behavior", "Visualizer", "Filetypes"];
+const SETTINGS_TABS: [&str; 5] = [
+    "Appearance",
+    "Behavior",
+    "Visualizer",
+    "Filetypes",
+    "Media Lib",
+];
 
 /// Render the full settings overlay with four tabs.
 ///
@@ -835,66 +980,93 @@ fn draw_settings_overlay(frame: &mut Frame, app: &App, state: &SettingsState, ar
 
     // Inner area (inside the border, 2 cells padding on left).
     let inner = Rect {
-        x:      popup.x + 2,
-        y:      popup.y + 1,
-        width:  popup.width.saturating_sub(4),
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
         height: popup.height.saturating_sub(2),
     };
-    if inner.height == 0 { return; }
+    if inner.height == 0 {
+        return;
+    }
 
     // ── tab bar ───────────────────────────────────────────────────────────
-    let tab_spans: Vec<Span> = SETTINGS_TABS.iter().enumerate().map(|(i, name)| {
-        if i == state.tab {
-            Span::styled(
-                format!(" {name} "),
-                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            )
-        } else {
-            Span::styled(format!(" {name} "), Style::default().fg(C_DIM))
-        }
-    }).collect();
+    let tab_spans: Vec<Span> = SETTINGS_TABS
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if i == state.tab {
+                Span::styled(
+                    format!(" {name} "),
+                    Style::default()
+                        .fg(C_ACCENT)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )
+            } else {
+                Span::styled(format!(" {name} "), Style::default().fg(C_DIM))
+            }
+        })
+        .collect();
 
     let tab_line = Line::from(tab_spans);
     frame.render_widget(
         Paragraph::new(vec![tab_line]).style(Style::default()),
-        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     // Separator below the tab bar.
     let sep = "─".repeat(inner.width as usize);
     frame.render_widget(
         Paragraph::new(Span::styled(sep, Style::default().fg(C_DIM))),
-        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y + 1,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     // ── settings rows ─────────────────────────────────────────────────────
     let rows_area = Rect {
-        x:      inner.x,
-        y:      inner.y + 2,
-        width:  inner.width,
+        x: inner.x,
+        y: inner.y + 2,
+        width: inner.width,
         height: inner.height.saturating_sub(3),
     };
 
     let rows = settings_rows_for_tab(app, state);
-    let items: Vec<ListItem> = rows.iter().enumerate().map(|(i, (label, value))| {
-        let focused = i == state.cursor;
-        let label_span = Span::styled(
-            format!("{label:<24}"),
-            Style::default().fg(if focused { C_ACCENT } else { C_TEXT }),
-        );
-        let value_span = Span::styled(
-            value.clone(),
-            Style::default().fg(if focused { C_ACCENT } else { C_TEXT })
-                .add_modifier(if focused { Modifier::BOLD } else { Modifier::empty() }),
-        );
-        // Prefix focused row with a pointer character.
-        let prefix = if focused {
-            Span::styled("▶ ", Style::default().fg(C_ACCENT))
-        } else {
-            Span::raw("  ")
-        };
-        ListItem::new(Line::from(vec![prefix, label_span, value_span]))
-    }).collect();
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let focused = i == state.cursor;
+            let label_span = Span::styled(
+                format!("{label:<24}"),
+                Style::default().fg(if focused { C_ACCENT } else { C_TEXT }),
+            );
+            let value_span = Span::styled(
+                value.clone(),
+                Style::default()
+                    .fg(if focused { C_ACCENT } else { C_TEXT })
+                    .add_modifier(if focused {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            );
+            // Prefix focused row with a pointer character.
+            let prefix = if focused {
+                Span::styled("▶ ", Style::default().fg(C_ACCENT))
+            } else {
+                Span::raw("  ")
+            };
+            ListItem::new(Line::from(vec![prefix, label_span, value_span]))
+        })
+        .collect();
 
     frame.render_widget(List::new(items), rows_area);
 
@@ -907,7 +1079,12 @@ fn draw_settings_overlay(frame: &mut Frame, app: &App, state: &SettingsState, ar
     };
     frame.render_widget(
         Paragraph::new(Span::styled(hint, Style::default().fg(C_DIM))),
-        Rect { x: popup.x + 1, y: hint_y, width: popup.width.saturating_sub(2), height: 1 },
+        Rect {
+            x: popup.x + 1,
+            y: hint_y,
+            width: popup.width.saturating_sub(2),
+            height: 1,
+        },
     );
 }
 
@@ -915,14 +1092,17 @@ fn draw_settings_overlay(frame: &mut Frame, app: &App, state: &SettingsState, ar
 ///
 /// For the Filetypes tab, if `state.edit_buf` is Some, the active item shows
 /// the in-progress edit buffer (with a cursor block appended).
-fn settings_rows_for_tab<'a>(app: &'a App, state: &'a SettingsState) -> Vec<(&'static str, String)> {
+fn settings_rows_for_tab<'a>(
+    app: &'a App,
+    state: &'a SettingsState,
+) -> Vec<(&'static str, String)> {
     match state.tab {
         // ── Appearance ────────────────────────────────────────────────────
         0 => vec![
             (
                 "Theme",
                 match app.config.appearance.theme {
-                    ThemeChoice::Dark  => "[ Dark  / Light ]  ●  Dark".to_string(),
+                    ThemeChoice::Dark => "[ Dark  / Light ]  ●  Dark".to_string(),
                     ThemeChoice::Light => "[ Dark  / Light ]  ●  Light".to_string(),
                 },
             ),
@@ -933,11 +1113,19 @@ fn settings_rows_for_tab<'a>(app: &'a App, state: &'a SettingsState) -> Vec<(&'s
                         format!("{buf}▌")
                     } else {
                         let v = &app.config.appearance.custom_skin;
-                        if v.is_empty() { "(none — uses Theme above)".to_string() } else { v.clone() }
+                        if v.is_empty() {
+                            "(none — uses Theme above)".to_string()
+                        } else {
+                            v.clone()
+                        }
                     }
                 } else {
                     let v = &app.config.appearance.custom_skin;
-                    if v.is_empty() { "(none — uses Theme above)".to_string() } else { v.clone() }
+                    if v.is_empty() {
+                        "(none — uses Theme above)".to_string()
+                    } else {
+                        v.clone()
+                    }
                 },
             ),
         ],
@@ -956,8 +1144,10 @@ fn settings_rows_for_tab<'a>(app: &'a App, state: &'a SettingsState) -> Vec<(&'s
         2 => vec![(
             "Visualizer mode",
             match app.config.visualizer.mode {
-                VisualizerMode::Bars        => "[ Bars / Oscilloscope ]  ●  Bars".to_string(),
-                VisualizerMode::Oscilloscope => "[ Bars / Oscilloscope ]  ●  Oscilloscope".to_string(),
+                VisualizerMode::Bars => "[ Bars / Oscilloscope ]  ●  Bars".to_string(),
+                VisualizerMode::Oscilloscope => {
+                    "[ Bars / Oscilloscope ]  ●  Oscilloscope".to_string()
+                }
             },
         )],
 
@@ -965,29 +1155,74 @@ fn settings_rows_for_tab<'a>(app: &'a App, state: &'a SettingsState) -> Vec<(&'s
         3 => {
             let viz_val = if state.cursor == 0 {
                 if let Some(buf) = &state.edit_buf {
-                    format!("{buf}▌")       // show cursor block in edit mode
+                    format!("{buf}▌") // show cursor block in edit mode
                 } else {
                     let v = &app.config.plugins.visualizer_dir;
-                    if v.is_empty() { "(none)".to_string() } else { v.clone() }
+                    if v.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        v.clone()
+                    }
                 }
             } else {
                 let v = &app.config.plugins.visualizer_dir;
-                if v.is_empty() { "(none)".to_string() } else { v.clone() }
+                if v.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    v.clone()
+                }
             };
             let ft_val = if state.cursor == 1 {
                 if let Some(buf) = &state.edit_buf {
                     format!("{buf}▌")
                 } else {
                     let v = &app.config.plugins.filetype_dir;
-                    if v.is_empty() { "(none)".to_string() } else { v.clone() }
+                    if v.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        v.clone()
+                    }
                 }
             } else {
                 let v = &app.config.plugins.filetype_dir;
-                if v.is_empty() { "(none)".to_string() } else { v.clone() }
+                if v.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    v.clone()
+                }
             };
             vec![
                 ("Visualizer plugin dir", viz_val),
-                ("Filetype plugin dir",   ft_val),
+                ("Filetype plugin dir", ft_val),
+            ]
+        }
+
+        // ── Media Library ─────────────────────────────────────────────────
+        4 => {
+            let startup_val = if app.config.media_library.rescan_on_startup {
+                "[ On  / Off ]  ●  On".to_string()
+            } else {
+                "[ On  / Off ]  ●  Off".to_string()
+            };
+            let periodic_val = if app.config.media_library.periodic_rescan {
+                "[ On  / Off ]  ●  On".to_string()
+            } else {
+                "[ On  / Off ]  ●  Off".to_string()
+            };
+            // Show interval only when periodic rescan is on (always shown for editing).
+            let interval_val = if state.cursor == 2 {
+                if let Some(buf) = &state.edit_buf {
+                    format!("{buf}▌ min")
+                } else {
+                    format!("{} min", app.config.media_library.rescan_interval_mins)
+                }
+            } else {
+                format!("{} min", app.config.media_library.rescan_interval_mins)
+            };
+            vec![
+                ("Rescan on startup", startup_val),
+                ("Periodic rescan", periodic_val),
+                ("Rescan interval", interval_val),
             ]
         }
 
@@ -1008,24 +1243,29 @@ fn settings_rows_for_tab<'a>(app: &'a App, state: &'a SettingsState) -> Vec<(&'s
 /// Layout: a popup centred on the screen containing —
 /// - Title bar: "10-Band Equalizer  [enabled/disabled]  preset name"
 /// - Band columns: 10 narrow columns, each showing a vertical gain bar
-///   (heights represent the –24 to +12 dB range) plus the frequency label
+///   (heights represent the ±12 dB range) plus the
 ///   and numeric gain value below.
 /// - Hint bar at the bottom.
 fn draw_eq_overlay(frame: &mut Frame, app: &App, state: &EqState, area: Rect) {
-    // Popup dimensions: needs at least 10 * 5 + borders for the band columns.
-    let popup_w = (area.width).min(80).max(64);
-    let popup_h = 14u16;
+    // 10 bands + 1 pre-amp column, each 5 wide = 55 + 3 left offset + 2 border = 60.
+    // Allow up to 80 wide on large terminals.
+    let popup_w = (area.width).min(80).max(62);
+    let popup_h = 12u16;
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(popup_w)) / 2,
         y: area.y + (area.height.saturating_sub(popup_h)) / 2,
-        width:  popup_w,
+        width: popup_w,
         height: popup_h,
     };
     frame.render_widget(Clear, popup);
 
     let eq = &app.config.equalizer;
     let enabled_str = if eq.enabled { "ON " } else { "OFF" };
-    let preset_str  = if eq.preset.is_empty() { "Custom" } else { &eq.preset };
+    let preset_str = if eq.preset.is_empty() {
+        "Custom"
+    } else {
+        &eq.preset
+    };
     let title = format!(" EQ [{enabled_str}]  {preset_str} ");
 
     let border_style = if eq.enabled {
@@ -1044,7 +1284,7 @@ fn draw_eq_overlay(frame: &mut Frame, app: &App, state: &EqState, area: Rect) {
     let inner = Rect {
         x: popup.x + 1,
         y: popup.y + 1,
-        width:  popup.width.saturating_sub(2),
+        width: popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
     };
 
@@ -1054,88 +1294,214 @@ fn draw_eq_overlay(frame: &mut Frame, app: &App, state: &EqState, area: Rect) {
         gains[i] = v;
     }
 
-    // Each band column gets equal width.
-    let col_w = (inner.width / 10).max(1);
-    let bar_h = inner.height.saturating_sub(3); // rows for the gain bar
+    // Each band column is 5 chars wide; 6-char left offset aligns the single-
+    // char bar with the centre of the 4-char value label rendered below it.
+    const COL_W: u16 = 5;
+    const LEFT_OFF: u16 = 6;
+    let bar_h = inner.height.saturating_sub(2); // rows for the gain bar + value row
+    let zero_row = (bar_h / 2).max(0); // row index for 0 dB / 100%
 
+    // ── EQ band columns (0-9) ──────────────────────────────────────────────
     for i in 0..10 {
-        let col_x = inner.x + (i as u16) * col_w;
+        let col_x = inner.x + LEFT_OFF + (i as u16) * COL_W;
         let selected = i == state.selected_band;
         let gain = gains[i];
 
         let col_style = if !eq.enabled {
             Style::default().fg(Color::DarkGray)
         } else if selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(C_ACCENT)
         };
 
-        // Draw the vertical gain bar.
-        // Map gain from [-24, +12] to bar_h rows.
-        // Zero line at row: bar_h * 24/36 (2/3 down).
-        let range = 36.0f64; // 24 + 12
-        let filled = ((gain + 24.0) / range * bar_h as f64).round() as u16;
+        // Map gain from [-12, +12] to bar_h rows. Zero line is at midpoint.
+        let filled = ((gain + 12.0) / 24.0 * bar_h as f64).round() as u16;
         let filled = filled.clamp(0, bar_h);
-        let zero_row = ((24.0 / range) * bar_h as f64).round() as u16;
 
         for row in 0..bar_h {
-            // Row 0 = top (+12), row bar_h-1 = bottom (-24).
             let display_row = bar_h - 1 - row;
             let ch = if display_row < filled {
-                if display_row >= zero_row { '█' } else { '▒' }
+                if display_row >= zero_row {
+                    '█'
+                } else {
+                    '▒'
+                }
             } else if display_row == zero_row {
-                '─'  // zero-line marker
+                '─'
             } else {
                 ' '
             };
-            let span = Span::styled(ch.to_string(), col_style);
-            let line = Line::from(vec![span]);
             frame.render_widget(
-                Paragraph::new(vec![line]),
-                Rect { x: col_x, y: inner.y + row, width: col_w.min(1), height: 1 },
+                Paragraph::new(vec![Line::from(Span::styled(ch.to_string(), col_style))]),
+                Rect {
+                    x: col_x.saturating_sub(1),
+                    y: inner.y + row,
+                    width: 1,
+                    height: 1,
+                },
             );
         }
 
-        // Frequency label (below the bar).
-        let freq = EQ_BAND_FREQS[i];
-        let freq_label = Span::styled(
-            format!("{:>4}", freq),
-            if selected { Style::default().fg(Color::Yellow) }
-            else        { Style::default().fg(Color::Gray) },
-        );
-        frame.render_widget(
-            Paragraph::new(vec![Line::from(vec![freq_label])]),
-            Rect { x: col_x, y: inner.y + bar_h, width: col_w.max(4), height: 1 },
-        );
-
-        // Gain value label (below frequency).
+        // Gain value label directly below the bar, centred in the column.
         let gain_text = if gain == 0.0 {
             format!("{:>4}", "0")
         } else {
             format!("{:>+4.0}", gain)
         };
-        let gain_label = Span::styled(
-            gain_text,
-            if selected { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) }
-            else        { Style::default().fg(Color::White) },
-        );
         frame.render_widget(
-            Paragraph::new(vec![Line::from(vec![gain_label])]),
-            Rect { x: col_x, y: inner.y + bar_h + 1, width: col_w.max(4), height: 1 },
+            Paragraph::new(vec![Line::from(Span::styled(
+                gain_text,
+                if selected {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ))]),
+            Rect {
+                x: col_x.saturating_sub(4),
+                y: inner.y + bar_h,
+                width: COL_W,
+                height: 1,
+            },
         );
     }
 
-    // Hint line at the very bottom.
-    let hint = " ←/→ band  ↑/↓ ±1dB  PgUp/PgDn ±3dB  p preset  r flat  t toggle  u close ";
-    let hint_line = Line::from(vec![Span::styled(hint, Style::default().fg(Color::DarkGray))]);
+    // ── Pre-amp column (index 10) — right-aligned ─────────────────────────
+    // The bar sits at the last inner column; the label and "Vol/Adj" text
+    // sit to its left so the column floats clearly away from the EQ bands.
+    let preamp_selected = state.selected_band == 10;
+    let preamp_pct = (eq.preamp * 100.0).round() as i32;
+
+    let preamp_style = if !eq.enabled {
+        Style::default().fg(Color::DarkGray)
+    } else if preamp_selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+
+    // Bar: 50% = bottom, 150% = top, 100% = midpoint.
+    let preamp_filled = ((eq.preamp - 0.5) / 1.0 * bar_h as f64).round() as u16;
+    let preamp_filled = preamp_filled.clamp(0, bar_h);
+
+    // Bar sits 3 columns left of the right inner edge; value label stays at
+    // the original flush-right position so only the slider moves.
+    let preamp_bar_x = (inner.x + inner.width).saturating_sub(4);
+    let preamp_value_anchor = (inner.x + inner.width).saturating_sub(1);
+
+    for row in 0..bar_h {
+        let display_row = bar_h - 1 - row;
+        let ch = if display_row < preamp_filled {
+            if display_row >= zero_row {
+                '█'
+            } else {
+                '▒'
+            }
+        } else if display_row == zero_row {
+            '─'
+        } else {
+            ' '
+        };
+        if preamp_bar_x < inner.x + inner.width {
+            frame.render_widget(
+                Paragraph::new(vec![Line::from(Span::styled(ch.to_string(), preamp_style))]),
+                Rect {
+                    x: preamp_bar_x,
+                    y: inner.y + row,
+                    width: 1,
+                    height: 1,
+                },
+            );
+        }
+    }
+
+    // "Vol" / "Adj" label centred on the zero line, 4 chars left of the bar.
+    let label_x = preamp_value_anchor.saturating_sub(7);
+    let label_style = Style::default().fg(if preamp_selected {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    });
+    if zero_row > 0 && inner.y + zero_row.saturating_sub(1) >= inner.y {
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled("Vol", label_style))]),
+            Rect {
+                x: label_x,
+                y: inner.y + zero_row.saturating_sub(1),
+                width: 3,
+                height: 1,
+            },
+        );
+    }
     frame.render_widget(
-        Paragraph::new(vec![hint_line]),
-        Rect { x: inner.x, y: inner.y + inner.height.saturating_sub(1), width: inner.width, height: 1 },
+        Paragraph::new(vec![Line::from(Span::styled("Adj", label_style))]),
+        Rect {
+            x: label_x,
+            y: inner.y + zero_row,
+            width: 3,
+            height: 1,
+        },
+    );
+
+    // Value label ("100%") right-aligned below the bar.
+    let preamp_label = format!("{preamp_pct:>4}%");
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(Span::styled(preamp_label, preamp_style))]),
+        Rect {
+            x: preamp_value_anchor.saturating_sub(6),
+            y: inner.y + bar_h,
+            width: 5,
+            height: 1,
+        },
+    );
+
+    // Hint line — `t` label reflects the action it will take (toggle to opposite).
+    let t_action = if eq.enabled { "eq off" } else { "eq on " };
+    let hint = format!(
+        " ←/→ select  ↑/↓ ±1dB/5%  PgUp/Dn ±3dB/15%  p preset  r flat  t {t_action}  u close "
+    );
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(Span::styled(
+            hint,
+            Style::default().fg(Color::DarkGray),
+        ))]),
+        Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        },
     );
 }
 
 /// Render the ID3 tag editor overlay.
+/// Return the last `n` characters of `s` (by Unicode scalar, not bytes).
+/// When `s` is shorter than or equal to `n` characters, returns `s` unchanged.
+/// Used for tail-scrolling text input fields so the cursor is always visible.
+fn tail_chars(s: &str, n: usize) -> &str {
+    if n == 0 {
+        return "";
+    }
+    let char_count = s.chars().count();
+    if char_count <= n {
+        return s;
+    }
+    let skip = char_count - n;
+    let byte_offset = s
+        .char_indices()
+        .nth(skip)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    &s[byte_offset..]
+}
+
 ///
 /// When `state.show_extra` is false, shows the standard two-column form for
 /// the 12 default tag fields.  When true, shows the Customize sub-panel
@@ -1156,7 +1522,8 @@ fn draw_id3_editor_overlay(frame: &mut Frame, state: &Id3EditorState, area: Rect
 /// Render the 12-field two-column editor form.
 fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
     // Filename shown in the title bar for quick reference.
-    let fname = state.path
+    let fname = state
+        .path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("(unknown)");
@@ -1175,9 +1542,9 @@ fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),     // two-column field form
-            Constraint::Length(1),  // status message (if any)
-            Constraint::Length(1),  // bottom hint bar
+            Constraint::Min(1),    // two-column field form
+            Constraint::Length(1), // status message (if any)
+            Constraint::Length(1), // bottom hint bar
         ])
         .split(inner);
 
@@ -1187,11 +1554,11 @@ fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rows[0]);
 
-    let pairs = state.fields.field_pairs();  // 12 (label, value) pairs
-    let mid = pairs.len() / 2;              // 6 in each column
+    let pairs = state.fields.field_pairs(); // 12 (label, value) pairs
+    let mid = pairs.len() / 2; // 6 in each column
 
     // Render each column.
-    draw_id3_field_column(frame, state, &pairs[..mid],    0,   cols[0]);
+    draw_id3_field_column(frame, state, &pairs[..mid], 0, cols[0]);
     draw_id3_field_column(frame, state, &pairs[mid..], mid as usize, cols[1]);
 
     // Genre typeahead popup (only when genre field is focused and has matches).
@@ -1205,9 +1572,9 @@ fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
             let drop_h = (matches.len() as u16 + 2).min(area.height.saturating_sub(drop_y));
             if drop_y < area.y + area.height && drop_h > 2 {
                 let drop = Rect {
-                    x:      cols[0].x,
-                    y:      drop_y,
-                    width:  cols[0].width.min(30),
+                    x: cols[0].x,
+                    y: drop_y,
+                    width: cols[0].width.min(30),
                     height: drop_h,
                 };
                 frame.render_widget(Clear, drop);
@@ -1255,6 +1622,8 @@ fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
         sep(),
         hint("^S", " save"),
         sep(),
+        hint("Alt+z/x/c/v/b", " transport"),
+        sep(),
         Span::styled("[Esc] cancel", Style::default().fg(C_WARN)),
     ]);
     frame.render_widget(Paragraph::new(hints), rows[2]);
@@ -1272,21 +1641,44 @@ fn draw_id3_field_column(
     offset: usize,
     area: Rect,
 ) {
+    // The label occupies 15 chars ("         Title: ") leaving the rest for
+    // the value.  When the value is longer than that we tail-scroll it so
+    // the cursor (end of string) is always visible.
+    let value_cols = (area.width as usize).saturating_sub(15);
+
     // Build one text line per field.
     let lines: Vec<Line> = pairs
         .iter()
         .enumerate()
         .map(|(i, (label, value))| {
             let field_idx = offset + i;
-            let focused   = field_idx == state.focused;
+            let focused = field_idx == state.focused;
 
             // Label: right-aligned in a 13-char column; value follows.
             let label_text = format!("{:>13}: ", label);
-            // Show a cursor marker at the end of the value when focused.
+
+            // For focused fields: scroll the view so the cursor is always
+            // visible, then render the cursor marker (▌) at its position.
+            // For non-focused fields: show the tail so the full value is
+            // visible from the end (matching how most text UIs tail-scroll).
             let value_text = if focused {
-                format!("{}▌", value)
+                let avail_text = value_cols.saturating_sub(1); // 1 col for ▌
+                let chars: Vec<char> = value.chars().collect();
+                let len = chars.len();
+                let cur = state.cursor.min(len);
+                // Scroll the window so the cursor sits at the right edge when
+                // the text is longer than the visible area.
+                let scroll = if cur <= avail_text {
+                    0
+                } else {
+                    cur - avail_text
+                };
+                let vis_end = (scroll + avail_text).min(len);
+                let before: String = chars[scroll..cur].iter().collect();
+                let after: String = chars[cur..vis_end].iter().collect();
+                format!("{}▌{}", before, after)
             } else {
-                value.clone()
+                tail_chars(value, value_cols).to_owned()
             };
 
             let label_span = Span::styled(
@@ -1305,7 +1697,10 @@ fn draw_id3_field_column(
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines).style(Style::default().fg(C_TEXT)), area);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(C_TEXT)),
+        area,
+    );
 }
 
 /// Render the Customize (extra frames) sub-panel.
@@ -1334,12 +1729,32 @@ fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
             rows[0],
         );
     } else if state.extra_editing {
-        // Show the editing buffer for the focused frame.
+        // Show the editing buffer for the focused frame with cursor support.
         let frame_ref = state.extra_frames.get(state.extra_focused);
         let id = frame_ref.map(|f| f.id.as_str()).unwrap_or("???");
+        let prefix = format!("  Editing frame {} — new value: ", id);
+        let prefix_cols = prefix.chars().count();
+        let avail_text = (rows[0].width as usize)
+            .saturating_sub(prefix_cols)
+            .saturating_sub(1);
+        let chars: Vec<char> = state.extra_input.chars().collect();
+        let len = chars.len();
+        let cur = state.extra_cursor.min(len);
+        let scroll = if cur <= avail_text {
+            0
+        } else {
+            cur - avail_text
+        };
+        let vis_end = (scroll + avail_text).min(len);
+        let before: String = chars[scroll..cur].iter().collect();
+        let after: String = chars[cur..vis_end].iter().collect();
+        let input_with_cursor = format!("{}▌{}", before, after);
         let label_line = Line::from(vec![
-            Span::styled(format!("  Editing frame {} — new value: ", id), Style::default().fg(C_DIM)),
-            Span::styled(format!("{}▌", state.extra_input), Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)),
+            Span::styled(prefix, Style::default().fg(C_DIM)),
+            Span::styled(
+                input_with_cursor,
+                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+            ),
         ]);
         frame.render_widget(Paragraph::new(vec![label_line]), rows[0]);
     } else {
@@ -1352,13 +1767,19 @@ fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
                 let focused = i == state.extra_focused;
                 let row = format!("  {:4}  {}", f.id, f.value);
                 if focused {
-                    Line::from(Span::styled(row, Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)))
+                    Line::from(Span::styled(
+                        row,
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ))
                 } else {
                     Line::from(row)
                 }
             })
             .collect();
-        frame.render_widget(Paragraph::new(items).style(Style::default().fg(C_TEXT)), rows[0]);
+        frame.render_widget(
+            Paragraph::new(items).style(Style::default().fg(C_TEXT)),
+            rows[0],
+        );
     }
 
     // Bottom hint bar.
@@ -1395,7 +1816,12 @@ fn centered_popup(area: Rect, max_w: u16, h: u16) -> Rect {
     let w = area.width.saturating_sub(8).min(max_w).max(30);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,10 +1830,7 @@ fn centered_popup(area: Rect, max_w: u16, h: u16) -> Rect {
 
 /// Build a key-hint span: `[key]label` in accent colour.
 fn hint<'a>(key: &'a str, label: &'a str) -> Span<'a> {
-    Span::styled(
-        format!("[{}]{}", key, label),
-        Style::default().fg(C_ACCENT),
-    )
+    Span::styled(format!("[{}]{}", key, label), Style::default().fg(C_ACCENT))
 }
 
 /// Build a dim separator span (` · `).
@@ -1415,3 +1838,432 @@ fn sep() -> Span<'static> {
     Span::styled(" · ", Style::default().fg(C_DIM))
 }
 
+// ---------------------------------------------------------------------------
+// Media library full-screen view
+// ---------------------------------------------------------------------------
+
+/// Render the full-screen media library browser.
+///
+/// ## Layout (Winamp-style)
+///
+/// ```text
+/// ┌──────────────────────────────────────────────────────────────┐
+/// │ Sparkamp — Media Library                                      │  ← title border
+/// │ ▶ Files    │ Search: ________________                         │
+/// │   Playlists│ Artist │ Title  │ Album │ Len                    │  ← column headers
+/// │            │ row 1 …                                          │
+/// │            │ …                                                │
+/// │            │ Esc:close  Tab:tab  /:search  Enter:add  s:sort  │  ← hint/toast
+/// └──────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// The left sidebar shows the navigation sections; the right pane shows the
+/// content for the active section.  Occupies the full terminal area.
+pub(super) fn draw_media_library(
+    frame: &mut Frame,
+    state: &MediaLibraryState,
+    toast: Option<&str>,
+    area: Rect,
+) {
+    // Erase the player/playlist underneath so there are no legibility issues.
+    frame.render_widget(Clear, area);
+
+    // Outer border.
+    let block = Block::default()
+        .title(Span::styled(
+            " Sparkamp — Media Library ",
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    frame.render_widget(block, area);
+
+    // Work inside the border.
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    if inner.height < 4 {
+        return;
+    }
+
+    // Split horizontally: narrow sidebar on the left, content on the right.
+    const SIDEBAR_W: u16 = 13;
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(SIDEBAR_W), Constraint::Min(1)])
+        .split(inner);
+
+    // ── Left sidebar: vertical tab list ──────────────────────────────────
+    let sidebar_items: Vec<ListItem> = [
+        ("Files", MediaLibraryTab::Files),
+        ("Playlists", MediaLibraryTab::Playlists),
+    ]
+    .iter()
+    .map(|(label, tab)| {
+        if *tab == state.tab {
+            ListItem::new(Span::styled(
+                format!("▶ {label}"),
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            ListItem::new(Span::styled(
+                format!("  {label}"),
+                Style::default().fg(C_DIM),
+            ))
+        }
+    })
+    .collect();
+
+    let sidebar = List::new(sidebar_items).block(
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(C_DIM)),
+    );
+    frame.render_widget(sidebar, cols[0]);
+
+    // ── Right pane ────────────────────────────────────────────────────────
+    // Split: search bar (1 row), content (rest − 1), hint/toast bar (1 row).
+    let right = cols[1];
+    let pane = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // search bar
+            Constraint::Min(1),    // content
+            Constraint::Length(1), // hint / toast
+        ])
+        .split(right);
+
+    // Top bar: add-path prompt takes priority over search bar.
+    let (top_str, top_style) = if let Some(ref buf) = state.add_input {
+        (format!("Add path: {buf}|"), Style::default().fg(C_ACCENT))
+    } else if state.search_active {
+        (
+            format!("Search: {}|", state.search_query),
+            Style::default().fg(C_WARN),
+        )
+    } else if !state.search_query.is_empty() {
+        (
+            format!("Search: {}", state.search_query),
+            Style::default().fg(C_WARN),
+        )
+    } else {
+        (" /: search".to_string(), Style::default().fg(C_DIM))
+    };
+    frame.render_widget(Paragraph::new(Span::styled(top_str, top_style)), pane[0]);
+
+    // Content.
+    match state.tab {
+        MediaLibraryTab::Files => draw_ml_files(frame, state, pane[1]),
+        MediaLibraryTab::Playlists => draw_ml_playlists(frame, state, pane[1]),
+    }
+
+    // Hint / toast bar — show a status message if one is pending, show a
+    // minimal "Esc: exit search" hint while typing, otherwise display all hints.
+    let hint_line = if let Some(msg) = toast {
+        Line::from(Span::styled(msg, Style::default().fg(C_PLAYING)))
+    } else if state.add_input.is_some() {
+        Line::from(vec![
+            hint("Enter", "add path"),
+            sep(),
+            hint("Esc", "cancel"),
+        ])
+    } else if state.search_active {
+        Line::from(hint("Esc", "exit search"))
+    } else {
+        Line::from(vec![
+            hint("Esc", "close"),
+            sep(),
+            hint("Tab", "tab"),
+            sep(),
+            hint("/", "search"),
+            sep(),
+            hint("Enter", "add"),
+            sep(),
+            hint("←→", "scroll cols"),
+            sep(),
+            hint("s", "sort"),
+            sep(),
+            hint("a", "add to ML"),
+            sep(),
+            hint("i", "help"),
+            sep(),
+            Span::styled("Alt+z/x/c/v/b/j", Style::default().fg(C_DIM)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(hint_line), pane[2]);
+}
+
+/// Width (chars) for each column ID in the Files tab.
+fn ml_col_width(id: &str) -> usize {
+    match id {
+        "num" => 4,
+        "title" => 28,
+        "artist" => 22,
+        "album" => 20,
+        "duration" => 6,
+        "filename" => 24,
+        "year" => 5,
+        "genre" => 12,
+        "bitrate" => 7,
+        _ => 12,
+    }
+}
+
+/// Human-readable header label for a column ID.
+fn ml_col_label(id: &str) -> &'static str {
+    match id {
+        "num" => "#",
+        "title" => "Title",
+        "artist" => "Artist",
+        "album" => "Album",
+        "duration" => "Len",
+        "filename" => "Filename",
+        "year" => "Year",
+        "genre" => "Genre",
+        "bitrate" => "Bitrate",
+        _ => "?",
+    }
+}
+
+/// Extract the display value for a given column from a `LibTrack`.
+fn ml_col_value<'a>(id: &str, t: &'a crate::media_library::LibTrack) -> std::borrow::Cow<'a, str> {
+    match id {
+        "num" => t
+            .track_num
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+            .into(),
+        "title" => t.title.as_deref().unwrap_or(&t.filename).into(),
+        "artist" => t.artist.as_deref().unwrap_or("-").into(),
+        "album" => t.album.as_deref().unwrap_or("-").into(),
+        "duration" => t
+            .length_secs
+            .map(|s| {
+                let u = s as u64;
+                format!("{:>2}:{:02}", u / 60, u % 60)
+            })
+            .unwrap_or_else(|| "-:--".to_string())
+            .into(),
+        "filename" => t.filename.as_str().into(),
+        "year" => t.year.map(|y| y.to_string()).unwrap_or_default().into(),
+        "genre" => t.genre.as_deref().unwrap_or("").into(),
+        "bitrate" => t
+            .bitrate
+            .map(|b| format!("{b}k"))
+            .unwrap_or_default()
+            .into(),
+        _ => "".into(),
+    }
+}
+
+/// Render the Files tab: column headers and a scrollable track list.
+///
+/// The columns shown, their order, and the starting scroll offset come from
+/// `state.visible_columns` and `state.col_offset`.  The sorted column is
+/// marked with ▲ / ▼ in the header.
+fn draw_ml_files(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+    if area.height < 2 {
+        return;
+    }
+
+    let header_area = Rect { height: 1, ..area };
+    let list_area = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+
+    // The visible columns starting from the scroll offset.
+    let cols: Vec<&str> = state
+        .visible_columns
+        .iter()
+        .skip(state.col_offset)
+        .map(String::as_str)
+        .collect();
+
+    if cols.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No columns selected. Add columns via Settings → Media Library.",
+                Style::default().fg(C_DIM),
+            )),
+            area,
+        );
+        return;
+    }
+
+    // Build the header line.
+    let mut header_spans: Vec<Span> = Vec::new();
+    for (ci, &col) in cols.iter().enumerate() {
+        let w = ml_col_width(col);
+        let label = ml_col_label(col);
+        let sort_indicator = if col == state.sort_col.as_str() {
+            if state.sort_desc {
+                " ▼"
+            } else {
+                " ▲"
+            }
+        } else {
+            ""
+        };
+        let text = format!("{:<w$}", format!("{label}{sort_indicator}"), w = w);
+        let style = if col == state.sort_col.as_str() {
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(C_DIM)
+        };
+        header_spans.push(Span::styled(text, style));
+        if ci + 1 < cols.len() {
+            header_spans.push(Span::styled("  ", Style::default().fg(C_DIM)));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
+
+    if state.tracks.is_empty() {
+        let msg = if state.search_query.is_empty() {
+            "No tracks in the media library.  Open the GTK4 UI and add a folder with the ML button."
+        } else {
+            "No tracks match the search query."
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::default().fg(C_DIM))),
+            list_area,
+        );
+        return;
+    }
+
+    let items: Vec<ListItem> = state
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut row = String::new();
+            for (ci, &col) in cols.iter().enumerate() {
+                let w = ml_col_width(col);
+                let val = ml_col_value(col, t);
+                // Right-align numeric/duration columns; left-align text columns.
+                match col {
+                    "num" | "duration" | "year" | "bitrate" => {
+                        row.push_str(&format!("{:>w$}", ml_truncate(&val, w), w = w));
+                    }
+                    _ => {
+                        row.push_str(&format!("{:<w$}", ml_truncate(&val, w), w = w));
+                    }
+                }
+                if ci + 1 < cols.len() {
+                    row.push_str("  ");
+                }
+            }
+            let style = if i == state.selected_track {
+                Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Span::styled(row, style))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected_track));
+    let list =
+        List::new(items).highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+}
+
+/// Render the Playlists tab: left pane = playlist list, right pane = track
+/// preview for the selected playlist (populated after pressing Enter).
+fn draw_ml_playlists(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+    if area.width < 20 {
+        return;
+    }
+
+    // Split: left ~30 % for playlist names, rest for preview.
+    let left_w = (area.width / 3).max(20).min(40);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(left_w), Constraint::Min(1)])
+        .split(area);
+
+    // Left: playlist names.
+    if state.playlists.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No playlists found.",
+                Style::default().fg(C_DIM),
+            )),
+            cols[0],
+        );
+    } else {
+        let pl_items: Vec<ListItem> = state
+            .playlists
+            .iter()
+            .enumerate()
+            .map(|(i, pl)| {
+                let style = if i == state.selected_playlist {
+                    Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+                } else {
+                    Style::default().fg(C_TEXT)
+                };
+                ListItem::new(Span::styled(pl.name.clone(), style))
+            })
+            .collect();
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected_playlist));
+        let list = List::new(pl_items)
+            .block(
+                Block::default()
+                    .borders(Borders::RIGHT)
+                    .border_style(Style::default().fg(C_DIM)),
+            )
+            .highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+        frame.render_stateful_widget(list, cols[0], &mut list_state);
+    }
+
+    // Right: track preview.
+    let right = Rect {
+        x: cols[1].x + 1,
+        width: cols[1].width.saturating_sub(1),
+        ..cols[1]
+    };
+    match &state.playlist_preview {
+        None => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "Press Enter to load playlist tracks.",
+                    Style::default().fg(C_DIM),
+                )),
+                right,
+            );
+        }
+        Some(tracks) => {
+            let items: Vec<ListItem> = tracks
+                .iter()
+                .map(|t| {
+                    let title = t.title.as_deref().unwrap_or(&t.filename);
+                    let artist = t.artist.as_deref().unwrap_or("-");
+                    ListItem::new(Span::styled(
+                        format!("{} — {}", artist, title),
+                        Style::default().fg(C_TEXT),
+                    ))
+                })
+                .collect();
+            frame.render_widget(List::new(items), right);
+        }
+    }
+}
+
+/// Truncate a string to at most `max_chars` characters, appending `…` when cut.
+fn ml_truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        s.chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    }
+}

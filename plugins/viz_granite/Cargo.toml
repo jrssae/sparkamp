@@ -1,0 +1,20 @@
+[package]
+name = "viz_granite"
+version = "0.1.0"
+edition = "2024"
+description = "Granite — Geiss-inspired OpenGL visualizer plugin for Sparkamp"
+license = "AGPL-3.0-only"
+
+# Build as a C-ABI dynamic library so Sparkamp can dlopen it at runtime.
+[lib]
+name = "viz_granite"
+crate-type = ["cdylib"]
+
+[dependencies]
+# OpenGL via glow (works with any OpenGL context provider — GLX, EGL, etc.).
+glow = "0.13"
+# libc for C ABI types used in the Sparkamp viz plugin interface.
+libc = "0.2"
+
+[build-dependencies]
+# No extra build-time deps needed.

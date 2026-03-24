@@ -1,10 +1,20 @@
 # Rust build artifacts (~1.7 GB — never commit these)
 /target
 
+# Flatpak build artifacts
+/flatpak-cargo-generator.py
+/repo/
+/build-dir/
+/.flatpak-builder/
+/Sparkamp.flatpak
+
 # Development / scratch files
 dev.txt
 
-# Test media and skin files (large binaries, not needed in the repo)
+# Test media files — copyrighted, must never reach GitHub
+/Testing/
+
+# Other large binaries not needed in the repo
 *.wsz
 *.mp3
 *.jpg

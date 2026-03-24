@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=SparkAmp
+Comment=Winamp-style audio player for Linux
+Exec=sparkamp --ui %F
+Icon=dev.sparkamp.SparkAmp
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/ogg;audio/flac;audio/x-flac;audio/wav;audio/x-wav;audio/aac;audio/mp4;audio/x-m4a;application/ogg;
+Keywords=music;audio;player;winamp;mp3;
+StartupNotify=true

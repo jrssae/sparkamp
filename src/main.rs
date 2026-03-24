@@ -1,4 +1,4 @@
-//! SparkAmp — a Winamp-style audio player for Linux / GNOME.
+//! Sparkamp — a Winamp-style audio player for Linux / GNOME.
 //!
 //! ## Entry points
 //!
@@ -16,15 +16,23 @@ use anyhow::Result;
 use clap::Parser;
 
 mod config;
+mod controller;
 mod duration_cache;
 mod duration_probe;
 mod engine;
 mod filetype_plugin;
+#[path = "../frontends/gtk/mod.rs"]
 mod gtk_ui;
 mod id3_editor;
+mod loaded_plugin;
+mod media_library;
 mod model;
+mod plugin_abi;
+mod plugin_manager;
+mod plugin_settings;
 mod shuffle;
 mod skin;
+#[path = "../frontends/tui/mod.rs"]
 mod tui;
 mod viz_plugin;
 
@@ -33,7 +41,7 @@ mod viz_plugin;
 #[command(
     name = "sparkamp",
     about = "A Winamp-style audio player for Linux/GNOME",
-    long_about = "SparkAmp — a Winamp-style audio player for Linux/GNOME.\n\
+    long_about = "Sparkamp — a Winamp-style audio player for Linux/GNOME.\n\
 \n\
 USAGE EXAMPLES:\n\
   sparkamp                          Launch the terminal UI\n\

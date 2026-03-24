@@ -43,7 +43,7 @@ impl DurationCache {
     /// Load the cache from the standard OS location, or return an empty cache
     /// on any I/O or parse error.
     ///
-    /// On the first run after the GnomAmp → SparkAmp rename, migrates the
+    /// On the first run after the GnomAmp → Sparkamp rename, migrates the
     /// existing cache from `~/.cache/gnomamp/` so probed durations are not lost.
     pub fn load() -> Self {
         let path = Self::cache_path();

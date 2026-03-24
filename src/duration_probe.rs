@@ -79,7 +79,7 @@ pub fn probe_duration(path: &Path) -> Option<Duration> {
 /// For CBR MP3 files without a Xing/Info header (which Symphonia cannot
 /// measure), GStreamer's `mpegaudioparse` estimates duration from file size ÷
 /// bitrate.  This estimate appears quickly and is accurate enough for display.
-fn discover_duration(path: &Path) -> Option<Duration> {
+pub fn discover_duration(path: &Path) -> Option<Duration> {
     let path_str = path.to_str()?;
     let encoded = path_str
         .replace('%', "%25")
