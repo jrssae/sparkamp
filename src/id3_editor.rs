@@ -29,41 +29,198 @@ use std::path::Path;
 /// The user may also type a genre that is not in this list; the editor
 /// accepts free text — this array is only for autocompletion suggestions.
 pub const ID3V1_GENRES: &[&str] = &[
-    "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
-    "Hip-Hop", "Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B",
-    "Rap", "Reggae", "Rock", "Techno", "Industrial", "Alternative", "Ska",
-    "Death Metal", "Pranks", "Soundtrack", "Euro-Techno", "Ambient",
-    "Trip-Hop", "Vocal", "Jazz+Funk", "Fusion", "Trance", "Classical",
-    "Instrumental", "Acid", "House", "Game", "Sound Clip", "Gospel",
-    "Noise", "AlternRock", "Bass", "Soul", "Punk", "Space", "Meditative",
-    "Instrumental Pop", "Instrumental Rock", "Ethnic", "Gothic",
-    "Darkwave", "Techno-Industrial", "Electronic", "Pop-Folk",
-    "Eurodance", "Dream", "Southern Rock", "Comedy", "Cult", "Gangsta",
-    "Top 40", "Christian Rap", "Pop/Funk", "Jungle", "Native American",
-    "Cabaret", "New Wave", "Psychedelic", "Rave", "Showtunes", "Trailer",
-    "Lo-Fi", "Tribal", "Acid Punk", "Acid Jazz", "Polka", "Retro",
-    "Musical", "Rock & Roll", "Hard Rock", "Folk", "Folk-Rock",
-    "National Folk", "Swing", "Fast Fusion", "Bebop", "Latin", "Revival",
-    "Celtic", "Bluegrass", "Avantgarde", "Gothic Rock", "Progressive Rock",
-    "Psychedelic Rock", "Symphonic Rock", "Slow Rock", "Big Band",
-    "Chorus", "Easy Listening", "Acoustic", "Humour", "Speech", "Chanson",
-    "Opera", "Chamber Music", "Sonata", "Symphony", "Booty Bass", "Primus",
-    "Porn Groove", "Satire", "Slow Jam", "Club", "Tango", "Samba",
-    "Folklore", "Ballad", "Power Ballad", "Rhythmic Soul", "Freestyle",
-    "Duet", "Punk Rock", "Drum Solo", "A Cappella", "Euro-House",
-    "Dance Hall", "Goa", "Drum & Bass", "Club-House", "Hardcore",
-    "Terror", "Indie", "BritPop", "Negerpunk", "Polsk Punk", "Beat",
-    "Christian Gangsta Rap", "Heavy Metal", "Black Metal", "Crossover",
-    "Contemporary Christian", "Christian Rock", "Merengue", "Salsa",
-    "Thrash Metal", "Anime", "JPop", "Synthpop", "Abstract", "Art Rock",
-    "Baroque", "Bhangra", "Big Beat", "Breakbeat", "Chillout", "Downtempo",
-    "Dub", "EBM", "Eclectic", "Electro", "Electroclash", "Emo",
-    "Experimental", "Garage", "Global", "IDM", "Illbient", "Industro-Goth",
-    "Jam Band", "Krautrock", "Leftfield", "Lounge", "Math Rock",
-    "New Romantic", "Nu-Breakz", "Post-Punk", "Post-Rock", "Psytrance",
-    "Shoegaze", "Space Rock", "Trop Rock", "World Music", "Neoclassical",
-    "Audiobook", "Audio Theatre", "Neue Deutsche Welle", "Podcast",
-    "Indie-Rock", "G-Funk", "Dubstep", "Garage Rock", "Psybient",
+    "Blues",
+    "Classic Rock",
+    "Country",
+    "Dance",
+    "Disco",
+    "Funk",
+    "Grunge",
+    "Hip-Hop",
+    "Jazz",
+    "Metal",
+    "New Age",
+    "Oldies",
+    "Other",
+    "Pop",
+    "R&B",
+    "Rap",
+    "Reggae",
+    "Rock",
+    "Techno",
+    "Industrial",
+    "Alternative",
+    "Ska",
+    "Death Metal",
+    "Pranks",
+    "Soundtrack",
+    "Euro-Techno",
+    "Ambient",
+    "Trip-Hop",
+    "Vocal",
+    "Jazz+Funk",
+    "Fusion",
+    "Trance",
+    "Classical",
+    "Instrumental",
+    "Acid",
+    "House",
+    "Game",
+    "Sound Clip",
+    "Gospel",
+    "Noise",
+    "AlternRock",
+    "Bass",
+    "Soul",
+    "Punk",
+    "Space",
+    "Meditative",
+    "Instrumental Pop",
+    "Instrumental Rock",
+    "Ethnic",
+    "Gothic",
+    "Darkwave",
+    "Techno-Industrial",
+    "Electronic",
+    "Pop-Folk",
+    "Eurodance",
+    "Dream",
+    "Southern Rock",
+    "Comedy",
+    "Cult",
+    "Gangsta",
+    "Top 40",
+    "Christian Rap",
+    "Pop/Funk",
+    "Jungle",
+    "Native American",
+    "Cabaret",
+    "New Wave",
+    "Psychedelic",
+    "Rave",
+    "Showtunes",
+    "Trailer",
+    "Lo-Fi",
+    "Tribal",
+    "Acid Punk",
+    "Acid Jazz",
+    "Polka",
+    "Retro",
+    "Musical",
+    "Rock & Roll",
+    "Hard Rock",
+    "Folk",
+    "Folk-Rock",
+    "National Folk",
+    "Swing",
+    "Fast Fusion",
+    "Bebop",
+    "Latin",
+    "Revival",
+    "Celtic",
+    "Bluegrass",
+    "Avantgarde",
+    "Gothic Rock",
+    "Progressive Rock",
+    "Psychedelic Rock",
+    "Symphonic Rock",
+    "Slow Rock",
+    "Big Band",
+    "Chorus",
+    "Easy Listening",
+    "Acoustic",
+    "Humour",
+    "Speech",
+    "Chanson",
+    "Opera",
+    "Chamber Music",
+    "Sonata",
+    "Symphony",
+    "Booty Bass",
+    "Primus",
+    "Porn Groove",
+    "Satire",
+    "Slow Jam",
+    "Club",
+    "Tango",
+    "Samba",
+    "Folklore",
+    "Ballad",
+    "Power Ballad",
+    "Rhythmic Soul",
+    "Freestyle",
+    "Duet",
+    "Punk Rock",
+    "Drum Solo",
+    "A Cappella",
+    "Euro-House",
+    "Dance Hall",
+    "Goa",
+    "Drum & Bass",
+    "Club-House",
+    "Hardcore",
+    "Terror",
+    "Indie",
+    "BritPop",
+    "Negerpunk",
+    "Polsk Punk",
+    "Beat",
+    "Christian Gangsta Rap",
+    "Heavy Metal",
+    "Black Metal",
+    "Crossover",
+    "Contemporary Christian",
+    "Christian Rock",
+    "Merengue",
+    "Salsa",
+    "Thrash Metal",
+    "Anime",
+    "JPop",
+    "Synthpop",
+    "Abstract",
+    "Art Rock",
+    "Baroque",
+    "Bhangra",
+    "Big Beat",
+    "Breakbeat",
+    "Chillout",
+    "Downtempo",
+    "Dub",
+    "EBM",
+    "Eclectic",
+    "Electro",
+    "Electroclash",
+    "Emo",
+    "Experimental",
+    "Garage",
+    "Global",
+    "IDM",
+    "Illbient",
+    "Industro-Goth",
+    "Jam Band",
+    "Krautrock",
+    "Leftfield",
+    "Lounge",
+    "Math Rock",
+    "New Romantic",
+    "Nu-Breakz",
+    "Post-Punk",
+    "Post-Rock",
+    "Psytrance",
+    "Shoegaze",
+    "Space Rock",
+    "Trop Rock",
+    "World Music",
+    "Neoclassical",
+    "Audiobook",
+    "Audio Theatre",
+    "Neue Deutsche Welle",
+    "Podcast",
+    "Indie-Rock",
+    "G-Funk",
+    "Dubstep",
+    "Garage Rock",
+    "Psybient",
 ];
 
 // ---------------------------------------------------------------------------
@@ -81,18 +238,18 @@ pub const ID3V1_GENRES: &[&str] = &[
 /// them back to integers when saving.
 #[derive(Debug, Clone, Default)]
 pub struct TagFields {
-    pub title:        String,
-    pub artist:       String,
-    pub album:        String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
     pub album_artist: String,
-    pub genre:        String,
-    pub year:         String,   // stored as String for display/editing
-    pub track_number: String,   // "x" part of "x/y"
-    pub track_total:  String,   // "y" part of "x/y"
-    pub disc_number:  String,   // "x" part of "x/y"
-    pub disc_total:   String,   // "y" part of "x/y"
-    pub bpm:          String,
-    pub comment:      String,   // default comment (no content description)
+    pub genre: String,
+    pub year: String,         // stored as String for display/editing
+    pub track_number: String, // "x" part of "x/y"
+    pub track_total: String,  // "y" part of "x/y"
+    pub disc_number: String,  // "x" part of "x/y"
+    pub disc_total: String,   // "y" part of "x/y"
+    pub bpm: String,
+    pub comment: String, // default comment (no content description)
 }
 
 impl TagFields {
@@ -105,18 +262,18 @@ impl TagFields {
     /// should edit the struct fields directly.
     pub fn field_pairs(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("Title",        self.title.clone()),
-            ("Artist",       self.artist.clone()),
-            ("Album",        self.album.clone()),
+            ("Title", self.title.clone()),
+            ("Artist", self.artist.clone()),
+            ("Album", self.album.clone()),
             ("Album Artist", self.album_artist.clone()),
-            ("Genre",        self.genre.clone()),
-            ("Year",         self.year.clone()),
-            ("Track #",      self.track_number.clone()),
-            ("Track Total",  self.track_total.clone()),
-            ("Disc #",       self.disc_number.clone()),
-            ("Disc Total",   self.disc_total.clone()),
-            ("BPM",          self.bpm.clone()),
-            ("Comment",      self.comment.clone()),
+            ("Genre", self.genre.clone()),
+            ("Year", self.year.clone()),
+            ("Track #", self.track_number.clone()),
+            ("Track Total", self.track_total.clone()),
+            ("Disc #", self.disc_number.clone()),
+            ("Disc Total", self.disc_total.clone()),
+            ("BPM", self.bpm.clone()),
+            ("Comment", self.comment.clone()),
         ]
     }
 }
@@ -185,20 +342,21 @@ pub fn read_tag_fields(path: &Path) -> TagFields {
         .unwrap_or_default();
 
     TagFields {
-        title:        tag.title().unwrap_or("").to_string(),
-        artist:       tag.artist().unwrap_or("").to_string(),
-        album:        tag.album().unwrap_or("").to_string(),
+        title: tag.title().unwrap_or("").to_string(),
+        artist: tag.artist().unwrap_or("").to_string(),
+        album: tag.album().unwrap_or("").to_string(),
         album_artist: tag.album_artist().unwrap_or("").to_string(),
-        genre:        tag.genre().unwrap_or("").to_string(),
-        year:         tag.year().map(|y| y.to_string()).unwrap_or_default(),
+        genre: tag.genre().unwrap_or("").to_string(),
+        year: tag.year().map(|y| y.to_string()).unwrap_or_default(),
         track_number,
         track_total,
         disc_number,
         disc_total,
-        bpm:          tag.get("TBPM")
-                         .and_then(|f| f.content().text())
-                         .unwrap_or("")
-                         .to_string(),
+        bpm: tag
+            .get("TBPM")
+            .and_then(|f| f.content().text())
+            .unwrap_or("")
+            .to_string(),
         comment,
     }
 }
@@ -211,8 +369,7 @@ pub fn read_tag_fields(path: &Path) -> TagFields {
 pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
     // Frame IDs covered by the default TagFields view — exclude these.
     const DEFAULT_IDS: &[&str] = &[
-        "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TRCK", "TPOS",
-        "TBPM", "COMM",
+        "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TRCK", "TPOS", "TBPM", "COMM",
     ];
 
     let tag = match Tag::read_from_path(path) {
@@ -224,8 +381,7 @@ pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
         .filter(|f| {
             let id = f.id();
             // Only show text frames and known extended text frames.
-            (id.starts_with('T') || id == "USLT")
-                && !DEFAULT_IDS.contains(&id)
+            (id.starts_with('T') || id == "USLT") && !DEFAULT_IDS.contains(&id)
         })
         .map(|f| {
             let value = f.content().text().unwrap_or("").to_string();
@@ -283,17 +439,20 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
     }
 
     // Track number: "x" or "x/y".
-    let trck = match (fields.track_number.is_empty(), fields.track_total.is_empty()) {
-        (true,  _)     => String::new(),
-        (false, true)  => fields.track_number.clone(),
+    let trck = match (
+        fields.track_number.is_empty(),
+        fields.track_total.is_empty(),
+    ) {
+        (true, _) => String::new(),
+        (false, true) => fields.track_number.clone(),
         (false, false) => format!("{}/{}", fields.track_number, fields.track_total),
     };
     set_text!("TRCK", &trck);
 
     // Disc number: "x" or "x/y".
     let tpos = match (fields.disc_number.is_empty(), fields.disc_total.is_empty()) {
-        (true,  _)     => String::new(),
-        (false, true)  => fields.disc_number.clone(),
+        (true, _) => String::new(),
+        (false, true) => fields.disc_number.clone(),
         (false, false) => format!("{}/{}", fields.disc_number, fields.disc_total),
     };
     set_text!("TPOS", &tpos);
@@ -456,11 +615,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     /// Create a temporary MP3-style file with an ID3v2 tag and return its path.
-    fn make_tagged_mp3(
-        title: &str,
-        artist: &str,
-        album: &str,
-    ) -> NamedTempFile {
+    fn make_tagged_mp3(title: &str, artist: &str, album: &str) -> NamedTempFile {
         // Write a minimal ID3v2.3 tag followed by a fake (silent) MPEG frame.
         // The id3 crate's write_to_path only needs a writable file path — it
         // does not validate the audio payload — so the fake frame is enough
@@ -492,9 +647,9 @@ mod tests {
     fn read_basic_fields() {
         let file = make_tagged_mp3("Test Title", "Test Artist", "Test Album");
         let fields = read_tag_fields(file.path());
-        assert_eq!(fields.title,  "Test Title");
+        assert_eq!(fields.title, "Test Title");
         assert_eq!(fields.artist, "Test Artist");
-        assert_eq!(fields.album,  "Test Album");
+        assert_eq!(fields.album, "Test Album");
     }
 
     #[test]
@@ -517,7 +672,7 @@ mod tests {
 
         let fields = read_tag_fields(f.path());
         assert_eq!(fields.track_number, "3");
-        assert_eq!(fields.track_total,  "12");
+        assert_eq!(fields.track_total, "12");
     }
 
     #[test]
@@ -541,35 +696,35 @@ mod tests {
     fn write_then_read_roundtrip() {
         let file = make_tagged_mp3("Old Title", "Old Artist", "Old Album");
         let new_fields = TagFields {
-            title:        "New Title".into(),
-            artist:       "New Artist".into(),
-            album:        "New Album".into(),
+            title: "New Title".into(),
+            artist: "New Artist".into(),
+            album: "New Album".into(),
             album_artist: "New Album Artist".into(),
-            genre:        "Electronic".into(),
-            year:         "2024".into(),
+            genre: "Electronic".into(),
+            year: "2024".into(),
             track_number: "5".into(),
-            track_total:  "10".into(),
-            disc_number:  "1".into(),
-            disc_total:   "2".into(),
-            bpm:          "128".into(),
-            comment:      "Test comment".into(),
+            track_total: "10".into(),
+            disc_number: "1".into(),
+            disc_total: "2".into(),
+            bpm: "128".into(),
+            comment: "Test comment".into(),
         };
 
         write_tag_fields(file.path(), &new_fields).unwrap();
         let read_back = read_tag_fields(file.path());
 
-        assert_eq!(read_back.title,        "New Title");
-        assert_eq!(read_back.artist,       "New Artist");
-        assert_eq!(read_back.album,        "New Album");
+        assert_eq!(read_back.title, "New Title");
+        assert_eq!(read_back.artist, "New Artist");
+        assert_eq!(read_back.album, "New Album");
         assert_eq!(read_back.album_artist, "New Album Artist");
-        assert_eq!(read_back.genre,        "Electronic");
-        assert_eq!(read_back.year,         "2024");
+        assert_eq!(read_back.genre, "Electronic");
+        assert_eq!(read_back.year, "2024");
         assert_eq!(read_back.track_number, "5");
-        assert_eq!(read_back.track_total,  "10");
-        assert_eq!(read_back.disc_number,  "1");
-        assert_eq!(read_back.disc_total,   "2");
-        assert_eq!(read_back.bpm,          "128");
-        assert_eq!(read_back.comment,      "Test comment");
+        assert_eq!(read_back.track_total, "10");
+        assert_eq!(read_back.disc_number, "1");
+        assert_eq!(read_back.disc_total, "2");
+        assert_eq!(read_back.bpm, "128");
+        assert_eq!(read_back.comment, "Test comment");
     }
 
     #[test]
@@ -582,12 +737,18 @@ mod tests {
         tag.write_to_path(f.path(), Version::Id3v23).unwrap();
 
         // Write default fields (no TCOM).
-        let fields = TagFields { title: "Updated".into(), ..Default::default() };
+        let fields = TagFields {
+            title: "Updated".into(),
+            ..Default::default()
+        };
         write_tag_fields(f.path(), &fields).unwrap();
 
         // TCOM should still be present.
         let tag_after = Tag::read_from_path(f.path()).unwrap();
-        let composer = tag_after.get("TCOM").and_then(|f| f.content().text()).unwrap_or("");
+        let composer = tag_after
+            .get("TCOM")
+            .and_then(|f| f.content().text())
+            .unwrap_or("");
         assert_eq!(composer, "A Composer");
         assert_eq!(tag_after.title().unwrap_or(""), "Updated");
     }
@@ -596,7 +757,7 @@ mod tests {
     fn write_empty_field_removes_frame() {
         let file = make_tagged_mp3("Title", "Artist", "Album");
         let fields = TagFields {
-            title:  "Title".into(),
+            title: "Title".into(),
             artist: String::new(), // clear the artist
             ..Default::default()
         };

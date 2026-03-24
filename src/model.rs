@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn track_from_libtrack_copies_all_fields() {
-        use crate::media_library::LibTrack;
+        use crate::media_library::{LibTrack, SortKeys};
 
         let lib = LibTrack {
             id: 42,
@@ -755,6 +755,18 @@ mod tests {
             filename: "test.mp3".into(),
             play_count: 5,
             last_played: Some("2024-01-15T10:30:00".into()),
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            sort_keys: SortKeys::default(),
         };
 
         let track = Track::from(&lib);
@@ -769,7 +781,7 @@ mod tests {
 
     #[test]
     fn track_from_libtrack_falls_back_to_filename_when_title_is_none() {
-        use crate::media_library::LibTrack;
+        use crate::media_library::{LibTrack, SortKeys};
 
         let lib = LibTrack {
             id: 1,
@@ -788,6 +800,18 @@ mod tests {
             filename: "no_tags.mp3".into(),
             play_count: 0,
             last_played: None,
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            sort_keys: SortKeys::default(),
         };
 
         let track = Track::from(&lib);
