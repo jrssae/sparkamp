@@ -491,24 +491,56 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
         } else {
             std::path::PathBuf::from(&fields.artwork_path)
         };
-        if let Ok(img_data) = std::fs::read(&art_path) {
-            let mime = if fields.artwork_path.ends_with(".png") {
-                "image/png"
-            } else {
-                "image/jpeg"
-            };
-            tag.add_frame(id3::frame::Picture {
-                mime_type: mime.to_string(),
-                picture_type: id3::frame::PictureType::CoverFront,
-                description: String::new(),
-                data: img_data,
-            });
+
+        match std::fs::read(&art_path) {
+            Ok(img_data) => {
+                eprintln!(
+                    "DEBUG: Read {} bytes from artwork file '{}'",
+                    img_data.len(),
+                    art_path.display()
+                );
+                let mime = if fields.artwork_path.ends_with(".png") {
+                    "image/png"
+                } else {
+                    "image/jpeg"
+                };
+                tag.add_frame(id3::frame::Picture {
+                    mime_type: mime.to_string(),
+                    picture_type: id3::frame::PictureType::CoverFront,
+                    description: String::new(),
+                    data: img_data.clone(),
+                });
+                eprintln!(
+                    "DEBUG: Added APIC frame with {} bytes of image data",
+                    img_data.len()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to read artwork file '{}': {}",
+                    art_path.display(),
+                    e
+                );
+            }
         }
     }
 
     // Write to disk using ID3v2.3 for broad compatibility.
-    tag.write_to_path(path, Version::Id3v23)
-        .with_context(|| format!("Failed to write ID3 tag to {}", path.display()))
+    match tag.write_to_path(path, Version::Id3v23) {
+        Ok(()) => {
+            eprintln!("DEBUG: Successfully wrote tag to '{}'", path.display());
+            // Verify the artwork was written
+            if let Ok(verify_tag) = id3::Tag::read_from_path(path) {
+                let pic_count = verify_tag.pictures().count();
+                eprintln!("DEBUG: Verified {} pictures in tag", pic_count);
+                for pic in verify_tag.pictures() {
+                    eprintln!("DEBUG:   - {} ({} bytes)", pic.mime_type, pic.data.len());
+                }
+            }
+            Ok(())
+        }
+        Err(e) => Err(e).with_context(|| format!("Failed to write ID3 tag to {}", path.display())),
+    }
 }
 
 /// Write a single extra frame (from the "Customize" panel) to the tag.

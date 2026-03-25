@@ -1139,15 +1139,29 @@ impl MediaLibrary {
     /// Clear and re-extract artwork from a track file.
     /// Updates the DB with the new cached artwork path.
     pub fn refresh_artwork(&self, track_id: i64, path: &str) -> Result<()> {
+        eprintln!(
+            "DEBUG refresh_artwork: track_id={}, path={}",
+            track_id, path
+        );
+
         // Delete old cached artwork file
         if let Ok(track) = self.track_by_path(path) {
+            eprintln!(
+                "DEBUG refresh_artwork: old artwork_path={:?}",
+                track.artwork_path
+            );
             if let Some(ref old_art) = track.artwork_path {
                 let _ = std::fs::remove_file(old_art);
+                eprintln!("DEBUG refresh_artwork: deleted old artwork file");
             }
         }
 
         // Re-extract artwork from the file
         let tags = read_track_tags(std::path::Path::new(path));
+        eprintln!(
+            "DEBUG refresh_artwork: extracted artwork_path={:?}",
+            tags.artwork_path
+        );
 
         // Update DB with new artwork path
         self.conn.execute(
