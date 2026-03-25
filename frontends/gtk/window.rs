@@ -1658,7 +1658,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // PL — toggle the playlist window.
     btn_pl.connect_clicked({
         let playlist_win = playlist_win.clone();
+        let state = state.clone();
         move |_| {
+            if playlist_win.is_visible() {
+                let (w, h) = (playlist_win.width(), playlist_win.height());
+                {
+                    let mut s = state.borrow_mut();
+                    s.config.window.playlist_width = w;
+                    s.config.window.playlist_height = h;
+                }
+                let _ = state.borrow().config.save();
+            }
             playlist_win.set_visible(!playlist_win.is_visible());
         }
     });
