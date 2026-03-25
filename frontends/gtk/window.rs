@@ -3226,6 +3226,7 @@ fn open_customize_columns_dialog(
     title: &str,
     mode: ColumnCustomizerMode,
     on_toggle: Option<Rc<dyn Fn(String, bool)>>,
+    on_id3_change: Option<Rc<dyn Fn()>>,
 ) {
     use gtk4::prelude::*;
 
@@ -3338,6 +3339,7 @@ fn open_customize_columns_dialog(
         let state_cfg = state.clone();
         let mode_for_cb = mode.clone();
         let on_toggle_cb = on_toggle.clone();
+        let on_id3_toggle = on_id3_change.clone();
         let skip_cb = skipping_callback.clone();
         cb.connect_toggled(move |btn| {
             if *skip_cb.borrow() {
@@ -3372,6 +3374,12 @@ fn open_customize_columns_dialog(
                 }
             }
             let _ = s.config.save();
+            drop(s);
+            if let ColumnCustomizerMode::Id3Editor = mode_for_cb {
+                if let Some(ref cb) = on_id3_toggle {
+                    cb();
+                }
+            }
         });
         row.append(&cb);
 
@@ -3395,6 +3403,7 @@ fn open_customize_columns_dialog(
 
             let id_for_dropdown = col.id.to_string();
             let state_dropdown = state.clone();
+            let on_id3_dropdown = on_id3_change.clone();
             dropdown.connect_changed(move |dd| {
                 if let Some(position) = dd.active_id() {
                     let mut s = state_dropdown.borrow_mut();
@@ -3403,6 +3412,10 @@ fn open_customize_columns_dialog(
                         .id3_column_position
                         .insert(id_for_dropdown.clone(), position.to_string());
                     let _ = s.config.save();
+                    drop(s);
+                    if let Some(ref cb) = on_id3_dropdown {
+                        cb();
+                    }
                 }
             });
 
@@ -3427,6 +3440,7 @@ fn open_customize_columns_dialog(
     let defaults_pos_clone = defaults_pos.clone();
     let mode_for_reset = mode.clone();
     let on_toggle_reset = on_toggle.clone();
+    let on_id3_reset = on_id3_change.clone();
     let skip_cb_flag = skipping_callback.clone();
     btn_reset.connect_clicked(move |_| {
         let default_set: std::collections::HashSet<String> =
@@ -3465,6 +3479,12 @@ fn open_customize_columns_dialog(
                 .map(|s| s.as_str())
                 .unwrap_or("left");
             dd.set_active_id(Some(pos));
+        }
+
+        if let ColumnCustomizerMode::Id3Editor = mode_for_reset {
+            if let Some(ref cb) = on_id3_reset {
+                cb();
+            }
         }
     });
     btn_row.append(&btn_reset);
@@ -3827,15 +3847,32 @@ fn open_id3_editor_window(
 
     // ── Customize button — open column customization dialog ──────────────────
     btn_customize.connect_clicked({
-        let state_inner = state.clone();
-        let win_wk = win.downgrade();
+        let state_outer = state.clone();
+        let win_wk_outer = win.downgrade();
+        let path_outer = path.clone();
+        let rebuild_outer = rebuild_cb.clone();
         move |_| {
+            let state_inner = state_outer.clone();
+            let win_wk = win_wk_outer.clone();
+            let path_clone = path_outer.clone();
+            let rebuild_clone = rebuild_outer.clone();
             open_customize_columns_dialog(
                 win_wk.upgrade().as_ref(),
                 state_inner.clone(),
                 "Customize ID3 Fields",
                 ColumnCustomizerMode::Id3Editor,
                 None::<Rc<dyn Fn(String, bool)>>,
+                Some(Rc::new(move || {
+                    if let Some(w) = win_wk.upgrade() {
+                        w.close();
+                    }
+                    open_id3_editor_window(
+                        None::<&gtk4::Window>,
+                        path_clone.clone(),
+                        state_inner.clone(),
+                        rebuild_clone.clone(),
+                    );
+                }) as Rc<dyn Fn()>),
             );
         }
     });
@@ -5615,6 +5652,7 @@ fn open_media_library_window(
                             col.set_visible(visible);
                         }
                     }) as Rc<dyn Fn(String, bool)>),
+                    None::<Rc<dyn Fn()>>,
                 );
             });
         }
