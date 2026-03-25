@@ -5569,20 +5569,24 @@ fn open_media_library_window(
 
                 let n_items = sel_ref.n_items();
                 if n_items == 0 {
+                    eprintln!("DEBUG ML right-click: no items");
                     return;
                 }
 
                 // Find the item at the click position
-                // The ColumnView might have column headers, so we need to find the first row
                 let scroll_offset = scroll_w.vadjustment().value() as f64;
-                let row_height = 28.0; // Estimated row height
-                let header_height = 32.0; // Estimated header height
+                let row_height = 28.0;
+                let header_height = 32.0;
                 let adjusted_y = y - header_height;
                 let item_idx = if adjusted_y >= 0.0 {
                     ((adjusted_y + scroll_offset) / row_height) as u32
                 } else {
                     0
                 };
+                eprintln!(
+                    "DEBUG ML right-click: x={}, y={}, scroll={}, n_items={}, item_idx={}",
+                    x, y, scroll_offset, n_items, item_idx
+                );
                 let clicked_idx = if item_idx < n_items {
                     Some(item_idx)
                 } else {
