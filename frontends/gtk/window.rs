@@ -102,6 +102,8 @@ struct AppState {
     plugin_manager: PluginManager,
     /// The media library browser window, if one is currently open.
     ml_window: Option<gtk4::Window>,
+    /// The ID3 tag editor window, if one is currently open.
+    id3_editor_window: Option<gtk4::Window>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -146,6 +148,7 @@ impl AppState {
             media_lib,
             plugin_manager,
             ml_window: None,
+            id3_editor_window: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
         })
@@ -521,6 +524,26 @@ fn gtk_safe(s: &str) -> String {
     } else {
         s.to_owned()
     }
+}
+
+fn sanitize_id3_text(s: &str) -> String {
+    let trimmed = s.trim();
+    let without_nulls = if trimmed.contains('\0') {
+        trimmed.replace('\0', "")
+    } else {
+        trimmed.to_owned()
+    };
+    let without_control: String = without_nulls
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+    without_control.chars().take(256).collect()
+}
+
+fn sanitize_id3_numeric(s: &str) -> String {
+    let trimmed = s.trim();
+    let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    numeric.chars().take(8).collect()
 }
 
 fn accent_hex() -> &'static str {
@@ -3304,6 +3327,7 @@ fn open_customize_columns_dialog(
         Rc::new(RefCell::new(Vec::new()));
     let dropdowns: Rc<RefCell<Vec<(String, gtk4::ComboBoxText)>>> =
         Rc::new(RefCell::new(Vec::new()));
+    let skipping_callback: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
     for col in &cols_to_show {
         let row = GtkBox::new(Orientation::Horizontal, 8);
@@ -3314,7 +3338,11 @@ fn open_customize_columns_dialog(
         let state_cfg = state.clone();
         let mode_for_cb = mode.clone();
         let on_toggle_cb = on_toggle.clone();
+        let skip_cb = skipping_callback.clone();
         cb.connect_toggled(move |btn| {
+            if *skip_cb.borrow() {
+                return;
+            }
             let visible = btn.is_active();
             let id = id_owned.clone();
             if let Some(ref cb) = on_toggle_cb {
@@ -3399,31 +3427,38 @@ fn open_customize_columns_dialog(
     let defaults_pos_clone = defaults_pos.clone();
     let mode_for_reset = mode.clone();
     let on_toggle_reset = on_toggle.clone();
+    let skip_cb_flag = skipping_callback.clone();
     btn_reset.connect_clicked(move |_| {
         let default_set: std::collections::HashSet<String> =
             defaults_vis_clone.iter().cloned().collect();
 
         if let Some(ref cb) = on_toggle_reset {
+            *skip_cb_flag.borrow_mut() = true;
             for (id, _) in cbs_reset.borrow().iter() {
                 cb(id.clone(), default_set.contains(id));
             }
+            *skip_cb_flag.borrow_mut() = false;
         }
 
-        let mut s = state_reset.borrow_mut();
-        match mode_for_reset {
-            ColumnCustomizerMode::Id3Editor => {
-                s.config.media_library.id3_visible_columns = defaults_vis_clone.clone();
-                s.config.media_library.id3_column_position = defaults_pos_clone.clone();
+        {
+            let mut s = state_reset.borrow_mut();
+            match mode_for_reset {
+                ColumnCustomizerMode::Id3Editor => {
+                    s.config.media_library.id3_visible_columns = defaults_vis_clone.clone();
+                    s.config.media_library.id3_column_position = defaults_pos_clone.clone();
+                }
+                ColumnCustomizerMode::MediaLibrary => {
+                    s.config.media_library.visible_columns = defaults_vis_clone.clone();
+                }
             }
-            ColumnCustomizerMode::MediaLibrary => {
-                s.config.media_library.visible_columns = defaults_vis_clone.clone();
-            }
+            let _ = s.config.save();
         }
-        let _ = s.config.save();
 
+        *skip_cb_flag.borrow_mut() = true;
         for (id, cb) in cbs_reset.borrow().iter() {
             cb.set_active(default_set.contains(id));
         }
+        *skip_cb_flag.borrow_mut() = false;
         for (id, dd) in dds_reset.borrow().iter() {
             let pos = defaults_pos_clone
                 .get(id)
@@ -3461,6 +3496,9 @@ fn open_customize_columns_dialog(
 ///
 /// A "Customize…" button opens a secondary window ([`open_id3_extra_window`])
 /// for any additional ID3v2 frames present in the file.
+///
+/// This is a singleton: if an editor is already open, it will be updated
+/// with the new file instead of opening a second window.
 fn open_id3_editor_window(
     _parent: Option<&impl gtk4::prelude::IsA<gtk4::Window>>,
     path: std::path::PathBuf,
@@ -3469,6 +3507,15 @@ fn open_id3_editor_window(
 ) {
     use crate::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
+
+    if let Some(ref existing_win) = state.borrow().id3_editor_window {
+        existing_win.set_title(Some(&format!(
+            "ID3 Tag Editor — {}",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+        )));
+        existing_win.present();
+        return;
+    }
 
     let fields = read_tag_fields(&path);
     let fname = path
@@ -3491,6 +3538,13 @@ fn open_id3_editor_window(
         .default_width(600)
         .default_height(480)
         .build();
+
+    let state_for_close = state.clone();
+    win.connect_close_request(move |_| {
+        state_for_close.borrow_mut().id3_editor_window = None;
+        glib::Propagation::Proceed
+    });
+    state.borrow_mut().id3_editor_window = Some(win.clone());
 
     // ── Get visible columns from config (preserve order for left/right split) ──
     let visible_ids: Vec<String> = state
@@ -3682,51 +3736,51 @@ fn open_id3_editor_window(
             let new_fields = TagFields {
                 title: entries
                     .get("title")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
                 artist: entries
                     .get("artist")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
                 album: entries
                     .get("album")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
                 album_artist: entries
                     .get("album_artist")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
                 genre: entries
                     .get("genre")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
                 year: entries
                     .get("year")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_numeric(&e.text()))
                     .unwrap_or_default(),
                 track_number: entries
                     .get("track_num")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_numeric(&e.text()))
                     .unwrap_or_default(),
                 track_total: entries
                     .get("track_total")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_numeric(&e.text()))
                     .unwrap_or_default(),
                 disc_number: entries
                     .get("disc_num")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_numeric(&e.text()))
                     .unwrap_or_default(),
                 disc_total: entries
                     .get("disc_total")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_numeric(&e.text()))
                     .unwrap_or_default(),
                 bpm: entries
                     .get("bpm")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_numeric(&e.text()))
                     .unwrap_or_default(),
                 comment: entries
                     .get("comment")
-                    .map(|e| e.text().to_string())
+                    .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
             };
 
