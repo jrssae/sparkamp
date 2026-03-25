@@ -3191,12 +3191,23 @@ fn get_id3_field_value(
     }
 }
 
-/// Open the Customize dialog for ID3 editor column visibility.
-fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
+#[derive(Clone)]
+enum ColumnCustomizerMode {
+    MediaLibrary,
+    Id3Editor,
+}
+
+fn open_customize_columns_dialog(
+    parent: Option<&gtk4::Window>,
+    state: Rc<RefCell<AppState>>,
+    title: &str,
+    mode: ColumnCustomizerMode,
+    on_toggle: Option<Rc<dyn Fn(String, bool)>>,
+) {
     use gtk4::prelude::*;
 
     let dlg = gtk4::Window::new();
-    dlg.set_title(Some("ID3 Editor — Customize"));
+    dlg.set_title(Some(title));
     dlg.set_default_size(400, 450);
     dlg.set_resizable(true);
     if let Some(p) = parent {
@@ -3209,24 +3220,49 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
     main_vbox.set_margin_start(12);
     main_vbox.set_margin_end(12);
 
-    // Header
+    let (show_header_row, show_position_dropdown, cols_to_show, defaults_vis, defaults_pos): (
+        bool,
+        bool,
+        Vec<&MlColumnDef>,
+        Vec<String>,
+        std::collections::HashMap<String, String>,
+    ) = match mode {
+        ColumnCustomizerMode::Id3Editor => {
+            let cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
+            let defaults_vis = crate::config::MediaLibraryConfig::default_id3_visible_columns();
+            let defaults_pos = crate::config::MediaLibraryConfig::default_id3_column_position();
+            (true, true, cols, defaults_vis, defaults_pos)
+        }
+        ColumnCustomizerMode::MediaLibrary => {
+            let cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().collect();
+            let defaults_vis = crate::config::MediaLibraryConfig::default_visible_columns();
+            let defaults_pos = std::collections::HashMap::new();
+            (false, false, cols, defaults_vis, defaults_pos)
+        }
+    };
+
+    let hdr_text = if show_position_dropdown {
+        "Select fields and column position:"
+    } else {
+        "Select columns to display:"
+    };
     let hdr = Label::builder()
-        .label("Select fields and column position:")
+        .label(hdr_text)
         .halign(Align::Start)
         .build();
     main_vbox.append(&hdr);
 
-    // Column headers
-    let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
-    col_hdrs.append(&Label::new(Some("")));
-    col_hdrs.append(&Label::new(Some("Field")));
-    let spring = GtkBox::new(Orientation::Horizontal, 0);
-    spring.set_hexpand(true);
-    col_hdrs.append(&spring);
-    col_hdrs.append(&Label::new(Some("Column")));
-    main_vbox.append(&col_hdrs);
+    if show_header_row {
+        let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
+        col_hdrs.append(&Label::new(Some("")));
+        col_hdrs.append(&Label::new(Some("Field")));
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        col_hdrs.append(&spring);
+        col_hdrs.append(&Label::new(Some("Column")));
+        main_vbox.append(&col_hdrs);
+    }
 
-    // Scrollable list
     let scrolled = ScrolledWindow::new();
     scrolled.set_hexpand(true);
     scrolled.set_vexpand(true);
@@ -3235,53 +3271,82 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
     let list_vbox = GtkBox::new(Orientation::Vertical, 4);
     list_vbox.set_margin_top(8);
 
-    let editable_cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
+    let visible_ids: std::collections::HashSet<String> = match mode {
+        ColumnCustomizerMode::Id3Editor => state
+            .borrow()
+            .config
+            .media_library
+            .id3_visible_columns
+            .iter()
+            .cloned()
+            .collect(),
+        ColumnCustomizerMode::MediaLibrary => state
+            .borrow()
+            .config
+            .media_library
+            .visible_columns
+            .iter()
+            .cloned()
+            .collect(),
+    };
 
-    let visible_ids: std::collections::HashSet<String> = state
-        .borrow()
-        .config
-        .media_library
-        .id3_visible_columns
-        .iter()
-        .cloned()
-        .collect();
+    let column_positions: std::collections::HashMap<String, String> = match mode {
+        ColumnCustomizerMode::Id3Editor => state
+            .borrow()
+            .config
+            .media_library
+            .id3_column_position
+            .clone(),
+        ColumnCustomizerMode::MediaLibrary => std::collections::HashMap::new(),
+    };
 
-    let column_positions: std::collections::HashMap<String, String> = state
-        .borrow()
-        .config
-        .media_library
-        .id3_column_position
-        .clone();
-
-    // Store checkboxes and dropdowns to update on Reset
     let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
         Rc::new(RefCell::new(Vec::new()));
     let dropdowns: Rc<RefCell<Vec<(String, gtk4::ComboBoxText)>>> =
         Rc::new(RefCell::new(Vec::new()));
 
-    for col in &editable_cols {
+    for col in &cols_to_show {
         let row = GtkBox::new(Orientation::Horizontal, 8);
 
-        // Checkbox
         let cb = CheckButton::new();
         let id_owned = col.id.to_string();
         cb.set_active(visible_ids.contains(col.id));
         let state_cfg = state.clone();
+        let mode_for_cb = mode.clone();
+        let on_toggle_cb = on_toggle.clone();
         cb.connect_toggled(move |btn| {
+            let visible = btn.is_active();
+            let id = id_owned.clone();
+            if let Some(ref cb) = on_toggle_cb {
+                cb(id.clone(), visible);
+            }
             let mut s = state_cfg.borrow_mut();
-            let vc = &mut s.config.media_library.id3_visible_columns;
-            if btn.is_active() {
-                if !vc.contains(&id_owned) {
-                    vc.push(id_owned.clone());
+            match mode_for_cb {
+                ColumnCustomizerMode::Id3Editor => {
+                    let vc = &mut s.config.media_library.id3_visible_columns;
+                    if btn.is_active() {
+                        if !vc.contains(&id) {
+                            vc.push(id);
+                        }
+                    } else {
+                        vc.retain(|c| c != &id_owned);
+                    }
                 }
-            } else {
-                vc.retain(|c| c != &id_owned);
+                ColumnCustomizerMode::MediaLibrary => {
+                    let vc = &mut s.config.media_library.visible_columns;
+                    if btn.is_active() {
+                        if !vc.contains(&id) {
+                            vc.push(id);
+                        }
+                    } else {
+                        vc.retain(|c| c != &id_owned);
+                    }
+                }
             }
             let _ = s.config.save();
         });
         row.append(&cb);
 
-        // Label
         let lbl = Label::new(Some(col.header));
         lbl.set_halign(Align::Start);
         row.append(&lbl);
@@ -3290,63 +3355,80 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
         spring.set_hexpand(true);
         row.append(&spring);
 
-        // Left/Right dropdown (ComboBoxText)
-        let pos = column_positions
-            .get(col.id)
-            .cloned()
-            .unwrap_or_else(|| "left".to_string());
-        let dropdown = gtk4::ComboBoxText::new();
-        dropdown.append(Some("left"), "Left");
-        dropdown.append(Some("right"), "Right");
-        dropdown.set_active_id(Some(if pos == "right" { "right" } else { "left" }));
+        if show_position_dropdown {
+            let pos = column_positions
+                .get(col.id)
+                .cloned()
+                .unwrap_or_else(|| "left".to_string());
+            let dropdown = gtk4::ComboBoxText::new();
+            dropdown.append(Some("left"), "Left");
+            dropdown.append(Some("right"), "Right");
+            dropdown.set_active_id(Some(if pos == "right" { "right" } else { "left" }));
 
-        let id_for_dropdown = col.id.to_string();
-        let state_dropdown = state.clone();
-        dropdown.connect_changed(move |dd| {
-            if let Some(position) = dd.active_id() {
-                let mut s = state_dropdown.borrow_mut();
-                s.config
-                    .media_library
-                    .id3_column_position
-                    .insert(id_for_dropdown.clone(), position.to_string());
-                let _ = s.config.save();
-            }
-        });
+            let id_for_dropdown = col.id.to_string();
+            let state_dropdown = state.clone();
+            dropdown.connect_changed(move |dd| {
+                if let Some(position) = dd.active_id() {
+                    let mut s = state_dropdown.borrow_mut();
+                    s.config
+                        .media_library
+                        .id3_column_position
+                        .insert(id_for_dropdown.clone(), position.to_string());
+                    let _ = s.config.save();
+                }
+            });
 
-        row.append(&dropdown);
+            row.append(&dropdown);
+            dropdowns.borrow_mut().push((col.id.to_string(), dropdown));
+        }
 
         list_vbox.append(&row);
         checkboxes.borrow_mut().push((col.id.to_string(), cb));
-        dropdowns.borrow_mut().push((col.id.to_string(), dropdown));
     }
 
     scrolled.set_child(Some(&list_vbox));
     main_vbox.append(&scrolled);
 
-    // Button row with Reset Defaults
     let btn_row = GtkBox::new(Orientation::Horizontal, 8);
 
     let btn_reset = Button::with_label("Reset Defaults");
     let state_reset = state.clone();
     let cbs_reset = checkboxes.clone();
     let dds_reset = dropdowns.clone();
-    let defaults_vis = crate::config::MediaLibraryConfig::default_id3_visible_columns();
-    let defaults_pos = crate::config::MediaLibraryConfig::default_id3_column_position();
+    let defaults_vis_clone = defaults_vis.clone();
+    let defaults_pos_clone = defaults_pos.clone();
+    let mode_for_reset = mode.clone();
+    let on_toggle_reset = on_toggle.clone();
     btn_reset.connect_clicked(move |_| {
-        let default_set: std::collections::HashSet<String> = defaults_vis.iter().cloned().collect();
+        let default_set: std::collections::HashSet<String> =
+            defaults_vis_clone.iter().cloned().collect();
+
+        if let Some(ref cb) = on_toggle_reset {
+            for (id, _) in cbs_reset.borrow().iter() {
+                cb(id.clone(), default_set.contains(id));
+            }
+        }
 
         let mut s = state_reset.borrow_mut();
-        s.config.media_library.id3_visible_columns = defaults_vis.clone();
-        s.config.media_library.id3_column_position = defaults_pos.clone();
+        match mode_for_reset {
+            ColumnCustomizerMode::Id3Editor => {
+                s.config.media_library.id3_visible_columns = defaults_vis_clone.clone();
+                s.config.media_library.id3_column_position = defaults_pos_clone.clone();
+            }
+            ColumnCustomizerMode::MediaLibrary => {
+                s.config.media_library.visible_columns = defaults_vis_clone.clone();
+            }
+        }
         let _ = s.config.save();
 
-        // Update checkboxes
         for (id, cb) in cbs_reset.borrow().iter() {
             cb.set_active(default_set.contains(id));
         }
-        // Update dropdowns
         for (id, dd) in dds_reset.borrow().iter() {
-            let pos = defaults_pos.get(id).map(|s| s.as_str()).unwrap_or("left");
+            let pos = defaults_pos_clone
+                .get(id)
+                .map(|s| s.as_str())
+                .unwrap_or("left");
             dd.set_active_id(Some(pos));
         }
     });
@@ -3694,7 +3776,13 @@ fn open_id3_editor_window(
         let state_inner = state.clone();
         let win_wk = win.downgrade();
         move |_| {
-            open_id3_customize_dialog(win_wk.upgrade().as_ref(), state_inner.clone());
+            open_customize_columns_dialog(
+                win_wk.upgrade().as_ref(),
+                state_inner.clone(),
+                "Customize ID3 Fields",
+                ColumnCustomizerMode::Id3Editor,
+                None::<Rc<dyn Fn(String, bool)>>,
+            );
         }
     });
 
@@ -5457,56 +5545,23 @@ fn open_media_library_window(
         // Customize columns dialog.
         {
             let state_rc = state.clone();
-            let cols_ref = all_cols.clone();
+            let all_cols_rc = all_cols.clone();
             let win_wk = win.downgrade();
             btn_customize.connect_clicked(move |_| {
-                let dlg = gtk4::Window::new();
-                dlg.set_title(Some("Customize Columns"));
-                dlg.set_default_size(240, 360);
-                dlg.set_resizable(false);
-                if let Some(w) = win_wk.upgrade() {
-                    dlg.set_transient_for(Some(&w));
-                }
-                let vbox = GtkBox::new(Orientation::Vertical, 6);
-                vbox.set_margin_top(12);
-                vbox.set_margin_bottom(12);
-                vbox.set_margin_start(12);
-                vbox.set_margin_end(12);
-                let hdr = Label::builder()
-                    .label("Select columns to display:")
-                    .halign(Align::Start)
-                    .build();
-                vbox.append(&hdr);
-                for (id, col) in cols_ref.iter() {
-                    let title = col
-                        .title()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| id.clone());
-                    let cb = CheckButton::with_label(&title);
-                    cb.set_active(col.is_visible());
-                    let col_ref = col.clone();
-                    let id_owned = id.clone();
-                    let state_inner = state_rc.clone();
-                    cb.connect_toggled(move |btn| {
-                        let visible = btn.is_active();
-                        col_ref.set_visible(visible);
-                        let mut s = state_inner.borrow_mut();
-                        let vc = &mut s.config.media_library.visible_columns;
-                        if visible {
-                            if !vc.contains(&id_owned) {
-                                vc.push(id_owned.clone());
-                            }
-                        } else {
-                            vc.retain(|c| c != &id_owned);
+                let cols_for_callback = all_cols_rc.clone();
+                open_customize_columns_dialog(
+                    win_wk.upgrade().as_ref(),
+                    state_rc.clone(),
+                    "Customize Columns",
+                    ColumnCustomizerMode::MediaLibrary,
+                    Some(Rc::new(move |id: String, visible: bool| {
+                        if let Some((_, col)) =
+                            cols_for_callback.iter().find(|(col_id, _)| col_id == &id)
+                        {
+                            col.set_visible(visible);
                         }
-                        // Save immediately so column changes persist even if the window
-                        // is closed without shutting down the main player.
-                        let _ = s.config.save();
-                    });
-                    vbox.append(&cb);
-                }
-                dlg.set_child(Some(&vbox));
-                dlg.present();
+                    }) as Rc<dyn Fn(String, bool)>),
+                );
             });
         }
 
