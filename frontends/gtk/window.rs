@@ -5551,61 +5551,65 @@ fn open_media_library_window(
             .build();
         files_vbox.append(&track_scroll);
 
-        // Right-click context menu
+        // Right-click context menu - use motion tracking to find hovered row
         {
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let rebuild_files_rc = rebuild_files.clone();
-            let scroll_w = track_scroll.clone();
 
+            // Track which row index is currently under the mouse
+            let hovered_idx = Rc::new(Cell::new(Option::<u32>::None));
+
+            // Add motion tracking to the ScrolledWindow (which contains the ColumnView)
+            let motion = gtk4::EventControllerMotion::new();
+            let hovered_for_motion = hovered_idx.clone();
+            let sel_for_motion = sel_ref.clone();
+            motion.connect_motion(move |_, x, y| {
+                let n_items = sel_for_motion.n_items();
+                if n_items == 0 {
+                    hovered_for_motion.set(None);
+                    return;
+                }
+                // y is the position within the widget
+                // Row height is approximately 28 pixels
+                let row_height = 28.0;
+                let idx = (y / row_height) as u32;
+                let clamped = if idx >= n_items { n_items - 1 } else { idx };
+                hovered_for_motion.set(Some(clamped));
+            });
+            let hovered_for_leave = hovered_idx.clone();
+            motion.connect_leave(move |_| {
+                hovered_for_leave.set(None);
+            });
+            track_scroll.add_controller(motion);
+
+            // Right-click gesture on ScrolledWindow
             let gesture = gtk4::GestureClick::new();
             gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
-            let col_view2 = col_view.clone();
+            let hovered_for_click = hovered_idx.clone();
+            let sel_for_click = sel_ref.clone();
+            let state_rc2 = state_rc.clone();
+            let rebuild_pl2 = rebuild_pl.clone();
+            let rebuild_files_rc2 = rebuild_files_rc.clone();
+            let col_view_for_popup = col_view.clone();
             gesture.connect_pressed(move |_gesture, n_press, x, y| {
                 if n_press != 1 {
                     return;
                 }
-
-                let n_items = sel_ref.n_items();
+                let n_items = sel_for_click.n_items();
                 if n_items == 0 {
                     return;
                 }
+                let idx = hovered_for_click.get().unwrap_or(0);
+                eprintln!("DEBUG ML right-click: n_items={}, idx={}", n_items, idx);
+                sel_for_click.unselect_all();
+                sel_for_click.select_item(idx, true);
 
-                // Calculate item index from click position
-                // y is relative to the widget that received the event
-                // We need to account for:
-                // 1. The ColumnView header (about 28-32 pixels)
-                // 2. The scroll offset
-                let vadj = scroll_w.vadjustment();
-                let scroll_offset = vadj.value() as f64;
-                let header_height = 28.0; // Column header height
-                
-                // The y coordinate from the gesture is relative to the ColumnView
-                // which is scrolled inside the ScrolledWindow
-                // So we add scroll_offset to get the position in the full content
-                let content_y = y + scroll_offset;
-                
-                // Calculate row index (assuming ~28 pixels per row)
-                let row_height = 28.0;
-                let item_idx = (content_y / row_height) as u32;
-                
-                // Clamp to valid range
-                let clamped_idx = if item_idx >= n_items {
-                    n_items - 1
-                } else {
-                    item_idx
-                };
-                
-                eprintln!("DEBUG ML right-click: x={}, y={}, scroll={}, content_y={}, n_items={}, item_idx={}, clamped={}", 
-                    x, y, scroll_offset, content_y, n_items, item_idx, clamped_idx);
-
-                sel_ref.unselect_all();
-                sel_ref.select_item(clamped_idx, true);
-
+                // Create popover
                 let popover = gtk4::Popover::new();
                 popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-                popover.set_parent(&col_view2);
+                popover.set_parent(&col_view_for_popup);
 
                 let vbox = GtkBox::new(Orientation::Vertical, 0);
                 vbox.set_margin_top(4);
@@ -5615,9 +5619,9 @@ fn open_media_library_window(
 
                 // Add to Playlist
                 let btn_add = Button::with_label("Add to Playlist");
-                let state_add = state_rc.clone();
-                let sel_add = sel_ref.clone();
-                let rebuild_add = rebuild_pl.clone();
+                let state_add = state_rc2.clone();
+                let sel_add = sel_for_click.clone();
+                let rebuild_add = rebuild_pl2.clone();
                 let popover_add = popover.clone();
                 btn_add.connect_clicked(move |_btn| {
                     for i in 0..sel_add.n_items() {
@@ -5639,9 +5643,9 @@ fn open_media_library_window(
 
                 // View/Edit ID3 Info
                 let btn_id3 = Button::with_label("View/Edit ID3 Info");
-                let state_id3 = state_rc.clone();
-                let sel_id3 = sel_ref.clone();
-                let rebuild_id3 = rebuild_pl.clone();
+                let state_id3 = state_rc2.clone();
+                let sel_id3 = sel_for_click.clone();
+                let rebuild_id3 = rebuild_pl2.clone();
                 let popover_id3 = popover.clone();
                 btn_id3.connect_clicked(move |_btn| {
                     for i in 0..sel_id3.n_items() {
@@ -5672,10 +5676,10 @@ fn open_media_library_window(
 
                 // Remove from Media Library
                 let btn_remove = Button::with_label("Remove from Media Library");
-                let state_remove = state_rc.clone();
-                let sel_remove = sel_ref.clone();
+                let state_remove = state_rc2.clone();
+                let sel_remove = sel_for_click.clone();
                 let popover_remove = popover.clone();
-                let rebuild_rm = rebuild_files_rc.clone();
+                let rebuild_rm = rebuild_files_rc2.clone();
                 btn_remove.connect_clicked(move |_btn| {
                     for i in 0..sel_remove.n_items() {
                         if sel_remove.is_selected(i) {
@@ -5698,7 +5702,7 @@ fn open_media_library_window(
                 popover.set_child(Some(&vbox));
                 popover.popup();
             });
-            col_view.add_controller(gesture);
+            track_scroll.add_controller(gesture);
         }
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
