@@ -5551,7 +5551,7 @@ fn open_media_library_window(
             .build();
         files_vbox.append(&track_scroll);
 
-        // Right-click context menu - track hovered row for accurate selection
+        // Right-click context menu
         {
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
@@ -5559,43 +5559,9 @@ fn open_media_library_window(
             let rebuild_files_rc = rebuild_files.clone();
             let scroll_w = track_scroll.clone();
 
-            // Track the currently hovered row index
-            let hovered_idx = Rc::new(Cell::new(Option::<u32>::None));
-
-            // Motion controller to track which row is under the mouse
-            let motion_ctrl = gtk4::EventControllerMotion::new();
-            let sel_for_motion = sel_ref.clone();
-            let scroll_for_motion = scroll_w.clone();
-            let hovered_for_motion = hovered_idx.clone();
-            motion_ctrl.connect_motion(move |_, _x, y| {
-                let n_items = sel_for_motion.n_items();
-                if n_items == 0 {
-                    hovered_for_motion.set(None);
-                    return;
-                }
-
-                let scroll_offset = scroll_for_motion.vadjustment().value() as f64;
-                let row_height = 28.0;
-                let header_height = 32.0;
-                let adjusted_y = if y > header_height {
-                    y - header_height
-                } else {
-                    0.0
-                };
-                let item_idx = ((adjusted_y + scroll_offset) / row_height) as u32;
-                let clamped = item_idx.min(n_items - 1);
-                hovered_for_motion.set(Some(clamped));
-            });
-            let hovered_for_leave = hovered_idx.clone();
-            motion_ctrl.connect_leave(move |_| {
-                hovered_for_leave.set(None);
-            });
-            col_view.add_controller(motion_ctrl);
-
             let gesture = gtk4::GestureClick::new();
             gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
             let col_view2 = col_view.clone();
-            let hovered_for_click = hovered_idx.clone();
             gesture.connect_pressed(move |_gesture, n_press, x, y| {
                 if n_press != 1 {
                     return;
@@ -5606,28 +5572,36 @@ fn open_media_library_window(
                     return;
                 }
 
-                // Use the hovered row index, or calculate from coordinates as fallback
-                let clicked_idx = if let Some(idx) = hovered_for_click.get() {
-                    eprintln!("DEBUG ML right-click: using hovered idx={}", idx);
-                    idx
+                // Calculate item index from click position
+                // y is relative to the widget that received the event
+                // We need to account for:
+                // 1. The ColumnView header (about 28-32 pixels)
+                // 2. The scroll offset
+                let vadj = scroll_w.vadjustment();
+                let scroll_offset = vadj.value() as f64;
+                let header_height = 28.0; // Column header height
+                
+                // The y coordinate from the gesture is relative to the ColumnView
+                // which is scrolled inside the ScrolledWindow
+                // So we add scroll_offset to get the position in the full content
+                let content_y = y + scroll_offset;
+                
+                // Calculate row index (assuming ~28 pixels per row)
+                let row_height = 28.0;
+                let item_idx = (content_y / row_height) as u32;
+                
+                // Clamp to valid range
+                let clamped_idx = if item_idx >= n_items {
+                    n_items - 1
                 } else {
-                    // Fallback: calculate from coordinates
-                    let scroll_offset = scroll_w.vadjustment().value() as f64;
-                    let row_height = 28.0;
-                    let header_height = 32.0;
-                    let adjusted_y = if y > header_height {
-                        y - header_height
-                    } else {
-                        0.0
-                    };
-                    let item_idx = ((adjusted_y + scroll_offset) / row_height) as u32;
-                    let clamped = item_idx.min(n_items - 1);
-                    eprintln!("DEBUG ML right-click: fallback calc idx={}", clamped);
-                    clamped
+                    item_idx
                 };
+                
+                eprintln!("DEBUG ML right-click: x={}, y={}, scroll={}, content_y={}, n_items={}, item_idx={}, clamped={}", 
+                    x, y, scroll_offset, content_y, n_items, item_idx, clamped_idx);
 
                 sel_ref.unselect_all();
-                sel_ref.select_item(clicked_idx, true);
+                sel_ref.select_item(clamped_idx, true);
 
                 let popover = gtk4::Popover::new();
                 popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
