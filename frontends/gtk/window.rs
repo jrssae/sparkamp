@@ -5559,28 +5559,14 @@ fn open_media_library_window(
             let rebuild_files_rc = rebuild_files.clone();
 
             // Track which row index is currently under the mouse
-            let hovered_idx = Rc::new(Cell::new(Option::<u32>::None));
+            let hovered_idx = Rc::new(Cell::new(Option::<(f64, f64)>::None));
 
-            // Add motion tracking to the ScrolledWindow (which contains the ColumnView)
+            // Add motion tracking to the ScrolledWindow at Capture phase
             let motion = gtk4::EventControllerMotion::new();
+            motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let hovered_for_motion = hovered_idx.clone();
-            let sel_for_motion = sel_ref.clone();
-            let scroll_for_motion = track_scroll.clone();
-            motion.connect_motion(move |_, _x, y| {
-                let n_items = sel_for_motion.n_items();
-                if n_items == 0 {
-                    hovered_for_motion.set(None);
-                    return;
-                }
-                // y is the position within the ScrolledWindow's viewport
-                // Add scroll offset to get the actual model index
-                let scroll_offset = scroll_for_motion.vadjustment().value() as f64;
-                let row_height = 28.0;
-                // Calculate model index: scroll_offset + y_position
-                let model_idx = scroll_offset + y;
-                let idx = (model_idx / row_height) as u32;
-                let clamped = if idx >= n_items { n_items - 1 } else { idx };
-                hovered_for_motion.set(Some(clamped));
+            motion.connect_motion(move |_, x, y| {
+                hovered_for_motion.set(Some((x, y)));
             });
             let hovered_for_leave = hovered_idx.clone();
             motion.connect_leave(move |_| {
@@ -5588,11 +5574,13 @@ fn open_media_library_window(
             });
             track_scroll.add_controller(motion);
 
-            // Right-click gesture on ScrolledWindow
+            // Right-click gesture on ScrolledWindow at Capture phase
             let gesture = gtk4::GestureClick::new();
             gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+            gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let hovered_for_click = hovered_idx.clone();
             let sel_for_click = sel_ref.clone();
+            let scroll_for_click = track_scroll.clone();
             let state_rc2 = state_rc.clone();
             let rebuild_pl2 = rebuild_pl.clone();
             let rebuild_files_rc2 = rebuild_files_rc.clone();
@@ -5605,10 +5593,27 @@ fn open_media_library_window(
                 if n_items == 0 {
                     return;
                 }
-                let idx = hovered_for_click.get().unwrap_or(0);
-                eprintln!("DEBUG ML right-click: n_items={}, idx={}", n_items, idx);
+
+                // Get the coordinates to use - prefer motion coordinates, fallback to gesture coords
+                let (use_x, use_y) = if let Some(coords) = hovered_for_click.get() {
+                    coords
+                } else {
+                    (x, y)
+                };
+
+                // Calculate model index from coordinates
+                let scroll_offset = scroll_for_click.vadjustment().value() as f64;
+                let row_height = 28.0;
+                let model_y = scroll_offset + use_y;
+                let idx = (model_y / row_height) as u32;
+                let clamped = if idx >= n_items { n_items - 1 } else { idx };
+
+                eprintln!(
+                    "DEBUG ML right-click: n_items={}, scroll={}, y={}, model_y={}, idx={}",
+                    n_items, scroll_offset, use_y, model_y, clamped
+                );
                 sel_for_click.unselect_all();
-                sel_for_click.select_item(idx, true);
+                sel_for_click.select_item(clamped, true);
 
                 // Create popover
                 let popover = gtk4::Popover::new();
