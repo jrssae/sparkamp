@@ -322,5 +322,25 @@ button.pl-btn.destructive:hover {
 .state-playing { color: #00aa55; }
 .state-paused  { color: #cc8800; }
 .state-stopped { color: #888888; }
-.ml-col-label  { font-size: 9px; }
+.ml-col-label  { font-size: 12px; }
 .playlist row.drop-target { background-color: #bbddff; border-top: 2px solid #0055aa; }
+
+/* Popover menu buttons */
+.popover-button {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #333333;
+    border-radius: 4px;
+    padding: 6px 12px;
+    min-height: 0;
+}
+
+.popover-button:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+.popover-button:active {
+    background-color: rgba(0, 0, 0, 0.2);
+}

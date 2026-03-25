@@ -1,6 +1,9 @@
 # Rust build artifacts (~1.7 GB — never commit these)
 /target
 
+# Vendored dependencies (cargo vendor)
+/vendor/
+
 # Flatpak build artifacts
 /flatpak-cargo-generator.py
 /repo/

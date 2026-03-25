@@ -125,6 +125,12 @@ pub struct WindowConfig {
     /// Whether the media library window was open when the application last exited.
     #[serde(default)]
     pub ml_visible: bool,
+    /// Media library window width.
+    #[serde(default = "WindowConfig::default_ml_width")]
+    pub ml_width: i32,
+    /// Media library window height.
+    #[serde(default = "WindowConfig::default_ml_height")]
+    pub ml_height: i32,
 }
 
 impl Default for WindowConfig {
@@ -136,6 +142,8 @@ impl Default for WindowConfig {
             playlist_height: Self::default_playlist_height(),
             playlist_visible: false,
             ml_visible: false,
+            ml_width: Self::default_ml_width(),
+            ml_height: Self::default_ml_height(),
         }
     }
 }
@@ -152,6 +160,12 @@ impl WindowConfig {
     }
     pub fn default_playlist_height() -> i32 {
         500
+    }
+    pub fn default_ml_width() -> i32 {
+        1000
+    }
+    pub fn default_ml_height() -> i32 {
+        520
     }
 }
 
@@ -396,6 +410,16 @@ pub struct MediaLibraryConfig {
     /// "filename", "year", "genre", "bitrate".
     #[serde(default = "MediaLibraryConfig::default_visible_columns")]
     pub visible_columns: Vec<String>,
+
+    /// Ordered list of column IDs shown in the ID3 tag editor window.
+    /// Read-only fields (filename, path, etc.) are always shown regardless of this list.
+    #[serde(default = "MediaLibraryConfig::default_id3_visible_columns")]
+    pub id3_visible_columns: Vec<String>,
+
+    /// Which column (left/right) each field belongs to in the ID3 editor.
+    /// Format: "left" or "right". Used for 2-column layout.
+    #[serde(default)]
+    pub id3_column_position: std::collections::HashMap<String, String>,
 }
 
 impl MediaLibraryConfig {
@@ -411,6 +435,40 @@ impl MediaLibraryConfig {
             .map(|s| s.to_string())
             .collect()
     }
+
+    /// Default column set shown in the ID3 tag editor window.
+    pub fn default_id3_visible_columns() -> Vec<String> {
+        [
+            "path",
+            "filename",
+            "title",
+            "artist",
+            "album",
+            "year",
+            "genre",
+            "track_num",
+            "track_total",
+            "comment",
+            "artwork_path",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    /// Default column positions for ID3 editor (left/right split).
+    pub fn default_id3_column_position() -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        let left_fields = ["title", "artist", "album", "year", "genre"];
+        let right_fields = ["track_num", "track_total", "comment", "artwork_path"];
+        for f in left_fields {
+            map.insert(f.to_string(), "left".to_string());
+        }
+        for f in right_fields {
+            map.insert(f.to_string(), "right".to_string());
+        }
+        map
+    }
 }
 
 impl Default for MediaLibraryConfig {
@@ -420,6 +478,8 @@ impl Default for MediaLibraryConfig {
             periodic_rescan: false,
             rescan_interval_mins: Self::default_interval_mins(),
             visible_columns: Self::default_visible_columns(),
+            id3_visible_columns: Self::default_id3_visible_columns(),
+            id3_column_position: Self::default_id3_column_position(),
         }
     }
 }
@@ -732,5 +792,178 @@ mod tests {
         let cfg: AppearanceConfig = toml::from_str(toml_str).expect("deserialize");
         assert!(cfg.hidden_skins.is_empty());
         assert_eq!(cfg.custom_skin, "dark");
+    }
+
+    #[test]
+    fn window_config_default_ml_dimensions() {
+        let cfg = WindowConfig::default();
+        assert_eq!(cfg.ml_width, WindowConfig::default_ml_width());
+        assert_eq!(cfg.ml_height, WindowConfig::default_ml_height());
+    }
+
+    #[test]
+    fn window_config_ml_size_roundtrips_through_toml() {
+        let mut cfg = WindowConfig::default();
+        cfg.ml_width = 1200;
+        cfg.ml_height = 800;
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: WindowConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(back.ml_width, 1200);
+        assert_eq!(back.ml_height, 800);
+    }
+
+    #[test]
+    fn window_config_without_ml_size_deserializes_with_defaults() {
+        // A config written before ml_width/ml_height were added should deserialize cleanly.
+        let toml_str = r#"
+player_width = 600
+player_height = 400
+playlist_width = 500
+playlist_height = 600
+"#;
+        let cfg: WindowConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(cfg.ml_width, WindowConfig::default_ml_width());
+        assert_eq!(cfg.ml_height, WindowConfig::default_ml_height());
+        // Other fields are set from TOML.
+        assert_eq!(cfg.player_width, 600);
+        assert_eq!(cfg.playlist_width, 500);
+    }
+
+    // ── MediaLibraryConfig::visible_columns ────────────────────────────────
+
+    #[test]
+    fn visible_columns_default_is_title_artist_album_duration() {
+        let cfg = MediaLibraryConfig::default();
+        assert_eq!(
+            cfg.visible_columns,
+            vec!["title", "artist", "album", "duration"]
+        );
+    }
+
+    #[test]
+    fn visible_columns_roundtrips_through_toml() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.visible_columns = vec!["num".to_string(), "title".to_string(), "artist".to_string()];
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(back.visible_columns, vec!["num", "title", "artist"]);
+    }
+
+    #[test]
+    fn visible_columns_without_key_deserializes_with_defaults() {
+        // A config written before visible_columns was added should deserialize cleanly.
+        let toml_str = r#"
+rescan_on_startup = true
+rescan_interval_mins = 60
+"#;
+        let cfg: MediaLibraryConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(
+            cfg.visible_columns,
+            vec!["title", "artist", "album", "duration"]
+        );
+        assert!(cfg.rescan_on_startup);
+        assert_eq!(cfg.rescan_interval_mins, 60);
+    }
+
+    // ── MediaLibraryConfig::id3_visible_columns ──────────────────────────────
+
+    #[test]
+    fn id3_visible_columns_default_has_basic_fields() {
+        let cfg = MediaLibraryConfig::default();
+        assert_eq!(
+            cfg.id3_visible_columns,
+            vec![
+                "path",
+                "filename",
+                "title",
+                "artist",
+                "album",
+                "year",
+                "genre",
+                "track_num",
+                "track_total",
+                "comment",
+                "artwork_path",
+            ]
+        );
+    }
+
+    #[test]
+    fn id3_visible_columns_roundtrips_through_toml() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.id3_visible_columns = vec![
+            "title".to_string(),
+            "artist".to_string(),
+            "year".to_string(),
+        ];
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(back.id3_visible_columns, vec!["title", "artist", "year"]);
+    }
+
+    #[test]
+    fn id3_visible_columns_without_key_deserializes_with_defaults() {
+        // A config written before id3_visible_columns was added should deserialize cleanly.
+        let toml_str = r#"
+rescan_on_startup = true
+rescan_interval_mins = 60
+"#;
+        let cfg: MediaLibraryConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(
+            cfg.id3_visible_columns,
+            vec![
+                "path",
+                "filename",
+                "title",
+                "artist",
+                "album",
+                "year",
+                "genre",
+                "track_num",
+                "track_total",
+                "comment",
+                "artwork_path",
+            ]
+        );
+    }
+
+    #[test]
+    fn id3_column_position_default_assigns_left_right() {
+        let cfg = MediaLibraryConfig::default();
+        assert_eq!(
+            cfg.id3_column_position.get("title"),
+            Some(&"left".to_string())
+        );
+        assert_eq!(
+            cfg.id3_column_position.get("artist"),
+            Some(&"left".to_string())
+        );
+        assert_eq!(
+            cfg.id3_column_position.get("track_num"),
+            Some(&"right".to_string())
+        );
+    }
+
+    #[test]
+    fn id3_column_position_roundtrips_through_toml() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.id3_column_position
+            .insert("title".to_string(), "right".to_string());
+        cfg.id3_column_position
+            .insert("artist".to_string(), "left".to_string());
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(
+            back.id3_column_position.get("title"),
+            Some(&"right".to_string())
+        );
+        assert_eq!(
+            back.id3_column_position.get("artist"),
+            Some(&"left".to_string())
+        );
     }
 }

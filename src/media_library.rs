@@ -64,6 +64,63 @@ pub struct LibTrack {
     pub play_count: i64,
     /// ISO-8601 datetime string of the last play, or `None` if never played.
     pub last_played: Option<String>,
+    pub comment: Option<String>,
+    pub album_artist: Option<String>,
+    pub disc_num: Option<i64>,
+    pub disc_total: Option<i64>,
+    pub composer: Option<String>,
+    pub original_artist: Option<String>,
+    pub copyright: Option<String>,
+    pub url: Option<String>,
+    pub encoded_by: Option<String>,
+    pub lyric: Option<String>,
+    pub artwork_path: Option<String>,
+    /// Pre-computed lowercase strings and zero-padded numbers for sort comparisons.
+    /// All strings are lowercase; all numeric fields are zero-padded so string
+    /// comparison gives correct numeric ordering.
+    pub sort_keys: SortKeys,
+}
+
+/// Pre-computed sort keys for a [`LibTrack`].
+/// All strings are lowercase; all numeric fields are zero-padded so string
+/// comparison gives correct numeric ordering.
+#[derive(Debug, Clone, Default)]
+pub struct SortKeys {
+    pub num: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration: String,
+    pub filename: String,
+    pub year: String,
+    pub genre: String,
+    pub bitrate: String,
+    pub album_artist: String,
+    pub composer: String,
+    pub comment: String,
+}
+
+impl SortKeys {
+    fn from_track(track: &LibTrack) -> Self {
+        SortKeys {
+            num: format!("{:010}", track.track_num.unwrap_or(0)),
+            title: track
+                .title
+                .as_deref()
+                .unwrap_or(&track.filename)
+                .to_lowercase(),
+            artist: track.artist.as_deref().unwrap_or("").to_lowercase(),
+            album: track.album.as_deref().unwrap_or("").to_lowercase(),
+            duration: format!("{:015.3}", track.length_secs.unwrap_or(0.0)),
+            filename: track.filename.to_lowercase(),
+            year: format!("{:010}", track.year.unwrap_or(0)),
+            genre: track.genre.as_deref().unwrap_or("").to_lowercase(),
+            bitrate: format!("{:010}", track.bitrate.unwrap_or(0)),
+            album_artist: track.album_artist.as_deref().unwrap_or("").to_lowercase(),
+            composer: track.composer.as_deref().unwrap_or("").to_lowercase(),
+            comment: track.comment.as_deref().unwrap_or("").to_lowercase(),
+        }
+    }
 }
 
 /// A playlist entry in the media library.
@@ -78,6 +135,90 @@ pub struct LibPlaylist {
     pub name: String,
     /// Tracks listed in this playlist (populated on demand).
     pub tracks: Vec<LibTrack>,
+}
+
+// ---------------------------------------------------------------------------
+// ReadOnlyTrackFields — formatted display values for the ID3 editor
+// ---------------------------------------------------------------------------
+
+/// Read-only file and library metadata for the ID3 editor.
+///
+/// All values are formatted display strings (e.g., bitrate as "128k",
+/// channels as "stereo", duration as "3:45").  Use [`read_only_track_fields`]
+/// to populate this struct from a path and optional media library track.
+#[derive(Debug, Clone, Default)]
+pub struct ReadOnlyTrackFields {
+    pub filename: String,
+    pub path: String,
+    pub filetype: String,
+    pub bitrate: String,
+    pub channels: String,
+    pub duration: String,
+    pub play_count: String,
+    pub last_played: String,
+    pub num: String,
+    pub artwork_path: String,
+}
+
+/// Compose read-only field values for the ID3 editor, formatted for display.
+///
+/// `track` may be `None` if the file is not indexed in the media library;
+/// in that case all library-derived fields fall back to empty strings.
+pub fn read_only_track_fields(
+    path: &std::path::Path,
+    track: Option<&LibTrack>,
+) -> ReadOnlyTrackFields {
+    let filename = track.map(|t| t.filename.clone()).unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string()
+    });
+    let path_str = path.to_string_lossy().into_owned();
+    let filetype = track.and_then(|t| t.filetype.clone()).unwrap_or_default();
+    let bitrate = track
+        .and_then(|t| t.bitrate)
+        .map(|b| format!("{b}k"))
+        .unwrap_or_default();
+    let channels = track
+        .and_then(|t| t.channels)
+        .map(|c| match c {
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            n => format!("{}ch", n),
+        })
+        .unwrap_or_default();
+    let duration = track
+        .and_then(|t| t.length_secs)
+        .map(|s| {
+            let ss = s as u64;
+            format!("{}:{:02}", ss / 60, ss % 60)
+        })
+        .unwrap_or_else(|| "-:--".to_string());
+    let play_count = track.map(|t| t.play_count.to_string()).unwrap_or_default();
+    let last_played = track
+        .and_then(|t| t.last_played.clone())
+        .unwrap_or_default();
+    let num = track
+        .and_then(|t| t.track_num)
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let artwork_path = track
+        .and_then(|t| t.artwork_path.clone())
+        .unwrap_or_default();
+
+    ReadOnlyTrackFields {
+        filename,
+        path: path_str,
+        filetype,
+        bitrate,
+        channels,
+        duration,
+        play_count,
+        last_played,
+        num,
+        artwork_path,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,8 +304,8 @@ impl MediaLibrary {
     }
 
     /// Create the `folders`, `tracks`, and `playlists` tables if they do not
-    /// already exist.  Adding new columns to an existing DB is handled
-    /// gracefully by `IF NOT EXISTS`.
+    /// already exist.  Adding new columns to an existing DB is handled by
+    /// checking column existence first.
     fn init_schema(&self) -> Result<()> {
         self.conn.execute_batch(
             "
@@ -174,23 +315,34 @@ impl MediaLibrary {
             );
 
             CREATE TABLE IF NOT EXISTS tracks (
-                id          INTEGER PRIMARY KEY,
-                path        TEXT NOT NULL UNIQUE,
-                folder_id   INTEGER REFERENCES folders(id),
-                artist      TEXT,
-                title       TEXT,
-                album       TEXT,
-                track_num   INTEGER,
-                genre       TEXT,
-                year        INTEGER,
-                bpm         TEXT,
-                length_secs REAL,
-                bitrate     INTEGER,
-                channels    INTEGER,
-                filetype    TEXT,
-                filename    TEXT,
-                play_count  INTEGER NOT NULL DEFAULT 0,
-                last_played TEXT
+                id              INTEGER PRIMARY KEY,
+                path            TEXT NOT NULL UNIQUE,
+                folder_id       INTEGER REFERENCES folders(id),
+                artist          TEXT,
+                title           TEXT,
+                album           TEXT,
+                track_num       INTEGER,
+                genre           TEXT,
+                year            INTEGER,
+                bpm             TEXT,
+                length_secs     REAL,
+                bitrate         INTEGER,
+                channels        INTEGER,
+                filetype        TEXT,
+                filename        TEXT,
+                play_count      INTEGER NOT NULL DEFAULT 0,
+                last_played     TEXT,
+                comment         TEXT,
+                album_artist    TEXT,
+                disc_num        INTEGER,
+                disc_total      INTEGER,
+                composer        TEXT,
+                original_artist TEXT,
+                copyright       TEXT,
+                url             TEXT,
+                encoded_by      TEXT,
+                lyric           TEXT,
+                artwork_path    TEXT
             );
 
             CREATE TABLE IF NOT EXISTS playlists (
@@ -206,6 +358,37 @@ impl MediaLibrary {
             CREATE INDEX IF NOT EXISTS idx_tracks_folder ON tracks(folder_id);
             ",
         )?;
+
+        let new_cols = [
+            ("comment", "TEXT"),
+            ("album_artist", "TEXT"),
+            ("disc_num", "INTEGER"),
+            ("disc_total", "INTEGER"),
+            ("composer", "TEXT"),
+            ("original_artist", "TEXT"),
+            ("copyright", "TEXT"),
+            ("url", "TEXT"),
+            ("encoded_by", "TEXT"),
+            ("lyric", "TEXT"),
+            ("artwork_path", "TEXT"),
+        ];
+        let existing: std::collections::HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT name FROM pragma_table_info('tracks')")?;
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for (col, typ) in new_cols {
+            if !existing.contains(col) {
+                self.conn.execute(
+                    &format!("ALTER TABLE tracks ADD COLUMN {} {}", col, typ),
+                    [],
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -579,7 +762,9 @@ impl MediaLibrary {
         let order = Self::sort_order_clause(col, desc);
         let sql = format!(
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
-                    length_secs, bitrate, channels, filetype, filename, play_count, last_played
+                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                    comment, album_artist, disc_num, disc_total, composer, original_artist,
+                    copyright, url, encoded_by, lyric, artwork_path
              FROM tracks
              ORDER BY {order}",
         );
@@ -607,7 +792,9 @@ impl MediaLibrary {
         let order = Self::sort_order_clause(col, desc);
         let sql = format!(
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
-                    length_secs, bitrate, channels, filetype, filename, play_count, last_played
+                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                    comment, album_artist, disc_num, disc_total, composer, original_artist,
+                    copyright, url, encoded_by, lyric, artwork_path
              FROM tracks
              WHERE LOWER(COALESCE(artist,''))   LIKE ?1
                 OR LOWER(COALESCE(title,''))    LIKE ?1
@@ -863,22 +1050,38 @@ impl MediaLibrary {
         self.conn.execute(
             "INSERT INTO tracks
                 (path, folder_id, artist, title, album, track_num, genre, year,
-                 bpm, length_secs, bitrate, channels, filetype, filename, play_count, last_played)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, NULL)
+                 bpm, length_secs, bitrate, channels, filetype, filename,
+                 play_count, last_played,
+                 comment, album_artist, disc_num, disc_total, composer, original_artist,
+                 copyright, url, encoded_by, lyric, artwork_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                    0, NULL,
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
              ON CONFLICT(path) DO UPDATE SET
-                folder_id   = excluded.folder_id,
-                artist      = excluded.artist,
-                title       = excluded.title,
-                album       = excluded.album,
-                track_num   = excluded.track_num,
-                genre       = excluded.genre,
-                year        = excluded.year,
-                bpm         = excluded.bpm,
-                length_secs = excluded.length_secs,
-                bitrate     = excluded.bitrate,
-                channels    = excluded.channels,
-                filetype    = excluded.filetype,
-                filename    = excluded.filename",
+                folder_id       = excluded.folder_id,
+                artist          = excluded.artist,
+                title           = excluded.title,
+                album           = excluded.album,
+                track_num       = excluded.track_num,
+                genre           = excluded.genre,
+                year            = excluded.year,
+                bpm             = excluded.bpm,
+                length_secs     = excluded.length_secs,
+                bitrate         = excluded.bitrate,
+                channels        = excluded.channels,
+                filetype        = excluded.filetype,
+                filename        = excluded.filename,
+                comment         = excluded.comment,
+                album_artist    = excluded.album_artist,
+                disc_num        = excluded.disc_num,
+                disc_total      = excluded.disc_total,
+                composer        = excluded.composer,
+                original_artist = excluded.original_artist,
+                copyright       = excluded.copyright,
+                url             = excluded.url,
+                encoded_by      = excluded.encoded_by,
+                lyric           = excluded.lyric,
+                artwork_path    = excluded.artwork_path",
             params![
                 path,
                 folder_id,
@@ -894,21 +1097,65 @@ impl MediaLibrary {
                 tags.channels,
                 filetype,
                 filename,
+                tags.comment,
+                tags.album_artist,
+                tags.disc_num,
+                tags.disc_total,
+                tags.composer,
+                tags.original_artist,
+                tags.copyright,
+                tags.url,
+                tags.encoded_by,
+                tags.lyric,
+                tags.artwork_path,
             ],
         )?;
         Ok(())
     }
 
     /// Look up a single track by its path.  Returns an error if not found.
-    fn track_by_path(&self, path: &str) -> Result<LibTrack> {
+    pub fn track_by_path(&self, path: &str) -> Result<LibTrack> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
-                    length_secs, bitrate, channels, filetype, filename, play_count, last_played
+                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                    comment, album_artist, disc_num, disc_total, composer, original_artist,
+                    copyright, url, encoded_by, lyric, artwork_path
              FROM tracks WHERE path = ?1",
         )?;
         let mut rows = Self::collect_tracks(&mut stmt, params![path])?;
         rows.pop()
             .ok_or_else(|| anyhow::anyhow!("track not found: {}", path))
+    }
+
+    /// Clear the cached artwork path for a track so it gets re-extracted on next read.
+    pub fn clear_artwork(&self, track_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET artwork_path = NULL WHERE id = ?1",
+            params![track_id],
+        )?;
+        Ok(())
+    }
+
+    /// Clear and re-extract artwork from a track file.
+    /// Updates the DB with the new cached artwork path.
+    pub fn refresh_artwork(&self, track_id: i64, path: &str) -> Result<()> {
+        // Delete old cached artwork file
+        if let Ok(track) = self.track_by_path(path) {
+            if let Some(ref old_art) = track.artwork_path {
+                let _ = std::fs::remove_file(old_art);
+            }
+        }
+
+        // Re-extract artwork from the file
+        let tags = read_track_tags(std::path::Path::new(path));
+
+        // Update DB with new artwork path
+        self.conn.execute(
+            "UPDATE tracks SET artwork_path = ?1 WHERE id = ?2",
+            params![tags.artwork_path, track_id],
+        )?;
+
+        Ok(())
     }
 
     /// Map rows from a prepared statement into [`LibTrack`] values.
@@ -919,10 +1166,11 @@ impl MediaLibrary {
         stmt: &mut rusqlite::Statement<'_>,
         params: P,
     ) -> Result<Vec<LibTrack>> {
-        let rows = stmt.query_map(params, |row| {
+        let mut tracks = Vec::new();
+        let mut rows = stmt.query(params)?;
+        while let Some(row) = rows.next()? {
             let path: String = row.get(1)?;
             let filename: Option<String> = row.get(13)?;
-            // filename fallback: use just the file-name component of path.
             let fname = filename.unwrap_or_else(|| {
                 Path::new(&path)
                     .file_name()
@@ -930,8 +1178,7 @@ impl MediaLibrary {
                     .unwrap_or("")
                     .to_string()
             });
-            // Sanitize all string fields to remove NUL bytes that could crash GTK.
-            Ok(LibTrack {
+            let mut track = LibTrack {
                 id: row.get(0)?,
                 path,
                 artist: row.get::<_, Option<String>>(2)?.map(|s| sanitize(&s)),
@@ -948,10 +1195,23 @@ impl MediaLibrary {
                 filename: sanitize(&fname),
                 play_count: row.get(14)?,
                 last_played: row.get(15)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("collect_tracks")
+                comment: row.get::<_, Option<String>>(16)?.map(|s| sanitize(&s)),
+                album_artist: row.get::<_, Option<String>>(17)?.map(|s| sanitize(&s)),
+                disc_num: row.get(18)?,
+                disc_total: row.get(19)?,
+                composer: row.get::<_, Option<String>>(20)?.map(|s| sanitize(&s)),
+                original_artist: row.get::<_, Option<String>>(21)?.map(|s| sanitize(&s)),
+                copyright: row.get::<_, Option<String>>(22)?.map(|s| sanitize(&s)),
+                url: row.get::<_, Option<String>>(23)?.map(|s| sanitize(&s)),
+                encoded_by: row.get::<_, Option<String>>(24)?.map(|s| sanitize(&s)),
+                lyric: row.get::<_, Option<String>>(25)?.map(|s| sanitize(&s)),
+                artwork_path: row.get::<_, Option<String>>(26)?.map(|s| sanitize(&s)),
+                sort_keys: SortKeys::default(),
+            };
+            track.sort_keys = SortKeys::from_track(&track);
+            tracks.push(track);
+        }
+        Ok(tracks)
     }
 }
 
@@ -960,6 +1220,7 @@ impl MediaLibrary {
 // ---------------------------------------------------------------------------
 
 /// Raw tag data extracted from an audio file.
+#[derive(Default)]
 struct TrackTags {
     title: Option<String>,
     artist: Option<String>,
@@ -970,6 +1231,17 @@ struct TrackTags {
     bpm: Option<String>,
     bitrate: Option<i64>,
     channels: Option<i64>,
+    comment: Option<String>,
+    album_artist: Option<String>,
+    disc_num: Option<i64>,
+    disc_total: Option<i64>,
+    composer: Option<String>,
+    original_artist: Option<String>,
+    copyright: Option<String>,
+    url: Option<String>,
+    encoded_by: Option<String>,
+    lyric: Option<String>,
+    artwork_path: Option<String>,
 }
 
 /// Read metadata from an audio file.
@@ -982,39 +1254,74 @@ fn read_track_tags(path: &Path) -> TrackTags {
 
     // Strategy 1: ID3 (MP3 and some other formats).
     if let Ok(tag) = id3::Tag::read_from_path(path) {
-        let bpm = tag
-            .get("TBPM")
-            .and_then(|f| f.content().text())
-            .map(|s| sanitize(&s));
-        return TrackTags {
+        let get_text = |frame_id: &str| -> Option<String> {
+            tag.get(frame_id)
+                .and_then(|f| f.content().text())
+                .map(|s| sanitize(&s))
+        };
+        let get_first_comment =
+            || -> Option<String> { tag.comments().next().map(|c| sanitize(&c.text)) };
+        let disc = tag.disc();
+        let (disc_num, disc_total) = if let Some(d) = disc {
+            (Some(d as i64), tag.total_discs().map(|t| t as i64))
+        } else {
+            (None, None)
+        };
+        let lyric_text = tag.lyrics().next().map(|l| sanitize(&l.text));
+
+        // Look for APIC (album art) and save it to the cache dir.
+        let artwork_path = tag.pictures().next().map(|pic| {
+            let cache_dir = dirs::cache_dir()
+                .unwrap_or_else(|| std::env::temp_dir())
+                .join("sparkamp");
+            let _ = std::fs::create_dir_all(&cache_dir);
+            // Use a hash of the path as the filename to avoid collisions.
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            path.hash(&mut h);
+            let hash = h.finish();
+            let ext = match pic.mime_type.as_str() {
+                "image/png" => "png",
+                "image/jpeg" | "image/jpg" => "jpg",
+                _ => "bin",
+            };
+            let art_path = cache_dir.join(format!("{:016x}.{}", hash, ext));
+            if !art_path.exists() {
+                let _ = std::fs::write(&art_path, &pic.data);
+            }
+            art_path.to_string_lossy().into_owned()
+        });
+
+        TrackTags {
             title: tag.title().map(|s| sanitize(&s)),
             artist: tag.artist().map(|s| sanitize(&s)),
             album: tag.album().map(|s| sanitize(&s)),
             track_num: tag.track().map(|n| n as i64),
             genre: tag.genre().map(|s| sanitize(&s)),
             year: tag.year().map(|y| y as i64),
-            bpm,
-            bitrate: None, // not directly in ID3 tags
+            bpm: get_text("TBPM"),
+            bitrate: None,
             channels: None,
-        };
-    }
-
-    // Strategy 2: Symphonia generic (Vorbis Comments, FLAC, Opus, etc.).
-    if let Some(meta) = read_symphonia_tags(path) {
-        return meta;
-    }
-
-    // Fallback: no tags at all.
-    TrackTags {
-        title: None,
-        artist: None,
-        album: None,
-        track_num: None,
-        genre: None,
-        year: None,
-        bpm: None,
-        bitrate: None,
-        channels: None,
+            comment: get_first_comment(),
+            album_artist: tag.album_artist().map(|s| sanitize(&s)),
+            disc_num,
+            disc_total,
+            composer: get_text("TCOM"),
+            original_artist: get_text("TOPE"),
+            copyright: get_text("TCOP"),
+            url: get_text("WXXX"),
+            encoded_by: get_text("TENC"),
+            lyric: lyric_text,
+            artwork_path,
+        }
+    } else {
+        // Strategy 2: Symphonia generic (Vorbis Comments, FLAC, Opus, etc.).
+        if let Some(meta) = read_symphonia_tags(path) {
+            return meta;
+        }
+        // Fallback: no tags at all.
+        TrackTags::default()
     }
 }
 
@@ -1101,6 +1408,17 @@ fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
         bpm: None,
         bitrate: None,
         channels,
+        comment: None,
+        album_artist: None,
+        disc_num: None,
+        disc_total: None,
+        composer: None,
+        original_artist: None,
+        copyright: None,
+        url: None,
+        encoded_by: None,
+        lyric: None,
+        artwork_path: None,
     })
 }
 
@@ -1490,5 +1808,312 @@ mod tests {
         let result = lib.add_folder("/tmp/test\x00dir");
         // May succeed or fail depending on path resolution, but should not panic.
         assert!(result.is_ok() || result.is_err());
+    }
+
+    // ── SortKeys pre-computation ───────────────────────────────────────────
+
+    #[test]
+    fn sort_keys_are_precomputed_from_libtrack() {
+        let track = LibTrack {
+            id: 1,
+            path: "/music/Test Song.mp3".into(),
+            artist: Some("The ARTIST".into()),
+            title: Some("My TITLE".into()),
+            album: Some("The ALBUM".into()),
+            track_num: Some(7),
+            genre: Some("Rock".into()),
+            year: Some(2024),
+            bpm: None,
+            length_secs: Some(180.5),
+            bitrate: Some(320),
+            channels: None,
+            filetype: Some("mp3".into()),
+            filename: "Test Song.mp3".into(),
+            play_count: 0,
+            last_played: None,
+            comment: Some("Great track!".into()),
+            album_artist: Some("Various Artists".into()),
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            sort_keys: SortKeys::default(),
+        };
+        let keys = SortKeys::from_track(&track);
+
+        assert_eq!(keys.num, "0000000007");
+        assert_eq!(keys.title, "my title");
+        assert_eq!(keys.artist, "the artist");
+        assert_eq!(keys.album, "the album");
+        assert_eq!(keys.duration, "00000000180.500");
+        assert_eq!(keys.filename, "test song.mp3");
+        assert_eq!(keys.year, "0000002024");
+        assert_eq!(keys.genre, "rock");
+        assert_eq!(keys.bitrate, "0000000320");
+        assert_eq!(keys.album_artist, "various artists");
+        assert_eq!(keys.composer, "");
+        assert_eq!(keys.comment, "great track!");
+    }
+
+    #[test]
+    fn sort_keys_fallback_to_filename_for_title() {
+        let track = LibTrack {
+            id: 1,
+            path: "/music/No Title.mp3".into(),
+            artist: None,
+            title: None,
+            album: None,
+            track_num: None,
+            genre: None,
+            year: None,
+            bpm: None,
+            length_secs: None,
+            bitrate: None,
+            channels: None,
+            filetype: None,
+            filename: "No Title.mp3".into(),
+            play_count: 0,
+            last_played: None,
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            sort_keys: SortKeys::default(),
+        };
+        let keys = SortKeys::from_track(&track);
+
+        assert_eq!(keys.title, "no title.mp3");
+    }
+
+    // ── record_play ────────────────────────────────────────────────────────
+
+    #[test]
+    fn record_play_increments_play_count() {
+        let (lib, _db) = temp_lib();
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("song.mp3");
+        let path = file_path.to_str().unwrap();
+        fs::write(&file_path, b"fake").unwrap();
+
+        let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+        lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+            .unwrap();
+
+        // play_count starts at 0.
+        let track = lib.track_by_path(path).unwrap();
+        assert_eq!(track.play_count, 0);
+
+        lib.record_play(path).unwrap();
+
+        let track = lib.track_by_path(path).unwrap();
+        assert_eq!(track.play_count, 1);
+        assert!(track.last_played.is_some());
+    }
+
+    #[test]
+    fn record_play_accumulates_multiple_calls() {
+        let (lib, _db) = temp_lib();
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("song.mp3");
+        let path = file_path.to_str().unwrap();
+        fs::write(&file_path, b"fake").unwrap();
+
+        let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+        lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+            .unwrap();
+
+        for i in 1..=5 {
+            lib.record_play(path).unwrap();
+            let track = lib.track_by_path(path).unwrap();
+            assert_eq!(track.play_count, i);
+        }
+    }
+
+    #[test]
+    fn record_play_updates_last_played_timestamp() {
+        let (lib, _db) = temp_lib();
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("song.mp3");
+        let path = file_path.to_str().unwrap();
+        fs::write(&file_path, b"fake").unwrap();
+
+        let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+        lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+            .unwrap();
+
+        lib.record_play(path).unwrap();
+        let first = lib.track_by_path(path).unwrap().last_played.clone();
+        assert!(first.is_some(), "first play should set last_played");
+
+        // Wait 1.1 seconds so the second play gets a different timestamp
+        // (timestamps are stored as seconds, not milliseconds).
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        lib.record_play(path).unwrap();
+        let second = lib.track_by_path(path).unwrap().last_played;
+
+        assert!(second.is_some(), "second play should update last_played");
+        assert_ne!(first, second, "second play should have a newer timestamp");
+    }
+
+    #[test]
+    fn record_play_noop_for_unknown_path() {
+        let (lib, _db) = temp_lib();
+        // No track added — record_play should succeed without error.
+        let result = lib.record_play("/nonexistent/path.mp3");
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // read_only_track_fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_only_track_fields_all_values_formatted() {
+        let track = LibTrack {
+            id: 1,
+            path: "/music/song.mp3".into(),
+            artist: Some("The Artist".into()),
+            title: Some("My Song".into()),
+            album: Some("The Album".into()),
+            track_num: Some(5),
+            genre: Some("Rock".into()),
+            year: Some(2020),
+            bpm: Some("120".into()),
+            length_secs: Some(185.0),
+            bitrate: Some(320),
+            channels: Some(2),
+            filetype: Some("MP3".into()),
+            filename: "song.mp3".into(),
+            play_count: 42,
+            last_played: Some("2024-01-15T10:30:00Z".into()),
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: Some("/music/cover.jpg".into()),
+            sort_keys: SortKeys::default(),
+        };
+        let path = std::path::Path::new("/music/song.mp3");
+        let ro = read_only_track_fields(path, Some(&track));
+
+        assert_eq!(ro.filename, "song.mp3");
+        assert_eq!(ro.path, "/music/song.mp3");
+        assert_eq!(ro.filetype, "MP3");
+        assert_eq!(ro.bitrate, "320k");
+        assert_eq!(ro.channels, "stereo");
+        assert_eq!(ro.duration, "3:05");
+        assert_eq!(ro.play_count, "42");
+        assert_eq!(ro.last_played, "2024-01-15T10:30:00Z");
+        assert_eq!(ro.num, "5");
+        assert_eq!(ro.artwork_path, "/music/cover.jpg");
+    }
+
+    #[test]
+    fn read_only_track_fields_fallback_when_no_track() {
+        let path = std::path::Path::new("/unknown/file.mp3");
+        let ro = read_only_track_fields(path, None);
+
+        assert_eq!(ro.filename, "file.mp3");
+        assert_eq!(ro.path, "/unknown/file.mp3");
+        assert_eq!(ro.filetype, "");
+        assert_eq!(ro.bitrate, "");
+        assert_eq!(ro.channels, "");
+        assert_eq!(ro.duration, "-:--");
+        assert_eq!(ro.play_count, "");
+        assert_eq!(ro.last_played, "");
+        assert_eq!(ro.num, "");
+        assert_eq!(ro.artwork_path, "");
+    }
+
+    #[test]
+    fn read_only_track_fields_channels_mono() {
+        let track = LibTrack {
+            id: 0,
+            path: String::new(),
+            artist: None,
+            title: None,
+            album: None,
+            track_num: None,
+            genre: None,
+            year: None,
+            bpm: None,
+            length_secs: None,
+            bitrate: None,
+            channels: Some(1),
+            filetype: None,
+            filename: String::new(),
+            play_count: 0,
+            last_played: None,
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            sort_keys: SortKeys::default(),
+        };
+        let path = std::path::Path::new("/test.mp3");
+        let ro = read_only_track_fields(path, Some(&track));
+        assert_eq!(ro.channels, "mono");
+    }
+
+    #[test]
+    fn read_only_track_fields_channels_multi() {
+        let track = LibTrack {
+            id: 0,
+            path: String::new(),
+            artist: None,
+            title: None,
+            album: None,
+            track_num: None,
+            genre: None,
+            year: None,
+            bpm: None,
+            length_secs: None,
+            bitrate: None,
+            channels: Some(6),
+            filetype: None,
+            filename: String::new(),
+            play_count: 0,
+            last_played: None,
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            sort_keys: SortKeys::default(),
+        };
+        let path = std::path::Path::new("/test.mp3");
+        let ro = read_only_track_fields(path, Some(&track));
+        assert_eq!(ro.channels, "6ch");
     }
 }

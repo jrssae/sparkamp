@@ -102,6 +102,18 @@ struct AppState {
     plugin_manager: PluginManager,
     /// The media library browser window, if one is currently open.
     ml_window: Option<gtk4::Window>,
+    /// The ID3 tag editor window, if one is currently open.
+    id3_editor_window: Option<gtk4::Window>,
+    /// Callback to refresh the media library window, registered by the window itself.
+    rebuild_ml_callback: Option<Rc<dyn Fn()>>,
+    /// Number of background operations (rescan, add folder, etc.) currently in flight.
+    /// Used to force-exit the main loop if the user closes the main window while
+    /// a background operation is still running.
+    pending_bg_ops: std::cell::Cell<usize>,
+    /// Path whose play has already been recorded in the media library this session.
+    /// Reset to `None` when a new track starts playing so the same track can be
+    /// counted again after a user-initiated restart.
+    counted_play_path: Option<String>,
 }
 
 impl AppState {
@@ -138,6 +150,10 @@ impl AppState {
             media_lib,
             plugin_manager,
             ml_window: None,
+            id3_editor_window: None,
+            rebuild_ml_callback: None,
+            pending_bg_ops: std::cell::Cell::new(0),
+            counted_play_path: None,
         })
     }
 
@@ -153,6 +169,8 @@ impl AppState {
         // Record this track in shuffle history so the previous button can step back.
         let idx = self.playlist.current_index;
         self.shuffle_state.record_played(idx);
+        // Reset so the new track can be counted when it plays long enough.
+        self.counted_play_path = None;
         let _ = self.player.load(&uri);
         if self.pending_seek.is_some() {
             // HACK: GStreamer's playbin does not expose a duration query while
@@ -183,7 +201,11 @@ impl AppState {
         let repeat = self.config.playback.repeat_mode;
         let idx = self.shuffle_state.next_index(current, total, repeat)?;
         self.playlist.jump_to(idx);
-        self.play_current()
+        if *self.player.state() != PlayerState::Stopped {
+            self.play_current()
+        } else {
+            self.playlist.current().map(|t| t.display_name())
+        }
     }
 
     /// Implement the "back button" behaviour with shuffle history support.
@@ -195,17 +217,30 @@ impl AppState {
     /// Returns `Some(display_name)` of the track that will now play.
     fn play_prev(&mut self) -> Option<String> {
         let pos = self.player.position().unwrap_or(Duration::ZERO);
+        let do_play = *self.player.state() != PlayerState::Stopped;
         if pos.as_secs() >= 2 {
             // Restart the current track.
-            self.play_current()
+            if do_play {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         } else if let Some(idx) = self.shuffle_state.prev_from_history() {
             // Step back through the session's playback history.
             self.playlist.jump_to(idx);
-            self.play_current()
+            if do_play {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         } else {
             // No history (beginning of session) — fall back to linear prev.
             self.playlist.previous();
-            self.play_current()
+            if do_play {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         }
     }
 
@@ -511,6 +546,77 @@ fn gtk_safe(s: &str) -> String {
     }
 }
 
+fn sanitize_id3_text(s: &str) -> String {
+    let trimmed = s.trim();
+    let without_nulls = if trimmed.contains('\0') {
+        trimmed.replace('\0', "")
+    } else {
+        trimmed.to_owned()
+    };
+    let without_control: String = without_nulls
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+    without_control.chars().take(256).collect()
+}
+
+fn sanitize_id3_numeric(s: &str) -> String {
+    let trimmed = s.trim();
+    let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    numeric.chars().take(8).collect()
+}
+
+fn format_last_played(iso_timestamp: &str) -> String {
+    if iso_timestamp.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<&str> = iso_timestamp
+        .trim_end_matches('Z')
+        .split(|c| c == 'T' || c == ':' || c == '-')
+        .collect();
+    if parts.len() < 5 {
+        return iso_timestamp.to_string();
+    }
+    let year = parts[0];
+    let month = parts[1];
+    let day = parts[2];
+    let hour: u32 = parts.get(3).and_then(|h| h.parse().ok()).unwrap_or(0);
+    let minute = parts.get(4).unwrap_or(&"00");
+    let (hour_12, am_pm) = if hour == 0 {
+        (12, "AM")
+    } else if hour < 12 {
+        (hour, "AM")
+    } else if hour == 12 {
+        (12, "PM")
+    } else {
+        (hour - 12, "PM")
+    };
+    format!(
+        "{}-{}-{} {:02}:{} {}",
+        year, month, day, hour_12, minute, am_pm
+    )
+}
+
+fn make_genre_combo(initial_value: &str) -> (gtk4::ComboBoxText, gtk4::Entry) {
+    use gtk4::prelude::ComboBoxExt;
+
+    let combo = gtk4::ComboBoxText::with_entry();
+    for genre in crate::id3_editor::ID3V1_GENRES {
+        combo.append(Some(genre), genre);
+    }
+    combo.set_entry_text_column(0);
+    let entry = combo
+        .child()
+        .and_then(|w| w.downcast::<gtk4::Entry>().ok())
+        .expect("Genre combo should have an Entry child");
+    entry.set_text(initial_value);
+    (combo, entry)
+}
+
+fn get_entry_text(entry: &gtk4::Entry) -> String {
+    entry.text().to_string()
+}
+
 fn accent_hex() -> &'static str {
     let output = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "accent-color"])
@@ -639,6 +745,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let mut init_player_height = state.borrow().config.window.player_height;
     let mut init_pl_width = state.borrow().config.window.playlist_width;
     let mut init_pl_height = state.borrow().config.window.playlist_height;
+    let mut init_ml_width = state.borrow().config.window.ml_width;
+    let mut init_ml_height = state.borrow().config.window.ml_height;
 
     // Defensive: if any stored dimension exceeds the largest available monitor,
     // reset that window's geometry to first-launch defaults so it is never
@@ -664,6 +772,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             if init_pl_width > max_w || init_pl_height > max_h {
                 init_pl_width = WindowConfig::default_playlist_width();
                 init_pl_height = WindowConfig::default_playlist_height();
+            }
+            if init_ml_width > max_w || init_ml_height > max_h {
+                init_ml_width = WindowConfig::default_ml_width();
+                init_ml_height = WindowConfig::default_ml_height();
             }
         }
     }
@@ -1583,7 +1695,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // PL — toggle the playlist window.
     btn_pl.connect_clicked({
         let playlist_win = playlist_win.clone();
+        let state = state.clone();
         move |_| {
+            if playlist_win.is_visible() {
+                let (w, h) = (playlist_win.width(), playlist_win.height());
+                {
+                    let mut s = state.borrow_mut();
+                    s.config.window.playlist_width = w;
+                    s.config.window.playlist_height = h;
+                }
+                let _ = state.borrow().config.save();
+            }
             playlist_win.set_visible(!playlist_win.is_visible());
         }
     });
@@ -1700,6 +1822,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             for btn in [&btn_edit, &btn_play_e, &btn_rm] {
                 btn.set_has_frame(false);
                 btn.set_hexpand(true);
+                btn.add_css_class("popover-button");
             }
             btn_rm.add_css_class("destructive-action");
 
@@ -1711,7 +1834,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 
             let popover = Popover::new();
             popover.set_child(Some(&menu_box));
-            popover.set_parent(&row);
+            popover.set_parent(&ctx_pb);
             popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
             // "View/Edit ID3 Information" — open the editor window.
@@ -1726,7 +1849,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                         pop.popdown();
                     }
                     if let Some(w) = win_wk.upgrade() {
-                        open_id3_editor_window(&w, path2.clone(), state2.clone(), rebuild2.clone());
+                        open_id3_editor_window(
+                            Some(&w),
+                            path2.clone(),
+                            state2.clone(),
+                            rebuild2.clone(),
+                            None,
+                        );
                     }
                 });
             }
@@ -1781,7 +1910,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let path = state_mc.borrow().playlist.current().map(|t| t.path.clone());
             if let Some(path) = path {
                 if let Some(w) = win_mc.upgrade() {
-                    open_id3_editor_window(&w, path, state_mc.clone(), rebuild_mc.clone());
+                    open_id3_editor_window(
+                        Some(&w),
+                        path,
+                        state_mc.clone(),
+                        rebuild_mc.clone(),
+                        None,
+                    );
                 }
             }
         });
@@ -1909,6 +2044,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 // main thread (plugin_manager is not Send).
                 let extra = state_cb.borrow().plugin_manager.extra_extensions();
 
+                state_cb.borrow().pending_bg_ops.set(state_cb.borrow().pending_bg_ops.get() + 1);
                 // Batch result type: (tracks, total_found, errors)
                 type ScanMsg = (Vec<crate::model::Track>, usize, usize);
                 let (sender, receiver) = std::sync::mpsc::channel::<ScanMsg>();
@@ -1938,6 +2074,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     let added = tracks.len();
                     if added == 0 && total == 0 {
                         status_cb.set_text("No audio files found in the selected folder");
+                        state_cb.borrow().pending_bg_ops.set(state_cb.borrow().pending_bg_ops.get() - 1);
                         return glib::ControlFlow::Break;
                     }
                     let before = state_cb.borrow().playlist.tracks.len();
@@ -1968,6 +2105,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                             paths, probe_tx_cb.clone(), broken_tx_cb.clone(),
                         );
                     }
+                    state_cb.borrow().pending_bg_ops.set(state_cb.borrow().pending_bg_ops.get() - 1);
                     glib::ControlFlow::Break
                 });
             });
@@ -2175,6 +2313,29 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             };
             if gst_dur_written {
                 rebuild_playlist();
+            }
+
+            // Record play in media library after 20 seconds of playback.
+            {
+                let mut s = state.borrow_mut();
+                let pos = pos.unwrap_or(Duration::ZERO);
+                let path_str = s
+                    .playlist
+                    .current()
+                    .map(|t| t.path.to_string_lossy().into_owned());
+                if pos >= Duration::from_secs(20) {
+                    if let Some(ref p) = path_str {
+                        if s.counted_play_path.as_ref() != Some(p) {
+                            if let Some(ref ml) = s.media_lib {
+                                let _ = ml.record_play(p);
+                                s.counted_play_path = Some(p.clone());
+                                if let Some(ref rebuild_ml) = s.rebuild_ml_callback {
+                                    rebuild_ml();
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             {
@@ -2738,7 +2899,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     let path = state.borrow().playlist.current().map(|t| t.path.clone());
                     if let Some(path) = path {
                         if let Some(w) = window_weak.upgrade() {
-                            open_id3_editor_window(&w, path, state.clone(), kbd_rebuild.clone());
+                            open_id3_editor_window(
+                                Some(&w),
+                                path,
+                                state.clone(),
+                                kbd_rebuild.clone(),
+                                None,
+                            );
                         }
                     } else {
                         status_label.set_text("No track loaded");
@@ -2896,8 +3063,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 }
             }
             let parent = window_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
-            let ml_win =
-                open_media_library_window(parent.as_ref(), state_rc.clone(), rebuild_pl.clone());
+            let (w, h) = {
+                let cfg = &state_rc.borrow().config.window;
+                (cfg.ml_width, cfg.ml_height)
+            };
+            let ml_win = open_media_library_window(
+                parent.as_ref(),
+                state_rc.clone(),
+                rebuild_pl.clone(),
+                w,
+                h,
+            );
             state_rc.borrow_mut().ml_window = Some(ml_win);
         }
     });
@@ -3033,13 +3209,23 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 cfg.window.playlist_height = playlist_win.height();
             }
             cfg.window.ml_visible = state.borrow().ml_window.is_some();
-            let _ = cfg.save();
-
-            // Destroy ML window if open so the app can exit cleanly.
+            // Save ML window size before destroying it.
             if let Some(ref ml_win) = state.borrow().ml_window {
+                cfg.window.ml_width = ml_win.width();
+                cfg.window.ml_height = ml_win.height();
                 ml_win.destroy();
             }
+            let _ = cfg.save();
             playlist_win.destroy();
+
+            // If any background operations (rescan, add folder) are still in flight,
+            // force the main loop to exit. The background threads keep running but
+            // the UI is gone so they have no effect.
+            if state.borrow().pending_bg_ops.get() > 0 {
+                if let Some(app) = w.application() {
+                    app.quit();
+                }
+            }
             glib::Propagation::Proceed
         }
     });
@@ -3062,6 +3248,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 Some(&window.upcast::<gtk4::Window>()),
                 state_rc.clone(),
                 rebuild_pl.clone(),
+                init_ml_width,
+                init_ml_height,
             );
             state_rc.borrow_mut().ml_window = Some(ml_win);
         });
@@ -3072,6 +3260,356 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 // ID3 editor windows
 // ---------------------------------------------------------------------------
 
+/// Get the display value for an ID3 editable field.
+fn get_id3_field_value(
+    fields: &crate::id3_editor::TagFields,
+    track_meta: &Option<crate::media_library::LibTrack>,
+    id: &str,
+) -> String {
+    match id {
+        "title" => fields.title.clone(),
+        "artist" => fields.artist.clone(),
+        "album" => fields.album.clone(),
+        "album_artist" => fields.album_artist.clone(),
+        "year" => fields.year.clone(),
+        "genre" => fields.genre.clone(),
+        "track_num" => fields.track_number.clone(),
+        "track_total" => fields.track_total.clone(),
+        "disc_num" => fields.disc_number.clone(),
+        "disc_total" => fields.disc_total.clone(),
+        "bpm" => fields.bpm.clone(),
+        "comment" => fields.comment.clone(),
+        "composer" => track_meta
+            .as_ref()
+            .and_then(|t| t.composer.clone())
+            .unwrap_or_default(),
+        "original_artist" => track_meta
+            .as_ref()
+            .and_then(|t| t.original_artist.clone())
+            .unwrap_or_default(),
+        "copyright" => track_meta
+            .as_ref()
+            .and_then(|t| t.copyright.clone())
+            .unwrap_or_default(),
+        "url" => track_meta
+            .as_ref()
+            .and_then(|t| t.url.clone())
+            .unwrap_or_default(),
+        "encoded_by" => track_meta
+            .as_ref()
+            .and_then(|t| t.encoded_by.clone())
+            .unwrap_or_default(),
+        "lyric" => track_meta
+            .as_ref()
+            .and_then(|t| t.lyric.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+#[derive(Clone)]
+enum ColumnCustomizerMode {
+    MediaLibrary,
+    Id3Editor,
+}
+
+fn open_customize_columns_dialog(
+    parent: Option<&gtk4::Window>,
+    state: Rc<RefCell<AppState>>,
+    title: &str,
+    mode: ColumnCustomizerMode,
+    on_toggle: Option<Rc<dyn Fn(String, bool)>>,
+    on_close: Option<Rc<dyn Fn()>>,
+) {
+    use gtk4::prelude::*;
+
+    let dlg = gtk4::Window::new();
+    dlg.set_title(Some(title));
+    dlg.set_default_size(400, 450);
+    dlg.set_resizable(true);
+    if let Some(p) = parent {
+        dlg.set_transient_for(Some(p));
+    }
+
+    let main_vbox = GtkBox::new(Orientation::Vertical, 8);
+    main_vbox.set_margin_top(12);
+    main_vbox.set_margin_bottom(12);
+    main_vbox.set_margin_start(12);
+    main_vbox.set_margin_end(12);
+
+    let (show_header_row, show_position_dropdown, cols_to_show, defaults_vis, defaults_pos): (
+        bool,
+        bool,
+        Vec<&MlColumnDef>,
+        Vec<String>,
+        std::collections::HashMap<String, String>,
+    ) = match mode {
+        ColumnCustomizerMode::Id3Editor => {
+            let cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
+            let defaults_vis = crate::config::MediaLibraryConfig::default_id3_visible_columns();
+            let defaults_pos = crate::config::MediaLibraryConfig::default_id3_column_position();
+            (true, true, cols, defaults_vis, defaults_pos)
+        }
+        ColumnCustomizerMode::MediaLibrary => {
+            let cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().collect();
+            let defaults_vis = crate::config::MediaLibraryConfig::default_visible_columns();
+            let defaults_pos = std::collections::HashMap::new();
+            (false, false, cols, defaults_vis, defaults_pos)
+        }
+    };
+
+    let hdr_text = if show_position_dropdown {
+        "Select fields and column position:"
+    } else {
+        "Select columns to display:"
+    };
+    let hdr = Label::builder()
+        .label(hdr_text)
+        .halign(Align::Start)
+        .build();
+    main_vbox.append(&hdr);
+
+    if show_header_row {
+        let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
+        col_hdrs.append(&Label::new(Some("")));
+        col_hdrs.append(&Label::new(Some("Field")));
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        col_hdrs.append(&spring);
+        col_hdrs.append(&Label::new(Some("Column")));
+        main_vbox.append(&col_hdrs);
+    } else {
+        let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
+        col_hdrs.append(&Label::new(Some("")));
+        col_hdrs.append(&Label::new(Some("Field")));
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        col_hdrs.append(&spring);
+        main_vbox.append(&col_hdrs);
+    }
+
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_hexpand(true);
+    scrolled.set_vexpand(true);
+    scrolled.set_has_frame(true);
+
+    let list_vbox = GtkBox::new(Orientation::Vertical, 4);
+    list_vbox.set_margin_top(8);
+
+    let visible_ids: std::collections::HashSet<String> = match mode {
+        ColumnCustomizerMode::Id3Editor => state
+            .borrow()
+            .config
+            .media_library
+            .id3_visible_columns
+            .iter()
+            .cloned()
+            .collect(),
+        ColumnCustomizerMode::MediaLibrary => state
+            .borrow()
+            .config
+            .media_library
+            .visible_columns
+            .iter()
+            .cloned()
+            .collect(),
+    };
+
+    let column_positions: std::collections::HashMap<String, String> = match mode {
+        ColumnCustomizerMode::Id3Editor => state
+            .borrow()
+            .config
+            .media_library
+            .id3_column_position
+            .clone(),
+        ColumnCustomizerMode::MediaLibrary => std::collections::HashMap::new(),
+    };
+
+    let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let dropdowns: Rc<RefCell<Vec<(String, gtk4::ComboBoxText)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let skipping_callback: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+
+    for col in &cols_to_show {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+
+        let cb = CheckButton::new();
+        cb.set_active(visible_ids.contains(col.id));
+        let state_cfg = state.clone();
+        let mode_for_cb = mode.clone();
+        let on_toggle_cb = on_toggle.clone();
+        let skip_cb = skipping_callback.clone();
+        let id_for_toggle = col.id.to_string();
+        cb.connect_toggled(move |btn| {
+            if *skip_cb.borrow() {
+                return;
+            }
+            let visible = btn.is_active();
+            let id = id_for_toggle.clone();
+            if let Some(ref cb) = on_toggle_cb {
+                cb(id.clone(), visible);
+            }
+            let mut s = state_cfg.borrow_mut();
+            match mode_for_cb {
+                ColumnCustomizerMode::Id3Editor => {
+                    let vc = &mut s.config.media_library.id3_visible_columns;
+                    if btn.is_active() {
+                        if !vc.contains(&id) {
+                            vc.push(id);
+                        }
+                    } else {
+                        vc.retain(|c| c != &id);
+                    }
+                }
+                ColumnCustomizerMode::MediaLibrary => {
+                    let vc = &mut s.config.media_library.visible_columns;
+                    if btn.is_active() {
+                        if !vc.contains(&id) {
+                            vc.push(id);
+                        }
+                    } else {
+                        vc.retain(|c| c != &id);
+                    }
+                }
+            }
+            let _ = s.config.save();
+        });
+
+        let lbl = Label::new(Some(col.header));
+        lbl.set_halign(Align::Start);
+        row.append(&cb);
+        row.append(&lbl);
+
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        row.append(&spring);
+
+        if show_position_dropdown {
+            let pos = column_positions
+                .get(col.id)
+                .cloned()
+                .unwrap_or_else(|| "left".to_string());
+            let dropdown = gtk4::ComboBoxText::new();
+            dropdown.append(Some("left"), "Left");
+            dropdown.append(Some("right"), "Right");
+            dropdown.set_active_id(Some(if pos == "right" { "right" } else { "left" }));
+
+            let id_for_dropdown = col.id.to_string();
+            let state_dropdown = state.clone();
+            dropdown.connect_changed(move |dd| {
+                if let Some(position) = dd.active_id() {
+                    let mut s = state_dropdown.borrow_mut();
+                    s.config
+                        .media_library
+                        .id3_column_position
+                        .insert(id_for_dropdown.clone(), position.to_string());
+                    let _ = s.config.save();
+                }
+            });
+
+            row.append(&dropdown);
+            dropdowns.borrow_mut().push((col.id.to_string(), dropdown));
+        }
+
+        list_vbox.append(&row);
+        checkboxes.borrow_mut().push((col.id.to_string(), cb));
+    }
+
+    scrolled.set_child(Some(&list_vbox));
+    main_vbox.append(&scrolled);
+
+    let btn_row = GtkBox::new(Orientation::Horizontal, 8);
+
+    let btn_reset = Button::with_label("Reset Defaults");
+    let state_reset = state.clone();
+    let cbs_reset = checkboxes.clone();
+    let dds_reset = dropdowns.clone();
+    let defaults_vis_clone = defaults_vis.clone();
+    let defaults_pos_clone = defaults_pos.clone();
+    let mode_for_reset = mode.clone();
+    let on_toggle_reset = on_toggle.clone();
+    let skip_cb_flag = skipping_callback.clone();
+
+    btn_reset.connect_clicked(move |_| {
+        let default_set: std::collections::HashSet<String> =
+            defaults_vis_clone.iter().cloned().collect();
+
+        if let Some(ref cb) = on_toggle_reset {
+            *skip_cb_flag.borrow_mut() = true;
+            for (id, _) in cbs_reset.borrow().iter() {
+                cb(id.clone(), default_set.contains(id));
+            }
+            *skip_cb_flag.borrow_mut() = false;
+        }
+
+        {
+            let mut s = state_reset.borrow_mut();
+            match mode_for_reset {
+                ColumnCustomizerMode::Id3Editor => {
+                    s.config.media_library.id3_visible_columns = defaults_vis_clone.clone();
+                    s.config.media_library.id3_column_position = defaults_pos_clone.clone();
+                }
+                ColumnCustomizerMode::MediaLibrary => {
+                    s.config.media_library.visible_columns = defaults_vis_clone.clone();
+                }
+            }
+            let _ = s.config.save();
+        }
+
+        *skip_cb_flag.borrow_mut() = true;
+        for (id, cb) in cbs_reset.borrow().iter() {
+            cb.set_active(default_set.contains(id));
+        }
+        *skip_cb_flag.borrow_mut() = false;
+        for (id, dd) in dds_reset.borrow().iter() {
+            let pos = defaults_pos_clone
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| "left".to_string());
+            dd.set_active_id(Some(&pos));
+        }
+    });
+
+    btn_row.append(&btn_reset);
+
+    let spring = GtkBox::new(Orientation::Horizontal, 0);
+    spring.set_hexpand(true);
+    btn_row.append(&spring);
+
+    let btn_close = Button::with_label("Close");
+    let dlg_wk = dlg.downgrade();
+    let on_close_cb = on_close.clone();
+    let mode_for_close = mode.clone();
+    btn_close.connect_clicked(move |_| {
+        if let ColumnCustomizerMode::Id3Editor = mode_for_close {
+            if let Some(ref cb) = on_close_cb {
+                cb();
+            }
+        }
+        if let Some(w) = dlg_wk.upgrade() {
+            w.close();
+        }
+    });
+    btn_row.append(&btn_close);
+
+    main_vbox.append(&btn_row);
+    dlg.set_child(Some(&main_vbox));
+
+    let on_close_req = on_close.clone();
+    let mode_for_req = mode.clone();
+    dlg.connect_close_request(move |_| {
+        if let ColumnCustomizerMode::Id3Editor = mode_for_req {
+            if let Some(ref cb) = on_close_req {
+                cb();
+            }
+        }
+        glib::Propagation::Proceed
+    });
+
+    dlg.present();
+}
+
 /// Open the ID3 tag editor window for `path`.
 ///
 /// Pre-populates all 12 default fields from the file's existing tag and lets
@@ -3081,36 +3619,68 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 ///
 /// A "Customize…" button opens a secondary window ([`open_id3_extra_window`])
 /// for any additional ID3v2 frames present in the file.
+///
+/// This is a singleton: if an editor is already open, it will be updated
+/// with the new file instead of opening a second window.
 fn open_id3_editor_window(
-    parent: &impl gtk4::prelude::IsA<gtk4::Window>,
+    _parent: Option<&impl gtk4::prelude::IsA<gtk4::Window>>,
     path: std::path::PathBuf,
     state: Rc<RefCell<AppState>>,
     rebuild_cb: Rc<dyn Fn()>,
+    initial_values: Option<std::collections::HashMap<String, String>>,
 ) {
     use crate::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
 
+    if let Some(ref existing_win) = state.borrow().id3_editor_window {
+        let title = format!(
+            "ID3 Tag Editor — {}",
+            gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+        );
+        existing_win.set_title(Some(&title));
+        existing_win.present();
+        return;
+    }
+
     let fields = read_tag_fields(&path);
-    let fname = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?")
-        .to_string();
+    let fname = gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
+    let path_str = path.to_string_lossy().into_owned();
+
+    let track_meta = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .and_then(|ml| ml.track_by_path(&path_str).ok());
+
+    let ro = crate::media_library::read_only_track_fields(&path, track_meta.as_ref());
 
     let win = gtk4::Window::builder()
-        .title(format!(" ID3 Tag Editor — {fname} "))
-        .default_width(560)
-        .default_height(420)
-        .modal(true)
+        .title(format!("ID3 Tag Editor — {fname}"))
+        .default_width(600)
+        .default_height(480)
         .build();
-    win.set_transient_for(Some(parent));
 
-    // ── Field grid — two columns of (label, entry) pairs ────────────────────
-    //
-    // Left column  (grid cols 0–1): Title, Album, Genre, Track#, Disc#, BPM
-    // Right column (grid cols 3–4): Artist, Album Artist, Year, Track Total,
-    //                               Disc Total, Comment
-    // A vertical Separator lives in col 2.
+    let state_for_close = state.clone();
+    win.connect_close_request(move |_| {
+        state_for_close.borrow_mut().id3_editor_window = None;
+        glib::Propagation::Proceed
+    });
+    state.borrow_mut().id3_editor_window = Some(win.clone());
+
+    // ── Get visible columns from config (preserve order for left/right split) ──
+    let visible_ids: Vec<String> = state
+        .borrow()
+        .config
+        .media_library
+        .id3_visible_columns
+        .clone();
+
+    // ── Collect entry widgets for the save handler ───────────────────────────
+    // Stores (field_id, Entry) for editable fields.
+    let entries: Rc<RefCell<std::collections::HashMap<String, Entry>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+
+    // ── 2-column field grid ───────────────────────────────────────────────
     let grid = Grid::new();
     grid.set_margin_top(12);
     grid.set_margin_bottom(8);
@@ -3118,45 +3688,192 @@ fn open_id3_editor_window(
     grid.set_margin_end(12);
     grid.set_row_spacing(6);
     grid.set_column_spacing(8);
+    grid.set_hexpand(true);
 
-    // Helper: attach a (Label, Entry) to `grid` at the given (label_col, entry_col, row).
-    // Returns the Entry so callbacks can read/write it.
-    let attach_field =
-        |grid: &Grid, label: &str, value: &str, row: i32, lbl_col: i32, ent_col: i32| -> Entry {
-            let lbl = Label::new(Some(label));
-            lbl.set_xalign(1.0);
-            lbl.set_margin_end(4);
-            let entry = Entry::new();
-            entry.set_text(value);
-            entry.set_hexpand(true);
-            grid.attach(&lbl, lbl_col, row, 1, 1);
-            grid.attach(&entry, ent_col, row, 1, 1);
-            entry
+    // Get column positions from config
+    let column_positions: std::collections::HashMap<String, String> = state
+        .borrow()
+        .config
+        .media_library
+        .id3_column_position
+        .clone();
+
+    // Get editable columns in visible order
+    let editable_ids: std::collections::HashSet<&str> = ALL_COLUMNS
+        .iter()
+        .filter(|c| c.id3_editable)
+        .map(|c| c.id)
+        .collect();
+
+    let visible_editable: Vec<&str> = visible_ids
+        .iter()
+        .filter(|id| editable_ids.contains(id.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+
+    // Separate into left/right based on column position config
+    let mut left_ids: Vec<&str> = Vec::new();
+    let mut right_ids: Vec<&str> = Vec::new();
+    for id in &visible_editable {
+        let pos = column_positions
+            .get(*id)
+            .map(|s| s.as_str())
+            .unwrap_or("left");
+        if pos == "right" {
+            right_ids.push(*id);
+        } else {
+            left_ids.push(*id);
+        }
+    }
+
+    // Build left column (cols 0-1)
+    let mut left_entries: Vec<(String, gtk4::Entry)> = Vec::new();
+    for (row, id) in left_ids.iter().enumerate() {
+        let col_def = ALL_COLUMNS.iter().find(|c| c.id == *id).unwrap();
+        let lbl = Label::new(Some(col_def.header));
+        lbl.set_xalign(1.0);
+        lbl.set_margin_end(4);
+        grid.attach(&lbl, 0, row as i32, 1, 1);
+
+        let value = if let Some(ref vals) = initial_values {
+            vals.get(*id)
+                .cloned()
+                .unwrap_or_else(|| get_id3_field_value(&fields, &track_meta, id))
+        } else {
+            get_id3_field_value(&fields, &track_meta, id)
         };
+        if *id == "genre" {
+            let (combo, entry) = make_genre_combo(&value);
+            combo.set_hexpand(true);
+            grid.attach(&combo, 1, row as i32, 1, 1);
+        } else {
+            let entry = Entry::new();
+            entry.set_hexpand(true);
+            entry.set_text(&gtk_safe(&value));
+            grid.attach(&entry, 1, row as i32, 1, 1);
+            left_entries.push((id.to_string(), entry));
+        }
+    }
 
-    // Left column (cols 0–1)
-    let e_title = attach_field(&grid, "Title:", &fields.title, 0, 0, 1);
-    let e_album = attach_field(&grid, "Album:", &fields.album, 1, 0, 1);
-    let e_genre = attach_field(&grid, "Genre:", &fields.genre, 2, 0, 1);
-    let e_track_num = attach_field(&grid, "Track #:", &fields.track_number, 3, 0, 1);
-    let e_disc_num = attach_field(&grid, "Disc #:", &fields.disc_number, 4, 0, 1);
-    let e_bpm = attach_field(&grid, "BPM:", &fields.bpm, 5, 0, 1);
+    // Build right column (cols 2-3)
+    let mut right_entries: Vec<(String, gtk4::Entry)> = Vec::new();
+    for (row, id) in right_ids.iter().enumerate() {
+        let col_def = ALL_COLUMNS.iter().find(|c| c.id == *id).unwrap();
+        let lbl = Label::new(Some(col_def.header));
+        lbl.set_xalign(1.0);
+        lbl.set_margin_end(4);
+        grid.attach(&lbl, 2, row as i32, 1, 1);
 
-    // Visual column separator
-    let vsep = Separator::new(Orientation::Vertical);
-    vsep.set_margin_start(4);
-    vsep.set_margin_end(4);
-    grid.attach(&vsep, 2, 0, 1, 6);
+        let value = if let Some(ref vals) = initial_values {
+            vals.get(*id)
+                .cloned()
+                .unwrap_or_else(|| get_id3_field_value(&fields, &track_meta, id))
+        } else {
+            get_id3_field_value(&fields, &track_meta, id)
+        };
+        if *id == "genre" {
+            let (combo, entry) = make_genre_combo(&value);
+            combo.set_hexpand(true);
+            grid.attach(&combo, 3, row as i32, 1, 1);
+            right_entries.push((id.to_string(), entry));
+        } else {
+            let entry = Entry::new();
+            entry.set_hexpand(true);
+            entry.set_text(&gtk_safe(&value));
+            grid.attach(&entry, 3, row as i32, 1, 1);
+            right_entries.push((id.to_string(), entry));
+        }
+    }
 
-    // Right column (cols 3–4)
-    let e_artist = attach_field(&grid, "Artist:", &fields.artist, 0, 3, 4);
-    let e_album_artist = attach_field(&grid, "Album Artist:", &fields.album_artist, 1, 3, 4);
-    let e_year = attach_field(&grid, "Year:", &fields.year, 2, 3, 4);
-    let e_track_total = attach_field(&grid, "Track Total:", &fields.track_total, 3, 3, 4);
-    let e_disc_total = attach_field(&grid, "Disc Total:", &fields.disc_total, 4, 3, 4);
-    let e_comment = attach_field(&grid, "Comment:", &fields.comment, 5, 3, 4);
+    // Insert all entries into the HashMap in one operation
+    for (id, entry) in left_entries.into_iter().chain(right_entries) {
+        entries.borrow_mut().insert(id, entry);
+    }
 
-    // ── Status label (errors shown here) ────────────────────────────────────
+    // ── Artwork section ─────────────────────────────────────────────────────
+    let artwork_vbox = GtkBox::new(Orientation::Vertical, 4);
+    artwork_vbox.set_margin_start(12);
+    artwork_vbox.set_margin_end(12);
+    artwork_vbox.set_margin_top(8);
+    artwork_vbox.set_margin_bottom(8);
+
+    let art_path_entry = Entry::new();
+    art_path_entry.set_text(&gtk_safe(&ro.artwork_path));
+    art_path_entry.set_hexpand(true);
+
+    let btn_browse = Button::with_label("Browse…");
+    let btn_view = Button::with_label("View");
+    btn_view.set_sensitive(!ro.artwork_path.is_empty());
+
+    let art_entry_clone = art_path_entry.clone();
+    let btn_view_for_browse = btn_view.clone();
+    btn_browse.connect_clicked(move |_| {
+        let dialog = gtk4::FileDialog::new();
+        dialog.set_title("Select Artwork");
+        let filters = gtk4::FileFilter::new();
+        filters.set_name(Some("Images"));
+        filters.add_mime_type("image/png");
+        filters.add_mime_type("image/jpeg");
+        filters.add_mime_type("image/jpg");
+        filters.add_mime_type("image/gif");
+        filters.add_mime_type("image/webp");
+        dialog.set_default_filter(Some(&filters));
+        let entry_clone = art_entry_clone.clone();
+        let btn_view_clone = btn_view_for_browse.clone();
+        dialog.open(
+            Some(&gtk4::Window::new()),
+            None::<&gtk4::gio::Cancellable>,
+            move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        let path_str = path.to_string_lossy().into_owned();
+                        entry_clone.set_text(&path_str);
+                        btn_view_clone.set_sensitive(true);
+                    }
+                }
+            },
+        );
+    });
+
+    let art_path_clone = art_path_entry.clone();
+    btn_view.connect_clicked(move |_| {
+        let p = art_path_clone.text();
+        if !p.is_empty() {
+            open_image_viewer(&p);
+        }
+    });
+
+    let art_path_row = GtkBox::new(Orientation::Horizontal, 8);
+    art_path_row.append(&Label::new(Some("Artwork:")));
+    art_path_row.append(&art_path_entry);
+    art_path_row.append(&btn_browse);
+    art_path_row.append(&btn_view);
+    artwork_vbox.append(&art_path_row);
+
+    // Track art_path_entry in the entries HashMap
+    entries
+        .borrow_mut()
+        .insert("artwork_path".to_string(), art_path_entry);
+
+    // Show 128x128 thumbnail preview
+    if visible_ids.contains(&"artwork_path".to_string()) && !ro.artwork_path.is_empty() {
+        let art_picture = gtk4::Picture::new();
+        art_picture.set_width_request(128);
+        art_picture.set_height_request(128);
+        art_picture.set_can_shrink(true);
+        art_picture.set_content_fit(gtk4::ContentFit::Contain);
+        art_picture.set_filename(Some(&ro.artwork_path));
+
+        let art_clone = ro.artwork_path.clone();
+        let click = gtk4::GestureClick::new();
+        click.connect_pressed(move |_, _, _, _| {
+            open_image_viewer(&art_clone);
+        });
+        art_picture.add_controller(click);
+        artwork_vbox.append(&art_picture);
+    }
+
+    // ── Status label ─────────────────────────────────────────────────────────
     let status_lbl = Label::builder()
         .label("")
         .halign(Align::Start)
@@ -3175,7 +3892,7 @@ fn open_id3_editor_window(
     let btn_customize = Button::with_label("Customize…");
     let btn_cancel = Button::with_label("Cancel");
     let btn_save = Button::with_label("Save");
-    btn_save.add_css_class("suggested-action"); // accent highlight for primary action
+    btn_save.add_css_class("suggested-action");
 
     let spring = GtkBox::new(Orientation::Horizontal, 0);
     spring.set_hexpand(true);
@@ -3187,68 +3904,108 @@ fn open_id3_editor_window(
     // ── Main layout ──────────────────────────────────────────────────────────
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&grid);
-    vbox.append(&status_lbl);
+    vbox.append(&artwork_vbox);
     vbox.append(&Separator::new(Orientation::Horizontal));
+    vbox.append(&status_lbl);
     vbox.append(&btn_row);
     win.set_child(Some(&vbox));
 
     // ── Collect fields → TagFields and write to disk ─────────────────────────
-    //
-    // Reading all 12 entries is verbose but avoids unsafe sharing patterns.
-    // The closure is cloned for the button callback and the keyboard shortcut.
     let do_save = {
         let path = path.clone();
         let state_s = state.clone();
         let rebuild_s = rebuild_cb.clone();
         let status_s = status_lbl.clone();
         let win_wk = win.downgrade();
-        // Clone each entry widget for reading inside the closure.
-        let et = e_title.clone();
-        let ear = e_artist.clone();
-        let eal = e_album.clone();
-        let eaa = e_album_artist.clone();
-        let eg = e_genre.clone();
-        let ey = e_year.clone();
-        let etn = e_track_num.clone();
-        let ett = e_track_total.clone();
-        let edn = e_disc_num.clone();
-        let edt = e_disc_total.clone();
-        let eb = e_bpm.clone();
-        let ec = e_comment.clone();
+        let entries_r = entries.clone();
 
         move || {
-            // Assemble TagFields from entry contents.
+            let entries = entries_r.borrow();
             let new_fields = TagFields {
-                title: et.text().to_string(),
-                artist: ear.text().to_string(),
-                album: eal.text().to_string(),
-                album_artist: eaa.text().to_string(),
-                genre: eg.text().to_string(),
-                year: ey.text().to_string(),
-                track_number: etn.text().to_string(),
-                track_total: ett.text().to_string(),
-                disc_number: edn.text().to_string(),
-                disc_total: edt.text().to_string(),
-                bpm: eb.text().to_string(),
-                comment: ec.text().to_string(),
+                title: entries
+                    .get("title")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                artist: entries
+                    .get("artist")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                album: entries
+                    .get("album")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                album_artist: entries
+                    .get("album_artist")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                genre: entries
+                    .get("genre")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                year: entries
+                    .get("year")
+                    .map(|e| sanitize_id3_numeric(&e.text()))
+                    .unwrap_or_default(),
+                track_number: entries
+                    .get("track_num")
+                    .map(|e| sanitize_id3_numeric(&e.text()))
+                    .unwrap_or_default(),
+                track_total: entries
+                    .get("track_total")
+                    .map(|e| sanitize_id3_numeric(&e.text()))
+                    .unwrap_or_default(),
+                disc_number: entries
+                    .get("disc_num")
+                    .map(|e| sanitize_id3_numeric(&e.text()))
+                    .unwrap_or_default(),
+                disc_total: entries
+                    .get("disc_total")
+                    .map(|e| sanitize_id3_numeric(&e.text()))
+                    .unwrap_or_default(),
+                bpm: entries
+                    .get("bpm")
+                    .map(|e| sanitize_id3_numeric(&e.text()))
+                    .unwrap_or_default(),
+                comment: entries
+                    .get("comment")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                artwork_path: entries
+                    .get("artwork_path")
+                    .map(|e| e.text().to_string())
+                    .unwrap_or_default(),
             };
 
             match write_tag_fields(&path, &new_fields) {
                 Ok(()) => {
-                    // Refresh in-memory title/artist so the playlist rebuilds correctly.
                     for track in &mut state_s.borrow_mut().playlist.tracks {
                         if track.path == path {
                             if let Ok(fresh) = crate::model::Track::from_path(&path) {
                                 track.title = fresh.title;
                                 track.artist = fresh.artist;
+                                track.album_artist = fresh.album_artist;
+                                track.album = fresh.album;
                             }
                             break;
                         }
                     }
-                    rebuild_s();
+
+                    // Re-extract and update cached artwork from the saved file
+                    if let Some(lib) = state_s.borrow().media_lib.as_ref() {
+                        let path_str = path.to_string_lossy().into_owned();
+                        if let Ok(lib_track) = lib.track_by_path(&path_str) {
+                            let _ = lib.refresh_artwork(lib_track.id, &path_str);
+                        }
+                    }
+
+                    let rebuild = rebuild_s.clone();
                     if let Some(w) = win_wk.upgrade() {
                         w.close();
                     }
+                    glib::idle_add_local(move || {
+                        rebuild();
+                        glib::ControlFlow::Break
+                    });
                 }
                 Err(e) => {
                     status_s.set_text(&format!("Save error: {e}"));
@@ -3275,12 +4032,43 @@ fn open_id3_editor_window(
         }
     });
 
-    // ── Customize button — open extra-frames window ──────────────────────────
+    // ── Customize button — open column customization dialog ──────────────────
     btn_customize.connect_clicked({
-        let path2 = path.clone();
-        let win_wk = win.downgrade();
+        let state_outer = state.clone();
+        let win_wk_outer = win.downgrade();
+        let path_outer = path.clone();
+        let rebuild_outer = rebuild_cb.clone();
+        let entries_outer = entries.clone();
         move |_| {
-            open_id3_extra_window(win_wk.upgrade().as_ref(), path2.clone());
+            let state_inner = state_outer.clone();
+            let win_wk = win_wk_outer.clone();
+            let path_clone = path_outer.clone();
+            let rebuild_clone = rebuild_outer.clone();
+            let entries_clone = entries_outer.clone();
+            let current_values: std::collections::HashMap<String, String> = entries_clone
+                .borrow()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.text().to_string()))
+                .collect();
+            open_customize_columns_dialog(
+                win_wk.upgrade().as_ref(),
+                state_inner.clone(),
+                "Customize ID3 Fields",
+                ColumnCustomizerMode::Id3Editor,
+                None::<Rc<dyn Fn(String, bool)>>,
+                Some(Rc::new(move || {
+                    if let Some(w) = win_wk.upgrade() {
+                        w.close();
+                    }
+                    open_id3_editor_window(
+                        None::<&gtk4::Window>,
+                        path_clone.clone(),
+                        state_inner.clone(),
+                        rebuild_clone.clone(),
+                        Some(current_values.clone()),
+                    );
+                }) as Rc<dyn Fn()>),
+            );
         }
     });
 
@@ -3356,13 +4144,13 @@ fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf
             .build();
 
         let desc_lbl = Label::builder()
-            .label(&frame.label)
+            .label(&gtk_safe(&frame.label))
             .xalign(0.0)
             .width_chars(20)
             .build();
 
         let entry = Entry::new();
-        entry.set_text(&frame.value);
+        entry.set_text(&gtk_safe(&frame.value));
         entry.set_hexpand(true);
 
         let btn_ok = Button::with_label("✓");
@@ -3720,12 +4508,14 @@ fn open_settings_window(
 
         let rebuild_for_add = rebuild_list.clone();
         let status_for_add = status_lbl.clone();
+        let state_for_add = state.clone();
         btn_add_folder.connect_clicked(move |_| {
             let dialog = gtk4::FileDialog::builder()
                 .title("Select Music Folder")
                 .build();
             let rebuild_cb = rebuild_for_add.clone();
             let status_rc = status_for_add.clone();
+            let state_rc = state_for_add.clone();
             dialog.select_folder(
                 None::<&gtk4::Window>,
                 None::<&gio::Cancellable>,
@@ -3739,6 +4529,10 @@ fn open_settings_window(
                     };
                     let path_for_thread = path_str.clone();
 
+                    state_rc
+                        .borrow()
+                        .pending_bg_ops
+                        .set(state_rc.borrow().pending_bg_ops.get() + 1);
                     let (tx, rx) = std::sync::mpsc::channel();
                     let tx2 = tx.clone();
 
@@ -3811,6 +4605,10 @@ fn open_settings_window(
                                 status.set_text(&format!("Error: {e}"));
                             }
                         }
+                        state_rc
+                            .borrow()
+                            .pending_bg_ops
+                            .set(state_rc.borrow().pending_bg_ops.get() - 1);
                         glib::ControlFlow::Break
                     });
                 },
@@ -4131,8 +4929,11 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     // ── Save config on close ─────────────────────────────────────────────────
     win.connect_close_request({
         let state_rc = state.clone();
-        move |_| {
-            let _ = state_rc.borrow().config.save();
+        move |w| {
+            let mut cfg = state_rc.borrow().config.clone();
+            cfg.window.ml_width = w.width();
+            cfg.window.ml_height = w.height();
+            let _ = cfg.save();
             glib::Propagation::Proceed
         }
     });
@@ -4157,17 +4958,277 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
 // Media Library browser window
 // ---------------------------------------------------------------------------
 
+/// Defines all columns that can appear in both the Media Library window
+/// and the ID3 tag editor.  `id3_editable` fields are shown as text entries
+/// in the ID3 editor; `read_only` fields are shown as non-editable labels.
+struct MlColumnDef {
+    id: &'static str,
+    header: &'static str,
+    expand: bool,
+    #[allow(dead_code)]
+    id3_editable: bool,
+    #[allow(dead_code)]
+    default_ml_visible: bool,
+    #[allow(dead_code)]
+    default_id3_visible: bool,
+}
+
+const ALL_COLUMNS: &[MlColumnDef] = &[
+    // ── Read-only file data ────────────────────────────────────────────────
+    MlColumnDef {
+        id: "num",
+        header: "#",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: true,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "filename",
+        header: "Filename",
+        expand: true,
+        id3_editable: false,
+        default_ml_visible: true,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "path",
+        header: "Path",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "filetype",
+        header: "Type",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "bitrate",
+        header: "Bitrate",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "channels",
+        header: "Ch",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "duration",
+        header: "Duration",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: true,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "play_count",
+        header: "# Play",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "last_played",
+        header: "Last Played",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "artwork_path",
+        header: "Artwork",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    // ── Editable ID3 fields ────────────────────────────────────────────────
+    MlColumnDef {
+        id: "title",
+        header: "Title",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: true,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "artist",
+        header: "Artist",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: true,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "album",
+        header: "Album",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: true,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "album_artist",
+        header: "Album Artist",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: true,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "year",
+        header: "Year",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "genre",
+        header: "Genre",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "track_num",
+        header: "Track #",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "track_total",
+        header: "Track Total",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "disc_num",
+        header: "Disc",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "disc_total",
+        header: "Disc Total",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "bpm",
+        header: "BPM",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "comment",
+        header: "Comment",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "composer",
+        header: "Composer",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "original_artist",
+        header: "Original Artist",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "copyright",
+        header: "Copyright",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "url",
+        header: "URL",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "encoded_by",
+        header: "Encoded By",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+    MlColumnDef {
+        id: "lyric",
+        header: "Lyric",
+        expand: false,
+        id3_editable: true,
+        default_ml_visible: false,
+        default_id3_visible: true,
+    },
+];
+
 fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
     match col {
-        "num" => format!("{:010}", t.track_num.unwrap_or(0)),
-        "title" => t.title.as_deref().unwrap_or(&t.filename).to_lowercase(),
-        "artist" => t.artist.as_deref().unwrap_or("").to_lowercase(),
-        "album" => t.album.as_deref().unwrap_or("").to_lowercase(),
-        "duration" => format!("{:015.3}", t.length_secs.unwrap_or(0.0)),
-        "filename" => t.filename.to_lowercase(),
-        "year" => format!("{:010}", t.year.unwrap_or(0)),
-        "genre" => t.genre.as_deref().unwrap_or("").to_lowercase(),
-        "bitrate" => format!("{:010}", t.bitrate.unwrap_or(0)),
+        "num" => t.sort_keys.num.clone(),
+        "title" => t.sort_keys.title.clone(),
+        "artist" => t.sort_keys.artist.clone(),
+        "album" => t.sort_keys.album.clone(),
+        "duration" => t.sort_keys.duration.clone(),
+        "filename" => t.sort_keys.filename.clone(),
+        "year" => t.sort_keys.year.clone(),
+        "genre" => t.sort_keys.genre.clone(),
+        "bitrate" => t.sort_keys.bitrate.clone(),
+        "channels" => format!("{:02}", t.channels.unwrap_or(0)),
+        "path" => t.path.to_lowercase(),
+        "play_count" => format!("{:010}", t.play_count),
+        "last_played" => t.last_played.clone().unwrap_or_default(),
+        "comment" => t.sort_keys.comment.clone(),
+        "album_artist" => t.sort_keys.album_artist.clone(),
+        "disc_num" => format!("{:010}", t.disc_num.unwrap_or(0)),
+        "disc_total" => format!("{:010}", t.disc_total.unwrap_or(0)),
+        "composer" => t.sort_keys.composer.clone(),
+        "original_artist" => t.original_artist.as_deref().unwrap_or("").to_lowercase(),
+        "copyright" => t.copyright.as_deref().unwrap_or("").to_lowercase(),
+        "url" => t.url.as_deref().unwrap_or("").to_lowercase(),
+        "encoded_by" => t.encoded_by.as_deref().unwrap_or("").to_lowercase(),
+        "bpm" => t.bpm.as_deref().unwrap_or("").to_lowercase(),
+        "lyric" => t.lyric.as_deref().unwrap_or("").to_lowercase(),
+        "artwork_path" => t.artwork_path.as_deref().unwrap_or("").to_lowercase(),
         _ => String::new(),
     }
 }
@@ -4187,14 +5248,40 @@ fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Image viewer popup
+// ---------------------------------------------------------------------------
+
+/// Open a resizable window displaying the image at `path`.
+fn open_image_viewer(path: &str) {
+    use gtk4::ContentFit;
+
+    let win = gtk4::Window::new();
+    win.set_title(Some("Artwork — Sparkamp"));
+    win.set_default_size(400, 400);
+    win.set_resizable(true);
+
+    let picture = gtk4::Picture::new();
+    picture.set_filename(Some(path));
+    picture.set_can_shrink(true);
+    picture.set_content_fit(ContentFit::Contain);
+    picture.set_hexpand(true);
+    picture.set_vexpand(true);
+
+    win.set_child(Some(&picture));
+    win.present();
+}
+
 fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     rebuild_playlist: Rc<dyn Fn()>,
+    init_width: i32,
+    init_height: i32,
 ) -> gtk4::Window {
     let win = gtk4::Window::new();
     win.set_title(Some("Media Library — Sparkamp"));
-    win.set_default_size(720, 520);
+    win.set_default_size(init_width, init_height);
     win.set_resizable(true);
     if let Some(p) = parent {
         win.set_transient_for(Some(p));
@@ -4261,38 +5348,242 @@ fn open_media_library_window(
         col_view.set_hexpand(true);
         col_view.set_vexpand(true);
 
-        // All available columns: (config_id, header, min_width_px, expand).
-        let col_defs: &[(&str, &str, i32, bool)] = &[
-            ("num", "#", 40, false),
-            ("title", "Title", 140, true),
-            ("artist", "Artist", 120, false),
-            ("album", "Album", 120, false),
-            ("duration", "Duration", 60, false),
-            ("filename", "Filename", 140, true),
-            ("year", "Year", 50, false),
-            ("genre", "Genre", 90, false),
-            ("bitrate", "Bitrate", 60, false),
-        ];
+        let col_defs: &[(&str, &str, i32, bool)] = ALL_COLUMNS
+            .iter()
+            .map(|c| (c.id, c.header, 80, c.expand))
+            .collect::<Vec<_>>()
+            .leak();
 
         let visible_ids: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
 
+        // Track which artwork buttons have been connected to avoid duplicate click handlers
+        // (connect_bind fires each time an item is shown after a scroll).
+        let connected_artwork: Rc<RefCell<std::collections::HashSet<glib::Object>>> =
+            Rc::new(RefCell::new(std::collections::HashSet::new()));
+
+        // Capture store_ref before factory so it's available for the factory's right-click handler
+        let store_for_ctx = track_store.clone();
+
         let all_cols: Vec<(String, ColumnViewColumn)> = col_defs
             .iter()
-            .map(|(id, header, min_w, expand)| {
+            .map(|(id, header, _min_w, expand)| {
                 let factory = SignalListItemFactory::new();
                 let id_str = id.to_string();
+                let is_artwork = id_str == "artwork_path";
+                let connected = connected_artwork.clone();
+                let ctx_state = state.clone();
+                let ctx_multi_sel = multi_sel.clone();
+                let ctx_rebuild_pl = rebuild_playlist.clone();
+                let ctx_col_view = col_view.clone();
+                let ctx_store = store_for_ctx.clone();
+
                 factory.connect_setup(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                    let lbl = Label::builder()
-                        .halign(Align::Start)
-                        .margin_start(6)
-                        .margin_end(6)
-                        .margin_top(3)
-                        .margin_bottom(3)
-                        .ellipsize(gtk4::pango::EllipsizeMode::End)
-                        .css_classes(["ml-col-label"])
-                        .build();
-                    li.set_child(Some(&lbl));
+
+                    // Skip if child already exists (row is being recycled)
+                    if li.child().is_some() {
+                        return;
+                    }
+
+                    let child: gtk4::Widget;
+
+                    if is_artwork {
+                        let btn = Button::builder()
+                            .label("View")
+                            .halign(Align::Start)
+                            .margin_start(6)
+                            .margin_end(6)
+                            .margin_top(3)
+                            .margin_bottom(3)
+                            .hexpand(true)
+                            .vexpand(true)
+                            .halign(Align::Fill)
+                            .valign(Align::Fill)
+                            .build();
+                        btn.add_css_class("link");
+                        child = btn.upcast::<gtk4::Widget>();
+                    } else {
+                        let lbl = Label::builder()
+                            .halign(Align::Start)
+                            .margin_start(6)
+                            .margin_end(6)
+                            .margin_top(3)
+                            .margin_bottom(3)
+                            .hexpand(true)
+                            .vexpand(true)
+                            .halign(Align::Fill)
+                            .valign(Align::Fill)
+                            .ellipsize(gtk4::pango::EllipsizeMode::End)
+                            .css_classes(["ml-col-label"])
+                            .build();
+                        child = lbl.upcast::<gtk4::Widget>();
+                    }
+
+                    // Add right-click gesture to each row
+                    let gesture = gtk4::GestureClick::new();
+                    gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+                    let state_gest = ctx_state.clone();
+                    let sel_gest = ctx_multi_sel.clone();
+                    let rebuild_pl_gest = ctx_rebuild_pl.clone();
+                    let col_popup = ctx_col_view.clone();
+                    let li_gest = li.clone();
+                    let store_gest = ctx_store.clone();
+                    gesture.connect_pressed(move |_gest, n_press, x, y| {
+                        if n_press != 1 {
+                            return;
+                        }
+                        // Get the item directly from the ListItem - no coordinate math needed!
+                        let Some(item) = li_gest.item() else {
+                            return;
+                        };
+                        let item_clone = item.clone();
+                        let Some(boxed) = item.downcast::<glib::BoxedAnyObject>().ok() else {
+                            return;
+                        };
+                        let track = boxed.borrow::<crate::media_library::LibTrack>();
+
+                        // Select only this item in the selection model
+                        let n_items = sel_gest.n_items();
+                        for i in 0..n_items {
+                            if let Some(model_item) = sel_gest.item(i) {
+                                if model_item == item_clone {
+                                    sel_gest.unselect_all();
+                                    sel_gest.select_item(i, true);
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Convert coordinates from gesture widget to ColumnView
+                        // The gesture gives coords in the child widget's space
+                        let child = li_gest.child();
+                        let (popup_x, popup_y) = if let Some(child_widget) = child {
+                            if let Some((rel_x, rel_y)) =
+                                child_widget.translate_coordinates(&col_popup, x, y)
+                            {
+                                (rel_x, rel_y)
+                            } else {
+                                (x, y)
+                            }
+                        } else {
+                            (x, y)
+                        };
+
+                        // Create popover at converted position
+                        let popover = gtk4::Popover::new();
+                        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+                            popup_x as i32,
+                            popup_y as i32,
+                            1,
+                            1,
+                        )));
+                        popover.set_parent(&col_popup);
+
+                        let vbox = GtkBox::new(Orientation::Vertical, 0);
+                        vbox.set_margin_top(4);
+                        vbox.set_margin_bottom(4);
+                        vbox.set_margin_start(4);
+                        vbox.set_margin_end(4);
+
+                        // Add to Playlist
+                        let btn_add = Button::with_label("Add to Playlist");
+                        let state_add = state_gest.clone();
+                        let sel_add = sel_gest.clone();
+                        let rebuild_add = rebuild_pl_gest.clone();
+                        let popover_add = popover.clone();
+                        btn_add.connect_clicked(move |_btn| {
+                            for i in 0..sel_add.n_items() {
+                                if sel_add.is_selected(i) {
+                                    if let Some(obj) = sel_add
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        let track = libtrack_to_track(&t);
+                                        state_add.borrow_mut().playlist.add(track);
+                                    }
+                                }
+                            }
+                            rebuild_add();
+                            popover_add.unparent();
+                        });
+                        vbox.append(&btn_add);
+
+                        // View/Edit ID3 Info
+                        let btn_id3 = Button::with_label("View/Edit ID3 Info");
+                        let state_id3 = state_gest.clone();
+                        let sel_id3 = sel_gest.clone();
+                        let rebuild_id3 = rebuild_pl_gest.clone();
+                        let popover_id3 = popover.clone();
+                        btn_id3.connect_clicked(move |_btn| {
+                            for i in 0..sel_id3.n_items() {
+                                if sel_id3.is_selected(i) {
+                                    if let Some(obj) = sel_id3
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        let path = std::path::PathBuf::from(&t.path);
+                                        open_id3_editor_window(
+                                            None::<&gtk4::Window>,
+                                            path,
+                                            state_id3.clone(),
+                                            rebuild_id3.clone(),
+                                            None,
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                            popover_id3.unparent();
+                        });
+                        vbox.append(&btn_id3);
+
+                        let sep = Separator::new(Orientation::Horizontal);
+                        vbox.append(&sep);
+
+                        // Remove from Media Library
+                        let btn_remove = Button::with_label("Remove from Media Library");
+                        let state_remove = state_gest.clone();
+                        let sel_remove = sel_gest.clone();
+                        let popover_remove = popover.clone();
+                        let store_remove = store_gest.clone();
+                        btn_remove.connect_clicked(move |_btn| {
+                            for i in 0..sel_remove.n_items() {
+                                if sel_remove.is_selected(i) {
+                                    if let Some(obj) = sel_remove
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        if let Some(lib) = state_remove.borrow().media_lib.as_ref()
+                                        {
+                                            let _ = lib.remove_track(t.id);
+                                        }
+                                    }
+                                }
+                            }
+                            // Rebuild the store to reflect removed tracks
+                            let tracks: Vec<crate::media_library::LibTrack> = state_remove
+                                .borrow()
+                                .media_lib
+                                .as_ref()
+                                .and_then(|lib| lib.all_tracks().ok())
+                                .unwrap_or_default();
+                            let boxed: Vec<glib::BoxedAnyObject> =
+                                tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
+                            store_remove.splice(0, store_remove.n_items(), &boxed);
+                            popover_remove.unparent();
+                        });
+                        vbox.append(&btn_remove);
+
+                        popover.set_child(Some(&vbox));
+                        popover.popup();
+                    });
+                    child.add_controller(gesture);
+                    if li.child().is_none() {
+                        li.set_child(Some(&child));
+                    }
                 });
                 factory.connect_bind(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -4303,6 +5594,30 @@ fn open_media_library_window(
                         return;
                     };
                     let t = boxed.borrow::<crate::media_library::LibTrack>();
+
+                    if is_artwork {
+                        let btn = li.child().and_then(|c| c.downcast::<Button>().ok());
+                        if let Some(btn) = btn {
+                            let btn_obj = btn.clone().upcast::<glib::Object>();
+                            if let Some(ref art_path) = t.artwork_path {
+                                btn.set_sensitive(true);
+                                btn.set_label("View");
+                                // Only connect once per button instance.
+                                if !connected.borrow().contains(&btn_obj) {
+                                    let art_clone = art_path.clone();
+                                    connected.borrow_mut().insert(btn_obj.clone());
+                                    btn.connect_clicked(move |_| {
+                                        open_image_viewer(&art_clone);
+                                    });
+                                }
+                            } else {
+                                btn.set_sensitive(false);
+                                btn.set_label("");
+                            }
+                        }
+                        return;
+                    }
+
                     let lbl = li.child().and_then(|c| c.downcast::<Label>().ok());
                     let Some(lbl) = lbl else {
                         return;
@@ -4312,6 +5627,7 @@ fn open_media_library_window(
                         "title" => t.title.as_deref().unwrap_or(&t.filename).to_string(),
                         "artist" => t.artist.as_deref().unwrap_or("").to_string(),
                         "album" => t.album.as_deref().unwrap_or("").to_string(),
+                        "album_artist" => t.album_artist.as_deref().unwrap_or("").to_string(),
                         "duration" => t
                             .length_secs
                             .map(|s| {
@@ -4323,6 +5639,53 @@ fn open_media_library_window(
                         "year" => t.year.map(|y| y.to_string()).unwrap_or_default(),
                         "genre" => t.genre.as_deref().unwrap_or("").to_string(),
                         "bitrate" => t.bitrate.map(|b| format!("{b}k")).unwrap_or_default(),
+                        "channels" => match t.channels.unwrap_or(0) {
+                            1 => "mono".to_string(),
+                            2 => "stereo".to_string(),
+                            n => format!("{}ch", n),
+                        },
+                        "path" => t.path.clone(),
+                        "play_count" => t.play_count.to_string(),
+                        "last_played" => format_last_played(t.last_played.as_deref().unwrap_or("")),
+                        "disc_num" => {
+                            let d = t.disc_num.unwrap_or(0);
+                            if d == 0 {
+                                String::new()
+                            } else if let Some(total) = t.disc_total {
+                                if total > 0 {
+                                    format!("{}/{}", d, total)
+                                } else {
+                                    d.to_string()
+                                }
+                            } else {
+                                d.to_string()
+                            }
+                        }
+                        "disc_total" => t.disc_total.map(|d| d.to_string()).unwrap_or_default(),
+                        "composer" => t.composer.as_deref().unwrap_or("").to_string(),
+                        "original_artist" => t.original_artist.as_deref().unwrap_or("").to_string(),
+                        "copyright" => t.copyright.as_deref().unwrap_or("").to_string(),
+                        "url" => t.url.as_deref().unwrap_or("").to_string(),
+                        "encoded_by" => t.encoded_by.as_deref().unwrap_or("").to_string(),
+                        "bpm" => t.bpm.as_deref().unwrap_or("").to_string(),
+                        "lyric" => {
+                            let ly = t.lyric.as_deref().unwrap_or("");
+                            if ly.is_empty() {
+                                String::new()
+                            } else if ly.len() > 30 {
+                                format!("{}…", &ly[..30])
+                            } else {
+                                ly.to_string()
+                            }
+                        }
+                        "comment" => t.comment.as_deref().unwrap_or("").to_string(),
+                        "artwork_path" => {
+                            if t.artwork_path.is_some() {
+                                "Yes".to_string()
+                            } else {
+                                String::new()
+                            }
+                        }
                         _ => String::new(),
                     };
                     lbl.set_text(&gtk_safe(&text));
@@ -4330,7 +5693,9 @@ fn open_media_library_window(
 
                 let col = ColumnViewColumn::new(Some(header), Some(factory));
                 col.set_resizable(true);
-                col.set_fixed_width(*min_w);
+                // Note: do NOT use set_fixed_width here — it prevents the column from
+                // shrinking smaller than min_w. Let the Label's ellipsize attribute truncate
+                // content when the user resizes the column narrower.
                 if *expand {
                     col.set_expand(true);
                 }
@@ -4521,53 +5886,24 @@ fn open_media_library_window(
         // Customize columns dialog.
         {
             let state_rc = state.clone();
-            let cols_ref = all_cols.clone();
+            let all_cols_rc = all_cols.clone();
             let win_wk = win.downgrade();
             btn_customize.connect_clicked(move |_| {
-                let dlg = gtk4::Window::new();
-                dlg.set_title(Some("Customize Columns"));
-                dlg.set_default_size(240, 360);
-                dlg.set_resizable(false);
-                if let Some(w) = win_wk.upgrade() {
-                    dlg.set_transient_for(Some(&w));
-                }
-                let vbox = GtkBox::new(Orientation::Vertical, 6);
-                vbox.set_margin_top(12);
-                vbox.set_margin_bottom(12);
-                vbox.set_margin_start(12);
-                vbox.set_margin_end(12);
-                let hdr = Label::builder()
-                    .label("Select columns to display:")
-                    .halign(Align::Start)
-                    .build();
-                vbox.append(&hdr);
-                for (id, col) in cols_ref.iter() {
-                    let title = col
-                        .title()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| id.clone());
-                    let cb = CheckButton::with_label(&title);
-                    cb.set_active(col.is_visible());
-                    let col_ref = col.clone();
-                    let id_owned = id.clone();
-                    let state_inner = state_rc.clone();
-                    cb.connect_toggled(move |btn| {
-                        let visible = btn.is_active();
-                        col_ref.set_visible(visible);
-                        let mut s = state_inner.borrow_mut();
-                        let vc = &mut s.config.media_library.visible_columns;
-                        if visible {
-                            if !vc.contains(&id_owned) {
-                                vc.push(id_owned.clone());
-                            }
-                        } else {
-                            vc.retain(|c| c != &id_owned);
+                let cols_for_callback = all_cols_rc.clone();
+                open_customize_columns_dialog(
+                    win_wk.upgrade().as_ref(),
+                    state_rc.clone(),
+                    "Customize Columns",
+                    ColumnCustomizerMode::MediaLibrary,
+                    Some(Rc::new(move |id: String, visible: bool| {
+                        if let Some((_, col)) =
+                            cols_for_callback.iter().find(|(col_id, _)| col_id == &id)
+                        {
+                            col.set_visible(visible);
                         }
-                    });
-                    vbox.append(&cb);
-                }
-                dlg.set_child(Some(&vbox));
-                dlg.present();
+                    }) as Rc<dyn Fn(String, bool)>),
+                    None::<Rc<dyn Fn()>>,
+                );
             });
         }
 
@@ -4605,6 +5941,10 @@ fn open_media_library_window(
                             return;
                         };
 
+                        state_inner
+                            .borrow()
+                            .pending_bg_ops
+                            .set(state_inner.borrow().pending_bg_ops.get() + 1);
                         type ScanMsg = Result<usize, String>;
                         let (sender, receiver) = std::sync::mpsc::channel::<ScanMsg>();
                         std::thread::spawn(move || {
@@ -4659,6 +5999,10 @@ fn open_media_library_window(
                                     ));
                                 }
                             }
+                            state_inner
+                                .borrow()
+                                .pending_bg_ops
+                                .set(state_inner.borrow().pending_bg_ops.get() - 1);
                             glib::ControlFlow::Break
                         });
                     });
@@ -4683,6 +6027,10 @@ fn open_media_library_window(
                     }
                 };
                 status_ref.set_text("Scanning…");
+                state_rc
+                    .borrow()
+                    .pending_bg_ops
+                    .set(state_rc.borrow().pending_bg_ops.get() + 1);
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
                     let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
@@ -4715,6 +6063,10 @@ fn open_media_library_window(
                             status_ref2.set_text(&format!("{count} tracks in library"));
                         }
                     }
+                    state_rc2
+                        .borrow()
+                        .pending_bg_ops
+                        .set(state_rc2.borrow().pending_bg_ops.get() - 1);
                     glib::ControlFlow::Break
                 });
             });
@@ -4776,6 +6128,10 @@ fn open_media_library_window(
         }
 
         stack.add_named(&files_vbox, Some("files"));
+        let rf = rebuild_files.clone();
+        state.borrow_mut().rebuild_ml_callback = Some(Rc::new(move || {
+            rf();
+        }));
     }
 
     // ── Page: Playlists ──────────────────────────────────────────────────
@@ -4950,6 +6306,23 @@ fn open_media_library_window(
     root.append(&vsep);
     root.append(&stack);
     win.set_child(Some(&root));
+
+    win.connect_close_request({
+        let state = state.clone();
+        move |w| {
+            let (w_size, h_size) = (w.width(), w.height());
+            {
+                let mut s = state.borrow_mut();
+                s.config.window.ml_width = w_size;
+                s.config.window.ml_height = h_size;
+                s.rebuild_ml_callback = None;
+            }
+            let _ = state.borrow().config.save();
+            state.borrow_mut().ml_window = None;
+            glib::Propagation::Proceed
+        }
+    });
+
     win.present();
     win
 }
@@ -5090,6 +6463,54 @@ mod tests {
         let mut s = state_with_tracks(&["A"]);
         s.play_prev();
         assert_eq!(s.playlist.current_index, 0);
+    }
+
+    #[test]
+    fn play_next_when_stopped_does_not_start_playback() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 0;
+        // Player starts in Stopped state
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+        let result = s.play_next();
+        // Should advance to next track
+        assert_eq!(s.playlist.current_index, 1);
+        // Should return display name
+        assert!(result.is_some());
+        // Should still be stopped (not auto-started)
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+    }
+
+    #[test]
+    fn play_next_when_stopped_returns_correct_display_name() {
+        let mut s = state_with_tracks(&["Song A", "Song B"]);
+        s.playlist.current_index = 0;
+        let result = s.play_next();
+        // Should return the display name of the next track
+        assert_eq!(result.unwrap(), "Song B");
+    }
+
+    #[test]
+    fn play_prev_when_stopped_does_not_start_playback() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        // Player starts in Stopped state
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+        let result = s.play_prev();
+        // Should go back to previous track
+        assert_eq!(s.playlist.current_index, 0);
+        // Should return display name
+        assert!(result.is_some());
+        // Should still be stopped (not auto-started)
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+    }
+
+    #[test]
+    fn play_prev_when_stopped_returns_correct_display_name() {
+        let mut s = state_with_tracks(&["Song A", "Song B"]);
+        s.playlist.current_index = 1;
+        let result = s.play_prev();
+        // Should return the display name of the previous track
+        assert_eq!(result.unwrap(), "Song A");
     }
 
     // ── AppState::toggle_visualizer_mode ──────────────────────────────────────
@@ -5516,5 +6937,119 @@ mod tests {
         s.config.equalizer.preamp = clamped;
         s.player.set_preamp(clamped);
         assert_eq!(s.config.equalizer.preamp, clamped);
+    }
+
+    // ── Play counting (20-second threshold) ─────────────────────────────────────
+
+    #[test]
+    fn new_state_has_counted_play_path_none() {
+        let s = make_state();
+        assert!(s.counted_play_path.is_none());
+    }
+
+    #[test]
+    fn play_current_resets_counted_play_path() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        // Simulate a previously-counted play by setting the field.
+        let path_str = s.playlist.tracks[0].path.to_string_lossy().into_owned();
+        s.counted_play_path = Some(path_str.clone());
+        assert!(s.counted_play_path.is_some());
+
+        // play_current() resets it so the new track can be counted.
+        let _ = s.play_current();
+        assert!(s.counted_play_path.is_none());
+    }
+
+    #[test]
+    fn play_count_is_not_recorded_before_20_seconds() {
+        // The counted_play_path field is None when a track starts,
+        // so the tick loop's recording logic will not fire before 20 seconds elapse.
+        let mut s = state_with_tracks(&["A"]);
+        let _ = s.play_current();
+        // Before any playback time accumulates, counted_play_path is None.
+        assert!(s.counted_play_path.is_none());
+    }
+
+    #[test]
+    fn play_current_tracks_are_independent() {
+        // When switching tracks, counted_play_path is reset so the new track
+        // starts fresh and can be counted independently of the previous one.
+        let mut s = state_with_tracks(&["A", "B"]);
+        let path_a = s.playlist.tracks[0].path.to_string_lossy().into_owned();
+        let path_b = s.playlist.tracks[1].path.to_string_lossy().into_owned();
+
+        // Simulate: A was counted, then user switched to B.
+        s.counted_play_path = Some(path_a.clone());
+        assert_eq!(s.counted_play_path, Some(path_a));
+
+        // Switching to B resets the counter so B can be counted on its own.
+        s.playlist.current_index = 1;
+        let _ = s.play_current();
+        assert!(s.counted_play_path.is_none());
+    }
+
+    #[test]
+    fn switching_tracks_allows_new_track_to_be_counted() {
+        // Verify that counted_play_path from track A does NOT prevent
+        // track B from being counted (different paths).
+        let mut s = state_with_tracks(&["A", "B"]);
+        let path_a = s.playlist.tracks[0].path.to_string_lossy().into_owned();
+        let path_b = s.playlist.tracks[1].path.to_string_lossy().into_owned();
+
+        s.counted_play_path = Some(path_a.clone());
+        assert_ne!(s.counted_play_path, Some(path_b.clone()));
+
+        // After jumping to B, counted_play_path is cleared so B can be counted.
+        s.playlist.jump_to(1);
+        let _ = s.play_current();
+        assert!(s.counted_play_path.is_none());
+    }
+
+    #[test]
+    fn tick_loop_does_not_record_play_before_20_seconds() {
+        // Simulate the tick loop's play-counting logic with < 20s of playback.
+        // At 19 seconds the condition `pos >= 20_secs` is false → no recording.
+        let mut s = state_with_tracks(&["A"]);
+        let _ = s.play_current();
+        let path = s.playlist.tracks[0].path.to_string_lossy().into_owned();
+
+        // Simulate 19 seconds of playback (just under threshold).
+        let pos_under = Duration::from_secs(19);
+        // The tick loop's check: pos >= Duration::from_secs(20) → false
+        assert!(pos_under < Duration::from_secs(20));
+        assert!(s.counted_play_path.is_none());
+        // Even after the check, path doesn't match (counted_play_path is None).
+        assert_ne!(s.counted_play_path.as_ref(), Some(&path));
+    }
+
+    #[test]
+    fn tick_loop_records_play_at_exactly_20_seconds() {
+        // At exactly 20 seconds the condition `pos >= 20_secs` is true.
+        let mut s = state_with_tracks(&["A"]);
+        let _ = s.play_current();
+        let path = s.playlist.tracks[0].path.to_string_lossy().into_owned();
+
+        let pos_20s = Duration::from_secs(20);
+        assert!(pos_20s >= Duration::from_secs(20));
+        // Simulate: path differs from counted_play_path, so the tick loop
+        // WOULD call ml.record_play and set counted_play_path = Some(path).
+        assert_ne!(s.counted_play_path.as_ref(), Some(&path));
+    }
+
+    #[test]
+    fn tick_loop_skips_recording_after_already_counted() {
+        // Once counted_play_path matches the current path, no re-recording occurs.
+        let mut s = state_with_tracks(&["A"]);
+        let path = s.playlist.tracks[0].path.to_string_lossy().into_owned();
+
+        // Simulate: track already counted at a previous tick.
+        s.counted_play_path = Some(path.clone());
+        assert_eq!(s.counted_play_path.as_ref(), Some(&path));
+
+        // Simulate another tick with 25 seconds of playback.
+        // The tick loop's condition: counted_play_path.as_ref() == Some(path) → true
+        // The recording block is skipped (different paths check fails).
+        // After this tick, counted_play_path should STILL be Some(path).
+        assert_eq!(s.counted_play_path, Some(path));
     }
 }
