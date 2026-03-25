@@ -1,0 +1,377 @@
+# Sparkamp Window Requirements
+
+## 1. Main Window / Player View
+
+The primary interface for playback control and track display.
+
+### Shared Features
+- Display current track info (title, artist, duration)
+- Transport controls: Previous, Play/Pause, Stop, Next
+- Seek functionality (seekbar/slider)
+- Volume control (0-100%)
+- Repeat modes: Off -> Song -> Playlist
+- Shuffle toggle
+- Now-playing display with elapsed/remaining time
+- Track index indicator (e.g., "3 / 15")
+
+### TUI Specific
+- Mini visualizer (22 columns, animated bars)
+- Marquee scrolling title for long names
+- Progress gauge (text-based bar)
+- Transport hints at bottom
+- Scrollable playlist panel
+- Playlist toggle visibility
+
+### GUI Specific
+- GTK4-based main window
+- Picture widget for album art (clickable for larger view)
+- Horizontal seekbar
+- Toggle buttons with icons for repeat/shuffle/EQ/ML
+- Volume slider
+- Status bar with GNOME integration
+- GNOME logo click -> Settings, right-click -> theme toggle
+
+---
+
+## 2. Playlist Window
+
+The track queue/list view.
+
+### Shared Features
+- Display all queued tracks
+- Show track number, title, artist, duration
+- Play track on selection
+- Remove tracks from list
+- Clear all tracks
+- Track count display
+
+### TUI Specific
+- Collapsible panel in main view
+- Duration column
+- 1-based track numbering
+
+### GUI Specific
+- Separate GTK4 window
+- Multi-select ListBox
+- Drag-and-drop reordering
+- External file drag-and-drop support
+- Add Files button (opens native FileDialog)
+- Add Folder button
+- Remove selected button
+- Clear All button
+
+---
+
+## 3. Jump to Track / Search
+
+Quick track search and navigation.
+
+### Shared Features
+- Text search input
+- Live filtering as user types
+- Case-insensitive search
+- Results show title + artist
+- Keyboard navigation (up/down arrows)
+- Enter to play selected
+- Escape to close
+
+### TUI Specific
+- Yellow highlight for selected result
+- Auto-selects first result on typing
+
+### GUI Specific
+- GTK4 SearchEntry widget
+- ListBox for results
+- Window appears as dialog/overlay
+
+---
+
+## 4. Settings / Preferences
+
+Configuration interface.
+
+### Shared Features
+- Appearance settings (theme, skins)
+- Behavior settings (autoplay, etc.)
+- Media library folder configuration
+- Plugin directory configuration
+
+### TUI Specific
+- 5-tab overlay interface
+- Inline text editing
+- Arrow key navigation
+- Save on close
+
+### GUI Specific
+- 5-tab Notebook widget
+- Theme dropdown selector
+- Custom skin path entry
+- Watched folders list with add/remove
+- Native GTK4 dialog
+
+---
+
+## 5. Equalizer
+
+Audio frequency adjustment.
+
+### Shared Features
+- 10-band equalizer (32Hz to 16kHz)
+- Pre-amp control (50%-150%)
+- Enable/disable toggle
+- Preset management (load/save)
+- Band range: -12 to +12 dB
+- Reset to flat
+
+### TUI Specific
+- 11-column layout (pre-amp + 10 bands)
+- Left/Right arrows: navigate bands
+- Up/Down arrows: adjust gain
+- PgUp/PgDn: larger adjustments
+- Band number display (0-9 + P for pre-amp)
+
+### GUI Specific
+- Horizontal sliders for each band
+- Pre-amp as separate horizontal scale with marks
+- Preset dropdown
+- Enable checkbox
+- Reset button
+- Real-time engine updates
+- Config saved on close
+
+---
+
+## 6. ID3 Editor / Tag Editor
+
+Edit audio file metadata.
+
+### Status: PARTIALLY IMPLEMENTED
+
+| Feature                      | TUI | GUI |
+|------------------------------|-----|-----|
+| 12 default tag fields        | [X] | [X] |
+| Genre dropdown/typeahead      | [X] | [X] |
+| Extra frames editing          | [X] | [X] |
+| Two-column layout            | [X] | [X] |
+| Keyboard navigation          | [X] | [X] |
+| Ctrl+S save                  | [X] | [X] |
+| Artwork section              | N/A | [X] |
+| Column customization UI       | [ ] | [X] |
+
+[X] = Done   [ ] = Missing
+
+### TUI Requirements (Missing)
+- No UI to customize which fields are visible
+- No UI to arrange left/right column layout
+- Reads from config only
+
+### GUI Requirements (Complete)
+- GTK4 Entry widgets for each field
+- Genre ComboBoxText with typeahead
+- Artwork section with Picture widget
+- Save/Cancel/Customize buttons
+- Singleton window behavior
+- Customize button -> opens Extra Frames dialog
+- Column visibility/position customization dialog
+
+### Shared Features Required
+- Edit basic tags: Title, Artist, Album, Album Artist, Year, Track Number, Genre, Comment
+- Genre dropdown with common genres
+- Save changes to file
+- Cancel to discard changes
+- Keyboard shortcut (Ctrl+S) to save
+
+---
+
+## 7. Media Library
+
+File browser and library management.
+
+### Status: PARTIALLY IMPLEMENTED
+
+| Feature                      | TUI | GUI |
+|------------------------------|-----|-----|
+| Media library mode/window    | [X] | [X] |
+| 'm' key to open             | [X] | [X] |
+| Files/Playlists tabs        | [X] | [X] |
+| Search/filter               | [X] | [X] |
+| Column sorting               | [X] | [X] |
+| Add to playlist              | [X] | [X] |
+| Add folder                  | [X] | [X] |
+| Remove from library         | [X] | [X] |
+| Album art thumbnails        | N/A | [X] |
+| Right-click context menu    | N/A | [X] |
+| Rescan folder               | [X] | [X] |
+| Column customization UI      | [ ] | [X] |
+
+[X] = Done   [ ] = Missing
+
+### TUI Requirements (Missing)
+- No UI to customize which columns are visible
+- No horizontal column scrolling UI
+- Reads from config only
+
+### GUI Requirements (Complete)
+- GTK4 dialog window
+- Sidebar navigation (Files/Playlists)
+- Files tab: ColumnView with 27+ columns
+- Right-click context menu (Add to Playlist, Edit ID3, Remove)
+- Search with 300ms debounce
+- Playlists tab: playlist list + track preview
+- Add Folder/Rescan/Remove buttons
+- Double-click or Enter to add to playlist
+- Column customization dialog
+
+### Shared Features Required
+- Browse audio files by folder
+- Search/filter tracks
+- Sort by columns
+- Add tracks to playlist
+- Remove from library (not disk)
+- Folder management
+
+---
+
+## 8. Help / Keyboard Shortcuts
+
+Display keyboard bindings.
+
+### Shared Features
+- List all keyboard shortcuts
+- Organized by category
+- Transport controls still work while open
+- Close on Escape
+
+### TUI Specific
+- Scrollable overlay
+- Sections: Playback, Volume, Playlist, Equalizer, Media Library, View/Other
+- Scroll offset tracking
+
+### GUI Specific
+- GTK4 scrolled text window
+- Scrollable TextView
+
+---
+
+## 9. Add Files / Add Folder
+
+Add audio files to playlist or library.
+
+### TUI Specific
+- Path entry overlay
+- Comma-separated paths supported
+- Tilde expansion
+- Background recursive folder scan
+- Status updates
+
+### GUI Specific
+- Native GTK FileDialog for Add Files
+- Native GTK FileDialog for Add Folder
+- Immediate playlist/library update
+
+---
+
+## 10. Customize Columns / Fields
+
+Configure visible columns in Media Library and ID3 Editor.
+
+### Status: PARTIALLY IMPLEMENTED
+
+| Feature                      | TUI | GUI |
+|------------------------------|-----|-----|
+| Column visibility toggles    | [ ] | [X] |
+| Left/Right position for ID3  | [ ] | [X] |
+| Reset to defaults            | [ ] | [X] |
+| ML column customization      | [ ] | [X] |
+| ID3 field customization      | [ ] | [X] |
+| Config persistence           | [X] | [X] |
+
+[X] = Done   [ ] = Missing
+
+### TUI Requirements (Missing)
+- No "Customize Columns" overlay/mode
+- No UI to toggle column visibility
+- No UI to arrange ID3 field positions
+- Cannot reset to defaults via UI
+
+### GUI Requirements (Complete)
+- Checkbox per column
+- Position dropdown (left/right alignment) for ID3 fields
+- Reset to Defaults button
+- Works for both Media Library and ID3 Editor
+- GTK4 dialog window
+
+---
+
+## 11. Image Viewer (GUI Only)
+
+Full-size album artwork display.
+
+### Status: FIXED
+
+Required Behavior (Now Implemented):
+- Image resizes to fit window
+- picture.set_can_shrink(true) allows shrinking
+- picture.set_content_fit(ContentFit::Contain) fits within window
+- Aspect ratio preserved
+- No scrolling
+
+---
+
+## 12. Move Track (TUI Only)
+
+Reposition tracks in playlist.
+
+### TUI Specific
+- Two-step input:
+  1. "From position" -> enter source index
+  2. "To position" -> enter destination index
+- Yellow styling
+- Escape to cancel
+
+---
+
+## 13. Remove Track (TUI Only)
+
+Remove single track by position.
+
+### TUI Specific
+- Enter 1-based position number
+- Red styling
+- Escape to cancel
+
+---
+
+## 14. ID3 Extra Frames (GUI Only)
+
+Edit additional ID3v2 frames beyond basic tags.
+
+### GUI Specific
+- Scrollable grid of extra frames
+- Per-frame editable Entry
+- Individual save per frame (checkmark button)
+- Enter key to save
+- Opens from ID3 Editor Customize button
+
+---
+
+## Summary: Remaining Items
+
+| # | Feature                          | TUI | GUI |
+|---|----------------------------------|-----|-----|
+| 1 | ID3 Editor column customization  | [ ] | [X] |
+| 2 | Media Library column customization | [ ] | [X] |
+
+[X] = Done   [ ] = Missing
+
+### 1. TUI ID3 Editor Column Customization
+- Location: frontends/tui/mod.rs
+- Needs: "Customize Fields" overlay mode
+- UI Elements: Checkboxes for field visibility, left/right toggle for position
+- Key binding: 'c' already opens a panel, but needs full customization UI
+
+### 2. TUI Media Library Column Customization
+- Location: frontends/tui/mod.rs
+- Needs: "Customize Columns" overlay mode
+- UI Elements: Checkboxes per column
+- Config: Reads config.media_library.visible_columns but no UI to change
