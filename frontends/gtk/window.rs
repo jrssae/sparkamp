@@ -3144,6 +3144,165 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 // ID3 editor windows
 // ---------------------------------------------------------------------------
 
+/// Get the display value for an ID3 editable field.
+fn get_id3_field_value(
+    fields: &crate::id3_editor::TagFields,
+    track_meta: &Option<crate::media_library::LibTrack>,
+    id: &str,
+) -> String {
+    match id {
+        "title" => fields.title.clone(),
+        "artist" => fields.artist.clone(),
+        "album" => fields.album.clone(),
+        "album_artist" => fields.album_artist.clone(),
+        "year" => fields.year.clone(),
+        "genre" => fields.genre.clone(),
+        "track_num" => fields.track_number.clone(),
+        "track_total" => fields.track_total.clone(),
+        "disc_num" => fields.disc_number.clone(),
+        "disc_total" => fields.disc_total.clone(),
+        "bpm" => fields.bpm.clone(),
+        "comment" => fields.comment.clone(),
+        "composer" => track_meta
+            .as_ref()
+            .and_then(|t| t.composer.clone())
+            .unwrap_or_default(),
+        "original_artist" => track_meta
+            .as_ref()
+            .and_then(|t| t.original_artist.clone())
+            .unwrap_or_default(),
+        "copyright" => track_meta
+            .as_ref()
+            .and_then(|t| t.copyright.clone())
+            .unwrap_or_default(),
+        "url" => track_meta
+            .as_ref()
+            .and_then(|t| t.url.clone())
+            .unwrap_or_default(),
+        "encoded_by" => track_meta
+            .as_ref()
+            .and_then(|t| t.encoded_by.clone())
+            .unwrap_or_default(),
+        "lyric" => track_meta
+            .as_ref()
+            .and_then(|t| t.lyric.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Open the Customize dialog for ID3 editor column visibility.
+fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
+    use gtk4::prelude::*;
+
+    let dlg = gtk4::Window::new();
+    dlg.set_title(Some("ID3 Editor — Customize"));
+    dlg.set_default_size(320, 450);
+    dlg.set_resizable(true);
+    if let Some(p) = parent {
+        dlg.set_transient_for(Some(p));
+    }
+
+    let main_vbox = GtkBox::new(Orientation::Vertical, 8);
+    main_vbox.set_margin_top(12);
+    main_vbox.set_margin_bottom(12);
+    main_vbox.set_margin_start(12);
+    main_vbox.set_margin_end(12);
+
+    // Header
+    let hdr = Label::builder()
+        .label("Select fields to display:")
+        .halign(Align::Start)
+        .build();
+    main_vbox.append(&hdr);
+
+    // Scrollable list
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_hexpand(true);
+    scrolled.set_vexpand(true);
+    scrolled.set_has_frame(true);
+
+    let list_vbox = GtkBox::new(Orientation::Vertical, 4);
+    list_vbox.set_margin_top(8);
+
+    let editable_cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
+
+    let visible_ids: std::collections::HashSet<String> = state
+        .borrow()
+        .config
+        .media_library
+        .id3_visible_columns
+        .iter()
+        .cloned()
+        .collect();
+
+    // Store checkboxes to update on Reset
+    let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+
+    for col in &editable_cols {
+        let cb = CheckButton::with_label(col.header);
+        cb.set_active(visible_ids.contains(col.id));
+        let id_owned = col.id.to_string();
+        let state_cfg = state.clone();
+        cb.connect_toggled(move |btn| {
+            let mut s = state_cfg.borrow_mut();
+            let vc = &mut s.config.media_library.id3_visible_columns;
+            if btn.is_active() {
+                if !vc.contains(&id_owned) {
+                    vc.push(id_owned.clone());
+                }
+            } else {
+                vc.retain(|c| c != &id_owned);
+            }
+            let _ = s.config.save();
+        });
+        list_vbox.append(&cb);
+        checkboxes.borrow_mut().push((col.id.to_string(), cb));
+    }
+
+    scrolled.set_child(Some(&list_vbox));
+    main_vbox.append(&scrolled);
+
+    // Button row with Reset Defaults
+    let btn_row = GtkBox::new(Orientation::Horizontal, 8);
+
+    let btn_reset = Button::with_label("Reset Defaults");
+    let state_reset = state.clone();
+    let cbs_reset = checkboxes.clone();
+    let defaults = crate::config::MediaLibraryConfig::default_id3_visible_columns();
+    btn_reset.connect_clicked(move |_| {
+        let default_set: std::collections::HashSet<String> = defaults.iter().cloned().collect();
+
+        let mut s = state_reset.borrow_mut();
+        s.config.media_library.id3_visible_columns = defaults.clone();
+        let _ = s.config.save();
+
+        // Update checkboxes
+        for (id, cb) in cbs_reset.borrow().iter() {
+            cb.set_active(default_set.contains(id));
+        }
+    });
+    btn_row.append(&btn_reset);
+
+    let spring = GtkBox::new(Orientation::Horizontal, 0);
+    spring.set_hexpand(true);
+    btn_row.append(&spring);
+
+    let btn_close = Button::with_label("Close");
+    let dlg_wk = dlg.downgrade();
+    btn_close.connect_clicked(move |_| {
+        if let Some(w) = dlg_wk.upgrade() {
+            w.close();
+        }
+    });
+    btn_row.append(&btn_close);
+
+    main_vbox.append(&btn_row);
+    dlg.set_child(Some(&main_vbox));
+    dlg.present();
+}
+
 /// Open the ID3 tag editor window for `path`.
 ///
 /// Pre-populates all 12 default fields from the file's existing tag and lets
@@ -3184,22 +3343,20 @@ fn open_id3_editor_window(
         .default_height(480)
         .build();
 
-    // ── Get visible columns from config ───────────────────────────────────────
-    let visible_ids: std::collections::HashSet<String> = state
+    // ── Get visible columns from config (preserve order for left/right split) ──
+    let visible_ids: Vec<String> = state
         .borrow()
         .config
         .media_library
         .id3_visible_columns
-        .iter()
-        .cloned()
-        .collect();
+        .clone();
 
     // ── Collect entry widgets for the save handler ───────────────────────────
     // Stores (field_id, Entry) for editable fields.
-    let entries: Rc<RefCell<std::collections::HashMap<&'static str, Entry>>> =
+    let entries: Rc<RefCell<std::collections::HashMap<String, Entry>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
 
-    // ── Field grid ───────────────────────────────────────────────────────────
+    // ── 2-column field grid ───────────────────────────────────────────────
     let grid = Grid::new();
     grid.set_margin_top(12);
     grid.set_margin_bottom(8);
@@ -3207,98 +3364,56 @@ fn open_id3_editor_window(
     grid.set_margin_end(12);
     grid.set_row_spacing(6);
     grid.set_column_spacing(8);
+    grid.set_hexpand(true);
 
-    // Read-only field: filename (always shown at top-left).
-    let lbl = Label::new(Some("File:"));
-    lbl.set_xalign(1.0);
-    lbl.set_margin_end(4);
-    grid.attach(&lbl, 0, 0, 1, 1);
-    let lbl_file = Label::new(Some(&ro.filename));
-    lbl_file.set_halign(Align::Start);
-    lbl_file.set_hexpand(true);
-    lbl_file.add_css_class("ml-col-label");
-    grid.attach(&lbl_file, 1, 0, 1, 1);
+    // Get editable columns in visible order
+    let editable_ids: std::collections::HashSet<&str> = ALL_COLUMNS
+        .iter()
+        .filter(|c| c.id3_editable)
+        .map(|c| c.id)
+        .collect();
 
-    let mut row = 1;
+    let visible_editable: Vec<&str> = visible_ids
+        .iter()
+        .filter(|id| editable_ids.contains(id.as_str()))
+        .map(|s| s.as_str())
+        .collect();
 
-    // Iterate ALL_COLUMNS: read-only fields shown as labels, editable ones as Entries.
-    // Skip: filename (shown above), artwork_path (shown in artwork section).
-    for col in ALL_COLUMNS {
-        if col.id == "filename" || col.id == "artwork_path" {
-            continue;
-        }
-        if col.id3_editable && !visible_ids.contains(col.id) {
-            continue;
-        }
+    // Split into left/right halves
+    let mid = (visible_editable.len() + 1) / 2;
+    let left_ids = &visible_editable[..mid];
+    let right_ids = &visible_editable[mid..];
 
-        let lbl = Label::new(Some(col.header));
+    // Build left column (cols 0-1)
+    for (row, id) in left_ids.iter().enumerate() {
+        let col_def = ALL_COLUMNS.iter().find(|c| c.id == *id).unwrap();
+        let lbl = Label::new(Some(col_def.header));
         lbl.set_xalign(1.0);
         lbl.set_margin_end(4);
-        grid.attach(&lbl, 0, row, 1, 1);
+        grid.attach(&lbl, 0, row as i32, 1, 1);
 
-        if col.id3_editable {
-            let entry = Entry::new();
-            entry.set_hexpand(true);
-            let value = match col.id {
-                "title" => fields.title.clone(),
-                "artist" => fields.artist.clone(),
-                "album" => fields.album.clone(),
-                "album_artist" => fields.album_artist.clone(),
-                "year" => fields.year.clone(),
-                "genre" => fields.genre.clone(),
-                "track_num" => fields.track_number.clone(),
-                "track_total" => fields.track_total.clone(),
-                "disc_num" => fields.disc_number.clone(),
-                "disc_total" => fields.disc_total.clone(),
-                "bpm" => fields.bpm.clone(),
-                "comment" => fields.comment.clone(),
-                "composer" => track_meta
-                    .as_ref()
-                    .and_then(|t| t.composer.clone())
-                    .unwrap_or_default(),
-                "original_artist" => track_meta
-                    .as_ref()
-                    .and_then(|t| t.original_artist.clone())
-                    .unwrap_or_default(),
-                "copyright" => track_meta
-                    .as_ref()
-                    .and_then(|t| t.copyright.clone())
-                    .unwrap_or_default(),
-                "url" => track_meta
-                    .as_ref()
-                    .and_then(|t| t.url.clone())
-                    .unwrap_or_default(),
-                "encoded_by" => track_meta
-                    .as_ref()
-                    .and_then(|t| t.encoded_by.clone())
-                    .unwrap_or_default(),
-                "lyric" => track_meta
-                    .as_ref()
-                    .and_then(|t| t.lyric.clone())
-                    .unwrap_or_default(),
-                _ => String::new(),
-            };
-            entry.set_text(&value);
-            entries.borrow_mut().insert(col.id, entry.clone());
-            grid.attach(&entry, 1, row, 1, 1);
-        } else {
-            let lbl_val = Label::new(Some(&match col.id {
-                "path" => ro.path.clone(),
-                "filetype" => ro.filetype.clone(),
-                "bitrate" => ro.bitrate.clone(),
-                "channels" => ro.channels.clone(),
-                "duration" => ro.duration.clone(),
-                "play_count" => ro.play_count.clone(),
-                "last_played" => ro.last_played.clone(),
-                "num" => ro.num.clone(),
-                _ => String::new(),
-            }));
-            lbl_val.set_halign(Align::Start);
-            lbl_val.set_hexpand(true);
-            lbl_val.add_css_class("ml-col-label");
-            grid.attach(&lbl_val, 1, row, 1, 1);
-        }
-        row += 1;
+        let entry = Entry::new();
+        entry.set_hexpand(true);
+        let value = get_id3_field_value(&fields, &track_meta, id);
+        entry.set_text(&value);
+        entries.borrow_mut().insert(id.to_string(), entry.clone());
+        grid.attach(&entry, 1, row as i32, 1, 1);
+    }
+
+    // Build right column (cols 2-3)
+    for (row, id) in right_ids.iter().enumerate() {
+        let col_def = ALL_COLUMNS.iter().find(|c| c.id == *id).unwrap();
+        let lbl = Label::new(Some(col_def.header));
+        lbl.set_xalign(1.0);
+        lbl.set_margin_end(4);
+        grid.attach(&lbl, 2, row as i32, 1, 1);
+
+        let entry = Entry::new();
+        entry.set_hexpand(true);
+        let value = get_id3_field_value(&fields, &track_meta, id);
+        entry.set_text(&value);
+        entries.borrow_mut().insert(id.to_string(), entry.clone());
+        grid.attach(&entry, 3, row as i32, 1, 1);
     }
 
     // ── Artwork section ─────────────────────────────────────────────────────
@@ -3328,7 +3443,7 @@ fn open_id3_editor_window(
     art_path_row.append(&btn_view_art);
     artwork_vbox.append(&art_path_row);
 
-    if visible_ids.contains("artwork_path") && !ro.artwork_path.is_empty() {
+    if visible_ids.contains(&"artwork_path".to_string()) && !ro.artwork_path.is_empty() {
         let art_picture = gtk4::Picture::new();
         art_picture.set_hexpand(true);
         art_picture.set_vexpand(true);
@@ -3366,7 +3481,6 @@ fn open_id3_editor_window(
     btn_row.set_margin_bottom(8);
 
     let btn_customize = Button::with_label("Customize…");
-    let btn_columns = Button::with_label("Columns…");
     let btn_cancel = Button::with_label("Cancel");
     let btn_save = Button::with_label("Save");
     btn_save.add_css_class("suggested-action");
@@ -3374,7 +3488,6 @@ fn open_id3_editor_window(
     let spring = GtkBox::new(Orientation::Horizontal, 0);
     spring.set_hexpand(true);
     btn_row.append(&btn_customize);
-    btn_row.append(&btn_columns);
     btn_row.append(&spring);
     btn_row.append(&btn_cancel);
     btn_row.append(&btn_save);
@@ -3491,74 +3604,12 @@ fn open_id3_editor_window(
         }
     });
 
-    // ── Customize button — open extra-frames window ──────────────────────────────
+    // ── Customize button — open column customization dialog ──────────────────
     btn_customize.connect_clicked({
-        let path2 = path.clone();
-        let win_wk = win.downgrade();
-        move |_| {
-            open_id3_extra_window(win_wk.upgrade().as_ref(), path2.clone());
-        }
-    });
-
-    // ── Columns button — customize which editable fields are shown ─────────────
-    btn_columns.connect_clicked({
         let state_inner = state.clone();
         let win_wk = win.downgrade();
         move |_| {
-            let dlg = gtk4::Window::new();
-            dlg.set_title(Some("ID3 Editor — Columns"));
-            dlg.set_default_size(280, 400);
-            dlg.set_resizable(false);
-            if let Some(w) = win_wk.upgrade() {
-                dlg.set_transient_for(Some(&w));
-            }
-
-            let vbox = GtkBox::new(Orientation::Vertical, 6);
-            vbox.set_margin_top(12);
-            vbox.set_margin_bottom(12);
-            vbox.set_margin_start(12);
-            vbox.set_margin_end(12);
-
-            let hdr = Label::builder()
-                .label("Select fields to display:")
-                .halign(Align::Start)
-                .build();
-            vbox.append(&hdr);
-
-            let editable_cols: Vec<&MlColumnDef> =
-                ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
-
-            let visible_ids: std::collections::HashSet<String> = state_inner
-                .borrow()
-                .config
-                .media_library
-                .id3_visible_columns
-                .iter()
-                .cloned()
-                .collect();
-
-            for col in &editable_cols {
-                let cb = CheckButton::with_label(col.header);
-                cb.set_active(visible_ids.contains(col.id));
-                let id_owned = col.id.to_string();
-                let state_cfg = state_inner.clone();
-                cb.connect_toggled(move |btn| {
-                    let mut s = state_cfg.borrow_mut();
-                    let vc = &mut s.config.media_library.id3_visible_columns;
-                    if btn.is_active() {
-                        if !vc.contains(&id_owned) {
-                            vc.push(id_owned.clone());
-                        }
-                    } else {
-                        vc.retain(|c| c != &id_owned);
-                    }
-                    let _ = s.config.save();
-                });
-                vbox.append(&cb);
-            }
-
-            dlg.set_child(Some(&vbox));
-            dlg.present();
+            open_id3_customize_dialog(win_wk.upgrade().as_ref(), state_inner.clone());
         }
     });
 
