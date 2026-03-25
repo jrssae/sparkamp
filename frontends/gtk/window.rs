@@ -5577,10 +5577,17 @@ fn open_media_library_window(
                     return;
                 }
 
-                // Find the item at the click position using scroll offset and estimated row height
+                // Find the item at the click position
+                // The ColumnView might have column headers, so we need to find the first row
                 let scroll_offset = scroll_w.vadjustment().value() as f64;
-                let row_height = 36.0;
-                let item_idx = ((y + scroll_offset) / row_height) as u32;
+                let row_height = 28.0; // Estimated row height
+                let header_height = 32.0; // Estimated header height
+                let adjusted_y = y - header_height;
+                let item_idx = if adjusted_y >= 0.0 {
+                    ((adjusted_y + scroll_offset) / row_height) as u32
+                } else {
+                    0
+                };
                 let clicked_idx = if item_idx < n_items {
                     Some(item_idx)
                 } else {

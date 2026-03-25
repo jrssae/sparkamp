@@ -480,18 +480,30 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
     if fields.artwork_path.is_empty() {
         // Remove existing pictures if artwork_path is cleared
         tag.remove_all_pictures();
-    } else if let Ok(img_data) = std::fs::read(&fields.artwork_path) {
-        let mime = if fields.artwork_path.ends_with(".png") {
-            "image/png"
+    } else {
+        // Expand tilde to home directory if present
+        let art_path = if fields.artwork_path.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&fields.artwork_path[2..])
+            } else {
+                std::path::PathBuf::from(&fields.artwork_path)
+            }
         } else {
-            "image/jpeg"
+            std::path::PathBuf::from(&fields.artwork_path)
         };
-        tag.add_frame(id3::frame::Picture {
-            mime_type: mime.to_string(),
-            picture_type: id3::frame::PictureType::CoverFront,
-            description: String::new(),
-            data: img_data,
-        });
+        if let Ok(img_data) = std::fs::read(&art_path) {
+            let mime = if fields.artwork_path.ends_with(".png") {
+                "image/png"
+            } else {
+                "image/jpeg"
+            };
+            tag.add_frame(id3::frame::Picture {
+                mime_type: mime.to_string(),
+                picture_type: id3::frame::PictureType::CoverFront,
+                description: String::new(),
+                data: img_data,
+            });
+        }
     }
 
     // Write to disk using ID3v2.3 for broad compatibility.
