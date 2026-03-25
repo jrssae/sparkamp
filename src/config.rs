@@ -434,24 +434,17 @@ impl MediaLibraryConfig {
     /// Default column set shown in the ID3 tag editor window.
     pub fn default_id3_visible_columns() -> Vec<String> {
         [
+            "path",
+            "filename",
             "title",
             "artist",
             "album",
-            "album_artist",
-            "genre",
             "year",
+            "genre",
             "track_num",
             "track_total",
-            "disc_num",
-            "disc_total",
-            "bpm",
             "comment",
-            "composer",
-            "original_artist",
-            "copyright",
-            "url",
-            "encoded_by",
-            "lyric",
+            "artwork_path",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -857,29 +850,22 @@ rescan_interval_mins = 60
     // ── MediaLibraryConfig::id3_visible_columns ──────────────────────────────
 
     #[test]
-    fn id3_visible_columns_default_has_18_id3_fields() {
+    fn id3_visible_columns_default_has_basic_fields() {
         let cfg = MediaLibraryConfig::default();
         assert_eq!(
             cfg.id3_visible_columns,
             vec![
+                "path",
+                "filename",
                 "title",
                 "artist",
                 "album",
-                "album_artist",
-                "genre",
                 "year",
+                "genre",
                 "track_num",
                 "track_total",
-                "disc_num",
-                "disc_total",
-                "bpm",
                 "comment",
-                "composer",
-                "original_artist",
-                "copyright",
-                "url",
-                "encoded_by",
-                "lyric"
+                "artwork_path",
             ]
         );
     }
@@ -909,24 +895,17 @@ rescan_interval_mins = 60
         assert_eq!(
             cfg.id3_visible_columns,
             vec![
+                "path",
+                "filename",
                 "title",
                 "artist",
                 "album",
-                "album_artist",
-                "genre",
                 "year",
+                "genre",
                 "track_num",
                 "track_total",
-                "disc_num",
-                "disc_total",
-                "bpm",
                 "comment",
-                "composer",
-                "original_artist",
-                "copyright",
-                "url",
-                "encoded_by",
-                "lyric"
+                "artwork_path",
             ]
         );
     }

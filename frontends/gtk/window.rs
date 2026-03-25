@@ -1744,7 +1744,12 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                         pop.popdown();
                     }
                     if let Some(w) = win_wk.upgrade() {
-                        open_id3_editor_window(&w, path2.clone(), state2.clone(), rebuild2.clone());
+                        open_id3_editor_window(
+                            Some(&w),
+                            path2.clone(),
+                            state2.clone(),
+                            rebuild2.clone(),
+                        );
                     }
                 });
             }
@@ -1799,7 +1804,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let path = state_mc.borrow().playlist.current().map(|t| t.path.clone());
             if let Some(path) = path {
                 if let Some(w) = win_mc.upgrade() {
-                    open_id3_editor_window(&w, path, state_mc.clone(), rebuild_mc.clone());
+                    open_id3_editor_window(Some(&w), path, state_mc.clone(), rebuild_mc.clone());
                 }
             }
         });
@@ -2779,7 +2784,12 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     let path = state.borrow().playlist.current().map(|t| t.path.clone());
                     if let Some(path) = path {
                         if let Some(w) = window_weak.upgrade() {
-                            open_id3_editor_window(&w, path, state.clone(), kbd_rebuild.clone());
+                            open_id3_editor_window(
+                                Some(&w),
+                                path,
+                                state.clone(),
+                                kbd_rebuild.clone(),
+                            );
                         }
                     } else {
                         status_label.set_text("No track loaded");
@@ -3144,7 +3154,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 /// A "Customize…" button opens a secondary window ([`open_id3_extra_window`])
 /// for any additional ID3v2 frames present in the file.
 fn open_id3_editor_window(
-    _parent: &impl gtk4::prelude::IsA<gtk4::Window>,
+    _parent: Option<&impl gtk4::prelude::IsA<gtk4::Window>>,
     path: std::path::PathBuf,
     state: Rc<RefCell<AppState>>,
     rebuild_cb: Rc<dyn Fn()>,
@@ -5038,6 +5048,138 @@ fn open_media_library_window(
 
         rebuild_files();
         sort_model.set_sorter(col_view.sorter().as_ref());
+
+        // Right-click context menu
+        {
+            let state_rc = state.clone();
+            let sel_ref = multi_sel.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            let rebuild_files_rc = rebuild_files.clone();
+
+            let gesture = gtk4::GestureClick::new();
+            gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+            let col_view2 = col_view.clone();
+            gesture.connect_pressed(move |_gesture, n_press, x, y| {
+                if n_press != 1 {
+                    return;
+                }
+
+                // Find first selected item
+                let mut selected_idx: Option<u32> = None;
+                let n_items = sel_ref.n_items();
+                for i in 0..n_items {
+                    if sel_ref.is_selected(i) {
+                        selected_idx = Some(i);
+                        break;
+                    }
+                }
+
+                if selected_idx.is_none() && n_items > 0 {
+                    selected_idx = Some(0);
+                    sel_ref.unselect_all();
+                    sel_ref.select_item(0, true);
+                }
+
+                if selected_idx.is_some() {
+                    let popover = gtk4::Popover::new();
+                    popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+                        x as i32, y as i32, 1, 1,
+                    )));
+                    popover.set_parent(&col_view2);
+
+                    let vbox = GtkBox::new(Orientation::Vertical, 0);
+                    vbox.set_margin_top(4);
+                    vbox.set_margin_bottom(4);
+                    vbox.set_margin_start(4);
+                    vbox.set_margin_end(4);
+
+                    // Add to Playlist
+                    let btn_add = Button::with_label("Add to Playlist");
+                    let state_add = state_rc.clone();
+                    let sel_add = sel_ref.clone();
+                    let rebuild_add = rebuild_pl.clone();
+                    let popover_add = popover.clone();
+                    btn_add.connect_clicked(move |_btn| {
+                        for i in 0..sel_add.n_items() {
+                            if sel_add.is_selected(i) {
+                                if let Some(obj) = sel_add
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                {
+                                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                                    let track = libtrack_to_track(&t);
+                                    state_add.borrow_mut().playlist.add(track);
+                                }
+                            }
+                        }
+                        rebuild_add();
+                        popover_add.unparent();
+                    });
+                    vbox.append(&btn_add);
+
+                    // View/Edit ID3 Info
+                    let btn_id3 = Button::with_label("View/Edit ID3 Info");
+                    let state_id3 = state_rc.clone();
+                    let sel_id3 = sel_ref.clone();
+                    let rebuild_id3 = rebuild_pl.clone();
+                    let popover_id3 = popover.clone();
+                    btn_id3.connect_clicked(move |_btn| {
+                        for i in 0..sel_id3.n_items() {
+                            if sel_id3.is_selected(i) {
+                                if let Some(obj) = sel_id3
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                {
+                                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                                    let path = std::path::PathBuf::from(&t.path);
+                                    open_id3_editor_window(
+                                        None::<&gtk4::Window>,
+                                        path,
+                                        state_id3.clone(),
+                                        rebuild_id3.clone(),
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        popover_id3.unparent();
+                    });
+                    vbox.append(&btn_id3);
+
+                    let sep = Separator::new(Orientation::Horizontal);
+                    vbox.append(&sep);
+
+                    // Remove from Media Library
+                    let btn_remove = Button::with_label("Remove from Media Library");
+                    let state_remove = state_rc.clone();
+                    let sel_remove = sel_ref.clone();
+                    let popover_remove = popover.clone();
+                    let rebuild_rm = rebuild_files_rc.clone();
+                    btn_remove.connect_clicked(move |_btn| {
+                        for i in 0..sel_remove.n_items() {
+                            if sel_remove.is_selected(i) {
+                                if let Some(obj) = sel_remove
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                {
+                                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                                    if let Some(lib) = state_remove.borrow().media_lib.as_ref() {
+                                        let _ = lib.remove_track(t.id);
+                                    }
+                                }
+                            }
+                        }
+                        rebuild_rm();
+                        popover_remove.unparent();
+                    });
+                    vbox.append(&btn_remove);
+
+                    popover.set_child(Some(&vbox));
+                    popover.popup();
+                }
+            });
+            col_view.add_controller(gesture);
+        }
 
         let track_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Automatic)
