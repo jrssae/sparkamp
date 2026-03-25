@@ -3761,6 +3761,7 @@ fn open_id3_editor_window(
             let (combo, entry) = make_genre_combo(&value);
             combo.set_hexpand(true);
             grid.attach(&combo, 3, row as i32, 1, 1);
+            right_entries.push((id.to_string(), entry));
         } else {
             let entry = Entry::new();
             entry.set_hexpand(true);
@@ -3786,10 +3787,42 @@ fn open_id3_editor_window(
     art_path_entry.set_text(&ro.artwork_path);
     art_path_entry.set_hexpand(true);
 
-    let btn_view_art = Button::with_label("View");
-    btn_view_art.set_sensitive(!ro.artwork_path.is_empty());
+    let btn_browse = Button::with_label("Browse…");
+    let btn_view = Button::with_label("View");
+    btn_view.set_sensitive(!ro.artwork_path.is_empty());
+
+    let art_entry_clone = art_path_entry.clone();
+    let btn_view_for_browse = btn_view.clone();
+    btn_browse.connect_clicked(move |_| {
+        let dialog = gtk4::FileDialog::new();
+        dialog.set_title("Select Artwork");
+        let filters = gtk4::FileFilter::new();
+        filters.set_name(Some("Images"));
+        filters.add_mime_type("image/png");
+        filters.add_mime_type("image/jpeg");
+        filters.add_mime_type("image/jpg");
+        filters.add_mime_type("image/gif");
+        filters.add_mime_type("image/webp");
+        dialog.set_default_filter(Some(&filters));
+        let entry_clone = art_entry_clone.clone();
+        let btn_view_clone = btn_view_for_browse.clone();
+        dialog.open(
+            Some(&gtk4::Window::new()),
+            None::<&gtk4::gio::Cancellable>,
+            move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        let path_str = path.to_string_lossy().into_owned();
+                        entry_clone.set_text(&path_str);
+                        btn_view_clone.set_sensitive(true);
+                    }
+                }
+            },
+        );
+    });
+
     let art_path_clone = art_path_entry.clone();
-    btn_view_art.connect_clicked(move |_| {
+    btn_view.connect_clicked(move |_| {
         let p = art_path_clone.text();
         if !p.is_empty() {
             open_image_viewer(&p);
@@ -3799,21 +3832,23 @@ fn open_id3_editor_window(
     let art_path_row = GtkBox::new(Orientation::Horizontal, 8);
     art_path_row.append(&Label::new(Some("Artwork:")));
     art_path_row.append(&art_path_entry);
-    art_path_row.append(&btn_view_art);
+    art_path_row.append(&btn_browse);
+    art_path_row.append(&btn_view);
     artwork_vbox.append(&art_path_row);
 
+    // Track art_path_entry in the entries HashMap
+    entries
+        .borrow_mut()
+        .insert("artwork_path".to_string(), art_path_entry);
+
+    // Show 128x128 thumbnail preview
     if visible_ids.contains(&"artwork_path".to_string()) && !ro.artwork_path.is_empty() {
         let art_picture = gtk4::Picture::new();
-        art_picture.set_hexpand(true);
-        art_picture.set_vexpand(true);
-        #[allow(deprecated)]
-        art_picture.set_keep_aspect_ratio(true);
+        art_picture.set_width_request(128);
+        art_picture.set_height_request(128);
+        art_picture.set_can_shrink(true);
+        art_picture.set_content_fit(gtk4::ContentFit::Contain);
         art_picture.set_filename(Some(&ro.artwork_path));
-        let art_scrolled = ScrolledWindow::new();
-        art_scrolled.set_child(Some(&art_picture));
-        art_scrolled.set_hexpand(true);
-        art_scrolled.set_vexpand(true);
-        artwork_vbox.append(&art_scrolled);
 
         let art_clone = ro.artwork_path.clone();
         let click = gtk4::GestureClick::new();
@@ -3821,6 +3856,7 @@ fn open_id3_editor_window(
             open_image_viewer(&art_clone);
         });
         art_picture.add_controller(click);
+        artwork_vbox.append(&art_picture);
     }
 
     // ── Status label ─────────────────────────────────────────────────────────
@@ -3919,6 +3955,10 @@ fn open_id3_editor_window(
                 comment: entries
                     .get("comment")
                     .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_default(),
+                artwork_path: entries
+                    .get("artwork_path")
+                    .map(|e| e.text().to_string())
                     .unwrap_or_default(),
             };
 

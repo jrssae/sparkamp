@@ -249,7 +249,8 @@ pub struct TagFields {
     pub disc_number: String,  // "x" part of "x/y"
     pub disc_total: String,   // "y" part of "x/y"
     pub bpm: String,
-    pub comment: String, // default comment (no content description)
+    pub comment: String,      // default comment (no content description)
+    pub artwork_path: String, // path to artwork file (not embedded in tag)
 }
 
 impl TagFields {
@@ -358,6 +359,7 @@ pub fn read_tag_fields(path: &Path) -> TagFields {
             .unwrap_or("")
             .to_string(),
         comment,
+        artwork_path: String::new(),
     }
 }
 
@@ -471,6 +473,24 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
             lang: "eng".to_string(),
             description: String::new(),
             text: fields.comment.clone(),
+        });
+    }
+
+    // Artwork: embed image from artwork_path as APIC frame
+    if fields.artwork_path.is_empty() {
+        // Remove existing pictures if artwork_path is cleared
+        tag.remove_all_pictures();
+    } else if let Ok(img_data) = std::fs::read(&fields.artwork_path) {
+        let mime = if fields.artwork_path.ends_with(".png") {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
+        tag.add_frame(id3::frame::Picture {
+            mime_type: mime.to_string(),
+            picture_type: id3::frame::PictureType::CoverFront,
+            description: String::new(),
+            data: img_data,
         });
     }
 
@@ -708,6 +728,7 @@ mod tests {
             disc_total: "2".into(),
             bpm: "128".into(),
             comment: "Test comment".into(),
+            artwork_path: String::new(),
         };
 
         write_tag_fields(file.path(), &new_fields).unwrap();
