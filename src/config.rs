@@ -459,7 +459,6 @@ impl MediaLibraryConfig {
     /// Default column positions for ID3 editor (left/right split).
     pub fn default_id3_column_position() -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
-        // First half go left, second half go right
         let left_fields = ["title", "artist", "album", "year", "genre"];
         let right_fields = ["track_num", "track_total", "comment", "artwork_path"];
         for f in left_fields {

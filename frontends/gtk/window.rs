@@ -580,6 +580,26 @@ fn format_last_played(iso_timestamp: &str) -> String {
     )
 }
 
+fn make_genre_combo(initial_value: &str) -> (gtk4::ComboBoxText, gtk4::Entry) {
+    use gtk4::prelude::ComboBoxExt;
+
+    let combo = gtk4::ComboBoxText::with_entry();
+    for genre in crate::id3_editor::ID3V1_GENRES {
+        combo.append(Some(genre), genre);
+    }
+    combo.set_entry_text_column(0);
+    let entry = combo
+        .child()
+        .and_then(|w| w.downcast::<gtk4::Entry>().ok())
+        .expect("Genre combo should have an Entry child");
+    entry.set_text(initial_value);
+    (combo, entry)
+}
+
+fn get_entry_text(entry: &gtk4::Entry) -> String {
+    entry.text().to_string()
+}
+
 fn accent_hex() -> &'static str {
     let output = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "accent-color"])
@@ -1785,6 +1805,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             for btn in [&btn_edit, &btn_play_e, &btn_rm] {
                 btn.set_has_frame(false);
                 btn.set_hexpand(true);
+                btn.add_css_class("popover-button");
             }
             btn_rm.add_css_class("destructive-action");
 
@@ -1796,7 +1817,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 
             let popover = Popover::new();
             popover.set_child(Some(&menu_box));
-            popover.set_parent(&row);
+            popover.set_parent(&ctx_pb);
             popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
             // "View/Edit ID3 Information" — open the editor window.
@@ -1816,6 +1837,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                             path2.clone(),
                             state2.clone(),
                             rebuild2.clone(),
+                            None,
                         );
                     }
                 });
@@ -1871,7 +1893,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let path = state_mc.borrow().playlist.current().map(|t| t.path.clone());
             if let Some(path) = path {
                 if let Some(w) = win_mc.upgrade() {
-                    open_id3_editor_window(Some(&w), path, state_mc.clone(), rebuild_mc.clone());
+                    open_id3_editor_window(
+                        Some(&w),
+                        path,
+                        state_mc.clone(),
+                        rebuild_mc.clone(),
+                        None,
+                    );
                 }
             }
         });
@@ -2859,6 +2887,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                                 path,
                                 state.clone(),
                                 kbd_rebuild.clone(),
+                                None,
                             );
                         }
                     } else {
@@ -3332,6 +3361,14 @@ fn open_customize_columns_dialog(
         col_hdrs.append(&spring);
         col_hdrs.append(&Label::new(Some("Column")));
         main_vbox.append(&col_hdrs);
+    } else {
+        let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
+        col_hdrs.append(&Label::new(Some("")));
+        col_hdrs.append(&Label::new(Some("Field")));
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        col_hdrs.append(&spring);
+        main_vbox.append(&col_hdrs);
     }
 
     let scrolled = ScrolledWindow::new();
@@ -3381,18 +3418,18 @@ fn open_customize_columns_dialog(
         let row = GtkBox::new(Orientation::Horizontal, 8);
 
         let cb = CheckButton::new();
-        let id_owned = col.id.to_string();
         cb.set_active(visible_ids.contains(col.id));
         let state_cfg = state.clone();
         let mode_for_cb = mode.clone();
         let on_toggle_cb = on_toggle.clone();
         let skip_cb = skipping_callback.clone();
+        let id_for_toggle = col.id.to_string();
         cb.connect_toggled(move |btn| {
             if *skip_cb.borrow() {
                 return;
             }
             let visible = btn.is_active();
-            let id = id_owned.clone();
+            let id = id_for_toggle.clone();
             if let Some(ref cb) = on_toggle_cb {
                 cb(id.clone(), visible);
             }
@@ -3405,7 +3442,7 @@ fn open_customize_columns_dialog(
                             vc.push(id);
                         }
                     } else {
-                        vc.retain(|c| c != &id_owned);
+                        vc.retain(|c| c != &id);
                     }
                 }
                 ColumnCustomizerMode::MediaLibrary => {
@@ -3415,16 +3452,16 @@ fn open_customize_columns_dialog(
                             vc.push(id);
                         }
                     } else {
-                        vc.retain(|c| c != &id_owned);
+                        vc.retain(|c| c != &id);
                     }
                 }
             }
             let _ = s.config.save();
         });
-        row.append(&cb);
 
         let lbl = Label::new(Some(col.header));
         lbl.set_halign(Align::Start);
+        row.append(&cb);
         row.append(&lbl);
 
         let spring = GtkBox::new(Orientation::Horizontal, 0);
@@ -3475,8 +3512,8 @@ fn open_customize_columns_dialog(
     let defaults_pos_clone = defaults_pos.clone();
     let mode_for_reset = mode.clone();
     let on_toggle_reset = on_toggle.clone();
-    let on_close_reset = on_close.clone();
     let skip_cb_flag = skipping_callback.clone();
+
     btn_reset.connect_clicked(move |_| {
         let default_set: std::collections::HashSet<String> =
             defaults_vis_clone.iter().cloned().collect();
@@ -3511,11 +3548,12 @@ fn open_customize_columns_dialog(
         for (id, dd) in dds_reset.borrow().iter() {
             let pos = defaults_pos_clone
                 .get(id)
-                .map(|s| s.as_str())
-                .unwrap_or("left");
-            dd.set_active_id(Some(pos));
+                .cloned()
+                .unwrap_or_else(|| "left".to_string());
+            dd.set_active_id(Some(&pos));
         }
     });
+
     btn_row.append(&btn_reset);
 
     let spring = GtkBox::new(Orientation::Horizontal, 0);
@@ -3572,6 +3610,7 @@ fn open_id3_editor_window(
     path: std::path::PathBuf,
     state: Rc<RefCell<AppState>>,
     rebuild_cb: Rc<dyn Fn()>,
+    initial_values: Option<std::collections::HashMap<String, String>>,
 ) {
     use crate::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
@@ -3674,6 +3713,7 @@ fn open_id3_editor_window(
     }
 
     // Build left column (cols 0-1)
+    let mut left_entries: Vec<(String, gtk4::Entry)> = Vec::new();
     for (row, id) in left_ids.iter().enumerate() {
         let col_def = ALL_COLUMNS.iter().find(|c| c.id == *id).unwrap();
         let lbl = Label::new(Some(col_def.header));
@@ -3681,15 +3721,28 @@ fn open_id3_editor_window(
         lbl.set_margin_end(4);
         grid.attach(&lbl, 0, row as i32, 1, 1);
 
-        let entry = Entry::new();
-        entry.set_hexpand(true);
-        let value = get_id3_field_value(&fields, &track_meta, id);
-        entry.set_text(&value);
-        entries.borrow_mut().insert(id.to_string(), entry.clone());
-        grid.attach(&entry, 1, row as i32, 1, 1);
+        let value = if let Some(ref vals) = initial_values {
+            vals.get(*id)
+                .cloned()
+                .unwrap_or_else(|| get_id3_field_value(&fields, &track_meta, id))
+        } else {
+            get_id3_field_value(&fields, &track_meta, id)
+        };
+        if *id == "genre" {
+            let (combo, entry) = make_genre_combo(&value);
+            combo.set_hexpand(true);
+            grid.attach(&combo, 1, row as i32, 1, 1);
+        } else {
+            let entry = Entry::new();
+            entry.set_hexpand(true);
+            entry.set_text(&value);
+            grid.attach(&entry, 1, row as i32, 1, 1);
+            left_entries.push((id.to_string(), entry));
+        }
     }
 
     // Build right column (cols 2-3)
+    let mut right_entries: Vec<(String, gtk4::Entry)> = Vec::new();
     for (row, id) in right_ids.iter().enumerate() {
         let col_def = ALL_COLUMNS.iter().find(|c| c.id == *id).unwrap();
         let lbl = Label::new(Some(col_def.header));
@@ -3697,12 +3750,29 @@ fn open_id3_editor_window(
         lbl.set_margin_end(4);
         grid.attach(&lbl, 2, row as i32, 1, 1);
 
-        let entry = Entry::new();
-        entry.set_hexpand(true);
-        let value = get_id3_field_value(&fields, &track_meta, id);
-        entry.set_text(&value);
-        entries.borrow_mut().insert(id.to_string(), entry.clone());
-        grid.attach(&entry, 3, row as i32, 1, 1);
+        let value = if let Some(ref vals) = initial_values {
+            vals.get(*id)
+                .cloned()
+                .unwrap_or_else(|| get_id3_field_value(&fields, &track_meta, id))
+        } else {
+            get_id3_field_value(&fields, &track_meta, id)
+        };
+        if *id == "genre" {
+            let (combo, entry) = make_genre_combo(&value);
+            combo.set_hexpand(true);
+            grid.attach(&combo, 3, row as i32, 1, 1);
+        } else {
+            let entry = Entry::new();
+            entry.set_hexpand(true);
+            entry.set_text(&value);
+            grid.attach(&entry, 3, row as i32, 1, 1);
+            right_entries.push((id.to_string(), entry));
+        }
+    }
+
+    // Insert all entries into the HashMap in one operation
+    for (id, entry) in left_entries.into_iter().chain(right_entries) {
+        entries.borrow_mut().insert(id, entry);
     }
 
     // ── Artwork section ─────────────────────────────────────────────────────
@@ -3859,14 +3929,20 @@ fn open_id3_editor_window(
                             if let Ok(fresh) = crate::model::Track::from_path(&path) {
                                 track.title = fresh.title;
                                 track.artist = fresh.artist;
+                                track.album_artist = fresh.album_artist;
+                                track.album = fresh.album;
                             }
                             break;
                         }
                     }
-                    rebuild_s();
+                    let rebuild = rebuild_s.clone();
                     if let Some(w) = win_wk.upgrade() {
                         w.close();
                     }
+                    glib::idle_add_local(move || {
+                        rebuild();
+                        glib::ControlFlow::Break
+                    });
                 }
                 Err(e) => {
                     status_s.set_text(&format!("Save error: {e}"));
@@ -3899,11 +3975,18 @@ fn open_id3_editor_window(
         let win_wk_outer = win.downgrade();
         let path_outer = path.clone();
         let rebuild_outer = rebuild_cb.clone();
+        let entries_outer = entries.clone();
         move |_| {
             let state_inner = state_outer.clone();
             let win_wk = win_wk_outer.clone();
             let path_clone = path_outer.clone();
             let rebuild_clone = rebuild_outer.clone();
+            let entries_clone = entries_outer.clone();
+            let current_values: std::collections::HashMap<String, String> = entries_clone
+                .borrow()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.text().to_string()))
+                .collect();
             open_customize_columns_dialog(
                 win_wk.upgrade().as_ref(),
                 state_inner.clone(),
@@ -3919,6 +4002,7 @@ fn open_id3_editor_window(
                         path_clone.clone(),
                         state_inner.clone(),
                         rebuild_clone.clone(),
+                        Some(current_values.clone()),
                     );
                 }) as Rc<dyn Fn()>),
             );
@@ -5412,12 +5496,22 @@ fn open_media_library_window(
         rebuild_files();
         sort_model.set_sorter(col_view.sorter().as_ref());
 
+        let track_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(PolicyType::Automatic)
+            .vscrollbar_policy(PolicyType::Automatic)
+            .vexpand(true)
+            .min_content_height(300)
+            .child(&col_view)
+            .build();
+        files_vbox.append(&track_scroll);
+
         // Right-click context menu
         {
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let rebuild_files_rc = rebuild_files.clone();
+            let scroll_w = track_scroll.clone();
 
             let gesture = gtk4::GestureClick::new();
             gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
@@ -5427,23 +5521,25 @@ fn open_media_library_window(
                     return;
                 }
 
-                // Find first selected item
-                let mut selected_idx: Option<u32> = None;
                 let n_items = sel_ref.n_items();
-                for i in 0..n_items {
-                    if sel_ref.is_selected(i) {
-                        selected_idx = Some(i);
-                        break;
-                    }
+                if n_items == 0 {
+                    return;
                 }
 
-                if selected_idx.is_none() && n_items > 0 {
-                    selected_idx = Some(0);
+                // Find the item at the click position using scroll offset and estimated row height
+                let scroll_offset = scroll_w.vadjustment().value() as f64;
+                let row_height = 36.0;
+                let item_idx = ((y + scroll_offset) / row_height) as u32;
+                let clicked_idx = if item_idx < n_items {
+                    Some(item_idx)
+                } else {
+                    None
+                };
+
+                if let Some(idx) = clicked_idx {
                     sel_ref.unselect_all();
-                    sel_ref.select_item(0, true);
-                }
+                    sel_ref.select_item(idx, true);
 
-                if selected_idx.is_some() {
                     let popover = gtk4::Popover::new();
                     popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
                         x as i32, y as i32, 1, 1,
@@ -5500,6 +5596,7 @@ fn open_media_library_window(
                                         path,
                                         state_id3.clone(),
                                         rebuild_id3.clone(),
+                                        None,
                                     );
                                     break;
                                 }
@@ -5543,15 +5640,6 @@ fn open_media_library_window(
             });
             col_view.add_controller(gesture);
         }
-
-        let track_scroll = ScrolledWindow::builder()
-            .hscrollbar_policy(PolicyType::Automatic)
-            .vscrollbar_policy(PolicyType::Automatic)
-            .vexpand(true)
-            .min_content_height(300)
-            .child(&col_view)
-            .build();
-        files_vbox.append(&track_scroll);
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
         {
