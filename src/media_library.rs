@@ -1127,6 +1127,15 @@ impl MediaLibrary {
             .ok_or_else(|| anyhow::anyhow!("track not found: {}", path))
     }
 
+    /// Clear the cached artwork path for a track so it gets re-extracted on next read.
+    pub fn clear_artwork(&self, track_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET artwork_path = NULL WHERE id = ?1",
+            params![track_id],
+        )?;
+        Ok(())
+    }
+
     /// Map rows from a prepared statement into [`LibTrack`] values.
     ///
     /// `P` matches rusqlite's `Params` trait so this helper works with both

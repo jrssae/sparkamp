@@ -3975,6 +3975,20 @@ fn open_id3_editor_window(
                             break;
                         }
                     }
+
+                    // Clear cached artwork so it gets re-extracted from the file
+                    if let Some(lib) = state_s.borrow().media_lib.as_ref() {
+                        let path_str = path.to_string_lossy();
+                        if let Ok(lib_track) = lib.track_by_path(&path_str) {
+                            // Delete the old cached artwork file
+                            if let Some(ref old_art) = lib_track.artwork_path {
+                                let _ = std::fs::remove_file(old_art);
+                            }
+                            // Clear artwork_path in DB so it gets re-extracted
+                            let _ = lib.clear_artwork(lib_track.id);
+                        }
+                    }
+
                     let rebuild = rebuild_s.clone();
                     if let Some(w) = win_wk.upgrade() {
                         w.close();
