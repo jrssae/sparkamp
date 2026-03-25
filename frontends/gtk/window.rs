@@ -5600,7 +5600,8 @@ fn open_media_library_window(
 
                 // Model position = scroll_offset + (y - header_height)
                 let model_y = scroll_offset + (y - header_height).max(0.0);
-                let idx = (model_y / row_height) as u32;
+                // Use ceiling division to properly map to rows
+                let idx = ((model_y + row_height - 1.0) / row_height) as u32;
                 let clamped = if idx >= n_items { n_items - 1 } else { idx };
 
                 eprintln!("DEBUG ML right-click: n_items={}, scroll={}, y={}, header={}, model_y={}, idx={}", 
