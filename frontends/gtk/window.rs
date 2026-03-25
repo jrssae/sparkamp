@@ -5578,6 +5578,7 @@ fn open_media_library_window(
             gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
             let hovered_for_click = hovered_pos.clone();
             let sel_for_click = sel_ref.clone();
+            let scroll_for_click = track_scroll.clone();
             let state_rc2 = state_rc.clone();
             let rebuild_pl2 = rebuild_pl.clone();
             let rebuild_files_rc2 = rebuild_files_rc.clone();
@@ -5591,18 +5592,19 @@ fn open_media_library_window(
                     return;
                 }
 
-                // Use gesture coordinates directly - they should be relative to the widget
-                let use_y = y;
-
-                // Row height based on user feedback
+                // Get scroll offset
+                let scroll_offset = scroll_for_click.vadjustment().value() as f64;
+                // ColumnView has a header row (about 28px) that we need to skip
+                let header_height = 28.0;
                 let row_height = 42.0;
-                let idx = (use_y / row_height) as u32;
+
+                // Model position = scroll_offset + (y - header_height)
+                let model_y = scroll_offset + (y - header_height).max(0.0);
+                let idx = (model_y / row_height) as u32;
                 let clamped = if idx >= n_items { n_items - 1 } else { idx };
 
-                eprintln!(
-                    "DEBUG ML right-click: n_items={}, y={}, row_h=42, idx={}",
-                    n_items, use_y, clamped
-                );
+                eprintln!("DEBUG ML right-click: n_items={}, scroll={}, y={}, header={}, model_y={}, idx={}", 
+                    n_items, scroll_offset, y, header_height, model_y, clamped);
                 sel_for_click.unselect_all();
                 sel_for_click.select_item(clamped, true);
 
