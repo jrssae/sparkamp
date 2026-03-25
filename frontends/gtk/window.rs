@@ -201,7 +201,11 @@ impl AppState {
         let repeat = self.config.playback.repeat_mode;
         let idx = self.shuffle_state.next_index(current, total, repeat)?;
         self.playlist.jump_to(idx);
-        self.play_current()
+        if *self.player.state() != PlayerState::Stopped {
+            self.play_current()
+        } else {
+            self.playlist.current().map(|t| t.display_name())
+        }
     }
 
     /// Implement the "back button" behaviour with shuffle history support.
@@ -213,17 +217,30 @@ impl AppState {
     /// Returns `Some(display_name)` of the track that will now play.
     fn play_prev(&mut self) -> Option<String> {
         let pos = self.player.position().unwrap_or(Duration::ZERO);
+        let do_play = *self.player.state() != PlayerState::Stopped;
         if pos.as_secs() >= 2 {
             // Restart the current track.
-            self.play_current()
+            if do_play {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         } else if let Some(idx) = self.shuffle_state.prev_from_history() {
             // Step back through the session's playback history.
             self.playlist.jump_to(idx);
-            self.play_current()
+            if do_play {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         } else {
             // No history (beginning of session) — fall back to linear prev.
             self.playlist.previous();
-            self.play_current()
+            if do_play {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         }
     }
 
@@ -3616,20 +3633,17 @@ fn open_id3_editor_window(
     use gtk4::prelude::*;
 
     if let Some(ref existing_win) = state.borrow().id3_editor_window {
-        existing_win.set_title(Some(&format!(
+        let title = format!(
             "ID3 Tag Editor — {}",
-            path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-        )));
+            gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+        );
+        existing_win.set_title(Some(&title));
         existing_win.present();
         return;
     }
 
     let fields = read_tag_fields(&path);
-    let fname = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?")
-        .to_string();
+    let fname = gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
     let path_str = path.to_string_lossy().into_owned();
 
     let track_meta = state
@@ -3735,7 +3749,7 @@ fn open_id3_editor_window(
         } else {
             let entry = Entry::new();
             entry.set_hexpand(true);
-            entry.set_text(&value);
+            entry.set_text(&gtk_safe(&value));
             grid.attach(&entry, 1, row as i32, 1, 1);
             left_entries.push((id.to_string(), entry));
         }
@@ -3765,7 +3779,7 @@ fn open_id3_editor_window(
         } else {
             let entry = Entry::new();
             entry.set_hexpand(true);
-            entry.set_text(&value);
+            entry.set_text(&gtk_safe(&value));
             grid.attach(&entry, 3, row as i32, 1, 1);
             right_entries.push((id.to_string(), entry));
         }
@@ -3784,7 +3798,7 @@ fn open_id3_editor_window(
     artwork_vbox.set_margin_bottom(8);
 
     let art_path_entry = Entry::new();
-    art_path_entry.set_text(&ro.artwork_path);
+    art_path_entry.set_text(&gtk_safe(&ro.artwork_path));
     art_path_entry.set_hexpand(true);
 
     let btn_browse = Button::with_label("Browse…");
@@ -4130,13 +4144,13 @@ fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf
             .build();
 
         let desc_lbl = Label::builder()
-            .label(&frame.label)
+            .label(&gtk_safe(&frame.label))
             .xalign(0.0)
             .width_chars(20)
             .build();
 
         let entry = Entry::new();
-        entry.set_text(&frame.value);
+        entry.set_text(&gtk_safe(&frame.value));
         entry.set_hexpand(true);
 
         let btn_ok = Button::with_label("✓");
@@ -5347,6 +5361,9 @@ fn open_media_library_window(
         let connected_artwork: Rc<RefCell<std::collections::HashSet<glib::Object>>> =
             Rc::new(RefCell::new(std::collections::HashSet::new()));
 
+        // Capture store_ref before factory so it's available for the factory's right-click handler
+        let store_for_ctx = track_store.clone();
+
         let all_cols: Vec<(String, ColumnViewColumn)> = col_defs
             .iter()
             .map(|(id, header, _min_w, expand)| {
@@ -5354,9 +5371,22 @@ fn open_media_library_window(
                 let id_str = id.to_string();
                 let is_artwork = id_str == "artwork_path";
                 let connected = connected_artwork.clone();
+                let ctx_state = state.clone();
+                let ctx_multi_sel = multi_sel.clone();
+                let ctx_rebuild_pl = rebuild_playlist.clone();
+                let ctx_col_view = col_view.clone();
+                let ctx_store = store_for_ctx.clone();
 
                 factory.connect_setup(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+
+                    // Skip if child already exists (row is being recycled)
+                    if li.child().is_some() {
+                        return;
+                    }
+
+                    let child: gtk4::Widget;
+
                     if is_artwork {
                         let btn = Button::builder()
                             .label("View")
@@ -5365,9 +5395,13 @@ fn open_media_library_window(
                             .margin_end(6)
                             .margin_top(3)
                             .margin_bottom(3)
+                            .hexpand(true)
+                            .vexpand(true)
+                            .halign(Align::Fill)
+                            .valign(Align::Fill)
                             .build();
                         btn.add_css_class("link");
-                        li.set_child(Some(&btn));
+                        child = btn.upcast::<gtk4::Widget>();
                     } else {
                         let lbl = Label::builder()
                             .halign(Align::Start)
@@ -5375,10 +5409,180 @@ fn open_media_library_window(
                             .margin_end(6)
                             .margin_top(3)
                             .margin_bottom(3)
+                            .hexpand(true)
+                            .vexpand(true)
+                            .halign(Align::Fill)
+                            .valign(Align::Fill)
                             .ellipsize(gtk4::pango::EllipsizeMode::End)
                             .css_classes(["ml-col-label"])
                             .build();
-                        li.set_child(Some(&lbl));
+                        child = lbl.upcast::<gtk4::Widget>();
+                    }
+
+                    // Add right-click gesture to each row
+                    let gesture = gtk4::GestureClick::new();
+                    gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+                    let state_gest = ctx_state.clone();
+                    let sel_gest = ctx_multi_sel.clone();
+                    let rebuild_pl_gest = ctx_rebuild_pl.clone();
+                    let col_popup = ctx_col_view.clone();
+                    let li_gest = li.clone();
+                    let store_gest = ctx_store.clone();
+                    gesture.connect_pressed(move |_gest, n_press, x, y| {
+                        if n_press != 1 {
+                            return;
+                        }
+                        // Get the item directly from the ListItem - no coordinate math needed!
+                        let Some(item) = li_gest.item() else {
+                            return;
+                        };
+                        let item_clone = item.clone();
+                        let Some(boxed) = item.downcast::<glib::BoxedAnyObject>().ok() else {
+                            return;
+                        };
+                        let track = boxed.borrow::<crate::media_library::LibTrack>();
+
+                        // Select only this item in the selection model
+                        let n_items = sel_gest.n_items();
+                        for i in 0..n_items {
+                            if let Some(model_item) = sel_gest.item(i) {
+                                if model_item == item_clone {
+                                    sel_gest.unselect_all();
+                                    sel_gest.select_item(i, true);
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Convert coordinates from gesture widget to ColumnView
+                        // The gesture gives coords in the child widget's space
+                        let child = li_gest.child();
+                        let (popup_x, popup_y) = if let Some(child_widget) = child {
+                            if let Some((rel_x, rel_y)) =
+                                child_widget.translate_coordinates(&col_popup, x, y)
+                            {
+                                (rel_x, rel_y)
+                            } else {
+                                (x, y)
+                            }
+                        } else {
+                            (x, y)
+                        };
+
+                        // Create popover at converted position
+                        let popover = gtk4::Popover::new();
+                        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+                            popup_x as i32,
+                            popup_y as i32,
+                            1,
+                            1,
+                        )));
+                        popover.set_parent(&col_popup);
+
+                        let vbox = GtkBox::new(Orientation::Vertical, 0);
+                        vbox.set_margin_top(4);
+                        vbox.set_margin_bottom(4);
+                        vbox.set_margin_start(4);
+                        vbox.set_margin_end(4);
+
+                        // Add to Playlist
+                        let btn_add = Button::with_label("Add to Playlist");
+                        let state_add = state_gest.clone();
+                        let sel_add = sel_gest.clone();
+                        let rebuild_add = rebuild_pl_gest.clone();
+                        let popover_add = popover.clone();
+                        btn_add.connect_clicked(move |_btn| {
+                            for i in 0..sel_add.n_items() {
+                                if sel_add.is_selected(i) {
+                                    if let Some(obj) = sel_add
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        let track = libtrack_to_track(&t);
+                                        state_add.borrow_mut().playlist.add(track);
+                                    }
+                                }
+                            }
+                            rebuild_add();
+                            popover_add.unparent();
+                        });
+                        vbox.append(&btn_add);
+
+                        // View/Edit ID3 Info
+                        let btn_id3 = Button::with_label("View/Edit ID3 Info");
+                        let state_id3 = state_gest.clone();
+                        let sel_id3 = sel_gest.clone();
+                        let rebuild_id3 = rebuild_pl_gest.clone();
+                        let popover_id3 = popover.clone();
+                        btn_id3.connect_clicked(move |_btn| {
+                            for i in 0..sel_id3.n_items() {
+                                if sel_id3.is_selected(i) {
+                                    if let Some(obj) = sel_id3
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        let path = std::path::PathBuf::from(&t.path);
+                                        open_id3_editor_window(
+                                            None::<&gtk4::Window>,
+                                            path,
+                                            state_id3.clone(),
+                                            rebuild_id3.clone(),
+                                            None,
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                            popover_id3.unparent();
+                        });
+                        vbox.append(&btn_id3);
+
+                        let sep = Separator::new(Orientation::Horizontal);
+                        vbox.append(&sep);
+
+                        // Remove from Media Library
+                        let btn_remove = Button::with_label("Remove from Media Library");
+                        let state_remove = state_gest.clone();
+                        let sel_remove = sel_gest.clone();
+                        let popover_remove = popover.clone();
+                        let store_remove = store_gest.clone();
+                        btn_remove.connect_clicked(move |_btn| {
+                            for i in 0..sel_remove.n_items() {
+                                if sel_remove.is_selected(i) {
+                                    if let Some(obj) = sel_remove
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        if let Some(lib) = state_remove.borrow().media_lib.as_ref()
+                                        {
+                                            let _ = lib.remove_track(t.id);
+                                        }
+                                    }
+                                }
+                            }
+                            // Rebuild the store to reflect removed tracks
+                            let tracks: Vec<crate::media_library::LibTrack> = state_remove
+                                .borrow()
+                                .media_lib
+                                .as_ref()
+                                .and_then(|lib| lib.all_tracks().ok())
+                                .unwrap_or_default();
+                            let boxed: Vec<glib::BoxedAnyObject> =
+                                tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
+                            store_remove.splice(0, store_remove.n_items(), &boxed);
+                            popover_remove.unparent();
+                        });
+                        vbox.append(&btn_remove);
+
+                        popover.set_child(Some(&vbox));
+                        popover.popup();
+                    });
+                    child.add_controller(gesture);
+                    if li.child().is_none() {
+                        li.set_child(Some(&child));
                     }
                 });
                 factory.connect_bind(move |_, obj| {
@@ -5550,165 +5754,6 @@ fn open_media_library_window(
             .child(&col_view)
             .build();
         files_vbox.append(&track_scroll);
-
-        // Right-click context menu - use motion tracking to find hovered row
-        {
-            let state_rc = state.clone();
-            let sel_ref = multi_sel.clone();
-            let rebuild_pl = rebuild_playlist.clone();
-            let rebuild_files_rc = rebuild_files.clone();
-
-            // Store last motion position
-            let hovered_pos = Rc::new(Cell::new(Option::<(f64, f64)>::None));
-
-            // Motion tracking
-            let motion = gtk4::EventControllerMotion::new();
-            let hovered_for_motion = hovered_pos.clone();
-            motion.connect_motion(move |_, x, y| {
-                hovered_for_motion.set(Some((x, y)));
-            });
-            let hovered_for_leave = hovered_pos.clone();
-            motion.connect_leave(move |_| {
-                hovered_for_leave.set(None);
-            });
-            track_scroll.add_controller(motion);
-
-            // Right-click gesture
-            let gesture = gtk4::GestureClick::new();
-            gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
-            let sel_for_click = sel_ref.clone();
-            let scroll_for_click = track_scroll.clone();
-            let state_rc2 = state_rc.clone();
-            let rebuild_pl2 = rebuild_pl.clone();
-            let rebuild_files_rc2 = rebuild_files_rc.clone();
-            let col_view_for_popup = col_view.clone();
-            gesture.connect_pressed(move |_gesture, n_press, x, y| {
-                if n_press != 1 {
-                    return;
-                }
-                let n_items = sel_for_click.n_items();
-                if n_items == 0 {
-                    return;
-                }
-
-                // Get scroll info
-                let vadj = scroll_for_click.vadjustment();
-                let scroll_offset = vadj.value() as f64;
-
-                // Gesture y is relative to the widget, we need scroll-relative position
-                // Formula: scroll_offset + y gives position in total content
-                let header_height = 28.0;
-                let row_height = 42.0;
-
-                let content_y = scroll_offset + y;
-                let idx = (content_y / row_height) as u32;
-                let clamped = if idx >= n_items { n_items - 1 } else { idx };
-
-                eprintln!(
-                    "DEBUG ML right-click: n_items={}, y={}, scroll={}, content_y={}, idx={}",
-                    n_items, y, scroll_offset, content_y, clamped
-                );
-                sel_for_click.unselect_all();
-                sel_for_click.select_item(clamped, true);
-
-                // Create popover
-                let popover = gtk4::Popover::new();
-                popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-                popover.set_parent(&col_view_for_popup);
-
-                let vbox = GtkBox::new(Orientation::Vertical, 0);
-                vbox.set_margin_top(4);
-                vbox.set_margin_bottom(4);
-                vbox.set_margin_start(4);
-                vbox.set_margin_end(4);
-
-                // Add to Playlist
-                let btn_add = Button::with_label("Add to Playlist");
-                let state_add = state_rc2.clone();
-                let sel_add = sel_for_click.clone();
-                let rebuild_add = rebuild_pl2.clone();
-                let popover_add = popover.clone();
-                btn_add.connect_clicked(move |_btn| {
-                    for i in 0..sel_add.n_items() {
-                        if sel_add.is_selected(i) {
-                            if let Some(obj) = sel_add
-                                .item(i)
-                                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
-                                let track = libtrack_to_track(&t);
-                                state_add.borrow_mut().playlist.add(track);
-                            }
-                        }
-                    }
-                    rebuild_add();
-                    popover_add.unparent();
-                });
-                vbox.append(&btn_add);
-
-                // View/Edit ID3 Info
-                let btn_id3 = Button::with_label("View/Edit ID3 Info");
-                let state_id3 = state_rc2.clone();
-                let sel_id3 = sel_for_click.clone();
-                let rebuild_id3 = rebuild_pl2.clone();
-                let popover_id3 = popover.clone();
-                btn_id3.connect_clicked(move |_btn| {
-                    for i in 0..sel_id3.n_items() {
-                        if sel_id3.is_selected(i) {
-                            if let Some(obj) = sel_id3
-                                .item(i)
-                                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
-                                let path = std::path::PathBuf::from(&t.path);
-                                open_id3_editor_window(
-                                    None::<&gtk4::Window>,
-                                    path,
-                                    state_id3.clone(),
-                                    rebuild_id3.clone(),
-                                    None,
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    popover_id3.unparent();
-                });
-                vbox.append(&btn_id3);
-
-                let sep = Separator::new(Orientation::Horizontal);
-                vbox.append(&sep);
-
-                // Remove from Media Library
-                let btn_remove = Button::with_label("Remove from Media Library");
-                let state_remove = state_rc2.clone();
-                let sel_remove = sel_for_click.clone();
-                let popover_remove = popover.clone();
-                let rebuild_rm = rebuild_files_rc2.clone();
-                btn_remove.connect_clicked(move |_btn| {
-                    for i in 0..sel_remove.n_items() {
-                        if sel_remove.is_selected(i) {
-                            if let Some(obj) = sel_remove
-                                .item(i)
-                                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
-                                if let Some(lib) = state_remove.borrow().media_lib.as_ref() {
-                                    let _ = lib.remove_track(t.id);
-                                }
-                            }
-                        }
-                    }
-                    rebuild_rm();
-                    popover_remove.unparent();
-                });
-                vbox.append(&btn_remove);
-
-                popover.set_child(Some(&vbox));
-                popover.popup();
-            });
-            track_scroll.add_controller(gesture);
-        }
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
         {
@@ -6418,6 +6463,54 @@ mod tests {
         let mut s = state_with_tracks(&["A"]);
         s.play_prev();
         assert_eq!(s.playlist.current_index, 0);
+    }
+
+    #[test]
+    fn play_next_when_stopped_does_not_start_playback() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 0;
+        // Player starts in Stopped state
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+        let result = s.play_next();
+        // Should advance to next track
+        assert_eq!(s.playlist.current_index, 1);
+        // Should return display name
+        assert!(result.is_some());
+        // Should still be stopped (not auto-started)
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+    }
+
+    #[test]
+    fn play_next_when_stopped_returns_correct_display_name() {
+        let mut s = state_with_tracks(&["Song A", "Song B"]);
+        s.playlist.current_index = 0;
+        let result = s.play_next();
+        // Should return the display name of the next track
+        assert_eq!(result.unwrap(), "Song B");
+    }
+
+    #[test]
+    fn play_prev_when_stopped_does_not_start_playback() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        // Player starts in Stopped state
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+        let result = s.play_prev();
+        // Should go back to previous track
+        assert_eq!(s.playlist.current_index, 0);
+        // Should return display name
+        assert!(result.is_some());
+        // Should still be stopped (not auto-started)
+        assert_eq!(*s.player.state(), PlayerState::Stopped);
+    }
+
+    #[test]
+    fn play_prev_when_stopped_returns_correct_display_name() {
+        let mut s = state_with_tracks(&["Song A", "Song B"]);
+        s.playlist.current_index = 1;
+        let result = s.play_prev();
+        // Should return the display name of the previous track
+        assert_eq!(result.unwrap(), "Song A");
     }
 
     // ── AppState::toggle_visualizer_mode ──────────────────────────────────────
