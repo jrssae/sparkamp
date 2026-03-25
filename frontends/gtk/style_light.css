@@ -322,5 +322,5 @@ button.pl-btn.destructive:hover {
 .state-playing { color: #00aa55; }
 .state-paused  { color: #cc8800; }
 .state-stopped { color: #888888; }
-.ml-col-label  { font-size: 9px; }
+.ml-col-label  { font-size: 12px; }
 .playlist row.drop-target { background-color: #bbddff; border-top: 2px solid #0055aa; }
