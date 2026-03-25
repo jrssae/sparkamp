@@ -5565,16 +5565,20 @@ fn open_media_library_window(
             let motion = gtk4::EventControllerMotion::new();
             let hovered_for_motion = hovered_idx.clone();
             let sel_for_motion = sel_ref.clone();
-            motion.connect_motion(move |_, x, y| {
+            let scroll_for_motion = track_scroll.clone();
+            motion.connect_motion(move |_, _x, y| {
                 let n_items = sel_for_motion.n_items();
                 if n_items == 0 {
                     hovered_for_motion.set(None);
                     return;
                 }
-                // y is the position within the widget
-                // Row height is approximately 28 pixels
+                // y is the position within the ScrolledWindow's viewport
+                // Add scroll offset to get the actual model index
+                let scroll_offset = scroll_for_motion.vadjustment().value() as f64;
                 let row_height = 28.0;
-                let idx = (y / row_height) as u32;
+                // Calculate model index: scroll_offset + y_position
+                let model_idx = scroll_offset + y;
+                let idx = (model_idx / row_height) as u32;
                 let clamped = if idx >= n_items { n_items - 1 } else { idx };
                 hovered_for_motion.set(Some(clamped));
             });
