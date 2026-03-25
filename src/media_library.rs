@@ -1136,6 +1136,28 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Clear and re-extract artwork from a track file.
+    /// Updates the DB with the new cached artwork path.
+    pub fn refresh_artwork(&self, track_id: i64, path: &str) -> Result<()> {
+        // Delete old cached artwork file
+        if let Ok(track) = self.track_by_path(path) {
+            if let Some(ref old_art) = track.artwork_path {
+                let _ = std::fs::remove_file(old_art);
+            }
+        }
+
+        // Re-extract artwork from the file
+        let tags = read_track_tags(std::path::Path::new(path));
+
+        // Update DB with new artwork path
+        self.conn.execute(
+            "UPDATE tracks SET artwork_path = ?1 WHERE id = ?2",
+            params![tags.artwork_path, track_id],
+        )?;
+
+        Ok(())
+    }
+
     /// Map rows from a prepared statement into [`LibTrack`] values.
     ///
     /// `P` matches rusqlite's `Params` trait so this helper works with both

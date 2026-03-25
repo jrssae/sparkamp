@@ -3976,16 +3976,11 @@ fn open_id3_editor_window(
                         }
                     }
 
-                    // Clear cached artwork so it gets re-extracted from the file
+                    // Re-extract and update cached artwork from the saved file
                     if let Some(lib) = state_s.borrow().media_lib.as_ref() {
-                        let path_str = path.to_string_lossy();
+                        let path_str = path.to_string_lossy().into_owned();
                         if let Ok(lib_track) = lib.track_by_path(&path_str) {
-                            // Delete the old cached artwork file
-                            if let Some(ref old_art) = lib_track.artwork_path {
-                                let _ = std::fs::remove_file(old_art);
-                            }
-                            // Clear artwork_path in DB so it gets re-extracted
-                            let _ = lib.clear_artwork(lib_track.id);
+                            let _ = lib.refresh_artwork(lib_track.id, &path_str);
                         }
                     }
 
