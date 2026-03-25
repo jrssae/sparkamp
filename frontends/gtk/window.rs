@@ -5569,29 +5569,26 @@ fn open_media_library_window(
 
                 let n_items = sel_ref.n_items();
                 if n_items == 0 {
-                    eprintln!("DEBUG ML right-click: no items");
                     return;
                 }
 
                 // Find the item at the click position
-                let scroll_offset = scroll_w.vadjustment().value() as f64;
+                // Use the scrolled window's hadjustment for horizontal scroll too
+                let vadj = scroll_w.vadjustment();
+                let scroll_offset = vadj.value() as f64;
                 let row_height = 28.0;
                 let header_height = 32.0;
-                let adjusted_y = y - header_height;
-                let item_idx = if adjusted_y >= 0.0 {
-                    ((adjusted_y + scroll_offset) / row_height) as u32
-                } else {
-                    0
-                };
-                eprintln!(
-                    "DEBUG ML right-click: x={}, y={}, scroll={}, n_items={}, item_idx={}",
-                    x, y, scroll_offset, n_items, item_idx
-                );
-                let clicked_idx = if item_idx < n_items {
-                    Some(item_idx)
-                } else {
-                    None
-                };
+
+                // Calculate which item index was clicked based on y position
+                // adjusted_y accounts for the column header height
+                let adjusted_y = if y > header_height { y - header_height } else { 0.0 };
+                let item_idx = ((adjusted_y + scroll_offset) / row_height) as u32;
+
+                // Clamp to valid range
+                let clamped_idx = item_idx.min(n_items - 1);
+                eprintln!("DEBUG ML right-click: x={}, y={}, scroll={}, n_items={}, item_idx={}, clamped={}", x, y, scroll_offset, n_items, item_idx, clamped_idx);
+
+                let clicked_idx = Some(clamped_idx);
 
                 if let Some(idx) = clicked_idx {
                     sel_ref.unselect_all();
