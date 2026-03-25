@@ -5558,29 +5558,26 @@ fn open_media_library_window(
             let rebuild_pl = rebuild_playlist.clone();
             let rebuild_files_rc = rebuild_files.clone();
 
-            // Track which row index is currently under the mouse
-            let hovered_idx = Rc::new(Cell::new(Option::<(f64, f64)>::None));
+            // Store last motion position
+            let hovered_pos = Rc::new(Cell::new(Option::<(f64, f64)>::None));
 
-            // Add motion tracking to the ScrolledWindow at Capture phase
+            // Motion tracking
             let motion = gtk4::EventControllerMotion::new();
-            motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
-            let hovered_for_motion = hovered_idx.clone();
+            let hovered_for_motion = hovered_pos.clone();
             motion.connect_motion(move |_, x, y| {
                 hovered_for_motion.set(Some((x, y)));
             });
-            let hovered_for_leave = hovered_idx.clone();
+            let hovered_for_leave = hovered_pos.clone();
             motion.connect_leave(move |_| {
                 hovered_for_leave.set(None);
             });
             track_scroll.add_controller(motion);
 
-            // Right-click gesture on ScrolledWindow at Capture phase
+            // Right-click gesture
             let gesture = gtk4::GestureClick::new();
             gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
-            gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
-            let hovered_for_click = hovered_idx.clone();
+            let hovered_for_click = hovered_pos.clone();
             let sel_for_click = sel_ref.clone();
-            let scroll_for_click = track_scroll.clone();
             let state_rc2 = state_rc.clone();
             let rebuild_pl2 = rebuild_pl.clone();
             let rebuild_files_rc2 = rebuild_files_rc.clone();
@@ -5594,24 +5591,18 @@ fn open_media_library_window(
                     return;
                 }
 
-                // Get the coordinates to use - prefer motion coordinates, fallback to gesture coords
-                let (use_x, use_y) = if let Some(coords) = hovered_for_click.get() {
-                    coords
-                } else {
-                    (x, y)
-                };
+                // Use gesture coordinates directly - they should be relative to the widget
+                let use_y = y;
 
-                // Calculate model index from coordinates
-                let scroll_offset = scroll_for_click.vadjustment().value() as f64;
-                let model_y = scroll_offset + use_y;
-                
-                // Try different row heights to find the right one
-                // Based on user feedback: model_y=713 should be idx=17, so 713/17 ≈ 42
+                // Row height based on user feedback
                 let row_height = 42.0;
-                let idx = (model_y / row_height) as u32;
+                let idx = (use_y / row_height) as u32;
                 let clamped = if idx >= n_items { n_items - 1 } else { idx };
 
-                eprintln!("DEBUG ML right-click: n_items={}, scroll={}, y={}, model_y={}, row_h=42, idx={}", n_items, scroll_offset, use_y, model_y, clamped);
+                eprintln!(
+                    "DEBUG ML right-click: n_items={}, y={}, row_h=42, idx={}",
+                    n_items, use_y, clamped
+                );
                 sel_for_click.unselect_all();
                 sel_for_click.select_item(clamped, true);
 
