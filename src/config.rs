@@ -415,6 +415,11 @@ pub struct MediaLibraryConfig {
     /// Read-only fields (filename, path, etc.) are always shown regardless of this list.
     #[serde(default = "MediaLibraryConfig::default_id3_visible_columns")]
     pub id3_visible_columns: Vec<String>,
+
+    /// Which column (left/right) each field belongs to in the ID3 editor.
+    /// Format: "left" or "right". Used for 2-column layout.
+    #[serde(default)]
+    pub id3_column_position: std::collections::HashMap<String, String>,
 }
 
 impl MediaLibraryConfig {
@@ -450,6 +455,21 @@ impl MediaLibraryConfig {
         .map(|s| s.to_string())
         .collect()
     }
+
+    /// Default column positions for ID3 editor (left/right split).
+    pub fn default_id3_column_position() -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        // First half go left, second half go right
+        let left_fields = ["title", "artist", "album", "year", "genre"];
+        let right_fields = ["track_num", "track_total", "comment", "artwork_path"];
+        for f in left_fields {
+            map.insert(f.to_string(), "left".to_string());
+        }
+        for f in right_fields {
+            map.insert(f.to_string(), "right".to_string());
+        }
+        map
+    }
 }
 
 impl Default for MediaLibraryConfig {
@@ -460,6 +480,7 @@ impl Default for MediaLibraryConfig {
             rescan_interval_mins: Self::default_interval_mins(),
             visible_columns: Self::default_visible_columns(),
             id3_visible_columns: Self::default_id3_visible_columns(),
+            id3_column_position: Self::default_id3_column_position(),
         }
     }
 }
@@ -907,6 +928,43 @@ rescan_interval_mins = 60
                 "comment",
                 "artwork_path",
             ]
+        );
+    }
+
+    #[test]
+    fn id3_column_position_default_assigns_left_right() {
+        let cfg = MediaLibraryConfig::default();
+        assert_eq!(
+            cfg.id3_column_position.get("title"),
+            Some(&"left".to_string())
+        );
+        assert_eq!(
+            cfg.id3_column_position.get("artist"),
+            Some(&"left".to_string())
+        );
+        assert_eq!(
+            cfg.id3_column_position.get("track_num"),
+            Some(&"right".to_string())
+        );
+    }
+
+    #[test]
+    fn id3_column_position_roundtrips_through_toml() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.id3_column_position
+            .insert("title".to_string(), "right".to_string());
+        cfg.id3_column_position
+            .insert("artist".to_string(), "left".to_string());
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(
+            back.id3_column_position.get("title"),
+            Some(&"right".to_string())
+        );
+        assert_eq!(
+            back.id3_column_position.get("artist"),
+            Some(&"left".to_string())
         );
     }
 }

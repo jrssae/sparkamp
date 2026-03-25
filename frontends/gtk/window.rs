@@ -3197,7 +3197,7 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
 
     let dlg = gtk4::Window::new();
     dlg.set_title(Some("ID3 Editor — Customize"));
-    dlg.set_default_size(320, 450);
+    dlg.set_default_size(400, 450);
     dlg.set_resizable(true);
     if let Some(p) = parent {
         dlg.set_transient_for(Some(p));
@@ -3211,10 +3211,20 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
 
     // Header
     let hdr = Label::builder()
-        .label("Select fields to display:")
+        .label("Select fields and column position:")
         .halign(Align::Start)
         .build();
     main_vbox.append(&hdr);
+
+    // Column headers
+    let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
+    col_hdrs.append(&Label::new(Some("")));
+    col_hdrs.append(&Label::new(Some("Field")));
+    let spring = GtkBox::new(Orientation::Horizontal, 0);
+    spring.set_hexpand(true);
+    col_hdrs.append(&spring);
+    col_hdrs.append(&Label::new(Some("Column")));
+    main_vbox.append(&col_hdrs);
 
     // Scrollable list
     let scrolled = ScrolledWindow::new();
@@ -3236,14 +3246,26 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
         .cloned()
         .collect();
 
-    // Store checkboxes to update on Reset
+    let column_positions: std::collections::HashMap<String, String> = state
+        .borrow()
+        .config
+        .media_library
+        .id3_column_position
+        .clone();
+
+    // Store checkboxes and dropdowns to update on Reset
     let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let dropdowns: Rc<RefCell<Vec<(String, gtk4::ComboBoxText)>>> =
         Rc::new(RefCell::new(Vec::new()));
 
     for col in &editable_cols {
-        let cb = CheckButton::with_label(col.header);
-        cb.set_active(visible_ids.contains(col.id));
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+
+        // Checkbox
+        let cb = CheckButton::new();
         let id_owned = col.id.to_string();
+        cb.set_active(visible_ids.contains(col.id));
         let state_cfg = state.clone();
         cb.connect_toggled(move |btn| {
             let mut s = state_cfg.borrow_mut();
@@ -3257,8 +3279,45 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
             }
             let _ = s.config.save();
         });
-        list_vbox.append(&cb);
+        row.append(&cb);
+
+        // Label
+        let lbl = Label::new(Some(col.header));
+        lbl.set_halign(Align::Start);
+        row.append(&lbl);
+
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        row.append(&spring);
+
+        // Left/Right dropdown (ComboBoxText)
+        let pos = column_positions
+            .get(col.id)
+            .cloned()
+            .unwrap_or_else(|| "left".to_string());
+        let dropdown = gtk4::ComboBoxText::new();
+        dropdown.append(Some("left"), "Left");
+        dropdown.append(Some("right"), "Right");
+        dropdown.set_active_id(Some(if pos == "right" { "right" } else { "left" }));
+
+        let id_for_dropdown = col.id.to_string();
+        let state_dropdown = state.clone();
+        dropdown.connect_changed(move |dd| {
+            if let Some(position) = dd.active_id() {
+                let mut s = state_dropdown.borrow_mut();
+                s.config
+                    .media_library
+                    .id3_column_position
+                    .insert(id_for_dropdown.clone(), position.to_string());
+                let _ = s.config.save();
+            }
+        });
+
+        row.append(&dropdown);
+
+        list_vbox.append(&row);
         checkboxes.borrow_mut().push((col.id.to_string(), cb));
+        dropdowns.borrow_mut().push((col.id.to_string(), dropdown));
     }
 
     scrolled.set_child(Some(&list_vbox));
@@ -3270,17 +3329,25 @@ fn open_id3_customize_dialog(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
     let btn_reset = Button::with_label("Reset Defaults");
     let state_reset = state.clone();
     let cbs_reset = checkboxes.clone();
-    let defaults = crate::config::MediaLibraryConfig::default_id3_visible_columns();
+    let dds_reset = dropdowns.clone();
+    let defaults_vis = crate::config::MediaLibraryConfig::default_id3_visible_columns();
+    let defaults_pos = crate::config::MediaLibraryConfig::default_id3_column_position();
     btn_reset.connect_clicked(move |_| {
-        let default_set: std::collections::HashSet<String> = defaults.iter().cloned().collect();
+        let default_set: std::collections::HashSet<String> = defaults_vis.iter().cloned().collect();
 
         let mut s = state_reset.borrow_mut();
-        s.config.media_library.id3_visible_columns = defaults.clone();
+        s.config.media_library.id3_visible_columns = defaults_vis.clone();
+        s.config.media_library.id3_column_position = defaults_pos.clone();
         let _ = s.config.save();
 
         // Update checkboxes
         for (id, cb) in cbs_reset.borrow().iter() {
             cb.set_active(default_set.contains(id));
+        }
+        // Update dropdowns
+        for (id, dd) in dds_reset.borrow().iter() {
+            let pos = defaults_pos.get(id).map(|s| s.as_str()).unwrap_or("left");
+            dd.set_active_id(Some(pos));
         }
     });
     btn_row.append(&btn_reset);
@@ -3366,6 +3433,14 @@ fn open_id3_editor_window(
     grid.set_column_spacing(8);
     grid.set_hexpand(true);
 
+    // Get column positions from config
+    let column_positions: std::collections::HashMap<String, String> = state
+        .borrow()
+        .config
+        .media_library
+        .id3_column_position
+        .clone();
+
     // Get editable columns in visible order
     let editable_ids: std::collections::HashSet<&str> = ALL_COLUMNS
         .iter()
@@ -3379,10 +3454,20 @@ fn open_id3_editor_window(
         .map(|s| s.as_str())
         .collect();
 
-    // Split into left/right halves
-    let mid = (visible_editable.len() + 1) / 2;
-    let left_ids = &visible_editable[..mid];
-    let right_ids = &visible_editable[mid..];
+    // Separate into left/right based on column position config
+    let mut left_ids: Vec<&str> = Vec::new();
+    let mut right_ids: Vec<&str> = Vec::new();
+    for id in &visible_editable {
+        let pos = column_positions
+            .get(*id)
+            .map(|s| s.as_str())
+            .unwrap_or("left");
+        if pos == "right" {
+            right_ids.push(*id);
+        } else {
+            left_ids.push(*id);
+        }
+    }
 
     // Build left column (cols 0-1)
     for (row, id) in left_ids.iter().enumerate() {
