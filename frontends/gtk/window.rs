@@ -5191,6 +5191,8 @@ fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track 
 
 /// Open a resizable window displaying the image at `path`.
 fn open_image_viewer(path: &str) {
+    use gtk4::ContentFit;
+
     let win = gtk4::Window::new();
     win.set_title(Some("Artwork — Sparkamp"));
     win.set_default_size(400, 400);
@@ -5198,17 +5200,12 @@ fn open_image_viewer(path: &str) {
 
     let picture = gtk4::Picture::new();
     picture.set_filename(Some(path));
-    #[allow(deprecated)]
-    picture.set_keep_aspect_ratio(true);
+    picture.set_can_shrink(true);
+    picture.set_content_fit(ContentFit::Contain);
     picture.set_hexpand(true);
     picture.set_vexpand(true);
 
-    let scrolled = ScrolledWindow::new();
-    scrolled.set_child(Some(&picture));
-    scrolled.set_hexpand(true);
-    scrolled.set_vexpand(true);
-
-    win.set_child(Some(&scrolled));
+    win.set_child(Some(&picture));
     win.present();
 }
 
