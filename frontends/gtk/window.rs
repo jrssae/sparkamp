@@ -104,6 +104,8 @@ struct AppState {
     ml_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
     id3_editor_window: Option<gtk4::Window>,
+    /// Callback to refresh the media library window, registered by the window itself.
+    rebuild_ml_callback: Option<Rc<dyn Fn()>>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -149,6 +151,7 @@ impl AppState {
             plugin_manager,
             ml_window: None,
             id3_editor_window: None,
+            rebuild_ml_callback: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
         })
@@ -544,6 +547,37 @@ fn sanitize_id3_numeric(s: &str) -> String {
     let trimmed = s.trim();
     let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
     numeric.chars().take(8).collect()
+}
+
+fn format_last_played(iso_timestamp: &str) -> String {
+    if iso_timestamp.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<&str> = iso_timestamp
+        .trim_end_matches('Z')
+        .split(|c| c == 'T' || c == ':' || c == '-')
+        .collect();
+    if parts.len() < 5 {
+        return iso_timestamp.to_string();
+    }
+    let year = parts[0];
+    let month = parts[1];
+    let day = parts[2];
+    let hour: u32 = parts.get(3).and_then(|h| h.parse().ok()).unwrap_or(0);
+    let minute = parts.get(4).unwrap_or(&"00");
+    let (hour_12, am_pm) = if hour == 0 {
+        (12, "AM")
+    } else if hour < 12 {
+        (hour, "AM")
+    } else if hour == 12 {
+        (12, "PM")
+    } else {
+        (hour - 12, "PM")
+    };
+    format!(
+        "{}-{}-{} {:02}:{} {}",
+        year, month, day, hour_12, minute, am_pm
+    )
 }
 
 fn accent_hex() -> &'static str {
@@ -2240,6 +2274,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                             if let Some(ref ml) = s.media_lib {
                                 let _ = ml.record_play(p);
                                 s.counted_play_path = Some(p.clone());
+                                if let Some(ref rebuild_ml) = s.rebuild_ml_callback {
+                                    rebuild_ml();
+                                }
                             }
                         }
                     }
@@ -5265,7 +5302,7 @@ fn open_media_library_window(
                         },
                         "path" => t.path.clone(),
                         "play_count" => t.play_count.to_string(),
-                        "last_played" => t.last_played.as_deref().unwrap_or("").to_string(),
+                        "last_played" => format_last_played(t.last_played.as_deref().unwrap_or("")),
                         "disc_num" => {
                             let d = t.disc_num.unwrap_or(0);
                             if d == 0 {
@@ -5879,6 +5916,10 @@ fn open_media_library_window(
         }
 
         stack.add_named(&files_vbox, Some("files"));
+        let rf = rebuild_files.clone();
+        state.borrow_mut().rebuild_ml_callback = Some(Rc::new(move || {
+            rf();
+        }));
     }
 
     // ── Page: Playlists ──────────────────────────────────────────────────
@@ -6053,6 +6094,23 @@ fn open_media_library_window(
     root.append(&vsep);
     root.append(&stack);
     win.set_child(Some(&root));
+
+    win.connect_close_request({
+        let state = state.clone();
+        move |w| {
+            let (w_size, h_size) = (w.width(), w.height());
+            {
+                let mut s = state.borrow_mut();
+                s.config.window.ml_width = w_size;
+                s.config.window.ml_height = h_size;
+                s.rebuild_ml_callback = None;
+            }
+            let _ = state.borrow().config.save();
+            state.borrow_mut().ml_window = None;
+            glib::Propagation::Proceed
+        }
+    });
+
     win.present();
     win
 }
