@@ -3226,7 +3226,7 @@ fn open_customize_columns_dialog(
     title: &str,
     mode: ColumnCustomizerMode,
     on_toggle: Option<Rc<dyn Fn(String, bool)>>,
-    on_id3_change: Option<Rc<dyn Fn()>>,
+    on_close: Option<Rc<dyn Fn()>>,
 ) {
     use gtk4::prelude::*;
 
@@ -3339,7 +3339,6 @@ fn open_customize_columns_dialog(
         let state_cfg = state.clone();
         let mode_for_cb = mode.clone();
         let on_toggle_cb = on_toggle.clone();
-        let on_id3_toggle = on_id3_change.clone();
         let skip_cb = skipping_callback.clone();
         cb.connect_toggled(move |btn| {
             if *skip_cb.borrow() {
@@ -3374,12 +3373,6 @@ fn open_customize_columns_dialog(
                 }
             }
             let _ = s.config.save();
-            drop(s);
-            if let ColumnCustomizerMode::Id3Editor = mode_for_cb {
-                if let Some(ref cb) = on_id3_toggle {
-                    cb();
-                }
-            }
         });
         row.append(&cb);
 
@@ -3403,7 +3396,6 @@ fn open_customize_columns_dialog(
 
             let id_for_dropdown = col.id.to_string();
             let state_dropdown = state.clone();
-            let on_id3_dropdown = on_id3_change.clone();
             dropdown.connect_changed(move |dd| {
                 if let Some(position) = dd.active_id() {
                     let mut s = state_dropdown.borrow_mut();
@@ -3412,10 +3404,6 @@ fn open_customize_columns_dialog(
                         .id3_column_position
                         .insert(id_for_dropdown.clone(), position.to_string());
                     let _ = s.config.save();
-                    drop(s);
-                    if let Some(ref cb) = on_id3_dropdown {
-                        cb();
-                    }
                 }
             });
 
@@ -3440,7 +3428,7 @@ fn open_customize_columns_dialog(
     let defaults_pos_clone = defaults_pos.clone();
     let mode_for_reset = mode.clone();
     let on_toggle_reset = on_toggle.clone();
-    let on_id3_reset = on_id3_change.clone();
+    let on_close_reset = on_close.clone();
     let skip_cb_flag = skipping_callback.clone();
     btn_reset.connect_clicked(move |_| {
         let default_set: std::collections::HashSet<String> =
@@ -3480,12 +3468,6 @@ fn open_customize_columns_dialog(
                 .unwrap_or("left");
             dd.set_active_id(Some(pos));
         }
-
-        if let ColumnCustomizerMode::Id3Editor = mode_for_reset {
-            if let Some(ref cb) = on_id3_reset {
-                cb();
-            }
-        }
     });
     btn_row.append(&btn_reset);
 
@@ -3495,7 +3477,14 @@ fn open_customize_columns_dialog(
 
     let btn_close = Button::with_label("Close");
     let dlg_wk = dlg.downgrade();
+    let on_close_cb = on_close.clone();
+    let mode_for_close = mode.clone();
     btn_close.connect_clicked(move |_| {
+        if let ColumnCustomizerMode::Id3Editor = mode_for_close {
+            if let Some(ref cb) = on_close_cb {
+                cb();
+            }
+        }
         if let Some(w) = dlg_wk.upgrade() {
             w.close();
         }
@@ -3504,6 +3493,18 @@ fn open_customize_columns_dialog(
 
     main_vbox.append(&btn_row);
     dlg.set_child(Some(&main_vbox));
+
+    let on_close_req = on_close.clone();
+    let mode_for_req = mode.clone();
+    dlg.connect_close_request(move |_| {
+        if let ColumnCustomizerMode::Id3Editor = mode_for_req {
+            if let Some(ref cb) = on_close_req {
+                cb();
+            }
+        }
+        glib::Propagation::Proceed
+    });
+
     dlg.present();
 }
 
