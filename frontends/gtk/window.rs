@@ -5594,23 +5594,20 @@ fn open_media_library_window(
                 // Get scroll info
                 let vadj = scroll_for_click.vadjustment();
                 let scroll_offset = vadj.value() as f64;
-                let page_size = vadj.page_size() as f64;
-                let upper = vadj.upper() as f64;
 
-                // Gesture coordinates are relative to the ScrolledWindow content
-                // y is the position within the visible/scrolled area
-                let row_height = 42.0;
+                // Gesture y is relative to the widget, we need scroll-relative position
+                // Formula: scroll_offset + y gives position in total content
                 let header_height = 28.0;
+                let row_height = 42.0;
 
-                // Calculate model index: y is already scroll-relative in GTK
-                // But we need to account for the header
-                let content_y = y - header_height;
-                let model_y = if content_y >= 0.0 { content_y } else { 0.0 };
-                let idx = (model_y / row_height) as u32;
+                let content_y = scroll_offset + y;
+                let idx = (content_y / row_height) as u32;
                 let clamped = if idx >= n_items { n_items - 1 } else { idx };
 
-                eprintln!("DEBUG ML right-click: n_items={}, y={}, scroll={}, page={}, upper={}, content_y={}, idx={}", 
-                    n_items, y, scroll_offset, page_size, upper, content_y, clamped);
+                eprintln!(
+                    "DEBUG ML right-click: n_items={}, y={}, scroll={}, content_y={}, idx={}",
+                    n_items, y, scroll_offset, content_y, clamped
+                );
                 sel_for_click.unselect_all();
                 sel_for_click.select_item(clamped, true);
 
