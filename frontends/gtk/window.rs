@@ -5603,15 +5603,15 @@ fn open_media_library_window(
 
                 // Calculate model index from coordinates
                 let scroll_offset = scroll_for_click.vadjustment().value() as f64;
-                let row_height = 28.0;
                 let model_y = scroll_offset + use_y;
+                
+                // Try different row heights to find the right one
+                // Based on user feedback: model_y=713 should be idx=17, so 713/17 ≈ 42
+                let row_height = 42.0;
                 let idx = (model_y / row_height) as u32;
                 let clamped = if idx >= n_items { n_items - 1 } else { idx };
 
-                eprintln!(
-                    "DEBUG ML right-click: n_items={}, scroll={}, y={}, model_y={}, idx={}",
-                    n_items, scroll_offset, use_y, model_y, clamped
-                );
+                eprintln!("DEBUG ML right-click: n_items={}, scroll={}, y={}, model_y={}, row_h=42, idx={}", n_items, scroll_offset, use_y, model_y, clamped);
                 sel_for_click.unselect_all();
                 sel_for_click.select_item(clamped, true);
 
