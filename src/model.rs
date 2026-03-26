@@ -210,6 +210,31 @@ pub struct Track {
 }
 
 impl Track {
+    /// Construct a `Track` from a path without reading metadata (fast).
+    ///
+    /// Only sets the path and title from the filename. Metadata (artist, album, etc.)
+    /// must be read separately via `from_path()`. Use this for fast UI population
+    /// when adding files to a playlist.
+    pub fn from_path_fast(path: &Path) -> Result<Self> {
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("Cannot resolve path: {}", path.display()))?;
+        let title = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        Ok(Track {
+            path,
+            title,
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+        })
+    }
+
     /// Construct a `Track` from an arbitrary filesystem path.
     ///
     /// `path` is canonicalised (resolved to an absolute path with symlinks

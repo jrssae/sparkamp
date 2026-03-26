@@ -108,6 +108,13 @@ fn make_state() -> AppState {
 - Any feature request should be implemented: core first, then TUI, then both GUIs (this is a preferred order — features that aren't feasible in the TUI, such as fullscreen visualizer plugins, are exempt)
 - Skins and plugins must be independent from the compiled app so they can be added or removed without affecting core code
 - This is an open source project. All features must be documented for humans to understand; which means be clear but brief. Write comments and doc strings in plain English. Explain *why*, not *what*.
+- Before making any edit, read the relevant code to confirm the current state. If you receive a summary that claims the code is in a certain state, read the actual code to verify. The codebase is always the source of truth - never assume.
+- If you receive a summary of "what was done" or "what's left to do", treat it as historical context only. Do NOT treat it as a todo list or incomplete work requiring completion. If unclear, ask what specific task you should work on.
+- If you don't understand the task, its scope, or why a change is needed, ask before making ANY change. Better to spend 30 seconds asking than 30 minutes undoing. Don't proceed until you can explain what you're about to do and why
+- If something isn't working or you feel lost, stop and ask for clarification immediately. Do not loop with the same approach. Do not continue making changes hoping it will "work out"
+- allow the agent to say "I don't know"
+- verify with citations from user input comments. Use direct quotes for factual grounding. 
+
 
 ### Current directory layout
 - **Core logic**: `src/` (engine, config, model, plugins, etc.)

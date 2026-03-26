@@ -57,6 +57,14 @@ When a user removes a skin, plugin, or music file from Sparkamp's UI, **do not d
 ### Don't over-engineer
 Only make the changes that are asked for. Don't add error handling, refactor nearby code, add docstrings to untouched functions, or introduce abstractions for one-time use, but make recommendations to the user if anything seems particularly concerning or if there's a high likelihood of failure.
 
+### Don't make assumptions
+- Before making any edit, read the relevant code to confirm the current state. If you receive a summary that claims the code is in a certain state, read the actual code to verify. The codebase is always the source of truth - never assume.
+- If you receive a summary of "what was done" or "what's left to do", treat it as historical context only. Do NOT treat it as a todo list or incomplete work requiring completion. If unclear, ask what specific task you should work on.
+- If you don't understand the task, its scope, or why a change is needed, ask before making ANY change. Better to spend 30 seconds asking than 30 minutes undoing. Don't proceed until you can explain what you're about to do and why
+- If something isn't working or you feel lost, stop and ask for clarification immediately. Do not loop with the same approach. Do not continue making changes hoping it will "work out"
+- You are allowed to say "I don't know" and ask for claification.
+- verify with citations from user input comments. Use direct quotes for factual grounding. 
+
 ---
 
 ## Key architecture notes
