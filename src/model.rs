@@ -766,6 +766,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
 
@@ -811,6 +812,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
 

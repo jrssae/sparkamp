@@ -346,3 +346,15 @@ button.pl-btn.destructive:hover {
 .popover-button:active {
     background-color: rgba(255, 255, 255, 0.2);
 }
+
+/* ── Media library unscanned rows ────────────────────────────────────────── */
+/* Rows without scanned_at have a black background to indicate they haven't been scanned */
+.unscanned-row {
+    background-color: #000000;
+}
+
+.unscanned-row label,
+.unscanned-row button {
+    background-color: #000000;
+    color: #ffffff;
+}

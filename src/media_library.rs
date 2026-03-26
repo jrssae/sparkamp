@@ -75,6 +75,8 @@ pub struct LibTrack {
     pub encoded_by: Option<String>,
     pub lyric: Option<String>,
     pub artwork_path: Option<String>,
+    /// ISO-8601 datetime string of the last metadata scan, or `None` if never scanned.
+    pub last_scanned: Option<String>,
     /// Pre-computed lowercase strings and zero-padded numbers for sort comparisons.
     /// All strings are lowercase; all numeric fields are zero-padded so string
     /// comparison gives correct numeric ordering.
@@ -342,7 +344,8 @@ impl MediaLibrary {
                 url             TEXT,
                 encoded_by      TEXT,
                 lyric           TEXT,
-                artwork_path    TEXT
+                artwork_path    TEXT,
+                last_scanned   TEXT
             );
 
             CREATE TABLE IF NOT EXISTS playlists (
@@ -371,6 +374,7 @@ impl MediaLibrary {
             ("encoded_by", "TEXT"),
             ("lyric", "TEXT"),
             ("artwork_path", "TEXT"),
+            ("last_scanned", "TEXT"),
         ];
         let existing: std::collections::HashSet<String> = {
             let mut stmt = self
@@ -764,7 +768,7 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
              FROM tracks
              ORDER BY {order}",
         );
@@ -794,7 +798,7 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
              FROM tracks
              WHERE LOWER(COALESCE(artist,''))   LIKE ?1
                 OR LOWER(COALESCE(title,''))    LIKE ?1
@@ -1113,13 +1117,315 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Check if a file needs metadata scanning based on modification time vs last_scanned.
+    ///
+    /// Returns `true` if:
+    /// - `last_scanned` is `None` (never scanned), or
+    /// - The file's modification time is newer than `last_scanned`
+    fn needs_metadata_scan(path: &str, last_scanned: Option<&str>) -> bool {
+        let Some(last_scanned) = last_scanned else {
+            return true; // Never scanned
+        };
+
+        let path = Path::new(path);
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return true; // File doesn't exist or can't be read
+        };
+
+        let Ok(mtime) = metadata.modified() else {
+            return true; // Can't get mtime
+        };
+
+        let mtime_secs = mtime
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Parse last_scanned (format: YYYY-MM-DDTHH:MM:SSZ)
+        // We use second-level precision, so add a 2-second buffer to handle timing
+        // edge cases where file mtime and scan timestamp are in the same second.
+        if let Some(scanned_secs) = Self::parse_iso_timestamp(last_scanned) {
+            return mtime_secs > scanned_secs + 2;
+        }
+
+        true // If we can't parse the timestamp, rescan
+    }
+
+    /// Parse an ISO 8601 timestamp (format: YYYY-MM-DDTHH:MM:SSZ) to Unix seconds.
+    fn parse_iso_timestamp(ts: &str) -> Option<u64> {
+        // Expected format: "2024-01-15T10:30:00Z"
+        let ts = ts.strip_suffix('Z')?;
+        let parts: Vec<&str> = ts.split(|c| c == '-' || c == 'T' || c == ':').collect();
+        if parts.len() < 6 {
+            return None;
+        }
+
+        let year: u64 = parts[0].parse().ok()?;
+        let month: u64 = parts[1].parse().ok()?;
+        let day: u64 = parts[2].parse().ok()?;
+        let hour: u64 = parts[3].parse().ok()?;
+        let min: u64 = parts[4].parse().ok()?;
+        let sec: u64 = parts[5].parse().ok()?;
+
+        // Validate ranges
+        if month < 1 || month > 12 {
+            return None;
+        }
+        if day < 1 || day > 31 {
+            return None;
+        }
+        if hour > 23 || min > 59 || sec > 59 {
+            return None;
+        }
+        if day > Self::days_in_month(year, month) {
+            return None;
+        }
+
+        // Simple conversion to Unix timestamp (ignoring leap seconds and timezone)
+        let days_since_epoch = Self::days_since_1970(year, month, day);
+        let secs = days_since_epoch as u64 * 86400 + hour * 3600 + min * 60 + sec;
+        Some(secs)
+    }
+
+    /// Calculate days since 1970-01-01 (simplified, not accounting for Julian calendar)
+    fn days_since_1970(year: u64, month: u64, day: u64) -> u64 {
+        let mut days = (year - 1970) * 365;
+        days += (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400; // leap days
+        for m in 1..month {
+            days += Self::days_in_month(year, m);
+        }
+        days + day - 1
+    }
+
+    /// Get days in a month
+    fn days_in_month(year: u64, month: u64) -> u64 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => {
+                if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+                    29
+                } else {
+                    28
+                }
+            }
+            _ => 30,
+        }
+    }
+
+    /// Update the `last_scanned` timestamp for a track.
+    fn update_last_scanned(&self, path: &str) -> Result<()> {
+        let now = Self::format_current_timestamp();
+        self.conn.execute(
+            "UPDATE tracks SET last_scanned = ?1 WHERE path = ?2",
+            params![now, path],
+        )?;
+        Ok(())
+    }
+
+    /// Get current timestamp in ISO 8601 format.
+    fn format_current_timestamp() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let secs = now.as_secs();
+        let days = secs / 86400;
+        let rem = secs % 86400;
+        let hour = rem / 3600;
+        let min = (rem % 3600) / 60;
+        let sec = rem % 60;
+
+        // Find year, month, day from days since 1970
+        let (year, month, day) = Self::year_month_day_from_days(days);
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            year, month, day, hour, min, sec
+        )
+    }
+
+    /// Convert days since 1970 to (year, month, day).
+    fn year_month_day_from_days(days: u64) -> (u64, u64, u64) {
+        let mut year = 1970;
+        let mut remaining_days = days;
+
+        loop {
+            let days_in_year = if Self::is_leap_year(year) { 366 } else { 365 };
+            if remaining_days < days_in_year {
+                break;
+            }
+            remaining_days -= days_in_year;
+            year += 1;
+        }
+
+        let mut month = 1;
+        loop {
+            let days_in_month = Self::days_in_month(year, month);
+            if remaining_days < days_in_month {
+                return (year, month, remaining_days + 1);
+            }
+            remaining_days -= days_in_month;
+            month += 1;
+        }
+    }
+
+    fn is_leap_year(year: u64) -> bool {
+        (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    }
+
+    /// Scan a single folder, updating metadata for files that have changed.
+    ///
+    /// Uses smart skip logic: only rescans files where the file modification time
+    /// is newer than the `last_scanned` timestamp. Reports progress via
+    /// `progress(current, total)` callback.
+    ///
+    /// Returns `(scanned, skipped)` counts where:
+    /// - `scanned`: files that were processed and metadata updated
+    /// - `skipped`: files that were checked but didn't need rescanning
+    pub fn scan_folder<F>(
+        &self,
+        folder_id: i64,
+        cancel: &AtomicBool,
+        mut progress: F,
+    ) -> Result<(usize, usize)>
+    where
+        F: FnMut(usize, usize),
+    {
+        // Get all tracks in the folder
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
+        let tracks: Vec<(i64, String, Option<String>)> = stmt
+            .query_map(params![folder_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let total = tracks.len();
+        let mut scanned = 0usize;
+        let mut skipped = 0usize;
+
+        for (_id, path, last_scanned) in tracks {
+            if cancel.load(Ordering::Relaxed) {
+                skipped += 1;
+                continue;
+            }
+
+            // Check if this file needs scanning
+            if Self::needs_metadata_scan(&path, last_scanned.as_deref()) {
+                // Update metadata
+                if self.upsert_track(folder_id, &path).is_ok() {
+                    let _ = self.update_last_scanned(&path);
+                    scanned += 1;
+                } else {
+                    skipped += 1;
+                }
+            } else {
+                skipped += 1;
+            }
+            progress(scanned + skipped, total);
+        }
+
+        Ok((scanned, skipped))
+    }
+
+    /// Scan all watched folders, updating metadata for files that have changed.
+    ///
+    /// Uses smart skip logic per-folder. Reports progress via
+    /// `progress(current, total)` callback where total is cumulative across all folders.
+    ///
+    /// Returns `(scanned, skipped)` counts across all folders.
+    pub fn scan_all_folders<F>(
+        &self,
+        cancel: &AtomicBool,
+        mut progress: F,
+    ) -> Result<(usize, usize)>
+    where
+        F: FnMut(usize, usize),
+    {
+        let folders = self.list_folders()?;
+        let mut total_scanned = 0usize;
+        let mut total_skipped = 0usize;
+
+        // First pass: count total files needing scan
+        let mut total_to_scan = 0usize;
+        for (folder_id, _) in &folders {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
+            let tracks: Vec<(i64, String, Option<String>)> = stmt
+                .query_map(params![*folder_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            total_to_scan += tracks
+                .into_iter()
+                .filter(|(_, path, last_scanned)| {
+                    Self::needs_metadata_scan(path, last_scanned.as_deref())
+                })
+                .count();
+        }
+
+        // Second pass: actually scan
+        for (folder_id, _) in folders {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let mut folder_scanned = 0usize;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
+            let tracks: Vec<(i64, String, Option<String>)> = stmt
+                .query_map(params![folder_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            for (_id, path, last_scanned) in tracks {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                if Self::needs_metadata_scan(&path, last_scanned.as_deref()) {
+                    if self.upsert_track(folder_id, &path).is_ok() {
+                        let _ = self.update_last_scanned(&path);
+                        folder_scanned += 1;
+                        total_scanned += 1;
+                    }
+                } else {
+                    total_skipped += 1;
+                }
+
+                progress(total_scanned, total_to_scan);
+            }
+        }
+
+        Ok((total_scanned, total_skipped))
+    }
+
     /// Look up a single track by its path.  Returns an error if not found.
     pub fn track_by_path(&self, path: &str) -> Result<LibTrack> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
              FROM tracks WHERE path = ?1",
         )?;
         let mut rows = Self::collect_tracks(&mut stmt, params![path])?;
@@ -1206,6 +1512,7 @@ impl MediaLibrary {
                 encoded_by: row.get::<_, Option<String>>(24)?.map(|s| sanitize(&s)),
                 lyric: row.get::<_, Option<String>>(25)?.map(|s| sanitize(&s)),
                 artwork_path: row.get::<_, Option<String>>(26)?.map(|s| sanitize(&s)),
+                last_scanned: row.get::<_, Option<String>>(27)?,
                 sort_keys: SortKeys::default(),
             };
             track.sort_keys = SortKeys::from_track(&track);
@@ -1699,6 +2006,246 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // ── Smart scan helpers ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_iso_timestamp_valid() {
+        // 2024-01-15T10:30:00Z
+        let secs = MediaLibrary::parse_iso_timestamp("2024-01-15T10:30:00Z");
+        assert!(secs.is_some());
+        // Just verify it's a reasonable timestamp (after 2020)
+        assert!(secs.unwrap() > 1700000000);
+    }
+
+    #[test]
+    fn parse_iso_timestamp_invalid() {
+        assert!(MediaLibrary::parse_iso_timestamp("not-a-date").is_none());
+        assert!(MediaLibrary::parse_iso_timestamp("2024-13-45T10:30:00Z").is_none()); // Invalid date
+        assert!(MediaLibrary::parse_iso_timestamp("").is_none());
+    }
+
+    #[test]
+    fn needs_metadata_scan_never_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mp3");
+        fs::write(&file_path, b"fake").unwrap();
+        let path = file_path.to_str().unwrap();
+
+        // Never scanned - should need scan
+        assert!(MediaLibrary::needs_metadata_scan(path, None));
+    }
+
+    #[test]
+    fn needs_metadata_scan_file_missing() {
+        // File doesn't exist - should need scan
+        assert!(MediaLibrary::needs_metadata_scan(
+            "/nonexistent/file.mp3",
+            Some("2024-01-15T10:30:00Z")
+        ));
+    }
+
+    #[test]
+    fn needs_metadata_scan_file_changed_after_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mp3");
+        fs::write(&file_path, b"fake").unwrap();
+
+        // Wait a moment so mtime is definitely after old timestamp
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let path = file_path.to_str().unwrap();
+        let old_timestamp = "2020-01-01T00:00:00Z";
+
+        // File was modified after scan - should need scan
+        assert!(MediaLibrary::needs_metadata_scan(path, Some(old_timestamp)));
+    }
+
+    #[test]
+    fn needs_metadata_scan_file_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mp3");
+        fs::write(&file_path, b"fake").unwrap();
+
+        let path = file_path.to_str().unwrap();
+
+        // Get current mtime as a string (this is what we'd store after scanning)
+        let current_ts = MediaLibrary::format_current_timestamp();
+
+        // File hasn't changed since scan - should NOT need scan
+        assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts)));
+    }
+
+    #[test]
+    fn format_current_timestamp_format() {
+        let ts = MediaLibrary::format_current_timestamp();
+        // Should end with Z
+        assert!(ts.ends_with('Z'));
+        // Should be parseable
+        assert!(MediaLibrary::parse_iso_timestamp(&ts).is_some());
+    }
+
+    // ── scan_folder ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_folder_scans_never_scanned() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 3);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap(); // Add tracks
+
+        // Verify tracks have no last_scanned yet
+        let tracks_before = lib.all_tracks().unwrap();
+        assert!(tracks_before.iter().all(|t| t.last_scanned.is_none()));
+
+        // Scan folder
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut progress_calls = Vec::new();
+        let (scanned, skipped) = lib
+            .scan_folder(folder_id, &cancel, |curr, total| {
+                progress_calls.push((curr, total));
+            })
+            .unwrap();
+
+        assert_eq!(scanned, 3);
+        assert_eq!(skipped, 0);
+        assert!(!progress_calls.is_empty());
+
+        // Verify tracks now have last_scanned set
+        let tracks_after = lib.all_tracks().unwrap();
+        assert!(tracks_after.iter().all(|t| t.last_scanned.is_some()));
+    }
+
+    #[test]
+    fn scan_folder_skips_unchanged_files() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 2);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        // Scan once
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (scanned1, _) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
+        assert_eq!(scanned1, 2);
+
+        // Scan again - should skip all (nothing changed)
+        let cancel2 = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (scanned2, skipped2) = lib.scan_folder(folder_id, &cancel2, |_, _| {}).unwrap();
+        assert_eq!(scanned2, 0);
+        assert_eq!(skipped2, 2);
+    }
+
+    #[test]
+    fn scan_folder_rescans_changed_files() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 2);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        // Scan once
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
+
+        // Wait and modify one file (3 seconds to ensure mtime differs after 2-second buffer)
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let files: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        fs::write(files[0].as_ref().unwrap().path(), b"modified data").unwrap();
+
+        // Scan again - should rescan the modified file
+        let cancel2 = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (scanned, skipped) = lib.scan_folder(folder_id, &cancel2, |_, _| {}).unwrap();
+        assert_eq!(scanned, 1); // Only the modified file
+        assert_eq!(skipped, 1); // The unchanged file
+    }
+
+    #[test]
+    fn scan_folder_respects_cancel() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 5);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let result = lib.scan_folder(folder_id, &cancel, |_, _| {});
+        assert!(result.is_ok()); // Should not error on cancel
+    }
+
+    // ── scan_all_folders ───────────────────────────────────────────────────
+
+    #[test]
+    fn scan_all_folders_processes_all_folders() {
+        gstreamer::init().ok();
+        let (lib, _db) = temp_lib();
+
+        let dir1 = temp_dir_with_files("mp3", 2);
+        let dir2 = temp_dir_with_files("flac", 3);
+
+        let folder_id1 = lib.add_folder(dir1.path().to_str().unwrap()).unwrap().id();
+        let folder_id2 = lib.add_folder(dir2.path().to_str().unwrap()).unwrap().id();
+
+        lib.rescan_folder_fast(folder_id1, dir1.path().to_str().unwrap())
+            .unwrap();
+        lib.rescan_folder_fast(folder_id2, dir2.path().to_str().unwrap())
+            .unwrap();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (scanned, skipped) = lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
+
+        assert_eq!(scanned, 5); // 2 + 3
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn scan_all_folders_cumulative_progress() {
+        gstreamer::init().ok();
+        let (lib, _db) = temp_lib();
+
+        let dir1 = temp_dir_with_files("mp3", 2);
+        let dir2 = temp_dir_with_files("flac", 3);
+
+        let folder_id1 = lib.add_folder(dir1.path().to_str().unwrap()).unwrap().id();
+        let folder_id2 = lib.add_folder(dir2.path().to_str().unwrap()).unwrap().id();
+
+        lib.rescan_folder_fast(folder_id1, dir1.path().to_str().unwrap())
+            .unwrap();
+        lib.rescan_folder_fast(folder_id2, dir2.path().to_str().unwrap())
+            .unwrap();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut last_total = 0usize;
+        let result = lib
+            .scan_all_folders(&cancel, |current, total| {
+                // Total should be consistent (all files to scan)
+                assert_eq!(total, 5);
+                // Current should increase monotonically
+                assert!(current >= last_total);
+                last_total = current;
+            })
+            .unwrap();
+
+        assert_eq!(result.0, 5); // All scanned
+    }
+
+    #[test]
+    fn scan_all_folders_empty_library() {
+        let (lib, _db) = temp_lib();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (scanned, skipped) = lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
+
+        assert_eq!(scanned, 0);
+        assert_eq!(skipped, 0);
+    }
+
     // ── remove_track ──────────────────────────────────────────────────────
 
     #[test]
@@ -1842,6 +2389,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
         let keys = SortKeys::from_track(&track);
@@ -1890,6 +2438,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
         let keys = SortKeys::from_track(&track);
@@ -2009,6 +2558,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: Some("/music/cover.jpg".into()),
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
         let path = std::path::Path::new("/music/song.mp3");
@@ -2073,6 +2623,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
         let path = std::path::Path::new("/test.mp3");
@@ -2110,6 +2661,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
         let path = std::path::Path::new("/test.mp3");

@@ -47,6 +47,7 @@ rayon = "1"
 # Utilities
 dirs = "5"
 anyhow = "1"
+libc = "0.2"
 
 # Random number generation (shuffle)
 rand = "0.8"

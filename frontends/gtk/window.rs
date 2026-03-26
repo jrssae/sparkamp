@@ -114,6 +114,30 @@ struct AppState {
     /// Reset to `None` when a new track starts playing so the same track can be
     /// counted again after a user-initiated restart.
     counted_play_path: Option<String>,
+    /// Scan state for media library operations.
+    ml_scan: Option<ScanState>,
+    /// Scan state for playlist operations.
+    playlist_scan: Option<ScanState>,
+}
+
+/// State for tracking background scan operations.
+struct ScanState {
+    /// Type of scan operation.
+    scan_type: ScanType,
+    /// Number of files processed so far.
+    current: usize,
+    /// Total number of files to process.
+    total: usize,
+    /// Flag to signal cancellation.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Type of scan operation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ScanType {
+    AddFolder,
+    AddFiles,
+    Rescan,
 }
 
 impl AppState {
@@ -154,6 +178,8 @@ impl AppState {
             rebuild_ml_callback: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
+            ml_scan: None,
+            playlist_scan: None,
         })
     }
 
@@ -5048,6 +5074,14 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
         default_id3_visible: false,
     },
     MlColumnDef {
+        id: "last_scanned",
+        header: "Last Scanned",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
         id: "artwork_path",
         header: "Artwork",
         expand: false,
@@ -5217,6 +5251,7 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
         "path" => t.path.to_lowercase(),
         "play_count" => format!("{:010}", t.play_count),
         "last_played" => t.last_played.clone().unwrap_or_default(),
+        "last_scanned" => t.last_scanned.clone().unwrap_or_default(),
         "comment" => t.sort_keys.comment.clone(),
         "album_artist" => t.sort_keys.album_artist.clone(),
         "disc_num" => format!("{:010}", t.disc_num.unwrap_or(0)),
@@ -5614,6 +5649,12 @@ fn open_media_library_window(
                                 btn.set_sensitive(false);
                                 btn.set_label("");
                             }
+                            // Style unscanned rows with black background
+                            if t.last_scanned.is_none() {
+                                btn.add_css_class("unscanned-row");
+                            } else {
+                                btn.remove_css_class("unscanned-row");
+                            }
                         }
                         return;
                     }
@@ -5647,6 +5688,7 @@ fn open_media_library_window(
                         "path" => t.path.clone(),
                         "play_count" => t.play_count.to_string(),
                         "last_played" => format_last_played(t.last_played.as_deref().unwrap_or("")),
+                        "last_scanned" => t.last_scanned.as_deref().unwrap_or("").to_string(),
                         "disc_num" => {
                             let d = t.disc_num.unwrap_or(0);
                             if d == 0 {
@@ -5689,6 +5731,13 @@ fn open_media_library_window(
                         _ => String::new(),
                     };
                     lbl.set_text(&gtk_safe(&text));
+
+                    // Style unscanned rows with black background
+                    if t.last_scanned.is_none() {
+                        lbl.add_css_class("unscanned-row");
+                    } else {
+                        lbl.remove_css_class("unscanned-row");
+                    }
                 });
 
                 let col = ColumnViewColumn::new(Some(header), Some(factory));
@@ -5818,10 +5867,15 @@ fn open_media_library_window(
         btn_add_folder.add_css_class("pl-btn");
         let btn_rescan = Button::with_label("⟳ Rescan");
         btn_rescan.add_css_class("pl-btn");
+        let btn_cancel = Button::with_label("✕ Cancel Scan");
+        btn_cancel.add_css_class("pl-btn");
+        btn_cancel.add_css_class("destructive");
+        btn_cancel.set_visible(false);
         let btn_rm_from_ml = Button::with_label("✕ Remove");
         btn_rm_from_ml.add_css_class("pl-btn");
         btn_rm_from_ml.add_css_class("destructive");
 
+        // Button row
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
         btn_row.append(&btn_add_to_pl);
@@ -5829,6 +5883,14 @@ fn open_media_library_window(
         btn_row.append(&btn_rm_from_ml);
         btn_row.append(&btn_customize);
         btn_row.append(&btn_add_folder);
+        btn_row.append(&btn_rescan);
+        btn_row.append(&btn_cancel);
+        files_vbox.append(&btn_row);
+        btn_row.append(&spring);
+        btn_row.append(&btn_rm_from_ml);
+        btn_row.append(&btn_customize);
+        btn_row.append(&btn_add_folder);
+        btn_row.append(&btn_cancel);
         btn_row.append(&btn_rescan);
         files_vbox.append(&btn_row);
 
@@ -5945,33 +6007,39 @@ fn open_media_library_window(
                             .borrow()
                             .pending_bg_ops
                             .set(state_inner.borrow().pending_bg_ops.get() + 1);
-                        type ScanMsg = Result<usize, String>;
+                        type ScanMsg = (Result<usize, String>, bool);
                         let (sender, receiver) = std::sync::mpsc::channel::<ScanMsg>();
                         std::thread::spawn(move || {
                             let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
                                 Err(e) => {
-                                    let _ = sender.send(Err(format!("DB error: {e}")));
+                                    let _ = sender.send((Err(format!("DB error: {e}")), false));
                                     return;
                                 }
                             };
                             let add_result = lib.add_folder(&path_str);
                             match add_result {
                                 Err(e) => {
-                                    let _ = sender
-                                        .send(Err(format!("Could not add '{}': {e}", path_str)));
+                                    let _ = sender.send((
+                                        Err(format!("Could not add '{}': {e}", path_str)),
+                                        false,
+                                    ));
                                 }
                                 Ok(folder_id_enum) => {
                                     let folder_id = folder_id_enum.id();
+                                    let is_existing = matches!(
+                                        folder_id_enum,
+                                        crate::media_library::AddFolderResult::AlreadyExists(_)
+                                    );
                                     match lib.rescan_folder_fast(folder_id, &path_str) {
                                         Ok((added, _)) => {
-                                            let _ = sender.send(Ok(added));
+                                            let _ = sender.send((Ok(added), is_existing));
                                         }
                                         Err(e) => {
-                                            let _ = sender.send(Err(format!(
-                                                "Scan error for '{}': {e}",
-                                                path_str
-                                            )));
+                                            let _ = sender.send((
+                                                Err(format!("Scan error for '{}': {e}", path_str)),
+                                                false,
+                                            ));
                                         }
                                     }
                                 }
@@ -5984,13 +6052,15 @@ fn open_media_library_window(
                             if result.is_err() {
                                 return glib::ControlFlow::Continue;
                             }
-                            // Re-open main library so in-memory instance picks up changes.
                             {
                                 let mut s = state_inner.borrow_mut();
                                 s.media_lib = crate::media_library::MediaLibrary::open().ok();
                             }
-                            match result.unwrap() {
-                                Err(msg) => status_inner.set_text(&msg),
+                            let (msg_result, _is_existing) = result.unwrap();
+                            match msg_result {
+                                Err(msg) => {
+                                    status_inner.set_text(&msg);
+                                }
                                 Ok(added) => {
                                     let count = rebuild_inner();
                                     status_inner.set_text(&format!(
@@ -6015,6 +6085,8 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let rebuild_ref = rebuild_files.clone();
             let status_ref = files_status.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
             btn_rescan.connect_clicked(move |_| {
                 let db_path = {
                     let s = state_rc.borrow();
@@ -6026,49 +6098,108 @@ fn open_media_library_window(
                         Some(_) => crate::media_library::MediaLibrary::db_path_pub(),
                     }
                 };
+
+                // Initialize scan state
+                let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.ml_scan = Some(ScanState {
+                        scan_type: ScanType::Rescan,
+                        current: 0,
+                        total: 0,
+                        cancel: cancel_flag.clone(),
+                    });
+                }
+
+                // Update UI
                 status_ref.set_text("Scanning…");
+                cancel_ref.set_visible(true);
+                rescan_ref.set_sensitive(false);
+
                 state_rc
                     .borrow()
                     .pending_bg_ops
                     .set(state_rc.borrow().pending_bg_ops.get() + 1);
-                let (tx, rx) = std::sync::mpsc::channel();
+                let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
                     let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                         Ok(l) => l,
                         Err(e) => {
-                            let _ = tx.send(Err(format!("DB error: {e}")));
+                            let _ = result_tx.send(Err(format!("DB error: {e}")));
                             return;
                         }
                     };
-                    let result = lib.rescan_all().map_err(|e| e.to_string());
-                    let _ = tx.send(result);
+                    let result = lib
+                        .scan_all_folders(&cancel_flag, |current, total| {
+                            let _ = progress_tx.send((current, total));
+                        })
+                        .map_err(|e| e.to_string());
+                    let _ = result_tx.send(result);
                 });
-                let rx = std::cell::RefCell::new(rx);
+                let progress_rx = std::cell::RefCell::new(progress_rx);
+                let result_rx = std::cell::RefCell::new(result_rx);
                 let state_rc2 = state_rc.clone();
                 let rebuild_ref2 = rebuild_ref.clone();
                 let status_ref2 = status_ref.clone();
-                glib::idle_add_local(move || {
-                    let result = rx.borrow().try_recv();
-                    if result.is_err() {
-                        return glib::ControlFlow::Continue;
-                    }
-                    {
-                        let mut s = state_rc2.borrow_mut();
-                        s.media_lib = crate::media_library::MediaLibrary::open().ok();
-                    }
-                    match result.unwrap() {
-                        Err(e) => status_ref2.set_text(&format!("Rescan error: {e}")),
-                        Ok(_) => {
-                            let count = rebuild_ref2();
-                            status_ref2.set_text(&format!("{count} tracks in library"));
+                let cancel_ref2 = cancel_ref.clone();
+                let rescan_ref2 = rescan_ref.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                    // Check for progress updates
+                    while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            if let Some(ref mut scan) = s.ml_scan {
+                                scan.current = current;
+                                scan.total = total;
+                            }
                         }
+                        status_ref2.set_text(&format!("Scanning {}/{}…", current, total));
                     }
-                    state_rc2
-                        .borrow()
-                        .pending_bg_ops
-                        .set(state_rc2.borrow().pending_bg_ops.get() - 1);
-                    glib::ControlFlow::Break
+
+                    // Check for completion
+                    if let Ok(result) = result_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            s.ml_scan = None;
+                            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                        }
+                        match result {
+                            Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
+                            Ok(_) => {
+                                let count = rebuild_ref2();
+                                status_ref2.set_text(&format!("{count} tracks in library"));
+                            }
+                        }
+                        cancel_ref2.set_visible(false);
+                        rescan_ref2.set_sensitive(true);
+                        state_rc2
+                            .borrow()
+                            .pending_bg_ops
+                            .set(state_rc2.borrow().pending_bg_ops.get() - 1);
+                        return glib::ControlFlow::Break;
+                    }
+
+                    glib::ControlFlow::Continue
                 });
+            });
+        }
+
+        // Cancel scan handler
+        {
+            let state_rc = state.clone();
+            let status_ref = files_status.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
+            btn_cancel.connect_clicked(move |_| {
+                let mut s = state_rc.borrow_mut();
+                if let Some(ref scan) = s.ml_scan {
+                    scan.cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    status_ref.set_text("Cancelling…");
+                    cancel_ref.set_visible(false);
+                    rescan_ref.set_sensitive(true);
+                }
             });
         }
 
