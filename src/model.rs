@@ -635,6 +635,103 @@ impl Playlist {
         files
     }
 
+    /// Scan a folder for audio files and emit tracks via channels.
+    ///
+    /// This is the unified scanning function used by both the Media Library rescan
+    /// and Playlist Add Folder. It runs entirely in a background thread and sends
+    /// results via channels to avoid blocking the UI.
+    ///
+    /// ## Channel semantics
+    ///
+    /// - `fast_track_tx`: Receives `Track` objects with only path and filename set.
+    ///   These arrive quickly (before metadata is read) so the UI can display tracks immediately.
+    /// - `metadata_tx`: Receives `(PathBuf, String, String, String, String)` tuples containing
+    ///   the full metadata (path, title, artist, album_artist, album) for tracks where
+    ///   metadata was successfully read. The UI should find the matching track by path
+    ///   and update its metadata.
+    /// - `done_tx`: Receives the total count of tracks found (including those that failed
+    ///   to create) when the scan is complete or cancelled.
+    ///
+    /// ## Cancellation
+    ///
+    /// When `cancel` is set to `true`, the scan stops as soon as possible. Any tracks
+    /// already discovered will have been sent. The `done_tx` will still receive the
+    /// final count.
+    ///
+    /// ## Example usage
+    ///
+    /// ```ignore
+    /// let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+    /// let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+    /// let (done_tx, done_rx) = std::sync::mpsc::channel();
+    /// let cancel = Arc::new(AtomicBool::new(false));
+    ///
+    /// Playlist::scan_folder_for_ui(
+    ///     &folder_path,
+    ///     &extra_extensions,
+    ///     &cancel,
+    ///     fast_tx,
+    ///     meta_tx,
+    ///     done_tx,
+    /// );
+    ///
+    /// // Poll fast_rx for fast tracks, meta_rx for metadata updates,
+    /// // and done_rx for completion.
+    /// ```
+    pub fn scan_folder_for_ui(
+        folder: PathBuf,
+        extra_extensions: Vec<String>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fast_track_tx: std::sync::mpsc::Sender<Track>,
+        metadata_tx: std::sync::mpsc::Sender<(PathBuf, String, String, String, String)>,
+        done_tx: std::sync::mpsc::Sender<usize>,
+    ) {
+        std::thread::spawn(move || {
+            let files = Self::collect_audio_files_extended(&folder, &extra_extensions);
+            let total = files.len();
+
+            if total == 0 {
+                let _ = done_tx.send(0);
+                return;
+            }
+
+            // Phase 1: Create fast tracks (no metadata reading)
+            let mut fast_tracks = Vec::with_capacity(total);
+            for f in &files {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = done_tx.send(fast_tracks.len());
+                    return;
+                }
+                if let Ok(t) = Track::from_path_fast(f) {
+                    fast_tracks.push(t);
+                }
+            }
+
+            // Send all fast tracks at once so UI can rebuild in one batch
+            for t in fast_tracks {
+                let _ = fast_track_tx.send(t);
+            }
+
+            // Phase 2: Read metadata in background
+            for f in files {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if let Ok(track) = Track::from_path(&f) {
+                    let _ = metadata_tx.send((
+                        track.path,
+                        track.title,
+                        track.artist,
+                        track.album_artist,
+                        track.album,
+                    ));
+                }
+            }
+
+            let _ = done_tx.send(total);
+        });
+    }
+
     /// Internal recursive helper for [`collect_audio_files`].
     ///
     /// Populates `files` with audio file paths found under `dir`.  Entries in
