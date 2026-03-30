@@ -1764,7 +1764,6 @@ dependencies = [
  "gstreamer-pbutils",
  "gtk4",
  "id3",
- "libc",
  "libloading",
  "rand",
  "ratatui",

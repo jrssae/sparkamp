@@ -54,7 +54,6 @@ pub enum Mode {
     AddFile {
         input: String,
         scan_cancel: Option<Arc<AtomicBool>>,
-        scan_total: usize,
         scan_added: usize,
     },
     /// m key: two-step entry — first the source position, then the destination.
@@ -83,14 +82,40 @@ pub enum Mode {
     MediaLibrary(MediaLibraryState),
 }
 
-/// Messages sent by the background add-file scan thread to the main loop.
-enum AddFileScanMsg {
-    /// New track discovered and fully scanned.
-    Track(Track),
-    /// File-count update during directory walk (before Track messages start).
-    Found { count: usize },
-    /// Scan finished: `errors` tracks failed to load.
-    Done { errors: usize },
+/// State for an in-progress background add-file scan.
+///
+/// Holds the three channels returned by `scan_files_for_ui` / `scan_folder_for_ui`
+/// plus the playlist index at which this scan started (needed for O(1) metadata patching).
+struct ScanChannels {
+    fast_rx: mpsc::Receiver<Track>,
+    meta_rx: mpsc::Receiver<(usize, String, String, String, String)>,
+    done_rx: mpsc::Receiver<usize>,
+    /// Receives a single usize once the scan thread finishes Phase 1.
+    /// The TUI uses recv_timeout so it does not need this signal for
+    /// correctness, but it must be kept alive so the scan thread's send
+    /// does not return Err and abort early.
+    phase1_done_rx: mpsc::Receiver<usize>,
+    /// Index of the first track added by this scan, so metadata patches can
+    /// address `playlist.tracks[scan_start + idx]` directly.
+    scan_start: usize,
+    /// Set to true once Phase 1 (fast tracks) has finished.
+    fast_done: bool,
+}
+
+/// Expand a leading `~/` or lone `~` to the user's home directory.
+///
+/// The TUI prompt is not run through a shell, so `~` is never expanded
+/// automatically.  GTK uses native file dialogs and does not need this.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else if path == "~" {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,8 +297,8 @@ pub struct App {
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<crate::media_library::MediaLibrary>,
-    /// Receiving end of the add-file background scan channel.
-    scan_rx: Option<mpsc::Receiver<AddFileScanMsg>>,
+    /// Active background scan channels, present while a scan is running.
+    scan_channels: Option<ScanChannels>,
 }
 
 impl App {
@@ -357,7 +382,7 @@ impl App {
             broken_tx,
             plugin_manager,
             media_lib,
-            scan_rx: None,
+            scan_channels: None,
         })
     }
 
@@ -638,21 +663,8 @@ impl App {
             if part.is_empty() {
                 continue;
             }
-            // Expand a leading ~ to the user's home directory, since the TUI
-            // prompt is not run through a shell and ~ won't be resolved otherwise.
-            let expanded;
-            let part = if let Some(rest) = part.strip_prefix("~/") {
-                expanded = dirs::home_dir()
-                    .map(|h| h.join(rest))
-                    .unwrap_or_else(|| std::path::PathBuf::from(part));
-                expanded.to_str().unwrap_or(part)
-            } else if part == "~" {
-                expanded = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(part));
-                expanded.to_str().unwrap_or(part)
-            } else {
-                part
-            };
-            let path = std::path::Path::new(part);
+            let expanded = expand_tilde(part);
+            let path = expanded.as_path();
 
             if path.is_dir() {
                 // Use extended scan so filetype plugins' formats are included.
@@ -859,7 +871,6 @@ impl App {
                 self.mode = Mode::AddFile {
                     input: String::new(),
                     scan_cancel: None,
-                    scan_total: 0,
                     scan_added: 0,
                 };
             }
@@ -1199,63 +1210,53 @@ impl App {
                 } else {
                     return;
                 };
+                // Collect all audio files from the comma-separated input.  Dir
+                // walks are fast (readdir only, no metadata), so we do this on
+                // the main thread before handing the list to the background scan.
                 let extra = self.plugin_manager.extra_extensions();
-                let cancel = std::sync::Arc::new(AtomicBool::new(false));
-                let (tx, rx) = mpsc::channel::<AddFileScanMsg>();
-                let cancel_thread = cancel.clone();
-                std::thread::spawn(move || {
-                    let mut total = 0usize;
-                    let mut errors = 0usize;
-                    for part in input.split(',') {
-                        let part = part.trim();
-                        if part.is_empty() {
-                            continue;
-                        }
-                        let expanded;
-                        let part = if let Some(rest) = part.strip_prefix("~/") {
-                            expanded = dirs::home_dir()
-                                .map(|h| h.join(rest))
-                                .unwrap_or_else(|| PathBuf::from(part));
-                            expanded.to_str().unwrap_or(part)
-                        } else if part == "~" {
-                            expanded = dirs::home_dir().unwrap_or_else(|| PathBuf::from(part));
-                            expanded.to_str().unwrap_or(part)
-                        } else {
-                            part
-                        };
-                        let path = PathBuf::from(part);
-                        if cancel_thread.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        if path.is_dir() {
-                            let files = Playlist::collect_audio_files_extended(&path, &extra);
-                            total += files.len();
-                            let _ = tx.send(AddFileScanMsg::Found { count: total });
-                            for f in files {
-                                if cancel_thread.load(Ordering::Relaxed) {
-                                    break;
-                                }
-                                match Track::from_path(&f) {
-                                    Ok(track) => {
-                                        let _ = tx.send(AddFileScanMsg::Track(track));
-                                    }
-                                    Err(_) => errors += 1,
-                                }
-                            }
-                        } else {
-                            total += 1;
-                            let _ = tx.send(AddFileScanMsg::Found { count: total });
-                            match Track::from_path(&path) {
-                                Ok(track) => {
-                                    let _ = tx.send(AddFileScanMsg::Track(track));
-                                }
-                                Err(_) => errors += 1,
-                            }
-                        }
+                let mut all_files: Vec<PathBuf> = Vec::new();
+                for part in input.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
                     }
-                    let _ = tx.send(AddFileScanMsg::Done { errors });
+                    let path = expand_tilde(part);
+                    if path.is_dir() {
+                        let files = Playlist::collect_audio_files_extended(&path, &extra);
+                        all_files.extend(files);
+                    } else {
+                        all_files.push(path);
+                    }
+                }
+                let scan_start = self.playlist.tracks.len();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let (fast_tx, fast_rx) = mpsc::channel::<Track>();
+                let (meta_tx, meta_rx) =
+                    mpsc::channel::<(usize, String, String, String, String)>();
+                let (done_tx, done_rx) = mpsc::channel::<usize>();
+                let (phase1_done_tx, phase1_done_rx) = mpsc::channel::<usize>();
+                Playlist::scan_files_for_ui(
+                    all_files,
+                    cancel.clone(),
+                    fast_tx,
+                    meta_tx,
+                    done_tx,
+                    phase1_done_tx,
+                );
+                if let Mode::AddFile {
+                    ref mut scan_cancel, ..
+                } = self.mode
+                {
+                    *scan_cancel = Some(cancel);
+                }
+                self.scan_channels = Some(ScanChannels {
+                    fast_rx,
+                    meta_rx,
+                    done_rx,
+                    phase1_done_rx,
+                    scan_start,
+                    fast_done: false,
                 });
-                self.scan_rx = Some(rx);
                 self.status_message = Some("Scanning…".to_string());
                 self.status_ticks = STATUS_TICKS;
                 self.drain_add_file_scan();
@@ -2583,39 +2584,24 @@ impl App {
     ///    the pipeline is Playing; this catches it on the first tick).
     /// 3. Advance to the next track on end-of-stream.
     fn drain_add_file_scan(&mut self) {
-        if let Some(rx) = self.scan_rx.take() {
-            let mut keep_receiver = false;
-            // First, use a blocking recv with a short timeout to let fast scans
-            // (single file / broken file) complete before we return.
-            let timeout = std::time::Duration::from_millis(50);
-            let first = rx.recv_timeout(timeout);
-            if let Ok(msg) = first {
-                self.process_add_file_scan_msg(msg, &mut keep_receiver);
-            }
-            // Drain any remaining messages that arrived within the timeout.
-            while let Ok(msg) = rx.try_recv() {
-                self.process_add_file_scan_msg(msg, &mut keep_receiver);
-            }
-            if keep_receiver {
-                self.scan_rx = Some(rx);
-            }
-        }
-    }
+        let Some(channels) = self.scan_channels.take() else {
+            return;
+        };
+        let ScanChannels {
+            fast_rx,
+            meta_rx,
+            done_rx,
+            phase1_done_rx,
+            scan_start,
+            mut fast_done,
+        } = channels;
 
-    fn process_add_file_scan_msg(&mut self, msg: AddFileScanMsg, keep_receiver: &mut bool) {
-        match msg {
-            AddFileScanMsg::Found { count } => {
-                if let Mode::AddFile {
-                    ref mut scan_total, ..
-                } = self.mode
-                {
-                    *scan_total = count;
-                }
-                self.status_message = Some(format!("Scanning… {count} files"));
-                self.status_ticks = STATUS_TICKS;
-                *keep_receiver = true;
-            }
-            AddFileScanMsg::Track(track) => {
+        // Phase 1: drain fast tracks (path + filename, no metadata yet).
+        // Use a short blocking recv first so tiny scans (single file) complete
+        // without waiting for the next tick.
+        if !fast_done {
+            let timeout = std::time::Duration::from_millis(50);
+            if let Ok(track) = fast_rx.recv_timeout(timeout) {
                 let count = if let Mode::AddFile { scan_added, .. } = &mut self.mode {
                     *scan_added += 1;
                     *scan_added
@@ -2628,29 +2614,58 @@ impl App {
                     if count == 1 { "" } else { "s" }
                 ));
                 self.status_ticks = STATUS_TICKS;
-                *keep_receiver = true;
             }
-            AddFileScanMsg::Done { errors } => {
-                let added = if let Mode::AddFile { scan_added, .. } = &self.mode {
-                    *scan_added
-                } else {
-                    0
-                };
-                self.mode = Mode::Normal;
-                self.shuffle_state.reset();
-                let msg = match (added, errors) {
-                    (0, _) => "No audio files found".to_string(),
-                    (n, 0) => format!("Added {n} file{}", if n == 1 { "" } else { "s" }),
-                    (n, e) => format!(
-                        "Added {n} file{}; {e} error{}",
-                        if n == 1 { "" } else { "s" },
-                        if e == 1 { "" } else { "s" }
-                    ),
-                };
-                self.status_message = Some(msg);
-                self.status_ticks = STATUS_TICKS;
+            while let Ok(track) = fast_rx.try_recv() {
+                if let Mode::AddFile { scan_added, .. } = &mut self.mode {
+                    *scan_added += 1;
+                }
+                self.playlist.add(track);
             }
         }
+
+        // Phase 2: apply metadata patches from the background thread.
+        // Each message is (index-within-scan, title, artist, album_artist, album).
+        while let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() {
+            fast_done = true; // metadata arriving means Phase 1 is done
+            let pos = scan_start + idx;
+            if let Some(track) = self.playlist.tracks.get_mut(pos) {
+                track.title = title;
+                track.artist = artist;
+                track.album_artist = album_artist;
+                track.album = album;
+            }
+        }
+
+        // Check for completion signal.
+        if let Ok(_total) = done_rx.try_recv() {
+            let added = if let Mode::AddFile { scan_added, .. } = &self.mode {
+                *scan_added
+            } else {
+                self.playlist.tracks.len().saturating_sub(scan_start)
+            };
+            // Probe durations for all newly added tracks.
+            let before = scan_start;
+            self.probe_new_tracks(before);
+            self.mode = Mode::Normal;
+            self.shuffle_state.reset();
+            let msg = match added {
+                0 => "No audio files found".to_string(),
+                n => format!("Added {n} file{}", if n == 1 { "" } else { "s" }),
+            };
+            self.status_message = Some(msg);
+            self.status_ticks = STATUS_TICKS;
+            return; // scan complete, do not restore channels
+        }
+
+        // Scan still running — put channels back.
+        self.scan_channels = Some(ScanChannels {
+            fast_rx,
+            meta_rx,
+            done_rx,
+            phase1_done_rx,
+            scan_start,
+            fast_done,
+        });
     }
 
     pub fn tick(&mut self) {
@@ -2997,7 +3012,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: "some/path".into(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
@@ -3010,7 +3024,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: String::new(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         for c in "/tmp/track.mp3".chars() {
@@ -3028,7 +3041,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: "abc".into(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
@@ -3044,7 +3056,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: "/nonexistent/file.mp3".into(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -3067,7 +3078,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: String::new(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         for c in "/tmp/my music/track.mp3".chars() {

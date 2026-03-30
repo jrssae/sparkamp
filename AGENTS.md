@@ -219,7 +219,7 @@ Before tagging a release: update `README.md` to reflect any new features or chan
 When a user removes a skin, plugin, or music file from Sparkamp's UI, **do not delete the file**. Remove it from the known skins list, known plugins list, the active playlist, or the media library, respective to the action that was taken. The file stays on disk and can be re-added later.
 
 ### Don't over-engineer
-Only make the changes that are asked for. Add common sense error handling but don't go overboard, only refactor nearby code if it improves readability and is low risk, don't add docstrings to untouched functions, and don't introduce abstractions for one-time use, but make recommendations to the user if anything seems particularly concerning or if there's a high likelihood of failure.
+Only make the changes that are asked for. Add common sense error handling but don't go overboard. If you see code that is near the feature being added or impacted by the feature being added, consider refactoring if improves readability and is low risk but ASK if you can refactor and describe the benefit and risks before making any changes. Don't add docstrings to untouched functions, and don't introduce abstractions for one-time use, but make recommendations to the user if anything seems particularly concerning or if there's a high likelihood of failure.
 
 ---
 

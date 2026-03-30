@@ -346,13 +346,8 @@ button.pl-btn.destructive:hover {
 }
 
 /* ── Media library unscanned rows ────────────────────────────────────────── */
-/* Rows without scanned_at have a black background to indicate they haven't been scanned */
-.unscanned-row {
-    background-color: #000000;
-}
-
+/* Tracks whose metadata hasn't been read yet appear dimmed in the light theme. */
 .unscanned-row label,
 .unscanned-row button {
-    background-color: #000000;
-    color: #ffffff;
+    color: alpha(currentColor, 0.45);
 }

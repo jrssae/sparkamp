@@ -704,6 +704,278 @@ fn invert_pixbuf(src: &gdk_pixbuf::Pixbuf) -> gdk_pixbuf::Pixbuf {
     pb
 }
 
+/// Set up a 100ms polling timer that drains the three scan channels and updates
+/// the playlist UI.  Shared by "Add Folder" and "Add Files" so both use identical
+/// behaviour.
+///
+/// `scan_start` is the index into `playlist.tracks` where this scan's tracks begin.
+/// It is captured at the moment the user confirms the dialog, before any tracks are
+/// added, so that `playlist.tracks[scan_start + scan_index]` always addresses the
+/// right track during the metadata phase.
+///
+/// ## Poller phases
+/// 1. **Fast phase** – drain up to 100 fast tracks per tick, rebuild once per batch.
+/// 2. **Transition** – when the first metadata message arrives, all fast tracks are
+///    guaranteed to have been sent (the background thread completes Phase 1 before
+///    starting Phase 2).  Drain any remaining fast tracks, rebuild, spawn duration
+///    probes for all newly-added tracks.
+/// 3. **Metadata phase** – patch `playlist.tracks[scan_start + idx]` in O(1);
+///    rebuild every 5 ticks (~500 ms) so tags fill in gradually.
+/// 4. **Done** – drain any remaining metadata, final rebuild, clear scan state.
+fn start_playlist_scan_poller(
+    state: std::rc::Rc<RefCell<AppState>>,
+    status: Label,
+    rebuild: std::rc::Rc<dyn Fn()>,
+    cancel_btn: Button,
+    probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
+    broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
+    playlist_box: gtk4::ListBox,
+    fast_rx: std::sync::mpsc::Receiver<crate::model::Track>,
+    meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
+    done_rx: std::sync::mpsc::Receiver<usize>,
+    phase1_done_rx: std::sync::mpsc::Receiver<usize>,
+    scan_start: usize,
+) {
+    use std::cell::Cell;
+    use gtk4::prelude::*;
+
+    // How many fast tracks this scan has added to state.playlist so far.
+    let fast_added = Cell::new(0usize);
+    // True once the scan thread has confirmed it finished sending all Phase 1 tracks.
+    // We wait for this signal before treating an empty fast_rx as "exhausted" —
+    // without it we'd give up on Phase 1 as soon as the channel is momentarily
+    // empty (e.g. while the scan thread is still walking the directory).
+    let phase1_signal_received = Cell::new(false);
+    // True once fast_rx is empty AND phase1_signal_received — all fast tracks are
+    // now in state.playlist and Phase 2 / probe spawning can proceed.
+    let fast_exhausted = Cell::new(false);
+    // True once duration probes have been spawned for the fast tracks.
+    let probes_spawned = Cell::new(false);
+    // Set when done_rx fires; we keep polling until meta_rx is also empty.
+    let completion_pending = Cell::new(false);
+    // True once we have done the one intermediate rebuild that shows initial filenames.
+    let first_display_done = Cell::new(false);
+    // Debug: tick counter and start time.
+    let tick_count = Cell::new(0u64);
+    let poller_start = std::time::Instant::now();
+    // Debug: total meta applied across all ticks.
+    let meta_total_applied = Cell::new(0usize);
+
+    // NOTE: GtkListBox.append() is O(n) — each append relays out the visible
+    // portion of the list, costing proportionally more as the list grows.
+    // For 30k tracks this becomes O(n²) ≈ 5 minutes; the OS kills the process.
+    // Phase 1 and Phase 2 therefore update only the in-memory model; the
+    // playlist ListBox is rebuilt once at the end (bounded by MAX_DISPLAY in
+    // rebuild_playlist).  A GtkListView migration is the correct long-term fix.
+    let _ = &playlist_box; // retained as parameter for future GtkListView work
+
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        let tick = tick_count.get() + 1;
+        tick_count.set(tick);
+        let t_tick = std::time::Instant::now();
+
+        // ── Phase 1: add tracks to the model only (no widget creation) ────
+        // Widget creation is skipped here because ListBox.append() is O(n):
+        // adding 500 rows at n=9 000 already takes 2.8 s per tick, making
+        // the total O(n²) for large playlists.  See CLAUDE.md for details.
+
+        // Check whether the scan thread has finished sending all Phase 1 tracks.
+        // We must receive this signal before treating an empty fast_rx as truly
+        // exhausted — without it we would give up on tick 1 when the channel is
+        // momentarily empty while the scan thread is still walking the directory.
+        if !phase1_signal_received.get() && phase1_done_rx.try_recv().is_ok() {
+            phase1_signal_received.set(true);
+            eprintln!("[DBG poller] tick={tick}  phase1 signal received, fast_added_so_far={}",
+                fast_added.get());
+        }
+
+        let p1_before = fast_added.get();
+        if !fast_exhausted.get() {
+            let mut drained = 0usize;
+            while drained < 500 {
+                match fast_rx.try_recv() {
+                    Ok(track) => {
+                        state.borrow_mut().playlist.add(track);
+                        fast_added.set(fast_added.get() + 1);
+                        drained += 1;
+                    }
+                    Err(_) => {
+                        // Channel temporarily empty.  Only mark Phase 1 exhausted if
+                        // the scan thread has confirmed it sent everything — otherwise
+                        // the directory walk may still be in progress and more tracks
+                        // will arrive on a future tick.
+                        if phase1_signal_received.get() {
+                            fast_exhausted.set(true);
+                            eprintln!("[DBG poller] tick={tick}  fast_exhausted=true, total={}",
+                                fast_added.get());
+                        }
+                        break;
+                    }
+                }
+            }
+            if drained > 0 {
+                status.set_text(&format!("Adding {}…", fast_added.get()));
+            }
+        }
+        let p1_added_this_tick = fast_added.get() - p1_before;
+        let t_after_p1 = t_tick.elapsed();
+
+        // Show the first batch of filenames as soon as any tracks are in the model.
+        // We do this exactly once so the playlist isn't empty for the full duration
+        // of Phase 1.  Subsequent ticks keep building the model silently; the final
+        // rebuild() at completion shows everything with metadata applied.
+        if !first_display_done.get() && fast_added.get() > 0 {
+            first_display_done.set(true);
+            eprintln!("[DBG poller] tick={tick}  first display rebuild at {} tracks", fast_added.get());
+            rebuild();
+        }
+
+        // Once all fast tracks are in, spawn duration probes.
+        if fast_exhausted.get() && !probes_spawned.get() {
+            probes_spawned.set(true);
+            let paths = state.borrow().uncached_paths_from(scan_start);
+            if !paths.is_empty() {
+                duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
+            }
+            let total = fast_added.get();
+            if total > 0 {
+                status.set_text(&format!("Reading tags… 0/{}", total));
+            }
+            eprintln!("[DBG poller] tick={tick} t={:.2}s  Phase1->Phase2: probes spawned, total fast={total}",
+                poller_start.elapsed().as_secs_f32());
+        }
+
+        // ── Phase 2: apply metadata to the model only (no widget updates) ─
+        // Row label updates are skipped for the same reason: row_at_index on
+        // a large ListBox is also O(n).  The final rebuild() will show all
+        // metadata correctly once the scan finishes.
+        let t_p2_start = std::time::Instant::now();
+        let mut meta_drained = 0usize;
+        while meta_drained < 200 {
+            let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() else {
+                break;
+            };
+            let playlist_idx = scan_start + idx;
+            {
+                let mut s = state.borrow_mut();
+                if let Some(track) = s.playlist.tracks.get_mut(playlist_idx) {
+                    track.title = title;
+                    track.artist = artist;
+                    track.album_artist = album_artist;
+                    track.album = album;
+                }
+                if let Some(ref mut scan) = s.playlist_scan {
+                    scan.current += 1;
+                }
+            }
+            meta_drained += 1;
+        }
+        meta_total_applied.set(meta_total_applied.get() + meta_drained);
+        let t_p2_elapsed_ms = t_p2_start.elapsed().as_millis();
+
+        // Update the status label with metadata progress.
+        if meta_drained > 0 {
+            let s = state.borrow();
+            let current = s.playlist_scan.as_ref().map(|sc| sc.current).unwrap_or(0);
+            let total = fast_added.get();
+            drop(s);
+            status.set_text(&format!("Reading tags… {}/{}", current, total));
+        }
+
+        // Per-tick summary — printed every tick to detect stalls.
+        eprintln!(
+            "[DBG poller] tick={tick} t={:.2}s  \
+             P1: +{p1_added_this_tick} (total={}) p1_ms={}  \
+             P2: drained={meta_drained} total_meta={} p2_ms={t_p2_elapsed_ms}  \
+             flags: fast_done={} completion_pending={}",
+            poller_start.elapsed().as_secs_f32(),
+            fast_added.get(),
+            t_after_p1.as_millis(),
+            meta_total_applied.get(),
+            fast_exhausted.get(),
+            completion_pending.get(),
+        );
+
+        // ── Completion ────────────────────────────────────────────────────
+        if !completion_pending.get() && done_rx.try_recv().is_ok() {
+            completion_pending.set(true);
+            eprintln!("[DBG poller] tick={tick}  done_rx fired, fast_added={}", fast_added.get());
+            // Edge case: folder had no files or all failed Phase 1.
+            if !probes_spawned.get() {
+                probes_spawned.set(true);
+                let paths = state.borrow().uncached_paths_from(scan_start);
+                if !paths.is_empty() {
+                    duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
+                }
+            }
+        }
+
+        // Finalise when done_rx has fired, all fast tracks are received, and
+        // meta_rx is drained for this tick.
+        if completion_pending.get()
+            && fast_exhausted.get()
+            && meta_drained == 0
+        {
+            let added = fast_added.get();
+            let meta_total = meta_total_applied.get();
+            eprintln!("[DBG poller] tick={tick}  FINALISING: added={added} meta_total={meta_total}");
+            {
+                let mut s = state.borrow_mut();
+                s.playlist_scan = None;
+                s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+            }
+            status.set_text(&format!(
+                "Added {} track{}",
+                added,
+                if added == 1 { "" } else { "s" }
+            ));
+            // rebuild() is now bounded by MAX_DISPLAY rows in rebuild_playlist
+            // so it won't freeze regardless of total playlist size.
+            let t_rebuild = std::time::Instant::now();
+            rebuild();
+            eprintln!("[DBG poller] tick={tick}  rebuild() took {}ms  total_wall={:.2}s",
+                t_rebuild.elapsed().as_millis(),
+                poller_start.elapsed().as_secs_f32());
+            cancel_btn.set_visible(false);
+            return ControlFlow::Break;
+        }
+
+        ControlFlow::Continue
+    });
+}
+
+/// Update the label text of an existing scan row in-place.
+///
+/// Called during Phase 2 to promote a filename-only row to a proper
+/// "Artist — Title" display without a full ListBox rebuild.
+fn update_scan_row_label(
+    playlist_box: &gtk4::ListBox,
+    playlist_idx: usize,
+    title: &str,
+    artist: &str,
+) {
+    use gtk4::prelude::*;
+    let display = if artist.is_empty() {
+        format!("{:2}. {}", playlist_idx + 1, gtk_safe(title))
+    } else {
+        format!("{:2}. {} — {}", playlist_idx + 1, gtk_safe(artist), gtk_safe(title))
+    };
+    if let Some(row) = playlist_box.row_at_index(playlist_idx as i32) {
+        row.remove_css_class("unscanned-row");
+        if let Some(row_box) = row
+            .child()
+            .and_then(|w| w.downcast::<gtk4::Box>().ok())
+        {
+            if let Some(lbl) = row_box
+                .first_child()
+                .and_then(|w| w.downcast::<Label>().ok())
+            {
+                lbl.set_label(&display);
+            }
+        }
+    }
+}
+
 pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
     // Inject the accent colour at startup so @accent_bg_color always resolves.
@@ -1317,6 +1589,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let playlist_box = playlist_box.clone();
         let pl_count_label = pl_count_label.clone();
         Rc::new(move || {
+            // GtkListBox.append() is O(n) — each append triggers a relayout
+            // proportional to the current list size, making a full rebuild
+            // O(n²).  We hard-cap the visible row count so rebuild() always
+            // completes in bounded time (~300 ms for 1 000 rows).  Tracks
+            // beyond the cap are still in the model and fully playable; the
+            // user just can't scroll to them here.  A GtkListView migration
+            // (virtual scrolling) is the correct long-term fix.
+            const MAX_DISPLAY: usize = 1_000;
+
             // ── Collect track data while holding the borrow ────────────────
             let (rows_data, current_idx, n_tracks) = {
                 let s = state.borrow();
@@ -1326,6 +1607,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     .tracks
                     .iter()
                     .enumerate()
+                    .take(MAX_DISPLAY)
                     .map(|(i, t)| {
                         let label = format!("{:2}. {}", i + 1, t.display_name());
                         let dur = fmt_duration(t.duration);
@@ -1336,6 +1618,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 (data, s.playlist.current_index, s.playlist.len())
             };
             // Borrow dropped here — safe to call GTK methods now.
+
+            let t_rebuild = std::time::Instant::now();
 
             // ── Update the count label ─────────────────────────────────────
             pl_count_label.set_label(&format!(
@@ -1414,8 +1698,29 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 playlist_box.append(&row);
             }
 
+            // If the playlist exceeds MAX_DISPLAY, show a non-selectable
+            // note row so the user knows tracks exist beyond what's visible.
+            if n_tracks > MAX_DISPLAY {
+                let note = ListBoxRow::new();
+                let lbl = Label::builder()
+                    .label(&format!(
+                        "… {} more tracks not shown (playlist is too large for this view)",
+                        n_tracks - MAX_DISPLAY
+                    ))
+                    .halign(Align::Center)
+                    .css_classes(["status-label"])
+                    .build();
+                note.set_child(Some(&lbl));
+                note.set_selectable(false);
+                note.set_activatable(false);
+                playlist_box.append(&note);
+            }
+
+            eprintln!("[DBG rebuild] {} rows rendered (of {n_tracks} total) in {}ms",
+                rows_data.len(), t_rebuild.elapsed().as_millis());
+
             // Scroll the currently playing track into view.
-            if n_tracks > 0 {
+            if n_tracks > 0 && current_idx < MAX_DISPLAY {
                 if let Some(row) = playlist_box.row_at_index(current_idx as i32) {
                     playlist_box.select_row(Some(&row));
                 }
@@ -1989,7 +2294,27 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         f
     };
 
+    // Cancel button: stops any active playlist scan (Add Folder or Add Files).
+    // Wired once here, before the add handlers, so it is always connected.
+    btn_cancel.connect_clicked({
+        let state = state.clone();
+        let pl_status = pl_status_label.clone();
+        let cancel_btn = btn_cancel.clone();
+        move |_| {
+            let s = state.borrow();
+            if let Some(ref scan) = s.playlist_scan {
+                scan.cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            drop(s);
+            pl_status.set_text("Cancelling…");
+            cancel_btn.set_visible(false);
+        }
+    });
+
     // [+ Files]: open the desktop file browser to pick one or more audio files.
+    // For small selections this is near-instant; for large selections it uses the
+    // same two-phase background scan as Add Folder to avoid blocking the UI.
     btn_add_files.connect_clicked({
         let state = state.clone();
         let rebuild_playlist = rebuild_playlist.clone();
@@ -1998,6 +2323,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let make_filt = make_audio_filter.clone();
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
+        let cancel_btn = btn_cancel.clone();
+        let playlist_box_scan = playlist_box.clone();
         move |_| {
             let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
             let filter_store = gio::ListStore::new::<gtk4::FileFilter>();
@@ -2009,50 +2336,79 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let status_cb = pl_status.clone();
             let probe_tx_cb = probe_tx.clone();
             let broken_tx_cb = broken_tx.clone();
+            let cancel_ref = cancel_btn.clone();
+            let playlist_box_cb = playlist_box_scan.clone();
             let parent = window_wk.upgrade();
             dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
-                if let Ok(list) = result {
-                    let before = state_cb.borrow().playlist.tracks.len();
-                    let mut added = 0usize;
-                    let n = list.n_items();
-                    for i in 0..n {
-                        if let Some(obj) = list.item(i) {
-                            if let Ok(file) = obj.downcast::<gio::File>() {
-                                if let Some(path) = file.path() {
-                                    let ok = state_cb.borrow_mut().add_path(&path).is_ok();
-                                    if ok {
-                                        added += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if added > 0 {
-                        status_cb.set_text(&format!(
-                            "Added {} file{}",
-                            added,
-                            if added == 1 { "" } else { "s" }
-                        ));
-                        rebuild_cb();
-                        let paths = state_cb.borrow().uncached_paths_from(before);
-                        if !paths.is_empty() {
-                            duration_probe::spawn_probes(
-                                paths,
-                                probe_tx_cb.clone(),
-                                broken_tx_cb.clone(),
-                            );
-                        }
-                    }
+                let Ok(list) = result else { return };
+
+                // Collect selected paths on the main thread before spawning.
+                let files: Vec<PathBuf> = (0..list.n_items())
+                    .filter_map(|i| list.item(i))
+                    .filter_map(|obj| obj.downcast::<gio::File>().ok())
+                    .filter_map(|f| f.path())
+                    .collect();
+
+                if files.is_empty() {
+                    return;
                 }
+
+                let cancel =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                {
+                    let mut s = state_cb.borrow_mut();
+                    s.playlist_scan = Some(ScanState {
+                        scan_type: ScanType::AddFiles,
+                        current: 0,
+                        total: 0,
+                        cancel: cancel.clone(),
+                    });
+                    s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+                }
+
+                status_cb.set_text("Scanning…");
+                cancel_ref.set_visible(true);
+
+                // Capture where the new tracks will start before any are added.
+                let scan_start = state_cb.borrow().playlist.len();
+
+                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
+                let (meta_tx, meta_rx) =
+                    std::sync::mpsc::channel::<(usize, String, String, String, String)>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
+                let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+
+                crate::model::Playlist::scan_files_for_ui(
+                    files,
+                    cancel,
+                    fast_tx,
+                    meta_tx,
+                    done_tx,
+                    phase1_done_tx,
+                );
+
+                start_playlist_scan_poller(
+                    state_cb.clone(),
+                    status_cb.clone(),
+                    rebuild_cb.clone(),
+                    cancel_ref.clone(),
+                    probe_tx_cb.clone(),
+                    broken_tx_cb.clone(),
+                    playlist_box_cb.clone(),
+                    fast_rx,
+                    meta_rx,
+                    done_rx,
+                    phase1_done_rx,
+                    scan_start,
+                );
             });
         }
     });
 
     // [+ Folder]: open the desktop folder browser; recursively add all audio files.
+    // Uses the same two-phase scan as Add Files: fast tracks appear immediately,
+    // metadata fills in as it is read in the background.
     btn_add_dir.connect_clicked({
-        // Shared cancel flag - declared here so both the dialog handler and cancel button can access it
-        let pl_cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
         let state = state.clone();
         let rebuild_playlist = rebuild_playlist.clone();
         let pl_status = pl_status_label.clone();
@@ -2060,173 +2416,76 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
         let cancel_btn = btn_cancel.clone();
-        let pl_cancel_for_btn = pl_cancel_flag.clone();
-
-        // Cancel scan handler for playlist (must be inside connect_clicked to access pl_cancel_flag)
-        let pl_cancel = pl_cancel_flag.clone();
-        let pl_status_for_cancel = pl_status.clone();
-        let cancel_btn_for_handler = btn_cancel.clone();
-        btn_cancel.connect_clicked(move |_| {
-            pl_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            pl_status_for_cancel.set_text("Cancelling…");
-            cancel_btn_for_handler.set_visible(false);
-        });
-
+        let playlist_box_scan = playlist_box.clone();
         move |_| {
-                let dialog = gtk4::FileDialog::new();
-                dialog.set_title("Add Folder to Playlist");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Add Folder to Playlist");
 
-                let state_cb = state.clone();
-                let rebuild_cb = rebuild_playlist.clone();
-                let status_cb = pl_status.clone();
-                let probe_tx_cb = probe_tx.clone();
-                let broken_tx_cb = broken_tx.clone();
-                let cancel_ref = cancel_btn.clone();
-                let pl_cancel = pl_cancel_for_btn.clone();
-                let parent = window_wk.upgrade();
-                dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
-                    let Ok(file) = result else { return };
-                    let Some(folder) = file.path() else { return };
+            let state_cb = state.clone();
+            let rebuild_cb = rebuild_playlist.clone();
+            let status_cb = pl_status.clone();
+            let probe_tx_cb = probe_tx.clone();
+            let broken_tx_cb = broken_tx.clone();
+            let cancel_ref = cancel_btn.clone();
+            let playlist_box_cb = playlist_box_scan.clone();
+            let parent = window_wk.upgrade();
+            dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
+                let Ok(file) = result else { return };
+                let Some(folder) = file.path() else { return };
 
-                    // Reset the shared cancel flag
-                    pl_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
-
-                    // Initialize playlist scan state
-                    {
-                        let mut s = state_cb.borrow_mut();
-                        s.playlist_scan = Some(ScanState {
-                            scan_type: ScanType::AddFiles,
-                            current: 0,
-                            total: 0,
-                            cancel: pl_cancel.clone(),
-                        });
-                    }
-
-                    status_cb.set_text("Scanning…");
-                    cancel_ref.set_visible(true);
-
-                    // Collect extra extensions from plugins while still on the
-                    // main thread (plugin_manager is not Send).
-                    let extra = state_cb.borrow().plugin_manager.extra_extensions();
-
-                    state_cb
-                        .borrow()
-                        .pending_bg_ops
-                        .set(state_cb.borrow().pending_bg_ops.get() + 1);
-
-                    // Set up channels for the unified scan function
-                    let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
-                    let (meta_tx, meta_rx) =
-                        std::sync::mpsc::channel::<(PathBuf, String, String, String, String)>();
-                    let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
-
-                    // Use the unified scan function - handles file collection + metadata in background
-                    crate::model::Playlist::scan_folder_for_ui(
-                        folder,
-                        extra,
-                        pl_cancel.clone(),
-                        fast_tx,
-                        meta_tx,
-                        done_tx,
-                    );
-
-                    // Set up poller state
-                    let fast_rx = std::cell::RefCell::new(fast_rx);
-                    let meta_rx = std::cell::RefCell::new(meta_rx);
-                    let done_rx = std::cell::RefCell::new(done_rx);
-
-                    let state_c = state_cb.clone();
-                    let status_c = status_cb.clone();
-                    let rebuild_c = rebuild_cb.clone();
-                    let cancel_c = cancel_ref.clone();
-                    let rebuild_counter = std::cell::RefCell::new(0u32);
-                    let fast_tracks_received = std::cell::RefCell::new(false);
-                    let total_tracks = std::cell::RefCell::new(0usize);
-
-                    // Single combined poller for all scan events
-                    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-                        // Process fast tracks (arrive in batch at start)
-                        if !*fast_tracks_received.borrow() {
-                            let mut received_any = false;
-                            while let Ok(track) = fast_rx.borrow().try_recv() {
-                                state_c.borrow_mut().playlist.add(track);
-                                received_any = true;
-                            }
-                            if received_any {
-                                *fast_tracks_received.borrow_mut() = true;
-                                let count = state_c.borrow().playlist.len();
-                                *total_tracks.borrow_mut() = count;
-                                status_c.set_text(&format!(
-                                    "Adding {} track{}…",
-                                    count,
-                                    if count == 1 { "" } else { "s" }
-                                ));
-                                rebuild_c();
-                            }
-                        }
-
-                        // Process metadata updates
-                        let mut meta_count = 0usize;
-                        while let Ok((path, title, artist, album_artist, album)) =
-                            meta_rx.borrow().try_recv()
-                        {
-                            let mut s = state_c.borrow_mut();
-                            if let Some(track) =
-                                s.playlist.tracks.iter_mut().find(|t| t.path == path)
-                            {
-                                track.title = title;
-                                track.artist = artist;
-                                track.album_artist = album_artist;
-                                track.album = album;
-                            }
-                            if let Some(ref mut scan) = s.playlist_scan {
-                                scan.current += 1;
-                            }
-                            meta_count += 1;
-                        }
-
-                        // Update status
-                        let current = state_c
-                            .borrow()
-                            .playlist_scan
-                            .as_ref()
-                            .map(|s| s.current)
-                            .unwrap_or(0);
-                        let total = *total_tracks.borrow();
-                        if total > 0 {
-                            status_c.set_text(&format!(
-                                "Scanning metadata {}/{}…",
-                                current.saturating_sub(meta_count),
-                                total
-                            ));
-                        }
-
-                        // Periodic rebuild every ~500ms (every 5 polls at 100ms interval)
-                        let counter = *rebuild_counter.borrow();
-                        if counter > 0 && counter % 5 == 0 {
-                            rebuild_c();
-                        }
-                        *rebuild_counter.borrow_mut() = counter.wrapping_add(1);
-
-                        // Check completion
-                        if let Ok(_total) = done_rx.borrow().try_recv() {
-                            let added = state_c.borrow().playlist.len();
-                            let mut s = state_c.borrow_mut();
-                            s.playlist_scan = None;
-                            s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
-                            status_c.set_text(&format!(
-                                "Added {} track{}",
-                                added,
-                                if added == 1 { "" } else { "s" }
-                            ));
-                            rebuild_c();
-                            cancel_c.set_visible(false);
-                            return glib::ControlFlow::Break;
-                        }
-
-                        glib::ControlFlow::Continue
+                let cancel =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                {
+                    let mut s = state_cb.borrow_mut();
+                    s.playlist_scan = Some(ScanState {
+                        scan_type: ScanType::AddFolder,
+                        current: 0,
+                        total: 0,
+                        cancel: cancel.clone(),
                     });
-                });
+                    s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+                }
+
+                status_cb.set_text("Scanning…");
+                cancel_ref.set_visible(true);
+
+                // Collect extra extensions on the main thread — plugin_manager is not Send.
+                let extra = state_cb.borrow().plugin_manager.extra_extensions();
+
+                // Capture where the new tracks will start before any are added.
+                let scan_start = state_cb.borrow().playlist.len();
+
+                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
+                let (meta_tx, meta_rx) =
+                    std::sync::mpsc::channel::<(usize, String, String, String, String)>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
+                let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+
+                crate::model::Playlist::scan_folder_for_ui(
+                    folder,
+                    extra,
+                    cancel,
+                    fast_tx,
+                    meta_tx,
+                    done_tx,
+                    phase1_done_tx,
+                );
+
+                start_playlist_scan_poller(
+                    state_cb.clone(),
+                    status_cb.clone(),
+                    rebuild_cb.clone(),
+                    cancel_ref.clone(),
+                    probe_tx_cb.clone(),
+                    broken_tx_cb.clone(),
+                    playlist_box_cb.clone(),
+                    fast_rx,
+                    meta_rx,
+                    done_rx,
+                    phase1_done_rx,
+                    scan_start,
+                );
+            });
         }
     });
 
@@ -2296,15 +2555,30 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let rebuild_playlist = rebuild_playlist.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
+        // Cooldown between probe-triggered playlist rebuilds outside of a scan.
+        // Each rebuild takes ~300 ms for 1 000 rows; without a cooldown every tick
+        // that has probe results would call rebuild, saturating the main thread.
+        // 20 ticks = ~2 s between refreshes, which is fast enough to feel live.
+        let mut probe_rebuild_cooldown = 0u32;
 
         glib::timeout_add_local(Duration::from_millis(100), move || {
             // 0. Drain probe results from background threads.
-            // Rebuild the playlist once per tick if any durations arrived so
-            // the new "M:SS" values appear without an extra user action.
+            // apply_probed_duration is O(n) per call.  When a large folder scan
+            // is in progress, Rayon can deliver thousands of probes per tick;
+            // processing them all without a cap would cost O(n²) per tick and
+            // saturate the main thread.  We therefore limit to 50 per tick while
+            // a scan is active and skip the ListBox rebuild entirely — the scan
+            // poller calls rebuild() once at completion anyway.
+            let is_scanning = state.borrow().playlist_scan.is_some();
+            // Cap to 50 during a scan; unlimited otherwise (normal runtime load).
+            let probe_cap = if is_scanning { 50usize } else { usize::MAX };
             let mut any_probed = false;
-            while let Ok((path, dur)) = probe_rx.try_recv() {
+            let mut probes_this_tick = 0usize;
+            while probes_this_tick < probe_cap {
+                let Ok((path, dur)) = probe_rx.try_recv() else { break };
                 state.borrow_mut().apply_probed_duration(&path, dur);
                 any_probed = true;
+                probes_this_tick += 1;
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.
             while let Ok(path) = broken_rx.try_recv() {
@@ -2316,8 +2590,16 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     }
                 }
             }
-            if any_probed {
+            // Skip the ListBox rebuild while a scan is running — redundant here
+            // since the scan poller calls rebuild() at completion.  Outside a scan,
+            // rate-limit to once per ~2 s so probe results arriving for a large
+            // library don't trigger a 300 ms rebuild every tick.
+            if any_probed && !is_scanning && probe_rebuild_cooldown == 0 {
                 rebuild_playlist();
+                probe_rebuild_cooldown = 20;
+            }
+            if probe_rebuild_cooldown > 0 {
+                probe_rebuild_cooldown -= 1;
             }
 
             // 1. Check for end-of-stream or GStreamer error.
@@ -2740,16 +3022,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let mut indices = jump_indices.borrow_mut();
             indices.clear();
 
-            let q = jump_entry.text().to_lowercase();
+            let q = jump_entry.text();
             let s = state.borrow();
-            for (idx, track) in s.playlist.tracks.iter().enumerate() {
-                if !q.is_empty()
-                    && !track.title.to_lowercase().contains(&q)
-                    && !track.artist.to_lowercase().contains(&q)
-                    && !track.album.to_lowercase().contains(&q)
-                {
-                    continue;
-                }
+            for idx in s.playlist.search_indices(&q) {
+                let track = &s.playlist.tracks[idx];
                 let label_text = if track.artist.is_empty() {
                     format!("{:2}. {}", idx + 1, track.title)
                 } else {
@@ -5968,7 +6244,7 @@ fn open_media_library_window(
         btn_rm_from_ml.add_css_class("pl-btn");
         btn_rm_from_ml.add_css_class("destructive");
 
-        // Button row
+        // Button row: add-to-playlist on the left, management buttons on the right.
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
         btn_row.append(&btn_add_to_pl);
@@ -5978,13 +6254,6 @@ fn open_media_library_window(
         btn_row.append(&btn_add_folder);
         btn_row.append(&btn_rescan);
         btn_row.append(&btn_cancel);
-        files_vbox.append(&btn_row);
-        btn_row.append(&spring);
-        btn_row.append(&btn_rm_from_ml);
-        btn_row.append(&btn_customize);
-        btn_row.append(&btn_add_folder);
-        btn_row.append(&btn_cancel);
-        btn_row.append(&btn_rescan);
         files_vbox.append(&btn_row);
 
         // Add selected tracks to playlist.
@@ -6068,12 +6337,16 @@ fn open_media_library_window(
             let win_wk = win.downgrade();
             let rebuild_ref = rebuild_files.clone();
             let status_ref = files_status.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
             btn_add_folder.connect_clicked(move |_| {
                 let chooser = gtk4::FileDialog::new();
                 chooser.set_title("Add Folder to Media Library");
                 let state_inner = state_rc.clone();
                 let rebuild_inner = rebuild_ref.clone();
                 let status_inner = status_ref.clone();
+                let cancel_btn = cancel_ref.clone();
+                let rescan_btn = rescan_ref.clone();
                 if let Some(w) = win_wk.upgrade() {
                     chooser.select_folder(Some(&w), None::<&gio::Cancellable>, move |result| {
                         let Ok(file) = result else {
@@ -6083,7 +6356,6 @@ fn open_media_library_window(
                             return;
                         };
                         let path_str = folder.to_string_lossy().to_string();
-                        status_inner.set_text("Scanning…");
 
                         let db_path = {
                             let s = state_inner.borrow();
@@ -6096,78 +6368,143 @@ fn open_media_library_window(
                             return;
                         };
 
-                        state_inner
-                            .borrow()
-                            .pending_bg_ops
-                            .set(state_inner.borrow().pending_bg_ops.get() + 1);
-                        type ScanMsg = (Result<usize, String>, bool);
-                        let (sender, receiver) = std::sync::mpsc::channel::<ScanMsg>();
+                        // Set up scan state: shows cancel button and disables rescan.
+                        let cancel =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        {
+                            let mut s = state_inner.borrow_mut();
+                            s.ml_scan = Some(ScanState {
+                                scan_type: ScanType::AddFolder,
+                                current: 0,
+                                total: 0,
+                                cancel: cancel.clone(),
+                            });
+                            s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+                        }
+                        status_inner.set_text("Scanning…");
+                        cancel_btn.set_visible(true);
+                        rescan_btn.set_sensitive(false);
+
+                        // Three channels: fast done, metadata progress, final result.
+                        let (fast_tx, fast_rx) =
+                            std::sync::mpsc::channel::<Result<usize, String>>();
+                        let (progress_tx, progress_rx) =
+                            std::sync::mpsc::channel::<(usize, usize)>();
+                        let (result_tx, result_rx) =
+                            std::sync::mpsc::channel::<Result<usize, String>>();
+
+                        let cancel_thread = cancel.clone();
                         std::thread::spawn(move || {
-                            let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
-                                Ok(l) => l,
+                            let lib =
+                                match crate::media_library::MediaLibrary::open_at(&db_path) {
+                                    Ok(l) => l,
+                                    Err(e) => {
+                                        let _ = fast_tx.send(Err(format!("DB error: {e}")));
+                                        return;
+                                    }
+                                };
+                            let folder_id = match lib.add_folder(&path_str) {
                                 Err(e) => {
-                                    let _ = sender.send((Err(format!("DB error: {e}")), false));
+                                    let _ = fast_tx.send(Err(format!(
+                                        "Could not add '{}': {e}",
+                                        path_str
+                                    )));
                                     return;
                                 }
+                                Ok(r) => r.id(),
                             };
-                            let add_result = lib.add_folder(&path_str);
-                            match add_result {
-                                Err(e) => {
-                                    let _ = sender.send((
-                                        Err(format!("Could not add '{}': {e}", path_str)),
-                                        false,
-                                    ));
-                                }
-                                Ok(folder_id_enum) => {
-                                    let folder_id = folder_id_enum.id();
-                                    let is_existing = matches!(
-                                        folder_id_enum,
-                                        crate::media_library::AddFolderResult::AlreadyExists(_)
-                                    );
-                                    match lib.rescan_folder_fast(folder_id, &path_str) {
-                                        Ok((added, _)) => {
-                                            let _ = sender.send((Ok(added), is_existing));
+                            // Phase 1: insert file paths into DB (fast).
+                            if let Err(e) = lib.rescan_folder_fast(folder_id, &path_str) {
+                                let _ = fast_tx
+                                    .send(Err(format!("Scan error for '{}': {e}", path_str)));
+                                return;
+                            }
+                            let _ = fast_tx.send(Ok(folder_id as usize));
+                            // Phase 2: read metadata for tracks that need it.
+                            let count = lib
+                                .rescan_folder_metadata(folder_id, &cancel_thread, |c, t| {
+                                    let _ = progress_tx.send((c, t));
+                                })
+                                .unwrap_or(0);
+                            let _ = result_tx.send(Ok(count));
+                        });
+
+                        let fast_rx = std::cell::RefCell::new(fast_rx);
+                        let progress_rx = std::cell::RefCell::new(progress_rx);
+                        let result_rx = std::cell::RefCell::new(result_rx);
+                        let fast_handled = std::cell::Cell::new(false);
+                        glib::timeout_add_local(
+                            std::time::Duration::from_millis(200),
+                            move || {
+                                // Handle fast scan completion — rebuild immediately so
+                                // tracks appear in the library while metadata loads.
+                                if !fast_handled.get() {
+                                    if let Ok(fast_result) =
+                                        fast_rx.borrow().try_recv()
+                                    {
+                                        fast_handled.set(true);
+                                        {
+                                            let mut s = state_inner.borrow_mut();
+                                            s.media_lib =
+                                                crate::media_library::MediaLibrary::open()
+                                                    .ok();
                                         }
-                                        Err(e) => {
-                                            let _ = sender.send((
-                                                Err(format!("Scan error for '{}': {e}", path_str)),
-                                                false,
+                                        if let Err(e) = fast_result {
+                                            status_inner.set_text(&e);
+                                            let mut s = state_inner.borrow_mut();
+                                            s.ml_scan = None;
+                                            s.pending_bg_ops
+                                                .set(s.pending_bg_ops.get() - 1);
+                                            cancel_btn.set_visible(false);
+                                            rescan_btn.set_sensitive(true);
+                                            return glib::ControlFlow::Break;
+                                        }
+                                        rebuild_inner();
+                                        status_inner.set_text("Reading tags…");
+                                    }
+                                }
+
+                                // Drain metadata progress updates.
+                                while let Ok((current, total)) =
+                                    progress_rx.borrow().try_recv()
+                                {
+                                    {
+                                        let mut s = state_inner.borrow_mut();
+                                        if let Some(ref mut scan) = s.ml_scan {
+                                            scan.current = current;
+                                            scan.total = total;
+                                        }
+                                    }
+                                    status_inner
+                                        .set_text(&format!("Reading tags… {current}/{total}"));
+                                }
+
+                                // Check for final completion.
+                                if let Ok(result) = result_rx.borrow().try_recv() {
+                                    {
+                                        let mut s = state_inner.borrow_mut();
+                                        s.ml_scan = None;
+                                        s.media_lib =
+                                            crate::media_library::MediaLibrary::open().ok();
+                                        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+                                    }
+                                    match result {
+                                        Err(e) => status_inner.set_text(&e),
+                                        Ok(_) => {
+                                            let count = rebuild_inner();
+                                            status_inner.set_text(&format!(
+                                                "{count} tracks in library"
                                             ));
                                         }
                                     }
+                                    cancel_btn.set_visible(false);
+                                    rescan_btn.set_sensitive(true);
+                                    return glib::ControlFlow::Break;
                                 }
-                            }
-                        });
 
-                        let receiver = std::cell::RefCell::new(receiver);
-                        glib::idle_add_local(move || {
-                            let result = receiver.borrow().try_recv();
-                            if result.is_err() {
-                                return glib::ControlFlow::Continue;
-                            }
-                            {
-                                let mut s = state_inner.borrow_mut();
-                                s.media_lib = crate::media_library::MediaLibrary::open().ok();
-                            }
-                            let (msg_result, _is_existing) = result.unwrap();
-                            match msg_result {
-                                Err(msg) => {
-                                    status_inner.set_text(&msg);
-                                }
-                                Ok(added) => {
-                                    let count = rebuild_inner();
-                                    status_inner.set_text(&format!(
-                                        "Added {added} track{}. {count} tracks in library",
-                                        if added == 1 { "" } else { "s" }
-                                    ));
-                                }
-                            }
-                            state_inner
-                                .borrow()
-                                .pending_bg_ops
-                                .set(state_inner.borrow().pending_bg_ops.get() - 1);
-                            glib::ControlFlow::Break
-                        });
+                                glib::ControlFlow::Continue
+                            },
+                        );
                     });
                 }
             });
@@ -6298,7 +6635,6 @@ fn open_media_library_window(
 
         // Remove selected tracks from library.
         {
-            let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let store_ref = track_store.clone();
             let status_ref = files_status.clone();
@@ -6318,14 +6654,10 @@ fn open_media_library_window(
                 if ids_vec.is_empty() {
                     return;
                 }
-                let removed = {
-                    let s = state_rc.borrow();
-                    match s.media_lib.as_ref() {
-                        None => 0,
-                        Some(lib) => lib.remove_tracks_batch(&ids_vec).unwrap_or(0),
-                    }
-                };
-                let ids_set: std::collections::HashSet<i64> = ids_vec.into_iter().collect();
+                // Soft-delete: remove rows from the GTK model immediately so
+                // the UI is instantly responsive regardless of collection size.
+                let ids_set: std::collections::HashSet<i64> =
+                    ids_vec.iter().copied().collect();
                 let n_items = store_ref.n_items();
                 let mut positions: Vec<u32> = (0..n_items)
                     .filter(|&i| {
@@ -6340,14 +6672,25 @@ fn open_media_library_window(
                     })
                     .collect();
                 positions.sort_by(|a, b| b.cmp(a));
+                let removed = positions.len();
                 for pos in positions {
                     store_ref.remove(pos);
                 }
-                let count = n_items as usize - removed as usize;
+                let remaining = n_items as usize - removed;
                 status_ref.set_text(&format!(
-                    "Removed {removed} track{}. {count} tracks in library",
+                    "Removed {removed} track{}. {remaining} tracks in library",
                     if removed == 1 { "" } else { "s" }
                 ));
+                // Delete from DB in the background — opens its own connection
+                // because rusqlite::Connection is not Send.
+                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                std::thread::spawn(move || {
+                    if let Ok(lib) =
+                        crate::media_library::MediaLibrary::open_at(&db_path)
+                    {
+                        let _ = lib.remove_tracks_batch(&ids_vec);
+                    }
+                });
             });
         }
 
