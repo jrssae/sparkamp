@@ -149,6 +149,7 @@ pub struct LibPlaylist {
 /// channels as "stereo", duration as "3:45").  Use [`read_only_track_fields`]
 /// to populate this struct from a path and optional media library track.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct ReadOnlyTrackFields {
     pub filename: String,
     pub path: String,
@@ -1382,7 +1383,6 @@ impl MediaLibrary {
                 break;
             }
 
-            let mut folder_scanned = 0usize;
             let mut stmt = self
                 .conn
                 .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
@@ -1405,7 +1405,6 @@ impl MediaLibrary {
                 if Self::needs_metadata_scan(&path, last_scanned.as_deref()) {
                     if self.upsert_track(folder_id, &path).is_ok() {
                         let _ = self.update_last_scanned(&path);
-                        folder_scanned += 1;
                         total_scanned += 1;
                     }
                 } else {

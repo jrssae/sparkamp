@@ -289,6 +289,7 @@ impl TagFields {
 /// Only text frames (IDs starting with 'T') and COMM/USLT are handled;
 /// binary frames (cover art, etc.) are read-only in this version.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExtraFrame {
     /// The four-character ID3v2 frame identifier (e.g. `"TCOM"`, `"TCOP"`).
     pub id: String,

@@ -1,4 +1,5 @@
 //! GTK4 main window — widget layout, callbacks, and application logic.
+#![allow(deprecated)]
 //!
 //! ## Architecture
 //!
@@ -29,15 +30,17 @@
 use anyhow::Result;
 use glib::ControlFlow;
 use gtk4::prelude::*;
+// Suppress deprecated warnings for GTK4 APIs that are still widely used
+// but have modern replacements (ComboBoxText, ColorButton, ListStore, TreeView, etc.)
+// TODO: Migrate to modern APIs (DropDown, ColorDialogButton, etc.) when feasible
 #[allow(deprecated)]
-// CellRendererText, ListStore, TreeView, TreeViewColumn deprecated since 4.10
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource,
     DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image, Label,
     ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType, Popover,
     Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack,
-    StackTransitionType, TreePath, TreeView, TreeViewColumn,
+    StackTransitionType, TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -45,7 +48,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::{
-    config::{Config, ThemeChoice, VisualizerMode},
+    config::{Config, VisualizerMode},
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player, PlayerState},
@@ -126,6 +129,7 @@ struct AppState {
 
 /// State for tracking background scan operations.
 #[derive(Clone)]
+#[allow(dead_code)]
 struct ScanState {
     /// Type of scan operation.
     scan_type: ScanType,
@@ -631,24 +635,23 @@ fn format_last_played(iso_timestamp: &str) -> String {
     )
 }
 
-fn make_genre_combo(initial_value: &str) -> (gtk4::ComboBoxText, gtk4::Entry) {
-    use gtk4::prelude::ComboBoxExt;
+#[allow(deprecated)]
+fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
+    let dd = DropDown::from_strings(crate::id3_editor::ID3V1_GENRES);
+    let entry = Entry::new();
+    entry.set_width_chars(16);
 
-    let combo = gtk4::ComboBoxText::with_entry();
-    for genre in crate::id3_editor::ID3V1_GENRES {
-        combo.append(Some(genre), genre);
+    // Try to match initial value to a predefined genre
+    if let Some(idx) = crate::id3_editor::ID3V1_GENRES
+        .iter()
+        .position(|g| *g == initial_value)
+    {
+        dd.set_selected(idx as u32);
+    } else {
+        entry.set_text(initial_value);
     }
-    combo.set_entry_text_column(0);
-    let entry = combo
-        .child()
-        .and_then(|w| w.downcast::<gtk4::Entry>().ok())
-        .expect("Genre combo should have an Entry child");
-    entry.set_text(initial_value);
-    (combo, entry)
-}
 
-fn get_entry_text(entry: &gtk4::Entry) -> String {
-    entry.text().to_string()
+    (dd, entry)
 }
 
 /// Get the system accent color from GNOME settings.
@@ -687,8 +690,8 @@ fn resolve_accent_hex(accent_choice: &crate::config::AccentColorChoice) -> Strin
 /// Reload the CSS with a new accent color. Called when the accent color setting changes.
 fn reload_css_accent(
     provider: &gtk4::CssProvider,
-    dark_css: &str,
-    light_css: &str,
+    _dark_css: &str,
+    _light_css: &str,
     is_dark: bool,
     accent_hex: &str,
 ) {
@@ -1754,7 +1757,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let patch_pl_row = {
         let state = state.clone();
         let pl_store = pl_store.clone();
-        let pl_view = pl_view.clone();
         let pl_selected_idx = pl_selected_idx.clone();
         let pl_active_idx = pl_active_idx.clone();
         let accent_rgba = accent_rgba.clone();
@@ -4104,8 +4106,7 @@ fn open_customize_columns_dialog(
 
     let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
         Rc::new(RefCell::new(Vec::new()));
-    let dropdowns: Rc<RefCell<Vec<(String, gtk4::ComboBoxText)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let dropdowns: Rc<RefCell<Vec<(String, gtk4::DropDown)>>> = Rc::new(RefCell::new(Vec::new()));
     let skipping_callback: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
     for col in &cols_to_show {
@@ -4167,22 +4168,19 @@ fn open_customize_columns_dialog(
                 .get(col.id)
                 .cloned()
                 .unwrap_or_else(|| "left".to_string());
-            let dropdown = gtk4::ComboBoxText::new();
-            dropdown.append(Some("left"), "Left");
-            dropdown.append(Some("right"), "Right");
-            dropdown.set_active_id(Some(if pos == "right" { "right" } else { "left" }));
+            let dropdown = DropDown::from_strings(&["Left", "Right"]);
+            dropdown.set_selected(if pos == "right" { 1 } else { 0 });
 
             let id_for_dropdown = col.id.to_string();
             let state_dropdown = state.clone();
-            dropdown.connect_changed(move |dd| {
-                if let Some(position) = dd.active_id() {
-                    let mut s = state_dropdown.borrow_mut();
-                    s.config
-                        .media_library
-                        .id3_column_position
-                        .insert(id_for_dropdown.clone(), position.to_string());
-                    let _ = s.config.save();
-                }
+            dropdown.connect_selected_notify(move |dd| {
+                let position = if dd.selected() == 1 { "right" } else { "left" };
+                let mut s = state_dropdown.borrow_mut();
+                s.config
+                    .media_library
+                    .id3_column_position
+                    .insert(id_for_dropdown.clone(), position.to_string());
+                let _ = s.config.save();
             });
 
             row.append(&dropdown);
@@ -4244,7 +4242,7 @@ fn open_customize_columns_dialog(
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| "left".to_string());
-            dd.set_active_id(Some(&pos));
+            dd.set_selected(if pos == "right" { 1 } else { 0 });
         }
     });
 
@@ -4420,7 +4418,7 @@ fn open_id3_editor_window(
             get_id3_field_value(&fields, &track_meta, id)
         };
         if *id == "genre" {
-            let (combo, entry) = make_genre_combo(&value);
+            let (combo, _entry) = make_genre_combo(&value);
             combo.set_hexpand(true);
             grid.attach(&combo, 1, row as i32, 1, 1);
         } else {
@@ -4773,132 +4771,8 @@ fn open_id3_editor_window(
     win.present();
 }
 
-/// Open the "Customize" extra-frames editor window for `path`.
-///
-/// Lists every ID3v2 frame present in the file that is *not* represented in
-/// the default 12-field editor.  Each frame's value is shown in an editable
-/// Entry; clicking ✓ or pressing Enter writes the new value back to the file
-/// immediately (per-frame saves, not batched).
-fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf) {
-    use crate::id3_editor::{read_extra_frames, write_extra_frame};
-    use gtk4::prelude::*;
-
-    let extra_frames = read_extra_frames(&path);
-
-    let win = gtk4::Window::builder()
-        .title("ID3 Extra Frames — Customize")
-        .default_width(500)
-        .default_height(320)
-        .modal(false)
-        .build();
-    if let Some(p) = parent {
-        win.set_transient_for(Some(p));
-    }
-
-    if extra_frames.is_empty() {
-        let lbl = Label::new(Some("No extra frames found in this file."));
-        lbl.set_margin_top(24);
-        lbl.set_margin_start(16);
-        win.set_child(Some(&lbl));
-        win.present();
-        return;
-    }
-
-    // Build a grid: ID (col 0) | Label (col 1) | Entry (col 2) | ✓ btn (col 3).
-    let grid = Grid::new();
-    grid.set_margin_top(12);
-    grid.set_margin_bottom(12);
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_row_spacing(6);
-    grid.set_column_spacing(8);
-
-    for (i, frame) in extra_frames.iter().enumerate() {
-        let id_lbl = Label::builder()
-            .label(&frame.id)
-            .xalign(0.0)
-            .width_chars(6)
-            .build();
-
-        let desc_lbl = Label::builder()
-            .label(&gtk_safe(&frame.label))
-            .xalign(0.0)
-            .width_chars(20)
-            .build();
-
-        let entry = Entry::new();
-        entry.set_text(&gtk_safe(&frame.value));
-        entry.set_hexpand(true);
-
-        let btn_ok = Button::with_label("✓");
-        btn_ok.set_tooltip_text(Some("Save this frame"));
-
-        // Save the frame when ✓ is clicked.
-        {
-            let path2 = path.clone();
-            let frame_id = frame.id.clone();
-            let entry_c = entry.clone();
-            let btn_c = btn_ok.clone();
-            btn_ok.connect_clicked(move |_| {
-                let value = entry_c.text().to_string();
-                match write_extra_frame(&path2, &frame_id, &value) {
-                    Ok(()) => {
-                        btn_c.set_label("✓");
-                    }
-                    Err(e) => {
-                        btn_c.set_label("!");
-                        eprintln!("extra frame save: {e}");
-                    }
-                }
-            });
-        }
-
-        // Also save when Enter is pressed inside the Entry.
-        {
-            let path3 = path.clone();
-            let frame_id2 = frame.id.clone();
-            entry.connect_activate(move |e| {
-                let value = e.text().to_string();
-                let _ = write_extra_frame(&path3, &frame_id2, &value);
-            });
-        }
-
-        let row = i as i32;
-        grid.attach(&id_lbl, 0, row, 1, 1);
-        grid.attach(&desc_lbl, 1, row, 1, 1);
-        grid.attach(&entry, 2, row, 1, 1);
-        grid.attach(&btn_ok, 3, row, 1, 1);
-    }
-
-    // Wrap the grid in a ScrolledWindow so long frame lists are navigable.
-    let scroll = gtk4::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk4::PolicyType::Never)
-        .vscrollbar_policy(gtk4::PolicyType::Automatic)
-        .vexpand(true)
-        .child(&grid)
-        .build();
-
-    let close_btn = Button::with_label("Close");
-    close_btn.set_margin_top(8);
-    close_btn.set_margin_bottom(8);
-    close_btn.set_margin_end(12);
-    close_btn.set_halign(Align::End);
-    {
-        let win_wk = win.downgrade();
-        close_btn.connect_clicked(move |_| {
-            if let Some(w) = win_wk.upgrade() {
-                w.close();
-            }
-        });
-    }
-
-    let vbox = GtkBox::new(Orientation::Vertical, 0);
-    vbox.append(&scroll);
-    vbox.append(&close_btn);
-    win.set_child(Some(&vbox));
-    win.present();
-}
-
+// ---------------------------------------------------------------------------
+// Settings window
 // ---------------------------------------------------------------------------
 // Settings window
 // ---------------------------------------------------------------------------
@@ -4914,6 +4788,7 @@ fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf
 /// `accent_hex_current` stores the current accent hex for theme toggles.
 /// `accent_rgba` is updated when accent changes to refresh playlist playing row color.
 /// `pl_store` is used to repaint the playing row when accent changes.
+#[allow(deprecated)]
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -5015,6 +4890,7 @@ fn open_settings_window(
 
         let dd_accent = DropDown::from_strings(&accent_color_labels);
         let accent_container = GtkBox::new(Orientation::Horizontal, 4);
+        #[allow(deprecated)]
         let custom_color_btn = gtk4::ColorButton::new();
         custom_color_btn.set_visible(false);
         accent_container.append(&dd_accent);
@@ -5064,7 +4940,7 @@ fn open_settings_window(
 
             dd_accent.connect_selected_notify(move |d| {
                 let selection = d.selected();
-                let (accent_choice, custom_hex) = match selection {
+                let (accent_choice, _custom_hex) = match selection {
                     0 => (AccentColorChoice::System, None),
                     1 => (AccentColorChoice::Blue, None),
                     2 => (AccentColorChoice::Green, None),
@@ -5118,6 +4994,7 @@ fn open_settings_window(
                     PlayerState::Playing | PlayerState::Paused
                 );
                 if is_playing && !state_rc.borrow().playlist.is_empty() {
+                    #[allow(deprecated)]
                     if let Some(iter) = pl_store_rc.iter_nth_child(None, playing_idx as i32) {
                         let rgba = accent_rgba_rc
                             .borrow()
@@ -5139,6 +5016,7 @@ fn open_settings_window(
                 let accent_cell2 = accent_hex_current.clone();
                 let accent_rgba_rc2 = accent_rgba.clone();
                 let pl_store_rc2 = pl_store.clone();
+                #[allow(deprecated)]
                 custom_color_btn.connect_color_set(move |btn| {
                     let rgba = btn.rgba();
                     let hex = format!(
@@ -5175,6 +5053,7 @@ fn open_settings_window(
                         PlayerState::Playing | PlayerState::Paused
                     );
                     if is_playing && !state_rc2.borrow().playlist.is_empty() {
+                        #[allow(deprecated)]
                         if let Some(iter) = pl_store_rc2.iter_nth_child(None, playing_idx as i32) {
                             #[allow(deprecated)]
                             let rgba = accent_rgba_rc2
@@ -7386,7 +7265,7 @@ fn open_media_library_window(
             let cancel_ref = btn_cancel.clone();
             let rescan_ref = btn_rescan.clone();
             btn_cancel.connect_clicked(move |_| {
-                let mut s = state_rc.borrow_mut();
+                let s = state_rc.borrow_mut();
                 if let Some(ref scan) = s.ml_scan {
                     scan.cancel
                         .store(true, std::sync::atomic::Ordering::Relaxed);

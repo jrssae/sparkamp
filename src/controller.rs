@@ -40,6 +40,7 @@ use crate::{
 
 /// Outcome of a load-and-play operation.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum PlayResult {
     /// Track loaded and playback started successfully.
     Started { display_name: String },
@@ -89,9 +90,9 @@ pub enum AdvanceResult {
 /// other fields (like TUI-specific `status_message` or GTK-specific
 /// `pending_seek`) before and after the call without lifetime conflicts.
 pub struct Controller<'a> {
-    pub player:        &'a mut Player,
-    pub playlist:      &'a mut Playlist,
-    pub config:        &'a mut Config,
+    pub player: &'a mut Player,
+    pub playlist: &'a mut Playlist,
+    pub config: &'a mut Config,
     pub shuffle_state: &'a mut ShuffleState,
     pub plugin_manager: &'a mut PluginManager,
 }
@@ -125,7 +126,9 @@ impl Controller<'_> {
             self.playlist.tracks[idx].broken = true;
             return PlayResult::Error(format!("Play error: {e}"));
         }
-        PlayResult::Started { display_name: display }
+        PlayResult::Started {
+            display_name: display,
+        }
     }
 
     /// Record the current track in the shuffle history, then load and play it.
@@ -156,7 +159,7 @@ impl Controller<'_> {
             *self.player.state(),
             PlayerState::Playing | PlayerState::Paused
         );
-        let total   = self.playlist.len();
+        let total = self.playlist.len();
         let current = self.playlist.current_index;
 
         let idx = if self.shuffle_state.enabled {
@@ -167,7 +170,7 @@ impl Controller<'_> {
             };
             match self.shuffle_state.next_index(current, total, eff) {
                 Some(i) => i,
-                None    => return NavResult::NoTarget,
+                None => return NavResult::NoTarget,
             }
         } else {
             let next = current + 1;
@@ -211,7 +214,7 @@ impl Controller<'_> {
         let idx = if self.shuffle_state.enabled {
             match self.shuffle_state.prev_from_history() {
                 Some(i) => i,
-                None    => return NavResult::NoTarget,
+                None => return NavResult::NoTarget,
             }
         } else {
             let current = self.playlist.current_index;
@@ -245,9 +248,9 @@ impl Controller<'_> {
     /// `Stopped` when there is nothing left to play (the player is also
     /// explicitly stopped in that case).
     pub fn advance_to_next_playable(&mut self) -> AdvanceResult {
-        let total   = self.playlist.len();
+        let total = self.playlist.len();
         let current = self.playlist.current_index;
-        let repeat  = self.config.playback.repeat_mode;
+        let repeat = self.config.playback.repeat_mode;
 
         let Some(mut idx) = self.shuffle_state.next_index(current, total, repeat) else {
             let _ = self.player.stop();
@@ -255,11 +258,20 @@ impl Controller<'_> {
         };
 
         for _ in 0..total {
-            if self.playlist.tracks.get(idx).map(|t| t.broken).unwrap_or(false) {
+            if self
+                .playlist
+                .tracks
+                .get(idx)
+                .map(|t| t.broken)
+                .unwrap_or(false)
+            {
                 // Already marked broken — skip without trying to play.
                 self.shuffle_state.record_played(idx);
                 match self.shuffle_state.next_index(idx, total, repeat) {
-                    Some(i) => { idx = i; continue; }
+                    Some(i) => {
+                        idx = i;
+                        continue;
+                    }
                     None => {
                         let _ = self.player.stop();
                         return AdvanceResult::Stopped;
@@ -269,7 +281,7 @@ impl Controller<'_> {
 
             self.playlist.jump_to(idx);
             let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
-            let ok  = self.player.load(&uri).is_ok() && self.player.play().is_ok();
+            let ok = self.player.load(&uri).is_ok() && self.player.play().is_ok();
             if ok {
                 self.shuffle_state.record_played(idx);
                 return AdvanceResult::Playing { new_index: idx };
@@ -278,7 +290,7 @@ impl Controller<'_> {
             self.playlist.tracks[idx].broken = true;
             match self.shuffle_state.next_index(idx, total, repeat) {
                 Some(i) => idx = i,
-                None    => break,
+                None => break,
             }
         }
 
@@ -338,8 +350,10 @@ impl Controller<'_> {
     /// When re-enabling, restores the stored values.
     pub fn set_eq_enabled(&mut self, enabled: bool) {
         self.config.equalizer.enabled = enabled;
-        self.player.apply_eq_bands(&self.config.equalizer.effective_bands());
-        self.player.set_preamp(self.config.equalizer.effective_preamp());
+        self.player
+            .apply_eq_bands(&self.config.equalizer.effective_bands());
+        self.player
+            .set_preamp(self.config.equalizer.effective_preamp());
     }
 
     /// Advance to the next EQ preset (cycling) and apply it to the player
@@ -357,7 +371,7 @@ impl Controller<'_> {
     pub fn reset_eq_to_flat(&mut self) {
         let flat = [0.0f64; 10];
         self.config.equalizer.preset = "Flat".to_string();
-        self.config.equalizer.bands  = flat.to_vec();
+        self.config.equalizer.bands = flat.to_vec();
         self.player.apply_eq_bands(&flat);
     }
 
