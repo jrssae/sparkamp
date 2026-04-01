@@ -5462,15 +5462,24 @@ fn open_settings_window(
                         None::<&gio::Cancellable>,
                         move |result| {
                             if result == Ok(1) {
-                                // Update UI immediately on main thread
-                                rebuild_for_dialog();
                                 status_for_dialog.set_text(&format!("Removing: {}", folder_path_cb));
+
+                                // Delete from state.media_lib on main thread first
+                                // This updates the same DB connection used by rebuild functions
+                                if let Some(ref lib) = state_for_dialog.borrow().media_lib {
+                                    let _ = lib.remove_folder(folder_id_cb);
+                                }
+
+                                // Now rebuild UI - data is gone from state.media_lib's DB
+                                rebuild_for_dialog();
+                                status_for_dialog.set_text(&format!("Removed: {}", folder_path_cb));
+
                                 // Trigger Media Library window to refresh if open
                                 if let Some(ref cb) = state_for_dialog.borrow().rebuild_ml_callback {
                                     cb();
                                 }
 
-                                // DB deletion in background thread (UI already updated)
+                                // Background cleanup: delete from DB again (harmless if already done)
                                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
                                 let folder_id_bg = folder_id_cb;
 
@@ -5478,11 +5487,9 @@ fn open_settings_window(
                                     if let Ok(lib) =
                                         crate::media_library::MediaLibrary::open_at(&db_path)
                                     {
-                                        // First delete all tracks in the folder
                                         if let Ok(track_ids) = lib.track_ids_for_folder(folder_id_bg) {
                                             let _ = lib.remove_tracks_batch(&track_ids);
                                         }
-                                        // Then delete the folder entry
                                         let _ = lib.remove_folder(folder_id_bg);
                                     }
                                 });
