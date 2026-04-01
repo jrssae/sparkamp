@@ -5439,12 +5439,56 @@ fn open_settings_window(
                     .unwrap_or_default();
                 if idx < folders.len() {
                     let (folder_id, folder_path) = folders[idx].clone();
-                    if let Some(ref lib) = btn_rm_state.borrow().media_lib {
-                        if lib.remove_folder(folder_id).is_ok() {
-                            btn_rm_rebuild();
-                            btn_rm_status.set_text(&format!("Removed: {}", folder_path));
-                        }
-                    }
+
+                    // Clone for use in dialog callback
+                    let state_for_dialog = btn_rm_state.clone();
+                    let rebuild_for_dialog = btn_rm_rebuild.clone();
+                    let status_for_dialog = btn_rm_status.clone();
+
+                    let dialog = gtk4::AlertDialog::builder()
+                        .message("Remove Folder from Library")
+                        .detail("Removing this folder will remove all files in this folder from the media library.\n\nNo files will be deleted from your disk, but they will not appear in the library any longer.\n\nContinue?")
+                        .buttons(vec!["Cancel".to_string(), "Continue".to_string()])
+                        .cancel_button(0)
+                        .default_button(0)
+                        .modal(true)
+                        .build();
+
+                    let folder_id_cb = folder_id;
+                    let folder_path_cb = folder_path.clone();
+
+                    dialog.choose(
+                        None::<&gtk4::Window>,
+                        None::<&gio::Cancellable>,
+                        move |result| {
+                            if result == Ok(1) {
+                                // Update UI immediately on main thread
+                                rebuild_for_dialog();
+                                status_for_dialog.set_text(&format!("Removing: {}", folder_path_cb));
+                                // Trigger Media Library window to refresh if open
+                                if let Some(ref cb) = state_for_dialog.borrow().rebuild_ml_callback {
+                                    cb();
+                                }
+
+                                // DB deletion in background thread (UI already updated)
+                                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                                let folder_id_bg = folder_id_cb;
+
+                                std::thread::spawn(move || {
+                                    if let Ok(lib) =
+                                        crate::media_library::MediaLibrary::open_at(&db_path)
+                                    {
+                                        // First delete all tracks in the folder
+                                        if let Ok(track_ids) = lib.track_ids_for_folder(folder_id_bg) {
+                                            let _ = lib.remove_tracks_batch(&track_ids);
+                                        }
+                                        // Then delete the folder entry
+                                        let _ = lib.remove_folder(folder_id_bg);
+                                    }
+                                });
+                            }
+                        },
+                    );
                 }
             }
         });

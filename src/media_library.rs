@@ -466,6 +466,16 @@ impl MediaLibrary {
             .context("list_folders query")
     }
 
+    /// Return all track IDs in a folder, for soft-delete UI updates.
+    pub fn track_ids_for_folder(&self, folder_id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tracks WHERE folder_id = ?1")?;
+        let rows = stmt.query_map(params![folder_id], |row| row.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("track_ids_for_folder query")
+    }
+
     // -----------------------------------------------------------------------
     // Scanning
     // -----------------------------------------------------------------------
