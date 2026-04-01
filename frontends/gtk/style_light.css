@@ -126,14 +126,6 @@ scale.vol-scale slider {
     font-size: 12px;
 }
 
-.playlist row:selected {
-    background-color: alpha(@accent_bg_color, 0.18);
-}
-
-.playlist row:selected cell {
-    color: @accent_bg_color;
-}
-
 .status-label {
     font-size: 10px;
     color: #888888;
@@ -342,4 +334,9 @@ button.pl-btn.destructive:hover {
 .unscanned-row label,
 .unscanned-row button {
     color: alpha(currentColor, 0.45);
+}
+
+/* Playlist selected row — background highlight for light theme. */
+.playlist row:selected {
+    background: rgba(0, 0, 0, 0.2);
 }

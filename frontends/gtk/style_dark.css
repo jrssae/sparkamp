@@ -129,14 +129,6 @@ scale.vol-scale slider {
     font-size: 12px;
 }
 
-.playlist row:selected {
-    background-color: alpha(@accent_bg_color, 0.2);
-}
-
-.playlist row:selected cell {
-    color: @accent_bg_color;
-}
-
 .status-label {
     font-size: 10px;
     color: #666666;
@@ -265,6 +257,12 @@ button.pl-btn.destructive:hover {
 .playlist row.dragging {
     opacity: 0.5;
     background-color: alpha(@accent_bg_color, 0.2);
+}
+
+/* Playlist selected row — background highlight.
+   Text color is controlled by the cell_data_func in the code. */
+.playlist row:selected {
+    background: rgba(255, 255, 255, 0.25);
 }
 
 /* Playlist drag-reorder drop indicator */

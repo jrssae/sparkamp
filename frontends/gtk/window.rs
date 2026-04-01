@@ -29,14 +29,15 @@
 use anyhow::Result;
 use glib::ControlFlow;
 use gtk4::prelude::*;
-#[allow(deprecated)] // CellRendererText, ListStore, TreeView, TreeViewColumn deprecated since 4.10
+#[allow(deprecated)]
+// CellRendererText, ListStore, TreeView, TreeViewColumn deprecated since 4.10
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource,
-    DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image,
-    Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType,
-    Popover, Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack,
-    StackTransitionType, TreeView, TreeViewColumn,
+    DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image, Label,
+    ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType, Popover,
+    Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack,
+    StackTransitionType, TreePath, TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -54,7 +55,6 @@ use crate::{
     shuffle::ShuffleState,
     viz_plugin::{load_plugins_from_dir, VizPlugin},
 };
-
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -736,14 +736,17 @@ fn start_playlist_scan_poller(
     probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
     broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
     patch_row: std::rc::Rc<dyn Fn(usize)>,
+    // Called when Phase 2 updates the currently playing track's metadata so the
+    // marquee immediately reflects the new "Artist - Title" display name.
+    set_track: std::rc::Rc<dyn Fn(&str)>,
     fast_rx: std::sync::mpsc::Receiver<crate::model::Track>,
     meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
     done_rx: std::sync::mpsc::Receiver<usize>,
     phase1_done_rx: std::sync::mpsc::Receiver<usize>,
     scan_start: usize,
 ) {
-    use std::cell::Cell;
     use gtk4::prelude::*;
+    use std::cell::Cell;
 
     // How many fast tracks this scan has added to state.playlist so far.
     let fast_added = Cell::new(0usize);
@@ -830,7 +833,7 @@ fn start_playlist_scan_poller(
         }
 
         // ── Phase 2: apply metadata and update individual rows ───────────
-        // patch_pl_row is O(1) per call: it finds the store iter by position
+        // patch_row is O(1) per call: it finds the store iter by position
         // and updates that row's text in place, so live updates are cheap.
         let mut meta_drained = 0usize;
         while meta_drained < 200 {
@@ -838,7 +841,7 @@ fn start_playlist_scan_poller(
                 break;
             };
             let playlist_idx = scan_start + idx;
-            {
+            let is_current = {
                 let mut s = state.borrow_mut();
                 if let Some(track) = s.playlist.tracks.get_mut(playlist_idx) {
                     track.title = title;
@@ -849,9 +852,25 @@ fn start_playlist_scan_poller(
                 if let Some(ref mut scan) = s.playlist_scan {
                     scan.current += 1;
                 }
-            }
+                s.playlist.current_index == playlist_idx
+            };
             // Update just this row in the ListView store; O(1), no full rebuild needed.
             patch_row(playlist_idx);
+            // If Phase 2 just filled in metadata for the currently playing track,
+            // refresh the marquee so it shows "Artist - Title" instead of the
+            // filename that was used as a placeholder during Phase 1.
+            if is_current {
+                let display = state
+                    .borrow()
+                    .playlist
+                    .tracks
+                    .get(playlist_idx)
+                    .map(|t| t.display_name())
+                    .unwrap_or_default();
+                if !display.is_empty() {
+                    set_track(&display);
+                }
+            }
             meta_drained += 1;
         }
         // Update the status label with metadata progress.
@@ -878,10 +897,7 @@ fn start_playlist_scan_poller(
 
         // Finalise when done_rx has fired, all fast tracks are received, and
         // meta_rx is drained for this tick.
-        if completion_pending.get()
-            && fast_exhausted.get()
-            && meta_drained == 0
-        {
+        if completion_pending.get() && fast_exhausted.get() && meta_drained == 0 {
             let added = fast_added.get();
             {
                 let mut s = state.borrow_mut();
@@ -907,7 +923,6 @@ fn start_playlist_scan_poller(
         ControlFlow::Continue
     });
 }
-
 
 pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
@@ -958,6 +973,12 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // (try_recv), keeping the GTK main thread fully responsive.
     let (probe_tx, probe_rx) = std::sync::mpsc::channel::<(std::path::PathBuf, Duration)>();
     let (broken_tx, broken_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
+
+    // ── Current track metadata scan channel ─────────────────────────────────────
+    // When the player starts a track that has no metadata (empty artist/album_artist),
+    // this channel receives the scanned metadata so we can update the marquee display.
+    let (current_track_meta_tx, current_track_meta_rx) =
+        std::sync::mpsc::channel::<(std::path::PathBuf, String, String, String, String)>();
 
     // Populate durations from the on-disk cache for the already-loaded
     // playlist, then probe any tracks that are still unknown.
@@ -1457,20 +1478,28 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // so 30k+ tracks render instantly without memory pressure.
     // Four-column ListStore: position | display name | duration | font weight.
     // Col 3 (i32): Pango weight — 700 for the active track, 400 for all others.
-    // Foreground color is applied via set_cell_data_func (not add_attribute) so
-    // we set gdk::RGBA directly and avoid GTK's string-to-color parser warnings.
+    // Col 4 (RGBA): Foreground color — accent for active, white for selected, grey for default.
+    // Using attribute binding instead of cell_data_func for reliable color updates.
     #[allow(deprecated)]
     let pl_store = ListStore::new(&[
-        String::static_type(), // col 0: position ("1.", "2.", …)
-        String::static_type(), // col 1: display name ("Artist - Title" or filename)
-        String::static_type(), // col 2: duration ("-:--" or "3:45")
-        i32::static_type(),    // col 3: Pango font weight (700 = active, 400 = normal)
+        String::static_type(),    // col 0: position ("1.", "2.", …)
+        String::static_type(),    // col 1: display name ("Artist - Title" or filename)
+        String::static_type(),    // col 2: duration ("-:--" or "3:45")
+        i32::static_type(),       // col 3: Pango font weight (700 = active, 400 = normal)
+        gdk::RGBA::static_type(), // col 4: foreground color
     ]);
 
     // Shared accent RGBA populated after main window realization by reading the
-    // computed color of the .np-title probe label.  The cell data func reads
-    // this to color the active row — same CSS variable drives both.
+    // computed color of the hidden .np-title probe label.
     let accent_rgba: Rc<RefCell<Option<gdk::RGBA>>> = Rc::new(RefCell::new(None));
+
+    // Track the single-clicked row index (separate from the playing row).
+    // usize::MAX means no row is selected.
+    let pl_selected_idx: Rc<Cell<usize>> = Rc::new(Cell::new(usize::MAX));
+
+    // Track the currently-playing row index (active row styling).
+    // usize::MAX means no row is playing.
+    let pl_active_idx: Rc<Cell<usize>> = Rc::new(Cell::new(usize::MAX));
 
     #[allow(deprecated)]
     let pl_view = TreeView::builder()
@@ -1497,9 +1526,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     pl_view.append_column(&pos_col);
 
     // Name column — expands to fill remaining width, ellipsizes long strings.
-    // Col 3 drives the font weight so the current track is bold without markup.
-    // Foreground is set via cell_data_func using gdk::RGBA directly so GTK's
-    // string-to-color parser is never invoked (avoids "Don't know color ''" warnings).
+    // Using add_attribute for all properties (text, weight, foreground-rgba).
+    // Foreground color is stored in column 4 and updated by patch_pl_row.
     #[allow(deprecated)]
     let name_col = TreeViewColumn::new();
     name_col.set_expand(true);
@@ -1513,20 +1541,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     #[allow(deprecated)]
     name_col.add_attribute(&name_cell, "weight", 3);
     #[allow(deprecated)]
-    name_col.set_cell_data_func(&name_cell, {
-        let accent_rgba = accent_rgba.clone();
-        move |_col, cell, model, iter| {
-            let cell = cell.downcast_ref::<CellRendererText>().unwrap();
-            let weight: i32 = model.get_value(iter, 3).get().unwrap_or(400);
-            if weight == 700 {
-                if let Some(rgba) = *accent_rgba.borrow() {
-                    cell.set_foreground_rgba(Some(&rgba));
-                    return;
-                }
-            }
-            cell.set_foreground_rgba(None);
-        }
-    });
+    name_col.add_attribute(&name_cell, "foreground-rgba", 4);
     #[allow(deprecated)]
     pl_view.append_column(&name_col);
 
@@ -1610,11 +1625,24 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let pl_store = pl_store.clone();
         let pl_view = pl_view.clone();
         let pl_count_label = pl_count_label.clone();
+        let pl_selected_idx = pl_selected_idx.clone();
+        let pl_active_idx = pl_active_idx.clone();
+        let accent_rgba = accent_rgba.clone();
         Rc::new(move || {
             let s = state.borrow();
             let current = s.playlist.current_index;
-            let is_playing = matches!(*s.player.state(), PlayerState::Playing | PlayerState::Paused);
+            let is_playing = matches!(
+                *s.player.state(),
+                PlayerState::Playing | PlayerState::Paused
+            );
             let n = s.playlist.tracks.len();
+            let saved_selected = pl_selected_idx.get();
+            // Update pl_active_idx to match current playing track.
+            if is_playing {
+                pl_active_idx.set(current);
+            } else {
+                pl_active_idx.set(usize::MAX);
+            }
             // Detach TreeView so bulk model changes don't trigger per-row signals.
             #[allow(deprecated)]
             pl_view.set_model(None::<&ListStore>);
@@ -1624,6 +1652,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 let pos = format!("{}.", i + 1);
                 let name = t.display_name();
                 let is_active = is_playing && i == current;
+                let is_row_selected = saved_selected != usize::MAX && saved_selected == i;
                 let display = if t.broken {
                     format!("⚠ {}", name)
                 } else if is_active {
@@ -1632,13 +1661,28 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     name
                 };
                 let weight: i32 = if is_active { 700 } else { 400 };
+                // Compute foreground color: active > selected > default.
+                let fg_rgba = if is_active {
+                    accent_rgba
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
+                } else if is_row_selected {
+                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                } else {
+                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                };
                 #[allow(deprecated)]
-                pl_store.insert_with_values(None, &[
-                    (0, &gtk_safe(&pos) as &dyn ToValue),
-                    (1, &gtk_safe(&display) as &dyn ToValue),
-                    (2, &gtk_safe(&fmt_duration(t.duration)) as &dyn ToValue),
-                    (3, &weight as &dyn ToValue),
-                ]);
+                pl_store.insert_with_values(
+                    None,
+                    &[
+                        (0, &gtk_safe(&pos) as &dyn ToValue),
+                        (1, &gtk_safe(&display) as &dyn ToValue),
+                        (2, &gtk_safe(&fmt_duration(t.duration)) as &dyn ToValue),
+                        (3, &weight as &dyn ToValue),
+                        (4, &fg_rgba as &dyn ToValue),
+                    ],
+                );
             }
             drop(s);
             // Reconnect — TreeView does one bulk re-read, only paints visible rows.
@@ -1660,13 +1704,22 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let patch_pl_row = {
         let state = state.clone();
         let pl_store = pl_store.clone();
+        let pl_view = pl_view.clone();
+        let pl_selected_idx = pl_selected_idx.clone();
+        let pl_active_idx = pl_active_idx.clone();
+        let accent_rgba = accent_rgba.clone();
         Rc::new(move |idx: usize| {
-            let (display, duration_str, weight) = {
+            let (display, duration_str, weight, is_active) = {
                 let s = state.borrow();
-                let Some(t) = s.playlist.tracks.get(idx) else { return; };
+                let Some(t) = s.playlist.tracks.get(idx) else {
+                    return;
+                };
                 let name = t.display_name();
-                let is_active = matches!(*s.player.state(), PlayerState::Playing | PlayerState::Paused)
-                    && idx == s.playlist.current_index;
+                let is_playing = matches!(
+                    *s.player.state(),
+                    PlayerState::Playing | PlayerState::Paused
+                );
+                let is_active = is_playing && idx == s.playlist.current_index;
                 let display = if t.broken {
                     format!("⚠ {}", name)
                 } else if is_active {
@@ -1675,20 +1728,123 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     name
                 };
                 let weight: i32 = if is_active { 700 } else { 400 };
-                (display, fmt_duration(t.duration), weight)
+                (display, fmt_duration(t.duration), weight, is_active)
             };
             #[allow(deprecated)]
-            let Some(iter) = pl_store.iter_nth_child(None, idx as i32) else { return; };
-            // Position (col 0) never changes; update name, duration, weight.
-            // The cell data func re-reads col 3 to set the foreground color.
+            let Some(iter) = pl_store.iter_nth_child(None, idx as i32) else {
+                return;
+            };
+            // Update pl_active_idx state.
+            let current_active = pl_active_idx.get();
+            if is_active && current_active != idx {
+                pl_active_idx.set(idx);
+            } else if !is_active && current_active == idx {
+                pl_active_idx.set(usize::MAX);
+            }
+            // Compute foreground color: active > selected > default.
+            let fg_rgba = {
+                let active_idx = pl_active_idx.get();
+                let selected_idx = pl_selected_idx.get();
+                let is_row_active = active_idx != usize::MAX && active_idx == idx;
+                let is_row_selected = selected_idx != usize::MAX && selected_idx == idx;
+                if is_row_active {
+                    accent_rgba
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
+                } else if is_row_selected {
+                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                } else {
+                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                }
+            };
+            // Update name, duration, weight, and foreground color columns.
             #[allow(deprecated)]
-            pl_store.set(&iter, &[
-                (1, &gtk_safe(&display) as &dyn ToValue),
-                (2, &gtk_safe(&duration_str) as &dyn ToValue),
-                (3, &weight as &dyn ToValue),
-            ]);
+            pl_store.set(
+                &iter,
+                &[
+                    (1, &gtk_safe(&display) as &dyn ToValue),
+                    (2, &gtk_safe(&duration_str) as &dyn ToValue),
+                    (3, &weight as &dyn ToValue),
+                    (4, &fg_rgba as &dyn ToValue),
+                ],
+            );
         })
     };
+
+    // Handle single-click row selection changes for highlighting.
+    // Updates pl_selected_idx and repaints old/new selected rows.
+    {
+        let pl_selected_idx = pl_selected_idx.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let pl_view = pl_view.clone();
+        #[allow(deprecated)]
+        pl_view.selection().connect_changed(move |selection| {
+            // Guard against model being detached (e.g., during rebuild_playlist).
+            #[allow(deprecated)]
+            if pl_view.model().is_none() {
+                return;
+            }
+            // Guard against initial model setup (count is 0 when model is initializing).
+            #[allow(deprecated)]
+            if selection.count_selected_rows() == 0 && pl_selected_idx.get() == usize::MAX {
+                return;
+            }
+            let old_idx = pl_selected_idx.get();
+            #[allow(deprecated)]
+            let (paths, _model): (Vec<_>, _) = selection.selected_rows();
+            let new_idx = paths
+                .into_iter()
+                .next()
+                .and_then(|p| p.indices().first().copied())
+                .map(|i| i as usize)
+                .unwrap_or(usize::MAX);
+            if old_idx != new_idx {
+                pl_selected_idx.set(new_idx);
+                // Repaint old and new selected rows.
+                if old_idx != usize::MAX {
+                    patch_pl_row(old_idx);
+                }
+                if new_idx != usize::MAX {
+                    patch_pl_row(new_idx);
+                }
+            }
+        });
+    }
+
+    // scan_current_track_metadata — if the current track has no metadata (empty
+    // artist AND album_artist), spawn a background thread to read the ID3 tags
+    // and send the result via current_track_meta_tx so the marquee can be updated.
+    fn scan_current_track_metadata(
+        state: &Rc<RefCell<AppState>>,
+        meta_tx: std::sync::mpsc::Sender<(PathBuf, String, String, String, String)>,
+    ) {
+        let (path, has_metadata) = {
+            let s = state.borrow();
+            match s.playlist.current() {
+                Some(t) => {
+                    let has_meta = !t.artist.is_empty() || !t.album_artist.is_empty();
+                    (t.path.clone(), has_meta)
+                }
+                None => return,
+            }
+        };
+        if has_metadata {
+            return;
+        }
+        let path_for_thread = path.clone();
+        std::thread::spawn(move || {
+            if let Ok(track) = crate::model::Track::from_path(&path_for_thread) {
+                let _ = meta_tx.send((
+                    track.path,
+                    track.title,
+                    track.artist,
+                    track.album_artist,
+                    track.album,
+                ));
+            }
+        });
+    }
 
     // play_and_update — play the current track and refresh the UI labels.
     //
@@ -1700,6 +1856,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let current_track_meta_tx = current_track_meta_tx.clone();
         Rc::new(move || {
             // Record which row was playing before so we can un-bold it.
             let old_idx = state.borrow().playlist.current_index;
@@ -1708,8 +1865,11 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 let new_idx = state.borrow().playlist.current_index;
                 eprintln!("[now-playing] playlist display: \"{}\"", display);
                 set_track(&display);
-                // Patch only the two affected rows: the old track loses bold/▶,
-                // the new track gains them.  This is O(1) vs O(n) for rebuild.
+                // Scan metadata for the current track if it hasn't been scanned yet.
+                // This updates the marquee with "Artist - Title" once the scan completes.
+                scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                // Patch the new current track to ensure active styling is applied.
+                // Also patch old track if it was different.
                 if old_idx != new_idx {
                     patch_pl_row(old_idx);
                 }
@@ -1726,16 +1886,20 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let remove_selected = {
         let state = state.clone();
         let pl_view = pl_view.clone();
+        let pl_scroll = pl_scroll.clone();
         let rebuild_rm = rebuild_playlist.clone();
         let set_track_rm = set_track.clone();
         Rc::new(move || {
             #[allow(deprecated)]
             let (paths, _) = pl_view.selection().selected_rows();
-            let mut indices: Vec<usize> = paths.iter()
+            let mut indices: Vec<usize> = paths
+                .iter()
                 .filter_map(|p| p.indices().first().copied())
                 .map(|i| i as usize)
                 .collect();
-            if indices.is_empty() { return; }
+            if indices.is_empty() {
+                return;
+            }
             // Highest first so earlier removes don't invalidate later indices.
             indices.sort_unstable_by(|a, b| b.cmp(a));
             let mut last_nowplaying: Option<String> = None;
@@ -1747,10 +1911,18 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             if let Some(display) = last_nowplaying {
                 set_track_rm(&display);
             }
+            // Save and restore the scroll position around the rebuild so the
+            // visible region doesn't jump after a removal.
+            let adj = pl_scroll.vadjustment();
+            let saved_scroll = adj.value();
             rebuild_rm();
+            // The model re-attach resets the scroll; restore on next idle tick
+            // after GTK has committed the new layout.
+            glib::idle_add_local_once(move || {
+                adj.set_value(saved_scroll);
+            });
         })
     };
-
 
     // ── Initial state ─────────────────────────────────────────────────────────
 
@@ -1773,9 +1945,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         drag_src.connect_prepare(move |_, x, y| {
             #[allow(deprecated)]
             let row_idx = match pl_view_ds.path_at_pos(x as i32, y as i32) {
-                Some((Some(path), _, _, _)) => {
-                    path.indices().first().copied().unwrap_or(0) as u32
-                }
+                Some((Some(path), _, _, _)) => path.indices().first().copied().unwrap_or(0) as u32,
                 _ => return None,
             };
             Some(gdk::ContentProvider::for_value(&row_idx.to_value()))
@@ -1798,7 +1968,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         drop_tgt.connect_drop(move |_, value, x, y| {
             if let Ok(src_pos) = value.get::<u32>() {
                 let n = state_dnd.borrow().playlist.len();
-                if n == 0 { return false; }
+                if n == 0 {
+                    return false;
+                }
                 #[allow(deprecated)]
                 let dst_pos = match pl_view_dnd.path_at_pos(x as i32, y as i32) {
                     Some((Some(path), _, _, _)) => {
@@ -1908,13 +2080,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let current_track_meta_tx = current_track_meta_tx.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             let result = { state.borrow_mut().play_next() };
             if let Some(display) = result {
                 let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                if old_idx != new_idx { patch_pl_row(old_idx); }
+                scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                if old_idx != new_idx {
+                    patch_pl_row(old_idx);
+                }
                 patch_pl_row(new_idx);
             }
         }
@@ -1925,13 +2101,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let current_track_meta_tx = current_track_meta_tx.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             let result = { state.borrow_mut().play_prev() };
             if let Some(display) = result {
                 let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                if old_idx != new_idx { patch_pl_row(old_idx); }
+                scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                if old_idx != new_idx {
+                    patch_pl_row(old_idx);
+                }
                 patch_pl_row(new_idx);
             }
         }
@@ -2025,7 +2205,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         }
     });
 
-    // Right-click context menu on a row: offer "Play this track" and "Remove".
+    // Right-click context menu on a row: Play / View+Edit ID3 / Remove.
     {
         let ctx_click = GestureClick::new();
         ctx_click.set_button(3); // right mouse button
@@ -2034,22 +2214,23 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let remove_ctx = remove_selected.clone();
         let pl_view_ctx = pl_view.clone();
         let patch_ctx = patch_pl_row.clone();
+        let win_ctx = window.downgrade();
+        let rebuild_ctx = rebuild_playlist.clone();
         ctx_click.connect_pressed(move |_, _, x, y| {
             #[allow(deprecated)]
             let row_idx = match pl_view_ctx.path_at_pos(x as i32, y as i32) {
-                Some((Some(path), _, _, _)) => {
-                    match path.indices().first().copied() {
-                        Some(i) => i as usize,
-                        None => return,
-                    }
-                }
+                Some((Some(path), _, _, _)) => match path.indices().first().copied() {
+                    Some(i) => i as usize,
+                    None => return,
+                },
                 _ => return,
             };
             // Select the right-clicked row so Remove acts on it.
             #[allow(deprecated)]
             pl_view_ctx.selection().unselect_all();
             #[allow(deprecated)]
-            if let Some(iter) = pl_view_ctx.model()
+            if let Some(iter) = pl_view_ctx
+                .model()
                 .and_then(|m| m.iter_nth_child(None, row_idx as i32))
             {
                 #[allow(deprecated)]
@@ -2061,13 +2242,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             popover.set_pointing_to(Some(&rect));
             let menu_box = GtkBox::new(Orientation::Vertical, 2);
             let btn_play = Button::with_label("▶ Play");
-            let btn_del  = Button::with_label("✕ Remove");
-            btn_play.add_css_class("flat");
-            btn_del.add_css_class("flat");
+            let btn_id3 = Button::with_label("🎵 View / Edit ID3");
+            let btn_del = Button::with_label("✕ Remove");
+            for btn in [&btn_play, &btn_id3, &btn_del] {
+                btn.add_css_class("popover-button");
+            }
             {
                 let state_p = state_ctx.clone();
-                let play_p  = play_ctx.clone();
-                let pop_p   = popover.clone();
+                let play_p = play_ctx.clone();
+                let pop_p = popover.clone();
                 let patch_p = patch_ctx.clone();
                 btn_play.connect_clicked(move |_| {
                     let old_idx = state_p.borrow().playlist.current_index;
@@ -2080,14 +2263,39 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 });
             }
             {
+                let state_i = state_ctx.clone();
+                let win_i = win_ctx.clone();
+                let rebuild_i = rebuild_ctx.clone();
+                let pop_i = popover.clone();
+                btn_id3.connect_clicked(move |_| {
+                    let path = state_i
+                        .borrow()
+                        .playlist
+                        .tracks
+                        .get(row_idx)
+                        .map(|t| t.path.clone());
+                    if let Some(path) = path {
+                        open_id3_editor_window(
+                            win_i.upgrade().as_ref(),
+                            path,
+                            state_i.clone(),
+                            rebuild_i.clone(),
+                            None,
+                        );
+                    }
+                    pop_i.popdown();
+                });
+            }
+            {
                 let remove_r = remove_ctx.clone();
-                let pop_r    = popover.clone();
+                let pop_r = popover.clone();
                 btn_del.connect_clicked(move |_| {
                     remove_r();
                     pop_r.popdown();
                 });
             }
             menu_box.append(&btn_play);
+            menu_box.append(&btn_id3);
             menu_box.append(&btn_del);
             popover.set_child(Some(&menu_box));
             popover.popup();
@@ -2254,6 +2462,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let broken_tx = broken_tx.clone();
         let cancel_btn = btn_cancel.clone();
         let patch_pl_row_af = patch_pl_row.clone();
+        let set_track_af = set_track.clone();
         move |_| {
             let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
             let filter_store = gio::ListStore::new::<gtk4::FileFilter>();
@@ -2267,6 +2476,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let broken_tx_cb = broken_tx.clone();
             let cancel_ref = cancel_btn.clone();
             let patch_cb = patch_pl_row_af.clone();
+            let set_track_cb = set_track_af.clone();
             let parent = window_wk.upgrade();
             dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                 let Ok(list) = result else { return };
@@ -2282,8 +2492,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     return;
                 }
 
-                let cancel =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 {
                     let mut s = state_cb.borrow_mut();
                     s.playlist_scan = Some(ScanState {
@@ -2324,6 +2533,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     probe_tx_cb.clone(),
                     broken_tx_cb.clone(),
                     patch_cb.clone(),
+                    set_track_cb.clone(),
                     fast_rx,
                     meta_rx,
                     done_rx,
@@ -2346,6 +2556,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let broken_tx = broken_tx.clone();
         let cancel_btn = btn_cancel.clone();
         let patch_pl_row_adir = patch_pl_row.clone();
+        let set_track_adir = set_track.clone();
         move |_| {
             let dialog = gtk4::FileDialog::new();
             dialog.set_title("Add Folder to Playlist");
@@ -2357,13 +2568,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let broken_tx_cb = broken_tx.clone();
             let cancel_ref = cancel_btn.clone();
             let patch_cb = patch_pl_row_adir.clone();
+            let set_track_cb = set_track_adir.clone();
             let parent = window_wk.upgrade();
             dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                 let Ok(file) = result else { return };
                 let Some(folder) = file.path() else { return };
 
-                let cancel =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 {
                     let mut s = state_cb.borrow_mut();
                     s.playlist_scan = Some(ScanState {
@@ -2408,6 +2619,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     probe_tx_cb.clone(),
                     broken_tx_cb.clone(),
                     patch_cb.clone(),
+                    set_track_cb.clone(),
                     fast_rx,
                     meta_rx,
                     done_rx,
@@ -2417,7 +2629,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             });
         }
     });
-
 
     // ══════════════════════════════════════════════════════════════════════════
     // Volume slider
@@ -2482,6 +2693,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let show_remaining = show_remaining.clone();
         let state_label = state_label.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let current_track_meta_rx = std::cell::RefCell::new(current_track_meta_rx);
+        let set_track = set_track.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
@@ -2494,7 +2707,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let probe_cap = if is_scanning { 50usize } else { 500usize };
             let mut probes_this_tick = 0usize;
             while probes_this_tick < probe_cap {
-                let Ok((path, dur)) = probe_rx.try_recv() else { break };
+                let Ok((path, dur)) = probe_rx.try_recv() else {
+                    break;
+                };
                 // Bind the return value to a `let` so the temporary RefMut is
                 // dropped at the semicolon — before patch_pl_row tries to borrow.
                 let probed_idx = state.borrow_mut().apply_probed_duration(&path, dur);
@@ -2518,6 +2733,47 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     found
                 };
                 if let Some(idx) = found_idx {
+                    patch_pl_row(idx);
+                }
+            }
+
+            // 0c. Drain current track metadata scan results.
+            // This is separate from the playlist scan (meta_rx) — it handles metadata
+            // reads triggered by play_and_update when a track starts without metadata.
+            while let Ok((path, title, artist, album_artist, album)) =
+                current_track_meta_rx.borrow().try_recv()
+            {
+                let (updated_idx, is_current) = {
+                    let mut s = state.borrow_mut();
+                    let mut updated_idx = None;
+                    let mut is_current = false;
+                    for (idx, track) in s.playlist.tracks.iter_mut().enumerate() {
+                        if track.path == path {
+                            track.title = title;
+                            track.artist = artist;
+                            track.album_artist = album_artist;
+                            track.album = album;
+                            updated_idx = Some(idx);
+                            is_current = idx == s.playlist.current_index;
+                            break;
+                        }
+                    }
+                    (updated_idx, is_current)
+                };
+                // Update the marquee with the new "Artist - Title" display name.
+                if is_current {
+                    let display = state
+                        .borrow()
+                        .playlist
+                        .current()
+                        .map(|t| t.display_name())
+                        .unwrap_or_default();
+                    if !display.is_empty() {
+                        set_track(&display);
+                    }
+                }
+                // Patch the row to show the new title/artist.
+                if let Some(idx) = updated_idx {
                     patch_pl_row(idx);
                 }
             }
@@ -2667,10 +2923,18 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                                 let _ = ml.record_play(p);
                                 s.counted_play_path = Some(p.clone());
                                 s.rebuild_ml_callback.clone()
-                            } else { None }
-                        } else { None }
-                    } else { None }
-                } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             };
             if let Some(rebuild_ml) = ml_rebuild_needed {
                 rebuild_ml();
@@ -3574,9 +3838,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 
     // After the main window is realized, read the computed text color of the
     // hidden .np-title probe label and cache it as gdk::RGBA.  The cell data
-    // func uses this directly — no string-to-color parsing, no GTK warnings.
+    // func reads this directly — no string parsing, no GTK color warnings.
     // Hooking the main window (not the playlist window) means the color is
-    // available the moment the app starts, not only after the playlist opens.
+    // available the moment the app starts.
     {
         let accent_rgba = accent_rgba.clone();
         let np_probe = np_probe.clone();
@@ -3584,7 +3848,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         window.connect_realize(move |_| {
             *accent_rgba.borrow_mut() = Some(np_probe.color());
-            // Re-patch the current track so it immediately shows the accent color
+            // Re-patch the current row so it immediately gets the accent color
             // if a track is already playing when the app starts.
             let idx = state.borrow().playlist.current_index;
             patch_pl_row(idx);
@@ -6335,8 +6599,7 @@ fn open_media_library_window(
                         };
 
                         // Set up scan state: shows cancel button and disables rescan.
-                        let cancel =
-                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                         {
                             let mut s = state_inner.borrow_mut();
                             s.ml_scan = Some(ScanState {
@@ -6361,20 +6624,17 @@ fn open_media_library_window(
 
                         let cancel_thread = cancel.clone();
                         std::thread::spawn(move || {
-                            let lib =
-                                match crate::media_library::MediaLibrary::open_at(&db_path) {
-                                    Ok(l) => l,
-                                    Err(e) => {
-                                        let _ = fast_tx.send(Err(format!("DB error: {e}")));
-                                        return;
-                                    }
-                                };
+                            let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    let _ = fast_tx.send(Err(format!("DB error: {e}")));
+                                    return;
+                                }
+                            };
                             let folder_id = match lib.add_folder(&path_str) {
                                 Err(e) => {
-                                    let _ = fast_tx.send(Err(format!(
-                                        "Could not add '{}': {e}",
-                                        path_str
-                                    )));
+                                    let _ = fast_tx
+                                        .send(Err(format!("Could not add '{}': {e}", path_str)));
                                     return;
                                 }
                                 Ok(r) => r.id(),
@@ -6399,78 +6659,66 @@ fn open_media_library_window(
                         let progress_rx = std::cell::RefCell::new(progress_rx);
                         let result_rx = std::cell::RefCell::new(result_rx);
                         let fast_handled = std::cell::Cell::new(false);
-                        glib::timeout_add_local(
-                            std::time::Duration::from_millis(200),
-                            move || {
-                                // Handle fast scan completion — rebuild immediately so
-                                // tracks appear in the library while metadata loads.
-                                if !fast_handled.get() {
-                                    if let Ok(fast_result) =
-                                        fast_rx.borrow().try_recv()
-                                    {
-                                        fast_handled.set(true);
-                                        {
-                                            let mut s = state_inner.borrow_mut();
-                                            s.media_lib =
-                                                crate::media_library::MediaLibrary::open()
-                                                    .ok();
-                                        }
-                                        if let Err(e) = fast_result {
-                                            status_inner.set_text(&e);
-                                            let mut s = state_inner.borrow_mut();
-                                            s.ml_scan = None;
-                                            s.pending_bg_ops
-                                                .set(s.pending_bg_ops.get() - 1);
-                                            cancel_btn.set_visible(false);
-                                            rescan_btn.set_sensitive(true);
-                                            return glib::ControlFlow::Break;
-                                        }
-                                        rebuild_inner();
-                                        status_inner.set_text("Reading tags…");
-                                    }
-                                }
-
-                                // Drain metadata progress updates.
-                                while let Ok((current, total)) =
-                                    progress_rx.borrow().try_recv()
-                                {
+                        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                            // Handle fast scan completion — rebuild immediately so
+                            // tracks appear in the library while metadata loads.
+                            if !fast_handled.get() {
+                                if let Ok(fast_result) = fast_rx.borrow().try_recv() {
+                                    fast_handled.set(true);
                                     {
                                         let mut s = state_inner.borrow_mut();
-                                        if let Some(ref mut scan) = s.ml_scan {
-                                            scan.current = current;
-                                            scan.total = total;
-                                        }
-                                    }
-                                    status_inner
-                                        .set_text(&format!("Reading tags… {current}/{total}"));
-                                }
-
-                                // Check for final completion.
-                                if let Ok(result) = result_rx.borrow().try_recv() {
-                                    {
-                                        let mut s = state_inner.borrow_mut();
-                                        s.ml_scan = None;
                                         s.media_lib =
                                             crate::media_library::MediaLibrary::open().ok();
+                                    }
+                                    if let Err(e) = fast_result {
+                                        status_inner.set_text(&e);
+                                        let mut s = state_inner.borrow_mut();
+                                        s.ml_scan = None;
                                         s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+                                        cancel_btn.set_visible(false);
+                                        rescan_btn.set_sensitive(true);
+                                        return glib::ControlFlow::Break;
                                     }
-                                    match result {
-                                        Err(e) => status_inner.set_text(&e),
-                                        Ok(_) => {
-                                            let count = rebuild_inner();
-                                            status_inner.set_text(&format!(
-                                                "{count} tracks in library"
-                                            ));
-                                        }
-                                    }
-                                    cancel_btn.set_visible(false);
-                                    rescan_btn.set_sensitive(true);
-                                    return glib::ControlFlow::Break;
+                                    rebuild_inner();
+                                    status_inner.set_text("Reading tags…");
                                 }
+                            }
 
-                                glib::ControlFlow::Continue
-                            },
-                        );
+                            // Drain metadata progress updates.
+                            while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                                {
+                                    let mut s = state_inner.borrow_mut();
+                                    if let Some(ref mut scan) = s.ml_scan {
+                                        scan.current = current;
+                                        scan.total = total;
+                                    }
+                                }
+                                status_inner.set_text(&format!("Reading tags… {current}/{total}"));
+                            }
+
+                            // Check for final completion.
+                            if let Ok(result) = result_rx.borrow().try_recv() {
+                                {
+                                    let mut s = state_inner.borrow_mut();
+                                    s.ml_scan = None;
+                                    s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                                    s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+                                }
+                                match result {
+                                    Err(e) => status_inner.set_text(&e),
+                                    Ok(_) => {
+                                        let count = rebuild_inner();
+                                        status_inner
+                                            .set_text(&format!("{count} tracks in library"));
+                                    }
+                                }
+                                cancel_btn.set_visible(false);
+                                rescan_btn.set_sensitive(true);
+                                return glib::ControlFlow::Break;
+                            }
+
+                            glib::ControlFlow::Continue
+                        });
                     });
                 }
             });
@@ -6622,8 +6870,7 @@ fn open_media_library_window(
                 }
                 // Soft-delete: remove rows from the GTK model immediately so
                 // the UI is instantly responsive regardless of collection size.
-                let ids_set: std::collections::HashSet<i64> =
-                    ids_vec.iter().copied().collect();
+                let ids_set: std::collections::HashSet<i64> = ids_vec.iter().copied().collect();
                 let n_items = store_ref.n_items();
                 let mut positions: Vec<u32> = (0..n_items)
                     .filter(|&i| {
@@ -6651,9 +6898,7 @@ fn open_media_library_window(
                 // because rusqlite::Connection is not Send.
                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
                 std::thread::spawn(move || {
-                    if let Ok(lib) =
-                        crate::media_library::MediaLibrary::open_at(&db_path)
-                    {
+                    if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
                         let _ = lib.remove_tracks_batch(&ids_vec);
                     }
                 });
