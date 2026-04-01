@@ -237,10 +237,10 @@ pub struct EqState {
 /// Tabs: 0=Appearance, 1=Behavior, 2=Visualizer, 3=Filetypes, 4=Media Library.
 pub(super) fn settings_tab_len(tab: usize) -> usize {
     match tab {
-        // Appearance: 2 items (theme, custom_skin)
-        0 => 2,
-        // Behavior: 1 item (autoplay_on_add)
-        1 => 1,
+        // Appearance: 3 items (theme, accent_color, custom_skin)
+        0 => 3,
+        // Behavior: 2 items (autoplay_on_add, playlist_add_behavior)
+        1 => 2,
         // Visualizer: 1 item (mode)
         2 => 1,
         // Filetypes: 2 items (visualizer_dir, filetype_dir)
@@ -1231,8 +1231,7 @@ impl App {
                 let scan_start = self.playlist.tracks.len();
                 let cancel = Arc::new(AtomicBool::new(false));
                 let (fast_tx, fast_rx) = mpsc::channel::<Track>();
-                let (meta_tx, meta_rx) =
-                    mpsc::channel::<(usize, String, String, String, String)>();
+                let (meta_tx, meta_rx) = mpsc::channel::<(usize, String, String, String, String)>();
                 let (done_tx, done_rx) = mpsc::channel::<usize>();
                 let (phase1_done_tx, phase1_done_rx) = mpsc::channel::<usize>();
                 Playlist::scan_files_for_ui(
@@ -1244,7 +1243,8 @@ impl App {
                     phase1_done_tx,
                 );
                 if let Mode::AddFile {
-                    ref mut scan_cancel, ..
+                    ref mut scan_cancel,
+                    ..
                 } = self.mode
                 {
                     *scan_cancel = Some(cancel);
@@ -1572,9 +1572,20 @@ impl App {
                             let p = std::path::Path::new(&path_str);
                             match crate::model::Track::from_path(p) {
                                 Ok(track) => {
+                                    let was_empty = self.playlist.is_empty();
+                                    if self.config.behavior.playlist_add_behavior
+                                        == crate::config::PlaylistAddBehavior::Replace
+                                    {
+                                        self.playlist.tracks.clear();
+                                        self.playlist.current_index = 0;
+                                        self.shuffle_state.reset();
+                                    }
                                     let before = self.playlist.tracks.len();
                                     self.playlist.add(track);
                                     self.probe_new_tracks(before);
+                                    if self.config.behavior.autoplay_on_add && was_empty {
+                                        self.play_current();
+                                    }
                                     self.set_status("Track added to playlist");
                                 }
                                 Err(e) => {
@@ -2213,7 +2224,7 @@ impl App {
     ///   Enter                  — confirm and write the value back to config
     ///   Esc                    — abandon the edit (revert to previous value)
     fn handle_settings(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        use crate::config::{ThemeChoice, VisualizerMode};
+        use crate::config::{AccentColorChoice, PlaylistAddBehavior, ThemeChoice, VisualizerMode};
 
         // Alt + transport keys pass through to the player without closing settings.
         if modifiers.contains(KeyModifiers::ALT) {
@@ -2275,7 +2286,7 @@ impl App {
                     };
                     // Dispatch by (tab, cursor).
                     match (tab, cursor) {
-                        (0, 1) => self.config.appearance.custom_skin = val,
+                        (0, 2) => self.config.appearance.custom_skin = val,
                         (3, 0) => self.config.plugins.visualizer_dir = val,
                         (3, 1) => self.config.plugins.filetype_dir = val,
                         (4, 2) => {
@@ -2340,7 +2351,16 @@ impl App {
                 }
             }
             // Down / j: move cursor down within the active tab.
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
+                let tab_len = settings_tab_len(tab);
+                if let Mode::Settings(s) = &mut self.mode {
+                    if s.cursor + 1 < tab_len {
+                        s.cursor += 1;
+                    }
+                }
+            }
+            // Also use 'j' for down navigation in settings (not jump).
+            KeyCode::Char('j') if !modifiers.contains(KeyModifiers::ALT) => {
                 let tab_len = settings_tab_len(tab);
                 if let Mode::Settings(s) = &mut self.mode {
                     if s.cursor + 1 < tab_len {
@@ -2352,7 +2372,7 @@ impl App {
             // Space / Enter: act on the focused setting.
             KeyCode::Enter | KeyCode::Char(' ') => {
                 match tab {
-                    // Appearance: row 0 = cycle theme; row 1 = edit custom skin name.
+                    // Appearance: row 0 = cycle theme; row 1 = cycle highlight color; row 2 = edit custom skin name.
                     0 => {
                         match cursor {
                             0 => {
@@ -2362,6 +2382,24 @@ impl App {
                                 };
                             }
                             1 => {
+                                // Cycle through accent colors.
+                                self.config.appearance.accent_color =
+                                    match self.config.appearance.accent_color {
+                                        AccentColorChoice::System => AccentColorChoice::Blue,
+                                        AccentColorChoice::Blue => AccentColorChoice::Green,
+                                        AccentColorChoice::Green => AccentColorChoice::Purple,
+                                        AccentColorChoice::Purple => AccentColorChoice::Red,
+                                        AccentColorChoice::Red => AccentColorChoice::Orange,
+                                        AccentColorChoice::Orange => AccentColorChoice::Yellow,
+                                        AccentColorChoice::Yellow => AccentColorChoice::White,
+                                        AccentColorChoice::White => AccentColorChoice::Grey,
+                                        AccentColorChoice::Grey => {
+                                            AccentColorChoice::Custom("#3584e4".to_string())
+                                        }
+                                        AccentColorChoice::Custom(_) => AccentColorChoice::System,
+                                    };
+                            }
+                            2 => {
                                 // Enter text-edit mode for the custom skin name.
                                 let current = self.config.appearance.custom_skin.clone();
                                 if let Mode::Settings(s) = &mut self.mode {
@@ -2371,11 +2409,21 @@ impl App {
                             _ => {}
                         }
                     }
-                    // Behavior: toggle autoplay-on-add.
-                    1 => {
-                        self.config.behavior.autoplay_on_add =
-                            !self.config.behavior.autoplay_on_add;
-                    }
+                    // Behavior: row 0 = toggle autoplay; row 1 = cycle playlist add behavior.
+                    1 => match cursor {
+                        0 => {
+                            self.config.behavior.autoplay_on_add =
+                                !self.config.behavior.autoplay_on_add;
+                        }
+                        1 => {
+                            self.config.behavior.playlist_add_behavior =
+                                match self.config.behavior.playlist_add_behavior {
+                                    PlaylistAddBehavior::Append => PlaylistAddBehavior::Replace,
+                                    PlaylistAddBehavior::Replace => PlaylistAddBehavior::Append,
+                                };
+                        }
+                        _ => {}
+                    },
                     // Visualizer: cycle between Bars and Oscilloscope.
                     2 => {
                         self.config.visualizer.mode = match self.config.visualizer.mode {

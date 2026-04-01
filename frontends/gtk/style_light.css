@@ -294,6 +294,40 @@ button.pl-btn.destructive:hover {
     font-weight: bold;
 }
 
+/* ── Media library column view (files tab) ─────────────────────────────── */
+.ml-col-view row:selected {
+    background-color: alpha(@accent_bg_color, 0.18);
+}
+
+.ml-col-view row:selected label,
+.ml-col-view row:selected button {
+    color: @accent_bg_color;
+}
+
+/* ── Equalizer sliders ──────────────────────────────────────────────────── */
+scale.eq-scale trough {
+    background-color: #d4d4d4;
+    background-image: none;
+    border: 1px solid #c4c4c4;
+    min-height: 6px;
+}
+
+scale.eq-scale highlight {
+    background-color: @accent_bg_color;
+    background-image: none;
+    border-radius: 2px;
+}
+
+scale.eq-scale slider {
+    background-color: @accent_bg_color;
+    background-image: none;
+    min-width: 12px;
+    min-height: 12px;
+    border-radius: 6px;
+    border: none;
+    margin: -5px;
+}
+
 /* Playlist duration column — right-aligned, dimmed */
 .pl-dur-label {
     font-family: monospace;

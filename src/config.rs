@@ -184,6 +184,59 @@ pub enum ThemeChoice {
     Light,
 }
 
+/// Accent/highlight color choices.
+/// GNOME provides these built-in accent colors that match the desktop theme.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "type", content = "value")]
+pub enum AccentColorChoice {
+    /// Use the system accent color from GNOME settings.
+    System,
+    /// GNOME blue (default).
+    Blue,
+    /// GNOME green.
+    Green,
+    /// GNOME purple.
+    Purple,
+    /// GNOME red/pink.
+    Red,
+    /// GNOME orange.
+    Orange,
+    /// GNOME yellow.
+    Yellow,
+    /// GNOME white.
+    White,
+    /// GNOME grey.
+    Grey,
+    /// Custom hex color (e.g., "#ff5500").
+    Custom(String),
+}
+
+impl Default for AccentColorChoice {
+    fn default() -> Self {
+        AccentColorChoice::System
+    }
+}
+
+impl AccentColorChoice {
+    /// Return the hex color string for this accent choice.
+    /// Returns None for System (to be resolved from gsettings).
+    /// Returns Some(hex) for built-in and custom colors.
+    pub fn hex(&self) -> Option<&str> {
+        match self {
+            AccentColorChoice::System => None,
+            AccentColorChoice::Blue => Some("#3584e4"),
+            AccentColorChoice::Green => Some("#3a944a"),
+            AccentColorChoice::Purple => Some("#9141ac"),
+            AccentColorChoice::Red => Some("#e01b24"),
+            AccentColorChoice::Orange => Some("#ff7800"),
+            AccentColorChoice::Yellow => Some("#f6d32d"),
+            AccentColorChoice::White => Some("#ffffff"),
+            AccentColorChoice::Grey => Some("#77767b"),
+            AccentColorChoice::Custom(hex) => Some(hex),
+        }
+    }
+}
+
 /// Visual-appearance preferences that live under `[appearance]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearanceConfig {
@@ -191,6 +244,11 @@ pub struct AppearanceConfig {
     /// Defaults to [`ThemeChoice::Dark`].
     #[serde(default)]
     pub theme: ThemeChoice,
+
+    /// Accent/highlight color for the UI.
+    /// Defaults to [`AccentColorChoice::System`] (reads from GNOME settings).
+    #[serde(default)]
+    pub accent_color: AccentColorChoice,
 
     /// Name of a user-provided skin to load from
     /// `~/.config/sparkamp/skins/<name>.css`.  When non-empty this overrides
@@ -211,6 +269,7 @@ impl Default for AppearanceConfig {
     fn default() -> Self {
         AppearanceConfig {
             theme: ThemeChoice::Dark,
+            accent_color: AccentColorChoice::default(),
             custom_skin: String::new(),
             hidden_skins: Vec::new(),
         }
@@ -221,6 +280,17 @@ impl Default for AppearanceConfig {
 // BehaviorConfig
 // ---------------------------------------------------------------------------
 
+/// How tracks from the media library are added to the playlist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistAddBehavior {
+    /// Append tracks to the end of the current playlist (default).
+    #[default]
+    Append,
+    /// Clear the playlist and add only the selected tracks.
+    Replace,
+}
+
 /// Miscellaneous behaviour tweaks under `[behavior]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorConfig {
@@ -228,12 +298,18 @@ pub struct BehaviorConfig {
     /// Defaults to `false`.
     #[serde(default)]
     pub autoplay_on_add: bool,
+
+    /// How tracks from the media library are added to the playlist.
+    /// Defaults to [`PlaylistAddBehavior::Append`].
+    #[serde(default)]
+    pub playlist_add_behavior: PlaylistAddBehavior,
 }
 
 impl Default for BehaviorConfig {
     fn default() -> Self {
         BehaviorConfig {
             autoplay_on_add: false,
+            playlist_add_behavior: PlaylistAddBehavior::default(),
         }
     }
 }

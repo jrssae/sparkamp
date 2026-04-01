@@ -39,7 +39,7 @@ use super::{
     SettingsState,
 };
 use crate::{
-    config::{ThemeChoice, VisualizerMode},
+    config::{AccentColorChoice, PlaylistAddBehavior, ThemeChoice, VisualizerMode},
     engine::PlayerState,
     model::fmt_duration,
     shuffle::RepeatMode,
@@ -61,6 +61,22 @@ const C_TEXT: Color = Color::White;
 const C_WARN: Color = Color::Yellow;
 /// Error colour: status messages and the remove-track overlay.
 const C_ERR: Color = Color::Red;
+
+/// Return a display string for the accent color setting.
+fn accent_color_display(choice: &AccentColorChoice) -> String {
+    match choice {
+        AccentColorChoice::System => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  System".to_string(),
+        AccentColorChoice::Blue => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Blue".to_string(),
+        AccentColorChoice::Green => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Green".to_string(),
+        AccentColorChoice::Purple => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Purple".to_string(),
+        AccentColorChoice::Red => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Red".to_string(),
+        AccentColorChoice::Orange => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Orange".to_string(),
+        AccentColorChoice::Yellow => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Yellow".to_string(),
+        AccentColorChoice::White => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  White".to_string(),
+        AccentColorChoice::Grey => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Grey".to_string(),
+        AccentColorChoice::Custom(hex) => format!("[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Custom ({hex})"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Top-level draw — assembles all sections into the terminal frame
@@ -1107,8 +1123,12 @@ fn settings_rows_for_tab<'a>(
                 },
             ),
             (
+                "Highlight color",
+                accent_color_display(&app.config.appearance.accent_color),
+            ),
+            (
                 "Custom skin name",
-                if state.tab == 0 && state.cursor == 1 {
+                if state.tab == 0 && state.cursor == 2 {
                     if let Some(buf) = &state.edit_buf {
                         format!("{buf}▌")
                     } else {
@@ -1131,14 +1151,23 @@ fn settings_rows_for_tab<'a>(
         ],
 
         // ── Behavior ─────────────────────────────────────────────────────
-        1 => vec![(
-            "Autoplay on add",
-            if app.config.behavior.autoplay_on_add {
-                "[ On  / Off ]  ●  On".to_string()
-            } else {
-                "[ On  / Off ]  ●  Off".to_string()
-            },
-        )],
+        1 => vec![
+            (
+                "Autoplay on add",
+                if app.config.behavior.autoplay_on_add {
+                    "[ On  / Off ]  ●  On".to_string()
+                } else {
+                    "[ On  / Off ]  ●  Off".to_string()
+                },
+            ),
+            (
+                "Media library → playlist",
+                match app.config.behavior.playlist_add_behavior {
+                    PlaylistAddBehavior::Append => "[ Append / Replace ]  ●  Append".to_string(),
+                    PlaylistAddBehavior::Replace => "[ Append / Replace ]  ●  Replace".to_string(),
+                },
+            ),
+        ],
 
         // ── Visualizer ────────────────────────────────────────────────────
         2 => vec![(

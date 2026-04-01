@@ -125,6 +125,7 @@ struct AppState {
 }
 
 /// State for tracking background scan operations.
+#[derive(Clone)]
 struct ScanState {
     /// Type of scan operation.
     scan_type: ScanType,
@@ -650,7 +651,8 @@ fn get_entry_text(entry: &gtk4::Entry) -> String {
     entry.text().to_string()
 }
 
-fn accent_hex() -> &'static str {
+/// Get the system accent color from GNOME settings.
+fn system_accent_hex() -> &'static str {
     let output = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "accent-color"])
         .output();
@@ -671,6 +673,31 @@ fn accent_hex() -> &'static str {
         "slate" => "#6f8396",
         _ => "#3584e4", // GNOME default blue
     }
+}
+
+/// Resolve the accent color hex from config. Returns the hex string.
+fn resolve_accent_hex(accent_choice: &crate::config::AccentColorChoice) -> String {
+    match accent_choice {
+        crate::config::AccentColorChoice::System => system_accent_hex().to_string(),
+        crate::config::AccentColorChoice::Custom(hex) => hex.clone(),
+        _ => accent_choice.hex().unwrap_or("#3584e4").to_string(),
+    }
+}
+
+/// Reload the CSS with a new accent color. Called when the accent color setting changes.
+fn reload_css_accent(
+    provider: &gtk4::CssProvider,
+    dark_css: &str,
+    light_css: &str,
+    is_dark: bool,
+    accent_hex: &str,
+) {
+    use crate::skin::prepare_css;
+    let css = prepare_css(
+        if is_dark { DARK_CSS_RAW } else { LIGHT_CSS_RAW },
+        accent_hex,
+    );
+    provider.load_from_data(&css);
 }
 
 /// Embedded app logo PNG bytes (compiled into the binary).
@@ -929,9 +956,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // Inject the accent colour at startup so @accent_bg_color always resolves.
     // If the user has configured a custom skin name, try to load it; fall back
     // to the built-in dark or light skin based on AppearanceConfig.theme.
-    let accent = accent_hex();
-    let dark_css_rc = Rc::new(prepare_css(DARK_CSS_RAW, accent));
-    let light_css_rc = Rc::new(prepare_css(LIGHT_CSS_RAW, accent));
+    let accent_hex_initial = resolve_accent_hex(&config.appearance.accent_color);
+    let accent_hex_current = Rc::new(RefCell::new(accent_hex_initial.clone()));
+    let dark_css_rc = Rc::new(prepare_css(DARK_CSS_RAW, &accent_hex_initial));
+    let light_css_rc = Rc::new(prepare_css(LIGHT_CSS_RAW, &accent_hex_initial));
 
     // Determine the initial CSS to load.
     let initial_css = {
@@ -940,7 +968,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let custom = &config.appearance.custom_skin;
         if !custom.is_empty() {
             // Try to load the user-specified skin; fall back to dark on failure.
-            skin::load_prepared(custom, accent).unwrap_or_else(|| dark_css_rc.as_ref().clone())
+            skin::load_prepared(custom, &accent_hex_initial)
+                .unwrap_or_else(|| dark_css_rc.as_ref().clone())
         } else {
             match config.appearance.theme {
                 ThemeChoice::Dark => dark_css_rc.as_ref().clone(),
@@ -957,6 +986,11 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     let dark_mode = Rc::new(Cell::new(true));
+
+    // Clone provider and CSS for use by handlers that need them.
+    let provider_for_settings = provider.clone();
+    let dark_css_for_settings = dark_css_rc.clone();
+    let light_css_for_settings = light_css_rc.clone();
 
     // ── AppState ──────────────────────────────────────────────────────────────
     let state = match AppState::new(playlist, config) {
@@ -1361,29 +1395,11 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 
     window.set_child(Some(&root));
 
-    // ── Left-click on the logo → open settings window ────────────────────────
-    {
-        let state_rc = state.clone();
-        let win_wk = window.downgrade();
-        let lclick = GestureClick::new();
-        lclick.set_button(1); // primary button only
-        lclick.connect_released(move |_, _, _, _| {
-            let parent_win = win_wk.upgrade();
-            open_settings_window(
-                parent_win.as_ref().map(|w| w.upcast_ref()),
-                state_rc.clone(),
-                None,
-            );
-        });
-        logo_img.add_controller(lclick);
-    }
-
     // ── Right-click on the player body → toggle dark / light theme ───────────
     {
         let provider_rc = provider.clone();
         let dark_ref = dark_mode.clone();
-        let dark_css = dark_css_rc.clone();
-        let light_css = light_css_rc.clone();
+        let accent_cell = accent_hex_current.clone();
         let logo_img_rc = logo_img.clone();
         let logo_light_t = logo_light_rc.clone();
         let logo_dark_t = logo_dark_rc.clone();
@@ -1392,7 +1408,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         rclick.connect_released(move |_, _, _, _| {
             let now_dark = !dark_ref.get();
             dark_ref.set(now_dark);
-            provider_rc.load_from_data(if now_dark { &**dark_css } else { &**light_css });
+            let accent_hex = accent_cell.borrow().clone();
+            let css = if now_dark {
+                prepare_css(DARK_CSS_RAW, &accent_hex)
+            } else {
+                prepare_css(LIGHT_CSS_RAW, &accent_hex)
+            };
+            provider_rc.load_from_data(&css);
             // Swap logo to match the new theme.
             if now_dark {
                 if let Some(ref pb) = *logo_dark_t {
@@ -1492,6 +1514,34 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // Shared accent RGBA populated after main window realization by reading the
     // computed color of the hidden .np-title probe label.
     let accent_rgba: Rc<RefCell<Option<gdk::RGBA>>> = Rc::new(RefCell::new(None));
+
+    // ── Left-click on the logo → open settings window ────────────────────────
+    {
+        let state_rc = state.clone();
+        let win_wk = window.downgrade();
+        let dark_mode_clone = dark_mode.clone();
+        let accent_hex_for_settings = accent_hex_current.clone();
+        let accent_rgba_for_settings = accent_rgba.clone();
+        let pl_store_ref = pl_store.clone();
+        let lclick = GestureClick::new();
+        lclick.set_button(1); // primary button only
+        lclick.connect_released(move |_, _, _, _| {
+            let parent_win = win_wk.upgrade();
+            open_settings_window(
+                parent_win.as_ref().map(|w| w.upcast_ref()),
+                state_rc.clone(),
+                None,
+                dark_mode_clone.clone(),
+                accent_hex_for_settings.clone(),
+                accent_rgba_for_settings.clone(),
+                provider_for_settings.clone(),
+                dark_css_for_settings.clone(),
+                light_css_for_settings.clone(),
+                pl_store_ref.clone(),
+            );
+        });
+        logo_img.add_controller(lclick);
+    }
 
     // Track the single-clicked row index (separate from the playing row).
     // usize::MAX means no row is selected.
@@ -2638,7 +2688,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     vol_bar.connect_change_value({
         let state = state.clone();
         move |_, _, value| {
-            state.borrow_mut().player.set_volume(value);
+            let mut s = state.borrow_mut();
+            s.config.playback.volume = value;
+            s.player.set_volume(value);
             glib::Propagation::Proceed
         }
     });
@@ -4855,13 +4907,24 @@ fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf
 /// Filetypes, Media Library.
 ///
 /// Changes made in any tab are written back to `state.config` immediately
-/// when a control's value changes.  Pressing "Save & Close" (or closing the
+/// when a control's value changes.  Pressing "Close" (or closing the
 /// window) persists the config to disk.  `initial_tab` selects the starting
 /// tab page (0-indexed), or opens at the default page if `None`.
+/// `dark_mode` tracks the current theme for CSS reloads.
+/// `accent_hex_current` stores the current accent hex for theme toggles.
+/// `accent_rgba` is updated when accent changes to refresh playlist playing row color.
+/// `pl_store` is used to repaint the playing row when accent changes.
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     initial_tab: Option<u32>,
+    dark_mode: Rc<Cell<bool>>,
+    accent_hex_current: Rc<RefCell<String>>,
+    accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
+    css_provider: Rc<gtk4::CssProvider>,
+    dark_css: Rc<String>,
+    light_css: Rc<String>,
+    pl_store: gtk4::ListStore,
 ) {
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — SparkAmp"));
@@ -4879,6 +4942,8 @@ fn open_settings_window(
 
     // ── Tab 0: Appearance ─────────────────────────────────────────────────
     {
+        use crate::config::{AccentColorChoice, ThemeChoice};
+
         let grid = Grid::new();
         grid.set_row_spacing(12);
         grid.set_column_spacing(16);
@@ -4902,20 +4967,233 @@ fn open_settings_window(
         }
         {
             let state_rc = state.clone();
+            let dark_mode_rc = dark_mode.clone();
+            let provider_rc = css_provider.clone();
+            let dark_css_rc = dark_css.clone();
+            let light_css_rc = light_css.clone();
             dd.connect_selected_notify(move |d| {
-                let mut s = state_rc.borrow_mut();
-                s.config.appearance.theme = match d.selected() {
+                let theme = match d.selected() {
                     0 => ThemeChoice::Dark,
                     _ => ThemeChoice::Light,
                 };
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.appearance.theme = theme.clone();
+                }
+                dark_mode_rc.set(matches!(theme, ThemeChoice::Dark));
+                // Reload CSS with new theme and current accent color.
+                let is_dark = matches!(theme, ThemeChoice::Dark);
+                let accent_hex =
+                    resolve_accent_hex(&state_rc.borrow().config.appearance.accent_color);
+                reload_css_accent(
+                    &provider_rc,
+                    &dark_css_rc,
+                    &light_css_rc,
+                    is_dark,
+                    &accent_hex,
+                );
             });
         }
         grid.attach(&dd, 1, 0, 1, 1);
 
-        // Row 1: Custom skin name (overrides Theme when non-empty).
+        // Row 1: Highlight color dropdown.
+        let accent_color_labels = [
+            "System Default",
+            "Blue",
+            "Green",
+            "Purple",
+            "Red",
+            "Orange",
+            "Yellow",
+            "White",
+            "Grey",
+            "Custom…",
+        ];
+        let lbl_accent = Label::new(Some("Highlight color"));
+        lbl_accent.set_halign(Align::Start);
+        grid.attach(&lbl_accent, 0, 1, 1, 1);
+
+        let dd_accent = DropDown::from_strings(&accent_color_labels);
+        let accent_container = GtkBox::new(Orientation::Horizontal, 4);
+        let custom_color_btn = gtk4::ColorButton::new();
+        custom_color_btn.set_visible(false);
+        accent_container.append(&dd_accent);
+        accent_container.append(&custom_color_btn);
+
+        // Initialize dropdown selection from config.
+        {
+            let accent_choice = state.borrow().config.appearance.accent_color.clone();
+            let custom_hex = match &accent_choice {
+                AccentColorChoice::Custom(hex) => Some(hex.clone()),
+                _ => None,
+            };
+            let selection = match &accent_choice {
+                AccentColorChoice::System => 0,
+                AccentColorChoice::Blue => 1,
+                AccentColorChoice::Green => 2,
+                AccentColorChoice::Purple => 3,
+                AccentColorChoice::Red => 4,
+                AccentColorChoice::Orange => 5,
+                AccentColorChoice::Yellow => 6,
+                AccentColorChoice::White => 7,
+                AccentColorChoice::Grey => 8,
+                AccentColorChoice::Custom(_) => {
+                    custom_color_btn.set_visible(true);
+                    9
+                }
+            };
+            dd_accent.set_selected(selection as u32);
+            if let Some(hex) = custom_hex {
+                if let Ok(color) = gdk::RGBA::parse(&hex) {
+                    custom_color_btn.set_rgba(&color);
+                }
+            }
+        }
+
+        // Handle accent color changes.
+        {
+            let state_rc = state.clone();
+            let provider_rc = css_provider.clone();
+            let dark_css_rc = dark_css.clone();
+            let light_css_rc = light_css.clone();
+            let dark_mode_rc = dark_mode.clone();
+            let accent_cell = accent_hex_current.clone();
+            let accent_rgba_rc = accent_rgba.clone();
+            let custom_btn = custom_color_btn.clone();
+            let pl_store_rc = pl_store.clone();
+
+            dd_accent.connect_selected_notify(move |d| {
+                let selection = d.selected();
+                let (accent_choice, custom_hex) = match selection {
+                    0 => (AccentColorChoice::System, None),
+                    1 => (AccentColorChoice::Blue, None),
+                    2 => (AccentColorChoice::Green, None),
+                    3 => (AccentColorChoice::Purple, None),
+                    4 => (AccentColorChoice::Red, None),
+                    5 => (AccentColorChoice::Orange, None),
+                    6 => (AccentColorChoice::Yellow, None),
+                    7 => (AccentColorChoice::White, None),
+                    8 => (AccentColorChoice::Grey, None),
+                    _ => {
+                        // Custom: read from color button
+                        let rgba = custom_btn.rgba();
+                        let hex = format!(
+                            "#{:02x}{:02x}{:02x}",
+                            (rgba.red() * 255.0) as u8,
+                            (rgba.green() * 255.0) as u8,
+                            (rgba.blue() * 255.0) as u8
+                        );
+                        (AccentColorChoice::Custom(hex.clone()), Some(hex))
+                    }
+                };
+
+                // Show/hide custom color button.
+                custom_btn.set_visible(selection == 9);
+
+                // Update config.
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.appearance.accent_color = accent_choice.clone();
+                }
+
+                // Reload CSS with new accent color.
+                let is_dark = dark_mode_rc.get();
+                let accent_hex = resolve_accent_hex(&accent_choice);
+                *accent_cell.borrow_mut() = accent_hex.clone();
+                reload_css_accent(
+                    &provider_rc,
+                    &dark_css_rc,
+                    &light_css_rc,
+                    is_dark,
+                    &accent_hex,
+                );
+                // Update accent_rgba for playlist playing row color
+                if let Ok(rgba) = gdk::RGBA::parse(&accent_hex) {
+                    *accent_rgba_rc.borrow_mut() = Some(rgba);
+                }
+                // Repaint the currently playing row with new accent color
+                let playing_idx = state_rc.borrow().playlist.current_index;
+                let is_playing = matches!(
+                    *state_rc.borrow().player.state(),
+                    PlayerState::Playing | PlayerState::Paused
+                );
+                if is_playing && !state_rc.borrow().playlist.is_empty() {
+                    if let Some(iter) = pl_store_rc.iter_nth_child(None, playing_idx as i32) {
+                        let rgba = accent_rgba_rc
+                            .borrow()
+                            .clone()
+                            .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
+                        #[allow(deprecated)]
+                        pl_store_rc.set_value(&iter, 4, &rgba.to_value());
+                    }
+                }
+            });
+
+            // Handle custom color button changes.
+            {
+                let state_rc2 = state.clone();
+                let provider_rc2 = css_provider.clone();
+                let dark_css_rc2 = dark_css.clone();
+                let light_css_rc2 = light_css.clone();
+                let dark_mode_rc2 = dark_mode.clone();
+                let accent_cell2 = accent_hex_current.clone();
+                let accent_rgba_rc2 = accent_rgba.clone();
+                let pl_store_rc2 = pl_store.clone();
+                custom_color_btn.connect_color_set(move |btn| {
+                    let rgba = btn.rgba();
+                    let hex = format!(
+                        "#{:02x}{:02x}{:02x}",
+                        (rgba.red() * 255.0) as u8,
+                        (rgba.green() * 255.0) as u8,
+                        (rgba.blue() * 255.0) as u8
+                    );
+                    let accent_choice = AccentColorChoice::Custom(hex.clone());
+
+                    // Update config.
+                    {
+                        let mut s = state_rc2.borrow_mut();
+                        s.config.appearance.accent_color = accent_choice.clone();
+                    }
+
+                    // Reload CSS with new accent color.
+                    let is_dark = dark_mode_rc2.get();
+                    let accent_hex = resolve_accent_hex(&accent_choice);
+                    *accent_cell2.borrow_mut() = accent_hex.clone();
+                    reload_css_accent(
+                        &provider_rc2,
+                        &dark_css_rc2,
+                        &light_css_rc2,
+                        is_dark,
+                        &accent_hex,
+                    );
+                    // Update accent_rgba for playlist playing row color
+                    *accent_rgba_rc2.borrow_mut() = Some(rgba.clone());
+                    // Repaint the currently playing row with new accent color
+                    let playing_idx = state_rc2.borrow().playlist.current_index;
+                    let is_playing = matches!(
+                        *state_rc2.borrow().player.state(),
+                        PlayerState::Playing | PlayerState::Paused
+                    );
+                    if is_playing && !state_rc2.borrow().playlist.is_empty() {
+                        if let Some(iter) = pl_store_rc2.iter_nth_child(None, playing_idx as i32) {
+                            #[allow(deprecated)]
+                            let rgba = accent_rgba_rc2
+                                .borrow()
+                                .clone()
+                                .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
+                            #[allow(deprecated)]
+                            pl_store_rc2.set_value(&iter, 4, &rgba.to_value());
+                        }
+                    }
+                });
+            }
+        }
+        grid.attach(&accent_container, 1, 1, 1, 1);
+
+        // Row 2: Custom skin name (overrides Theme when non-empty).
         let lbl_skin = Label::new(Some("Custom skin name"));
         lbl_skin.set_halign(Align::Start);
-        grid.attach(&lbl_skin, 0, 1, 1, 1);
+        grid.attach(&lbl_skin, 0, 2, 1, 1);
 
         let entry_skin = Entry::new();
         entry_skin.set_text(&state.borrow().config.appearance.custom_skin);
@@ -4927,7 +5205,7 @@ fn open_settings_window(
                 state_rc.borrow_mut().config.appearance.custom_skin = e.text().to_string();
             });
         }
-        grid.attach(&entry_skin, 1, 1, 1, 1);
+        grid.attach(&entry_skin, 1, 2, 1, 1);
 
         let tab_lbl = Label::new(Some("Appearance"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -4935,6 +5213,8 @@ fn open_settings_window(
 
     // ── Tab 1: Behavior ───────────────────────────────────────────────────
     {
+        use crate::config::PlaylistAddBehavior;
+
         let grid = Grid::new();
         grid.set_row_spacing(12);
         grid.set_column_spacing(16);
@@ -4956,6 +5236,31 @@ fn open_settings_window(
             });
         }
         grid.attach(&chk, 1, 0, 1, 1);
+
+        // Row 1: Default playlist behavior for media library add.
+        let lbl_add = Label::new(Some("Media library → playlist"));
+        lbl_add.set_halign(Align::Start);
+        grid.attach(&lbl_add, 0, 1, 1, 1);
+
+        let dd_add = DropDown::from_strings(&["Append to current", "Replace current"]);
+        {
+            let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+            dd_add.set_selected(match behavior {
+                PlaylistAddBehavior::Append => 0,
+                PlaylistAddBehavior::Replace => 1,
+            });
+        }
+        {
+            let state_rc = state.clone();
+            dd_add.connect_selected_notify(move |d| {
+                let behavior = match d.selected() {
+                    1 => PlaylistAddBehavior::Replace,
+                    _ => PlaylistAddBehavior::Append,
+                };
+                state_rc.borrow_mut().config.behavior.playlist_add_behavior = behavior;
+            });
+        }
+        grid.attach(&dd_add, 1, 1, 1, 1);
 
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -5271,6 +5576,185 @@ fn open_settings_window(
         grid.attach(&folder_scroll, 0, 1, 4, 1);
         grid.attach(&status_lbl, 0, 2, 4, 1);
 
+        // Row 3: Rescan button (shares state with media library window).
+        let lbl_rescan = Label::new(Some("Scan:"));
+        lbl_rescan.set_halign(Align::Start);
+
+        let btn_rescan = Button::with_label("⟳ Rescan");
+        let btn_cancel_scan = Button::with_label("✕ Cancel Scan");
+        btn_cancel_scan.set_visible(false);
+
+        let status_scan = Label::new(None);
+        status_scan.set_halign(Align::Start);
+        status_scan.add_css_class("dim-label");
+
+        // Update button visibility based on scan state.
+        // Clone references for the closure to avoid moving the originals.
+        let state_rc_for_update = state.clone();
+        let btn_rescan_ref = btn_rescan.clone();
+        let btn_cancel_ref = btn_cancel_scan.clone();
+        let status_ref = status_scan.clone();
+        let update_scan_ui = Rc::new(move || {
+            let scan_state = state_rc_for_update.borrow().ml_scan.clone();
+            if let Some(scan) = scan_state {
+                btn_rescan_ref.set_visible(false);
+                btn_cancel_ref.set_visible(true);
+                if scan.total > 0 {
+                    status_ref.set_text(&format!("Scanning {} / {}…", scan.current, scan.total));
+                } else {
+                    status_ref.set_text("Scanning…");
+                }
+            } else {
+                btn_rescan_ref.set_visible(true);
+                btn_cancel_ref.set_visible(false);
+                status_ref.set_text("");
+            }
+        });
+
+        // Initial UI state.
+        update_scan_ui();
+
+        // Refresh scan UI when this tab is shown.
+        {
+            let update_cb = update_scan_ui.clone();
+            notebook.connect_switch_page(move |_, _, _| {
+                update_cb();
+            });
+        }
+
+        // Rescan button: trigger a full rescan of all watched folders.
+        // Note: This shares state with the media library window via state.ml_scan.
+        {
+            let state_rc = state.clone();
+            // Clone all variables for use in closures.
+            let btn_rescan_ref = btn_rescan.clone();
+            let btn_cancel_ref = btn_cancel_scan.clone();
+            let status_ref = status_scan.clone();
+            let update_ui_ref = update_scan_ui.clone();
+            let btn_rescan_for_timeout = btn_rescan.clone();
+            let btn_cancel_for_timeout = btn_cancel_scan.clone();
+            let status_for_timeout = status_scan.clone();
+            let update_for_timeout = update_scan_ui.clone();
+
+            btn_rescan.connect_clicked(move |_| {
+                // Check if a scan is already running.
+                if state_rc.borrow().ml_scan.is_some() {
+                    status_ref.set_text("Scan already in progress");
+                    return;
+                }
+                if state_rc.borrow().media_lib.is_none() {
+                    status_ref.set_text("Error: Media library not available");
+                    return;
+                }
+
+                // Get db path before borrow.
+                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+
+                // Set up shared scan state.
+                let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.ml_scan = Some(ScanState {
+                        scan_type: ScanType::Rescan,
+                        current: 0,
+                        total: 0,
+                        cancel: cancel_flag.clone(),
+                    });
+                }
+                update_ui_ref();
+                btn_rescan_ref.set_sensitive(false);
+                btn_cancel_ref.set_visible(true);
+
+                state_rc
+                    .borrow()
+                    .pending_bg_ops
+                    .set(state_rc.borrow().pending_bg_ops.get() + 1);
+
+                let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+                std::thread::spawn(move || {
+                    let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            let _ = result_tx.send(Err(format!("DB error: {e}")));
+                            return;
+                        }
+                    };
+                    let result = lib
+                        .scan_all_folders(&cancel_flag, |current, total| {
+                            let _ = progress_tx.send((current, total));
+                        })
+                        .map_err(|e| e.to_string());
+                    let _ = result_tx.send(result);
+                });
+
+                let progress_rx = std::cell::RefCell::new(progress_rx);
+                let result_rx = std::cell::RefCell::new(result_rx);
+                let state_rc2 = state_rc.clone();
+                // Clone for the timeout closure.
+                let status_for_timeout2 = status_for_timeout.clone();
+                let btn_rescan_for_timeout2 = btn_rescan_for_timeout.clone();
+                let btn_cancel_for_timeout2 = btn_cancel_for_timeout.clone();
+                let update_for_timeout2 = update_for_timeout.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                    // Check for progress updates
+                    while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            if let Some(ref mut scan) = s.ml_scan {
+                                scan.current = current;
+                                scan.total = total;
+                            }
+                        }
+                        status_for_timeout2.set_text(&format!("Scanning {}/{}…", current, total));
+                    }
+
+                    // Check for completion
+                    if let Ok(result) = result_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            s.ml_scan = None;
+                        }
+                        match result {
+                            Err(e) => status_for_timeout2.set_text(&format!("Rescan error: {}", e)),
+                            Ok(_) => status_for_timeout2.set_text("Scan complete"),
+                        }
+                        btn_rescan_for_timeout2.set_sensitive(true);
+                        btn_cancel_for_timeout2.set_visible(false);
+                        update_for_timeout2();
+                        state_rc2
+                            .borrow()
+                            .pending_bg_ops
+                            .set(state_rc2.borrow().pending_bg_ops.get() - 1);
+                        glib::ControlFlow::Break
+                    } else {
+                        glib::ControlFlow::Continue
+                    }
+                });
+            });
+        }
+
+        // Cancel scan button.
+        {
+            let state_rc = state.clone();
+            let update_ui = update_scan_ui.clone();
+            let status_ref = status_scan.clone();
+            btn_cancel_scan.connect_clicked(move |_| {
+                if let Some(ref scan) = state_rc.borrow().ml_scan {
+                    scan.cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    status_ref.set_text("Cancelling…");
+                }
+                update_ui();
+            });
+        }
+
+        grid.attach(&lbl_rescan, 0, 3, 1, 1);
+        grid.attach(&btn_rescan, 1, 3, 1, 1);
+        grid.attach(&btn_cancel_scan, 1, 3, 1, 1);
+        grid.attach(&status_scan, 2, 3, 2, 1);
+
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
@@ -5280,25 +5764,24 @@ fn open_settings_window(
         notebook.set_current_page(Some(tab));
     }
 
-    // ── Save & Close button ───────────────────────────────────────────────
-    let save_btn = Button::with_label("Save & Close");
-    save_btn.set_margin_top(4);
-    save_btn.set_margin_bottom(8);
-    save_btn.set_margin_start(8);
-    save_btn.set_margin_end(8);
-    save_btn.set_halign(Align::End);
+    // ── Close button ───────────────────────────────────────────────────────
+    // Changes are applied immediately; this button just closes the window.
+    let close_btn = Button::with_label("Close");
+    close_btn.set_margin_top(4);
+    close_btn.set_margin_bottom(8);
+    close_btn.set_margin_start(8);
+    close_btn.set_margin_end(8);
+    close_btn.set_halign(Align::End);
     {
-        let state_rc = state.clone();
         let win_wk = win.downgrade();
-        save_btn.connect_clicked(move |_| {
-            let _ = state_rc.borrow().config.save();
+        close_btn.connect_clicked(move |_| {
             if let Some(w) = win_wk.upgrade() {
                 w.close();
             }
         });
     }
 
-    // Also save when the window is closed via the window-manager button.
+    // Save when the window is closed via the window-manager button.
     {
         let state_rc = state.clone();
         win.connect_close_request(move |_| {
@@ -5309,7 +5792,7 @@ fn open_settings_window(
 
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&notebook);
-    vbox.append(&save_btn);
+    vbox.append(&close_btn);
     win.set_child(Some(&vbox));
     win.present();
 }
@@ -5386,6 +5869,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     let init_preamp = state.borrow().config.equalizer.preamp.clamp(0.5, 1.5);
     let preamp_adj = Adjustment::new(init_preamp, 0.5, 1.5, 0.01, 0.1, 0.0);
     let preamp_scale = Scale::new(Orientation::Horizontal, Some(&preamp_adj));
+    preamp_scale.add_css_class("eq-scale");
     preamp_scale.set_hexpand(true);
     preamp_scale.set_draw_value(false);
     preamp_scale.add_mark(0.5, gtk4::PositionType::Bottom, Some("50%"));
@@ -5443,6 +5927,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
         // Vertical scale: range −24..+12, step 1, page 3.
         let adj = Adjustment::new(bands_snapshot[i], -24.0, 12.0, 1.0, 3.0, 0.0);
         let scale = Scale::new(Orientation::Vertical, Some(&adj));
+        scale.add_css_class("eq-scale");
         scale.set_inverted(true); // top = positive, bottom = negative
         scale.set_draw_value(false);
         scale.set_vexpand(true);
@@ -5977,6 +6462,7 @@ fn open_media_library_window(
         let sort_model = SortListModel::new(Some(track_store.clone()), None::<gtk4::Sorter>);
         let multi_sel = MultiSelection::new(Some(sort_model.clone()));
         let col_view = ColumnView::new(Some(multi_sel.clone()));
+        col_view.add_css_class("ml-col-view");
         col_view.set_show_row_separators(true);
         col_view.set_show_column_separators(true);
         col_view.set_hexpand(true);
@@ -6074,17 +6560,25 @@ fn open_media_library_window(
                         let Some(boxed) = item.downcast::<glib::BoxedAnyObject>().ok() else {
                             return;
                         };
-                        let track = boxed.borrow::<crate::media_library::LibTrack>();
+                        let _track = boxed.borrow::<crate::media_library::LibTrack>();
 
-                        // Select only this item in the selection model
-                        let n_items = sel_gest.n_items();
-                        for i in 0..n_items {
+                        // Find the index of the clicked item by checking each item
+                        let mut clicked_index: Option<u32> = None;
+                        for i in 0..sel_gest.n_items() {
                             if let Some(model_item) = sel_gest.item(i) {
                                 if model_item == item_clone {
-                                    sel_gest.unselect_all();
-                                    sel_gest.select_item(i, true);
+                                    clicked_index = Some(i);
                                     break;
                                 }
+                            }
+                        }
+
+                        // Only change selection if clicked on non-selected item
+                        // This preserves multi-selection when right-clicking on selected items
+                        if let Some(idx) = clicked_index {
+                            if !sel_gest.is_selected(idx) {
+                                sel_gest.unselect_all();
+                                sel_gest.select_item(idx, true);
                             }
                         }
 
@@ -6119,13 +6613,14 @@ fn open_media_library_window(
                         vbox.set_margin_start(4);
                         vbox.set_margin_end(4);
 
-                        // Add to Playlist
-                        let btn_add = Button::with_label("Add to Playlist");
+                        // Append to Playlist
+                        let btn_add = Button::with_label("Append to Playlist");
                         let state_add = state_gest.clone();
                         let sel_add = sel_gest.clone();
                         let rebuild_add = rebuild_pl_gest.clone();
                         let popover_add = popover.clone();
                         btn_add.connect_clicked(move |_btn| {
+                            let was_empty = state_add.borrow().playlist.is_empty();
                             for i in 0..sel_add.n_items() {
                                 if sel_add.is_selected(i) {
                                     if let Some(obj) = sel_add
@@ -6138,10 +6633,47 @@ fn open_media_library_window(
                                     }
                                 }
                             }
+                            if state_add.borrow().config.behavior.autoplay_on_add && was_empty {
+                                state_add.borrow_mut().play_current();
+                            }
                             rebuild_add();
                             popover_add.unparent();
                         });
                         vbox.append(&btn_add);
+
+                        // Replace current playlist
+                        let btn_replace = Button::with_label("Replace current playlist");
+                        let state_replace = state_gest.clone();
+                        let sel_replace = sel_gest.clone();
+                        let rebuild_replace = rebuild_pl_gest.clone();
+                        let popover_replace = popover.clone();
+                        btn_replace.connect_clicked(move |_btn| {
+                            // Stop current playback first (always, regardless of autoplay setting)
+                            let _ = state_replace.borrow_mut().player.stop();
+                            // Clear the playlist first.
+                            state_replace.borrow_mut().playlist.clear();
+                            for i in 0..sel_replace.n_items() {
+                                if sel_replace.is_selected(i) {
+                                    if let Some(obj) = sel_replace
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        let track = libtrack_to_track(&t);
+                                        state_replace.borrow_mut().playlist.add(track);
+                                    }
+                                }
+                            }
+                            // Autoplay if setting is enabled and there are new tracks
+                            if state_replace.borrow().config.behavior.autoplay_on_add
+                                && !state_replace.borrow().playlist.is_empty()
+                            {
+                                state_replace.borrow_mut().play_current();
+                            }
+                            rebuild_replace();
+                            popover_replace.unparent();
+                        });
+                        vbox.append(&btn_replace);
 
                         // View/Edit ID3 Info
                         let btn_id3 = Button::with_label("View/Edit ID3 Info");
@@ -6492,6 +7024,12 @@ fn open_media_library_window(
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
             Rc::new(move || {
+                let was_empty = state_rc.borrow().playlist.is_empty();
+                let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
+                    == crate::config::PlaylistAddBehavior::Replace;
+                if should_replace {
+                    state_rc.borrow_mut().playlist.clear();
+                }
                 let mut added = 0usize;
                 for i in 0..sel_ref.n_items() {
                     if sel_ref.is_selected(i) {
@@ -6507,6 +7045,9 @@ fn open_media_library_window(
                     }
                 }
                 if added > 0 {
+                    if state_rc.borrow().config.behavior.autoplay_on_add && was_empty {
+                        state_rc.borrow_mut().play_current();
+                    }
                     rebuild_pl();
                 }
             })
@@ -6529,9 +7070,18 @@ fn open_media_library_window(
                     .item(pos)
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                 {
+                    let was_empty = state_rc.borrow().playlist.is_empty();
                     let t = obj.borrow::<crate::media_library::LibTrack>();
                     let track = libtrack_to_track(&t);
+                    let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
+                        == crate::config::PlaylistAddBehavior::Replace;
+                    if should_replace {
+                        state_rc.borrow_mut().playlist.clear();
+                    }
                     state_rc.borrow_mut().playlist.add(track);
+                    if state_rc.borrow().config.behavior.autoplay_on_add && was_empty {
+                        state_rc.borrow_mut().play_current();
+                    }
                     rebuild_pl();
                 }
             });

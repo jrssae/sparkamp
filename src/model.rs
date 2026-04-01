@@ -411,6 +411,12 @@ impl Playlist {
         self.tracks.push(track);
     }
 
+    /// Clear all tracks from the playlist, resetting current_index to 0.
+    pub fn clear(&mut self) {
+        self.tracks.clear();
+        self.current_index = 0;
+    }
+
     /// Return `true` if the playlist contains no tracks.
     pub fn is_empty(&self) -> bool {
         self.tracks.is_empty()
@@ -730,7 +736,14 @@ impl Playlist {
     ) {
         std::thread::spawn(move || {
             let files = Self::collect_audio_files_extended(&folder, &extra_extensions);
-            Self::scan_paths_in_thread(files, cancel, fast_tx, metadata_tx, done_tx, phase1_done_tx);
+            Self::scan_paths_in_thread(
+                files,
+                cancel,
+                fast_tx,
+                metadata_tx,
+                done_tx,
+                phase1_done_tx,
+            );
         });
     }
 
@@ -750,7 +763,14 @@ impl Playlist {
         phase1_done_tx: std::sync::mpsc::Sender<usize>,
     ) {
         std::thread::spawn(move || {
-            Self::scan_paths_in_thread(files, cancel, fast_tx, metadata_tx, done_tx, phase1_done_tx);
+            Self::scan_paths_in_thread(
+                files,
+                cancel,
+                fast_tx,
+                metadata_tx,
+                done_tx,
+                phase1_done_tx,
+            );
         });
     }
 
@@ -1289,9 +1309,15 @@ mod tests {
         fast_rx: std::sync::mpsc::Receiver<Track>,
         meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
         done_rx: std::sync::mpsc::Receiver<usize>,
-    ) -> (Vec<Track>, Vec<(usize, String, String, String, String)>, usize) {
+    ) -> (
+        Vec<Track>,
+        Vec<(usize, String, String, String, String)>,
+        usize,
+    ) {
         let timeout = std::time::Duration::from_secs(5);
-        let total = done_rx.recv_timeout(timeout).expect("scan did not complete");
+        let total = done_rx
+            .recv_timeout(timeout)
+            .expect("scan did not complete");
         let fast: Vec<_> = fast_rx.try_iter().collect();
         let meta: Vec<_> = meta_rx.try_iter().collect();
         (fast, meta, total)
@@ -1328,7 +1354,14 @@ mod tests {
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(paths.clone(), cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+        Playlist::scan_files_for_ui(
+            paths.clone(),
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
         let (fast, _meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
 
         assert_eq!(total, 3);
@@ -1353,7 +1386,14 @@ mod tests {
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(paths.clone(), cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+        Playlist::scan_files_for_ui(
+            paths.clone(),
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
         let (fast, meta, _total) = drain_scan(fast_rx, meta_rx, done_rx);
 
         assert_eq!(fast.len(), 3, "expected 3 fast tracks");
@@ -1381,7 +1421,14 @@ mod tests {
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(paths.clone(), cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+        Playlist::scan_files_for_ui(
+            paths.clone(),
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
         let (fast, meta, _total) = drain_scan(fast_rx, meta_rx, done_rx);
 
         // For each metadata update, the index should point at the fast track for
@@ -1390,7 +1437,10 @@ mod tests {
             let fast_title = &fast[*idx].title;
             // Both title (from from_path) and fast title (from from_path_fast)
             // fall back to the filename stem, so they must match.
-            assert_eq!(fast_title, title, "metadata index {idx} should match fast track title");
+            assert_eq!(
+                fast_title, title,
+                "metadata index {idx} should match fast track title"
+            );
         }
     }
 
@@ -1416,13 +1466,21 @@ mod tests {
         Playlist::scan_files_for_ui(paths, cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
 
         let timeout = std::time::Duration::from_secs(5);
-        let total = done_rx.recv_timeout(timeout).expect("scan did not send done");
+        let total = done_rx
+            .recv_timeout(timeout)
+            .expect("scan did not send done");
         // With cancel pre-set, at most 0 fast tracks should have been sent.
         let fast: Vec<_> = fast_rx.try_iter().collect();
-        assert!(fast.len() <= total, "fast tracks must not exceed done count");
+        assert!(
+            fast.len() <= total,
+            "fast tracks must not exceed done count"
+        );
         // No metadata should have been sent since Phase 1 was aborted.
         let meta: Vec<_> = meta_rx.try_iter().collect();
-        assert!(meta.is_empty(), "no metadata expected when cancelled before Phase 2");
+        assert!(
+            meta.is_empty(),
+            "no metadata expected when cancelled before Phase 2"
+        );
     }
 
     #[test]
@@ -1433,7 +1491,15 @@ mod tests {
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_folder_for_ui(dir.path().to_path_buf(), vec![], cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+        Playlist::scan_folder_for_ui(
+            dir.path().to_path_buf(),
+            vec![],
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
         let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
         assert_eq!(total, 0);
         assert!(fast.is_empty());
@@ -1452,7 +1518,15 @@ mod tests {
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_folder_for_ui(dir.path().to_path_buf(), vec![], cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+        Playlist::scan_folder_for_ui(
+            dir.path().to_path_buf(),
+            vec![],
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
         let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
 
         assert_eq!(total, 2, "only the two audio files should be scanned");
