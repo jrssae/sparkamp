@@ -690,25 +690,14 @@ impl Playlist {
         // All Phase 1 tracks have been sent; tell the poller it can now treat an
         // empty fast_rx as "exhausted" rather than "not started yet".
         let _ = phase1_done_tx.send(successful.len());
-        eprintln!("[DBG scan] Phase 1 done: {} fast tracks sent", successful.len());
 
         // Phase 2: read full metadata for each successfully-added fast track and
         // send by index so the receiver can patch the playlist in O(1).
-        let phase2_start = std::time::Instant::now();
-        let mut meta_sent = 0usize;
         for (idx, path) in successful.iter().enumerate() {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("[DBG scan] Phase 2 cancelled at {}/{}", idx, successful.len());
                 break;
             }
-            let t0 = std::time::Instant::now();
-            let result = Track::from_path(path);
-            let elapsed = t0.elapsed().as_millis();
-            if elapsed > 100 {
-                eprintln!("[DBG scan] SLOW from_path idx={idx} file={:?} took {elapsed}ms",
-                    path.file_name().unwrap_or_default());
-            }
-            if let Ok(track) = result {
+            if let Ok(track) = Track::from_path(path) {
                 let _ = metadata_tx.send((
                     idx,
                     track.title,
@@ -716,15 +705,8 @@ impl Playlist {
                     track.album_artist,
                     track.album,
                 ));
-                meta_sent += 1;
-                if meta_sent % 500 == 0 {
-                    eprintln!("[DBG scan] Phase 2: sent {}/{} meta in {:.1}s",
-                        meta_sent, successful.len(), phase2_start.elapsed().as_secs_f32());
-                }
             }
         }
-        eprintln!("[DBG scan] Phase 2 done: {}/{} meta sent in {:.1}s",
-            meta_sent, successful.len(), phase2_start.elapsed().as_secs_f32());
 
         let _ = done_tx.send(successful.len());
     }

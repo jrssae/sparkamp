@@ -112,6 +112,9 @@ scale.vol-scale slider {
     margin: -4px;
 }
 
+/* Main playlist — GtkTreeView.  TreeView rows use "cell" not "label" nodes,
+   so text colour is set on the cell node.  Playing (▶) and broken (⚠) state
+   is encoded in the display text so no class-based overrides are needed. */
 .playlist {
     background-color: #141414;
 }
@@ -121,7 +124,7 @@ scale.vol-scale slider {
     border-bottom: 1px solid #222222;
 }
 
-.playlist row label {
+.playlist cell {
     color: #cccccc;
     font-size: 12px;
 }
@@ -130,13 +133,8 @@ scale.vol-scale slider {
     background-color: alpha(@accent_bg_color, 0.2);
 }
 
-.playlist row:selected label {
+.playlist row:selected cell {
     color: @accent_bg_color;
-}
-
-.playlist row.playing label {
-    color: @accent_bg_color;
-    font-weight: bold;
 }
 
 .status-label {
@@ -281,11 +279,8 @@ button.pl-btn.destructive:hover {
     padding: 2px 4px;
 }
 
-/* Broken / unavailable playlist row */
-.playlist row.broken label {
-    color: #884444;
-    font-style: italic;
-}
+/* Broken / unavailable playlist row — ⚠ prefix is shown in the display text;
+   no class-based override needed for TreeView (would require cell data func). */
 
 /* Media library sidebar navigation */
 .ml-sidebar {

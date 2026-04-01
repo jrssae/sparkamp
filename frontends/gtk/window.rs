@@ -29,12 +29,14 @@
 use anyhow::Result;
 use glib::ControlFlow;
 use gtk4::prelude::*;
+#[allow(deprecated)] // CellRendererText, ListStore, TreeView, TreeViewColumn deprecated since 4.10
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
-    Button, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource, DrawingArea,
-    DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image, Label, ListBox,
-    ListBoxRow, MultiSelection, Notebook, Orientation, PolicyType, Popover, Scale, ScrolledWindow,
-    Separator, SignalListItemFactory, SortListModel, Stack, StackTransitionType,
+    Button, CellRendererText, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource,
+    DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image,
+    Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType,
+    Popover, Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack,
+    StackTransitionType, TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -52,6 +54,7 @@ use crate::{
     shuffle::ShuffleState,
     viz_plugin::{load_plugins_from_dir, VizPlugin},
 };
+
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -384,10 +387,12 @@ impl AppState {
             .collect()
     }
 
-    fn apply_probed_duration(&mut self, path: &std::path::PathBuf, dur: Duration) {
-        for track in &mut self.playlist.tracks {
+    fn apply_probed_duration(&mut self, path: &std::path::PathBuf, dur: Duration) -> Option<usize> {
+        let mut found_idx = None;
+        for (i, track) in self.playlist.tracks.iter_mut().enumerate() {
             if &track.path == path {
                 track.duration = Some(dur);
+                found_idx = Some(i);
                 break;
             }
         }
@@ -399,6 +404,7 @@ impl AppState {
                 self.last_duration = Some(dur);
             }
         }
+        found_idx
     }
 
     /// Format a time display string for the given seek `fraction` [0.0, 1.0].
@@ -729,7 +735,7 @@ fn start_playlist_scan_poller(
     cancel_btn: Button,
     probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
     broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
-    playlist_box: gtk4::ListBox,
+    patch_row: std::rc::Rc<dyn Fn(usize)>,
     fast_rx: std::sync::mpsc::Receiver<crate::model::Track>,
     meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
     done_rx: std::sync::mpsc::Receiver<usize>,
@@ -754,30 +760,17 @@ fn start_playlist_scan_poller(
     // Set when done_rx fires; we keep polling until meta_rx is also empty.
     let completion_pending = Cell::new(false);
     // True once we have done the one intermediate rebuild that shows initial filenames.
-    let first_display_done = Cell::new(false);
-    // Debug: tick counter and start time.
-    let tick_count = Cell::new(0u64);
-    let poller_start = std::time::Instant::now();
-    // Debug: total meta applied across all ticks.
-    let meta_total_applied = Cell::new(0usize);
+    let phase1_rebuilt = Cell::new(false);
 
-    // NOTE: GtkListBox.append() is O(n) — each append relays out the visible
-    // portion of the list, costing proportionally more as the list grows.
-    // For 30k tracks this becomes O(n²) ≈ 5 minutes; the OS kills the process.
-    // Phase 1 and Phase 2 therefore update only the in-memory model; the
-    // playlist ListBox is rebuilt once at the end (bounded by MAX_DISPLAY in
-    // rebuild_playlist).  A GtkListView migration is the correct long-term fix.
-    let _ = &playlist_box; // retained as parameter for future GtkListView work
+    // Phase 1 and Phase 2 update only the in-memory model during the scan.
+    // The TreeView is rebuilt once after Phase 1 (first_display) and again at
+    // FINALISING.  Because TreeView virtualizes rows, a full rebuild() is O(n)
+    // in data and O(visible_rows) in paint cost — no row cap needed.
 
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        let tick = tick_count.get() + 1;
-        tick_count.set(tick);
-        let t_tick = std::time::Instant::now();
-
-        // ── Phase 1: add tracks to the model only (no widget creation) ────
-        // Widget creation is skipped here because ListBox.append() is O(n):
-        // adding 500 rows at n=9 000 already takes 2.8 s per tick, making
-        // the total O(n²) for large playlists.  See CLAUDE.md for details.
+        // ── Phase 1: add tracks to the in-memory model ───────────────────
+        // We update the model here and let the TreeView render whatever is
+        // visible on demand — no O(n²) layout penalty from per-row widgets.
 
         // Check whether the scan thread has finished sending all Phase 1 tracks.
         // We must receive this signal before treating an empty fast_rx as truly
@@ -785,19 +778,19 @@ fn start_playlist_scan_poller(
         // momentarily empty while the scan thread is still walking the directory.
         if !phase1_signal_received.get() && phase1_done_rx.try_recv().is_ok() {
             phase1_signal_received.set(true);
-            eprintln!("[DBG poller] tick={tick}  phase1 signal received, fast_added_so_far={}",
-                fast_added.get());
         }
 
         let p1_before = fast_added.get();
         if !fast_exhausted.get() {
-            let mut drained = 0usize;
-            while drained < 500 {
+            // Drain all available fast tracks with no per-tick cap.  The scan
+            // thread produces them almost instantly (filesystem stat + canonicalize
+            // only), so all tracks usually land in the channel within the first
+            // 100 ms and are consumed in a single tick.
+            loop {
                 match fast_rx.try_recv() {
                     Ok(track) => {
                         state.borrow_mut().playlist.add(track);
                         fast_added.set(fast_added.get() + 1);
-                        drained += 1;
                     }
                     Err(_) => {
                         // Channel temporarily empty.  Only mark Phase 1 exhausted if
@@ -806,27 +799,20 @@ fn start_playlist_scan_poller(
                         // will arrive on a future tick.
                         if phase1_signal_received.get() {
                             fast_exhausted.set(true);
-                            eprintln!("[DBG poller] tick={tick}  fast_exhausted=true, total={}",
-                                fast_added.get());
                         }
                         break;
                     }
                 }
             }
-            if drained > 0 {
+            if fast_added.get() > p1_before {
                 status.set_text(&format!("Adding {}…", fast_added.get()));
             }
         }
-        let p1_added_this_tick = fast_added.get() - p1_before;
-        let t_after_p1 = t_tick.elapsed();
-
-        // Show the first batch of filenames as soon as any tracks are in the model.
-        // We do this exactly once so the playlist isn't empty for the full duration
-        // of Phase 1.  Subsequent ticks keep building the model silently; the final
-        // rebuild() at completion shows everything with metadata applied.
-        if !first_display_done.get() && fast_added.get() > 0 {
-            first_display_done.set(true);
-            eprintln!("[DBG poller] tick={tick}  first display rebuild at {} tracks", fast_added.get());
+        // Rebuild to show all Phase 1 filenames once the channel is drained.
+        // Phase 2 starts immediately after and updates rows in place via
+        // patch_row(), so the user sees names replace filenames live.
+        if !phase1_rebuilt.get() && fast_exhausted.get() {
+            phase1_rebuilt.set(true);
             rebuild();
         }
 
@@ -841,15 +827,11 @@ fn start_playlist_scan_poller(
             if total > 0 {
                 status.set_text(&format!("Reading tags… 0/{}", total));
             }
-            eprintln!("[DBG poller] tick={tick} t={:.2}s  Phase1->Phase2: probes spawned, total fast={total}",
-                poller_start.elapsed().as_secs_f32());
         }
 
-        // ── Phase 2: apply metadata to the model only (no widget updates) ─
-        // Row label updates are skipped for the same reason: row_at_index on
-        // a large ListBox is also O(n).  The final rebuild() will show all
-        // metadata correctly once the scan finishes.
-        let t_p2_start = std::time::Instant::now();
+        // ── Phase 2: apply metadata and update individual rows ───────────
+        // patch_pl_row is O(1) per call: it finds the store iter by position
+        // and updates that row's text in place, so live updates are cheap.
         let mut meta_drained = 0usize;
         while meta_drained < 200 {
             let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() else {
@@ -868,11 +850,10 @@ fn start_playlist_scan_poller(
                     scan.current += 1;
                 }
             }
+            // Update just this row in the ListView store; O(1), no full rebuild needed.
+            patch_row(playlist_idx);
             meta_drained += 1;
         }
-        meta_total_applied.set(meta_total_applied.get() + meta_drained);
-        let t_p2_elapsed_ms = t_p2_start.elapsed().as_millis();
-
         // Update the status label with metadata progress.
         if meta_drained > 0 {
             let s = state.borrow();
@@ -882,24 +863,9 @@ fn start_playlist_scan_poller(
             status.set_text(&format!("Reading tags… {}/{}", current, total));
         }
 
-        // Per-tick summary — printed every tick to detect stalls.
-        eprintln!(
-            "[DBG poller] tick={tick} t={:.2}s  \
-             P1: +{p1_added_this_tick} (total={}) p1_ms={}  \
-             P2: drained={meta_drained} total_meta={} p2_ms={t_p2_elapsed_ms}  \
-             flags: fast_done={} completion_pending={}",
-            poller_start.elapsed().as_secs_f32(),
-            fast_added.get(),
-            t_after_p1.as_millis(),
-            meta_total_applied.get(),
-            fast_exhausted.get(),
-            completion_pending.get(),
-        );
-
         // ── Completion ────────────────────────────────────────────────────
         if !completion_pending.get() && done_rx.try_recv().is_ok() {
             completion_pending.set(true);
-            eprintln!("[DBG poller] tick={tick}  done_rx fired, fast_added={}", fast_added.get());
             // Edge case: folder had no files or all failed Phase 1.
             if !probes_spawned.get() {
                 probes_spawned.set(true);
@@ -917,8 +883,6 @@ fn start_playlist_scan_poller(
             && meta_drained == 0
         {
             let added = fast_added.get();
-            let meta_total = meta_total_applied.get();
-            eprintln!("[DBG poller] tick={tick}  FINALISING: added={added} meta_total={meta_total}");
             {
                 let mut s = state.borrow_mut();
                 s.playlist_scan = None;
@@ -929,13 +893,13 @@ fn start_playlist_scan_poller(
                 added,
                 if added == 1 { "" } else { "s" }
             ));
-            // rebuild() is now bounded by MAX_DISPLAY rows in rebuild_playlist
-            // so it won't freeze regardless of total playlist size.
-            let t_rebuild = std::time::Instant::now();
+            // Apply any durations that are already in the on-disk cache for the
+            // newly-added tracks, so the final rebuild can show them immediately
+            // without waiting for background probes to return.
+            state.borrow_mut().apply_cached_durations();
+            // TreeView rebuild() is O(n) in data and O(visible_rows) in paint —
+            // no row cap needed; all tracks are inserted and rendered efficiently.
             rebuild();
-            eprintln!("[DBG poller] tick={tick}  rebuild() took {}ms  total_wall={:.2}s",
-                t_rebuild.elapsed().as_millis(),
-                poller_start.elapsed().as_secs_f32());
             cancel_btn.set_visible(false);
             return ControlFlow::Break;
         }
@@ -944,37 +908,6 @@ fn start_playlist_scan_poller(
     });
 }
 
-/// Update the label text of an existing scan row in-place.
-///
-/// Called during Phase 2 to promote a filename-only row to a proper
-/// "Artist — Title" display without a full ListBox rebuild.
-fn update_scan_row_label(
-    playlist_box: &gtk4::ListBox,
-    playlist_idx: usize,
-    title: &str,
-    artist: &str,
-) {
-    use gtk4::prelude::*;
-    let display = if artist.is_empty() {
-        format!("{:2}. {}", playlist_idx + 1, gtk_safe(title))
-    } else {
-        format!("{:2}. {} — {}", playlist_idx + 1, gtk_safe(artist), gtk_safe(title))
-    };
-    if let Some(row) = playlist_box.row_at_index(playlist_idx as i32) {
-        row.remove_css_class("unscanned-row");
-        if let Some(row_box) = row
-            .child()
-            .and_then(|w| w.downcast::<gtk4::Box>().ok())
-        {
-            if let Some(lbl) = row_box
-                .first_child()
-                .and_then(|w| w.downcast::<Label>().ok())
-            {
-                lbl.set_label(&display);
-            }
-        }
-    }
-}
 
 pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
@@ -1396,6 +1329,14 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     status_label.set_margin_end(8);
     status_label.set_margin_bottom(4);
     root.append(&status_label);
+    // Hidden probe label carries .np-title CSS class.  Appended to the main
+    // window root so it is realized — and its computed text color readable —
+    // as soon as the main window opens, not only when the playlist opens.
+    let np_probe = Label::builder()
+        .css_classes(["np-title"])
+        .visible(false)
+        .build();
+    root.append(&np_probe);
 
     window.set_child(Some(&root));
 
@@ -1511,20 +1452,103 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     pl_btn_row.append(&btn_clear_all);
     pl_btn_row.append(&btn_cancel);
 
-    // ── Playlist ListBox: multi-select, with drag-and-drop reordering ──────────
-    // `SelectionMode::Multiple` lets the user select a contiguous or
-    // discontiguous set of rows and remove them all in one Remove click.
-    // (Search/jump lives in its own window, not here — see jump_win below.)
-    let playlist_box = ListBox::new();
-    playlist_box.add_css_class("playlist");
-    playlist_box.set_selection_mode(gtk4::SelectionMode::Multiple);
+    // ── Playlist TreeView + ListStore ─────────────────────────────────────────
+    // GtkTreeView uses virtual scrolling — only visible rows create cell renderers,
+    // so 30k+ tracks render instantly without memory pressure.
+    // Four-column ListStore: position | display name | duration | font weight.
+    // Col 3 (i32): Pango weight — 700 for the active track, 400 for all others.
+    // Foreground color is applied via set_cell_data_func (not add_attribute) so
+    // we set gdk::RGBA directly and avoid GTK's string-to-color parser warnings.
+    #[allow(deprecated)]
+    let pl_store = ListStore::new(&[
+        String::static_type(), // col 0: position ("1.", "2.", …)
+        String::static_type(), // col 1: display name ("Artist - Title" or filename)
+        String::static_type(), // col 2: duration ("-:--" or "3:45")
+        i32::static_type(),    // col 3: Pango font weight (700 = active, 400 = normal)
+    ]);
+
+    // Shared accent RGBA populated after main window realization by reading the
+    // computed color of the .np-title probe label.  The cell data func reads
+    // this to color the active row — same CSS variable drives both.
+    let accent_rgba: Rc<RefCell<Option<gdk::RGBA>>> = Rc::new(RefCell::new(None));
+
+    #[allow(deprecated)]
+    let pl_view = TreeView::builder()
+        .model(&pl_store)
+        .headers_visible(false)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    pl_view.add_css_class("playlist");
+    #[allow(deprecated)]
+    pl_view.selection().set_mode(gtk4::SelectionMode::Multiple);
+
+    // Position column — narrow, right-aligned, monospace.
+    #[allow(deprecated)]
+    let pos_col = TreeViewColumn::new();
+    #[allow(deprecated)]
+    let pos_cell = CellRendererText::new();
+    pos_cell.set_xalign(1.0);
+    #[allow(deprecated)]
+    pos_col.pack_start(&pos_cell, false);
+    #[allow(deprecated)]
+    pos_col.add_attribute(&pos_cell, "text", 0);
+    #[allow(deprecated)]
+    pl_view.append_column(&pos_col);
+
+    // Name column — expands to fill remaining width, ellipsizes long strings.
+    // Col 3 drives the font weight so the current track is bold without markup.
+    // Foreground is set via cell_data_func using gdk::RGBA directly so GTK's
+    // string-to-color parser is never invoked (avoids "Don't know color ''" warnings).
+    #[allow(deprecated)]
+    let name_col = TreeViewColumn::new();
+    name_col.set_expand(true);
+    #[allow(deprecated)]
+    let name_cell = CellRendererText::new();
+    name_cell.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    #[allow(deprecated)]
+    name_col.pack_start(&name_cell, true);
+    #[allow(deprecated)]
+    name_col.add_attribute(&name_cell, "text", 1);
+    #[allow(deprecated)]
+    name_col.add_attribute(&name_cell, "weight", 3);
+    #[allow(deprecated)]
+    name_col.set_cell_data_func(&name_cell, {
+        let accent_rgba = accent_rgba.clone();
+        move |_col, cell, model, iter| {
+            let cell = cell.downcast_ref::<CellRendererText>().unwrap();
+            let weight: i32 = model.get_value(iter, 3).get().unwrap_or(400);
+            if weight == 700 {
+                if let Some(rgba) = *accent_rgba.borrow() {
+                    cell.set_foreground_rgba(Some(&rgba));
+                    return;
+                }
+            }
+            cell.set_foreground_rgba(None);
+        }
+    });
+    #[allow(deprecated)]
+    pl_view.append_column(&name_col);
+
+    // Duration column — fixed width, right-aligned, monospace.
+    #[allow(deprecated)]
+    let dur_col = TreeViewColumn::new();
+    #[allow(deprecated)]
+    let dur_cell = CellRendererText::new();
+    dur_cell.set_xalign(1.0);
+    #[allow(deprecated)]
+    dur_col.pack_start(&dur_cell, false);
+    #[allow(deprecated)]
+    dur_col.add_attribute(&dur_cell, "text", 2);
+    #[allow(deprecated)]
+    pl_view.append_column(&dur_col);
 
     let pl_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .vexpand(true)
         .min_content_height(350)
-        .child(&playlist_box)
+        .child(&pl_view)
         .build();
     pl_root.append(&pl_scroll);
 
@@ -1574,157 +1598,95 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // Shared closures
     // ══════════════════════════════════════════════════════════════════════════
 
-    // rebuild_playlist — clear and recreate all ListBox rows.
+    // rebuild_playlist — repopulate the ListStore from the current playlist model.
     //
-    // Called after any playlist modification.  Attaches a DragSource to each
-    // row so that rows can be dragged to a new position.  Also updates the
-    // pl_count_label so the playlist window header stays current.
-    //
-    // Borrow discipline: we extract all data from `state` into local Vecs
-    // while holding the borrow, then drop the borrow before touching GTK
-    // widgets (widget operations can trigger callbacks that need to borrow
-    // state themselves — overlapping borrows would panic the RefCell).
+    // The TreeView is temporarily disconnected from the model while the store is
+    // cleared and repopulated.  This prevents the TreeView from processing one
+    // row-deleted / row-inserted signal per track (which would block the UI for
+    // several seconds on a 30k-track playlist).  Reconnecting the model triggers
+    // a single bulk re-read; only visible rows are painted, so it remains O(1).
     let rebuild_playlist = {
         let state = state.clone();
-        let playlist_box = playlist_box.clone();
+        let pl_store = pl_store.clone();
+        let pl_view = pl_view.clone();
         let pl_count_label = pl_count_label.clone();
         Rc::new(move || {
-            // GtkListBox.append() is O(n) — each append triggers a relayout
-            // proportional to the current list size, making a full rebuild
-            // O(n²).  We hard-cap the visible row count so rebuild() always
-            // completes in bounded time (~300 ms for 1 000 rows).  Tracks
-            // beyond the cap are still in the model and fully playable; the
-            // user just can't scroll to them here.  A GtkListView migration
-            // (virtual scrolling) is the correct long-term fix.
-            const MAX_DISPLAY: usize = 1_000;
-
-            // ── Collect track data while holding the borrow ────────────────
-            let (rows_data, current_idx, n_tracks) = {
-                let s = state.borrow();
-                // (label, duration, is_current, is_broken)
-                let data: Vec<(String, String, bool, bool)> = s
-                    .playlist
-                    .tracks
-                    .iter()
-                    .enumerate()
-                    .take(MAX_DISPLAY)
-                    .map(|(i, t)| {
-                        let label = format!("{:2}. {}", i + 1, t.display_name());
-                        let dur = fmt_duration(t.duration);
-                        let is_current = i == s.playlist.current_index;
-                        (label, dur, is_current, t.broken)
-                    })
-                    .collect();
-                (data, s.playlist.current_index, s.playlist.len())
-            };
-            // Borrow dropped here — safe to call GTK methods now.
-
-            let t_rebuild = std::time::Instant::now();
-
-            // ── Update the count label ─────────────────────────────────────
+            let s = state.borrow();
+            let current = s.playlist.current_index;
+            let is_playing = matches!(*s.player.state(), PlayerState::Playing | PlayerState::Paused);
+            let n = s.playlist.tracks.len();
+            // Detach TreeView so bulk model changes don't trigger per-row signals.
+            #[allow(deprecated)]
+            pl_view.set_model(None::<&ListStore>);
+            #[allow(deprecated)]
+            pl_store.clear();
+            for (i, t) in s.playlist.tracks.iter().enumerate() {
+                let pos = format!("{}.", i + 1);
+                let name = t.display_name();
+                let is_active = is_playing && i == current;
+                let display = if t.broken {
+                    format!("⚠ {}", name)
+                } else if is_active {
+                    format!("▶ {}", name)
+                } else {
+                    name
+                };
+                let weight: i32 = if is_active { 700 } else { 400 };
+                #[allow(deprecated)]
+                pl_store.insert_with_values(None, &[
+                    (0, &gtk_safe(&pos) as &dyn ToValue),
+                    (1, &gtk_safe(&display) as &dyn ToValue),
+                    (2, &gtk_safe(&fmt_duration(t.duration)) as &dyn ToValue),
+                    (3, &weight as &dyn ToValue),
+                ]);
+            }
+            drop(s);
+            // Reconnect — TreeView does one bulk re-read, only paints visible rows.
+            #[allow(deprecated)]
+            pl_view.set_model(Some(&pl_store));
             pl_count_label.set_label(&format!(
                 "Playlist — {} track{}",
-                n_tracks,
-                if n_tracks == 1 { "" } else { "s" }
+                n,
+                if n == 1 { "" } else { "s" },
             ));
+        })
+    };
 
-            // ── Rebuild the ListBox rows ───────────────────────────────────
-            while let Some(child) = playlist_box.first_child() {
-                playlist_box.remove(&child);
-            }
-
-            for (i, (label_text, dur_text, is_current, is_broken)) in rows_data.iter().enumerate() {
-                let row = ListBoxRow::new();
-                let row_box = GtkBox::new(Orientation::Horizontal, 0);
-
-                // Prefix broken rows with ⚠ so the user can see which files
-                // could not be found / played.
-                let display_label = if *is_broken {
-                    format!("⚠ {}", label_text.trim_start())
+    // patch_pl_row — update a single store row's text without a full rebuild.
+    //
+    // Called by the probe drain so name and duration updates appear row by row
+    // as background probes complete.  O(1): finds the iter by position and
+    // calls set() on just that row.
+    let patch_pl_row = {
+        let state = state.clone();
+        let pl_store = pl_store.clone();
+        Rc::new(move |idx: usize| {
+            let (display, duration_str, weight) = {
+                let s = state.borrow();
+                let Some(t) = s.playlist.tracks.get(idx) else { return; };
+                let name = t.display_name();
+                let is_active = matches!(*s.player.state(), PlayerState::Playing | PlayerState::Paused)
+                    && idx == s.playlist.current_index;
+                let display = if t.broken {
+                    format!("⚠ {}", name)
+                } else if is_active {
+                    format!("▶ {}", name)
                 } else {
-                    label_text.clone()
+                    name
                 };
-                let lbl = Label::builder()
-                    .label(&display_label)
-                    .halign(Align::Start)
-                    .hexpand(true)
-                    .ellipsize(gtk4::pango::EllipsizeMode::End)
-                    .build();
-                let dur_lbl = Label::builder()
-                    .label(dur_text)
-                    .halign(Align::End)
-                    .css_classes(["pl-dur-label"])
-                    .build();
-                row_box.append(&lbl);
-                row_box.append(&dur_lbl);
-                row.set_child(Some(&row_box));
-                if *is_current {
-                    row.add_css_class("playing");
-                }
-                if *is_broken {
-                    row.add_css_class("broken");
-                }
-
-                // ── Drag source for reordering ─────────────────────────────
-                // Each row carries its 0-based index as the drag payload so
-                // the DropTarget can call move_track(src, dst).
-                let idx = i as i32;
-                let drag_src = DragSource::new();
-                drag_src.set_actions(gdk::DragAction::MOVE);
-
-                // Prepare: return a ContentProvider wrapping the row index.
-                drag_src.connect_prepare(move |src, _, _| {
-                    src.set_state(gtk4::EventSequenceState::Claimed);
-                    Some(gdk::ContentProvider::for_value(&idx.to_value()))
-                });
-
-                // Dim the row while it is being dragged.
-                let row_weak = row.downgrade();
-                drag_src.connect_drag_begin(move |_, _| {
-                    if let Some(r) = row_weak.upgrade() {
-                        r.add_css_class("dragging");
-                    }
-                });
-
-                // Remove the dim class when the drag ends.
-                let row_weak2 = row.downgrade();
-                drag_src.connect_drag_end(move |_, _, _| {
-                    if let Some(r) = row_weak2.upgrade() {
-                        r.remove_css_class("dragging");
-                    }
-                });
-
-                row.add_controller(drag_src);
-                playlist_box.append(&row);
-            }
-
-            // If the playlist exceeds MAX_DISPLAY, show a non-selectable
-            // note row so the user knows tracks exist beyond what's visible.
-            if n_tracks > MAX_DISPLAY {
-                let note = ListBoxRow::new();
-                let lbl = Label::builder()
-                    .label(&format!(
-                        "… {} more tracks not shown (playlist is too large for this view)",
-                        n_tracks - MAX_DISPLAY
-                    ))
-                    .halign(Align::Center)
-                    .css_classes(["status-label"])
-                    .build();
-                note.set_child(Some(&lbl));
-                note.set_selectable(false);
-                note.set_activatable(false);
-                playlist_box.append(&note);
-            }
-
-            eprintln!("[DBG rebuild] {} rows rendered (of {n_tracks} total) in {}ms",
-                rows_data.len(), t_rebuild.elapsed().as_millis());
-
-            // Scroll the currently playing track into view.
-            if n_tracks > 0 && current_idx < MAX_DISPLAY {
-                if let Some(row) = playlist_box.row_at_index(current_idx as i32) {
-                    playlist_box.select_row(Some(&row));
-                }
-            }
+                let weight: i32 = if is_active { 700 } else { 400 };
+                (display, fmt_duration(t.duration), weight)
+            };
+            #[allow(deprecated)]
+            let Some(iter) = pl_store.iter_nth_child(None, idx as i32) else { return; };
+            // Position (col 0) never changes; update name, duration, weight.
+            // The cell data func re-reads col 3 to set the foreground color.
+            #[allow(deprecated)]
+            pl_store.set(&iter, &[
+                (1, &gtk_safe(&display) as &dyn ToValue),
+                (2, &gtk_safe(&duration_str) as &dyn ToValue),
+                (3, &weight as &dyn ToValue),
+            ]);
         })
     };
 
@@ -1737,12 +1699,21 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let play_and_update = {
         let state = state.clone();
         let set_track = set_track.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
         Rc::new(move || {
+            // Record which row was playing before so we can un-bold it.
+            let old_idx = state.borrow().playlist.current_index;
             let result = { state.borrow_mut().play_current() };
             if let Some(display) = result {
+                let new_idx = state.borrow().playlist.current_index;
+                eprintln!("[now-playing] playlist display: \"{}\"", display);
                 set_track(&display);
-                rebuild_playlist();
+                // Patch only the two affected rows: the old track loses bold/▶,
+                // the new track gains them.  This is O(1) vs O(n) for rebuild.
+                if old_idx != new_idx {
+                    patch_pl_row(old_idx);
+                }
+                patch_pl_row(new_idx);
             }
         })
     };
@@ -1754,31 +1725,25 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // disk; only removes the entries from the in-memory playlist.
     let remove_selected = {
         let state = state.clone();
-        let playlist_box_rm = playlist_box.clone();
+        let pl_view = pl_view.clone();
         let rebuild_rm = rebuild_playlist.clone();
         let set_track_rm = set_track.clone();
         Rc::new(move || {
-            // Collect selected indices before modifying the playlist.
-            let mut indices: Vec<usize> = playlist_box_rm
-                .selected_rows()
-                .iter()
-                .map(|r| r.index() as usize)
+            #[allow(deprecated)]
+            let (paths, _) = pl_view.selection().selected_rows();
+            let mut indices: Vec<usize> = paths.iter()
+                .filter_map(|p| p.indices().first().copied())
+                .map(|i| i as usize)
                 .collect();
-            if indices.is_empty() {
-                return;
-            }
-
+            if indices.is_empty() { return; }
             // Highest first so earlier removes don't invalidate later indices.
             indices.sort_unstable_by(|a, b| b.cmp(a));
-
             let mut last_nowplaying: Option<String> = None;
             for idx in indices {
-                // remove_track handles current_index adjustment and auto-advance.
                 if let Some(display) = { state.borrow_mut().remove_track(idx) } {
                     last_nowplaying = Some(display);
                 }
             }
-            // If auto-advance happened, push the new track into the marquee.
             if let Some(display) = last_nowplaying {
                 set_track_rm(&display);
             }
@@ -1786,11 +1751,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         })
     };
 
+
     // ── Initial state ─────────────────────────────────────────────────────────
-    // Single click selects (highlights) a row; double click or Enter plays it.
-    // GTK's default for ListBox is activate-on-single-click = true, which would
-    // fire row-activated on the first click and immediately start playback.
-    playlist_box.set_activate_on_single_click(false);
 
     rebuild_playlist();
     {
@@ -1800,80 +1762,60 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Drag-and-drop: DropTarget on the ListBox (row reorder)
-    // ══════════════════════════════════════════════════════════════════════════
-    //
-    // Set up ONCE here (not inside rebuild_playlist) so the target persists
-    // across rebuilds.  The per-row DragSource is re-created each rebuild.
-    //
-    // A live drop-indicator line (thin accent border on `drop-target` class) is
-    // shown on the row currently under the cursor so the user can see exactly
-    // where the dragged entry will land.
+    // ── DragSource on the TreeView — initiates row reorder drags ─────────────
+    // prepare() fires before the drag starts; x/y are the pointer coordinates
+    // within the widget.  path_at_pos identifies which row is being dragged and
+    // packs its index as u32 into the content provider.
     {
-        let drop_tgt = DropTarget::new(i32::static_type(), gdk::DragAction::MOVE);
+        let drag_src = DragSource::new();
+        drag_src.set_actions(gdk::DragAction::MOVE);
+        let pl_view_ds = pl_view.clone();
+        drag_src.connect_prepare(move |_, x, y| {
+            #[allow(deprecated)]
+            let row_idx = match pl_view_ds.path_at_pos(x as i32, y as i32) {
+                Some((Some(path), _, _, _)) => {
+                    path.indices().first().copied().unwrap_or(0) as u32
+                }
+                _ => return None,
+            };
+            Some(gdk::ContentProvider::for_value(&row_idx.to_value()))
+        });
+        pl_view.add_controller(drag_src);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Drag-and-drop: DropTarget on the TreeView (row reorder)
+    // ══════════════════════════════════════════════════════════════════════════
+    //
+    // The DragSource on the TreeView carries the model index as u32.
+    // path_at_pos converts the drop coordinate to the destination row index.
+    {
+        let drop_tgt = DropTarget::new(u32::static_type(), gdk::DragAction::MOVE);
         let state_dnd = state.clone();
         let rebuild_dnd = rebuild_playlist.clone();
-        let playlist_box_dnd = playlist_box.clone();
-        // Track which row currently carries the drop-target indicator (-1 = none).
-        let hover_idx = Rc::new(Cell::new(-1i32));
+        let pl_view_dnd = pl_view.clone();
 
-        // Motion: move the indicator line to the row under the cursor.
-        drop_tgt.connect_motion({
-            let pb = playlist_box_dnd.clone();
-            let hi = hover_idx.clone();
-            move |_, _x, y| {
-                let prev = hi.get();
-                if prev >= 0 {
-                    if let Some(r) = pb.row_at_index(prev) {
-                        r.remove_css_class("drop-target");
+        drop_tgt.connect_drop(move |_, value, x, y| {
+            if let Ok(src_pos) = value.get::<u32>() {
+                let n = state_dnd.borrow().playlist.len();
+                if n == 0 { return false; }
+                #[allow(deprecated)]
+                let dst_pos = match pl_view_dnd.path_at_pos(x as i32, y as i32) {
+                    Some((Some(path), _, _, _)) => {
+                        path.indices().first().copied().unwrap_or(0) as usize
                     }
-                }
-                if let Some(row) = pb.row_at_y(y as i32) {
-                    let idx = row.index();
-                    row.add_css_class("drop-target");
-                    hi.set(idx);
-                } else {
-                    hi.set(-1);
-                }
-                gdk::DragAction::MOVE
-            }
-        });
-
-        // Leave: clear the indicator when the drag exits the playlist area.
-        drop_tgt.connect_leave({
-            let pb = playlist_box_dnd.clone();
-            let hi = hover_idx.clone();
-            move |_| {
-                let prev = hi.get();
-                if prev >= 0 {
-                    if let Some(r) = pb.row_at_index(prev) {
-                        r.remove_css_class("drop-target");
-                    }
-                    hi.set(-1);
+                    _ => n.saturating_sub(1),
+                };
+                let src_idx = src_pos as usize;
+                if src_idx != dst_pos {
+                    state_dnd.borrow_mut().playlist.move_track(src_idx, dst_pos);
+                    rebuild_dnd();
                 }
             }
+            true
         });
 
-        drop_tgt.connect_drop(move |_, value, _x, y| {
-            // The drag payload is the source row index packed as i32.
-            if let Ok(src_idx) = value.get::<i32>() {
-                let src_idx = src_idx as usize;
-                // Determine destination row from the drop y-coordinate.
-                if let Some(dst_row) = playlist_box_dnd.row_at_y(y as i32) {
-                    let dst_idx = dst_row.index() as usize;
-                    if src_idx != dst_idx {
-                        // move_track keeps current_index pointing at the same
-                        // logical track even when the row order changes.
-                        state_dnd.borrow_mut().playlist.move_track(src_idx, dst_idx);
-                        rebuild_dnd(); // rebuilds all rows, indicator gone
-                    }
-                }
-            }
-            true // signal: drop was handled
-        });
-
-        playlist_box.add_controller(drop_tgt);
+        pl_view.add_controller(drop_tgt);
     }
 
     // ── Drop target: accept files dragged from an external file manager ───────
@@ -1951,9 +1893,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     btn_stop.connect_clicked({
         let state = state.clone();
         let seek_bar = seek_bar.clone();
+        let patch_pl_row = patch_pl_row.clone();
         move |_| {
+            let old_idx = state.borrow().playlist.current_index;
             let _ = state.borrow_mut().player.stop();
             seek_bar.set_value(0.0);
+            // Remove the bold/arrow from the now-stopped track.
+            patch_pl_row(old_idx);
         }
     });
 
@@ -1961,12 +1907,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     btn_next.connect_clicked({
         let state = state.clone();
         let set_track = set_track.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
         move |_| {
+            let old_idx = state.borrow().playlist.current_index;
             let result = { state.borrow_mut().play_next() };
             if let Some(display) = result {
+                let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                rebuild_playlist();
+                if old_idx != new_idx { patch_pl_row(old_idx); }
+                patch_pl_row(new_idx);
             }
         }
     });
@@ -1975,12 +1924,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     btn_prev.connect_clicked({
         let state = state.clone();
         let set_track = set_track.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
         move |_| {
+            let old_idx = state.borrow().playlist.current_index;
             let result = { state.borrow_mut().play_prev() };
             if let Some(display) = result {
+                let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                rebuild_playlist();
+                if old_idx != new_idx { patch_pl_row(old_idx); }
+                patch_pl_row(new_idx);
             }
         }
     });
@@ -2050,26 +2002,122 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ℹ Info button — connected after handle_key is defined (see below).
 
     // ══════════════════════════════════════════════════════════════════════════
-    // Playlist ListBox interactions
+    // Playlist TreeView interactions
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Double-click / Enter on a row: jump to that track and play it.
-    playlist_box.connect_row_activated({
+    // Double-click / Enter on a row: jump to that track and start playback.
+    #[allow(deprecated)]
+    pl_view.connect_row_activated({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
-        move |_, row| {
-            state.borrow_mut().playlist.jump_to(row.index() as usize);
-            play_and_update();
+        let patch_pl_row = patch_pl_row.clone();
+        move |_, path, _| {
+            if let Some(&idx) = path.indices().first() {
+                // Record the previously-playing track before changing current_index
+                // so we can de-highlight it after the jump.
+                let old_idx = state.borrow().playlist.current_index;
+                state.borrow_mut().playlist.jump_to(idx as usize);
+                play_and_update();
+                if old_idx != idx as usize {
+                    patch_pl_row(old_idx);
+                }
+            }
         }
     });
 
-    // Single-click on a broken row: show a plain-language explanation.
-    playlist_box.connect_row_selected({
-        let state      = state.clone();
-        let pl_status  = pl_status_label.clone();
-        move |_, row| {
-            let Some(row) = row else { return; };
-            let idx = row.index() as usize;
+    // Right-click context menu on a row: offer "Play this track" and "Remove".
+    {
+        let ctx_click = GestureClick::new();
+        ctx_click.set_button(3); // right mouse button
+        let state_ctx = state.clone();
+        let play_ctx = play_and_update.clone();
+        let remove_ctx = remove_selected.clone();
+        let pl_view_ctx = pl_view.clone();
+        let patch_ctx = patch_pl_row.clone();
+        ctx_click.connect_pressed(move |_, _, x, y| {
+            #[allow(deprecated)]
+            let row_idx = match pl_view_ctx.path_at_pos(x as i32, y as i32) {
+                Some((Some(path), _, _, _)) => {
+                    match path.indices().first().copied() {
+                        Some(i) => i as usize,
+                        None => return,
+                    }
+                }
+                _ => return,
+            };
+            // Select the right-clicked row so Remove acts on it.
+            #[allow(deprecated)]
+            pl_view_ctx.selection().unselect_all();
+            #[allow(deprecated)]
+            if let Some(iter) = pl_view_ctx.model()
+                .and_then(|m| m.iter_nth_child(None, row_idx as i32))
+            {
+                #[allow(deprecated)]
+                pl_view_ctx.selection().select_iter(&iter);
+            }
+            let popover = Popover::new();
+            popover.set_parent(&pl_view_ctx);
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            let menu_box = GtkBox::new(Orientation::Vertical, 2);
+            let btn_play = Button::with_label("▶ Play");
+            let btn_del  = Button::with_label("✕ Remove");
+            btn_play.add_css_class("flat");
+            btn_del.add_css_class("flat");
+            {
+                let state_p = state_ctx.clone();
+                let play_p  = play_ctx.clone();
+                let pop_p   = popover.clone();
+                let patch_p = patch_ctx.clone();
+                btn_play.connect_clicked(move |_| {
+                    let old_idx = state_p.borrow().playlist.current_index;
+                    state_p.borrow_mut().playlist.jump_to(row_idx);
+                    play_p();
+                    if old_idx != row_idx {
+                        patch_p(old_idx);
+                    }
+                    pop_p.popdown();
+                });
+            }
+            {
+                let remove_r = remove_ctx.clone();
+                let pop_r    = popover.clone();
+                btn_del.connect_clicked(move |_| {
+                    remove_r();
+                    pop_r.popdown();
+                });
+            }
+            menu_box.append(&btn_play);
+            menu_box.append(&btn_del);
+            popover.set_child(Some(&menu_box));
+            popover.popup();
+        });
+        #[allow(deprecated)]
+        pl_view.add_controller(ctx_click);
+    }
+
+    // Selection change: show a status hint when a broken track is selected.
+    #[allow(deprecated)]
+    pl_view.selection().connect_changed({
+        let state     = state.clone();
+        let pl_status = pl_status_label.clone();
+        let pl_view_sc = pl_view.clone();
+        move |_| {
+            // set_model(None) during a bulk rebuild fires this signal with a null
+            // model; selected_rows() would then panic.  Bail early if no model.
+            #[allow(deprecated)]
+            if pl_view_sc.model().is_none() { return; }
+            #[allow(deprecated)]
+            let (paths, _) = pl_view_sc.selection().selected_rows();
+            let Some(path) = paths.first() else {
+                pl_status.set_text("");
+                return;
+            };
+            let Some(&idx) = path.indices().first() else {
+                pl_status.set_text("");
+                return;
+            };
+            let idx = idx as usize;
             let is_broken = state.borrow().playlist.tracks
                 .get(idx)
                 .map(|t| t.broken)
@@ -2114,125 +2162,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             rebuild_playlist();
         }
     });
-
-    // ── Right-click context menu on playlist rows ─────────────────────────────
-    // A single GestureClick on the ListBox handles all rows so that the handler
-    // does not need to be re-wired every time the playlist is rebuilt.
-    // Menu items: "View/Edit ID3 Information" · "Play Entry" · "Remove Entry".
-    {
-        let ctx_state = state.clone();
-        let ctx_rebuild = rebuild_playlist.clone();
-        let ctx_play = play_and_update.clone();
-        let ctx_set_track = set_track.clone();
-        let ctx_pb = playlist_box.clone();
-        let ctx_win = window.downgrade();
-
-        let rclick = GestureClick::new();
-        rclick.set_button(3); // right mouse button
-        rclick.connect_released(move |_, _, x, y| {
-            // Identify which row received the click.
-            let Some(row) = ctx_pb.row_at_y(y as i32) else {
-                return;
-            };
-            let row_idx = row.index() as usize;
-
-            let path = ctx_state
-                .borrow()
-                .playlist
-                .tracks
-                .get(row_idx)
-                .map(|t| t.path.clone());
-            let Some(path) = path else {
-                return;
-            };
-
-            // Build a plain-GtkBox popover (no gio::Menu needed).
-            let menu_box = GtkBox::new(Orientation::Vertical, 0);
-            menu_box.set_margin_top(4);
-            menu_box.set_margin_bottom(4);
-            menu_box.set_margin_start(4);
-            menu_box.set_margin_end(4);
-
-            let btn_edit = Button::with_label("View/Edit ID3 Information");
-            let btn_play_e = Button::with_label("Play Entry");
-            let btn_rm = Button::with_label("Remove Entry");
-            for btn in [&btn_edit, &btn_play_e, &btn_rm] {
-                btn.set_has_frame(false);
-                btn.set_hexpand(true);
-                btn.add_css_class("popover-button");
-            }
-            btn_rm.add_css_class("destructive-action");
-
-            menu_box.append(&btn_edit);
-            menu_box.append(&Separator::new(Orientation::Horizontal));
-            menu_box.append(&btn_play_e);
-            menu_box.append(&Separator::new(Orientation::Horizontal));
-            menu_box.append(&btn_rm);
-
-            let popover = Popover::new();
-            popover.set_child(Some(&menu_box));
-            popover.set_parent(&ctx_pb);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-
-            // "View/Edit ID3 Information" — open the editor window.
-            {
-                let path2 = path.clone();
-                let state2 = ctx_state.clone();
-                let rebuild2 = ctx_rebuild.clone();
-                let win_wk = ctx_win.clone();
-                let pop_wk = popover.downgrade();
-                btn_edit.connect_clicked(move |_| {
-                    if let Some(pop) = pop_wk.upgrade() {
-                        pop.popdown();
-                    }
-                    if let Some(w) = win_wk.upgrade() {
-                        open_id3_editor_window(
-                            Some(&w),
-                            path2.clone(),
-                            state2.clone(),
-                            rebuild2.clone(),
-                            None,
-                        );
-                    }
-                });
-            }
-
-            // "Play Entry" — jump to this track and play it.
-            {
-                let state3 = ctx_state.clone();
-                let play3 = ctx_play.clone();
-                let pop_wk3 = popover.downgrade();
-                btn_play_e.connect_clicked(move |_| {
-                    if let Some(pop) = pop_wk3.upgrade() {
-                        pop.popdown();
-                    }
-                    state3.borrow_mut().playlist.jump_to(row_idx);
-                    play3();
-                });
-            }
-
-            // "Remove Entry" — remove from playlist, handle auto-advance.
-            {
-                let state4 = ctx_state.clone();
-                let rebuild4 = ctx_rebuild.clone();
-                let set_track4 = ctx_set_track.clone();
-                let pop_wk4 = popover.downgrade();
-                btn_rm.connect_clicked(move |_| {
-                    if let Some(pop) = pop_wk4.upgrade() {
-                        pop.popdown();
-                    }
-                    let auto_track = state4.borrow_mut().remove_track(row_idx);
-                    if let Some(display) = auto_track {
-                        set_track4(&display);
-                    }
-                    rebuild4();
-                });
-            }
-
-            popover.popup();
-        });
-        playlist_box.add_controller(rclick);
-    }
 
     // ── Left-click on the marquee title → open ID3 editor for current track ──
     // Adding the click controller to title_label so only the text area is
@@ -2324,7 +2253,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
         let cancel_btn = btn_cancel.clone();
-        let playlist_box_scan = playlist_box.clone();
+        let patch_pl_row_af = patch_pl_row.clone();
         move |_| {
             let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
             let filter_store = gio::ListStore::new::<gtk4::FileFilter>();
@@ -2337,7 +2266,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let probe_tx_cb = probe_tx.clone();
             let broken_tx_cb = broken_tx.clone();
             let cancel_ref = cancel_btn.clone();
-            let playlist_box_cb = playlist_box_scan.clone();
+            let patch_cb = patch_pl_row_af.clone();
             let parent = window_wk.upgrade();
             dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                 let Ok(list) = result else { return };
@@ -2394,7 +2323,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     cancel_ref.clone(),
                     probe_tx_cb.clone(),
                     broken_tx_cb.clone(),
-                    playlist_box_cb.clone(),
+                    patch_cb.clone(),
                     fast_rx,
                     meta_rx,
                     done_rx,
@@ -2416,7 +2345,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
         let cancel_btn = btn_cancel.clone();
-        let playlist_box_scan = playlist_box.clone();
+        let patch_pl_row_adir = patch_pl_row.clone();
         move |_| {
             let dialog = gtk4::FileDialog::new();
             dialog.set_title("Add Folder to Playlist");
@@ -2427,7 +2356,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let probe_tx_cb = probe_tx.clone();
             let broken_tx_cb = broken_tx.clone();
             let cancel_ref = cancel_btn.clone();
-            let playlist_box_cb = playlist_box_scan.clone();
+            let patch_cb = patch_pl_row_adir.clone();
             let parent = window_wk.upgrade();
             dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                 let Ok(file) = result else { return };
@@ -2478,7 +2407,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     cancel_ref.clone(),
                     probe_tx_cb.clone(),
                     broken_tx_cb.clone(),
-                    playlist_box_cb.clone(),
+                    patch_cb.clone(),
                     fast_rx,
                     meta_rx,
                     done_rx,
@@ -2552,54 +2481,45 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let marquee_tick = marquee_tick.clone();
         let show_remaining = show_remaining.clone();
         let state_label = state_label.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
-        // Cooldown between probe-triggered playlist rebuilds outside of a scan.
-        // Each rebuild takes ~300 ms for 1 000 rows; without a cooldown every tick
-        // that has probe results would call rebuild, saturating the main thread.
-        // 20 ticks = ~2 s between refreshes, which is fast enough to feel live.
-        let mut probe_rebuild_cooldown = 0u32;
 
         glib::timeout_add_local(Duration::from_millis(100), move || {
             // 0. Drain probe results from background threads.
-            // apply_probed_duration is O(n) per call.  When a large folder scan
-            // is in progress, Rayon can deliver thousands of probes per tick;
-            // processing them all without a cap would cost O(n²) per tick and
-            // saturate the main thread.  We therefore limit to 50 per tick while
-            // a scan is active and skip the ListBox rebuild entirely — the scan
-            // poller calls rebuild() once at completion anyway.
+            // patch_pl_row is O(1) per call (updates a single TreeView store row).
+            // Cap to 50 per tick so we never block the main thread for long when
+            // a large library delivers thousands of results at once.
             let is_scanning = state.borrow().playlist_scan.is_some();
-            // Cap to 50 during a scan; unlimited otherwise (normal runtime load).
-            let probe_cap = if is_scanning { 50usize } else { usize::MAX };
-            let mut any_probed = false;
+            let probe_cap = if is_scanning { 50usize } else { 500usize };
             let mut probes_this_tick = 0usize;
             while probes_this_tick < probe_cap {
                 let Ok((path, dur)) = probe_rx.try_recv() else { break };
-                state.borrow_mut().apply_probed_duration(&path, dur);
-                any_probed = true;
+                // Bind the return value to a `let` so the temporary RefMut is
+                // dropped at the semicolon — before patch_pl_row tries to borrow.
+                let probed_idx = state.borrow_mut().apply_probed_duration(&path, dur);
+                if let Some(idx) = probed_idx {
+                    patch_pl_row(idx);
+                }
                 probes_this_tick += 1;
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.
             while let Ok(path) = broken_rx.try_recv() {
-                for track in &mut state.borrow_mut().playlist.tracks {
-                    if track.path == path {
-                        track.broken = true;
-                        any_probed = true;
-                        break;
+                let found_idx = {
+                    let mut s = state.borrow_mut();
+                    let mut found = None;
+                    for (idx, track) in s.playlist.tracks.iter_mut().enumerate() {
+                        if track.path == path {
+                            track.broken = true;
+                            found = Some(idx);
+                            break;
+                        }
                     }
+                    found
+                };
+                if let Some(idx) = found_idx {
+                    patch_pl_row(idx);
                 }
-            }
-            // Skip the ListBox rebuild while a scan is running — redundant here
-            // since the scan poller calls rebuild() at completion.  Outside a scan,
-            // rate-limit to once per ~2 s so probe results arriving for a large
-            // library don't trigger a 300 ms rebuild every tick.
-            if any_probed && !is_scanning && probe_rebuild_cooldown == 0 {
-                rebuild_playlist();
-                probe_rebuild_cooldown = 20;
-            }
-            if probe_rebuild_cooldown > 0 {
-                probe_rebuild_cooldown -= 1;
             }
 
             // 1. Check for end-of-stream or GStreamer error.
@@ -2633,6 +2553,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 }
             }
             if let Some(event) = bus_event {
+                // Record which track just finished so we can de-highlight it
+                // after the advance changes current_index.
+                let pre_advance_idx = state.borrow().playlist.current_index;
+
                 // On error, mark the current track broken so it shows a
                 // warning indicator and is skipped in future auto-advances.
                 if matches!(event, BusEvent::Error) {
@@ -2678,8 +2602,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     found
                 };
                 if advanced {
+                    // play_update (play_and_update) patches the new current track.
+                    // We also patch pre_advance_idx because jump_to() already
+                    // updated current_index before play_and_update runs, so
+                    // play_and_update won't know the finished track is different.
                     play_update();
-                    rebuild_playlist();
+                    let new_idx = state.borrow().playlist.current_index;
+                    if pre_advance_idx != new_idx {
+                        patch_pl_row(pre_advance_idx);
+                    }
                 }
             }
 
@@ -2713,11 +2644,16 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 false
             };
             if gst_dur_written {
-                rebuild_playlist();
+                // Only the current track's duration changed; patch just that row.
+                let idx = state.borrow().playlist.current_index;
+                patch_pl_row(idx);
             }
 
             // Record play in media library after 20 seconds of playback.
-            {
+            // The rebuild_ml_callback borrows state immutably, so it must be
+            // called AFTER the mutable borrow is released — extract the Rc
+            // first, then drop the borrow, then invoke the callback.
+            let ml_rebuild_needed: Option<Rc<dyn Fn()>> = {
                 let mut s = state.borrow_mut();
                 let pos = pos.unwrap_or(Duration::ZERO);
                 let path_str = s
@@ -2730,13 +2666,14 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                             if let Some(ref ml) = s.media_lib {
                                 let _ = ml.record_play(p);
                                 s.counted_play_path = Some(p.clone());
-                                if let Some(ref rebuild_ml) = s.rebuild_ml_callback {
-                                    rebuild_ml();
-                                }
-                            }
-                        }
-                    }
-                }
+                                s.rebuild_ml_callback.clone()
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                } else { None }
+            };
+            if let Some(rebuild_ml) = ml_rebuild_needed {
+                rebuild_ml();
             }
 
             {
@@ -3500,6 +3437,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     jump_entry.connect_activate({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
+        let patch_pl_row = patch_pl_row.clone();
         let jump_box = jump_box.clone();
         let jump_indices = jump_indices.clone();
         let jump_win_wk = jump_win.downgrade();
@@ -3507,8 +3445,12 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let sel_row_idx = jump_box.selected_row().map(|r| r.index() as usize);
             if let Some(list_pos) = sel_row_idx {
                 if let Some(&track_idx) = jump_indices.borrow().get(list_pos) {
+                    let old_idx = state.borrow().playlist.current_index;
                     state.borrow_mut().playlist.jump_to(track_idx);
                     play_and_update();
+                    if old_idx != track_idx {
+                        patch_pl_row(old_idx);
+                    }
                 }
             }
             if let Some(w) = jump_win_wk.upgrade() {
@@ -3564,13 +3506,18 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     jump_box.connect_row_activated({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
+        let patch_pl_row = patch_pl_row.clone();
         let jump_indices = jump_indices.clone();
         let jump_win_wk = jump_win.downgrade();
         move |_, row| {
             let list_pos = row.index() as usize;
             if let Some(&track_idx) = jump_indices.borrow().get(list_pos) {
+                let old_idx = state.borrow().playlist.current_index;
                 state.borrow_mut().playlist.jump_to(track_idx);
                 play_and_update();
+                if old_idx != track_idx {
+                    patch_pl_row(old_idx);
+                }
             }
             if let Some(w) = jump_win_wk.upgrade() {
                 w.close();
@@ -3624,6 +3571,25 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             glib::Propagation::Proceed
         }
     });
+
+    // After the main window is realized, read the computed text color of the
+    // hidden .np-title probe label and cache it as gdk::RGBA.  The cell data
+    // func uses this directly — no string-to-color parsing, no GTK warnings.
+    // Hooking the main window (not the playlist window) means the color is
+    // available the moment the app starts, not only after the playlist opens.
+    {
+        let accent_rgba = accent_rgba.clone();
+        let np_probe = np_probe.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let state = state.clone();
+        window.connect_realize(move |_| {
+            *accent_rgba.borrow_mut() = Some(np_probe.color());
+            // Re-patch the current track so it immediately shows the accent color
+            // if a track is already playing when the app starts.
+            let idx = state.borrow().playlist.current_index;
+            patch_pl_row(idx);
+        });
+    }
 
     window.present();
     if init_playlist_visible {
@@ -7413,7 +7379,7 @@ mod tests {
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
         let dur = Duration::from_secs(180);
-        s.apply_probed_duration(&path, dur);
+        let _ = s.apply_probed_duration(&path, dur);
         assert_eq!(s.playlist.tracks[0].duration, Some(dur));
     }
 
@@ -7422,7 +7388,7 @@ mod tests {
         let mut s = make_state();
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
-        s.apply_probed_duration(&path, Duration::from_secs(120));
+        let _ = s.apply_probed_duration(&path, Duration::from_secs(120));
         assert!(s.duration_cache.dirty);
         assert_eq!(s.duration_cache.get(&path), Some(Duration::from_secs(120)));
     }
@@ -7433,7 +7399,7 @@ mod tests {
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
         let dur = Duration::from_secs(200);
-        s.apply_probed_duration(&path, dur);
+        let _ = s.apply_probed_duration(&path, dur);
         // Player is Stopped (freshly created), current track matches → last_duration set.
         assert_eq!(s.last_duration, Some(dur));
     }
@@ -7445,7 +7411,7 @@ mod tests {
         s.playlist.add(fake_track("B"));
         s.playlist.current_index = 0;
         let path_b = s.playlist.tracks[1].path.clone();
-        s.apply_probed_duration(&path_b, Duration::from_secs(99));
+        let _ = s.apply_probed_duration(&path_b, Duration::from_secs(99));
         // Track B is not current → last_duration unchanged.
         assert_eq!(s.last_duration, None);
     }

@@ -111,6 +111,7 @@ scale.vol-scale slider {
     margin: -4px;
 }
 
+/* Main playlist — GtkTreeView.  Cell node instead of label node for text. */
 .playlist {
     background-color: #e8e8e8;
 }
@@ -120,7 +121,7 @@ scale.vol-scale slider {
     border-bottom: 1px solid #d4d4d4;
 }
 
-.playlist row label {
+.playlist cell {
     color: #333333;
     font-size: 12px;
 }
@@ -129,13 +130,8 @@ scale.vol-scale slider {
     background-color: alpha(@accent_bg_color, 0.18);
 }
 
-.playlist row:selected label {
+.playlist row:selected cell {
     color: @accent_bg_color;
-}
-
-.playlist row.playing label {
-    color: @accent_bg_color;
-    font-weight: bold;
 }
 
 .status-label {
@@ -279,11 +275,7 @@ button.pl-btn.destructive:hover {
     padding: 2px 4px;
 }
 
-/* Broken / unavailable playlist row */
-.playlist row.broken label {
-    color: #cc4444;
-    font-style: italic;
-}
+/* Broken / unavailable playlist row — ⚠ prefix shown in display text. */
 
 /* Media library sidebar navigation */
 .ml-sidebar {
