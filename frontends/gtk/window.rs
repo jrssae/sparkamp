@@ -113,6 +113,8 @@ struct AppState {
     id3_editor_window: Option<gtk4::Window>,
     /// Callback to refresh the media library window, registered by the window itself.
     rebuild_ml_callback: Option<Rc<dyn Fn()>>,
+    /// Callback to update ML scan UI in all windows, registered by each window.
+    ml_scan_ui_callback: Option<Rc<dyn Fn()>>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -147,6 +149,97 @@ enum ScanType {
     AddFolder,
     AddFiles,
     Rescan,
+}
+
+/// Shared helper: start an ML scan with the given scan type and total count.
+fn start_ml_scan(
+    state: &Rc<RefCell<AppState>>,
+    scan_type: ScanType,
+    total: usize,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_clone = cancel_flag.clone();
+    {
+        let mut s = state.borrow_mut();
+        s.ml_scan = Some(ScanState {
+            scan_type,
+            current: 0,
+            total,
+            cancel: cancel_clone,
+        });
+        s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+    cancel_flag
+}
+
+/// Shared helper: update ML scan progress and notify UI.
+fn update_ml_scan_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
+    {
+        let mut s = state.borrow_mut();
+        if let Some(ref mut scan) = s.ml_scan {
+            scan.current = current;
+            scan.total = total;
+        }
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+}
+
+/// Shared helper: complete an ML scan and notify UI.
+fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
+    {
+        let mut s = state.borrow_mut();
+        s.ml_scan = None;
+        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+}
+
+/// Shared helper: cancel an ML scan and notify UI.
+fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
+    {
+        let mut s = state.borrow_mut();
+        if let Some(ref scan) = s.ml_scan {
+            scan.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+}
+
+/// Shared helper: update scan UI elements based on current ml_scan state.
+/// Returns true if scanning is in progress.
+#[allow(dead_code)]
+fn update_scan_ui_elements(
+    state: &Rc<RefCell<AppState>>,
+    status_label: &gtk4::Label,
+    rescan_btn: &gtk4::Button,
+    cancel_btn: &gtk4::Button,
+) -> bool {
+    let scan_state = state.borrow().ml_scan.clone();
+    if let Some(scan) = scan_state {
+        rescan_btn.set_visible(false);
+        cancel_btn.set_visible(true);
+        if scan.total > 0 {
+            status_label.set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
+        } else {
+            status_label.set_text("Reading tags…");
+        }
+        true
+    } else {
+        rescan_btn.set_visible(true);
+        cancel_btn.set_visible(false);
+        status_label.set_text("");
+        false
+    }
 }
 
 impl AppState {
@@ -185,6 +278,7 @@ impl AppState {
             ml_window: None,
             id3_editor_window: None,
             rebuild_ml_callback: None,
+            ml_scan_ui_callback: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
             ml_scan: None,
@@ -5338,87 +5432,105 @@ fn open_settings_window(
                     };
                     let path_for_thread = path_str.clone();
 
-                    state_rc
-                        .borrow()
-                        .pending_bg_ops
-                        .set(state_rc.borrow().pending_bg_ops.get() + 1);
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let tx2 = tx.clone();
+                    let cancel_flag = start_ml_scan(&state_rc, ScanType::AddFolder, 0);
+                    status_rc.set_text("Reading tags…");
+
+                    // Three channels: fast done, metadata progress, final result.
+                    let (fast_tx, fast_rx) = std::sync::mpsc::channel::<Result<usize, String>>();
+                    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
+                    let (result_tx, result_rx) =
+                        std::sync::mpsc::channel::<Result<(bool, usize), String>>();
 
                     std::thread::spawn(move || {
-                        let result = {
-                            let lib = match crate::media_library::MediaLibrary::open_at(
-                                &crate::media_library::MediaLibrary::db_path_pub(),
-                            ) {
-                                Ok(l) => l,
-                                Err(e) => {
-                                    let _ = tx2.send(MlSettingsMsg::Error(e.to_string()));
-                                    return;
-                                }
-                            };
-                            use crate::media_library::AddFolderResult;
-                            match lib.add_folder(&path_for_thread) {
-                                Ok(add_result) => {
-                                    let folder_id = add_result.id();
-                                    let is_new = matches!(add_result, AddFolderResult::New(_));
-                                    match lib.rescan_folder_fast(folder_id, &path_for_thread) {
-                                        Ok((added, _removed)) => {
-                                            MlSettingsMsg::Done { is_new, added }
-                                        }
-                                        Err(e) => MlSettingsMsg::Error(e.to_string()),
-                                    }
-                                }
-                                Err(e) => MlSettingsMsg::Error(e.to_string()),
+                        let lib = match crate::media_library::MediaLibrary::open_at(
+                            &crate::media_library::MediaLibrary::db_path_pub(),
+                        ) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                let _ = fast_tx.send(Err(format!("DB error: {e}")));
+                                return;
                             }
                         };
-                        let _ = tx.send(result);
+
+                        let folder_id = match lib.add_folder(&path_for_thread) {
+                            Ok(r) => r.id(),
+                            Err(e) => {
+                                let _ = fast_tx.send(Err(format!("Could not add: {e}")));
+                                return;
+                            }
+                        };
+
+                        // Phase 1: fast scan
+                        if let Err(e) = lib.rescan_folder_fast(folder_id, &path_for_thread) {
+                            let _ = fast_tx.send(Err(format!("Fast scan error: {e}")));
+                            return;
+                        }
+                        let _ = fast_tx.send(Ok(0usize));
+
+                        // Phase 2: metadata scan
+                        let count = lib
+                            .scan_folder(folder_id, &cancel_flag, |c, t| {
+                                let _ = progress_tx.send((c, t));
+                            })
+                            .map(|(scanned, _, _)| scanned)
+                            .unwrap_or(0);
+                        let _ = result_tx.send(Ok((true, count)));
                     });
 
-                    #[derive(Debug)]
-                    enum MlSettingsMsg {
-                        Done { is_new: bool, added: usize },
-                        Error(String),
-                    }
+                    let fast_rx = std::cell::RefCell::new(fast_rx);
+                    let progress_rx = std::cell::RefCell::new(progress_rx);
+                    let result_rx = std::cell::RefCell::new(result_rx);
+                    let fast_handled = std::cell::Cell::new(false);
+                    let path_str_clone = path_str.clone();
+                    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                        // Handle fast scan completion
+                        if !fast_handled.get() {
+                            if let Ok(fast_result) = fast_rx.borrow().try_recv() {
+                                fast_handled.set(true);
+                                if let Err(e) = fast_result {
+                                    status_rc.set_text(&e);
+                                    complete_ml_scan(&state_rc);
+                                    return glib::ControlFlow::Break;
+                                }
+                                rebuild_cb();
+                                // Rebuild ML window to show added files
+                                if let Some(ref cb) = state_rc.borrow().rebuild_ml_callback {
+                                    cb();
+                                }
+                            }
+                        }
 
-                    let rebuild = rebuild_cb.clone();
-                    let status = status_rc.clone();
-                    glib::idle_add_local(move || {
-                        let msg = match rx.recv() {
-                            Ok(m) => m,
-                            Err(_) => return glib::ControlFlow::Continue,
-                        };
-                        rebuild();
-                        match msg {
-                            MlSettingsMsg::Done { is_new, added } => {
-                                let path_short = if path_str.len() > 40 {
-                                    format!("{}…", &path_str[..40])
-                                } else {
-                                    path_str.clone()
-                                };
-                                if is_new {
-                                    status.set_text(&format!(
-                                        "Added: {} ({added} track{})",
-                                        path_short,
-                                        if added == 1 { "" } else { "s" }
-                                    ));
-                                } else {
-                                    status.set_text(&format!(
-                                        "Rescanned: {} — {} track{} in library",
-                                        path_short,
-                                        added,
-                                        if added == 1 { "" } else { "s" }
+                        // Drain progress updates
+                        while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                            update_ml_scan_progress(&state_rc, current, total);
+                            status_rc.set_text(&format!("Reading tags {}/{}…", current, total));
+                        }
+
+                        // Check for completion
+                        if let Ok(result) = result_rx.borrow().try_recv() {
+                            rebuild_cb();
+                            match result {
+                                Err(e) => status_rc.set_text(&e),
+                                Ok((_, count)) => {
+                                    let path_short = if path_str_clone.len() > 40 {
+                                        format!("{}…", &path_str_clone[..40])
+                                    } else {
+                                        path_str_clone.clone()
+                                    };
+                                    status_rc.set_text(&format!(
+                                        "Added: {} ({} tracks)",
+                                        path_short, count
                                     ));
                                 }
                             }
-                            MlSettingsMsg::Error(e) => {
-                                status.set_text(&format!("Error: {e}"));
+                            if let Some(ref cb) = state_rc.borrow().rebuild_ml_callback {
+                                cb();
                             }
+                            complete_ml_scan(&state_rc);
+                            return glib::ControlFlow::Break;
                         }
-                        state_rc
-                            .borrow()
-                            .pending_bg_ops
-                            .set(state_rc.borrow().pending_bg_ops.get() - 1);
-                        glib::ControlFlow::Break
+
+                        glib::ControlFlow::Continue
                     });
                 },
             );
@@ -5556,18 +5668,11 @@ fn open_settings_window(
         // Note: This shares state with the media library window via state.ml_scan.
         {
             let state_rc = state.clone();
-            // Clone all variables for use in closures.
             let btn_rescan_ref = btn_rescan.clone();
             let btn_cancel_ref = btn_cancel_scan.clone();
             let status_ref = status_scan.clone();
-            let update_ui_ref = update_scan_ui.clone();
-            let btn_rescan_for_timeout = btn_rescan.clone();
-            let btn_cancel_for_timeout = btn_cancel_scan.clone();
-            let status_for_timeout = status_scan.clone();
-            let update_for_timeout = update_scan_ui.clone();
 
             btn_rescan.connect_clicked(move |_| {
-                // Check if a scan is already running.
                 if state_rc.borrow().ml_scan.is_some() {
                     status_ref.set_text("Scan already in progress");
                     return;
@@ -5577,28 +5682,12 @@ fn open_settings_window(
                     return;
                 }
 
-                // Get db path before borrow.
                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
 
-                // Set up shared scan state.
-                let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                {
-                    let mut s = state_rc.borrow_mut();
-                    s.ml_scan = Some(ScanState {
-                        scan_type: ScanType::Rescan,
-                        current: 0,
-                        total: 0,
-                        cancel: cancel_flag.clone(),
-                    });
-                }
-                update_ui_ref();
+                let cancel_flag = start_ml_scan(&state_rc, ScanType::Rescan, 0);
+                status_ref.set_text("Reading tags…");
                 btn_rescan_ref.set_sensitive(false);
                 btn_cancel_ref.set_visible(true);
-
-                state_rc
-                    .borrow()
-                    .pending_bg_ops
-                    .set(state_rc.borrow().pending_bg_ops.get() + 1);
 
                 let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                 let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -5622,41 +5711,25 @@ fn open_settings_window(
                 let progress_rx = std::cell::RefCell::new(progress_rx);
                 let result_rx = std::cell::RefCell::new(result_rx);
                 let state_rc2 = state_rc.clone();
-                // Clone for the timeout closure.
-                let status_for_timeout2 = status_for_timeout.clone();
-                let btn_rescan_for_timeout2 = btn_rescan_for_timeout.clone();
-                let btn_cancel_for_timeout2 = btn_cancel_for_timeout.clone();
-                let update_for_timeout2 = update_for_timeout.clone();
-                glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                let status_ref2 = status_ref.clone();
+                let btn_rescan_ref2 = btn_rescan_ref.clone();
+                let btn_cancel_ref2 = btn_cancel_ref.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                     // Check for progress updates
                     while let Ok((current, total)) = progress_rx.borrow().try_recv() {
-                        {
-                            let mut s = state_rc2.borrow_mut();
-                            if let Some(ref mut scan) = s.ml_scan {
-                                scan.current = current;
-                                scan.total = total;
-                            }
-                        }
-                        status_for_timeout2.set_text(&format!("Scanning {}/{}…", current, total));
+                        update_ml_scan_progress(&state_rc2, current, total);
+                        status_ref2.set_text(&format!("Reading tags {}/{}…", current, total));
                     }
 
                     // Check for completion
                     if let Ok(result) = result_rx.borrow().try_recv() {
-                        {
-                            let mut s = state_rc2.borrow_mut();
-                            s.ml_scan = None;
-                        }
+                        complete_ml_scan(&state_rc2);
                         match result {
-                            Err(e) => status_for_timeout2.set_text(&format!("Rescan error: {}", e)),
-                            Ok(_) => status_for_timeout2.set_text("Scan complete"),
+                            Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
+                            Ok(_) => status_ref2.set_text("Scan complete"),
                         }
-                        btn_rescan_for_timeout2.set_sensitive(true);
-                        btn_cancel_for_timeout2.set_visible(false);
-                        update_for_timeout2();
-                        state_rc2
-                            .borrow()
-                            .pending_bg_ops
-                            .set(state_rc2.borrow().pending_bg_ops.get() - 1);
+                        btn_rescan_ref2.set_sensitive(true);
+                        btn_cancel_ref2.set_visible(false);
                         glib::ControlFlow::Break
                     } else {
                         glib::ControlFlow::Continue
@@ -5668,15 +5741,19 @@ fn open_settings_window(
         // Cancel scan button.
         {
             let state_rc = state.clone();
-            let update_ui = update_scan_ui.clone();
             let status_ref = status_scan.clone();
             btn_cancel_scan.connect_clicked(move |_| {
-                if let Some(ref scan) = state_rc.borrow().ml_scan {
-                    scan.cancel
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    status_ref.set_text("Cancelling…");
-                }
+                cancel_ml_scan(&state_rc);
+                status_ref.set_text("Cancelling…");
+            });
+        }
+
+        // Polling timer to sync scan state with UI.
+        {
+            let update_ui = update_scan_ui.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 update_ui();
+                glib::ControlFlow::Continue
             });
         }
 
@@ -6414,6 +6491,48 @@ fn open_media_library_window(
         // Capture store_ref before factory so it's available for the factory's right-click handler
         let store_for_ctx = track_store.clone();
 
+        // ── Unscanned indicator column (always first, always visible) ──────────
+        {
+            let unscanned_factory = SignalListItemFactory::new();
+
+            unscanned_factory.connect_setup(|_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                if li.child().is_some() {
+                    return;
+                }
+                let lbl = Label::builder()
+                    .halign(Align::Center)
+                    .valign(Align::Center)
+                    .css_classes(["ml-col-label"])
+                    .build();
+                li.set_child(Some(&lbl));
+            });
+
+            unscanned_factory.connect_bind(move |_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                let boxed = li
+                    .item()
+                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok());
+                let Some(boxed) = boxed else {
+                    return;
+                };
+                let t = boxed.borrow::<crate::media_library::LibTrack>();
+                let lbl = li.child().and_then(|c| c.downcast::<Label>().ok());
+                let Some(lbl) = lbl else {
+                    return;
+                };
+                if t.last_scanned.is_none() {
+                    lbl.set_label("❓");
+                } else {
+                    lbl.set_label("");
+                }
+            });
+
+            let unscanned_col = ColumnViewColumn::new(Some(""), Some(unscanned_factory));
+            unscanned_col.set_fixed_width(24);
+            col_view.append_column(&unscanned_col);
+        }
+
         let all_cols: Vec<(String, ColumnViewColumn)> = col_defs
             .iter()
             .map(|(id, header, _min_w, expand)| {
@@ -6635,6 +6754,109 @@ fn open_media_library_window(
                         });
                         vbox.append(&btn_id3);
 
+                        // Rescan Metadata
+                        let btn_rescan = Button::with_label("Rescan Metadata");
+                        let state_rescan = state_gest.clone();
+                        let sel_rescan = sel_gest.clone();
+                        let popover_rescan = popover.clone();
+                        let store_rescan = store_gest.clone();
+                        btn_rescan.connect_clicked(move |_btn| {
+                            // Collect selected paths
+                            let mut paths_to_scan: Vec<String> = Vec::new();
+                            for i in 0..sel_rescan.n_items() {
+                                if sel_rescan.is_selected(i) {
+                                    if let Some(obj) = sel_rescan
+                                        .item(i)
+                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                    {
+                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        paths_to_scan.push(t.path.clone());
+                                    }
+                                }
+                            }
+
+                            if paths_to_scan.is_empty() {
+                                popover_rescan.unparent();
+                                return;
+                            }
+
+                            // Check if a scan is already in progress
+                            if state_rescan.borrow().ml_scan.is_some() {
+                                popover_rescan.unparent();
+                                return;
+                            }
+
+                            let total = paths_to_scan.len();
+                            let cancel_flag =
+                                start_ml_scan(&state_rescan, ScanType::AddFiles, total);
+
+                            let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                            let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+                            std::thread::spawn(move || {
+                                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                                let lib =
+                                    match crate::media_library::MediaLibrary::open_at(&db_path) {
+                                        Ok(l) => l,
+                                        Err(_) => {
+                                            let _ = result_tx.send(());
+                                            return;
+                                        }
+                                    };
+
+                                for (i, path) in paths_to_scan.iter().enumerate() {
+                                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    let _ = lib.rescan_track(path);
+                                    let _ = progress_tx.send(i + 1);
+                                }
+                                let _ = result_tx.send(());
+                            });
+
+                            let progress_rx = std::cell::RefCell::new(progress_rx);
+                            let result_rx = std::cell::RefCell::new(result_rx);
+                            let state_for_timer = state_rescan.clone();
+                            let store_for_timer = store_rescan.clone();
+                            glib::timeout_add_local(
+                                std::time::Duration::from_millis(500),
+                                move || {
+                                    // Drain progress updates
+                                    while let Ok(current) = progress_rx.borrow().try_recv() {
+                                        update_ml_scan_progress(&state_for_timer, current, total);
+                                    }
+
+                                    // Check for completion
+                                    if result_rx.borrow().try_recv().is_ok() {
+                                        complete_ml_scan(&state_for_timer);
+                                        // Rebuild the store to reflect rescanned tracks
+                                        let tracks: Vec<crate::media_library::LibTrack> =
+                                            state_for_timer
+                                                .borrow()
+                                                .media_lib
+                                                .as_ref()
+                                                .and_then(|lib| lib.all_tracks().ok())
+                                                .unwrap_or_default();
+                                        let boxed: Vec<glib::BoxedAnyObject> = tracks
+                                            .into_iter()
+                                            .map(glib::BoxedAnyObject::new)
+                                            .collect();
+                                        store_for_timer.splice(
+                                            0,
+                                            store_for_timer.n_items(),
+                                            &boxed,
+                                        );
+                                        return glib::ControlFlow::Break;
+                                    }
+
+                                    glib::ControlFlow::Continue
+                                },
+                            );
+
+                            popover_rescan.unparent();
+                        });
+                        vbox.append(&btn_rescan);
+
                         let sep = Separator::new(Orientation::Horizontal);
                         vbox.append(&sep);
 
@@ -6709,12 +6931,6 @@ fn open_media_library_window(
                             } else {
                                 btn.set_sensitive(false);
                                 btn.set_label("");
-                            }
-                            // Style unscanned rows with black background
-                            if t.last_scanned.is_none() {
-                                btn.add_css_class("unscanned-row");
-                            } else {
-                                btn.remove_css_class("unscanned-row");
                             }
                         }
                         return;
@@ -6792,13 +7008,6 @@ fn open_media_library_window(
                         _ => String::new(),
                     };
                     lbl.set_text(&gtk_safe(&text));
-
-                    // Style unscanned rows with black background
-                    if t.last_scanned.is_none() {
-                        lbl.add_css_class("unscanned-row");
-                    } else {
-                        lbl.remove_css_class("unscanned-row");
-                    }
                 });
 
                 let col = ColumnViewColumn::new(Some(header), Some(factory));
@@ -7079,18 +7288,8 @@ fn open_media_library_window(
                         };
 
                         // Set up scan state: shows cancel button and disables rescan.
-                        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        {
-                            let mut s = state_inner.borrow_mut();
-                            s.ml_scan = Some(ScanState {
-                                scan_type: ScanType::AddFolder,
-                                current: 0,
-                                total: 0,
-                                cancel: cancel.clone(),
-                            });
-                            s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
-                        }
-                        status_inner.set_text("Scanning…");
+                        let cancel_flag = start_ml_scan(&state_inner, ScanType::AddFolder, 0);
+                        status_inner.set_text("Reading tags…");
                         cancel_btn.set_visible(true);
                         rescan_btn.set_sensitive(false);
 
@@ -7102,7 +7301,7 @@ fn open_media_library_window(
                         let (result_tx, result_rx) =
                             std::sync::mpsc::channel::<Result<usize, String>>();
 
-                        let cancel_thread = cancel.clone();
+                        let cancel_thread = cancel_flag.clone();
                         std::thread::spawn(move || {
                             let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
@@ -7128,9 +7327,10 @@ fn open_media_library_window(
                             let _ = fast_tx.send(Ok(folder_id as usize));
                             // Phase 2: read metadata for tracks that need it.
                             let count = lib
-                                .rescan_folder_metadata(folder_id, &cancel_thread, |c, t| {
+                                .scan_folder(folder_id, &cancel_thread, |c, t| {
                                     let _ = progress_tx.send((c, t));
                                 })
+                                .map(|(scanned, _, _)| scanned)
                                 .unwrap_or(0);
                             let _ = result_tx.send(Ok(count));
                         });
@@ -7152,9 +7352,7 @@ fn open_media_library_window(
                                     }
                                     if let Err(e) = fast_result {
                                         status_inner.set_text(&e);
-                                        let mut s = state_inner.borrow_mut();
-                                        s.ml_scan = None;
-                                        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+                                        complete_ml_scan(&state_inner);
                                         cancel_btn.set_visible(false);
                                         rescan_btn.set_sensitive(true);
                                         return glib::ControlFlow::Break;
@@ -7166,24 +7364,18 @@ fn open_media_library_window(
 
                             // Drain metadata progress updates.
                             while let Ok((current, total)) = progress_rx.borrow().try_recv() {
-                                {
-                                    let mut s = state_inner.borrow_mut();
-                                    if let Some(ref mut scan) = s.ml_scan {
-                                        scan.current = current;
-                                        scan.total = total;
-                                    }
-                                }
-                                status_inner.set_text(&format!("Reading tags… {current}/{total}"));
+                                update_ml_scan_progress(&state_inner, current, total);
+                                status_inner
+                                    .set_text(&format!("Reading tags {}/{}…", current, total));
                             }
 
                             // Check for final completion.
                             if let Ok(result) = result_rx.borrow().try_recv() {
                                 {
                                     let mut s = state_inner.borrow_mut();
-                                    s.ml_scan = None;
                                     s.media_lib = crate::media_library::MediaLibrary::open().ok();
-                                    s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
                                 }
+                                complete_ml_scan(&state_inner);
                                 match result {
                                     Err(e) => status_inner.set_text(&e),
                                     Ok(_) => {
@@ -7223,27 +7415,11 @@ fn open_media_library_window(
                     }
                 };
 
-                // Initialize scan state
-                let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                {
-                    let mut s = state_rc.borrow_mut();
-                    s.ml_scan = Some(ScanState {
-                        scan_type: ScanType::Rescan,
-                        current: 0,
-                        total: 0,
-                        cancel: cancel_flag.clone(),
-                    });
-                }
-
-                // Update UI
-                status_ref.set_text("Scanning…");
+                let cancel_flag = start_ml_scan(&state_rc, ScanType::Rescan, 0);
+                status_ref.set_text("Reading tags…");
                 cancel_ref.set_visible(true);
                 rescan_ref.set_sensitive(false);
 
-                state_rc
-                    .borrow()
-                    .pending_bg_ops
-                    .set(state_rc.borrow().pending_bg_ops.get() + 1);
                 let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                 let (result_tx, result_rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
@@ -7268,26 +7444,20 @@ fn open_media_library_window(
                 let status_ref2 = status_ref.clone();
                 let cancel_ref2 = cancel_ref.clone();
                 let rescan_ref2 = rescan_ref.clone();
-                glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                     // Check for progress updates
                     while let Ok((current, total)) = progress_rx.borrow().try_recv() {
-                        {
-                            let mut s = state_rc2.borrow_mut();
-                            if let Some(ref mut scan) = s.ml_scan {
-                                scan.current = current;
-                                scan.total = total;
-                            }
-                        }
-                        status_ref2.set_text(&format!("Scanning {}/{}…", current, total));
+                        update_ml_scan_progress(&state_rc2, current, total);
+                        status_ref2.set_text(&format!("Reading tags {}/{}…", current, total));
                     }
 
                     // Check for completion
                     if let Ok(result) = result_rx.borrow().try_recv() {
                         {
                             let mut s = state_rc2.borrow_mut();
-                            s.ml_scan = None;
                             s.media_lib = crate::media_library::MediaLibrary::open().ok();
                         }
+                        complete_ml_scan(&state_rc2);
                         match result {
                             Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
                             Ok(_) => {
@@ -7297,10 +7467,6 @@ fn open_media_library_window(
                         }
                         cancel_ref2.set_visible(false);
                         rescan_ref2.set_sensitive(true);
-                        state_rc2
-                            .borrow()
-                            .pending_bg_ops
-                            .set(state_rc2.borrow().pending_bg_ops.get() - 1);
                         return glib::ControlFlow::Break;
                     }
 
@@ -7312,18 +7478,39 @@ fn open_media_library_window(
         // Cancel scan handler
         {
             let state_rc = state.clone();
-            let status_ref = files_status.clone();
             let cancel_ref = btn_cancel.clone();
             let rescan_ref = btn_rescan.clone();
+            let status_ref = files_status.clone();
             btn_cancel.connect_clicked(move |_| {
-                let s = state_rc.borrow_mut();
-                if let Some(ref scan) = s.ml_scan {
-                    scan.cancel
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    status_ref.set_text("Cancelling…");
+                cancel_ml_scan(&state_rc);
+                status_ref.set_text("Cancelling…");
+                cancel_ref.set_visible(false);
+                rescan_ref.set_sensitive(true);
+            });
+        }
+
+        // Polling timer to sync scan state with UI.
+        {
+            let state_rc = state.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
+            let status_ref = files_status.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                let scan_state = state_rc.borrow().ml_scan.clone();
+                if let Some(scan) = scan_state {
+                    cancel_ref.set_visible(true);
+                    rescan_ref.set_sensitive(false);
+                    if scan.total > 0 {
+                        status_ref
+                            .set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
+                    } else {
+                        status_ref.set_text("Reading tags…");
+                    }
+                } else {
                     cancel_ref.set_visible(false);
                     rescan_ref.set_sensitive(true);
                 }
+                glib::ControlFlow::Continue
             });
         }
 
