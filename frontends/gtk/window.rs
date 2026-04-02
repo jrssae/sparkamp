@@ -38,9 +38,9 @@ use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource,
     DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image, Label,
-    ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType, Popover,
-    Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack,
-    StackTransitionType, TreeView, TreeViewColumn,
+    ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType, Scale,
+    ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack, StackTransitionType,
+    TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -2353,25 +2353,88 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     });
 
     // Right-click context menu on a row: Play / View+Edit ID3 / Remove.
+    // NOTE: Attached to ScrolledWindow instead of TreeView to work around GTK4 bug
+    // where PopoverMenu doesn't receive hover events when attached directly to TreeView.
     {
         let ctx_click = GestureClick::new();
         ctx_click.set_button(3); // right mouse button
-        let state_ctx = state.clone();
-        let play_ctx = play_and_update.clone();
-        let remove_ctx = remove_selected.clone();
         let pl_view_ctx = pl_view.clone();
-        let patch_ctx = patch_pl_row.clone();
-        let win_ctx = window.downgrade();
-        let rebuild_ctx = rebuild_playlist.clone();
+        let pl_scroll_ctx = pl_scroll.clone();
+
+        // Create action group and attach to the ScrolledWindow (not TreeView)
+        let pl_action_group = gio::SimpleActionGroup::new();
+        pl_scroll_ctx.insert_action_group("pl", Some(&pl_action_group));
+
+        // Store the current row index for the action handlers
+        let current_row: Rc<RefCell<Option<i64>>> = Rc::new(RefCell::new(None));
+
+        // Register playlist menu actions in the action group
+        let action_play = gio::SimpleAction::new("play", None); // Short name
+        let state_play = state.clone();
+        let play_callback = play_and_update.clone();
+        let patch_callback = patch_pl_row.clone();
+        let row_play = current_row.clone();
+        action_play.connect_activate(move |_, _| {
+            let row_idx = *row_play.borrow();
+            if let Some(idx) = row_idx {
+                let idx = idx as usize;
+                let old_idx = state_play.borrow().playlist.current_index;
+                state_play.borrow_mut().playlist.jump_to(idx);
+                play_callback();
+                if old_idx != idx {
+                    patch_callback(old_idx);
+                }
+            }
+        });
+        pl_action_group.add_action(&action_play);
+
+        let action_id3 = gio::SimpleAction::new("edit-id3", None); // Short name
+        let state_id3 = state.clone();
+        let win_id3 = window.downgrade();
+        let rebuild_id3 = rebuild_playlist.clone();
+        let row_id3 = current_row.clone();
+        action_id3.connect_activate(move |_, _| {
+            let row_idx = *row_id3.borrow();
+            if let Some(idx) = row_idx {
+                let path = state_id3
+                    .borrow()
+                    .playlist
+                    .tracks
+                    .get(idx as usize)
+                    .map(|t| t.path.clone());
+                if let Some(path) = path {
+                    open_id3_editor_window(
+                        win_id3.upgrade().as_ref(),
+                        path,
+                        state_id3.clone(),
+                        rebuild_id3.clone(),
+                        None,
+                    );
+                }
+            }
+        });
+        pl_action_group.add_action(&action_id3);
+
+        let action_remove = gio::SimpleAction::new("remove", None); // Short name
+        let remove_callback = remove_selected.clone();
+        action_remove.connect_activate(move |_, _| {
+            remove_callback();
+        });
+        pl_action_group.add_action(&action_remove);
+
         ctx_click.connect_pressed(move |_, _, x, y| {
             #[allow(deprecated)]
             let row_idx = match pl_view_ctx.path_at_pos(x as i32, y as i32) {
                 Some((Some(path), _, _, _)) => match path.indices().first().copied() {
-                    Some(i) => i as usize,
+                    Some(i) => i as i64,
                     None => return,
                 },
                 _ => return,
             };
+
+            // Store the row index for the action handlers
+            *current_row.borrow_mut() = Some(row_idx);
+
             // Select the right-clicked row so Remove acts on it.
             #[allow(deprecated)]
             pl_view_ctx.selection().unselect_all();
@@ -2383,68 +2446,21 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 #[allow(deprecated)]
                 pl_view_ctx.selection().select_iter(&iter);
             }
-            let popover = Popover::new();
-            popover.set_parent(&pl_view_ctx);
+
+            // Build menu model with prefixed action names
+            let menu = gio::Menu::new();
+            menu.append_item(&gio::MenuItem::new(Some("▶ Play"), Some("pl.play")));
+            menu.append_item(&gio::MenuItem::new(
+                Some("🎵 View / Edit ID3"),
+                Some("pl.edit-id3"),
+            ));
+            menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));
+
+            // Create popover menu
+            let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+            popover.set_parent(&pl_scroll_ctx);
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
-            let menu_box = GtkBox::new(Orientation::Vertical, 2);
-            let btn_play = Button::with_label("▶ Play");
-            let btn_id3 = Button::with_label("🎵 View / Edit ID3");
-            let btn_del = Button::with_label("✕ Remove");
-            for btn in [&btn_play, &btn_id3, &btn_del] {
-                btn.add_css_class("popover-button");
-            }
-            {
-                let state_p = state_ctx.clone();
-                let play_p = play_ctx.clone();
-                let pop_p = popover.clone();
-                let patch_p = patch_ctx.clone();
-                btn_play.connect_clicked(move |_| {
-                    let old_idx = state_p.borrow().playlist.current_index;
-                    state_p.borrow_mut().playlist.jump_to(row_idx);
-                    play_p();
-                    if old_idx != row_idx {
-                        patch_p(old_idx);
-                    }
-                    pop_p.popdown();
-                });
-            }
-            {
-                let state_i = state_ctx.clone();
-                let win_i = win_ctx.clone();
-                let rebuild_i = rebuild_ctx.clone();
-                let pop_i = popover.clone();
-                btn_id3.connect_clicked(move |_| {
-                    let path = state_i
-                        .borrow()
-                        .playlist
-                        .tracks
-                        .get(row_idx)
-                        .map(|t| t.path.clone());
-                    if let Some(path) = path {
-                        open_id3_editor_window(
-                            win_i.upgrade().as_ref(),
-                            path,
-                            state_i.clone(),
-                            rebuild_i.clone(),
-                            None,
-                        );
-                    }
-                    pop_i.popdown();
-                });
-            }
-            {
-                let remove_r = remove_ctx.clone();
-                let pop_r = popover.clone();
-                btn_del.connect_clicked(move |_| {
-                    remove_r();
-                    pop_r.popdown();
-                });
-            }
-            menu_box.append(&btn_play);
-            menu_box.append(&btn_id3);
-            menu_box.append(&btn_del);
-            popover.set_child(Some(&menu_box));
             popover.popup();
         });
         #[allow(deprecated)]
@@ -6502,6 +6518,193 @@ fn open_media_library_window(
         col_view.set_hexpand(true);
         col_view.set_vexpand(true);
 
+        // Create action group and actions for ML right-click menu
+        let ml_action_group = gio::SimpleActionGroup::new();
+        col_view.insert_action_group("ml", Some(&ml_action_group));
+
+        // Store for selected tracks (used by action handlers)
+        let ml_selected_tracks: Rc<RefCell<Vec<std::path::PathBuf>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
+        // Append to Playlist action
+        let ml_action_append_state = state.clone();
+        let _ml_action_append_sel = multi_sel.clone();
+        let ml_action_append_rebuild = rebuild_playlist.clone();
+        let ml_action_append_tracks = ml_selected_tracks.clone();
+        let action_append = gio::SimpleAction::new("append", None); // Note: action name without "ml." prefix
+        action_append.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_append_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            let was_empty = ml_action_append_state.borrow().playlist.is_empty();
+            for path in tracks {
+                let track = crate::model::Track::from_path(&path).ok();
+                if let Some(track) = track {
+                    ml_action_append_state.borrow_mut().playlist.add(track);
+                }
+            }
+            if ml_action_append_state
+                .borrow()
+                .config
+                .behavior
+                .autoplay_on_add
+                && was_empty
+            {
+                ml_action_append_state.borrow_mut().play_current();
+            }
+            ml_action_append_rebuild();
+        });
+        ml_action_group.add_action(&action_append);
+
+        // Replace current playlist action
+        let ml_action_replace_state = state.clone();
+        let ml_action_replace_tracks = ml_selected_tracks.clone();
+        let ml_action_replace_rebuild = rebuild_playlist.clone();
+        let action_replace = gio::SimpleAction::new("replace", None); // Note: action name without "ml." prefix
+        action_replace.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_replace_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            let _ = ml_action_replace_state.borrow_mut().player.stop();
+            ml_action_replace_state.borrow_mut().playlist.clear();
+            for path in tracks {
+                let track = crate::model::Track::from_path(&path).ok();
+                if let Some(track) = track {
+                    ml_action_replace_state.borrow_mut().playlist.add(track);
+                }
+            }
+            if ml_action_replace_state
+                .borrow()
+                .config
+                .behavior
+                .autoplay_on_add
+                && !ml_action_replace_state.borrow().playlist.is_empty()
+            {
+                ml_action_replace_state.borrow_mut().play_current();
+            }
+            ml_action_replace_rebuild();
+        });
+        ml_action_group.add_action(&action_replace);
+
+        // View/Edit ID3 Info action (for single selection)
+        let ml_action_id3_state = state.clone();
+        let ml_action_id3_tracks = ml_selected_tracks.clone();
+        let ml_action_id3_rebuild = rebuild_playlist.clone();
+        let action_id3 = gio::SimpleAction::new("edit-id3", None); // Note: action name without "ml." prefix
+        action_id3.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_id3_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            // Only open for the first (single) selected track
+            let path = tracks[0].clone();
+            open_id3_editor_window(
+                None::<&gtk4::Window>,
+                path,
+                ml_action_id3_state.clone(),
+                ml_action_id3_rebuild.clone(),
+                None,
+            );
+        });
+        ml_action_group.add_action(&action_id3);
+
+        // Rescan Metadata action
+        let ml_action_rescan_state = state.clone();
+        let ml_action_rescan_tracks = ml_selected_tracks.clone();
+        let ml_action_rescan_store = track_store.clone();
+        let action_rescan = gio::SimpleAction::new("rescan", None); // Note: action name without "ml." prefix
+        action_rescan.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_rescan_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            if ml_action_rescan_state.borrow().ml_scan.is_some() {
+                return;
+            }
+            let paths: Vec<String> = tracks
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            let total = paths.len();
+            let cancel_flag = start_ml_scan(&ml_action_rescan_state, ScanType::AddFiles, total);
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+            let (result_tx, result_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                    Ok(l) => l,
+                    Err(_) => {
+                        let _ = result_tx.send(());
+                        return;
+                    }
+                };
+                for (i, path) in paths.iter().enumerate() {
+                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = lib.rescan_track(path);
+                    let _ = progress_tx.send(i + 1);
+                }
+                let _ = result_tx.send(());
+            });
+            let progress_rx = std::cell::RefCell::new(progress_rx);
+            let result_rx = std::cell::RefCell::new(result_rx);
+            let state_for_timer = ml_action_rescan_state.clone();
+            let store_for_timer = ml_action_rescan_store.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                while let Ok(current) = progress_rx.borrow().try_recv() {
+                    update_ml_scan_progress(&state_for_timer, current, total);
+                }
+                if result_rx.borrow().try_recv().is_ok() {
+                    complete_ml_scan(&state_for_timer);
+                    let tracks: Vec<crate::media_library::LibTrack> = state_for_timer
+                        .borrow()
+                        .media_lib
+                        .as_ref()
+                        .and_then(|lib| lib.all_tracks().ok())
+                        .unwrap_or_default();
+                    let boxed: Vec<glib::BoxedAnyObject> =
+                        tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
+                    store_for_timer.splice(0, store_for_timer.n_items(), &boxed);
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        });
+        ml_action_group.add_action(&action_rescan);
+
+        // Remove from Media Library action
+        let ml_action_remove_state = state.clone();
+        let ml_action_remove_tracks = ml_selected_tracks.clone();
+        let ml_action_remove_store = track_store.clone();
+        let action_remove = gio::SimpleAction::new("remove", None); // Note: action name without "ml." prefix
+        action_remove.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_remove_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            if let Some(lib) = ml_action_remove_state.borrow().media_lib.as_ref() {
+                for path in &tracks {
+                    let path_str = path.to_string_lossy().into_owned();
+                    if let Ok(track) = lib.track_by_path(&path_str) {
+                        let _ = lib.remove_track(track.id);
+                    }
+                }
+            }
+            let tracks: Vec<crate::media_library::LibTrack> = ml_action_remove_state
+                .borrow()
+                .media_lib
+                .as_ref()
+                .and_then(|lib| lib.all_tracks().ok())
+                .unwrap_or_default();
+            let boxed: Vec<glib::BoxedAnyObject> =
+                tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
+            ml_action_remove_store.splice(0, ml_action_remove_store.n_items(), &boxed);
+        });
+        ml_action_group.add_action(&action_remove);
+
         let col_defs: &[(&str, &str, i32, bool)] = ALL_COLUMNS
             .iter()
             .map(|c| (c.id, c.header, 80, c.expand))
@@ -6570,11 +6773,10 @@ fn open_media_library_window(
                 let id_str = id.to_string();
                 let is_artwork = id_str == "artwork_path";
                 let connected = connected_artwork.clone();
-                let ctx_state = state.clone();
                 let ctx_multi_sel = multi_sel.clone();
-                let ctx_rebuild_pl = rebuild_playlist.clone();
                 let ctx_col_view = col_view.clone();
-                let ctx_store = store_for_ctx.clone();
+                let _ctx_store = store_for_ctx.clone();
+                let ml_tracks_gest = ml_selected_tracks.clone();
 
                 factory.connect_setup(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -6621,12 +6823,10 @@ fn open_media_library_window(
                     // Add right-click gesture to each row
                     let gesture = gtk4::GestureClick::new();
                     gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
-                    let state_gest = ctx_state.clone();
                     let sel_gest = ctx_multi_sel.clone();
-                    let rebuild_pl_gest = ctx_rebuild_pl.clone();
                     let col_popup = ctx_col_view.clone();
                     let li_gest = li.clone();
-                    let store_gest = ctx_store.clone();
+                    let ml_tracks_for_gest = ml_tracks_gest.clone();
                     gesture.connect_pressed(move |_gest, n_press, x, y| {
                         if n_press != 1 {
                             return;
@@ -6636,10 +6836,6 @@ fn open_media_library_window(
                             return;
                         };
                         let item_clone = item.clone();
-                        let Some(boxed) = item.downcast::<glib::BoxedAnyObject>().ok() else {
-                            return;
-                        };
-                        let _track = boxed.borrow::<crate::media_library::LibTrack>();
 
                         // Find the index of the clicked item by checking each item
                         let mut clicked_index: Option<u32> = None;
@@ -6661,6 +6857,23 @@ fn open_media_library_window(
                             }
                         }
 
+                        // Collect selected tracks into shared state for action handlers
+                        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+                        let mut selected_count = 0usize;
+                        for i in 0..sel_gest.n_items() {
+                            if sel_gest.is_selected(i) {
+                                if let Some(obj) = sel_gest
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                {
+                                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                                    paths.push(std::path::PathBuf::from(&t.path));
+                                    selected_count += 1;
+                                }
+                            }
+                        }
+                        *ml_tracks_for_gest.borrow_mut() = paths;
+
                         // Convert coordinates from gesture widget to ColumnView
                         // The gesture gives coords in the child widget's space
                         let child = li_gest.child();
@@ -6676,8 +6889,36 @@ fn open_media_library_window(
                             (x, y)
                         };
 
-                        // Create popover at converted position
-                        let popover = gtk4::Popover::new();
+                        // Build menu model
+                        let menu = gio::Menu::new();
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Append to Playlist"),
+                            Some("ml.append"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Replace current playlist"),
+                            Some("ml.replace"),
+                        ));
+
+                        // Only show View/Edit ID3 for single selection
+                        if selected_count == 1 {
+                            menu.append_item(&gio::MenuItem::new(
+                                Some("View/Edit ID3 Info"),
+                                Some("ml.edit-id3"),
+                            ));
+                        }
+
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Rescan Metadata"),
+                            Some("ml.rescan"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Remove from Media Library"),
+                            Some("ml.remove"),
+                        ));
+
+                        // Create popover menu
+                        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
                         popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
                             popup_x as i32,
                             popup_y as i32,
@@ -6685,247 +6926,6 @@ fn open_media_library_window(
                             1,
                         )));
                         popover.set_parent(&col_popup);
-
-                        let vbox = GtkBox::new(Orientation::Vertical, 0);
-                        vbox.set_margin_top(4);
-                        vbox.set_margin_bottom(4);
-                        vbox.set_margin_start(4);
-                        vbox.set_margin_end(4);
-
-                        // Append to Playlist
-                        let btn_add = Button::with_label("Append to Playlist");
-                        let state_add = state_gest.clone();
-                        let sel_add = sel_gest.clone();
-                        let rebuild_add = rebuild_pl_gest.clone();
-                        let popover_add = popover.clone();
-                        btn_add.connect_clicked(move |_btn| {
-                            let was_empty = state_add.borrow().playlist.is_empty();
-                            for i in 0..sel_add.n_items() {
-                                if sel_add.is_selected(i) {
-                                    if let Some(obj) = sel_add
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        let track = libtrack_to_track(&t);
-                                        state_add.borrow_mut().playlist.add(track);
-                                    }
-                                }
-                            }
-                            if state_add.borrow().config.behavior.autoplay_on_add && was_empty {
-                                state_add.borrow_mut().play_current();
-                            }
-                            rebuild_add();
-                            popover_add.unparent();
-                        });
-                        vbox.append(&btn_add);
-
-                        // Replace current playlist
-                        let btn_replace = Button::with_label("Replace current playlist");
-                        let state_replace = state_gest.clone();
-                        let sel_replace = sel_gest.clone();
-                        let rebuild_replace = rebuild_pl_gest.clone();
-                        let popover_replace = popover.clone();
-                        btn_replace.connect_clicked(move |_btn| {
-                            // Stop current playback first (always, regardless of autoplay setting)
-                            let _ = state_replace.borrow_mut().player.stop();
-                            // Clear the playlist first.
-                            state_replace.borrow_mut().playlist.clear();
-                            for i in 0..sel_replace.n_items() {
-                                if sel_replace.is_selected(i) {
-                                    if let Some(obj) = sel_replace
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        let track = libtrack_to_track(&t);
-                                        state_replace.borrow_mut().playlist.add(track);
-                                    }
-                                }
-                            }
-                            // Autoplay if setting is enabled and there are new tracks
-                            if state_replace.borrow().config.behavior.autoplay_on_add
-                                && !state_replace.borrow().playlist.is_empty()
-                            {
-                                state_replace.borrow_mut().play_current();
-                            }
-                            rebuild_replace();
-                            popover_replace.unparent();
-                        });
-                        vbox.append(&btn_replace);
-
-                        // View/Edit ID3 Info
-                        let btn_id3 = Button::with_label("View/Edit ID3 Info");
-                        let state_id3 = state_gest.clone();
-                        let sel_id3 = sel_gest.clone();
-                        let rebuild_id3 = rebuild_pl_gest.clone();
-                        let popover_id3 = popover.clone();
-                        btn_id3.connect_clicked(move |_btn| {
-                            for i in 0..sel_id3.n_items() {
-                                if sel_id3.is_selected(i) {
-                                    if let Some(obj) = sel_id3
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        let path = std::path::PathBuf::from(&t.path);
-                                        open_id3_editor_window(
-                                            None::<&gtk4::Window>,
-                                            path,
-                                            state_id3.clone(),
-                                            rebuild_id3.clone(),
-                                            None,
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                            popover_id3.unparent();
-                        });
-                        vbox.append(&btn_id3);
-
-                        // Rescan Metadata
-                        let btn_rescan = Button::with_label("Rescan Metadata");
-                        let state_rescan = state_gest.clone();
-                        let sel_rescan = sel_gest.clone();
-                        let popover_rescan = popover.clone();
-                        let store_rescan = store_gest.clone();
-                        btn_rescan.connect_clicked(move |_btn| {
-                            // Collect selected paths
-                            let mut paths_to_scan: Vec<String> = Vec::new();
-                            for i in 0..sel_rescan.n_items() {
-                                if sel_rescan.is_selected(i) {
-                                    if let Some(obj) = sel_rescan
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        paths_to_scan.push(t.path.clone());
-                                    }
-                                }
-                            }
-
-                            if paths_to_scan.is_empty() {
-                                popover_rescan.unparent();
-                                return;
-                            }
-
-                            // Check if a scan is already in progress
-                            if state_rescan.borrow().ml_scan.is_some() {
-                                popover_rescan.unparent();
-                                return;
-                            }
-
-                            let total = paths_to_scan.len();
-                            let cancel_flag =
-                                start_ml_scan(&state_rescan, ScanType::AddFiles, total);
-
-                            let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-                            let (result_tx, result_rx) = std::sync::mpsc::channel();
-
-                            std::thread::spawn(move || {
-                                let db_path = crate::media_library::MediaLibrary::db_path_pub();
-                                let lib =
-                                    match crate::media_library::MediaLibrary::open_at(&db_path) {
-                                        Ok(l) => l,
-                                        Err(_) => {
-                                            let _ = result_tx.send(());
-                                            return;
-                                        }
-                                    };
-
-                                for (i, path) in paths_to_scan.iter().enumerate() {
-                                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                                        break;
-                                    }
-                                    let _ = lib.rescan_track(path);
-                                    let _ = progress_tx.send(i + 1);
-                                }
-                                let _ = result_tx.send(());
-                            });
-
-                            let progress_rx = std::cell::RefCell::new(progress_rx);
-                            let result_rx = std::cell::RefCell::new(result_rx);
-                            let state_for_timer = state_rescan.clone();
-                            let store_for_timer = store_rescan.clone();
-                            glib::timeout_add_local(
-                                std::time::Duration::from_millis(500),
-                                move || {
-                                    // Drain progress updates
-                                    while let Ok(current) = progress_rx.borrow().try_recv() {
-                                        update_ml_scan_progress(&state_for_timer, current, total);
-                                    }
-
-                                    // Check for completion
-                                    if result_rx.borrow().try_recv().is_ok() {
-                                        complete_ml_scan(&state_for_timer);
-                                        // Rebuild the store to reflect rescanned tracks
-                                        let tracks: Vec<crate::media_library::LibTrack> =
-                                            state_for_timer
-                                                .borrow()
-                                                .media_lib
-                                                .as_ref()
-                                                .and_then(|lib| lib.all_tracks().ok())
-                                                .unwrap_or_default();
-                                        let boxed: Vec<glib::BoxedAnyObject> = tracks
-                                            .into_iter()
-                                            .map(glib::BoxedAnyObject::new)
-                                            .collect();
-                                        store_for_timer.splice(
-                                            0,
-                                            store_for_timer.n_items(),
-                                            &boxed,
-                                        );
-                                        return glib::ControlFlow::Break;
-                                    }
-
-                                    glib::ControlFlow::Continue
-                                },
-                            );
-
-                            popover_rescan.unparent();
-                        });
-                        vbox.append(&btn_rescan);
-
-                        let sep = Separator::new(Orientation::Horizontal);
-                        vbox.append(&sep);
-
-                        // Remove from Media Library
-                        let btn_remove = Button::with_label("Remove from Media Library");
-                        let state_remove = state_gest.clone();
-                        let sel_remove = sel_gest.clone();
-                        let popover_remove = popover.clone();
-                        let store_remove = store_gest.clone();
-                        btn_remove.connect_clicked(move |_btn| {
-                            for i in 0..sel_remove.n_items() {
-                                if sel_remove.is_selected(i) {
-                                    if let Some(obj) = sel_remove
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        if let Some(lib) = state_remove.borrow().media_lib.as_ref()
-                                        {
-                                            let _ = lib.remove_track(t.id);
-                                        }
-                                    }
-                                }
-                            }
-                            // Rebuild the store to reflect removed tracks
-                            let tracks: Vec<crate::media_library::LibTrack> = state_remove
-                                .borrow()
-                                .media_lib
-                                .as_ref()
-                                .and_then(|lib| lib.all_tracks().ok())
-                                .unwrap_or_default();
-                            let boxed: Vec<glib::BoxedAnyObject> =
-                                tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
-                            store_remove.splice(0, store_remove.n_items(), &boxed);
-                            popover_remove.unparent();
-                        });
-                        vbox.append(&btn_remove);
-
-                        popover.set_child(Some(&vbox));
                         popover.popup();
                     });
                     child.add_controller(gesture);

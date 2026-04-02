@@ -379,6 +379,12 @@ scale.eq-scale slider {
     background-color: rgba(255, 255, 255, 0.2);
 }
 
+/* ── Popover menu hover highlighting (GTK4) ────────────────────────────────── */
+/* Let GTK4 handle the popover background; only style individual menu items */
+popover modelbutton:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
 /* ── Media library unscanned rows ────────────────────────────────────────── */
 /* Rows without scanned_at have a black background to indicate they haven't been scanned */
 .unscanned-row {

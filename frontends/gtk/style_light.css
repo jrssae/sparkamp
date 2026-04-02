@@ -363,6 +363,12 @@ scale.eq-scale slider {
     background-color: rgba(0, 0, 0, 0.2);
 }
 
+/* ── Popover menu hover highlighting (GTK4) ──────────────────────────────── */
+/* Let GTK4 handle the popover background; only style individual menu items */
+popover modelbutton:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
 /* ── Media library unscanned rows ────────────────────────────────────────── */
 /* Tracks whose metadata hasn't been read yet appear dimmed in the light theme. */
 .unscanned-row label,
