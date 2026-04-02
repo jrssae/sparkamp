@@ -65,7 +65,7 @@ This release is a major benchmark commit adding the media library and resolving 
 - **Granite visualizer plugin** — a Geiss-inspired plasma animation (separate `.so` plugin) with configurable speed, palette, and feedback strength; press `f` or double-click the visualizer to run a fullscreen mode
 - **Plugin framework (ABI v2)** — install/uninstall `.so` plugins at runtime; visualizer and filetype plugins; settings schema with per-plugin TOML persistence; live `on_setting_changed` callbacks; automatic v1 plugin shimming for backward compatibility
 - **Media library** — SQLite-backed library with Files and Playlists tabs, full-text search, play-count tracking, folder watch/rescan, configurable periodic rescans
-- **CLI / TUI mode** — a full terminal UI for headless or keyboard-only use (`sparkamp`)
+- **CLI / TUI mode** — a full terminal UI for headless or keyboard-only use (`sparkamp`) - note that this hasn't been actively tested so it's a bit sketchy. 
 - **Playlist persistence** — saves and restores the playlist and player position between sessions
 - **Skin system** — light and dark CSS skins, switchable at runtime; user skins at `~/.config/sparkamp/skins/`
 - **Format support** — MP3, FLAC, OGG Vorbis, Opus, WAV, M4A; filetype plugin API for additional formats
@@ -147,7 +147,7 @@ For TUI mode:
 
 ## Plugin System
 
-Sparkamp supports third-party plugins as shared libraries (`.so` files on Linux).
+Sparkamp will eventually support third-party plugins as shared libraries (`.so` files on Linux). It hasn't yet been tested and likely doesn't work yet. 
 
 ### Plugin types
 
