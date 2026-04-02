@@ -527,23 +527,26 @@ impl MediaLibrary {
             .filter_map(|p| p.to_str().map(String::from))
             .collect();
 
-        // Batch query: find all existing paths in one DB call.
         let existing_paths: std::collections::HashSet<String> = if audio_paths.is_empty() {
             std::collections::HashSet::new()
         } else {
-            let placeholders: Vec<String> = audio_paths.iter().map(|_| "?".to_string()).collect();
-            let sql = format!(
-                "SELECT path FROM tracks WHERE path IN ({})",
-                placeholders.join(",")
-            );
-            let params: Vec<&dyn rusqlite::ToSql> = audio_paths
-                .iter()
-                .map(|s| s as &dyn rusqlite::ToSql)
-                .collect();
-            let mut stmt = self.conn.prepare(&sql)?;
-            stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
-                .filter_map(|r| r.ok())
-                .collect()
+            let mut result = std::collections::HashSet::new();
+            for chunk in audio_paths.chunks(1000) {
+                let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+                let sql = format!(
+                    "SELECT path FROM tracks WHERE path IN ({})",
+                    placeholders.join(",")
+                );
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+                let mut stmt = self.conn.prepare(&sql)?;
+                stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .for_each(|p| {
+                        result.insert(p);
+                    });
+            }
+            result
         };
 
         // Upsert each audio file, counting genuinely new insertions.
@@ -610,23 +613,26 @@ impl MediaLibrary {
             .filter_map(|p| p.to_str().map(String::from))
             .collect();
 
-        // Batch query: find all existing paths in one DB call.
         let existing_paths: std::collections::HashSet<String> = if audio_paths.is_empty() {
             std::collections::HashSet::new()
         } else {
-            let placeholders: Vec<String> = audio_paths.iter().map(|_| "?".to_string()).collect();
-            let sql = format!(
-                "SELECT path FROM tracks WHERE path IN ({})",
-                placeholders.join(",")
-            );
-            let params: Vec<&dyn rusqlite::ToSql> = audio_paths
-                .iter()
-                .map(|s| s as &dyn rusqlite::ToSql)
-                .collect();
-            let mut stmt = self.conn.prepare(&sql)?;
-            stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
-                .filter_map(|r| r.ok())
-                .collect()
+            let mut result = std::collections::HashSet::new();
+            for chunk in audio_paths.chunks(1000) {
+                let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+                let sql = format!(
+                    "SELECT path FROM tracks WHERE path IN ({})",
+                    placeholders.join(",")
+                );
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+                let mut stmt = self.conn.prepare(&sql)?;
+                stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .for_each(|p| {
+                        result.insert(p);
+                    });
+            }
+            result
         };
 
         // Fast insert: just path and filename, no metadata.  Use a transaction for
@@ -688,35 +694,46 @@ impl MediaLibrary {
     }
 
     /// Update metadata (ID3 tags, duration) for tracks in a folder.
+    ///
     /// Reports progress via `progress(processed, total)` callback after each track.
     /// Checks `cancel.load(Ordering::Relaxed)` before each track; if true, returns early.
+    ///
+    /// When `paths` is `None`, queries tracks with missing metadata internally:
+    ///   `WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL)`
+    ///
+    /// When `paths` is `Some(vec)`, scans only the provided paths.
+    ///
     /// This is the slow part - call after rescan_folder_fast in a background thread.
     pub fn rescan_folder_metadata<F>(
         &self,
         folder_id: i64,
         cancel: &AtomicBool,
         mut progress: F,
+        paths: Option<Vec<String>>,
     ) -> Result<usize>
     where
         F: FnMut(usize, usize),
     {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path FROM tracks WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL)"
-        )?;
-        let tracks: Vec<(i64, String)> = stmt
-            .query_map(params![folder_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        let tracks: Vec<String> = match paths {
+            Some(p) => p,
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, path FROM tracks WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL)"
+                )?;
+                stmt.query_map(params![folder_id], |row| row.get::<_, String>(1))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            }
+        };
 
         let total = tracks.len();
         let mut updated = 0usize;
-        for (_id, path) in tracks {
+        for path in tracks {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(updated);
             }
             if self.upsert_track(folder_id, &path).is_ok() {
+                let _ = self.update_last_scanned(&path);
                 updated += 1;
             }
             progress(updated, total);
@@ -1128,12 +1145,35 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Force re-read metadata for a specific track, ignoring last_scanned timestamp.
+    ///
+    /// Always re-scans the file's ID3 tags and duration, then updates last_scanned.
+    pub fn rescan_track(&self, path: &str) -> Result<()> {
+        let p = Path::new(path);
+        if !p.exists() {
+            return Ok(());
+        }
+        let folder_id = self.get_folder_id_for_path(path)?;
+        self.upsert_track(folder_id, path)?;
+        self.update_last_scanned(path)?;
+        Ok(())
+    }
+
+    fn get_folder_id_for_path(&self, path: &str) -> Result<i64> {
+        let folder_id: i64 = self.conn.query_row(
+            "SELECT folder_id FROM tracks WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
+        Ok(folder_id)
+    }
+
     /// Check if a file needs metadata scanning based on modification time vs last_scanned.
     ///
     /// Returns `true` if:
     /// - `last_scanned` is `None` (never scanned), or
     /// - The file's modification time is newer than `last_scanned`
-    fn needs_metadata_scan(path: &str, last_scanned: Option<&str>) -> bool {
+    pub fn needs_metadata_scan(path: &str, last_scanned: Option<&str>) -> bool {
         let Some(last_scanned) = last_scanned else {
             return true; // Never scanned
         };
@@ -1287,17 +1327,18 @@ impl MediaLibrary {
     ///
     /// Uses smart skip logic: only rescans files where the file modification time
     /// is newer than the `last_scanned` timestamp. Reports progress via
-    /// `progress(current, total)` callback.
+    /// `progress(current, total)` callback on every iteration.
     ///
-    /// Returns `(scanned, skipped)` counts where:
-    /// - `scanned`: files that were processed and metadata updated
+    /// Returns `(scanned, skipped, failed)` counts where:
+    /// - `scanned`: files that were processed and metadata updated successfully
     /// - `skipped`: files that were checked but didn't need rescanning
+    /// - `failed`: files that needed rescanning but the upsert failed
     pub fn scan_folder<F>(
         &self,
         folder_id: i64,
         cancel: &AtomicBool,
         mut progress: F,
-    ) -> Result<(usize, usize)>
+    ) -> Result<(usize, usize, usize)>
     where
         F: FnMut(usize, usize),
     {
@@ -1317,52 +1358,57 @@ impl MediaLibrary {
             .collect();
 
         let total = tracks.len();
-        let mut scanned = 0usize;
         let mut skipped = 0usize;
 
-        for (_id, path, last_scanned) in tracks {
-            if cancel.load(Ordering::Relaxed) {
-                skipped += 1;
-                continue;
-            }
+        // Separate tracks into those needing scan and those to skip
+        let paths_to_scan: Vec<(i64, String)> = tracks
+            .into_iter()
+            .filter(|(_, path, last_scanned)| {
+                Self::needs_metadata_scan(path, last_scanned.as_deref())
+            })
+            .map(|(id, path, _)| (id, path))
+            .collect();
 
-            // Check if this file needs scanning
-            if Self::needs_metadata_scan(&path, last_scanned.as_deref()) {
-                // Update metadata
-                if self.upsert_track(folder_id, &path).is_ok() {
-                    let _ = self.update_last_scanned(&path);
-                    scanned += 1;
-                } else {
-                    skipped += 1;
-                }
-            } else {
-                skipped += 1;
+        let to_scan_count = paths_to_scan.len();
+        let mut scanned = 0usize;
+
+        // Process files that need scanning
+        for (_, path) in paths_to_scan {
+            if cancel.load(Ordering::Relaxed) {
+                break;
             }
-            progress(scanned + skipped, total);
+            if self.upsert_track(folder_id, &path).is_ok() {
+                let _ = self.update_last_scanned(&path);
+                scanned += 1;
+            }
+            progress(scanned, to_scan_count);
         }
 
-        Ok((scanned, skipped))
+        skipped = total - scanned;
+
+        Ok((scanned, skipped, to_scan_count - scanned))
     }
 
     /// Scan all watched folders, updating metadata for files that have changed.
     ///
     /// Uses smart skip logic per-folder. Reports progress via
-    /// `progress(current, total)` callback where total is cumulative across all folders.
+    /// `progress(current, total)` callback on every iteration.
     ///
-    /// Returns `(scanned, skipped)` counts across all folders.
+    /// Returns `(scanned, skipped, failed)` counts across all folders.
     pub fn scan_all_folders<F>(
         &self,
         cancel: &AtomicBool,
         mut progress: F,
-    ) -> Result<(usize, usize)>
+    ) -> Result<(usize, usize, usize)>
     where
         F: FnMut(usize, usize),
     {
         let folders = self.list_folders()?;
         let mut total_scanned = 0usize;
         let mut total_skipped = 0usize;
+        let mut total_failed = 0usize;
 
-        // First pass: count total files needing scan
+        // First pass: count total files that need scanning (unscanned)
         let mut total_to_scan = 0usize;
         for (folder_id, _) in &folders {
             let mut stmt = self
@@ -1387,45 +1433,21 @@ impl MediaLibrary {
                 .count();
         }
 
-        // Second pass: actually scan
         for (folder_id, _) in folders {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
 
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
-            let tracks: Vec<(i64, String, Option<String>)> = stmt
-                .query_map(params![folder_id], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
+            let (scanned, skipped, failed) = self.scan_folder(folder_id, cancel, |curr, _| {
+                progress(total_scanned + curr, total_to_scan);
+            })?;
 
-            for (_id, path, last_scanned) in tracks {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                if Self::needs_metadata_scan(&path, last_scanned.as_deref()) {
-                    if self.upsert_track(folder_id, &path).is_ok() {
-                        let _ = self.update_last_scanned(&path);
-                        total_scanned += 1;
-                    }
-                } else {
-                    total_skipped += 1;
-                }
-
-                progress(total_scanned, total_to_scan);
-            }
+            total_scanned += scanned;
+            total_skipped += skipped;
+            total_failed += failed;
         }
 
-        Ok((total_scanned, total_skipped))
+        Ok((total_scanned, total_skipped, total_failed))
     }
 
     /// Look up a single track by its path.  Returns an error if not found.
@@ -1985,10 +2007,15 @@ mod tests {
         let progress_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
         let progress_count_clone = progress_count.clone();
 
-        lib.rescan_folder_metadata(folder_id, &cancel, |done, total| {
-            assert!(done <= total);
-            *progress_count_clone.lock().unwrap() += 1;
-        })
+        lib.rescan_folder_metadata(
+            folder_id,
+            &cancel,
+            |done, total| {
+                assert!(done <= total);
+                *progress_count_clone.lock().unwrap() += 1;
+            },
+            None,
+        )
         .unwrap();
 
         // Progress callback should have been called.
@@ -2011,8 +2038,61 @@ mod tests {
         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
 
         // Even with cancel set, it should return Ok (not an error).
-        let result = lib.rescan_folder_metadata(folder_id, &cancel, |_, _| {});
+        let result = lib.rescan_folder_metadata(folder_id, &cancel, |_, _| {}, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rescan_folder_metadata_sets_last_scanned() {
+        gstreamer::init().ok();
+
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 3);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        // Verify tracks have no last_scanned yet
+        let tracks_before = lib.all_tracks().unwrap();
+        assert!(tracks_before.iter().all(|t| t.last_scanned.is_none()));
+
+        // Run metadata scan
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        lib.rescan_folder_metadata(folder_id, &cancel, |_, _| {}, None)
+            .unwrap();
+
+        // Verify tracks now have last_scanned set
+        let tracks_after = lib.all_tracks().unwrap();
+        assert!(tracks_after.iter().all(|t| t.last_scanned.is_some()));
+    }
+
+    #[test]
+    fn rescan_track_updates_metadata() {
+        gstreamer::init().ok();
+
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 2);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        // Get first track path
+        let tracks = lib.all_tracks().unwrap();
+        assert!(!tracks.is_empty());
+        let track_path = &tracks[0].path;
+
+        // Verify no last_scanned initially
+        assert!(tracks[0].last_scanned.is_none());
+
+        // Rescan the track
+        lib.rescan_track(track_path).unwrap();
+
+        // Verify last_scanned is now set
+        let tracks_after = lib.all_tracks().unwrap();
+        let rescanned = tracks_after.iter().find(|t| t.path == *track_path).unwrap();
+        assert!(rescanned.last_scanned.is_some());
     }
 
     // ── Smart scan helpers ─────────────────────────────────────────────────
@@ -2097,6 +2177,7 @@ mod tests {
 
     #[test]
     fn scan_folder_scans_never_scanned() {
+        gstreamer::init().ok();
         let (lib, _db) = temp_lib();
         let dir = temp_dir_with_files("mp3", 3);
         let path = dir.path().to_str().unwrap();
@@ -2111,7 +2192,7 @@ mod tests {
         // Scan folder
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut progress_calls = Vec::new();
-        let (scanned, skipped) = lib
+        let (scanned, skipped, _) = lib
             .scan_folder(folder_id, &cancel, |curr, total| {
                 progress_calls.push((curr, total));
             })
@@ -2137,12 +2218,12 @@ mod tests {
 
         // Scan once
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (scanned1, _) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
+        let (scanned1, _, _) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
         assert_eq!(scanned1, 2);
 
         // Scan again - should skip all (nothing changed)
         let cancel2 = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (scanned2, skipped2) = lib.scan_folder(folder_id, &cancel2, |_, _| {}).unwrap();
+        let (scanned2, skipped2, _) = lib.scan_folder(folder_id, &cancel2, |_, _| {}).unwrap();
         assert_eq!(scanned2, 0);
         assert_eq!(skipped2, 2);
     }
@@ -2167,7 +2248,7 @@ mod tests {
 
         // Scan again - should rescan the modified file
         let cancel2 = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (scanned, skipped) = lib.scan_folder(folder_id, &cancel2, |_, _| {}).unwrap();
+        let (scanned, skipped, _) = lib.scan_folder(folder_id, &cancel2, |_, _| {}).unwrap();
         assert_eq!(scanned, 1); // Only the modified file
         assert_eq!(skipped, 1); // The unchanged file
     }
@@ -2207,7 +2288,7 @@ mod tests {
             .unwrap();
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (scanned, skipped) = lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
+        let (scanned, skipped, _) = lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
 
         assert_eq!(scanned, 5); // 2 + 3
         assert_eq!(skipped, 0);
@@ -2249,7 +2330,7 @@ mod tests {
         let (lib, _db) = temp_lib();
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (scanned, skipped) = lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
+        let (scanned, skipped, _) = lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
 
         assert_eq!(scanned, 0);
         assert_eq!(skipped, 0);
