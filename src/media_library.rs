@@ -224,6 +224,22 @@ pub fn read_only_track_fields(
     }
 }
 
+/// Check if a file is read-only by attempting to open it for writing.
+///
+/// Returns `true` if the file cannot be written to (permission denied or read-only filesystem).
+/// Returns `false` if the file can be opened for writing, or if an error occurs.
+/// This method works reliably for all filesystem types including network shares
+/// (SMB/CIFS/NFS) and system-level read-only mounts.
+pub fn is_read_only(path: &std::path::Path) -> bool {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(_) => false,
+        Err(e) => matches!(
+            e.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MediaLibrary
 // ---------------------------------------------------------------------------

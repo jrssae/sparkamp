@@ -2915,6 +2915,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -2927,6 +2928,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -4394,6 +4396,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         };
         let before = app.playlist.tracks.len();
         app.playlist.add(t);

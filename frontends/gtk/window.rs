@@ -1796,7 +1796,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             #[allow(deprecated)]
             pl_store.clear();
             for (i, t) in s.playlist.tracks.iter().enumerate() {
-                let pos = format!("{}.", i + 1);
+                let lock_suffix = if t.read_only { " 🔒" } else { "" };
+                let pos = format!("{}.{}", i + 1, lock_suffix);
                 let name = t.display_name();
                 let is_active = is_playing && i == current;
                 let is_row_selected = saved_selected != usize::MAX && saved_selected == i;
@@ -4559,6 +4560,9 @@ fn open_id3_editor_window(
         entries.borrow_mut().insert(id, entry);
     }
 
+    // ── Check if file is read-only ───────────────────────────────────────────
+    let is_read_only = crate::media_library::is_read_only(&path);
+
     // ── Artwork section ─────────────────────────────────────────────────────
     let artwork_vbox = GtkBox::new(Orientation::Vertical, 4);
     artwork_vbox.set_margin_start(12);
@@ -4651,6 +4655,24 @@ fn open_id3_editor_window(
     status_lbl.set_margin_start(12);
     status_lbl.set_margin_bottom(4);
 
+    // ── Read-only notice (only shown for read-only files) ────────────────────
+    let read_only_notice = Label::builder()
+        .label("🔒 This file is read only")
+        .halign(Align::Center)
+        .build();
+    read_only_notice.set_margin_start(12);
+    read_only_notice.set_margin_end(12);
+    read_only_notice.set_margin_top(8);
+    read_only_notice.set_margin_bottom(4);
+    read_only_notice.set_visible(is_read_only);
+
+    // Disable all entry widgets for read-only files
+    if is_read_only {
+        for (_, entry) in entries.borrow().iter() {
+            entry.set_sensitive(false);
+        }
+    }
+
     // ── Button row ───────────────────────────────────────────────────────────
     let btn_row = GtkBox::new(Orientation::Horizontal, 8);
     btn_row.set_margin_top(4);
@@ -4662,6 +4684,7 @@ fn open_id3_editor_window(
     let btn_cancel = Button::with_label("Cancel");
     let btn_save = Button::with_label("Save");
     btn_save.add_css_class("suggested-action");
+    btn_save.set_visible(!is_read_only);
 
     let spring = GtkBox::new(Orientation::Horizontal, 0);
     spring.set_hexpand(true);
@@ -4676,6 +4699,7 @@ fn open_id3_editor_window(
     vbox.append(&artwork_vbox);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&status_lbl);
+    vbox.append(&read_only_notice);
     vbox.append(&btn_row);
     win.set_child(Some(&vbox));
 
@@ -6361,8 +6385,10 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
 
 fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track {
     use std::time::Duration;
+    let path = std::path::PathBuf::from(&t.path);
+    let read_only = crate::media_library::is_read_only(&path);
     crate::model::Track {
-        path: std::path::PathBuf::from(&t.path),
+        path,
         title: t.title.clone().unwrap_or_else(|| t.filename.clone()),
         artist: t.artist.clone().unwrap_or_default(),
         album_artist: String::new(),
@@ -6371,6 +6397,7 @@ fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track 
             .length_secs
             .map(|s| Duration::try_from_secs_f64(s).unwrap_or_default()),
         broken: false,
+        read_only,
     }
 }
 
@@ -6521,7 +6548,10 @@ fn open_media_library_window(
                 let Some(lbl) = lbl else {
                     return;
                 };
-                if t.last_scanned.is_none() {
+                let path = std::path::Path::new(&t.path);
+                if crate::media_library::is_read_only(path) {
+                    lbl.set_label("🔒");
+                } else if t.last_scanned.is_none() {
                     lbl.set_label("❓");
                 } else {
                     lbl.set_label("");
@@ -7795,6 +7825,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -7807,6 +7838,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 

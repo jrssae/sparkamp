@@ -207,6 +207,10 @@ pub struct Track {
     /// user can try a repaired or re-mounted file next launch.
     #[serde(skip)]
     pub broken: bool,
+    /// Set at runtime when the file has read-only permissions.
+    /// Used to display a lock indicator in the UI.
+    #[serde(skip)]
+    pub read_only: bool,
 }
 
 impl Track {
@@ -224,6 +228,7 @@ impl Track {
             .and_then(|s| s.to_str())
             .unwrap_or("Unknown")
             .to_string();
+        let read_only = crate::media_library::is_read_only(&path);
         Ok(Track {
             path,
             title,
@@ -232,6 +237,7 @@ impl Track {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only,
         })
     }
 
@@ -297,6 +303,7 @@ impl Track {
             }
         };
 
+        let read_only = crate::media_library::is_read_only(&path);
         Ok(Track {
             path,
             title,
@@ -305,6 +312,7 @@ impl Track {
             album,
             duration: None,
             broken: false,
+            read_only,
         })
     }
 
@@ -353,14 +361,17 @@ impl Track {
 /// without re-probing the file. This is much faster when adding tracks from ML.
 impl From<&crate::media_library::LibTrack> for Track {
     fn from(lib: &crate::media_library::LibTrack) -> Self {
+        let path = PathBuf::from(&lib.path);
+        let read_only = crate::media_library::is_read_only(&path);
         Track {
-            path: PathBuf::from(&lib.path),
+            path,
             title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
             artist: lib.artist.clone().unwrap_or_default(),
             album_artist: String::new(),
             album: lib.album.clone().unwrap_or_default(),
             duration: lib.length_secs.map(Duration::from_secs_f64),
             broken: false,
+            read_only,
         }
     }
 }
@@ -605,6 +616,7 @@ impl Playlist {
             track.artist = sanitize(&track.artist);
             track.album_artist = sanitize(&track.album_artist);
             track.album = sanitize(&track.album);
+            track.read_only = crate::media_library::is_read_only(&track.path);
         }
         Ok(playlist)
     }
@@ -997,6 +1009,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
