@@ -148,11 +148,6 @@ impl Player {
             .ok();
 
         let has_spectrum = spectrum_elem.is_some();
-        if has_spectrum {
-            eprintln!("[Sparkamp] Spectrum element created successfully");
-        } else {
-            eprintln!("[Sparkamp] Spectrum element not available - visualizer disabled");
-        }
 
         // Configure spectrum if available
         if let Some(ref spec) = spectrum_elem {
@@ -236,25 +231,15 @@ impl Player {
             // Check if the pad has audio capability
             let Some(caps) = src_pad.current_caps() else {
                 // Caps not yet available, try to link anyway
-                if src_pad.link(&sink_pad).is_ok() {
-                    eprintln!("[Sparkamp] Linked decodebin to audioconvert (no caps)");
-                }
+                let _ = src_pad.link(&sink_pad);
                 return;
             };
 
             let caps_str = caps.to_string();
             let has_audio = caps_str.contains("audio");
 
-            eprintln!(
-                "[Sparkamp] Pad added: {}, caps: {}",
-                src_pad.name(),
-                caps_str
-            );
-
             if has_audio || caps_str.contains("audio") {
-                if src_pad.link(&sink_pad).is_ok() {
-                    eprintln!("[Sparkamp] Linked decodebin to audioconvert (has audio)");
-                }
+                let _ = src_pad.link(&sink_pad);
             }
         });
 
@@ -489,9 +474,6 @@ impl Player {
         use gst::MessageView;
         let bus = self.pipeline.bus()?;
 
-        let mut spectrum_msg_count = 0;
-        let mut other_msg_count = 0;
-
         // Drain every pending message in one call so we don't leave stale
         // messages in the queue between ticks.
         while let Some(msg) = bus.timed_pop(gst::ClockTime::ZERO) {
@@ -508,27 +490,12 @@ impl Player {
                     // Handle spectrum messages
                     if let Some(structure) = elem.structure() {
                         if structure.has_name("spectrum") {
-                            spectrum_msg_count += 1;
                             self.handle_spectrum_message(&structure);
-                        } else {
-                            other_msg_count += 1;
                         }
-                    } else {
-                        other_msg_count += 1;
                     }
                 }
-                _ => {
-                    other_msg_count += 1;
-                }
+                _ => {}
             }
-        }
-
-        // Debug output every ~200ms (when called from tick loop)
-        if spectrum_msg_count > 0 || other_msg_count > 0 {
-            eprintln!(
-                "[Bus] spectrum msgs: {}, other msgs: {}",
-                spectrum_msg_count, other_msg_count
-            );
         }
 
         None
@@ -603,10 +570,12 @@ impl Player {
     /// Maps the raw spectrum bands (64 bands, 0-22050 Hz) to `num_bands` display bars
     /// using a logarithmic scale that matches the equalizer frequency range (30-15000 Hz).
     ///
-    /// This gives bass frequencies more visual space, matching human audio perception.
+    /// Uses smoothed band values for smooth bar animation.
     pub fn get_spectrum_display_bands(&self, num_bands: u32) -> Vec<f64> {
         let spectrum = match self.spectrum_data.read() {
-            Ok(data) if data.has_received_data() && !data.bands.is_empty() => data.bands.clone(),
+            Ok(data) if data.has_received_data() && !data.bands.is_empty() => {
+                data.smoothed().to_vec()
+            }
             _ => return vec![0.0; num_bands as usize],
         };
 
@@ -615,11 +584,11 @@ impl Player {
         let min_freq = 30.0_f64;
         let max_freq = 15000.0_f64;
 
+        // Linear frequency interpolation across the equalizer range (30-15000 Hz)
         (0..num_bands)
             .map(|i| {
                 let ratio = i as f64 / num_bands as f64;
-                let log_ratio = ratio.powf(0.7);
-                let target_freq = min_freq * (max_freq / min_freq).powf(log_ratio);
+                let target_freq = min_freq + (max_freq - min_freq) * ratio;
                 let band_idx =
                     ((target_freq / nyquist) * spectrum_len).min(spectrum_len - 1.0) as usize;
                 spectrum.get(band_idx).copied().unwrap_or(0.0)

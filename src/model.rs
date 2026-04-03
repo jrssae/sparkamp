@@ -884,9 +884,11 @@ impl Playlist {
 /// to display real audio frequency bars instead of synthetic animation.
 #[derive(Debug, Clone)]
 pub struct SpectrumData {
-    /// Frequency band magnitudes, normalized to [0.0, 1.0].
+    /// Raw frequency band magnitudes, normalized to [0.0, 1.0].
     /// Each entry represents one frequency band from low to high frequencies.
     pub bands: Vec<f64>,
+    /// Smoothed band magnitudes for display. Uses attack/release ballistics.
+    smoothed_bands: Vec<f64>,
     /// Whether real spectrum data has been received from GStreamer.
     /// Used to distinguish between "no data yet" vs "data received but all zeros".
     has_received_data: bool,
@@ -897,6 +899,7 @@ impl SpectrumData {
     pub fn new(num_bands: usize) -> Self {
         Self {
             bands: vec![0.0; num_bands],
+            smoothed_bands: vec![0.0; num_bands],
             has_received_data: false,
         }
     }
@@ -905,15 +908,41 @@ impl SpectrumData {
     pub fn empty() -> Self {
         Self {
             bands: vec![],
+            smoothed_bands: vec![],
             has_received_data: false,
         }
     }
 
     /// Update the spectrum bands with new values from GStreamer.
+    /// Applies attack/release smoothing for smooth bar animation.
     /// Sets has_received_data to true.
     pub fn update(&mut self, new_bands: Vec<f64>) {
+        let attack = 0.7_f64;
+        let release = 0.92_f64;
+
+        // Ensure smoothed_bands is the right size
+        if self.smoothed_bands.len() != new_bands.len() {
+            self.smoothed_bands = vec![0.0; new_bands.len()];
+        }
+
+        for (i, &new_val) in new_bands.iter().enumerate() {
+            let current = self.smoothed_bands[i];
+            self.smoothed_bands[i] = if new_val > current {
+                // Attack: rise quickly toward target
+                current + (new_val - current) * attack
+            } else {
+                // Release: fall slowly toward target
+                current + (new_val - current) * release
+            };
+        }
+
         self.bands = new_bands;
         self.has_received_data = true;
+    }
+
+    /// Return the smoothed band values for display.
+    pub fn smoothed(&self) -> &[f64] {
+        &self.smoothed_bands
     }
 
     /// Return the number of frequency bands.
@@ -935,7 +964,9 @@ impl SpectrumData {
     /// Reset the spectrum data, clearing received flag.
     /// Call this when reinitializing the pipeline.
     pub fn reset(&mut self) {
-        self.bands = vec![0.0; self.bands.len().max(64)];
+        let len = self.bands.len().max(64);
+        self.bands = vec![0.0; len];
+        self.smoothed_bands = vec![0.0; len];
         self.has_received_data = false;
     }
 }

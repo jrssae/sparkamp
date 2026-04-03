@@ -2050,7 +2050,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let result = { state.borrow_mut().play_current() };
             if let Some(display) = result {
                 let new_idx = state.borrow().playlist.current_index;
-                eprintln!("[now-playing] playlist display: \"{}\"", display);
                 set_track(&display);
                 // Scan metadata for the current track if it hasn't been scanned yet.
                 // This updates the marquee with "Artist - Title" once the scan completes.
