@@ -875,6 +875,72 @@ impl Playlist {
 }
 
 // ---------------------------------------------------------------------------
+// Spectrum data
+// ---------------------------------------------------------------------------
+
+/// Stores the frequency spectrum data from GStreamer's spectrum element.
+///
+/// This data is populated from GStreamer bus messages and read by the visualizer
+/// to display real audio frequency bars instead of synthetic animation.
+#[derive(Debug, Clone)]
+pub struct SpectrumData {
+    /// Frequency band magnitudes, normalized to [0.0, 1.0].
+    /// Each entry represents one frequency band from low to high frequencies.
+    pub bands: Vec<f64>,
+    /// Whether real spectrum data has been received from GStreamer.
+    /// Used to distinguish between "no data yet" vs "data received but all zeros".
+    has_received_data: bool,
+}
+
+impl SpectrumData {
+    /// Create a new SpectrumData with the given number of bands initialized to zero.
+    pub fn new(num_bands: usize) -> Self {
+        Self {
+            bands: vec![0.0; num_bands],
+            has_received_data: false,
+        }
+    }
+
+    /// Create an empty SpectrumData with no bands.
+    pub fn empty() -> Self {
+        Self {
+            bands: vec![],
+            has_received_data: false,
+        }
+    }
+
+    /// Update the spectrum bands with new values from GStreamer.
+    /// Sets has_received_data to true.
+    pub fn update(&mut self, new_bands: Vec<f64>) {
+        self.bands = new_bands;
+        self.has_received_data = true;
+    }
+
+    /// Return the number of frequency bands.
+    pub fn len(&self) -> usize {
+        self.bands.len()
+    }
+
+    /// Return true if there are no bands (empty or all zeros).
+    pub fn is_empty(&self) -> bool {
+        self.bands.is_empty()
+    }
+
+    /// Return true if real spectrum data has been received from GStreamer.
+    /// Distinguishes between "no data yet" and "data received but all zeros".
+    pub fn has_received_data(&self) -> bool {
+        self.has_received_data
+    }
+
+    /// Reset the spectrum data, clearing received flag.
+    /// Call this when reinitializing the pipeline.
+    pub fn reset(&mut self) {
+        self.bands = vec![0.0; self.bands.len().max(64)];
+        self.has_received_data = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

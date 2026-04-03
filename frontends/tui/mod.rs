@@ -572,14 +572,10 @@ impl App {
     /// Returns `count` (minimum 10) normalised amplitude values [0.0, 1.0] for
     /// the current visualizer frame.  When the player is not active all values
     /// are 0.0 (idle state).  Values are generated from the current playback
-    /// position using composite sine waves so they animate naturally while a
-    /// track plays.
+    /// Return visualizer data for the current mode.
     ///
-    /// For `Bars` mode each bar uses a frequency-scaled phase so lower-indexed
-    /// bars simulate bass frequencies (slower, higher amplitude) and
-    /// higher-indexed bars simulate treble (faster, lower amplitude).
-    /// For `Oscilloscope` mode a smooth periodic waveform spanning [0.0, 1.0]
-    /// is returned in column order.
+    /// Returns frequency data from GStreamer's spectrum analysis when available.
+    /// Falls back to minimal bars when spectrum data is not yet received.
     pub fn visualizer_data(&self, count: usize) -> Vec<f64> {
         // Enforce a minimum of 10 data points so the visualizer always looks
         // reasonable even in very narrow terminal windows.
@@ -599,17 +595,20 @@ impl App {
         }
 
         match self.config.visualizer.mode {
-            VisualizerMode::Bars => (0..count)
-                .map(|i| {
-                    // Scale the animation phase by a per-bar frequency so that
-                    // bar 0 (leftmost) oscillates slowly (bass) and bar N-1
-                    // (rightmost) oscillates quickly (treble).
-                    let freq = 1.0 + i as f64 * 0.5;
-                    let phase = pos * freq + i as f64 * 0.7;
-                    // Mix two harmonics for a richer, less mechanical look.
-                    (phase.sin() * 0.4 + (phase * 1.5).sin() * 0.2 + 0.55).clamp(0.05, 1.0)
-                })
-                .collect(),
+            VisualizerMode::Bars => {
+                // Use display_bands from config
+                let display_count = self.config.visualizer.display_bands as usize;
+                // Get display-ready spectrum bands (logarithmically mapped)
+                let display_bands = self.player.get_spectrum_display_bands(display_count as u32);
+
+                // Check if we got real data
+                if !display_bands.iter().all(|&v| v == 0.0) {
+                    display_bands
+                } else {
+                    // Spectrum not available: return minimal bars
+                    vec![0.05; count]
+                }
+            }
             VisualizerMode::Oscilloscope => (0..count)
                 .map(|i| {
                     // Normalised x position in [0.0, 1.0] across the display width.

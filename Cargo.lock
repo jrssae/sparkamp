@@ -1762,6 +1762,7 @@ dependencies = [
  "dirs",
  "gstreamer",
  "gstreamer-pbutils",
+ "gstreamer-sys",
  "gtk4",
  "id3",
  "libloading",

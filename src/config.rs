@@ -95,6 +95,45 @@ pub enum VisualizerMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualizerConfig {
     pub mode: VisualizerMode,
+    /// Number of frequency bands for spectrum analysis (8, 16, 32, or 64).
+    /// Only used when a real audio source is connected.
+    #[serde(default = "VisualizerConfig::default_spectrum_bands")]
+    pub spectrum_bands: u32,
+    /// Number of display bars for the Bars visualizer.
+    /// Uses logarithmic frequency mapping from 30 Hz to 15000 Hz.
+    #[serde(default = "VisualizerConfig::default_display_bands")]
+    pub display_bands: u32,
+    /// Whether to show a mirror effect for bars visualizer.
+    /// The bar extends both above and below the center line.
+    #[serde(default)]
+    pub bars_mirror: bool,
+    /// Number of color zones for bars (1-6). Each zone shows a different color.
+    #[serde(default = "VisualizerConfig::default_color_zones")]
+    pub color_zones: u8,
+}
+
+impl VisualizerConfig {
+    fn default_spectrum_bands() -> u32 {
+        64
+    }
+    fn default_display_bands() -> u32 {
+        16
+    }
+    fn default_color_zones() -> u8 {
+        5
+    }
+}
+
+impl Default for VisualizerConfig {
+    fn default() -> Self {
+        Self {
+            mode: VisualizerMode::default(),
+            spectrum_bands: Self::default_spectrum_bands(),
+            display_bands: Self::default_display_bands(),
+            bars_mirror: true,
+            color_zones: Self::default_color_zones(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -632,9 +671,7 @@ impl Default for Config {
                 repeat_mode: RepeatMode::Off,
                 shuffle_enabled: false,
             },
-            visualizer: VisualizerConfig {
-                mode: VisualizerMode::Bars,
-            },
+            visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),
             appearance: AppearanceConfig::default(),
             behavior: BehaviorConfig::default(),

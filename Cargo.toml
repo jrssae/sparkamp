@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 # Audio backend
 gstreamer = "0.22"
+gstreamer-sys = "0.22"
 gstreamer-pbutils = "0.22"
 
 # ID3 metadata

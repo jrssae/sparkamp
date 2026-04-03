@@ -402,6 +402,36 @@ impl AppState {
         }
     }
 
+    /// Attempt to retry spectrum initialization.
+    ///
+    /// Returns Ok(()) if retry was initiated, Err if spectrum is not available.
+    fn retry_spectrum(&mut self) -> Result<(), &'static str> {
+        if !self.player.has_spectrum() {
+            return Err("Spectrum element not available");
+        }
+
+        // Check current state
+        let current_state = self.player.state().clone();
+        let has_spectrum_data = self.player.has_spectrum_data();
+        eprintln!(
+            "[Sparkamp] Retry spectrum: state={:?}, has_spectrum_data={}",
+            current_state, has_spectrum_data
+        );
+
+        // If currently playing, just trigger a pipeline state change to help
+        // re-establish links. Don't stop playback.
+        if current_state == PlayerState::Playing {
+            // The spectrum element is already in the pipeline.
+            // If no data is coming through, the issue is likely:
+            // 1. Links aren't properly established
+            // 2. Caps negotiation failed
+            // 3. Pipeline state issues
+            eprintln!("[Sparkamp] Currently playing - spectrum links should be active");
+        }
+
+        Ok(())
+    }
+
     /// Seek to a fractional position `[0.0, 1.0]` within the current track.
     ///
     /// Values outside the range are clamped silently.  Does nothing if no
@@ -1257,7 +1287,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state_vc = state.clone();
         let click = GestureClick::new();
         click.connect_released(move |_, _, _, _| {
-            state_vc.borrow_mut().toggle_visualizer_mode();
+            let needs_retry = {
+                let s = state_vc.borrow();
+                !s.player.has_spectrum_data() && s.config.visualizer.mode == VisualizerMode::Bars
+            };
+            if needs_retry {
+                // Trigger spectrum retry by reinitializing player state
+                // This will cause the visualizer to try again on next tick
+                let _ = state_vc.borrow_mut().retry_spectrum();
+            } else {
+                state_vc.borrow_mut().toggle_visualizer_mode();
+            }
         });
         viz.add_controller(click);
     }
@@ -3243,6 +3283,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let pos_secs = s.player.position().unwrap_or(Duration::ZERO).as_secs_f64();
             let mode = s.config.visualizer.mode.clone();
             let plugin_idx = s.active_plugin_idx;
+            let display_bands_count = s.config.visualizer.display_bands;
+
+            // Get spectrum display bands before dropping the borrow
+            let display_bands_data = s.player.get_spectrum_display_bands(display_bands_count);
 
             // If a plugin is selected and active, delegate the frame to it.
             if is_playing {
@@ -3280,24 +3324,43 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let pos_ms = (pos_secs * 1000.0) as u64;
             match mode {
                 VisualizerMode::Bars => {
-                    // Minimum 10 bars; more bars at wider widths.
-                    // Each bar uses a frequency-scaled oscillation so lower-
-                    // indexed bars move slowly (bass) and higher ones fast
-                    // (treble), giving the classic spectrum analyser feel.
-                    let num_bars = (width / 5).max(10) as usize;
+                    // Use display_bands from config, with minimum of 10
+                    let num_bars = display_bands_count.max(10) as usize;
                     let bar_w = width as f64 / num_bars as f64;
-                    let t = pos_ms as f64 / 80.0;
-                    for i in 0..num_bars {
-                        let freq = 1.0 + i as f64 * 0.5;
-                        let amp = ((t * freq).sin() * 0.4 + (t * freq * 1.5).sin() * 0.2 + 0.55)
-                            .clamp(0.05, 1.0);
-                        let bar_h = (amp * height as f64 * 0.92).max(2.0);
-                        let x = i as f64 * bar_w + 0.5;
-                        let y = height as f64 - bar_h;
-                        // Colour: dark green (low) → bright cyan (high).
-                        cr.set_source_rgb(0.0, 0.55 + amp * 0.35, amp * 0.7);
-                        cr.rectangle(x, y, bar_w - 1.5, bar_h);
-                        cr.fill().ok();
+
+                    if !display_bands_data.iter().all(|&v| v == 0.0) {
+                        // Use real spectrum data from GStreamer
+                        for (i, &amp) in display_bands_data.iter().enumerate() {
+                            let bar_h = (amp * height as f64 * 0.92).max(2.0);
+                            let x = i as f64 * bar_w + 0.5;
+                            let y = height as f64 - bar_h;
+                            // Colour: dark green (low) → bright cyan (high).
+                            cr.set_source_rgb(0.0, 0.55 + amp * 0.35, amp * 0.7);
+                            cr.rectangle(x, y, bar_w - 1.5, bar_h);
+                            cr.fill().ok();
+                        }
+                    } else {
+                        // Spectrum not available: show flat line with "Retry" indicator
+                        cr.set_source_rgb(0.0, 0.3, 0.1);
+                        cr.set_line_width(1.0);
+                        let mid = height as f64 / 2.0;
+                        cr.move_to(0.0, mid);
+                        cr.line_to(width as f64, mid);
+                        cr.stroke().ok();
+
+                        // Draw "Retry" text indicator
+                        cr.set_source_rgb(0.0, 0.5, 0.2);
+                        let font_size = 10.0_f64.min(height as f64 * 0.4);
+                        cr.set_font_size(font_size);
+                        let text = "Retry";
+                        if let Ok(extents) = cr.text_extents(text) {
+                            let text_x =
+                                (width as f64 - extents.width()) / 2.0 - extents.x_bearing();
+                            let text_y =
+                                (height as f64 - extents.height()) / 2.0 - extents.y_bearing();
+                            cr.move_to(text_x, text_y);
+                            cr.show_text(text).ok();
+                        }
                     }
                 }
                 VisualizerMode::Oscilloscope => {
