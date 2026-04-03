@@ -32,15 +32,15 @@ use glib::ControlFlow;
 use gtk4::prelude::*;
 // Suppress deprecated warnings for GTK4 APIs that are still widely used
 // but have modern replacements (ComboBoxText, ColorButton, ListStore, TreeView, etc.)
-// TODO: Migrate to modern APIs (DropDown, ColorDialogButton, etc.) when feasible
+// TODO: Migrate to modern APIs (DropDown, ListStore, TreeView, etc.) when feasible
 #[allow(deprecated)]
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
-    Button, CellRendererText, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource,
-    DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image, Label,
-    ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, PolicyType, Scale,
-    ScrolledWindow, Separator, SignalListItemFactory, SortListModel, Stack, StackTransitionType,
-    TreeView, TreeViewColumn,
+    Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn, CustomSorter,
+    DragSource, DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid,
+    Image, Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation,
+    PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, SpinButton,
+    Stack, StackTransitionType, TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -3268,6 +3268,114 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ══════════════════════════════════════════════════════════════════════════
     // Visualizer draw function (mini box in the now-playing row)
     // ══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a hex color string to RGB (0-1 range).
+    fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() >= 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f64 / 255.0;
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f64 / 255.0;
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f64 / 255.0;
+            (r, g, b)
+        } else {
+            (0.0, 0.4, 0.0) // default dark green
+        }
+    }
+
+    /// Draw zone-colored bar segments.
+    /// For singular mode: bar extends from bottom to amp*height.
+    /// For mirrored mode: bar extends amp*height/2 above and below center.
+    fn draw_zoned_bar(
+        cr: &gtk4::cairo::Context,
+        x: f64,
+        bar_w: f64,
+        height: f64,
+        amp: f64,
+        mirror: bool,
+        num_zones: usize,
+        zone_colors: &[String],
+    ) {
+        let num_zones = num_zones.max(1);
+        let half_gap = 0.75;
+        let bar_w = bar_w - half_gap;
+
+        // Get color for a zone index, wrapping if needed
+        let get_color = |zone: usize| -> (f64, f64, f64) {
+            let idx = zone.min(zone_colors.len().saturating_sub(1));
+            parse_hex_color(&zone_colors[idx])
+        };
+
+        if mirror {
+            // Mirror mode: draw zones outward from center
+            let center = height / 2.0;
+            let max_extent = amp * center; // max distance from center
+
+            for zone in 0..num_zones {
+                // Zone 0 is closest to center, higher zones go outward
+                let zone_inner = zone as f64 * (center / num_zones as f64);
+                let zone_outer = (zone + 1) as f64 * (center / num_zones as f64);
+
+                // Only draw this zone if it intersects with the amplitude range
+                if zone_outer <= max_extent {
+                    // Entire zone is within amplitude - draw fully
+                    let (r, g, b) = get_color(zone);
+                    cr.set_source_rgb(r, g, b);
+
+                    // Bottom half
+                    let y = center + zone_inner;
+                    let h = zone_outer - zone_inner;
+                    cr.rectangle(x + 0.5, y, bar_w, h);
+                    cr.fill().ok();
+
+                    // Top half (mirrored)
+                    let y = center - zone_outer;
+                    cr.rectangle(x + 0.5, y, bar_w, h);
+                    cr.fill().ok();
+                } else if zone_inner < max_extent {
+                    // Partial zone - only the inner portion is within amplitude
+                    let (r, g, b) = get_color(zone);
+                    cr.set_source_rgb(r, g, b);
+
+                    // Bottom half (partial)
+                    let y = center + zone_inner;
+                    let h = max_extent - zone_inner;
+                    cr.rectangle(x + 0.5, y, bar_w, h);
+                    cr.fill().ok();
+
+                    // Top half (mirrored)
+                    let y = center - max_extent;
+                    cr.rectangle(x + 0.5, y, bar_w, h);
+                    cr.fill().ok();
+                }
+            }
+        } else {
+            // Singular mode: draw zones from bottom up
+            // In Cairo coords: y=0 is TOP, y=height is BOTTOM
+            // Zone 0 (bottom) should have the darkest color
+            let bar_height = amp * height;
+            let bar_top = height - bar_height; // y where bar stops
+            let zone_h = height / num_zones as f64;
+
+            for zone in 0..num_zones {
+                // Zone 0 at bottom (highest y values), higher zones go up
+                let zone_bottom = height - (zone + 1) as f64 * zone_h; // lower y bound
+                let zone_top = height - zone as f64 * zone_h; // higher y bound
+
+                // Only draw if this zone intersects with the bar
+                if zone_top > bar_top {
+                    let (r, g, b) = get_color(zone);
+                    cr.set_source_rgb(r, g, b);
+
+                    let draw_bottom = zone_bottom.max(bar_top);
+                    let draw_top = zone_top.min(height);
+                    let h = (draw_top - draw_bottom).max(1.0);
+                    cr.rectangle(x + 0.5, draw_bottom, bar_w, h);
+                    cr.fill().ok();
+                }
+            }
+        }
+    }
+
     {
         let state = state.clone();
         viz.set_draw_func(move |_da, cr, width, height| {
@@ -3283,6 +3391,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let mode = s.config.visualizer.mode.clone();
             let plugin_idx = s.active_plugin_idx;
             let display_bands_count = s.config.visualizer.display_bands;
+            let bars_mirror = s.config.visualizer.bars_mirror;
+            let color_zones = s.config.visualizer.color_zones as usize;
+            let zone_colors = s.config.visualizer.zone_colors.clone();
 
             // Get spectrum display bands before dropping the borrow
             let display_bands_data = s.player.get_spectrum_display_bands(display_bands_count);
@@ -3296,12 +3407,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                         drop(s); // release borrow after last plugin access
                         let bar_w = width as f64 / count as f64;
                         for (i, &v) in values.iter().enumerate() {
-                            let bar_h = (v * height as f64 * 0.92).max(2.0);
-                            let x = i as f64 * bar_w + 0.5;
-                            let y = height as f64 - bar_h;
-                            cr.set_source_rgb(0.0, 0.55 + v * 0.35, v * 0.7);
-                            cr.rectangle(x, y, bar_w - 1.5, bar_h);
-                            cr.fill().ok();
+                            let x = i as f64 * bar_w;
+                            draw_zoned_bar(
+                                &cr,
+                                x,
+                                bar_w,
+                                height as f64,
+                                v,
+                                bars_mirror,
+                                color_zones,
+                                &zone_colors,
+                            );
                         }
                         return;
                     }
@@ -3328,15 +3444,19 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     let bar_w = width as f64 / num_bars as f64;
 
                     if !display_bands_data.iter().all(|&v| v == 0.0) {
-                        // Use real spectrum data from GStreamer
+                        // Use real spectrum data from GStreamer with zone coloring
                         for (i, &amp) in display_bands_data.iter().enumerate() {
-                            let bar_h = (amp * height as f64 * 0.92).max(2.0);
-                            let x = i as f64 * bar_w + 0.5;
-                            let y = height as f64 - bar_h;
-                            // Colour: dark green (low) → bright cyan (high).
-                            cr.set_source_rgb(0.0, 0.55 + amp * 0.35, amp * 0.7);
-                            cr.rectangle(x, y, bar_w - 1.5, bar_h);
-                            cr.fill().ok();
+                            let x = i as f64 * bar_w;
+                            draw_zoned_bar(
+                                &cr,
+                                x,
+                                bar_w,
+                                height as f64,
+                                amp,
+                                bars_mirror,
+                                color_zones,
+                                &zone_colors,
+                            );
                         }
                     } else {
                         // Spectrum not available: show flat line with "Retry" indicator
@@ -5351,22 +5471,23 @@ fn open_settings_window(
         grid.set_margin_start(16);
         grid.set_margin_end(16);
 
+        // ── Mode selector ──────────────────────────────────────────────
         let lbl = Label::new(Some("Visualizer mode"));
         lbl.set_halign(Align::Start);
         grid.attach(&lbl, 0, 0, 1, 1);
 
         // DropDown: index 0 = Bars, index 1 = Oscilloscope.
-        let dd = DropDown::from_strings(&["Bars", "Oscilloscope"]);
+        let dd_mode = DropDown::from_strings(&["Bars", "Oscilloscope"]);
         {
             let mode = state.borrow().config.visualizer.mode.clone();
-            dd.set_selected(match mode {
+            dd_mode.set_selected(match mode {
                 VisualizerMode::Bars => 0,
                 VisualizerMode::Oscilloscope => 1,
             });
         }
         {
             let state_rc = state.clone();
-            dd.connect_selected_notify(move |d| {
+            dd_mode.connect_selected_notify(move |d| {
                 let mut s = state_rc.borrow_mut();
                 s.config.visualizer.mode = match d.selected() {
                     0 => VisualizerMode::Bars,
@@ -5374,7 +5495,141 @@ fn open_settings_window(
                 };
             });
         }
-        grid.attach(&dd, 1, 0, 1, 1);
+        grid.attach(&dd_mode, 1, 0, 1, 1);
+
+        // ── Bars Settings (visible only when Bars mode is selected) ───
+        let bars_settings_box = Grid::new();
+        bars_settings_box.set_row_spacing(12);
+        bars_settings_box.set_column_spacing(16);
+        bars_settings_box.set_margin_top(16);
+        bars_settings_box.set_margin_start(16);
+        bars_settings_box.attach(&Label::new(Some("Bars Settings")), 0, 0, 2, 1);
+
+        // Mirror bars toggle
+        let lbl_mirror = Label::new(Some("Mirror bars"));
+        lbl_mirror.set_halign(Align::Start);
+        bars_settings_box.attach(&lbl_mirror, 0, 1, 1, 1);
+
+        let chk_mirror = CheckButton::new();
+        {
+            let bars_mirror = state.borrow().config.visualizer.bars_mirror;
+            chk_mirror.set_active(bars_mirror);
+        }
+        {
+            let state_rc = state.clone();
+            chk_mirror.connect_toggled(move |c| {
+                state_rc.borrow_mut().config.visualizer.bars_mirror = c.is_active();
+            });
+        }
+        bars_settings_box.attach(&chk_mirror, 1, 1, 1, 1);
+
+        // Color zones selector
+        let lbl_zones = Label::new(Some("Color zones"));
+        lbl_zones.set_halign(Align::Start);
+        bars_settings_box.attach(&lbl_zones, 0, 2, 1, 1);
+
+        let spin_zones = SpinButton::with_range(1.0, 6.0, 1.0);
+        {
+            let zones = state.borrow().config.visualizer.color_zones;
+            spin_zones.set_value(zones as f64);
+        }
+        bars_settings_box.attach(&spin_zones, 1, 2, 1, 1);
+
+        // Zone colors - create 6 color buttons (one per possible zone)
+        let zone_color_buttons: Vec<(Label, ColorButton)> = (0..6)
+            .map(|i| {
+                let lbl = Label::new(Some(&format!("Zone {} color:", i + 1)));
+                lbl.set_halign(Align::Start);
+
+                let btn = ColorButton::new();
+                let zone_colors = state.borrow().config.visualizer.zone_colors.clone();
+                if let Some(hex) = zone_colors.get(i) {
+                    if let Ok(rgba) = gdk::RGBA::parse(hex) {
+                        btn.set_rgba(&rgba);
+                    }
+                }
+
+                (lbl, btn)
+            })
+            .collect();
+
+        // Add color buttons to grid (start at row 3)
+        for (i, (lbl, btn)) in zone_color_buttons.iter().enumerate() {
+            bars_settings_box.attach(lbl, 0, 3 + i as i32, 1, 1);
+            bars_settings_box.attach(btn, 1, 3 + i as i32, 1, 1);
+            // Start with all hidden; they'll be shown based on zone count
+            lbl.set_visible(false);
+            btn.set_visible(false);
+        }
+
+        // Helper to update zone button visibility
+        let update_zone_visibility = {
+            let zone_labels: Vec<_> = zone_color_buttons.iter().map(|(l, _)| l.clone()).collect();
+            let zone_buttons: Vec<_> = zone_color_buttons.iter().map(|(_, b)| b.clone()).collect();
+            move |num_zones: u8| {
+                for i in 0..6 {
+                    let visible = (i as u8) < num_zones;
+                    zone_labels[i].set_visible(visible);
+                    zone_buttons[i].set_visible(visible);
+                }
+            }
+        };
+
+        // Connect zone count changes
+        {
+            let state_rc = state.clone();
+            let update_zone_visibility = update_zone_visibility.clone();
+            spin_zones.connect_value_changed(move |s| {
+                let num_zones = s.value() as u8;
+                state_rc.borrow_mut().config.visualizer.color_zones = num_zones;
+                update_zone_visibility(num_zones);
+            });
+        }
+
+        // Connect color button signals
+        for (i, (_, btn)) in zone_color_buttons.iter().enumerate() {
+            let state_rc = state.clone();
+            btn.connect_color_set(move |button| {
+                let rgba = button.rgba();
+                let hex = format!(
+                    "#{:02x}{:02x}{:02x}",
+                    (rgba.red() * 255.0) as u8,
+                    (rgba.green() * 255.0) as u8,
+                    (rgba.blue() * 255.0) as u8,
+                );
+                let mut s = state_rc.borrow_mut();
+                let zone_colors = &mut s.config.visualizer.zone_colors;
+                // Ensure we have at least i+1 entries
+                while zone_colors.len() <= i {
+                    zone_colors.push("#000000".to_string());
+                }
+                zone_colors[i] = hex;
+            });
+        }
+
+        // Set initial visibility based on current zone count
+        {
+            let num_zones = state.borrow().config.visualizer.color_zones;
+            update_zone_visibility(num_zones);
+        }
+
+        // Show/hide bars settings based on mode
+        bars_settings_box.set_visible(false); // Start hidden
+        {
+            let bars_settings = bars_settings_box.clone();
+            dd_mode.connect_selected_notify(move |d| {
+                let is_bars = d.selected() == 0;
+                bars_settings.set_visible(is_bars);
+            });
+        }
+        // Also check initial state and set visibility
+        {
+            let bars_settings = bars_settings_box.clone();
+            let is_bars = state.borrow().config.visualizer.mode == VisualizerMode::Bars;
+            bars_settings.set_visible(is_bars);
+        }
+
+        grid.attach(&bars_settings_box, 0, 1, 2, 1);
 
         let tab_lbl = Label::new(Some("Visualizer"));
         notebook.append_page(&grid, Some(&tab_lbl));

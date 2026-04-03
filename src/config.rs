@@ -110,6 +110,9 @@ pub struct VisualizerConfig {
     /// Number of color zones for bars (1-6). Each zone shows a different color.
     #[serde(default = "VisualizerConfig::default_color_zones")]
     pub color_zones: u8,
+    /// Per-zone colors as hex strings (e.g., "#006600"). Index 0 is bottom zone.
+    #[serde(default)]
+    pub zone_colors: Vec<String>,
 }
 
 impl VisualizerConfig {
@@ -122,6 +125,16 @@ impl VisualizerConfig {
     fn default_color_zones() -> u8 {
         5
     }
+    fn default_zone_colors() -> Vec<String> {
+        vec![
+            "#006600".to_string(), // dark green
+            "#00cc00".to_string(), // light green
+            "#cccc00".to_string(), // yellow
+            "#cc8000".to_string(), // orange
+            "#cc3300".to_string(), // red
+            "#ff0000".to_string(), // bright red
+        ]
+    }
 }
 
 impl Default for VisualizerConfig {
@@ -132,6 +145,7 @@ impl Default for VisualizerConfig {
             display_bands: Self::default_display_bands(),
             bars_mirror: true,
             color_zones: Self::default_color_zones(),
+            zone_colors: Self::default_zone_colors(),
         }
     }
 }

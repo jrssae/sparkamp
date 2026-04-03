@@ -203,7 +203,12 @@ fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let n_rows = inner.height as usize;
 
     let lines: Vec<Line> = match app.config.visualizer.mode {
-        VisualizerMode::Bars => render_bars(&data, n_rows),
+        VisualizerMode::Bars => {
+            let mirror = app.config.visualizer.bars_mirror;
+            let zones = app.config.visualizer.color_zones as usize;
+            let zone_colors = &app.config.visualizer.zone_colors;
+            render_bars(&data, n_rows, mirror, zones, zone_colors)
+        }
         VisualizerMode::Oscilloscope => render_oscilloscope(&data, n_rows),
     };
 
@@ -498,39 +503,134 @@ fn draw_playlist_hints(frame: &mut Frame, _app: &App, area: Rect) {
 /// analyser look even though no actual FFT is performed.
 ///
 /// The number of bars equals `data.len()`, which the caller ensures is at
-/// least 10 (the minimum for a meaningful frequency split).  Colour grades
-/// from green at the bottom through cyan to blue at the top so the display
-/// pops against the dark background.
-fn render_bars(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
+/// least 10 (the minimum for a meaningful frequency split).
+/// Color zones: configurable via zone_colors parameter.
+/// If mirror is true, bars extend both above and below the center line.
+fn render_bars(
+    data: &[f64],
+    n_rows: usize,
+    mirror: bool,
+    color_zones: usize,
+    zone_colors: &[String],
+) -> Vec<Line<'static>> {
     let n_rows = n_rows.max(1);
-    (0..n_rows)
-        .map(|row| {
-            // row 0 = top of the box, row n_rows-1 = bottom.
-            // A bar with amplitude v fills upward from the bottom; this row
-            // is "lit" when v exceeds the fraction that maps to this row.
-            let row_fraction = 1.0 - (row as f64 + 1.0) / n_rows as f64;
-            let spans: Vec<Span> = data
-                .iter()
-                .map(|&v| {
-                    if v > row_fraction {
-                        // Colour gradient: bottom rows green, middle cyan, top blue.
-                        let intensity = row as f64 / n_rows as f64;
-                        let color = if intensity < 0.33 {
-                            Color::Blue
-                        } else if intensity < 0.67 {
-                            Color::Cyan
-                        } else {
-                            Color::Green
-                        };
-                        Span::styled("█", Style::default().fg(color))
+    let num_zones = color_zones.max(1);
+
+    // Parse hex color and find closest ANSI terminal color
+    let hex_to_ansi = |hex: &str| -> Color {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() >= 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32;
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32;
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32;
+
+            // Map to closest ANSI color based on RGB values
+            // Simple heuristic based on dominant channel and lightness
+            let max_val = r.max(g).max(b);
+            let min_val = r.min(g).min(b);
+            let lightness = (max_val + min_val) / 2.0 / 255.0;
+
+            if lightness < 0.2 {
+                Color::DarkGray
+            } else if lightness > 0.8 && r > 200.0 && g > 200.0 && b > 200.0 {
+                Color::White
+            } else if r > g && r > b {
+                // Red/orange range
+                if g > 100.0 {
+                    Color::Yellow // orange-ish
+                } else {
+                    Color::Red
+                }
+            } else if g > r && g > b {
+                // Green range
+                if lightness > 0.5 {
+                    Color::LightGreen
+                } else {
+                    Color::Green
+                }
+            } else if b > r && b > g {
+                Color::Cyan
+            } else {
+                // Mixed colors - estimate hue
+                if r >= g && r >= b {
+                    Color::Yellow
+                } else if g >= r && g >= b {
+                    if lightness > 0.5 {
+                        Color::LightGreen
                     } else {
-                        Span::raw(" ")
+                        Color::Green
                     }
-                })
-                .collect();
-            Line::from(spans)
-        })
-        .collect()
+                } else {
+                    Color::Cyan
+                }
+            }
+        } else {
+            Color::Green // default
+        }
+    };
+
+    // Get ANSI color for a zone
+    let get_zone_color = |zone: usize| -> Color {
+        let idx = zone.min(zone_colors.len().saturating_sub(1));
+        hex_to_ansi(&zone_colors[idx])
+    };
+
+    if mirror {
+        // Mirrored mode: center row is the reference, bars go up and down
+        let center_row = n_rows / 2;
+        (0..n_rows)
+            .map(|row| {
+                // Distance from center (0 = at center, positive = away)
+                let dist_from_center = if row < center_row {
+                    center_row - row
+                } else {
+                    row - center_row
+                };
+                // How far from center as a fraction of half the available space
+                let half_space = center_row.max(1);
+                let center_fraction = dist_from_center as f64 / half_space as f64;
+
+                let spans: Vec<Span> = data
+                    .iter()
+                    .map(|&v| {
+                        if v > center_fraction {
+                            // This row is within the bar's amplitude
+                            let zone = (((1.0 - v) * num_zones as f64) as usize).min(num_zones - 1);
+                            Span::styled("█", Style::default().fg(get_zone_color(zone)))
+                        } else {
+                            Span::raw(" ")
+                        }
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect()
+    } else {
+        // Singular mode: bars extend from bottom to top
+        (0..n_rows)
+            .map(|row| {
+                // row 0 = top of the box, row n_rows-1 = bottom.
+                // A bar with amplitude v fills upward from the bottom; this row
+                // is "lit" when v exceeds the fraction that maps to this row.
+                let row_fraction = 1.0 - (row as f64 + 1.0) / n_rows as f64;
+                let spans: Vec<Span> = data
+                    .iter()
+                    .map(|&v| {
+                        if v > row_fraction {
+                            // Determine zone based on how high in the bar this row is
+                            let bar_progress = (1.0 - v + row_fraction).max(0.0).min(1.0);
+                            let zone = (((1.0 - bar_progress) * num_zones as f64) as usize)
+                                .min(num_zones - 1);
+                            Span::styled("█", Style::default().fg(get_zone_color(zone)))
+                        } else {
+                            Span::raw(" ")
+                        }
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect()
+    }
 }
 
 /// Render the oscilloscope waveform visualizer.

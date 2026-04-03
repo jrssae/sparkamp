@@ -151,7 +151,7 @@ impl Player {
 
         // Configure spectrum if available
         if let Some(ref spec) = spectrum_elem {
-            spec.set_property("bands", 64u32);
+            spec.set_property("bands", 256u32);
             spec.set_property("interval", 50u64 * gst::ClockTime::MSECOND);
             spec.set_property("post-messages", true);
         }
@@ -581,14 +581,39 @@ impl Player {
 
         let spectrum_len = spectrum.len() as f64;
         let nyquist = 22050.0_f64;
-        let min_freq = 30.0_f64;
-        let max_freq = 15000.0_f64;
 
-        // Linear frequency interpolation across the equalizer range (30-15000 Hz)
+        // Plateau distribution with 256 FFT bands for better frequency resolution
+        // Each frequency maps to a distinct FFT band to minimize spectral leakage overlap
+        // Range: 100 Hz to 3800 Hz
+        let target_freqs: [f64; 16] = [
+            86.0,   // Bar 0: FFT band 1 (86-172 Hz)
+            172.0,  // Bar 1: FFT band 2 (172-258 Hz)
+            344.0,  // Bar 2: FFT band 4 (344-430 Hz)
+            430.0,  // Bar 3: FFT band 5 (430-516 Hz)
+            602.0,  // Bar 4: FFT band 7 (602-688 Hz)
+            775.0,  // Bar 5: FFT band 9 (775-861 Hz)
+            947.0,  // Bar 6: FFT band 11 (947-1033 Hz)
+            1119.0, // Bar 7: FFT band 13 (1119-1205 Hz)
+            1292.0, // Bar 8: FFT band 15 (1292-1378 Hz)
+            1464.0, // Bar 9: FFT band 17 (1464-1550 Hz)
+            1722.0, // Bar 10: FFT band 20 (1722-1808 Hz)
+            1981.0, // Bar 11: FFT band 23 (1981-2067 Hz)
+            2239.0, // Bar 12: FFT band 26 (2239-2325 Hz)
+            2670.0, // Bar 13: FFT band 31 (2670-2756 Hz)
+            3272.0, // Bar 14: FFT band 38 (3272-3358 Hz)
+            3790.0, // Bar 15: FFT band 44 (3790-3876 Hz)
+        ];
+
         (0..num_bands)
             .map(|i| {
-                let ratio = i as f64 / num_bands as f64;
-                let target_freq = min_freq + (max_freq - min_freq) * ratio;
+                let i = i as usize;
+                let target_freq = if i < target_freqs.len() {
+                    target_freqs[i]
+                } else {
+                    // Fallback for num_bands > 16
+                    let t = i as f64 / num_bands as f64;
+                    100.0 * (38.0_f64).powf(t)
+                };
                 let band_idx =
                     ((target_freq / nyquist) * spectrum_len).min(spectrum_len - 1.0) as usize;
                 spectrum.get(band_idx).copied().unwrap_or(0.0)
