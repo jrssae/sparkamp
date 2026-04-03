@@ -115,6 +115,9 @@ pub struct Player {
     spectrum_data: Arc<RwLock<SpectrumData>>,
     /// Flag indicating if spectrum element is available.
     has_spectrum: bool,
+    /// Fake position for testing (overrides real position when set).
+    #[cfg(test)]
+    fake_position: Option<Duration>,
 }
 
 impl Player {
@@ -258,6 +261,8 @@ impl Player {
             user_preamp: 1.0,
             spectrum_data,
             has_spectrum,
+            #[cfg(test)]
+            fake_position: None,
         })
     }
 
@@ -334,12 +339,30 @@ impl Player {
         self.state = s;
     }
 
+    /// Only available in tests — sets a fake position for testing back button behavior.
+    #[cfg(test)]
+    pub fn set_position_for_test(&mut self, pos: Duration) {
+        self.fake_position = Some(pos);
+    }
+
+    /// Clear any fake position set by set_position_for_test.
+    #[cfg(test)]
+    pub fn clear_position_for_test(&mut self) {
+        self.fake_position = None;
+    }
+
     /// Return the current playback position, or `None` if no track is loaded.
     ///
     /// The position is queried directly from the GStreamer pipeline clock and
     /// is accurate to nanoseconds, though the system timer resolution may be
     /// coarser in practice.
+    ///
+    /// In tests, returns the fake position if set via `set_position_for_test`.
     pub fn position(&self) -> Option<Duration> {
+        #[cfg(test)]
+        if let Some(pos) = self.fake_position {
+            return Some(pos);
+        }
         self.pipeline
             .query_position::<gst::ClockTime>()
             .map(|t| Duration::from_nanos(t.nseconds()))

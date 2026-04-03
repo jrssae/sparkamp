@@ -261,6 +261,17 @@ impl AppState {
         let mut plugin_manager = PluginManager::new();
         plugin_manager.load_from_config(&config);
         let media_lib = crate::media_library::MediaLibrary::open().ok();
+
+        // Startup cleanup: purge any soft-deleted records from previous sessions
+        {
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            std::thread::spawn(move || {
+                if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                    let _ = lib.cleanup_on_startup();
+                }
+            });
+        }
+
         Ok(AppState {
             player,
             playlist,
@@ -320,6 +331,23 @@ impl AppState {
         Some(display)
     }
 
+    /// Same as `play_current()` but does not record to shuffle history.
+    /// Used for back navigation via history to avoid corrupting the history cursor.
+    fn play_current_no_record(&mut self) -> Option<String> {
+        let track = self.playlist.current()?;
+        let uri = track.uri();
+        let display = track.display_name();
+        // Reset so the new track can be counted when it plays long enough.
+        self.counted_play_path = None;
+        let _ = self.player.load(&uri);
+        if self.pending_seek.is_some() {
+            self.mute_pending = Some(self.config.playback.volume);
+            self.player.set_volume(0.0);
+        }
+        let _ = self.player.play();
+        Some(display)
+    }
+
     /// Advance to the next track, respecting shuffle and repeat modes.
     ///
     /// Returns `Some(display_name)` if a next track was found, or `None` if
@@ -339,37 +367,55 @@ impl AppState {
 
     /// Implement the "back button" behaviour with shuffle history support.
     ///
-    /// - ≥ 2 s elapsed → restart the current track from the beginning.
-    /// - < 2 s elapsed + shuffle history → step back through session history.
-    /// - < 2 s elapsed + no history → linear previous track.
+    /// - ≥ 5 s elapsed → restart the current track from the beginning.
+    /// - < 5 s elapsed + shuffle on → step back through session history.
+    /// - < 5 s elapsed + shuffle off → linear previous track (wraps with Repeat::Playlist).
     ///
     /// Returns `Some(display_name)` of the track that will now play.
     fn play_prev(&mut self) -> Option<String> {
         let pos = self.player.position().unwrap_or(Duration::ZERO);
         let do_play = *self.player.state() != PlayerState::Stopped;
-        if pos.as_secs() >= 2 {
-            // Restart the current track.
-            if do_play {
+
+        if pos.as_secs() >= 5 {
+            return if do_play {
                 self.play_current()
             } else {
                 self.playlist.current().map(|t| t.display_name())
-            }
-        } else if let Some(idx) = self.shuffle_state.prev_from_history() {
-            // Step back through the session's playback history.
-            self.playlist.jump_to(idx);
-            if do_play {
-                self.play_current()
-            } else {
-                self.playlist.current().map(|t| t.display_name())
+            };
+        }
+
+        if self.shuffle_state.enabled {
+            if let Some(idx) = self.shuffle_state.prev_from_history() {
+                self.playlist.jump_to(idx);
+                return if do_play {
+                    self.play_current_no_record()
+                } else {
+                    self.playlist.current().map(|t| t.display_name())
+                };
             }
         } else {
-            // No history (beginning of session) — fall back to linear prev.
-            self.playlist.previous();
-            if do_play {
+            if self.playlist.current_index == 0 {
+                if self.config.playback.repeat_mode == crate::shuffle::RepeatMode::Playlist {
+                    self.playlist.jump_to(self.playlist.len().saturating_sub(1));
+                }
+            } else {
+                self.playlist.previous();
+            }
+            return if do_play {
                 self.play_current()
             } else {
                 self.playlist.current().map(|t| t.display_name())
-            }
+            };
+        }
+
+        if self.playlist.current_index == 0 {
+            return None;
+        }
+        self.playlist.previous();
+        if do_play {
+            self.play_current_no_record()
+        } else {
+            self.playlist.current().map(|t| t.display_name())
         }
     }
 
@@ -1884,6 +1930,31 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         })
     };
 
+    // scroll_to_row_if_needed — scroll the playlist to make a row visible.
+    //
+    // Only scrolls if the target row is outside the visible area.
+    // Row height is fixed at 24px to match the playlist style.
+    let scroll_to_row_if_needed = {
+        let pl_scroll = pl_scroll.clone();
+        Rc::new(move |target_idx: usize| {
+            let adj = pl_scroll.vadjustment();
+            let page_size = adj.page_size();
+            let upper = adj.upper();
+            let visible_start = adj.value();
+
+            let row_height = 24.0;
+            let target_pixels = (target_idx as f64) * row_height;
+            let visible_end = visible_start + page_size;
+
+            if target_pixels < visible_start || target_pixels > visible_end {
+                let target_pos = target_pixels - (page_size / 2.0);
+                let max_pos = (upper - page_size).max(0.0);
+                let clamped_pos = target_pos.clamp(0.0, max_pos);
+                adj.set_value(clamped_pos);
+            }
+        })
+    };
+
     // patch_pl_row — update a single store row's text without a full rebuild.
     //
     // Called by the probe drain so name and duration updates appear row by row
@@ -2043,6 +2114,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         Rc::new(move || {
             // Record which row was playing before so we can un-bold it.
@@ -2054,6 +2126,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 // Scan metadata for the current track if it hasn't been scanned yet.
                 // This updates the marquee with "Artist - Title" once the scan completes.
                 scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                // Scroll to make the new current track visible
+                scroll_to_row_if_needed(new_idx);
                 // Patch the new current track to ensure active styling is applied.
                 // Also patch old track if it was different.
                 if old_idx != new_idx {
@@ -2266,14 +2340,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
-            let result = { state.borrow_mut().play_next() };
-            if let Some(display) = result {
+            if let Some(display) = { state.borrow_mut().play_next() } {
                 let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
                 scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                scroll_to_row_if_needed(new_idx);
                 if old_idx != new_idx {
                     patch_pl_row(old_idx);
                 }
@@ -2287,14 +2362,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
-            let result = { state.borrow_mut().play_prev() };
-            if let Some(display) = result {
+            if let Some(display) = { state.borrow_mut().play_prev() } {
                 let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
                 scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                scroll_to_row_if_needed(new_idx);
                 if old_idx != new_idx {
                     patch_pl_row(old_idx);
                 }
@@ -2412,6 +2488,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let state_play = state.clone();
         let play_callback = play_and_update.clone();
         let patch_callback = patch_pl_row.clone();
+        let scroll_callback = scroll_to_row_if_needed.clone();
         let row_play = current_row.clone();
         action_play.connect_activate(move |_, _| {
             let row_idx = *row_play.borrow();
@@ -2420,6 +2497,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 let old_idx = state_play.borrow().playlist.current_index;
                 state_play.borrow_mut().playlist.jump_to(idx);
                 play_callback();
+                scroll_callback(idx);
                 if old_idx != idx {
                     patch_callback(old_idx);
                 }
@@ -5933,13 +6011,14 @@ fn open_settings_window(
                             if result == Ok(1) {
                                 status_for_dialog.set_text(&format!("Removing: {}", folder_path_cb));
 
-                                // Delete from state.media_lib on main thread first
-                                // This updates the same DB connection used by rebuild functions
+                                // Soft delete tracks on main thread
                                 if let Some(ref lib) = state_for_dialog.borrow().media_lib {
-                                    let _ = lib.remove_folder(folder_id_cb);
+                                    if let Ok(track_ids) = lib.track_ids_for_folder(folder_id_cb) {
+                                        let _ = lib.soft_delete_tracks(&track_ids);
+                                    }
                                 }
 
-                                // Now rebuild UI - data is gone from state.media_lib's DB
+                                // Rebuild UI immediately
                                 rebuild_for_dialog();
                                 status_for_dialog.set_text(&format!("Removed: {}", folder_path_cb));
 
@@ -5948,7 +6027,7 @@ fn open_settings_window(
                                     cb();
                                 }
 
-                                // Background cleanup: delete from DB again (harmless if already done)
+                                // Background: purge deleted tracks, then delete folder
                                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
                                 let folder_id_bg = folder_id_cb;
 
@@ -5956,9 +6035,9 @@ fn open_settings_window(
                                     if let Ok(lib) =
                                         crate::media_library::MediaLibrary::open_at(&db_path)
                                     {
-                                        if let Ok(track_ids) = lib.track_ids_for_folder(folder_id_bg) {
-                                            let _ = lib.remove_tracks_batch(&track_ids);
-                                        }
+                                        // Purge all soft-deleted records
+                                        let _ = lib.purge_deleted_tracks();
+                                        // Then delete the folder entry
                                         let _ = lib.remove_folder(folder_id_bg);
                                     }
                                 });
@@ -6993,32 +7072,44 @@ fn open_media_library_window(
         ml_action_group.add_action(&action_rescan);
 
         // Remove from Media Library action
-        let ml_action_remove_state = state.clone();
         let ml_action_remove_tracks = ml_selected_tracks.clone();
         let ml_action_remove_store = track_store.clone();
-        let action_remove = gio::SimpleAction::new("remove", None); // Note: action name without "ml." prefix
+        let action_remove = gio::SimpleAction::new("remove", None);
         action_remove.connect_activate(move |_, _| {
-            let tracks: Vec<_> = ml_action_remove_tracks.borrow().clone();
-            if tracks.is_empty() {
+            let paths = ml_action_remove_tracks.borrow().clone();
+            if paths.is_empty() {
                 return;
             }
-            if let Some(lib) = ml_action_remove_state.borrow().media_lib.as_ref() {
-                for path in &tracks {
-                    let path_str = path.to_string_lossy().into_owned();
-                    if let Ok(track) = lib.track_by_path(&path_str) {
-                        let _ = lib.remove_track(track.id);
+
+            let path_set: std::collections::HashSet<String> = paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            let paths_owned: Vec<String> = path_set.iter().cloned().collect();
+
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            std::thread::spawn(move || {
+                if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                    let _ = lib.soft_delete_tracks_by_paths(&paths_owned);
+                    let _ = lib.purge_deleted_tracks();
+                }
+            });
+
+            let mut rows_to_remove: Vec<u32> = Vec::new();
+            for i in 0..ml_action_remove_store.n_items() {
+                if let Some(item) = ml_action_remove_store.item(i) {
+                    if let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() {
+                        let track = boxed.borrow::<crate::media_library::LibTrack>();
+                        if path_set.contains(&track.path) {
+                            rows_to_remove.push(i);
+                        }
                     }
                 }
             }
-            let tracks: Vec<crate::media_library::LibTrack> = ml_action_remove_state
-                .borrow()
-                .media_lib
-                .as_ref()
-                .and_then(|lib| lib.all_tracks().ok())
-                .unwrap_or_default();
-            let boxed: Vec<glib::BoxedAnyObject> =
-                tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
-            ml_action_remove_store.splice(0, ml_action_remove_store.n_items(), &boxed);
+
+            for idx in rows_to_remove.into_iter().rev() {
+                ml_action_remove_store.remove(idx);
+            }
         });
         ml_action_group.add_action(&action_remove);
 
@@ -7069,10 +7160,10 @@ fn open_media_library_window(
                     return;
                 };
                 let path = std::path::Path::new(&t.path);
-                if crate::media_library::is_read_only(path) {
-                    lbl.set_label("🔒");
-                } else if t.last_scanned.is_none() {
+                if t.last_scanned.is_none() {
                     lbl.set_label("❓");
+                } else if crate::media_library::is_read_only(path) {
+                    lbl.set_label("🔒");
                 } else {
                     lbl.set_label("");
                 }
@@ -8234,7 +8325,7 @@ mod tests {
     // ── AppState::play_prev ───────────────────────────────────────────────────
 
     /// Without real audio the player has no position, so `position()` returns
-    /// `None` → `Duration::ZERO`, which is always < 2 s, so the back button
+    /// `None` → `Duration::ZERO`, which is always < 5 s, so the back button
     /// always steps to the previous track in tests.
     #[test]
     fn play_prev_when_position_is_zero_goes_to_previous_track() {
@@ -8242,6 +8333,41 @@ mod tests {
         s.playlist.current_index = 1;
         s.play_prev();
         assert_eq!(s.playlist.current_index, 0);
+    }
+
+    /// At exactly 4 seconds, back button should go to previous track.
+    #[test]
+    fn play_prev_at_position_4_secs_goes_to_previous() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        s.player
+            .set_position_for_test(std::time::Duration::from_secs(4));
+        s.play_prev();
+        assert_eq!(s.playlist.current_index, 0);
+    }
+
+    /// At exactly 5 seconds, back button should restart the current track.
+    #[test]
+    fn play_prev_at_position_5_secs_restarts_track() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        s.player
+            .set_position_for_test(std::time::Duration::from_secs(5));
+        s.play_prev();
+        // Should stay at index 1 (restart, not go to previous)
+        assert_eq!(s.playlist.current_index, 1);
+    }
+
+    /// At 6 seconds, back button should restart the current track.
+    #[test]
+    fn play_prev_at_position_6_secs_restarts_track() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        s.player
+            .set_position_for_test(std::time::Duration::from_secs(6));
+        s.play_prev();
+        // Should stay at index 1 (restart, not go to previous)
+        assert_eq!(s.playlist.current_index, 1);
     }
 
     #[test]

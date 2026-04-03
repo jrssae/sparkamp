@@ -193,10 +193,11 @@ impl Controller<'_> {
     ///
     /// - **≥ 2 s elapsed:** restart semantics — `current_index` is unchanged
     ///   but `was_playing` is propagated so the caller restarts the track.
-    /// - **< 2 s, shuffle on:** step back through the session history.
-    /// - **< 2 s, shuffle off:** go to `current − 1`; wraps to the last track
-    ///   under `RepeatMode::Playlist`.
-    /// - **At the first track with no wrap:** returns `NavResult::NoTarget`.
+    /// - **>= 5 s:** restart the current track from the beginning.
+    /// - **< 5 s, shuffle on:** step back through the session history.
+    /// - **< 5 s, shuffle off:** go to `current − 1`; wraps to the last track
+    ///   only under `RepeatMode::Playlist`.
+    /// - **At the first track with shuffle off and no wrap:** returns `NavResult::NoTarget`.
     ///
     /// `RepeatMode::Song` does not affect manual back navigation.
     pub fn nav_prev(&mut self) -> NavResult {
@@ -206,7 +207,7 @@ impl Controller<'_> {
         );
         let pos = self.player.position().unwrap_or(Duration::ZERO);
 
-        if pos.as_secs() >= 2 {
+        if pos.as_secs() >= 5 {
             // Restart current track — index unchanged.
             return NavResult::Target { was_playing };
         }

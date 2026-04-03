@@ -392,6 +392,7 @@ impl MediaLibrary {
             ("lyric", "TEXT"),
             ("artwork_path", "TEXT"),
             ("last_scanned", "TEXT"),
+            ("deleted_at", "TEXT"),
         ];
         let existing: std::collections::HashSet<String> = {
             let mut stmt = self
@@ -961,6 +962,90 @@ impl MediaLibrary {
             .map(|i| i as &dyn rusqlite::ToSql)
             .collect();
         let count = self.conn.execute(&sql, params.as_slice())?;
+        Ok(count)
+    }
+
+    /// Mark tracks as deleted by setting `deleted_at` timestamp.
+    /// Used for soft delete before background purge.
+    #[allow(dead_code)]
+    pub fn soft_delete_tracks(&self, track_ids: &[i64]) -> Result<()> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default();
+        let placeholders: Vec<String> = track_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE tracks SET deleted_at = ?1 WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&now];
+        params.extend(track_ids.iter().map(|i| i as &dyn rusqlite::ToSql));
+        self.conn.execute(&sql, params.as_slice())?;
+        Ok(())
+    }
+
+    /// Mark tracks as deleted by their paths, using batched queries to avoid
+    /// SQLite parameter limits. Returns the total number of rows updated.
+    #[allow(dead_code)]
+    pub fn soft_delete_tracks_by_paths(&self, paths: &[String]) -> Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default();
+        let mut total = 0usize;
+        for chunk in paths.chunks(1000) {
+            let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "UPDATE tracks SET deleted_at = ?1 WHERE path IN ({})",
+                placeholders.join(",")
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&now];
+            params.extend(chunk.iter().map(|s| s as &dyn rusqlite::ToSql));
+            total += self.conn.execute(&sql, params.as_slice())?;
+        }
+        Ok(total)
+    }
+
+    /// Get count of soft-deleted tracks.
+    #[allow(dead_code)]
+    pub fn get_deleted_track_count(&self) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE deleted_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Purge all soft-deleted tracks from the database.
+    /// Called by background cleanup and on application startup.
+    #[allow(dead_code)]
+    pub fn purge_deleted_tracks(&self) -> Result<usize> {
+        let count = self
+            .conn
+            .execute("DELETE FROM tracks WHERE deleted_at IS NOT NULL", [])?;
+        Ok(count)
+    }
+
+    /// Cleanup orphaned soft-deleted records on startup.
+    /// Logs the count of purged records.
+    #[allow(dead_code)]
+    pub fn cleanup_on_startup(&self) -> Result<usize> {
+        let count = self.get_deleted_track_count()?;
+        if count > 0 {
+            let purged = self.purge_deleted_tracks()?;
+            eprintln!(
+                "Media library: cleaned up {} orphaned record(s) on startup",
+                purged
+            );
+        }
         Ok(count)
     }
 
@@ -2449,6 +2534,106 @@ mod tests {
             0,
             "all tracks should be removed"
         );
+    }
+
+    // ── soft_delete and purge ──────────────────────────────────────────
+
+    #[test]
+    fn soft_delete_marks_tracks_with_timestamp() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 3);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        let tracks = lib.all_tracks().unwrap();
+        let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
+
+        // Soft delete 2 tracks
+        lib.soft_delete_tracks(&ids[0..2]).unwrap();
+
+        // Check count
+        assert_eq!(lib.get_deleted_track_count().unwrap(), 2);
+
+        // Tracks still exist but are marked as deleted
+        assert_eq!(lib.all_tracks().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn purge_deleted_removes_marked_tracks() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 3);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        let tracks = lib.all_tracks().unwrap();
+        let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
+
+        // Soft delete all tracks
+        lib.soft_delete_tracks(&ids).unwrap();
+
+        // Purge them
+        let purged = lib.purge_deleted_tracks().unwrap();
+        assert_eq!(purged, 3);
+
+        // Tracks are now gone
+        assert_eq!(lib.all_tracks().unwrap().len(), 0);
+        assert_eq!(lib.get_deleted_track_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn purge_keeps_active_tracks() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 3);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        let tracks = lib.all_tracks().unwrap();
+        let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
+
+        // Soft delete only first track
+        lib.soft_delete_tracks(&ids[0..1]).unwrap();
+
+        // Purge
+        lib.purge_deleted_tracks().unwrap();
+
+        // Only the non-deleted tracks remain
+        assert_eq!(lib.all_tracks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cleanup_on_startup_purges_deleted() {
+        let (lib, _db) = temp_lib();
+        let dir = temp_dir_with_files("mp3", 3);
+        let path = dir.path().to_str().unwrap();
+
+        let folder_id = lib.add_folder(path).unwrap().id();
+        lib.rescan_folder_fast(folder_id, path).unwrap();
+
+        let tracks = lib.all_tracks().unwrap();
+        let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
+
+        // Soft delete
+        lib.soft_delete_tracks(&ids).unwrap();
+
+        // Cleanup on startup (simulated)
+        lib.cleanup_on_startup().unwrap();
+
+        // All deleted
+        assert_eq!(lib.all_tracks().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn soft_delete_empty_ids_is_noop() {
+        let (lib, _db) = temp_lib();
+        let result = lib.soft_delete_tracks(&[]);
+        assert!(result.is_ok());
+        assert_eq!(lib.get_deleted_track_count().unwrap(), 0);
     }
 
     // ── add_folder with NUL bytes in path ─────────────────────────────────
