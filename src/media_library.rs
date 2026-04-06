@@ -966,6 +966,7 @@ impl MediaLibrary {
     }
 
     /// Mark tracks as deleted by setting `deleted_at` timestamp.
+    /// Processes IDs in chunks of 999 to stay within SQLite's parameter limit.
     /// Used for soft delete before background purge.
     #[allow(dead_code)]
     pub fn soft_delete_tracks(&self, track_ids: &[i64]) -> Result<()> {
@@ -976,14 +977,16 @@ impl MediaLibrary {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_default();
-        let placeholders: Vec<String> = track_ids.iter().map(|_| "?".to_string()).collect();
-        let sql = format!(
-            "UPDATE tracks SET deleted_at = ?1 WHERE id IN ({})",
-            placeholders.join(",")
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&now];
-        params.extend(track_ids.iter().map(|i| i as &dyn rusqlite::ToSql));
-        self.conn.execute(&sql, params.as_slice())?;
+        for chunk in track_ids.chunks(999) {
+            let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "UPDATE tracks SET deleted_at = ?1 WHERE id IN ({})",
+                placeholders.join(",")
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&now];
+            params.extend(chunk.iter().map(|i| i as &dyn rusqlite::ToSql));
+            self.conn.execute(&sql, params.as_slice())?;
+        }
         Ok(())
     }
 
@@ -1040,11 +1043,7 @@ impl MediaLibrary {
     pub fn cleanup_on_startup(&self) -> Result<usize> {
         let count = self.get_deleted_track_count()?;
         if count > 0 {
-            let purged = self.purge_deleted_tracks()?;
-            eprintln!(
-                "Media library: cleaned up {} orphaned record(s) on startup",
-                purged
-            );
+            self.purge_deleted_tracks()?;
         }
         Ok(count)
     }

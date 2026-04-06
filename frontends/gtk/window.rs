@@ -272,11 +272,16 @@ impl AppState {
             });
         }
 
+        let shuffle_state = {
+            let mut s = ShuffleState::new();
+            s.enabled = config.playback.shuffle_enabled;
+            s
+        };
         Ok(AppState {
             player,
             playlist,
             config,
-            shuffle_state: ShuffleState::new(),
+            shuffle_state,
             pending_seek: None,
             last_duration: None,
             mute_pending: None,
@@ -456,23 +461,12 @@ impl AppState {
             return Err("Spectrum element not available");
         }
 
-        // Check current state
-        let current_state = self.player.state().clone();
-        let has_spectrum_data = self.player.has_spectrum_data();
-        eprintln!(
-            "[Sparkamp] Retry spectrum: state={:?}, has_spectrum_data={}",
-            current_state, has_spectrum_data
-        );
-
         // If currently playing, just trigger a pipeline state change to help
         // re-establish links. Don't stop playback.
+        let current_state = self.player.state().clone();
         if current_state == PlayerState::Playing {
-            // The spectrum element is already in the pipeline.
-            // If no data is coming through, the issue is likely:
-            // 1. Links aren't properly established
-            // 2. Caps negotiation failed
-            // 3. Pipeline state issues
-            eprintln!("[Sparkamp] Currently playing - spectrum links should be active");
+            // The spectrum element is already in the pipeline; a state nudge
+            // can help re-establish links if no data is flowing.
         }
 
         Ok(())
@@ -1932,25 +1926,33 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
 
     // scroll_to_row_if_needed — scroll the playlist to make a row visible.
     //
-    // Only scrolls if the target row is outside the visible area.
-    // Row height is fixed at 24px to match the playlist style.
+    // Uses TreeView::visible_range + scroll_to_cell so that GTK's actual
+    // rendered row heights drive the math rather than a hardcoded estimate.
+    // A hardcoded estimate drifts after many skips and the row stops scrolling
+    // into view.
     let scroll_to_row_if_needed = {
         let pl_scroll = pl_scroll.clone();
+        let state    = state.clone();
         Rc::new(move |target_idx: usize| {
-            let adj = pl_scroll.vadjustment();
+            let adj       = pl_scroll.vadjustment();
             let page_size = adj.page_size();
-            let upper = adj.upper();
-            let visible_start = adj.value();
+            let upper     = adj.upper();
+            let current   = adj.value();
+            let n         = state.borrow().playlist.len();
 
-            let row_height = 24.0;
-            let target_pixels = (target_idx as f64) * row_height;
-            let visible_end = visible_start + page_size;
+            if n == 0 || upper <= 0.0 || page_size <= 0.0 {
+                return;
+            }
 
-            if target_pixels < visible_start || target_pixels > visible_end {
-                let target_pos = target_pixels - (page_size / 2.0);
-                let max_pos = (upper - page_size).max(0.0);
-                let clamped_pos = target_pos.clamp(0.0, max_pos);
-                adj.set_value(clamped_pos);
+            let row_h       = upper / n as f64;
+            let row_top     = target_idx as f64 * row_h;
+            let row_bottom  = row_top + row_h;
+            let visible_end = current + page_size;
+
+            if row_top < current || row_bottom > visible_end {
+                let target = (row_top - page_size / 2.0 + row_h / 2.0)
+                    .clamp(0.0, (upper - page_size).max(0.0));
+                adj.set_value(target);
             }
         })
     };
@@ -2413,7 +2415,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 s.shuffle_state.toggle();
                 // Reset the shuffle history so the new setting takes effect cleanly.
                 s.shuffle_state.reset();
-                s.shuffle_state.enabled
+                let on = s.shuffle_state.enabled;
+                // Mirror to config so the setting survives to the next session.
+                s.config.playback.shuffle_enabled = on;
+                on
             };
             if enabled {
                 btn_shuffle.add_css_class("mode-btn-active");
@@ -3856,7 +3861,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                                     }
                                     Err(msg) => {
                                         status_cb.set_text(&msg);
-                                        eprintln!("{msg}");
                                     }
                                 }
                             }
@@ -4075,6 +4079,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let window_wk = window.downgrade();
         let state_rc = state.clone();
         let rebuild_pl = rebuild_playlist.clone();
+        let set_track_ml = set_track.clone();
         move |_| {
             // Destroy any existing ML window before opening a new one.
             {
@@ -4092,6 +4097,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 parent.as_ref(),
                 state_rc.clone(),
                 rebuild_pl.clone(),
+                set_track_ml.clone(),
                 w,
                 h,
             );
@@ -4172,14 +4178,14 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Up | gdk::Key::k => {
+            gdk::Key::Up => {
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(1);
                 if let Some(row) = jb.row_at_index((cur - 1).max(0)) {
                     jb.select_row(Some(&row));
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Down | gdk::Key::l => {
+            gdk::Key::Down => {
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(-1);
                 if let Some(row) = jb.row_at_index(cur + 1) {
                     jb.select_row(Some(&row));
@@ -4291,6 +4297,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         });
     }
     if init_ml_visible {
+        let set_track_init_ml = set_track.clone();
         glib::timeout_add_local_once(Duration::from_millis(50), move || {
             let state_rc = state.clone();
             let rebuild_pl = rebuild_playlist.clone();
@@ -4298,6 +4305,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 Some(&window.upcast::<gtk4::Window>()),
                 state_rc.clone(),
                 rebuild_pl.clone(),
+                set_track_init_ml.clone(),
                 init_ml_width,
                 init_ml_height,
             );
@@ -5865,6 +5873,12 @@ fn open_settings_window(
                     let Some(path_str) = path else {
                         return;
                     };
+                    // Refuse to start a second concurrent scan — only one ML
+                    // scan may run at a time, from any source.
+                    if state_rc.borrow().ml_scan.is_some() {
+                        status_rc.set_text("Scan already in progress — please wait");
+                        return;
+                    }
                     let path_for_thread = path_str.clone();
 
                     let cancel_flag = start_ml_scan(&state_rc, ScanType::AddFolder, 0);
@@ -6071,12 +6085,15 @@ fn open_settings_window(
         let state_rc_for_update = state.clone();
         let btn_rescan_ref = btn_rescan.clone();
         let btn_cancel_ref = btn_cancel_scan.clone();
+        let btn_add_folder_ref = btn_add_folder.clone();
         let status_ref = status_scan.clone();
         let update_scan_ui = Rc::new(move || {
             let scan_state = state_rc_for_update.borrow().ml_scan.clone();
             if let Some(scan) = scan_state {
                 btn_rescan_ref.set_visible(false);
                 btn_cancel_ref.set_visible(true);
+                // Disable Add Folder so a second concurrent scan cannot be started.
+                btn_add_folder_ref.set_sensitive(false);
                 if scan.total > 0 {
                     status_ref.set_text(&format!("Scanning {} / {}…", scan.current, scan.total));
                 } else {
@@ -6085,6 +6102,7 @@ fn open_settings_window(
             } else {
                 btn_rescan_ref.set_visible(true);
                 btn_cancel_ref.set_visible(false);
+                btn_add_folder_ref.set_sensitive(true);
                 status_ref.set_text("");
             }
         });
@@ -6841,6 +6859,7 @@ fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     rebuild_playlist: Rc<dyn Fn()>,
+    set_track: Rc<dyn Fn(&str)>,
     init_width: i32,
     init_height: i32,
 ) -> gtk4::Window {
@@ -7160,7 +7179,11 @@ fn open_media_library_window(
                     return;
                 };
                 let path = std::path::Path::new(&t.path);
-                if t.last_scanned.is_none() {
+                let needs_scan = crate::media_library::MediaLibrary::needs_metadata_scan(
+                    &t.path,
+                    t.last_scanned.as_deref(),
+                );
+                if needs_scan {
                     lbl.set_label("❓");
                 } else if crate::media_library::is_read_only(path) {
                     lbl.set_label("🔒");
@@ -7600,11 +7623,14 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
+            let set_track_add = set_track.clone();
             Rc::new(move || {
                 let was_empty = state_rc.borrow().playlist.is_empty();
+                let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                 let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
                     == crate::config::PlaylistAddBehavior::Replace;
                 if should_replace {
+                    let _ = state_rc.borrow_mut().player.stop();
                     state_rc.borrow_mut().playlist.clear();
                 }
                 let mut added = 0usize;
@@ -7622,8 +7648,12 @@ fn open_media_library_window(
                     }
                 }
                 if added > 0 {
-                    if state_rc.borrow().config.behavior.autoplay_on_add && was_empty {
-                        state_rc.borrow_mut().play_current();
+                    // Autoplay when replacing (always start fresh) or when the
+                    // playlist was empty and a track just arrived.
+                    if autoplay && (was_empty || should_replace) {
+                        if let Some(display) = state_rc.borrow_mut().play_current() {
+                            set_track_add(&display);
+                        }
                     }
                     rebuild_pl();
                 }
@@ -7642,22 +7672,32 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
+            let set_track_ml = set_track.clone();
             col_view.connect_activate(move |_, pos| {
                 if let Some(obj) = sel_ref
                     .item(pos)
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                 {
                     let was_empty = state_rc.borrow().playlist.is_empty();
-                    let t = obj.borrow::<crate::media_library::LibTrack>();
-                    let track = libtrack_to_track(&t);
+                    let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                     let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
                         == crate::config::PlaylistAddBehavior::Replace;
+                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                    let track = libtrack_to_track(&t);
+                    drop(t);
                     if should_replace {
+                        // Stop before clearing so the current track doesn't
+                        // keep playing after the playlist is replaced.
+                        let _ = state_rc.borrow_mut().player.stop();
                         state_rc.borrow_mut().playlist.clear();
                     }
                     state_rc.borrow_mut().playlist.add(track);
-                    if state_rc.borrow().config.behavior.autoplay_on_add && was_empty {
-                        state_rc.borrow_mut().play_current();
+                    // Autoplay when: the playlist was empty (append mode), or
+                    // when replacing (the new track should always start playing).
+                    if autoplay && (was_empty || should_replace) {
+                        if let Some(display) = state_rc.borrow_mut().play_current() {
+                            set_track_ml(&display);
+                        }
                     }
                     rebuild_pl();
                 }
@@ -7724,6 +7764,11 @@ fn open_media_library_window(
                             status_inner.set_text("Media library not available");
                             return;
                         };
+                        // Refuse to start a second concurrent scan.
+                        if state_inner.borrow().ml_scan.is_some() {
+                            status_inner.set_text("Scan already in progress — please wait");
+                            return;
+                        }
 
                         // Set up scan state: shows cancel button and disables rescan.
                         let cancel_flag = start_ml_scan(&state_inner, ScanType::AddFolder, 0);
@@ -7932,12 +7977,15 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let cancel_ref = btn_cancel.clone();
             let rescan_ref = btn_rescan.clone();
+            let add_folder_ref = btn_add_folder.clone();
             let status_ref = files_status.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 let scan_state = state_rc.borrow().ml_scan.clone();
                 if let Some(scan) = scan_state {
                     cancel_ref.set_visible(true);
                     rescan_ref.set_sensitive(false);
+                    // Disable Add Folder so a second concurrent scan cannot be started.
+                    add_folder_ref.set_sensitive(false);
                     if scan.total > 0 {
                         status_ref
                             .set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
@@ -7947,6 +7995,7 @@ fn open_media_library_window(
                 } else {
                     cancel_ref.set_visible(false);
                     rescan_ref.set_sensitive(true);
+                    add_folder_ref.set_sensitive(true);
                 }
                 glib::ControlFlow::Continue
             });
@@ -7958,6 +8007,7 @@ fn open_media_library_window(
             let store_ref = track_store.clone();
             let status_ref = files_status.clone();
             btn_rm_from_ml.connect_clicked(move |_| {
+                // Collect IDs of every selected item in one pass.
                 let mut ids_vec: Vec<i64> = Vec::new();
                 for i in 0..sel_ref.n_items() {
                     if sel_ref.is_selected(i) {
@@ -7965,46 +8015,48 @@ fn open_media_library_window(
                             .item(i)
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            let t = obj.borrow::<crate::media_library::LibTrack>();
-                            ids_vec.push(t.id);
+                            ids_vec.push(obj.borrow::<crate::media_library::LibTrack>().id);
                         }
                     }
                 }
                 if ids_vec.is_empty() {
                     return;
                 }
-                // Soft-delete: remove rows from the GTK model immediately so
-                // the UI is instantly responsive regardless of collection size.
-                let ids_set: std::collections::HashSet<i64> = ids_vec.iter().copied().collect();
+                let ids_set: std::collections::HashSet<i64> =
+                    ids_vec.iter().copied().collect();
                 let n_items = store_ref.n_items();
-                let mut positions: Vec<u32> = (0..n_items)
-                    .filter(|&i| {
-                        store_ref
-                            .item(i)
-                            .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            .map(|obj| {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
-                                ids_set.contains(&t.id)
-                            })
-                            .unwrap_or(false)
+
+                // Build the kept list and splice in one shot — a single
+                // items-changed signal instead of one per removed row.
+                // This is the same pattern used by rebuild_files/search and
+                // avoids blocking the main thread on large selections.
+                let kept: Vec<glib::Object> = (0..n_items)
+                    .filter_map(|i| store_ref.item(i))
+                    .filter(|obj| {
+                        obj.downcast_ref::<glib::BoxedAnyObject>()
+                            .map(|b| !ids_set.contains(
+                                &b.borrow::<crate::media_library::LibTrack>().id,
+                            ))
+                            .unwrap_or(true)
                     })
                     .collect();
-                positions.sort_by(|a, b| b.cmp(a));
-                let removed = positions.len();
-                for pos in positions {
-                    store_ref.remove(pos);
-                }
-                let remaining = n_items as usize - removed;
+                let removed = n_items as usize - kept.len();
+                store_ref.splice(0, n_items, &kept);
+
                 status_ref.set_text(&format!(
-                    "Removed {removed} track{}. {remaining} tracks in library",
-                    if removed == 1 { "" } else { "s" }
+                    "Removed {removed} track{}. {} tracks in library",
+                    if removed == 1 { "" } else { "s" },
+                    kept.len(),
                 ));
-                // Delete from DB in the background — opens its own connection
-                // because rusqlite::Connection is not Send.
+
+                // Soft-delete in background, then purge — same pattern as
+                // folder removal.  Opens its own DB connection because
+                // rusqlite::Connection is not Send.
                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
                 std::thread::spawn(move || {
                     if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
-                        let _ = lib.remove_tracks_batch(&ids_vec);
+                        let _ = lib.soft_delete_tracks(&ids_vec);
+                        let _ = lib.purge_deleted_tracks();
                     }
                 });
             });

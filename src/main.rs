@@ -4,10 +4,10 @@
 //!
 //! | Command | Behaviour |
 //! |---------|-----------|
-//! | `sparkamp` | Launch the terminal UI (TUI) |
-//! | `sparkamp --ui` | Launch the GTK4 graphical UI |
-//! | `sparkamp file1.mp3 …` | Pre-load files into the playlist, then open the TUI |
-//! | `sparkamp --ui file1.mp3 …` | Pre-load files into the playlist, then open the GTK4 UI |
+//! | `sparkamp` | Launch the GTK4 graphical UI |
+//! | `sparkamp --tui` | Launch the terminal UI (TUI) |
+//! | `sparkamp file1.mp3 …` | Pre-load files into the playlist, then open the GTK4 UI |
+//! | `sparkamp --tui file1.mp3 …` | Pre-load files into the playlist, then open the TUI |
 //!
 //! GStreamer is initialised once here, before either UI is entered, so that
 //! both frontends can assume the library is ready.
@@ -44,11 +44,11 @@ mod viz_plugin;
     long_about = "Sparkamp — a Winamp-style audio player for Linux/GNOME.\n\
 \n\
 USAGE EXAMPLES:\n\
-  sparkamp                          Launch the terminal UI\n\
-  sparkamp --ui                     Launch the GTK4 graphical UI\n\
-  sparkamp file1.mp3 file2.flac     Load files, then open the TUI\n\
-  sparkamp ~/music/                 Load a folder recursively, then open the TUI\n\
-  sparkamp --ui ~/music/*.mp3       Shell-glob expansion into the GTK4 UI\n\
+  sparkamp                          Launch the GTK4 graphical UI\n\
+  sparkamp --tui                    Launch the terminal UI\n\
+  sparkamp file1.mp3 file2.flac     Load files, then open the GTK4 UI\n\
+  sparkamp ~/music/                 Load a folder recursively, then open the GTK4 UI\n\
+  sparkamp --tui ~/music/*.mp3      Shell-glob expansion into the TUI\n\
   sparkamp \"song.mp3,~/albums/rock\" Comma-separated file and folder in one argument\n\
 \n\
 FILES:\n\
@@ -62,9 +62,9 @@ FILES:\n\
 Press 'i' inside the app to view all keyboard shortcuts."
 )]
 struct Args {
-    /// Open the GTK4 graphical interface instead of the terminal UI.
+    /// Open the terminal UI instead of the GTK4 graphical interface.
     #[arg(long)]
-    ui: bool,
+    tui: bool,
 
     /// Audio files or folders to load at startup.
     ///
@@ -125,9 +125,9 @@ fn main() -> Result<()> {
     }
 
     // Dispatch to the appropriate frontend.
-    if args.ui {
-        gtk_ui::run(playlist, config)
-    } else {
+    if args.tui {
         tui::run(playlist, config)
+    } else {
+        gtk_ui::run(playlist, config)
     }
 }

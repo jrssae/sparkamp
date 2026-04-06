@@ -105,13 +105,13 @@ pub struct VisualizerConfig {
     pub display_bands: u32,
     /// Whether to show a mirror effect for bars visualizer.
     /// The bar extends both above and below the center line.
-    #[serde(default)]
+    #[serde(default = "VisualizerConfig::default_bars_mirror")]
     pub bars_mirror: bool,
     /// Number of color zones for bars (1-6). Each zone shows a different color.
     #[serde(default = "VisualizerConfig::default_color_zones")]
     pub color_zones: u8,
     /// Per-zone colors as hex strings (e.g., "#006600"). Index 0 is bottom zone.
-    #[serde(default)]
+    #[serde(default = "VisualizerConfig::default_zone_colors")]
     pub zone_colors: Vec<String>,
 }
 
@@ -121,6 +121,9 @@ impl VisualizerConfig {
     }
     fn default_display_bands() -> u32 {
         16
+    }
+    fn default_bars_mirror() -> bool {
+        true
     }
     fn default_color_zones() -> u8 {
         5
