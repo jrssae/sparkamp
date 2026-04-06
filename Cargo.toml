@@ -30,7 +30,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 # GTK4 GUI
-gtk4 = { version = "0.9", features = ["v4_10"] }
+gtk4 = { version = "0.9", features = ["v4_12"] }
 
 # Config & playlist persistence
 serde = { version = "1", features = ["derive"] }

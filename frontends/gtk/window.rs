@@ -3690,9 +3690,20 @@ pub fn build(
         .child(&jump_box)
         .build();
 
+    // Status line below the results box: shows match count or a hint.
+    let jump_status = gtk4::Label::builder()
+        .halign(Align::Start)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(2)
+        .margin_bottom(4)
+        .build();
+    jump_status.add_css_class("status-label");
+
     let jump_root = gtk4::Box::new(Orientation::Vertical, 0);
     jump_root.append(&jump_entry);
     jump_root.append(&jump_scroll);
+    jump_root.append(&jump_status);
 
     let jump_win = gtk4::Window::builder()
         .title("Jump to Track")
@@ -3710,23 +3721,41 @@ pub fn build(
     // Maps each visible row in jump_box → the original track index in the playlist.
     let jump_indices: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
 
+    // Maximum rows shown in the jump list.  Caps widget creation so the window
+    // stays responsive on playlists with tens of thousands of tracks.
+    const MAX_JUMP_RESULTS: usize = 500;
+
     // Closure: clear and repopulate jump_box based on the current query.
     let rebuild_jump: Rc<dyn Fn()> = {
         let state = state.clone();
         let jump_entry = jump_entry.clone();
         let jump_box = jump_box.clone();
         let jump_indices = jump_indices.clone();
+        let jump_status = jump_status.clone();
         Rc::new(move || {
-            // Remove all existing rows.
-            while let Some(row) = jump_box.row_at_index(0) {
-                jump_box.remove(&row);
-            }
+            // remove_all() is a single GTK call instead of O(n) individual removes.
+            jump_box.remove_all();
             let mut indices = jump_indices.borrow_mut();
             indices.clear();
 
             let q = jump_entry.text();
+            // Empty query: show a hint and leave the list empty.
+            // Without this guard, an empty query would match every track and
+            // create tens of thousands of widgets, freezing the UI.
+            if q.trim().is_empty() {
+                let total = state.borrow().playlist.len();
+                jump_status.set_text(&format!("{total} tracks — type to search"));
+                return;
+            }
+
+            let all_matches = {
+                let s = state.borrow();
+                s.playlist.search_indices(&q)
+            };
+            let total_matches = all_matches.len();
+            let capped = total_matches > MAX_JUMP_RESULTS;
             let s = state.borrow();
-            for idx in s.playlist.search_indices(&q) {
+            for &idx in all_matches.iter().take(MAX_JUMP_RESULTS) {
                 let track = &s.playlist.tracks[idx];
                 let label_text = if track.artist.is_empty() {
                     format!("{:2}. {}", idx + 1, track.title)
@@ -3747,6 +3776,20 @@ pub fn build(
                 jump_box.append(&row);
                 indices.push(idx);
             }
+            drop(s);
+
+            // Status line.
+            if total_matches == 0 {
+                jump_status.set_text("No matches");
+            } else if capped {
+                jump_status.set_text(&format!(
+                    "Showing {} of {} matches — type more to narrow",
+                    MAX_JUMP_RESULTS, total_matches
+                ));
+            } else {
+                jump_status.set_text(&format!("{total_matches} match{}", if total_matches == 1 { "" } else { "es" }));
+            }
+
             // Auto-select the first row so Enter immediately plays.
             if let Some(row) = jump_box.row_at_index(0) {
                 jump_box.select_row(Some(&row));
@@ -8863,11 +8906,23 @@ mod tests {
     }
 
     #[test]
-    fn search_indices_returns_all_tracks_for_empty_query() {
+    fn search_indices_matches_across_fields() {
+        // "ed sheeran don't" — artist and title words in a single query.
+        let mut s = make_state();
+        s.playlist.add(named_track("Don't", "Ed Sheeran"));
+        s.playlist.add(named_track("Perfect", "Ed Sheeran"));
+        s.playlist.add(named_track("Don't Stop", "Journey"));
+        let results = s.playlist.search_indices("ed sheeran don't");
+        assert_eq!(results, vec![0]);
+    }
+
+    #[test]
+    fn search_indices_returns_empty_for_empty_query() {
         let s = state_with_tracks(&["A", "B", "C"]);
-        // search_indices is called with "" from the search bar before any typing
+        // Empty query returns nothing so the jump window doesn't create
+        // thousands of widgets on open, which would freeze the UI.
         let results = s.playlist.search_indices("");
-        assert_eq!(results.len(), 3);
+        assert!(results.is_empty());
     }
 
     // ── fmt_duration ──────────────────────────────────────────────────────────
