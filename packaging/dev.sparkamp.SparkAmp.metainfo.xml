@@ -13,8 +13,8 @@
       equalizer, a media library, visualizer plugins, and custom CSS skinning.
     </p>
     <p>
-      Launch with <code>sparkamp --ui</code> for the GTK4 graphical interface
-      or just <code>sparkamp</code> for the terminal (TUI) mode.
+      Launch with <code>sparkamp</code> for the GTK4 graphical interface
+      or <code>sparkamp --tui</code> for the terminal (TUI) mode.
     </p>
   </description>
   <launchable type="desktop-id">dev.sparkamp.SparkAmp.desktop</launchable>
@@ -28,6 +28,16 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="0.2.0" date="2026-04-06">
+      <description>
+        <p>GTK4 is now the default interface (launch with sparkamp); TUI is
+        available via sparkamp --tui. Adds media library with background
+        scanning, spectrum visualizer with configurable color zones and mirror
+        mode, bar visualizer improvements, shuffle persistence, and numerous
+        GTK fixes including jump-window search, scroll-to-row, and
+        replace-mode autoplay.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-03-22">
       <description>
         <p>Initial public release featuring GStreamer audio backend, GTK4 GUI,
