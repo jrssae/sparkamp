@@ -190,18 +190,17 @@ button.mode-btn.active {
 /* mode-btn-active: programmatically set on repeat/shuffle buttons when "on".
    Distinct from :active (the momentary press state) — this persists while
    the feature is enabled so the user can see it at a glance.
-   Background is filled with the accent colour (high alpha) so the button
-   reads as clearly "on" at a glance; text switches to accent foreground
-   (white on most themes) for contrast. */
-button.mode-btn-active {
-    background-color: alpha(@accent_bg_color, 0.7);
+   Double-class selector beats the single-class mode-btn rule at equal priority. */
+button.mode-btn.mode-btn-active {
+    background-color: @accent_bg_color;
     background-image: none;
+    box-shadow: none;
     color: @accent_fg_color;
-    border-color: alpha(@accent_bg_color, 0.85);
+    border-color: @accent_bg_color;
 }
 
-button.mode-btn-active:hover {
-    background-color: alpha(@accent_bg_color, 0.82);
+button.mode-btn.mode-btn-active:hover {
+    background-color: alpha(@accent_bg_color, 0.85);
     background-image: none;
 }
 
@@ -395,4 +394,114 @@ popover modelbutton:hover {
 .unscanned-row button {
     background-color: #000000;
     color: #ffffff;
+}
+
+/* ── Entry / search widgets ─────────────────────────────────────────────
+   GtkEntry (ML search bar) and GtkSearchEntry (jump window) are not
+   covered by the window{} rule, so they fall through to the system
+   theme in Flatpak.  Style them explicitly here. */
+entry {
+    background-color: #222222;
+    background-image: none;
+    color: #e0e0e0;
+    border-color: #444444;
+    caret-color: @accent_bg_color;
+}
+
+entry text {
+    background-color: #222222;
+    color: #e0e0e0;
+}
+
+entry:focus {
+    border-color: @accent_bg_color;
+    outline-color: alpha(@accent_bg_color, 0.3);
+}
+
+entry placeholder {
+    color: #666666;
+}
+
+/* ── ColumnView / ListView (media library file list) ─────────────────── */
+columnview,
+listview {
+    background-color: #141414;
+    color: #cccccc;
+}
+
+columnview > listview > row,
+listview > row {
+    background-color: transparent;
+    color: #cccccc;
+}
+
+columnview > listview > row:hover,
+listview > row:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Notebook (Settings window) ──────────────────────────────────────────
+   GtkNotebook is used for the tabbed settings panel.  The header (tab
+   strip), individual tabs, and the content stack all need explicit dark
+   colours in Flatpak. */
+notebook {
+    background-color: #1a1a1a;
+}
+
+notebook > header {
+    background-color: #222222;
+    border-bottom: 1px solid #333333;
+}
+
+notebook > header tab {
+    background-color: #1e1e1e;
+    color: #aaaaaa;
+    padding: 4px 10px;
+    border: 1px solid #2e2e2e;
+}
+
+notebook > header tab:checked {
+    background-color: #1a1a1a;
+    color: @accent_bg_color;
+    border-top: 2px solid @accent_bg_color;
+    border-bottom: 2px solid @accent_bg_color;
+}
+
+notebook > stack {
+    background-color: #1a1a1a;
+}
+
+/* ── Generic text buttons (Save/Close in dialogs) ────────────────────── */
+button.text-button {
+    background-color: #2a2a2a;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #3a3a3a;
+    color: #cccccc;
+    border-radius: 4px;
+    padding: 4px 12px;
+    min-height: 0;
+}
+
+button.text-button:hover {
+    background-color: #3a3a3a;
+    background-image: none;
+    border-color: #555555;
+    color: #ffffff;
+}
+
+/* suggested-action is applied to the Save button in the ID3 editor
+   and other primary action buttons. */
+button.suggested-action {
+    background-color: @accent_bg_color;
+    background-image: none;
+    box-shadow: none;
+    color: @accent_fg_color;
+    border: none;
+    border-radius: 4px;
+}
+
+button.suggested-action:hover {
+    background-color: alpha(@accent_bg_color, 0.85);
+    background-image: none;
 }

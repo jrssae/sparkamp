@@ -865,6 +865,9 @@ fn reload_css_accent(
         accent_hex,
     );
     provider.load_from_data(&css);
+    if let Some(gtk_settings) = gtk4::Settings::default() {
+        gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
+    }
 }
 
 /// Embedded app logo PNG bytes (compiled into the binary).
@@ -1118,7 +1121,15 @@ fn start_playlist_scan_poller(
     });
 }
 
-pub fn build(app: &Application, playlist: Playlist, config: Config) {
+pub fn build(
+    app: &Application,
+    playlist: Playlist,
+    config: Config,
+    // Receives batches of file paths from the `open` GApplication signal so that
+    // "Open with Sparkamp" in the file manager reaches the running instance
+    // rather than spawning a new one.
+    open_rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
     // Inject the accent colour at startup so @accent_bg_color always resolves.
     // If the user has configured a custom skin name, try to load it; fall back
@@ -1145,6 +1156,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         }
     };
 
+    // Determine initial dark/light state from config (custom skins are treated as dark).
+    let initial_dark = config.appearance.custom_skin.is_empty()
+        && !matches!(config.appearance.theme, crate::config::ThemeChoice::Light);
+
     let provider = Rc::new(gtk4::CssProvider::new());
     provider.load_from_data(&initial_css);
     gtk4::style_context_add_provider_for_display(
@@ -1152,7 +1167,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         &*provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    let dark_mode = Rc::new(Cell::new(true));
+    // Tell GTK to use the dark/light Adwaita variant for built-in widgets
+    // (title bars, entries, notebooks, etc.).  Without this, Flatpak apps
+    // default to light regardless of the system setting.
+    if let Some(gtk_settings) = gtk4::Settings::default() {
+        gtk_settings.set_gtk_application_prefer_dark_theme(initial_dark);
+    }
+    let dark_mode = Rc::new(Cell::new(initial_dark));
 
     // Clone provider and CSS for use by handlers that need them.
     let provider_for_settings = provider.clone();
@@ -1592,6 +1613,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 prepare_css(LIGHT_CSS_RAW, &accent_hex)
             };
             provider_rc.load_from_data(&css);
+            if let Some(gtk_settings) = gtk4::Settings::default() {
+                gtk_settings.set_gtk_application_prefer_dark_theme(now_dark);
+            }
             // Swap logo to match the new theme.
             if now_dark {
                 if let Some(ref pb) = *logo_dark_t {
@@ -2982,6 +3006,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let patch_pl_row = patch_pl_row.clone();
         let current_track_meta_rx = std::cell::RefCell::new(current_track_meta_rx);
         let set_track = set_track.clone();
+        let rebuild_playlist_tick = rebuild_playlist.clone();
+        let play_update_tick = play_and_update.clone();
+        let scroll_tick = scroll_to_row_if_needed.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
@@ -3062,6 +3089,50 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 // Patch the row to show the new title/artist.
                 if let Some(idx) = updated_idx {
                     patch_pl_row(idx);
+                }
+            }
+
+            // 0d. Handle files received from "Open with Sparkamp" in the file manager.
+            // Each batch respects playlist_add_behavior (append/replace) and
+            // autoplay_on_add from config.
+            while let Ok(paths) = open_rx.try_recv() {
+                if paths.is_empty() {
+                    continue;
+                }
+                use crate::config::PlaylistAddBehavior;
+                let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+                let autoplay = state.borrow().config.behavior.autoplay_on_add;
+
+                if behavior == PlaylistAddBehavior::Replace {
+                    let _ = state.borrow_mut().player.stop();
+                    {
+                        let mut s = state.borrow_mut();
+                        s.playlist.tracks.clear();
+                        s.playlist.current_index = 0;
+                        s.last_duration = None;
+                        s.pending_seek = None;
+                        s.mute_pending = None;
+                    }
+                }
+
+                let insert_start = state.borrow().playlist.len();
+                for path in &paths {
+                    if let Ok(track) = crate::model::Track::from_path_fast(path) {
+                        state.borrow_mut().playlist.tracks.push(track);
+                    }
+                }
+                let inserted = state.borrow().playlist.len() - insert_start;
+                if inserted == 0 {
+                    continue;
+                }
+                rebuild_playlist_tick();
+
+                if autoplay
+                    && (behavior == PlaylistAddBehavior::Replace || insert_start == 0)
+                {
+                    state.borrow_mut().playlist.jump_to(insert_start);
+                    play_update_tick();
+                    scroll_tick(insert_start);
                 }
             }
 
@@ -3710,15 +3781,25 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
         let kbd_btn_shuffle = btn_shuffle.clone();
+        // Clones for z/b (prev/next) handlers — use patch instead of rebuild
+        // so the scroll position is preserved rather than reset to the top.
+        let kbd_patch_row = patch_pl_row.clone();
+        let kbd_scroll = scroll_to_row_if_needed.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
                 // ── Winamp transport bindings ──────────────────────────────
                 gdk::Key::z => {
+                    let old_idx = state.borrow().playlist.current_index;
                     let result = { state.borrow_mut().play_prev() };
                     if let Some(d) = result {
                         kbd_set_track(&d);
-                        kbd_rebuild();
+                        let new_idx = state.borrow().playlist.current_index;
+                        if old_idx != new_idx {
+                            kbd_patch_row(old_idx);
+                        }
+                        kbd_patch_row(new_idx);
+                        kbd_scroll(new_idx);
                     }
                     glib::Propagation::Stop
                 }
@@ -3740,10 +3821,16 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     glib::Propagation::Stop
                 }
                 gdk::Key::b => {
+                    let old_idx = state.borrow().playlist.current_index;
                     let result = { state.borrow_mut().play_next() };
                     if let Some(d) = result {
                         kbd_set_track(&d);
-                        kbd_rebuild();
+                        let new_idx = state.borrow().playlist.current_index;
+                        if old_idx != new_idx {
+                            kbd_patch_row(old_idx);
+                        }
+                        kbd_patch_row(new_idx);
+                        kbd_scroll(new_idx);
                     }
                     glib::Propagation::Stop
                 }

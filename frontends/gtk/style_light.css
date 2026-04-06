@@ -186,18 +186,17 @@ button.mode-btn.active {
 
 /* mode-btn-active: "on" state for repeat/shuffle buttons — persists while
    the feature is enabled so the user can see the current mode at a glance.
-   Background is filled with the accent colour (high alpha) so the button
-   reads as clearly "on" at a glance; text switches to accent foreground
-   (white on most themes) for contrast. */
-button.mode-btn-active {
-    background-color: alpha(@accent_bg_color, 0.6);
+   Double-class selector beats the single-class mode-btn rule at equal priority. */
+button.mode-btn.mode-btn-active {
+    background-color: @accent_bg_color;
     background-image: none;
+    box-shadow: none;
     color: @accent_fg_color;
-    border-color: alpha(@accent_bg_color, 0.8);
+    border-color: @accent_bg_color;
 }
 
-button.mode-btn-active:hover {
-    background-color: alpha(@accent_bg_color, 0.72);
+button.mode-btn.mode-btn-active:hover {
+    background-color: alpha(@accent_bg_color, 0.85);
     background-image: none;
 }
 
@@ -379,4 +378,106 @@ popover modelbutton:hover {
 /* Playlist selected row — background highlight for light theme. */
 .playlist row:selected {
     background: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Entry / search widgets ─────────────────────────────────────────────── */
+entry {
+    background-color: #ffffff;
+    background-image: none;
+    color: #1a1a1a;
+    border-color: #cccccc;
+    caret-color: @accent_bg_color;
+}
+
+entry text {
+    background-color: #ffffff;
+    color: #1a1a1a;
+}
+
+entry:focus {
+    border-color: @accent_bg_color;
+    outline-color: alpha(@accent_bg_color, 0.3);
+}
+
+entry placeholder {
+    color: #999999;
+}
+
+/* ── ColumnView / ListView (media library file list) ─────────────────────── */
+columnview,
+listview {
+    background-color: #f8f8f8;
+    color: #1a1a1a;
+}
+
+columnview > listview > row,
+listview > row {
+    background-color: transparent;
+    color: #1a1a1a;
+}
+
+columnview > listview > row:hover,
+listview > row:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* ── Notebook (Settings window) ──────────────────────────────────────────── */
+notebook {
+    background-color: #f0f0f0;
+}
+
+notebook > header {
+    background-color: #e0e0e0;
+    border-bottom: 1px solid #cccccc;
+}
+
+notebook > header tab {
+    background-color: #e8e8e8;
+    color: #555555;
+    padding: 4px 10px;
+    border: 1px solid #cccccc;
+}
+
+notebook > header tab:checked {
+    background-color: #f0f0f0;
+    color: @accent_bg_color;
+    border-top: 2px solid @accent_bg_color;
+    border-bottom: 2px solid @accent_bg_color;
+}
+
+notebook > stack {
+    background-color: #f0f0f0;
+}
+
+/* ── Generic text buttons ────────────────────────────────────────────────── */
+button.text-button {
+    background-color: #e8e8e8;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #cccccc;
+    color: #333333;
+    border-radius: 4px;
+    padding: 4px 12px;
+    min-height: 0;
+}
+
+button.text-button:hover {
+    background-color: #dddddd;
+    background-image: none;
+    border-color: #aaaaaa;
+    color: #000000;
+}
+
+button.suggested-action {
+    background-color: @accent_bg_color;
+    background-image: none;
+    box-shadow: none;
+    color: @accent_fg_color;
+    border: none;
+    border-radius: 4px;
+}
+
+button.suggested-action:hover {
+    background-color: alpha(@accent_bg_color, 0.85);
+    background-image: none;
 }

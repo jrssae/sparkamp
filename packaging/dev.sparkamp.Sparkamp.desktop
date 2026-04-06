@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=SparkAmp
+Name=Sparkamp
 Comment=Winamp-style audio player for Linux
-Exec=sparkamp --ui %F
-Icon=dev.sparkamp.SparkAmp
+Exec=sparkamp %F
+Icon=dev.sparkamp.Sparkamp
 Terminal=false
 Type=Application
 Categories=AudioVideo;Audio;Player;

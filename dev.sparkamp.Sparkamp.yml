@@ -1,4 +1,4 @@
-app-id: dev.sparkamp.SparkAmp
+app-id: dev.sparkamp.Sparkamp
 runtime: org.gnome.Platform
 runtime-version: '47'
 sdk: org.gnome.Sdk
@@ -12,6 +12,8 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --share=ipc
+  # GPU / DRI access — required for GTK4 rendering
+  - --device=dri
   # Audio playback via PulseAudio / PipeWire
   - --socket=pulseaudio
   # Read access to the user's home directory (music files)
@@ -51,7 +53,7 @@ modules:
   # ── GTK4 ──────────────────────────────────────────────────────────────────
   # GTK4 4.12 is available in the freedesktop 23.08 runtime; no extra build.
 
-  # ── SparkAmp ──────────────────────────────────────────────────────────────
+  # ── Sparkamp ──────────────────────────────────────────────────────────────
   - name: sparkamp
     buildsystem: simple
     build-commands:
@@ -62,14 +64,14 @@ modules:
       # Install the binary.
       - install -Dm755 target/release/sparkamp /app/bin/sparkamp
       # Install the desktop entry.
-      - install -Dm644 packaging/dev.sparkamp.SparkAmp.desktop
-          /app/share/applications/dev.sparkamp.SparkAmp.desktop
+      - install -Dm644 packaging/dev.sparkamp.Sparkamp.desktop
+          /app/share/applications/dev.sparkamp.Sparkamp.desktop
       # Install the application icon (use the square logo).
       - install -Dm644 "square logo.png"
-          /app/share/icons/hicolor/512x512/apps/dev.sparkamp.SparkAmp.png
+          /app/share/icons/hicolor/512x512/apps/dev.sparkamp.Sparkamp.png
       # Install the AppStream metainfo file.
-      - install -Dm644 packaging/dev.sparkamp.SparkAmp.metainfo.xml
-          /app/share/metainfo/dev.sparkamp.SparkAmp.metainfo.xml
+      - install -Dm644 packaging/dev.sparkamp.Sparkamp.metainfo.xml
+          /app/share/metainfo/dev.sparkamp.Sparkamp.metainfo.xml
 
     sources:
       # The application source tree (includes .cargo/config.toml and vendor/).
