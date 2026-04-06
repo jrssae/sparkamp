@@ -3408,11 +3408,13 @@ pub fn build(
             // 5. Trigger a Cairo repaint of the visualizer.
             viz.queue_draw();
 
-            // 6. Periodically flush the duration cache to disk (every 30 s).
+            // 6. Periodically flush the duration cache and config to disk (every 30 s).
+            // Saving config here ensures settings survive force-kills.
             cache_save_countdown -= 1;
             if cache_save_countdown == 0 {
                 cache_save_countdown = 300;
                 state.borrow_mut().duration_cache.save_if_dirty();
+                let _ = state.borrow().config.save();
             }
 
             ControlFlow::Continue
@@ -4037,7 +4039,10 @@ pub fn build(
                         let mut s = state.borrow_mut();
                         s.shuffle_state.toggle();
                         s.shuffle_state.reset();
-                        s.shuffle_state.enabled
+                        let on = s.shuffle_state.enabled;
+                        // Mirror to config so the setting survives to the next session.
+                        s.config.playback.shuffle_enabled = on;
+                        on
                     };
                     if enabled {
                         kbd_btn_shuffle.add_css_class("mode-btn-active");
@@ -6630,11 +6635,8 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     // ── Save config on close ─────────────────────────────────────────────────
     win.connect_close_request({
         let state_rc = state.clone();
-        move |w| {
-            let mut cfg = state_rc.borrow().config.clone();
-            cfg.window.ml_width = w.width();
-            cfg.window.ml_height = w.height();
-            let _ = cfg.save();
+        move |_w| {
+            let _ = state_rc.borrow().config.save();
             glib::Propagation::Proceed
         }
     });
