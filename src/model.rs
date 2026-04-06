@@ -549,10 +549,10 @@ impl Playlist {
     /// Return playlist indices whose tracks match every word in `query`.
     ///
     /// Each whitespace-delimited word must appear somewhere in the combined
-    /// "title artist album" string, so cross-field queries like
-    /// "ed sheeran don't" correctly match a track titled "Don't" by
-    /// "Ed Sheeran".  An empty query returns an empty vec — callers decide
-    /// what to show when there is no input.
+    /// "title artist album_artist album filename" string, so cross-field
+    /// queries like "ed sheeran don't" correctly match a track titled
+    /// "Don't" by "Ed Sheeran".  An empty query returns an empty vec —
+    /// callers decide what to show when there is no input.
     pub fn search_indices(&self, query: &str) -> Vec<usize> {
         let words: Vec<String> = query
             .split_whitespace()
@@ -565,13 +565,21 @@ impl Playlist {
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                // Concatenate fields once per track so a single word can span
-                // the boundary between artist and title.
+                // Include the filename stem so bare filename searches work
+                // even when metadata is absent.
+                let filename = t
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
                 let combined = format!(
-                    "{} {} {}",
+                    "{} {} {} {} {}",
                     t.title.to_lowercase(),
                     t.artist.to_lowercase(),
-                    t.album.to_lowercase()
+                    t.album_artist.to_lowercase(),
+                    t.album.to_lowercase(),
+                    filename,
                 );
                 words.iter().all(|w| combined.contains(w.as_str()))
             })

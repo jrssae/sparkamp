@@ -821,10 +821,15 @@ impl MediaLibrary {
         Self::collect_tracks(&mut stmt, [])
     }
 
-    /// Case-insensitive substring search across artist, title, album, genre,
-    /// year (as string), filename, and filetype fields.
+    /// Case-insensitive, word-based substring search.
     ///
-    /// Returns all matching tracks in the same order as [`all_tracks`].
+    /// Every whitespace-delimited word in `query` must appear in at least one
+    /// of: artist, title, album, album_artist, filename, genre, filetype, or
+    /// year.  Cross-field queries therefore work — "ed sheeran don't" finds a
+    /// track titled "Don't" by "Ed Sheeran" even though no single field
+    /// contains the whole query.  An empty query returns an empty result.
+    ///
+    /// Returns all matching tracks in the default sort order.
     pub fn search_tracks(&self, query: &str) -> Result<Vec<LibTrack>> {
         self.search_tracks_sorted(query, "artist", false)
     }
@@ -837,25 +842,49 @@ impl MediaLibrary {
         col: &str,
         desc: bool,
     ) -> Result<Vec<LibTrack>> {
-        let pattern = format!("%{}%", query.to_lowercase());
+        // Split into words; empty query returns nothing (consistent with the
+        // playlist jump window which also returns nothing for an empty query).
+        let words: Vec<String> = query
+            .split_whitespace()
+            .map(|w| format!("%{}%", w.to_lowercase()))
+            .collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let order = Self::sort_order_clause(col, desc);
+
+        // Build one WHERE group per word — each group matches any field, all
+        // groups must match (AND).  This produces SQL like:
+        //   WHERE (artist LIKE ?1 OR title LIKE ?1 OR ...)
+        //     AND (artist LIKE ?2 OR title LIKE ?2 OR ...)
+        let word_clauses: String = (1..=words.len())
+            .map(|i| {
+                format!(
+                    "(LOWER(COALESCE(artist,''))        LIKE ?{i}
+                      OR LOWER(COALESCE(title,''))       LIKE ?{i}
+                      OR LOWER(COALESCE(album,''))        LIKE ?{i}
+                      OR LOWER(COALESCE(album_artist,'')) LIKE ?{i}
+                      OR LOWER(COALESCE(filename,''))     LIKE ?{i}
+                      OR LOWER(COALESCE(genre,''))        LIKE ?{i}
+                      OR LOWER(COALESCE(filetype,''))     LIKE ?{i}
+                      OR CAST(COALESCE(year,0) AS TEXT)   LIKE ?{i})"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+
         let sql = format!(
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned
              FROM tracks
-             WHERE LOWER(COALESCE(artist,''))   LIKE ?1
-                OR LOWER(COALESCE(title,''))    LIKE ?1
-                OR LOWER(COALESCE(album,''))    LIKE ?1
-                OR LOWER(COALESCE(genre,''))    LIKE ?1
-                OR LOWER(COALESCE(filename,'')) LIKE ?1
-                OR LOWER(COALESCE(filetype,'')) LIKE ?1
-                OR CAST(year AS TEXT)           LIKE ?1
+             WHERE {word_clauses}
              ORDER BY {order}",
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        Self::collect_tracks(&mut stmt, params![pattern])
+        Self::collect_tracks(&mut stmt, rusqlite::params_from_iter(words.iter()))
     }
 
     /// Build the SQL ORDER BY clause for a given column ID and direction.
