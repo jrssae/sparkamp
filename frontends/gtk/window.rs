@@ -119,6 +119,8 @@ struct AppState {
     rebuild_pl_callback: Option<Rc<dyn Fn()>>,
     /// Callback that plays the current track and updates all UI labels, set during build().
     play_and_update_callback: Option<Rc<dyn Fn()>>,
+    /// Callback that updates the marquee with a new display string, set during build().
+    set_track_callback: Option<Rc<dyn Fn(&str)>>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -301,6 +303,7 @@ impl AppState {
             ml_scan_ui_callback: None,
             rebuild_pl_callback: None,
             play_and_update_callback: None,
+            set_track_callback: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
             ml_scan: None,
@@ -2176,6 +2179,7 @@ pub fn build(
         let mut s = state.borrow_mut();
         s.rebuild_pl_callback = Some(rebuild_playlist.clone());
         s.play_and_update_callback = Some(play_and_update.clone());
+        s.set_track_callback = Some(set_track.clone());
     }
 
     // remove_selected — remove every currently selected playlist row.
@@ -3692,7 +3696,17 @@ pub fn build(
     jump_entry.set_margin_top(8);
     jump_entry.set_margin_bottom(4);
     jump_entry.set_margin_start(8);
-    jump_entry.set_margin_end(8);
+    jump_entry.set_hexpand(true);
+
+    let jump_clear_btn = Button::with_label("✕");
+    jump_clear_btn.add_css_class("pl-btn");
+    jump_clear_btn.set_margin_top(8);
+    jump_clear_btn.set_margin_bottom(4);
+    jump_clear_btn.set_margin_end(8);
+
+    let jump_search_row = GtkBox::new(Orientation::Horizontal, 4);
+    jump_search_row.append(&jump_entry);
+    jump_search_row.append(&jump_clear_btn);
 
     let jump_box = ListBox::new();
     jump_box.add_css_class("playlist");
@@ -3717,7 +3731,7 @@ pub fn build(
     jump_status.add_css_class("status-label");
 
     let jump_root = gtk4::Box::new(Orientation::Vertical, 0);
-    jump_root.append(&jump_entry);
+    jump_root.append(&jump_search_row);
     jump_root.append(&jump_scroll);
     jump_root.append(&jump_status);
 
@@ -3812,6 +3826,16 @@ pub fn build(
             }
         })
     };
+
+    // Wire up the jump-window clear button now that rebuild_jump is in scope.
+    {
+        let e = jump_entry.clone();
+        let rj = rebuild_jump.clone();
+        jump_clear_btn.connect_clicked(move |_| {
+            gtk4::prelude::EditableExt::set_text(&e, "");
+            rj();
+        });
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // Keyboard shortcuts — shared handler applied to player + playlist windows.
@@ -5216,20 +5240,47 @@ fn open_id3_editor_window(
                         }
                     }
 
-                    // Re-extract and update cached artwork from the saved file
+                    // If the saved track is currently playing, update the marquee
+                    // immediately so the new artist/title is reflected without
+                    // requiring a track change.
+                    let is_current = state_s
+                        .borrow()
+                        .playlist
+                        .current()
+                        .map(|t| t.path == path)
+                        .unwrap_or(false);
+                    if is_current {
+                        let display = state_s
+                            .borrow()
+                            .playlist
+                            .current()
+                            .map(|t| t.display_name())
+                            .unwrap_or_default();
+                        if let Some(ref cb) = state_s.borrow().set_track_callback.clone() {
+                            cb(&display);
+                        }
+                    }
+
+                    // Update the Media Library DB record and artwork cache for
+                    // the edited file, then refresh the ML window if it is open.
                     if let Some(lib) = state_s.borrow().media_lib.as_ref() {
                         let path_str = path.to_string_lossy().into_owned();
+                        let _ = lib.rescan_track(&path_str);
                         if let Ok(lib_track) = lib.track_by_path(&path_str) {
                             let _ = lib.refresh_artwork(lib_track.id, &path_str);
                         }
                     }
 
                     let rebuild = rebuild_s.clone();
+                    let rebuild_ml = state_s.borrow().rebuild_ml_callback.clone();
                     if let Some(w) = win_wk.upgrade() {
                         w.close();
                     }
                     glib::idle_add_local(move || {
                         rebuild();
+                        if let Some(ref cb) = rebuild_ml {
+                            cb();
+                        }
                         glib::ControlFlow::Break
                     });
                 }
@@ -6695,17 +6746,38 @@ enum DedupeMsg {
 
 /// Open the standalone Deduplicate Music window.
 ///
+/// Results are shown in a single virtualised `TreeView` backed by a
+/// `TreeStore` so that scrolling stays smooth even with thousands of
+/// duplicate groups.  Group rows are collapsed by default; clicking the
+/// expander reveals each group's individual file rows.
+///
 /// The window immediately starts a background scan of the media library.  It
 /// is independent and non-modal so the user can continue playback while
 /// waiting.  A cancel button with a confirmation prompt guards against
 /// accidental cancellation; closing the window while scanning also prompts.
+///
+/// ## TreeStore column layout
+///
+/// | # | Type   | Meaning                                          |
+/// |---|--------|--------------------------------------------------|
+/// | 0 | String | Primary label (group heading or track path)      |
+/// | 1 | String | Secondary (confidence+count, or track title)     |
+/// | 2 | String | Artist (empty for group rows)                    |
+/// | 3 | String | Album  (empty for group rows)                    |
+/// | 4 | String | Duration (empty for group rows)                  |
+/// | 5 | String | File size (empty for group rows)                 |
+/// | 6 | String | Bitrate  (empty for group rows)                  |
+/// | 7 | String | Format   (empty for group rows)                  |
+/// | 8 | i64    | Track ID (0 for group rows)                      |
+/// | 9 | bool   | `true` → group row, `false` → track row          |
+/// |10 | i32    | Pango weight (700 group, 400 track)              |
+/// |11 | String | Full path (empty for group rows; for file-open)  |
 fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    use std::collections::HashSet;
 
     let win = gtk4::Window::new();
     win.set_title(Some("Deduplicate Music — Sparkamp"));
-    win.set_default_size(800, 560);
+    win.set_default_size(900, 600);
     win.set_resizable(true);
     if let Some(p) = parent {
         win.set_transient_for(Some(p));
@@ -6724,7 +6796,6 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
     let status_lbl = Label::new(Some("Preparing scan…"));
     status_lbl.set_hexpand(true);
     status_lbl.set_halign(Align::Start);
-    status_lbl.add_css_class("status-label");
 
     let action_btn = Button::with_label("✕ Cancel");
     action_btn.add_css_class("pl-btn");
@@ -6732,19 +6803,71 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
     status_row.append(&status_lbl);
     status_row.append(&action_btn);
 
-    // Scrollable results area
-    let groups_box = GtkBox::new(Orientation::Vertical, 8);
-    groups_box.set_margin_top(4);
-    groups_box.set_margin_bottom(8);
-    groups_box.set_margin_start(10);
-    groups_box.set_margin_end(10);
+    // ── Single virtualised TreeView for all groups and their tracks ───────────
+    // Using TreeStore so GTK only creates widgets for visible rows regardless
+    // of the total group count — essential for libraries with thousands of dupes.
+    #[allow(deprecated)]
+    let tree_store = gtk4::TreeStore::new(&[
+        String::static_type(), // 0  primary label
+        String::static_type(), // 1  secondary
+        String::static_type(), // 2  artist
+        String::static_type(), // 3  album
+        String::static_type(), // 4  duration
+        String::static_type(), // 5  size
+        String::static_type(), // 6  bitrate
+        String::static_type(), // 7  format
+        i64::static_type(),    // 8  track id (0 for group rows)
+        bool::static_type(),   // 9  is_group
+        i32::static_type(),    // 10 pango weight
+        String::static_type(), // 11 full path (empty for group rows)
+    ]);
+
+    #[allow(deprecated)]
+    let tree_view = TreeView::with_model(&tree_store);
+    tree_view.set_headers_visible(true);
+    tree_view.set_enable_search(false);
+    tree_view.set_activate_on_single_click(false);
+    tree_view.add_css_class("playlist");
+    tree_view.set_hexpand(true);
+    tree_view.set_vexpand(true);
+
+    // Build visible columns: expander on col 0, then cols 1-7.
+    {
+        let col_defs: &[(&str, i32, bool)] = &[
+            ("Group / Path", 0, true),
+            ("Title / Info", 1, false),
+            ("Artist",       2, false),
+            ("Album",        3, false),
+            ("Duration",     4, false),
+            ("Size",         5, false),
+            ("Bitrate",      6, false),
+            ("Format",       7, false),
+        ];
+        for (title, data_col, expands) in col_defs {
+            #[allow(deprecated)]
+            let renderer = CellRendererText::new();
+            #[allow(deprecated)]
+            let col = TreeViewColumn::new();
+            col.set_title(title);
+            col.set_resizable(true);
+            col.set_expand(*expands);
+            #[allow(deprecated)]
+            col.pack_start(&renderer, true);
+            #[allow(deprecated)]
+            col.add_attribute(&renderer, "text", *data_col);
+            #[allow(deprecated)]
+            col.add_attribute(&renderer, "weight", 10); // pango weight col
+            #[allow(deprecated)]
+            tree_view.append_column(&col);
+        }
+    }
 
     let scroll = ScrolledWindow::builder()
-        .hscrollbar_policy(PolicyType::Never)
+        .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Automatic)
         .hexpand(true)
         .vexpand(true)
-        .child(&groups_box)
+        .child(&tree_view)
         .build();
 
     root.append(&status_row);
@@ -6790,25 +6913,29 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
         format!("…{}", &path[path.len().saturating_sub(max_chars)..])
     }
 
-    // ── Populate groups_box after scan completes ─────────────────────────────
+    // ── Track info lookup for playlist operations ────────────────────────────
+    // Populated by `populate`; keyed by track id.
+    let track_map: Rc<RefCell<std::collections::HashMap<i64, crate::dedupe::DupeTrackInfo>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+
+    // ── Populate the TreeStore after scan completes ──────────────────────────
     let populate = {
-        let groups_box = groups_box.clone();
+        let tree_store = tree_store.clone();
         let status_lbl = status_lbl.clone();
         let action_btn = action_btn.clone();
-        let state_rc = state.clone();
         let is_scanning = is_scanning.clone();
+        let track_map = track_map.clone();
 
         Rc::new(move |groups: Vec<crate::dedupe::DupeGroup>| {
-            // Clear old results.
-            while let Some(c) = groups_box.first_child() {
-                groups_box.remove(&c);
-            }
-
             let probable = groups
                 .iter()
                 .filter(|g| g.confidence == crate::dedupe::DupeConfidence::Probable)
                 .count();
             let total = groups.len();
+
+            #[allow(deprecated)]
+            tree_store.clear();
+            track_map.borrow_mut().clear();
 
             if total == 0 {
                 status_lbl.set_text("No duplicates found.");
@@ -6825,25 +6952,8 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
             action_btn.set_visible(true);
             is_scanning.set(false);
 
-            for group in groups {
-                // Dismissed track IDs for this group (user clicked "Not a duplicate").
-                let dismissed: Rc<RefCell<HashSet<i64>>> =
-                    Rc::new(RefCell::new(HashSet::new()));
-
-                // ── Group frame ──────────────────────────────────────────
-                let frame = gtk4::Frame::new(None);
-                frame.set_margin_bottom(4);
-
-                let inner = GtkBox::new(Orientation::Vertical, 0);
-                frame.set_child(Some(&inner));
-
-                // Header row
-                let hdr = GtkBox::new(Orientation::Horizontal, 8);
-                hdr.set_margin_top(6);
-                hdr.set_margin_bottom(6);
-                hdr.set_margin_start(8);
-                hdr.set_margin_end(8);
-
+            let mut tm = track_map.borrow_mut();
+            for group in &groups {
                 let bullet = if group.confidence == crate::dedupe::DupeConfidence::Probable {
                     "●"
                 } else {
@@ -6854,308 +6964,244 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
                 } else {
                     "Less likely"
                 };
-                let n_tracks = group.tracks.len();
-                let hdr_lbl = Label::new(Some(&format!(
-                    "{bullet} {}  ({conf_str} · {n_tracks} files)",
-                    group.label
-                )));
-                hdr_lbl.set_hexpand(true);
-                hdr_lbl.set_halign(Align::Start);
-                hdr_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                if group.confidence == crate::dedupe::DupeConfidence::Probable {
-                    hdr_lbl.add_css_class("np-title");
-                } else {
-                    hdr_lbl.add_css_class("np-artist");
-                }
-
-                let play_btn = Button::with_label("▶ Add to playlist");
-                play_btn.add_css_class("pl-btn");
-
-                hdr.append(&hdr_lbl);
-                hdr.append(&play_btn);
-                inner.append(&hdr);
-                inner.append(&gtk4::Separator::new(Orientation::Horizontal));
-
-                // ── Track list (deprecated TreeView) ─────────────────────
-                // Columns: Path | Title | Artist | Album | Dur | Size | kbps | Fmt
-                // Hidden:  col 8 = track id (i64), col 9 = full path (String)
-                #[allow(deprecated)]
-                let store = ListStore::new(&[
-                    String::static_type(), // 0 path (display)
-                    String::static_type(), // 1 title
-                    String::static_type(), // 2 artist
-                    String::static_type(), // 3 album
-                    String::static_type(), // 4 duration
-                    String::static_type(), // 5 file size
-                    String::static_type(), // 6 bitrate
-                    String::static_type(), // 7 format
-                    i64::static_type(),    // 8 track id (hidden)
-                    String::static_type(), // 9 full path (hidden)
-                ]);
-
-                let tracks_snapshot = group.tracks.clone();
-
-                // Closure to populate the store from scratch (respects dismissed set).
-                let fill_store = {
-                    let store = store.clone();
-                    let tracks_snap = tracks_snapshot.clone();
-                    let dismissed = dismissed.clone();
-                    move || {
-                        #[allow(deprecated)]
-                        store.clear();
-                        for info in &tracks_snap {
-                            if dismissed.borrow().contains(&info.track.id) {
-                                continue;
-                            }
-                            let title = info.track.title.as_deref()
-                                .unwrap_or(info.track.filename.as_str());
-                            let artist = info.track.artist.as_deref().unwrap_or("—");
-                            let album  = info.track.album.as_deref().unwrap_or("—");
-                            let dur    = fmt_dur(info.track.length_secs);
-                            let size   = fmt_size(info.file_size_bytes);
-                            let kbps   = info.track.bitrate
-                                .map_or("—".to_string(), |b| format!("{b} kbps"));
-                            let fmt    = info.track.filetype.as_deref().unwrap_or("—");
-                            let short  = shorten_path(&info.track.path, 55);
-                            #[allow(deprecated)]
-                            store.insert_with_values(
-                                None,
-                                &[
-                                    (0, &short),
-                                    (1, &title),
-                                    (2, &artist),
-                                    (3, &album),
-                                    (4, &dur),
-                                    (5, &size),
-                                    (6, &kbps),
-                                    (7, &fmt),
-                                    (8, &info.track.id),
-                                    (9, &info.track.path),
-                                ],
-                            );
-                        }
-                    }
-                };
-                fill_store();
-                let fill_store = Rc::new(fill_store);
+                let n = group.tracks.len();
+                let group_label =
+                    format!("{bullet} {}  ({conf_str} · {n} files)", group.label);
 
                 #[allow(deprecated)]
-                let tv = TreeView::with_model(&store);
-                tv.set_headers_visible(true);
-                tv.set_enable_search(false);
-                tv.add_css_class("playlist");
+                let group_iter = tree_store.insert_with_values(
+                    None,
+                    None,
+                    &[
+                        (0, &group_label),
+                        (1, &conf_str.to_string()),
+                        (2, &String::new()),
+                        (3, &String::new()),
+                        (4, &String::new()),
+                        (5, &String::new()),
+                        (6, &String::new()),
+                        (7, &String::new()),
+                        (8, &0i64),
+                        (9, &true),
+                        (10, &700i32),
+                        (11, &String::new()),
+                    ],
+                );
 
-                let col_defs: &[(&str, i32)] = &[
-                    ("Path", 0),
-                    ("Title", 1),
-                    ("Artist", 2),
-                    ("Album", 3),
-                    ("Duration", 4),
-                    ("Size", 5),
-                    ("Bitrate", 6),
-                    ("Format", 7),
-                ];
-                for (title, col_idx) in col_defs {
+                for info in &group.tracks {
+                    tm.insert(info.track.id, info.clone());
+                    let title = info
+                        .track
+                        .title
+                        .as_deref()
+                        .unwrap_or(info.track.filename.as_str())
+                        .to_string();
+                    let artist =
+                        info.track.artist.as_deref().unwrap_or("—").to_string();
+                    let album =
+                        info.track.album.as_deref().unwrap_or("—").to_string();
+                    let dur = fmt_dur(info.track.length_secs);
+                    let size = fmt_size(info.file_size_bytes);
+                    let kbps = info
+                        .track
+                        .bitrate
+                        .map_or("—".to_string(), |b| format!("{b} kbps"));
+                    let fmt =
+                        info.track.filetype.as_deref().unwrap_or("—").to_string();
+                    let short = shorten_path(&info.track.path, 55);
+
                     #[allow(deprecated)]
-                    let renderer = CellRendererText::new();
-                    #[allow(deprecated)]
-                    let col = TreeViewColumn::new();
-                    col.set_title(title);
-                    col.set_resizable(true);
-                    #[allow(deprecated)]
-                    col.pack_start(&renderer, true);
-                    #[allow(deprecated)]
-                    col.add_attribute(&renderer, "text", *col_idx);
-                    if *col_idx == 0 {
-                        col.set_expand(true);
-                    }
-                    #[allow(deprecated)]
-                    tv.append_column(&col);
+                    tree_store.insert_with_values(
+                        Some(&group_iter),
+                        None,
+                        &[
+                            (0, &short),
+                            (1, &title),
+                            (2, &artist),
+                            (3, &album),
+                            (4, &dur),
+                            (5, &size),
+                            (6, &kbps),
+                            (7, &fmt),
+                            (8, &info.track.id),
+                            (9, &false),
+                            (10, &400i32),
+                            (11, &info.track.path),
+                        ],
+                    );
                 }
+            }
+        })
+    };
 
-                // ── Right-click on a track row ────────────────────────────
-                {
-                    let tv_rc = tv.clone();
-                    let dismissed_rc = dismissed.clone();
-                    let fill_rc = fill_store.clone();
-                    let frame_rc = frame.clone();
-                    let tracks_snap_rc = tracks_snapshot.clone();
-                    let total_tracks = tracks_snapshot.len();
-                    let rclick = GestureClick::new();
-                    rclick.set_button(gdk::BUTTON_SECONDARY);
-                    rclick.connect_pressed(move |_, _, x, y| {
-                        #[allow(deprecated)]
-                        let Some((Some(tpath), _, _, _)) =
-                            tv_rc.path_at_pos(x as i32, y as i32)
-                        else {
-                            return;
-                        };
-                        let row_idx = tpath.indices().first().copied().unwrap_or(0) as usize;
+    // ── Right-click on a group or track row ──────────────────────────────────
+    {
+        let tree_store_rc = tree_store.clone();
+        let tree_view_rc = tree_view.clone();
+        let track_map_rc = track_map.clone();
+        let state_rc = state.clone();
 
-                        // Map visible row index → track (skipping dismissed ones).
-                        let dismissed_snap = dismissed_rc.borrow().clone();
-                        let visible: Vec<&crate::dedupe::DupeTrackInfo> = tracks_snap_rc
-                            .iter()
-                            .filter(|info| !dismissed_snap.contains(&info.track.id))
-                            .collect();
-                        let Some(info) = visible.get(row_idx) else { return; };
-                        let track_id = info.track.id;
-                        let full_path = info.track.path.clone();
+        let rclick = GestureClick::new();
+        rclick.set_button(gdk::BUTTON_SECONDARY);
+        rclick.connect_pressed(move |_, _, x, y| {
+            // GestureClick gives widget-space coordinates (origin at top-left of
+            // the TreeView widget, including the column-header row).
+            // path_at_pos expects bin-window coordinates (origin at the top of
+            // the scrollable content area, below the headers).
+            // Convert before calling so the header row does not cause an
+            // off-by-one in row detection.
+            #[allow(deprecated)]
+            let (bx, by) = tree_view_rc.convert_widget_to_bin_window_coords(x as i32, y as i32);
+            #[allow(deprecated)]
+            let Some((Some(tpath), _, _, _)) =
+                tree_view_rc.path_at_pos(bx, by)
+            else {
+                return;
+            };
+            #[allow(deprecated)]
+            let Some(row_iter) = tree_store_rc.iter(&tpath) else { return };
 
-                        let parent_dir = std::path::Path::new(&full_path)
-                            .parent()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default();
+            // Determine row type by position in the tree: top-level rows are
+            // groups, child rows are individual tracks.
+            #[allow(deprecated)]
+            let is_group = tree_store_rc.iter_parent(&row_iter).is_none();
 
-                        // Build popover with two actions.
-                        let pop_box = GtkBox::new(Orientation::Vertical, 0);
+            let pop_box = GtkBox::new(Orientation::Vertical, 0);
 
-                        let btn_open = Button::with_label("Open file location");
-                        btn_open.add_css_class("popover-button");
-                        {
-                            let dir = parent_dir.clone();
-                            btn_open.connect_clicked(move |_| {
-                                let uri = format!("file://{dir}");
-                                let _ = gio::AppInfo::launch_default_for_uri(
-                                    &uri,
-                                    None::<&gio::AppLaunchContext>,
-                                );
-                            });
-                        }
-
-                        let btn_dismiss = Button::with_label("Not a duplicate");
-                        btn_dismiss.add_css_class("popover-button");
-                        {
-                            let dismissed2 = dismissed_rc.clone();
-                            let fill2 = fill_rc.clone();
-                            let frame2 = frame_rc.clone();
-                            btn_dismiss.connect_clicked(move |_| {
-                                dismissed2.borrow_mut().insert(track_id);
-                                fill2();
-                                // Hide frame when fewer than 2 tracks remain.
-                                let remaining = total_tracks
-                                    - dismissed2.borrow().len();
-                                if remaining < 2 {
-                                    frame2.set_visible(false);
-                                }
-                            });
-                        }
-
-                        pop_box.append(&btn_open);
-                        pop_box.append(&btn_dismiss);
-
-                        let popover = gtk4::Popover::new();
-                        popover.set_child(Some(&pop_box));
-                        popover.set_parent(&tv_rc);
-                        popover.set_pointing_to(Some(&gdk::Rectangle::new(
-                            x as i32, y as i32, 1, 1,
-                        )));
-                        popover.popup();
-                    });
-                    #[allow(deprecated)]
-                    tv.add_controller(rclick);
-                }
-
-                let tv_scroll = ScrolledWindow::builder()
-                    .hscrollbar_policy(PolicyType::Automatic)
-                    .vscrollbar_policy(PolicyType::Never)
-                    .child(&tv)
-                    .build();
-                inner.append(&tv_scroll);
-
-                // ── Play button (left = follow config, right = popover) ───
-                {
-                    let state_play = state_rc.clone();
-                    let tracks_play = tracks_snapshot.clone();
-                    let dismissed_play = dismissed.clone();
-
-                    // Helper: add tracks from this group to the playlist.
-                    let add_group = move |replace: bool| {
-                        let autoplay = state_play.borrow().config.behavior.autoplay_on_add;
-                        let was_empty = state_play.borrow().playlist.is_empty();
+            if is_group {
+                // ── Group row: add/replace playlist ──────────────────────
+                let add_group = {
+                    let ts = tree_store_rc.clone();
+                    let giter = row_iter.clone();
+                    let tm = track_map_rc.clone();
+                    let st = state_rc.clone();
+                    move |replace: bool| {
+                        let giter = giter.clone();
+                        let autoplay = st.borrow().config.behavior.autoplay_on_add;
+                        let was_empty = st.borrow().playlist.is_empty();
                         if replace {
-                            let _ = state_play.borrow_mut().player.stop();
-                            state_play.borrow_mut().playlist.clear();
+                            let _ = st.borrow_mut().player.stop();
+                            st.borrow_mut().playlist.clear();
                         }
-                        let insert_start = state_play.borrow().playlist.len();
-                        let dismissed_snap = dismissed_play.borrow().clone();
-                        for info in &tracks_play {
-                            if dismissed_snap.contains(&info.track.id) {
-                                continue;
+                        let insert_start = st.borrow().playlist.len();
+                        let tm_borrow = tm.borrow();
+                        #[allow(deprecated)]
+                        if let Some(ci) = ts.iter_children(Some(&giter)) {
+                            loop {
+                                #[allow(deprecated)]
+                                let tid: i64 =
+                                    ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
+                                if let Some(info) = tm_borrow.get(&tid) {
+                                    st.borrow_mut()
+                                        .playlist
+                                        .add(libtrack_to_track(&info.track));
+                                }
+                                #[allow(deprecated)]
+                                if !ts.iter_next(&ci) {
+                                    break;
+                                }
                             }
-                            let track = libtrack_to_track(&info.track);
-                            state_play.borrow_mut().playlist.add(track);
                         }
-                        if let Some(ref cb) = state_play.borrow().rebuild_pl_callback.clone() {
+                        drop(tm_borrow);
+                        if let Some(ref cb) =
+                            st.borrow().rebuild_pl_callback.clone()
+                        {
                             cb();
                         }
                         if autoplay && (was_empty || replace) {
-                            state_play
-                                .borrow_mut()
-                                .playlist
-                                .jump_to(insert_start);
+                            st.borrow_mut().playlist.jump_to(insert_start);
                             if let Some(ref cb) =
-                                state_play.borrow().play_and_update_callback.clone()
+                                st.borrow().play_and_update_callback.clone()
                             {
                                 cb();
                             }
                         }
-                    };
-                    let add_group = Rc::new(add_group);
-
-                    // Left-click: follow playlist_add_behavior.
-                    {
-                        let ag = add_group.clone();
-                        let state2 = state_rc.clone();
-                        play_btn.connect_clicked(move |_| {
-                            let replace = state2.borrow().config.behavior.playlist_add_behavior
-                                == crate::config::PlaylistAddBehavior::Replace;
-                            ag(replace);
-                        });
                     }
+                };
+                let add_group = Rc::new(add_group);
 
-                    // Right-click: Append / Replace popover.
-                    {
-                        let ag = add_group.clone();
-                        let play_btn_rc = play_btn.clone();
-                        let rclick = GestureClick::new();
-                        rclick.set_button(gdk::BUTTON_SECONDARY);
-                        rclick.connect_pressed(move |_, _, x, y| {
-                            let pop_box = GtkBox::new(Orientation::Vertical, 0);
-
-                            let btn_append = Button::with_label("Add to playlist");
-                            btn_append.add_css_class("popover-button");
-                            {
-                                let ag2 = ag.clone();
-                                btn_append.connect_clicked(move |_| ag2(false));
-                            }
-
-                            let btn_replace = Button::with_label("Replace playlist");
-                            btn_replace.add_css_class("popover-button");
-                            {
-                                let ag2 = ag.clone();
-                                btn_replace.connect_clicked(move |_| ag2(true));
-                            }
-
-                            pop_box.append(&btn_append);
-                            pop_box.append(&btn_replace);
-
-                            let popover = gtk4::Popover::new();
-                            popover.set_child(Some(&pop_box));
-                            popover.set_parent(&play_btn_rc);
-                            popover.set_pointing_to(Some(&gdk::Rectangle::new(
-                                x as i32, y as i32, 1, 1,
-                            )));
-                            popover.popup();
-                        });
-                        play_btn.add_controller(rclick);
-                    }
+                let btn_add = Button::with_label("Add to playlist");
+                btn_add.add_css_class("popover-button");
+                {
+                    let ag = add_group.clone();
+                    btn_add.connect_clicked(move |_| ag(false));
+                }
+                let btn_replace = Button::with_label("Replace playlist");
+                btn_replace.add_css_class("popover-button");
+                {
+                    let ag = add_group;
+                    btn_replace.connect_clicked(move |_| ag(true));
                 }
 
-                groups_box.append(&frame);
+                pop_box.append(&btn_add);
+                pop_box.append(&btn_replace);
+            } else {
+                // ── Track row: open file location / dismiss ───────────────
+                #[allow(deprecated)]
+                let full_path: String = tree_store_rc
+                    .get_value(&row_iter, 11)
+                    .get::<String>()
+                    .unwrap_or_default();
+
+                let parent_dir = std::path::Path::new(&full_path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+
+                let btn_open = Button::with_label("Open file location");
+                btn_open.add_css_class("popover-button");
+                {
+                    let dir = parent_dir.clone();
+                    btn_open.connect_clicked(move |_| {
+                        let uri = format!("file://{dir}");
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gio::AppLaunchContext>,
+                        );
+                    });
+                }
+
+                let btn_dismiss = Button::with_label("Not a duplicate");
+                btn_dismiss.add_css_class("popover-button");
+                {
+                    let ts = tree_store_rc.clone();
+                    let path_str = tpath.to_str().map(|s| s.to_string()).unwrap_or_default();
+                    btn_dismiss.connect_clicked(move |_| {
+                        #[allow(deprecated)]
+                        let Some(ti) = ts.iter_from_string(&path_str) else {
+                            return;
+                        };
+                        #[allow(deprecated)]
+                        let parent_opt = ts.iter_parent(&ti);
+                        #[allow(deprecated)]
+                        ts.remove(&ti);
+                        // Remove the group row when fewer than 2 tracks remain.
+                        if let Some(pi) = parent_opt {
+                            #[allow(deprecated)]
+                            let remaining = ts.iter_n_children(Some(&pi));
+                            if remaining < 2 {
+                                #[allow(deprecated)]
+                                ts.remove(&pi);
+                            }
+                        }
+                    });
+                }
+
+                pop_box.append(&btn_open);
+                pop_box.append(&btn_dismiss);
             }
-        })
-    };
+
+            let popover = gtk4::Popover::new();
+            popover.set_child(Some(&pop_box));
+            popover.set_parent(&tree_view_rc);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(
+                x as i32, y as i32, 1, 1,
+            )));
+            popover.popup();
+        });
+        #[allow(deprecated)]
+        tree_view.add_controller(rclick);
+    }
 
     // ── Start a background scan ──────────────────────────────────────────────
     let start_scan = {
@@ -7164,13 +7210,11 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
         let is_scanning = is_scanning.clone();
         let status_lbl = status_lbl.clone();
         let action_btn = action_btn.clone();
-        let groups_box = groups_box.clone();
+        let tree_store = tree_store.clone();
 
         Rc::new(move || {
-            // Clear old results.
-            while let Some(c) = groups_box.first_child() {
-                groups_box.remove(&c);
-            }
+            #[allow(deprecated)]
+            tree_store.clear();
 
             // Fresh cancel flag for the new scan.
             let new_cancel = Arc::new(AtomicBool::new(false));
@@ -7729,10 +7773,24 @@ fn open_media_library_window(
 
         let search_entry = Entry::new();
         search_entry.set_placeholder_text(Some("Search artist, title, album…"));
-        search_entry.set_margin_top(4);
-        search_entry.set_margin_start(4);
-        search_entry.set_margin_end(4);
-        files_vbox.append(&search_entry);
+        search_entry.set_hexpand(true);
+
+        let search_clear_btn = Button::with_label("✕");
+        search_clear_btn.add_css_class("pl-btn");
+        {
+            let e = search_entry.clone();
+            search_clear_btn.connect_clicked(move |_| {
+                e.set_text("");
+            });
+        }
+
+        let search_row = GtkBox::new(Orientation::Horizontal, 4);
+        search_row.set_margin_top(4);
+        search_row.set_margin_start(4);
+        search_row.set_margin_end(4);
+        search_row.append(&search_entry);
+        search_row.append(&search_clear_btn);
+        files_vbox.append(&search_row);
 
         let track_store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let sort_model = SortListModel::new(Some(track_store.clone()), None::<gtk4::Sorter>);
@@ -8319,12 +8377,22 @@ fn open_media_library_window(
         let rebuild_files: Rc<dyn Fn() -> usize> = {
             let state_rc = state.clone();
             let store_ref = track_store.clone();
+            let search_ref = search_entry.clone();
             Rc::new(move || {
+                // Respect any active search filter so that background rebuilds
+                // (rescan, folder add, ID3 save) don't discard the current query.
+                let query = search_ref.text().to_lowercase();
                 let tracks: Vec<crate::media_library::LibTrack> = state_rc
                     .borrow()
                     .media_lib
                     .as_ref()
-                    .and_then(|lib| lib.all_tracks().ok())
+                    .and_then(|lib| {
+                        if query.is_empty() {
+                            lib.all_tracks().ok()
+                        } else {
+                            lib.search_tracks(&query).ok()
+                        }
+                    })
                     .unwrap_or_default();
                 let count = tracks.len();
                 let boxed: Vec<glib::BoxedAnyObject> =
