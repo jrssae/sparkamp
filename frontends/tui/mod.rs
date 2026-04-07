@@ -609,14 +609,14 @@ impl App {
                     vec![0.05; count]
                 }
             }
-            VisualizerMode::Oscilloscope => (0..count)
-                .map(|i| {
-                    // Normalised x position in [0.0, 1.0] across the display width.
-                    let t = i as f64 / (count - 1).max(1) as f64;
-                    // TAU * t traces one full cycle; pos * 4.0 animates it over time.
-                    (std::f64::consts::TAU * t + pos * 4.0).sin() * 0.5 + 0.5
-                })
-                .collect(),
+            VisualizerMode::Waveform => {
+                // Get real PCM waveform samples from the audio pipeline.
+                // Samples are in [-1, 1] (bipolar, centred); map to [0, 1] for display.
+                let raw = self.player.get_waveform_samples(count);
+                raw.iter()
+                    .map(|&s| (0.5 + s * 0.45).clamp(0.0, 1.0))
+                    .collect()
+            }
         }
     }
 
@@ -626,7 +626,7 @@ impl App {
 
     /// Advance the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars.
+    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
     /// Delegates the mode-cycling logic to the shared controller and then
     /// enables the visualizer and clears any status message.
     fn cycle_visualizer_mode(&mut self) {
@@ -919,7 +919,7 @@ impl App {
             KeyCode::Left => self.seek_delta_secs(-5.0),
             KeyCode::Right => self.seek_delta_secs(5.0),
 
-            // Visualizer mode cycle: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars
+            // Visualizer mode cycle: Bars → Waveform → plugin 0 → plugin 1 → … → Bars
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 self.cycle_visualizer_mode();
             }
@@ -2423,11 +2423,11 @@ impl App {
                         }
                         _ => {}
                     },
-                    // Visualizer: cycle between Bars and Oscilloscope.
+                    // Visualizer: cycle between Bars and Waveform.
                     2 => {
                         self.config.visualizer.mode = match self.config.visualizer.mode {
-                            VisualizerMode::Bars => VisualizerMode::Oscilloscope,
-                            VisualizerMode::Oscilloscope => VisualizerMode::Bars,
+                            VisualizerMode::Bars => VisualizerMode::Waveform,
+                            VisualizerMode::Waveform => VisualizerMode::Bars,
                         };
                     }
                     // Filetypes: enter text-edit mode for the focused path field.
@@ -3946,29 +3946,29 @@ mod tests {
     #[test]
     fn visualizer_uses_mode_from_config_not_reset_on_play() {
         let mut cfg = Config::default();
-        cfg.visualizer.mode = VisualizerMode::Oscilloscope;
+        cfg.visualizer.mode = VisualizerMode::Waveform;
         gstreamer::init().unwrap();
         let mut app = App::new(Playlist::new(), cfg).unwrap();
         app.visualizer_active = true;
-        assert_eq!(app.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
         // Simulate a play_current() call (no tracks, so it's a no-op)
         app.play_current();
         // Mode must be unchanged
-        assert_eq!(app.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
     }
 
     #[test]
-    fn a_key_toggles_bars_to_oscilloscope() {
+    fn a_key_toggles_bars_to_waveform() {
         let mut app = make_app();
         assert_eq!(app.config.visualizer.mode, VisualizerMode::Bars);
         app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        assert_eq!(app.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
     }
 
     #[test]
-    fn a_key_toggles_oscilloscope_back_to_bars() {
+    fn a_key_toggles_waveform_back_to_bars() {
         let mut app = make_app();
-        app.config.visualizer.mode = VisualizerMode::Oscilloscope;
+        app.config.visualizer.mode = VisualizerMode::Waveform;
         app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(app.config.visualizer.mode, VisualizerMode::Bars);
     }
@@ -3991,10 +3991,10 @@ mod tests {
     }
 
     #[test]
-    fn visualizer_data_oscilloscope_returns_at_least_8_points() {
+    fn visualizer_data_waveform_returns_at_least_8_points() {
         let mut app = make_app();
         app.visualizer_active = true;
-        app.config.visualizer.mode = VisualizerMode::Oscilloscope;
+        app.config.visualizer.mode = VisualizerMode::Waveform;
         let data = app.visualizer_data(8);
         assert!(data.len() >= 8);
     }
@@ -4028,7 +4028,7 @@ mod tests {
     fn visualizer_data_values_in_range() {
         let mut app = make_app();
         app.visualizer_active = true;
-        for mode in [VisualizerMode::Bars, VisualizerMode::Oscilloscope] {
+        for mode in [VisualizerMode::Bars, VisualizerMode::Waveform] {
             app.config.visualizer.mode = mode;
             let data = app.visualizer_data(16);
             for &v in &data {
@@ -4046,7 +4046,7 @@ mod tests {
         // mode must be one of the two valid variants
         assert!(matches!(
             app.config.visualizer.mode,
-            VisualizerMode::Bars | VisualizerMode::Oscilloscope
+            VisualizerMode::Bars | VisualizerMode::Waveform
         ));
     }
 
