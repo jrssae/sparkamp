@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop — built in Rust with GTK4.
 
-> **v0.2.0 benchmark commit** — see [What's New](#whats-new-v020) for everything added in this release.
+> **v0.3.0** — see [What's New](#whats-new-v030) for everything added in this release.
 
 ---
 
@@ -12,9 +12,36 @@ There are a number of various Winamp clones and other audio players available fo
 
 ---
 
+## What's New (v0.3.0)
+
+### Duplicate Music Finder
+- **Deduplicate Music** button in Settings → Media Library launches a dedicated window
+- Background scan groups tracks by normalised artist+title metadata, with filename cross-matching as a fallback
+- Groups are shown in a virtualised `TreeStore`+`TreeView` — smooth scrolling even with thousands of duplicate groups
+- Confidence levels: **Probable** (metadata match, duration spread ≤ 10 s) and **Less likely** (duration spread > 10 s, or filename-only match)
+- Right-click a group to **Add to playlist** or **Replace playlist**; right-click a track entry to **Open file location** or mark as **Not a duplicate** (removes it from the group without deleting the file)
+- Cancel with confirmation prompt; close-during-scan also prompts
+- Correct right-click row detection: widget→bin-window coordinate conversion ensures the column header never causes an off-by-one
+
+### ID3 Editor improvements
+- **Marquee updates immediately** after saving — works from any editor entry point (marquee click, `d` key, playlist right-click, Media Library)
+- **Media Library DB record updated on save** — `rescan_track` re-reads the file's tags and upserts the row; ML window refreshes automatically if open
+- **Artwork cache refreshed** on save
+
+### Bug Fixes
+- **Volume on startup** — saved volume was silently reset to 100% on every launch because `apply_eq_bands` (called during init) overwrote the GStreamer volume element via pre-amp. Fixed by tracking `user_volume` and `user_preamp` separately and always writing their product
+- **ML search filter preserved across rebuilds** — background events (folder add, rescan, ID3 save) no longer reset the track list to the full library when a search query is active
+- **EQ window close handler**, **periodic config save**, and **keyboard `s` shuffle mirror** — three persistent settings bugs fixed
+
+### UI Polish
+- **Clear (✕) button** added to the Media Library search bar
+- **Clear (✕) button** added to the Jump-to-track search bar
+
+---
+
 ## What's New (v0.2.0)
 
-This release is a major benchmark commit adding the media library and resolving years of accumulated issues.
+This release added the media library and resolved a number of accumulated issues.
 
 ### Media Library
 - **SQLite-backed library** with watch folders and background rescanning
