@@ -999,6 +999,78 @@ impl SpectrumData {
 }
 
 // ---------------------------------------------------------------------------
+// Waveform ring buffer
+// ---------------------------------------------------------------------------
+
+/// Fixed-capacity ring buffer that stores recent raw PCM samples for the
+/// waveform visualizer.
+///
+/// Samples are written from the GStreamer streaming thread (via a pad probe)
+/// and read from the draw/UI thread.  Access is guarded by the caller via
+/// `Arc<RwLock<WaveformBuffer>>`.
+pub struct WaveformBuffer {
+    samples: std::collections::VecDeque<f64>,
+    capacity: usize,
+}
+
+impl WaveformBuffer {
+    /// Create a new buffer that holds at most `capacity` samples.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            samples: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Append PCM samples, evicting the oldest when full.
+    pub fn push_samples(&mut self, new_samples: &[f64]) {
+        for &s in new_samples {
+            if self.samples.len() >= self.capacity {
+                self.samples.pop_front();
+            }
+            self.samples.push_back(s);
+        }
+    }
+
+    /// Return `count` evenly-spaced samples with light smoothing applied.
+    ///
+    /// Returns silence (all zeros) when not enough samples have been buffered.
+    /// Samples are in `[-1.0, 1.0]`.
+    pub fn get_samples(&self, count: usize) -> Vec<f64> {
+        let n = self.samples.len();
+        if n < count / 2 {
+            return vec![0.0; count];
+        }
+
+        // Linearly interpolate from the ring buffer to `count` output points.
+        let resampled: Vec<f64> = (0..count)
+            .map(|i| {
+                let src_f = i as f64 * (n - 1).max(1) as f64 / (count - 1).max(1) as f64;
+                let lo = src_f.floor() as usize;
+                let hi = (src_f.ceil() as usize).min(n - 1);
+                let t = src_f.fract();
+                self.samples[lo] * (1.0 - t) + self.samples[hi] * t
+            })
+            .collect();
+
+        // Gaussian-style 5-tap moving average for Winamp-style smoothness.
+        let half = 2usize;
+        (0..count)
+            .map(|i| {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(count);
+                resampled[lo..hi].iter().sum::<f64>() / (hi - lo) as f64
+            })
+            .collect()
+    }
+
+    /// Clear all buffered samples (e.g. when a new track starts).
+    pub fn reset(&mut self) {
+        self.samples.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -24,7 +24,7 @@ use gstreamer_sys;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::model::SpectrumData;
+use crate::model::{SpectrumData, WaveformBuffer};
 
 // ---------------------------------------------------------------------------
 // BusEvent
@@ -114,6 +114,9 @@ pub struct Player {
     /// Shared spectrum data updated from GStreamer bus messages.
     /// Protected by RwLock for thread-safe access.
     spectrum_data: Arc<RwLock<SpectrumData>>,
+    /// Ring buffer of recent raw PCM samples for the waveform visualizer.
+    /// Written from the GStreamer streaming thread via a pad probe.
+    waveform_data: Arc<RwLock<WaveformBuffer>>,
     /// Flag indicating if spectrum element is available.
     has_spectrum: bool,
     /// Fake position for testing (overrides real position when set).
@@ -250,6 +253,89 @@ impl Player {
         // Initialize spectrum data
         let spectrum_data = Arc::new(RwLock::new(SpectrumData::new(64)));
 
+        // Waveform ring buffer — 8192 samples ≈ 185 ms at 44.1 kHz.
+        let waveform_data = Arc::new(RwLock::new(WaveformBuffer::new(8192)));
+
+        // Add a pad probe to audioconvert's src pad to capture raw PCM samples
+        // for the waveform visualizer.  The probe runs on the GStreamer streaming
+        // thread; it writes into the RwLock-protected ring buffer.
+        #[cfg(not(test))]
+        {
+            let wd = Arc::clone(&waveform_data);
+            if let Some(src_pad) = audioconvert.static_pad("src") {
+                src_pad.add_probe(
+                    gst::PadProbeType::BUFFER,
+                    move |pad, probe_info| {
+                        // Caps are negotiated before first buffer arrives; bail if not yet set.
+                        let caps = match pad.current_caps() {
+                            Some(c) => c,
+                            None => return gst::PadProbeReturn::Ok,
+                        };
+                        let structure = match caps.structure(0) {
+                            Some(s) => s,
+                            None => return gst::PadProbeReturn::Ok,
+                        };
+
+                        let format = structure
+                            .get::<String>("format")
+                            .unwrap_or_default();
+                        let channels = structure
+                            .get::<i32>("channels")
+                            .unwrap_or(1)
+                            .max(1) as usize;
+
+                        if let Some(gst::PadProbeData::Buffer(ref buffer)) = probe_info.data {
+                            if let Ok(map) = buffer.map_readable() {
+                                let data = map.as_slice();
+                                // Extract mono samples (left channel) from the buffer.
+                                // Supported formats: F32LE (most common with spectrum),
+                                // S16LE (fallback).
+                                let samples: Vec<f64> = match format.as_str() {
+                                    "F32LE" => {
+                                        let frame = 4 * channels; // bytes per frame
+                                        data.chunks_exact(frame)
+                                            .map(|c| {
+                                                f32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                                                    as f64
+                                            })
+                                            .collect()
+                                    }
+                                    "F64LE" => {
+                                        let frame = 8 * channels;
+                                        data.chunks_exact(frame)
+                                            .map(|c| {
+                                                f64::from_le_bytes([
+                                                    c[0], c[1], c[2], c[3], c[4], c[5], c[6],
+                                                    c[7],
+                                                ])
+                                            })
+                                            .collect()
+                                    }
+                                    "S16LE" => {
+                                        let frame = 2 * channels;
+                                        data.chunks_exact(frame)
+                                            .map(|c| {
+                                                i16::from_le_bytes([c[0], c[1]]) as f64
+                                                    / 32768.0
+                                            })
+                                            .collect()
+                                    }
+                                    _ => vec![],
+                                };
+
+                                if !samples.is_empty() {
+                                    if let Ok(mut wb) = wd.write() {
+                                        wb.push_samples(&samples);
+                                    }
+                                }
+                            }
+                        }
+                        gst::PadProbeReturn::Ok
+                    },
+                );
+            }
+        }
+
         Ok(Player {
             pipeline,
             decodebin,
@@ -262,6 +348,7 @@ impl Player {
             user_preamp: 1.0,
             user_volume: 1.0,
             spectrum_data,
+            waveform_data,
             has_spectrum,
             #[cfg(test)]
             fake_position: None,
@@ -282,6 +369,12 @@ impl Player {
 
         // Set the URI on the decodebin element
         self.decodebin.set_property("uri", uri);
+
+        // Clear stale waveform samples from the previous track so the new
+        // track starts with a blank canvas rather than a ghost of old audio.
+        if let Ok(mut wb) = self.waveform_data.write() {
+            wb.reset();
+        }
 
         self.state = PlayerState::Stopped;
         Ok(())
@@ -647,6 +740,17 @@ impl Player {
                 spectrum.get(band_idx).copied().unwrap_or(0.0)
             })
             .collect()
+    }
+
+    /// Return `count` waveform PCM samples for the visualizer.
+    ///
+    /// Samples are in `[-1.0, 1.0]` (bipolar, centre = silence).  Returns
+    /// all zeros when not enough audio has been buffered yet.
+    pub fn get_waveform_samples(&self, count: usize) -> Vec<f64> {
+        self.waveform_data
+            .read()
+            .map(|wb| wb.get_samples(count))
+            .unwrap_or_else(|_| vec![0.0; count])
     }
 
     /// Return the current spectrum data for the visualizer.

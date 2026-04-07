@@ -396,16 +396,16 @@ impl Controller<'_> {
 
     /// Cycle the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is simply Bars ↔ Oscilloscope.
+    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
+    /// When no plugins are loaded the cycle is simply Bars ↔ Waveform.
     pub fn toggle_visualizer_mode(&mut self) {
         let viz_count = self.plugin_manager.viz_plugins().count();
         match self.plugin_manager.active_viz_index() {
             None => match self.config.visualizer.mode {
                 VisualizerMode::Bars => {
-                    self.config.visualizer.mode = VisualizerMode::Oscilloscope;
+                    self.config.visualizer.mode = VisualizerMode::Waveform;
                 }
-                VisualizerMode::Oscilloscope => {
+                VisualizerMode::Waveform => {
                     if viz_count > 0 {
                         self.plugin_manager.set_active_viz_index(Some(0));
                     } else {

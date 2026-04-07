@@ -86,8 +86,21 @@ pub enum VisualizerMode {
     /// Animated frequency-bar display.  Default.
     #[default]
     Bars,
-    /// Waveform oscilloscope display.
-    Oscilloscope,
+    /// Real-audio waveform display (center-line oscilloscope style).
+    /// Serialised as "waveform"; the legacy "oscilloscope" value is accepted
+    /// on load for backward compatibility.
+    Waveform,
+}
+
+/// How the waveform trace is rendered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WaveformStyle {
+    /// Draw only the waveform stroke; each segment coloured by zone.
+    #[default]
+    Lines,
+    /// Fill the area between the waveform and the centre baseline; coloured by zone.
+    Filled,
 }
 
 /// Wraps [`VisualizerMode`] so it lives under its own `[visualizer]` section
@@ -113,6 +126,15 @@ pub struct VisualizerConfig {
     /// Per-zone colors as hex strings (e.g., "#006600"). Index 0 is bottom zone.
     #[serde(default = "VisualizerConfig::default_zone_colors")]
     pub zone_colors: Vec<String>,
+    /// Number of color zones for the waveform (1-6).
+    #[serde(default = "VisualizerConfig::default_waveform_color_zones")]
+    pub waveform_color_zones: u8,
+    /// Per-zone colors for the waveform as hex strings. Index 0 is bottom zone.
+    #[serde(default = "VisualizerConfig::default_waveform_zone_colors")]
+    pub waveform_zone_colors: Vec<String>,
+    /// Whether the waveform is drawn as a stroke line or a filled shape.
+    #[serde(default)]
+    pub waveform_style: WaveformStyle,
 }
 
 impl VisualizerConfig {
@@ -138,6 +160,19 @@ impl VisualizerConfig {
             "#ff0000".to_string(), // bright red
         ]
     }
+    fn default_waveform_color_zones() -> u8 {
+        5
+    }
+    fn default_waveform_zone_colors() -> Vec<String> {
+        vec![
+            "#006600".to_string(), // dark green
+            "#00cc00".to_string(), // light green
+            "#cccc00".to_string(), // yellow
+            "#cc8000".to_string(), // orange
+            "#cc3300".to_string(), // red
+            "#ff0000".to_string(), // bright red
+        ]
+    }
 }
 
 impl Default for VisualizerConfig {
@@ -149,6 +184,9 @@ impl Default for VisualizerConfig {
             bars_mirror: true,
             color_zones: Self::default_color_zones(),
             zone_colors: Self::default_zone_colors(),
+            waveform_color_zones: Self::default_waveform_color_zones(),
+            waveform_zone_colors: Self::default_waveform_zone_colors(),
+            waveform_style: WaveformStyle::default(),
         }
     }
 }

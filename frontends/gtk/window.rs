@@ -19,7 +19,7 @@
 //! ## GUI features
 //! - Now-playing title and artist labels
 //! - Seek bar with drag-detection (prevents the tick loop from fighting user)
-//! - Animated visualizer (bars / oscilloscope, toggled with `a`)
+//! - Animated visualizer (bars / waveform, toggled with `a`; waveform fullscreen with `f`)
 //! - Transport buttons: ⏮ ▶ ⏸ ⏹ ⏭
 //! - Volume slider (0 – 100 %)
 //! - Live search / jump overlay (`j` key)
@@ -48,7 +48,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::{
-    config::{Config, VisualizerMode},
+    config::{Config, VisualizerMode, WaveformStyle},
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player, PlayerState},
@@ -210,7 +210,7 @@ fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
 /// Shared helper: cancel an ML scan and notify UI.
 fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
     {
-        let mut s = state.borrow_mut();
+        let s = state.borrow_mut();
         if let Some(ref scan) = s.ml_scan {
             scan.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -435,15 +435,15 @@ impl AppState {
 
     /// Cycle the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is simply Bars ↔ Oscilloscope.
+    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
+    /// When no plugins are loaded the cycle is simply Bars ↔ Waveform.
     fn toggle_visualizer_mode(&mut self) {
         match self.active_plugin_idx {
             None => match self.config.visualizer.mode {
                 VisualizerMode::Bars => {
-                    self.config.visualizer.mode = VisualizerMode::Oscilloscope;
+                    self.config.visualizer.mode = VisualizerMode::Waveform;
                 }
-                VisualizerMode::Oscilloscope => {
+                VisualizerMode::Waveform => {
                     if !self.viz_plugins.is_empty() {
                         self.active_plugin_idx = Some(0);
                     } else {
@@ -1277,6 +1277,11 @@ pub fn build(
 
     let root = GtkBox::new(Orientation::Vertical, 0);
 
+    // Deferred fullscreen opener — set after handle_key is built (chicken-and-egg).
+    // Declared early so the visualiser click handler can reference it.
+    let open_fullscreen_fn: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(RefCell::new(None));
+
     // ── Marquee / scrolling-title state ───────────────────────────────────────
     // The full "Title — Artist" string is stored as a Vec<char> so we can slice
     // it by character index without UTF-8 boundary arithmetic.  Each 100 ms tick
@@ -1355,15 +1360,23 @@ pub fn build(
     viz.add_css_class("mini-viz");
     {
         let state_vc = state.clone();
+        let open_fs_vc = open_fullscreen_fn.clone();
         let click = GestureClick::new();
-        click.connect_released(move |_, _, _, _| {
+        // Single click: cycle mode (or retry spectrum).
+        // Double click: open waveform fullscreen when in Waveform mode.
+        click.connect_released(move |_, n_press, _, _| {
+            let is_waveform = state_vc.borrow().config.visualizer.mode == VisualizerMode::Waveform;
+            if n_press == 2 && is_waveform {
+                if let Some(ref opener) = *open_fs_vc.borrow() {
+                    opener();
+                }
+                return;
+            }
             let needs_retry = {
                 let s = state_vc.borrow();
                 !s.player.has_spectrum_data() && s.config.visualizer.mode == VisualizerMode::Bars
             };
             if needs_retry {
-                // Trigger spectrum retry by reinitializing player state
-                // This will cause the visualizer to try again on next tick
                 let _ = state_vc.borrow_mut().retry_spectrum();
             } else {
                 state_vc.borrow_mut().toggle_visualizer_mode();
@@ -3442,119 +3455,13 @@ pub fn build(
     // ══════════════════════════════════════════════════════════════════════════
     // Visualizer draw function (mini box in the now-playing row)
     // ══════════════════════════════════════════════════════════════════════════
-
-    /// Parse a hex color string to RGB (0-1 range).
-    fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
-        let hex = hex.trim_start_matches('#');
-        if hex.len() >= 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f64 / 255.0;
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f64 / 255.0;
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f64 / 255.0;
-            (r, g, b)
-        } else {
-            (0.0, 0.4, 0.0) // default dark green
-        }
-    }
-
-    /// Draw zone-colored bar segments.
-    /// For singular mode: bar extends from bottom to amp*height.
-    /// For mirrored mode: bar extends amp*height/2 above and below center.
-    fn draw_zoned_bar(
-        cr: &gtk4::cairo::Context,
-        x: f64,
-        bar_w: f64,
-        height: f64,
-        amp: f64,
-        mirror: bool,
-        num_zones: usize,
-        zone_colors: &[String],
-    ) {
-        let num_zones = num_zones.max(1);
-        let half_gap = 0.75;
-        let bar_w = bar_w - half_gap;
-
-        // Get color for a zone index, wrapping if needed
-        let get_color = |zone: usize| -> (f64, f64, f64) {
-            let idx = zone.min(zone_colors.len().saturating_sub(1));
-            parse_hex_color(&zone_colors[idx])
-        };
-
-        if mirror {
-            // Mirror mode: draw zones outward from center
-            let center = height / 2.0;
-            let max_extent = amp * center; // max distance from center
-
-            for zone in 0..num_zones {
-                // Zone 0 is closest to center, higher zones go outward
-                let zone_inner = zone as f64 * (center / num_zones as f64);
-                let zone_outer = (zone + 1) as f64 * (center / num_zones as f64);
-
-                // Only draw this zone if it intersects with the amplitude range
-                if zone_outer <= max_extent {
-                    // Entire zone is within amplitude - draw fully
-                    let (r, g, b) = get_color(zone);
-                    cr.set_source_rgb(r, g, b);
-
-                    // Bottom half
-                    let y = center + zone_inner;
-                    let h = zone_outer - zone_inner;
-                    cr.rectangle(x + 0.5, y, bar_w, h);
-                    cr.fill().ok();
-
-                    // Top half (mirrored)
-                    let y = center - zone_outer;
-                    cr.rectangle(x + 0.5, y, bar_w, h);
-                    cr.fill().ok();
-                } else if zone_inner < max_extent {
-                    // Partial zone - only the inner portion is within amplitude
-                    let (r, g, b) = get_color(zone);
-                    cr.set_source_rgb(r, g, b);
-
-                    // Bottom half (partial)
-                    let y = center + zone_inner;
-                    let h = max_extent - zone_inner;
-                    cr.rectangle(x + 0.5, y, bar_w, h);
-                    cr.fill().ok();
-
-                    // Top half (mirrored)
-                    let y = center - max_extent;
-                    cr.rectangle(x + 0.5, y, bar_w, h);
-                    cr.fill().ok();
-                }
-            }
-        } else {
-            // Singular mode: draw zones from bottom up
-            // In Cairo coords: y=0 is TOP, y=height is BOTTOM
-            // Zone 0 (bottom) should have the darkest color
-            let bar_height = amp * height;
-            let bar_top = height - bar_height; // y where bar stops
-            let zone_h = height / num_zones as f64;
-
-            for zone in 0..num_zones {
-                // Zone 0 at bottom (highest y values), higher zones go up
-                let zone_bottom = height - (zone + 1) as f64 * zone_h; // lower y bound
-                let zone_top = height - zone as f64 * zone_h; // higher y bound
-
-                // Only draw if this zone intersects with the bar
-                if zone_top > bar_top {
-                    let (r, g, b) = get_color(zone);
-                    cr.set_source_rgb(r, g, b);
-
-                    let draw_bottom = zone_bottom.max(bar_top);
-                    let draw_top = zone_top.min(height);
-                    let h = (draw_top - draw_bottom).max(1.0);
-                    cr.rectangle(x + 0.5, draw_bottom, bar_w, h);
-                    cr.fill().ok();
-                }
-            }
-        }
-    }
+    // Note: parse_hex_color / draw_zoned_bar / draw_waveform are module-level
+    // functions defined near the bottom of this file so they can also be called
+    // from open_waveform_fullscreen.
 
     {
         let state = state.clone();
         viz.set_draw_func(move |_da, cr, width, height| {
-            use std::f64::consts::PI;
-
             // ── Background ────────────────────────────────────────────────
             cr.set_source_rgb(0.05, 0.05, 0.05);
             cr.paint().ok();
@@ -3568,36 +3475,45 @@ pub fn build(
             let bars_mirror = s.config.visualizer.bars_mirror;
             let color_zones = s.config.visualizer.color_zones as usize;
             let zone_colors = s.config.visualizer.zone_colors.clone();
+            let wf_zones = s.config.visualizer.waveform_color_zones as usize;
+            let wf_zone_colors = s.config.visualizer.waveform_zone_colors.clone();
+            let wf_style = s.config.visualizer.waveform_style.clone();
 
-            // Get spectrum display bands before dropping the borrow
+            // Get spectrum, waveform, and plugin data before dropping the borrow.
             let display_bands_data = s.player.get_spectrum_display_bands(display_bands_count);
-
-            // If a plugin is selected and active, delegate the frame to it.
-            if is_playing {
+            let waveform_samples = s.player.get_waveform_samples(width.max(64) as usize);
+            // Render plugin frame if one is active.
+            let plugin_frame: Option<Vec<f64>> = if is_playing {
                 if let Some(idx) = plugin_idx {
-                    if let Some(plugin) = s.viz_plugins.get(idx) {
-                        let count = (width / 5).max(10) as usize;
-                        let values = plugin.render(pos_secs, true, count);
-                        drop(s); // release borrow after last plugin access
-                        let bar_w = width as f64 / count as f64;
-                        for (i, &v) in values.iter().enumerate() {
-                            let x = i as f64 * bar_w;
-                            draw_zoned_bar(
-                                &cr,
-                                x,
-                                bar_w,
-                                height as f64,
-                                v,
-                                bars_mirror,
-                                color_zones,
-                                &zone_colors,
-                            );
-                        }
-                        return;
-                    }
+                    s.viz_plugins
+                        .get(idx)
+                        .map(|plugin| plugin.render(pos_secs, true, (width / 5).max(10) as usize))
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+            drop(s);
+
+            if let Some(values) = plugin_frame {
+                let count = values.len();
+                let bar_w = width as f64 / count.max(1) as f64;
+                for (i, &v) in values.iter().enumerate() {
+                    let x = i as f64 * bar_w;
+                    draw_zoned_bar(
+                        &cr,
+                        x,
+                        bar_w,
+                        height as f64,
+                        v,
+                        bars_mirror,
+                        color_zones,
+                        &zone_colors,
+                    );
+                }
+                return;
             }
-            drop(s); // release borrow before built-in rendering
 
             if !is_playing {
                 // Idle: flat dim centre line.
@@ -3610,15 +3526,12 @@ pub fn build(
                 return;
             }
 
-            let pos_ms = (pos_secs * 1000.0) as u64;
             match mode {
                 VisualizerMode::Bars => {
-                    // Use display_bands from config, with minimum of 10
                     let num_bars = display_bands_count.max(10) as usize;
                     let bar_w = width as f64 / num_bars as f64;
 
                     if !display_bands_data.iter().all(|&v| v == 0.0) {
-                        // Use real spectrum data from GStreamer with zone coloring
                         for (i, &amp) in display_bands_data.iter().enumerate() {
                             let x = i as f64 * bar_w;
                             draw_zoned_bar(
@@ -3633,7 +3546,6 @@ pub fn build(
                             );
                         }
                     } else {
-                        // Spectrum not available: show flat line with "Retry" indicator
                         cr.set_source_rgb(0.0, 0.3, 0.1);
                         cr.set_line_width(1.0);
                         let mid = height as f64 / 2.0;
@@ -3641,7 +3553,6 @@ pub fn build(
                         cr.line_to(width as f64, mid);
                         cr.stroke().ok();
 
-                        // Draw "Retry" text indicator
                         cr.set_source_rgb(0.0, 0.5, 0.2);
                         let font_size = 10.0_f64.min(height as f64 * 0.4);
                         cr.set_font_size(font_size);
@@ -3656,29 +3567,16 @@ pub fn build(
                         }
                     }
                 }
-                VisualizerMode::Oscilloscope => {
-                    let t0 = pos_ms as f64 / 80.0;
-
-                    // ── Dim centre baseline (orientation reference) ────────
-                    cr.set_source_rgb(0.0, 0.2, 0.08);
-                    cr.set_line_width(0.5);
-                    cr.move_to(0.0, height as f64 / 2.0);
-                    cr.line_to(width as f64, height as f64 / 2.0);
-                    cr.stroke().ok();
-
-                    // ── Animated waveform ──────────────────────────────────
-                    // Composite of two sine waves at the golden-ratio interval
-                    // (φ ≈ 1.618) for a natural, non-repeating look.
-                    cr.set_source_rgb(0.0, 0.85, 0.35);
-                    cr.set_line_width(2.0);
-                    cr.move_to(0.0, height as f64 / 2.0);
-                    for x in 0..width {
-                        let t = x as f64 / width as f64;
-                        let ph = t0 + t * PI * 6.0;
-                        let amp = (ph.sin() + (ph * 1.618).sin() * 0.4) * 0.28;
-                        cr.line_to(x as f64, height as f64 * (0.5 + amp));
-                    }
-                    cr.stroke().ok();
+                VisualizerMode::Waveform => {
+                    draw_waveform(
+                        &cr,
+                        width as f64,
+                        height as f64,
+                        &waveform_samples,
+                        wf_zones,
+                        &wf_zone_colors,
+                        &wf_style,
+                    );
                 }
             }
         });
@@ -3840,6 +3738,7 @@ pub fn build(
     // ══════════════════════════════════════════════════════════════════════════
     // Keyboard shortcuts — shared handler applied to player + playlist windows.
     // ══════════════════════════════════════════════════════════════════════════
+
     let handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation> = {
         let state = state.clone();
         let play_and_update = play_and_update.clone();
@@ -3868,6 +3767,7 @@ pub fn build(
         // so the scroll position is preserved rather than reset to the top.
         let kbd_patch_row = patch_pl_row.clone();
         let kbd_scroll = scroll_to_row_if_needed.clone();
+        let kbd_open_fs = open_fullscreen_fn.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -3963,6 +3863,18 @@ pub fn build(
                 // ── Visualizer mode toggle ─────────────────────────────────
                 gdk::Key::a | gdk::Key::A => {
                     state.borrow_mut().toggle_visualizer_mode();
+                    glib::Propagation::Stop
+                }
+
+                // ── Waveform fullscreen (f — only in Waveform mode) ────────
+                gdk::Key::f | gdk::Key::F => {
+                    let is_waveform = state.borrow().config.visualizer.mode
+                        == VisualizerMode::Waveform;
+                    if is_waveform {
+                        if let Some(ref opener) = *kbd_open_fs.borrow() {
+                            opener();
+                        }
+                    }
                     glib::Propagation::Stop
                 }
 
@@ -4133,6 +4045,26 @@ pub fn build(
         })
     };
 
+    // Wire up the fullscreen opener now that handle_key is fully defined.
+    {
+        let hk = handle_key.clone();
+        let state_fs = state.clone();
+        let jump_win_fs = jump_win.clone();
+        let jump_entry_fs = jump_entry.clone();
+        let rebuild_jump_fs = rebuild_jump.clone();
+        let btn_info_fs = btn_info.clone();
+        *open_fullscreen_fn.borrow_mut() = Some(Rc::new(move || {
+            open_waveform_fullscreen(
+                state_fs.clone(),
+                hk.clone(),
+                jump_win_fs.clone(),
+                jump_entry_fs.clone(),
+                rebuild_jump_fs.clone(),
+                btn_info_fs.clone(),
+            );
+        }));
+    }
+
     // Attach the shared handler to the main player window.
     // Capture phase ensures keys reach the handler even when a child widget
     // (e.g. the visualizer DrawingArea) has keyboard focus.
@@ -4185,7 +4117,8 @@ pub fn build(
   p          Toggle playlist window
 
 ── View & Tags ─────────────────────────────────────
-  a          Cycle visualizer mode (bars / oscilloscope)
+  a          Cycle visualizer mode (bars / waveform)
+  f          Waveform fullscreen (in Waveform mode; Esc to exit)
   d          View/Edit ID3 tags for current track
   u          Open EQ (TUI only — use EQ button in GUI)
   Click logo Open settings
@@ -5762,13 +5695,13 @@ fn open_settings_window(
         lbl.set_halign(Align::Start);
         grid.attach(&lbl, 0, 0, 1, 1);
 
-        // DropDown: index 0 = Bars, index 1 = Oscilloscope.
-        let dd_mode = DropDown::from_strings(&["Bars", "Oscilloscope"]);
+        // DropDown: index 0 = Bars, index 1 = Waveform.
+        let dd_mode = DropDown::from_strings(&["Bars", "Waveform"]);
         {
             let mode = state.borrow().config.visualizer.mode.clone();
             dd_mode.set_selected(match mode {
                 VisualizerMode::Bars => 0,
-                VisualizerMode::Oscilloscope => 1,
+                VisualizerMode::Waveform => 1,
             });
         }
         {
@@ -5777,7 +5710,7 @@ fn open_settings_window(
                 let mut s = state_rc.borrow_mut();
                 s.config.visualizer.mode = match d.selected() {
                     0 => VisualizerMode::Bars,
-                    _ => VisualizerMode::Oscilloscope,
+                    _ => VisualizerMode::Waveform,
                 };
             });
         }
@@ -5904,18 +5837,149 @@ fn open_settings_window(
         {
             let bars_settings = bars_settings_box.clone();
             dd_mode.connect_selected_notify(move |d| {
-                let is_bars = d.selected() == 0;
-                bars_settings.set_visible(is_bars);
+                bars_settings.set_visible(d.selected() == 0);
             });
         }
-        // Also check initial state and set visibility
         {
             let bars_settings = bars_settings_box.clone();
-            let is_bars = state.borrow().config.visualizer.mode == VisualizerMode::Bars;
-            bars_settings.set_visible(is_bars);
+            bars_settings.set_visible(
+                state.borrow().config.visualizer.mode == VisualizerMode::Bars,
+            );
         }
 
         grid.attach(&bars_settings_box, 0, 1, 2, 1);
+
+        // ── Waveform Settings (visible only when Waveform mode is selected) ─
+        let wf_settings_box = Grid::new();
+        wf_settings_box.set_row_spacing(12);
+        wf_settings_box.set_column_spacing(16);
+        wf_settings_box.set_margin_top(16);
+        wf_settings_box.set_margin_start(16);
+        wf_settings_box.attach(&Label::new(Some("Waveform Settings")), 0, 0, 2, 1);
+
+        // Style selector (Lines / Filled)
+        let lbl_wf_style = Label::new(Some("Style"));
+        lbl_wf_style.set_halign(Align::Start);
+        wf_settings_box.attach(&lbl_wf_style, 0, 1, 1, 1);
+
+        let dd_wf_style = DropDown::from_strings(&["Lines", "Filled"]);
+        {
+
+            let cur = state.borrow().config.visualizer.waveform_style.clone();
+            dd_wf_style.set_selected(match cur {
+                WaveformStyle::Lines => 0,
+                WaveformStyle::Filled => 1,
+            });
+        }
+        {
+
+            let state_rc = state.clone();
+            dd_wf_style.connect_selected_notify(move |d| {
+                state_rc.borrow_mut().config.visualizer.waveform_style = match d.selected() {
+                    1 => WaveformStyle::Filled,
+                    _ => WaveformStyle::Lines,
+                };
+            });
+        }
+        wf_settings_box.attach(&dd_wf_style, 1, 1, 1, 1);
+
+        // Color zones count
+        let lbl_wf_zones = Label::new(Some("Color zones"));
+        lbl_wf_zones.set_halign(Align::Start);
+        wf_settings_box.attach(&lbl_wf_zones, 0, 2, 1, 1);
+
+        let spin_wf_zones = SpinButton::with_range(1.0, 6.0, 1.0);
+        {
+            let zones = state.borrow().config.visualizer.waveform_color_zones;
+            spin_wf_zones.set_value(zones as f64);
+        }
+        wf_settings_box.attach(&spin_wf_zones, 1, 2, 1, 1);
+
+        // 6 zone colour buttons
+        let wf_zone_color_buttons: Vec<(Label, ColorButton)> = (0..6)
+            .map(|i| {
+                let lbl = Label::new(Some(&format!("Zone {} color:", i + 1)));
+                lbl.set_halign(Align::Start);
+                let btn = ColorButton::new();
+                let colors = state.borrow().config.visualizer.waveform_zone_colors.clone();
+                if let Some(hex) = colors.get(i) {
+                    if let Ok(rgba) = gdk::RGBA::parse(hex) {
+                        btn.set_rgba(&rgba);
+                    }
+                }
+                (lbl, btn)
+            })
+            .collect();
+
+        for (i, (lbl, btn)) in wf_zone_color_buttons.iter().enumerate() {
+            wf_settings_box.attach(lbl, 0, 3 + i as i32, 1, 1);
+            wf_settings_box.attach(btn, 1, 3 + i as i32, 1, 1);
+            lbl.set_visible(false);
+            btn.set_visible(false);
+        }
+
+        let update_wf_zone_visibility = {
+            let lbls: Vec<_> = wf_zone_color_buttons.iter().map(|(l, _)| l.clone()).collect();
+            let btns: Vec<_> = wf_zone_color_buttons.iter().map(|(_, b)| b.clone()).collect();
+            move |num: u8| {
+                for i in 0..6 {
+                    let v = (i as u8) < num;
+                    lbls[i].set_visible(v);
+                    btns[i].set_visible(v);
+                }
+            }
+        };
+
+        {
+            let state_rc = state.clone();
+            let upd = update_wf_zone_visibility.clone();
+            spin_wf_zones.connect_value_changed(move |s| {
+                let n = s.value() as u8;
+                state_rc.borrow_mut().config.visualizer.waveform_color_zones = n;
+                upd(n);
+            });
+        }
+
+        for (i, (_, btn)) in wf_zone_color_buttons.iter().enumerate() {
+            let state_rc = state.clone();
+            btn.connect_color_set(move |button| {
+                let rgba = button.rgba();
+                let hex = format!(
+                    "#{:02x}{:02x}{:02x}",
+                    (rgba.red() * 255.0) as u8,
+                    (rgba.green() * 255.0) as u8,
+                    (rgba.blue() * 255.0) as u8,
+                );
+                let mut s = state_rc.borrow_mut();
+                let colors = &mut s.config.visualizer.waveform_zone_colors;
+                while colors.len() <= i {
+                    colors.push("#000000".to_string());
+                }
+                colors[i] = hex;
+            });
+        }
+
+        {
+            let n = state.borrow().config.visualizer.waveform_color_zones;
+            update_wf_zone_visibility(n);
+        }
+
+        // Show/hide waveform settings based on mode
+        wf_settings_box.set_visible(false);
+        {
+            let wf_settings = wf_settings_box.clone();
+            dd_mode.connect_selected_notify(move |d| {
+                wf_settings.set_visible(d.selected() == 1);
+            });
+        }
+        {
+            let wf_settings = wf_settings_box.clone();
+            wf_settings.set_visible(
+                state.borrow().config.visualizer.mode == VisualizerMode::Waveform,
+            );
+        }
+
+        grid.attach(&wf_settings_box, 0, 2, 2, 1);
 
         let tab_lbl = Label::new(Some("Visualizer"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -7687,6 +7751,370 @@ fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track 
 }
 
 // ---------------------------------------------------------------------------
+// Visualizer draw helpers (module-level so both build() and open_waveform_fullscreen can use them)
+// ---------------------------------------------------------------------------
+
+/// Parse a hex color string (`"#RRGGBB"`) to RGB components in [0, 1].
+fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() >= 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f64 / 255.0;
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f64 / 255.0;
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f64 / 255.0;
+        (r, g, b)
+    } else {
+        (0.0, 0.4, 0.0) // fallback dark green
+    }
+}
+
+/// Draw a single zone-coloured frequency bar.
+/// For singular mode: bar extends from bottom to `amp × height`.
+/// For mirrored mode: bar extends `amp × height / 2` above and below centre.
+fn draw_zoned_bar(
+    cr: &gtk4::cairo::Context,
+    x: f64,
+    bar_w: f64,
+    height: f64,
+    amp: f64,
+    mirror: bool,
+    num_zones: usize,
+    zone_colors: &[String],
+) {
+    let num_zones = num_zones.max(1);
+    let half_gap = 0.75;
+    let bar_w = bar_w - half_gap;
+
+    let get_color = |zone: usize| -> (f64, f64, f64) {
+        let idx = zone.min(zone_colors.len().saturating_sub(1));
+        parse_hex_color(&zone_colors[idx])
+    };
+
+    if mirror {
+        let center = height / 2.0;
+        let max_extent = amp * center;
+
+        for zone in 0..num_zones {
+            let zone_inner = zone as f64 * (center / num_zones as f64);
+            let zone_outer = (zone + 1) as f64 * (center / num_zones as f64);
+
+            if zone_outer <= max_extent {
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                let y = center + zone_inner;
+                let h = zone_outer - zone_inner;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+                let y = center - zone_outer;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+            } else if zone_inner < max_extent {
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                let y = center + zone_inner;
+                let h = max_extent - zone_inner;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+                let y = center - max_extent;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+            }
+        }
+    } else {
+        let bar_height = amp * height;
+        let bar_top = height - bar_height;
+        let zone_h = height / num_zones as f64;
+
+        for zone in 0..num_zones {
+            let zone_bottom = height - (zone + 1) as f64 * zone_h;
+            let zone_top = height - zone as f64 * zone_h;
+
+            if zone_top > bar_top {
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                let draw_bottom = zone_bottom.max(bar_top);
+                let draw_top = zone_top.min(height);
+                let h = (draw_top - draw_bottom).max(1.0);
+                cr.rectangle(x + 0.5, draw_bottom, bar_w, h);
+                cr.fill().ok();
+            }
+        }
+    }
+}
+
+/// Draw the real-audio waveform visualizer using Cairo.
+///
+/// `samples` are bipolar PCM in `[-1, 1]` (0 = centre / silence).
+/// Zones are horizontal bands; zone 0 (index 0 in `zone_colors`) is the
+/// bottom of the widget and zone N-1 is the top.
+///
+/// - **Lines** — draws the stroke only; each segment coloured by zone.
+/// - **Filled** — fills the area between the waveform and the centre
+///   baseline, coloured per zone.
+fn draw_waveform(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    height: f64,
+    samples: &[f64],
+    num_zones: usize,
+    zone_colors: &[String],
+    style: &WaveformStyle,
+) {
+    let num_zones = num_zones.max(1);
+    let center_y = height / 2.0;
+    let n = samples.len();
+    if n == 0 {
+        return;
+    }
+
+    // Dim centre baseline.
+    cr.set_source_rgb(0.0, 0.2, 0.08);
+    cr.set_line_width(0.5);
+    cr.move_to(0.0, center_y);
+    cr.line_to(width, center_y);
+    cr.stroke().ok();
+
+    // Zone index for a Cairo y-coordinate. Zone 0 = bottom, zone N-1 = top.
+    let zone_for_y = |y: f64| -> usize {
+        let frac = (height - y) / height;
+        ((frac * num_zones as f64) as usize).min(num_zones - 1)
+    };
+
+    let get_color = |zone: usize| -> (f64, f64, f64) {
+        let idx = zone.min(zone_colors.len().saturating_sub(1));
+        parse_hex_color(&zone_colors[idx])
+    };
+
+    // sample ∈ [-1, 1] → y = center - sample × (center × 0.9)
+    let ys: Vec<f64> = samples
+        .iter()
+        .map(|&s| (center_y - s * center_y * 0.9).clamp(0.0, height))
+        .collect();
+
+    match style {
+        WaveformStyle::Lines => {
+            cr.set_line_width(1.5);
+            for i in 0..n.saturating_sub(1) {
+                let x0 = i as f64 * width / n as f64;
+                let x1 = (i + 1) as f64 * width / n as f64;
+                let y0 = ys[i];
+                let y1 = ys[i + 1];
+                let zone = zone_for_y((y0 + y1) / 2.0);
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                cr.move_to(x0, y0);
+                cr.line_to(x1, y1);
+                cr.stroke().ok();
+            }
+        }
+        WaveformStyle::Filled => {
+            for i in 0..n {
+                let x = i as f64 * width / n as f64;
+                let col_w = (width / n as f64).max(1.0);
+                let y = ys[i];
+                let (y_top, y_bot) = if y < center_y { (y, center_y) } else { (center_y, y) };
+                for zone in 0..num_zones {
+                    let zone_top_y = height - (zone + 1) as f64 * height / num_zones as f64;
+                    let zone_bot_y = height - zone as f64 * height / num_zones as f64;
+                    let draw_top = y_top.max(zone_top_y);
+                    let draw_bot = y_bot.min(zone_bot_y);
+                    if draw_top < draw_bot {
+                        let (r, g, b) = get_color(zone);
+                        cr.set_source_rgb(r, g, b);
+                        cr.rectangle(x, draw_top, col_w, draw_bot - draw_top);
+                        cr.fill().ok();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Waveform fullscreen
+// ---------------------------------------------------------------------------
+
+/// Open the waveform visualizer in fullscreen mode.
+///
+/// The window covers all other windows on the desktop.  While open:
+/// - `z x c v b r s` are passed to the shared `handle_key` handler.
+/// - `i` opens the information/shortcuts window.
+/// - `j` opens the jump-to-track window.
+/// - Status changes appear as a 3-second translucent toast at the bottom.
+/// - `Esc` closes the fullscreen window.
+///
+/// Double-clicking the mini visualiser or pressing `f` when Waveform mode is
+/// active triggers this function.
+fn open_waveform_fullscreen(
+    state: Rc<RefCell<AppState>>,
+    handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation>,
+    jump_win: gtk4::Window,
+    jump_entry: gtk4::SearchEntry,
+    rebuild_jump: Rc<dyn Fn()>,
+    btn_info: gtk4::Button,
+) {
+    let fs_win = gtk4::Window::new();
+    fs_win.set_decorated(false);
+
+    // ── Canvas + toast overlay ─────────────────────────────────────────────
+    let overlay = gtk4::Overlay::new();
+
+    let canvas = DrawingArea::new();
+    canvas.set_hexpand(true);
+    canvas.set_vexpand(true);
+    overlay.set_child(Some(&canvas));
+
+    // Translucent status toast label at the bottom of the screen.
+    let toast = gtk4::Label::new(None);
+    toast.add_css_class("wf-fs-toast");
+    toast.set_halign(Align::Center);
+    toast.set_valign(Align::End);
+    toast.set_margin_bottom(48);
+    toast.set_visible(false);
+    overlay.add_overlay(&toast);
+
+    fs_win.set_child(Some(&overlay));
+
+    // ── Draw function ──────────────────────────────────────────────────────
+    let state_draw = state.clone();
+    canvas.set_draw_func(move |_da, cr, width, height| {
+        cr.set_source_rgb(0.0, 0.0, 0.0);
+        cr.paint().ok();
+
+        let s = state_draw.borrow();
+        let is_playing = *s.player.state() == PlayerState::Playing;
+        let wf_zones = s.config.visualizer.waveform_color_zones as usize;
+        let wf_zone_colors = s.config.visualizer.waveform_zone_colors.clone();
+        let wf_style = s.config.visualizer.waveform_style.clone();
+        // Use 2× width for sharper fullscreen detail.
+        let sample_count = (width * 2).max(512) as usize;
+        let waveform_samples = s.player.get_waveform_samples(sample_count);
+        drop(s);
+
+        if !is_playing {
+            // Flat dim centre line when idle.
+            cr.set_source_rgb(0.0, 0.15, 0.05);
+            cr.set_line_width(1.0);
+            cr.move_to(0.0, height as f64 / 2.0);
+            cr.line_to(width as f64, height as f64 / 2.0);
+            cr.stroke().ok();
+            return;
+        }
+
+        draw_waveform(
+            cr,
+            width as f64,
+            height as f64,
+            &waveform_samples,
+            wf_zones,
+            &wf_zone_colors,
+            &wf_style,
+        );
+    });
+
+    // ── Redraw timer (~30 fps) ─────────────────────────────────────────────
+    let canvas_weak = canvas.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+        match canvas_weak.upgrade() {
+            Some(c) => {
+                c.queue_draw();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        }
+    });
+
+    // ── Toast helpers ──────────────────────────────────────────────────────
+    let toast_label = toast.clone();
+    let toast_source: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+
+    let show_toast = {
+        let tl = toast_label.clone();
+        let ts = toast_source.clone();
+        Rc::new(move |msg: String| {
+            tl.set_text(&msg);
+            tl.set_visible(true);
+            if let Some(id) = ts.take() {
+                id.remove();
+            }
+            let tl2 = tl.clone();
+            let ts2 = ts.clone();
+            let id = glib::timeout_add_local(std::time::Duration::from_secs(3), move || {
+                tl2.set_visible(false);
+                ts2.set(None);
+                glib::ControlFlow::Break
+            });
+            ts.set(Some(id));
+        })
+    };
+
+    // ── Key bindings ───────────────────────────────────────────────────────
+    let key_ctrl = EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+    let fs_win_weak = fs_win.downgrade();
+    let state_keys = state.clone();
+    let show_toast_key = show_toast.clone();
+
+    key_ctrl.connect_key_pressed(move |_, key, _, _| {
+        match key {
+            gdk::Key::Escape => {
+                if let Some(w) = fs_win_weak.upgrade() {
+                    w.close();
+                }
+                glib::Propagation::Stop
+            }
+            // Jump window
+            gdk::Key::j | gdk::Key::J => {
+                gtk4::prelude::EditableExt::set_text(&jump_entry, "");
+                rebuild_jump();
+                jump_win.present();
+                jump_entry.grab_focus();
+                glib::Propagation::Stop
+            }
+            // Info / shortcuts window
+            gdk::Key::i | gdk::Key::I => {
+                btn_info.activate();
+                glib::Propagation::Stop
+            }
+            // Transport + mode keys — pass through, then show toast
+            gdk::Key::z
+            | gdk::Key::x
+            | gdk::Key::c
+            | gdk::Key::v
+            | gdk::Key::b
+            | gdk::Key::r
+            | gdk::Key::R
+            | gdk::Key::s
+            | gdk::Key::S => {
+                let result = handle_key(key);
+                let msg = {
+                    let s = state_keys.borrow();
+                    if let Some(track) = s.playlist.current() {
+                        let ps = s.player.state().clone();
+                        let verb = match ps {
+                            PlayerState::Playing => "Playing",
+                            PlayerState::Paused => "Paused",
+                            PlayerState::Stopped => "Stopped",
+                        };
+                        format!("{}: {}", verb, track.display_name())
+                    } else {
+                        String::new()
+                    }
+                };
+                if !msg.is_empty() {
+                    show_toast_key(msg);
+                }
+                result
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    fs_win.add_controller(key_ctrl);
+
+    // ── Show fullscreen ────────────────────────────────────────────────────
+    fs_win.present();
+    fs_win.fullscreen();
+}
+
 // Image viewer popup
 // ---------------------------------------------------------------------------
 
@@ -9367,17 +9795,17 @@ mod tests {
     // ── AppState::toggle_visualizer_mode ──────────────────────────────────────
 
     #[test]
-    fn toggle_visualizer_mode_bars_becomes_oscilloscope() {
+    fn toggle_visualizer_mode_bars_becomes_waveform() {
         let mut s = make_state();
         assert_eq!(s.config.visualizer.mode, VisualizerMode::Bars);
         s.toggle_visualizer_mode();
-        assert_eq!(s.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(s.config.visualizer.mode, VisualizerMode::Waveform);
     }
 
     #[test]
-    fn toggle_visualizer_mode_oscilloscope_becomes_bars() {
+    fn toggle_visualizer_mode_waveform_becomes_bars() {
         let mut s = make_state();
-        s.config.visualizer.mode = VisualizerMode::Oscilloscope;
+        s.config.visualizer.mode = VisualizerMode::Waveform;
         s.toggle_visualizer_mode();
         assert_eq!(s.config.visualizer.mode, VisualizerMode::Bars);
     }
