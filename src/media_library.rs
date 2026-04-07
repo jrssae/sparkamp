@@ -801,6 +801,24 @@ impl MediaLibrary {
         self.all_tracks_sorted("artist", false)
     }
 
+    /// Return only tracks that have already had their metadata scanned
+    /// (`last_scanned IS NOT NULL`), sorted by artist then title.
+    ///
+    /// Used by the deduplication feature, which cannot make useful comparisons
+    /// on entries whose ID3 tags have not been read yet.
+    pub fn scanned_tracks(&self) -> Result<Vec<LibTrack>> {
+        let sql =
+            "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
+                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                    comment, album_artist, disc_num, disc_total, composer, original_artist,
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+             FROM tracks
+             WHERE last_scanned IS NOT NULL
+             ORDER BY LOWER(COALESCE(artist,'')), LOWER(COALESCE(title,''))";
+        let mut stmt = self.conn.prepare(sql)?;
+        Self::collect_tracks(&mut stmt, [])
+    }
+
     /// Return all tracks with a caller-specified primary sort.
     ///
     /// `col` is one of the column IDs used in the UI: `"artist"`, `"title"`,
