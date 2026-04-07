@@ -17,6 +17,7 @@ use clap::Parser;
 
 mod config;
 mod controller;
+mod dedupe;
 mod duration_cache;
 mod duration_probe;
 mod engine;

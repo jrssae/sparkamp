@@ -107,9 +107,10 @@ pub struct Player {
     /// Shadow copy of the current band gains, used to compute auto-compensation.
     eq_bands: [f64; 10],
     /// User-requested pre-amp multiplier (0.5–1.5).
-    /// The value actually sent to the hardware is `user_preamp * compensation`
-    /// where compensation counters any positive-dB band boost to prevent clipping.
     user_preamp: f64,
+    /// User-requested playback volume (0.0–1.0).
+    /// Kept separately so that `apply_preamp_compensation` does not overwrite it.
+    user_volume: f64,
     /// Shared spectrum data updated from GStreamer bus messages.
     /// Protected by RwLock for thread-safe access.
     spectrum_data: Arc<RwLock<SpectrumData>>,
@@ -259,6 +260,7 @@ impl Player {
             volume_elem,
             eq_bands: [0.0; 10],
             user_preamp: 1.0,
+            user_volume: 1.0,
             spectrum_data,
             has_spectrum,
             #[cfg(test)]
@@ -390,9 +392,13 @@ impl Player {
 
     /// Set the playback volume.
     ///
-    /// `vol` is clamped to `[0.0, 1.0]` before being applied.
+    /// `vol` is clamped to `[0.0, 1.0]` before being applied.  The value
+    /// written to GStreamer is `vol × user_preamp` so that subsequent
+    /// `apply_preamp_compensation` calls do not reset the user's chosen level.
     pub fn set_volume(&mut self, vol: f64) {
-        self.volume_elem.set_property("volume", vol.clamp(0.0, 1.0));
+        self.user_volume = vol.clamp(0.0, 1.0);
+        self.volume_elem
+            .set_property("volume", self.user_volume * self.user_preamp);
     }
 
     /// Returns `true` if the `equalizer-10bands` element was successfully
@@ -472,13 +478,12 @@ impl Player {
         self.apply_preamp_compensation();
     }
 
-    /// Apply the user pre-amp multiplier directly to the volume element.
-    ///
-    /// EQ band boosts are left to the equalizer element — no auto-compensation
-    /// is applied here, as that was silently dropping volume whenever any band
-    /// was boosted, which is the wrong behaviour for an EQ.
+    /// Write the combined `user_volume × user_preamp` value to the GStreamer
+    /// volume element.  Called by both `set_volume` and `set_preamp` so that
+    /// neither overwrites the other's contribution.
     fn apply_preamp_compensation(&self) {
-        self.volume_elem.set_property("volume", self.user_preamp);
+        self.volume_elem
+            .set_property("volume", self.user_volume * self.user_preamp);
     }
 
     /// Non-blocking bus poll.  Returns `Some(BusEvent)` when the current track
