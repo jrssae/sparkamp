@@ -218,6 +218,20 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
         }
     }
 
+    // If the player is actively playing, the current track is healthy — clear
+    // any stale broken flag left over from a previous failed load (e.g. the
+    // file was renamed back to its original name and the user played it again).
+    // Checked after the bus drain so error events have already been processed.
+    if *ctx.player.state() == PlayerState::Playing {
+        let idx = ctx.playlist.current_index;
+        if let Some(track) = ctx.playlist.tracks.get_mut(idx) {
+            if track.broken {
+                track.broken = false;
+                ctx.dirty_count += 1;
+            }
+        }
+    }
+
     // Persist duration to the playlist track and last_known_duration while
     // GStreamer has it (it returns None when stopped, so we cache it here).
     if let Some(dur) = ctx.player.duration() {
