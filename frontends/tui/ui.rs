@@ -18,7 +18,7 @@
 //!
 //! The visualizer lives inside the left column of the header row so that it
 //! always occupies the same screen real estate as the now-playing information,
-//! mirroring the classic Winamp 2.x layout where the spectrum / oscilloscope
+//! mirroring the classic Winamp 2.x layout where the spectrum / waveform
 //! sits to the left of the scrolling song title.
 //!
 //! When the user hides the playlist (`p` key) the playlist section collapses
@@ -39,7 +39,7 @@ use super::{
     SettingsState,
 };
 use crate::{
-    config::{ThemeChoice, VisualizerMode},
+    config::{AccentColorChoice, PlaylistAddBehavior, ThemeChoice, VisualizerMode},
     engine::PlayerState,
     model::fmt_duration,
     shuffle::RepeatMode,
@@ -49,7 +49,7 @@ use crate::{
 // Colour palette — centralised so re-skinning only needs edits here
 // ---------------------------------------------------------------------------
 
-/// Accent colour: used for borders, labels and the oscilloscope waveform.
+/// Accent colour: used for borders, labels and the waveform waveform.
 const C_ACCENT: Color = Color::Cyan;
 /// Playing state indicator colour.
 const C_PLAYING: Color = Color::Green;
@@ -61,6 +61,22 @@ const C_TEXT: Color = Color::White;
 const C_WARN: Color = Color::Yellow;
 /// Error colour: status messages and the remove-track overlay.
 const C_ERR: Color = Color::Red;
+
+/// Return a display string for the accent color setting.
+fn accent_color_display(choice: &AccentColorChoice) -> String {
+    match choice {
+        AccentColorChoice::System => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  System".to_string(),
+        AccentColorChoice::Blue => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Blue".to_string(),
+        AccentColorChoice::Green => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Green".to_string(),
+        AccentColorChoice::Purple => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Purple".to_string(),
+        AccentColorChoice::Red => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Red".to_string(),
+        AccentColorChoice::Orange => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Orange".to_string(),
+        AccentColorChoice::Yellow => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Yellow".to_string(),
+        AccentColorChoice::White => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  White".to_string(),
+        AccentColorChoice::Grey => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Grey".to_string(),
+        AccentColorChoice::Custom(hex) => format!("[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Custom ({hex})"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Top-level draw — assembles all sections into the terminal frame
@@ -127,7 +143,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 ///
 /// The row is split horizontally:
 /// - **Left 22 columns**: a small bordered box containing the visualizer
-///   (bars or oscilloscope), labelled with the current mode name.
+///   (bars or waveform), labelled with the current mode name.
 /// - **Right (remainder)**: now-playing information — state icon, title,
 ///   artist and track index — inside a bordered box titled "Sparkamp".
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -147,12 +163,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the mini visualizer inside the left column of the header.
 ///
-/// Uses the same [`render_bars`] / [`render_oscilloscope`] functions as the
+/// Uses the same [`render_bars`] / [`render_waveform`] functions as the
 /// full-size standalone visualizer so the rendering logic stays in one place.
 fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let mode_label = match app.config.visualizer.mode {
         VisualizerMode::Bars => "▲",
-        VisualizerMode::Oscilloscope => "~",
+        VisualizerMode::Waveform => "~",
     };
 
     let block = Block::default()
@@ -187,8 +203,17 @@ fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let n_rows = inner.height as usize;
 
     let lines: Vec<Line> = match app.config.visualizer.mode {
-        VisualizerMode::Bars => render_bars(&data, n_rows),
-        VisualizerMode::Oscilloscope => render_oscilloscope(&data, n_rows),
+        VisualizerMode::Bars => {
+            let mirror = app.config.visualizer.bars_mirror;
+            let zones = app.config.visualizer.color_zones as usize;
+            let zone_colors = &app.config.visualizer.zone_colors;
+            render_bars(&data, n_rows, mirror, zones, zone_colors)
+        }
+        VisualizerMode::Waveform => {
+            let zones = app.config.visualizer.waveform_color_zones as usize;
+            let zone_colors = &app.config.visualizer.waveform_zone_colors;
+            render_waveform(&data, n_rows, zones, zone_colors)
+        }
     };
 
     frame.render_widget(Paragraph::new(lines), inner);
@@ -482,61 +507,185 @@ fn draw_playlist_hints(frame: &mut Frame, _app: &App, area: Rect) {
 /// analyser look even though no actual FFT is performed.
 ///
 /// The number of bars equals `data.len()`, which the caller ensures is at
-/// least 10 (the minimum for a meaningful frequency split).  Colour grades
-/// from green at the bottom through cyan to blue at the top so the display
-/// pops against the dark background.
-fn render_bars(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
+/// least 10 (the minimum for a meaningful frequency split).
+/// Color zones: configurable via zone_colors parameter.
+/// If mirror is true, bars extend both above and below the center line.
+fn render_bars(
+    data: &[f64],
+    n_rows: usize,
+    mirror: bool,
+    color_zones: usize,
+    zone_colors: &[String],
+) -> Vec<Line<'static>> {
     let n_rows = n_rows.max(1);
-    (0..n_rows)
-        .map(|row| {
-            // row 0 = top of the box, row n_rows-1 = bottom.
-            // A bar with amplitude v fills upward from the bottom; this row
-            // is "lit" when v exceeds the fraction that maps to this row.
-            let row_fraction = 1.0 - (row as f64 + 1.0) / n_rows as f64;
-            let spans: Vec<Span> = data
-                .iter()
-                .map(|&v| {
-                    if v > row_fraction {
-                        // Colour gradient: bottom rows green, middle cyan, top blue.
-                        let intensity = row as f64 / n_rows as f64;
-                        let color = if intensity < 0.33 {
-                            Color::Blue
-                        } else if intensity < 0.67 {
-                            Color::Cyan
-                        } else {
-                            Color::Green
-                        };
-                        Span::styled("█", Style::default().fg(color))
+    let num_zones = color_zones.max(1);
+
+    // Parse hex color and find closest ANSI terminal color
+    let hex_to_ansi = |hex: &str| -> Color {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() >= 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32;
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32;
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32;
+
+            // Map to closest ANSI color based on RGB values
+            // Simple heuristic based on dominant channel and lightness
+            let max_val = r.max(g).max(b);
+            let min_val = r.min(g).min(b);
+            let lightness = (max_val + min_val) / 2.0 / 255.0;
+
+            if lightness < 0.2 {
+                Color::DarkGray
+            } else if lightness > 0.8 && r > 200.0 && g > 200.0 && b > 200.0 {
+                Color::White
+            } else if r > g && r > b {
+                // Red/orange range
+                if g > 100.0 {
+                    Color::Yellow // orange-ish
+                } else {
+                    Color::Red
+                }
+            } else if g > r && g > b {
+                // Green range
+                if lightness > 0.5 {
+                    Color::LightGreen
+                } else {
+                    Color::Green
+                }
+            } else if b > r && b > g {
+                Color::Cyan
+            } else {
+                // Mixed colors - estimate hue
+                if r >= g && r >= b {
+                    Color::Yellow
+                } else if g >= r && g >= b {
+                    if lightness > 0.5 {
+                        Color::LightGreen
                     } else {
-                        Span::raw(" ")
+                        Color::Green
                     }
-                })
-                .collect();
-            Line::from(spans)
-        })
-        .collect()
+                } else {
+                    Color::Cyan
+                }
+            }
+        } else {
+            Color::Green // default
+        }
+    };
+
+    // Get ANSI color for a zone
+    let get_zone_color = |zone: usize| -> Color {
+        let idx = zone.min(zone_colors.len().saturating_sub(1));
+        hex_to_ansi(&zone_colors[idx])
+    };
+
+    if mirror {
+        // Mirrored mode: center row is the reference, bars go up and down
+        let center_row = n_rows / 2;
+        (0..n_rows)
+            .map(|row| {
+                // Distance from center (0 = at center, positive = away)
+                let dist_from_center = if row < center_row {
+                    center_row - row
+                } else {
+                    row - center_row
+                };
+                // How far from center as a fraction of half the available space
+                let half_space = center_row.max(1);
+                let center_fraction = dist_from_center as f64 / half_space as f64;
+
+                let spans: Vec<Span> = data
+                    .iter()
+                    .map(|&v| {
+                        if v > center_fraction {
+                            // This row is within the bar's amplitude
+                            let zone = (((1.0 - v) * num_zones as f64) as usize).min(num_zones - 1);
+                            Span::styled("█", Style::default().fg(get_zone_color(zone)))
+                        } else {
+                            Span::raw(" ")
+                        }
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect()
+    } else {
+        // Singular mode: bars extend from bottom to top
+        (0..n_rows)
+            .map(|row| {
+                // row 0 = top of the box, row n_rows-1 = bottom.
+                // A bar with amplitude v fills upward from the bottom; this row
+                // is "lit" when v exceeds the fraction that maps to this row.
+                let row_fraction = 1.0 - (row as f64 + 1.0) / n_rows as f64;
+                let spans: Vec<Span> = data
+                    .iter()
+                    .map(|&v| {
+                        if v > row_fraction {
+                            // Determine zone based on how high in the bar this row is
+                            let bar_progress = (1.0 - v + row_fraction).max(0.0).min(1.0);
+                            let zone = (((1.0 - bar_progress) * num_zones as f64) as usize)
+                                .min(num_zones - 1);
+                            Span::styled("█", Style::default().fg(get_zone_color(zone)))
+                        } else {
+                            Span::raw(" ")
+                        }
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect()
+    }
 }
 
-/// Render the oscilloscope waveform visualizer.
+/// Render the real-audio waveform visualizer with zone-based colouring.
 ///
-/// The waveform is rendered as a continuous line:
+/// Data values are in [0, 1] where 0.5 = silence (centre line).
 /// - A dim `─` baseline is drawn at the vertical mid-point as a reference.
-/// - The waveform sample for each column is plotted as a `●` at its target row.
-/// - When adjacent samples are more than one row apart, `│` connectors fill
-///   the gap between them so the trace looks continuous rather than a scatter
-///   of isolated dots.
-///
-/// This matches the look of a classic triggered oscilloscope display.
-fn render_oscilloscope(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
+/// - The waveform sample for each column is plotted as `●` coloured by zone.
+/// - Vertical `│` connectors bridge gaps between adjacent samples; they are
+///   coloured by whichever zone they fall in.
+/// - Zone 0 (index 0 in zone_colors) is the bottom zone; zone N-1 is the top.
+fn render_waveform(
+    data: &[f64],
+    n_rows: usize,
+    num_zones: usize,
+    zone_colors: &[String],
+) -> Vec<Line<'static>> {
     let n_rows = n_rows.max(1);
+    let num_zones = num_zones.max(1);
 
-    // Pre-compute the target row for every column so we can look ahead when
-    // drawing connectors.
+    // Map a hex colour string (#RRGGBB) to the nearest Ratatui terminal colour.
+    let hex_to_color = |hex: &str| -> Color {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() < 6 {
+            return Color::Green;
+        }
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(128);
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+        Color::Rgb(r, g, b)
+    };
+
+    // Given a terminal row (0 = top, n_rows-1 = bottom), return the zone index.
+    // Zone 0 is at the bottom (highest row numbers), zone N-1 at the top.
+    let zone_for_row = |row: usize| -> usize {
+        // fraction from bottom: 0.0 at top, 1.0 at bottom
+        let frac_from_bottom = (n_rows - 1 - row) as f64 / n_rows as f64;
+        let z = (frac_from_bottom * num_zones as f64) as usize;
+        z.min(num_zones - 1)
+    };
+
+    let zone_color = |row: usize| -> Color {
+        let idx = zone_for_row(row).min(zone_colors.len().saturating_sub(1));
+        hex_to_color(&zone_colors[idx])
+    };
+
+    // Pre-compute the target row for every column.
     let targets: Vec<usize> = data
         .iter()
         .map(|&v| {
-            // v ∈ [0, 1]; 0 = bottom, 1 = top.
-            // Target row: 0 = top, n_rows-1 = bottom → invert v.
+            // v ∈ [0, 1]; 0.5 = centre. 1 = top, 0 = bottom.
+            // Row 0 = top, n_rows-1 = bottom → invert.
             ((1.0 - v) * (n_rows - 1) as f64).round() as usize
         })
         .collect();
@@ -549,9 +698,6 @@ fn render_oscilloscope(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
                 .map(|col| {
                     let target = targets[col];
 
-                    // Determine whether this row should show a connector that
-                    // bridges the gap between this column's sample and the
-                    // next column's sample.
                     let connects_to_next = col + 1 < targets.len() && {
                         let next = targets[col + 1];
                         let (lo, hi) = if target < next {
@@ -559,19 +705,14 @@ fn render_oscilloscope(data: &[f64], n_rows: usize) -> Vec<Line<'static>> {
                         } else {
                             (next, target)
                         };
-                        // The connector occupies rows strictly between the two
-                        // sample positions (not the sample row itself).
                         row > lo && row < hi
                     };
 
                     if target == row {
-                        // Waveform sample position — show the dot.
-                        Span::styled("●", Style::default().fg(C_ACCENT))
+                        Span::styled("●", Style::default().fg(zone_color(row)))
                     } else if connects_to_next {
-                        // Vertical bridge between two non-adjacent samples.
-                        Span::styled("│", Style::default().fg(Color::Rgb(0, 100, 130)))
+                        Span::styled("│", Style::default().fg(zone_color(row)))
                     } else if row == center_row {
-                        // Reference baseline — always visible as orientation aid.
                         Span::styled("─", Style::default().fg(Color::Rgb(20, 60, 70)))
                     } else {
                         Span::raw(" ")
@@ -1107,8 +1248,12 @@ fn settings_rows_for_tab<'a>(
                 },
             ),
             (
+                "Highlight color",
+                accent_color_display(&app.config.appearance.accent_color),
+            ),
+            (
                 "Custom skin name",
-                if state.tab == 0 && state.cursor == 1 {
+                if state.tab == 0 && state.cursor == 2 {
                     if let Some(buf) = &state.edit_buf {
                         format!("{buf}▌")
                     } else {
@@ -1131,22 +1276,31 @@ fn settings_rows_for_tab<'a>(
         ],
 
         // ── Behavior ─────────────────────────────────────────────────────
-        1 => vec![(
-            "Autoplay on add",
-            if app.config.behavior.autoplay_on_add {
-                "[ On  / Off ]  ●  On".to_string()
-            } else {
-                "[ On  / Off ]  ●  Off".to_string()
-            },
-        )],
+        1 => vec![
+            (
+                "Autoplay on add",
+                if app.config.behavior.autoplay_on_add {
+                    "[ On  / Off ]  ●  On".to_string()
+                } else {
+                    "[ On  / Off ]  ●  Off".to_string()
+                },
+            ),
+            (
+                "Media library → playlist",
+                match app.config.behavior.playlist_add_behavior {
+                    PlaylistAddBehavior::Append => "[ Append / Replace ]  ●  Append".to_string(),
+                    PlaylistAddBehavior::Replace => "[ Append / Replace ]  ●  Replace".to_string(),
+                },
+            ),
+        ],
 
         // ── Visualizer ────────────────────────────────────────────────────
         2 => vec![(
             "Visualizer mode",
             match app.config.visualizer.mode {
-                VisualizerMode::Bars => "[ Bars / Oscilloscope ]  ●  Bars".to_string(),
-                VisualizerMode::Oscilloscope => {
-                    "[ Bars / Oscilloscope ]  ●  Oscilloscope".to_string()
+                VisualizerMode::Bars => "[ Bars / Waveform ]  ●  Bars".to_string(),
+                VisualizerMode::Waveform => {
+                    "[ Bars / Waveform ]  ●  Waveform".to_string()
                 }
             },
         )],

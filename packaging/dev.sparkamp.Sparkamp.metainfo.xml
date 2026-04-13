@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>dev.sparkamp.SparkAmp</id>
+  <id>dev.sparkamp.Sparkamp</id>
   <metadata_license>FSFAP</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
-  <name>SparkAmp</name>
+  <name>Sparkamp</name>
   <summary>Winamp-style audio player for Linux</summary>
   <description>
     <p>
-      SparkAmp is an open-source, keyboard-centric audio player for Linux and
+      Sparkamp is an open-source, keyboard-centric audio player for Linux and
       GNOME inspired by the classic Winamp interface.  It supports MP3, OGG,
       FLAC and other common audio formats, and includes a full-featured 10-band
       equalizer, a media library, visualizer plugins, and custom CSS skinning.
     </p>
     <p>
-      Launch with <code>sparkamp --ui</code> for the GTK4 graphical interface
-      or just <code>sparkamp</code> for the terminal (TUI) mode.
+      Launch with <code>sparkamp</code> for the GTK4 graphical interface
+      or <code>sparkamp --tui</code> for the terminal (TUI) mode.
     </p>
   </description>
-  <launchable type="desktop-id">dev.sparkamp.SparkAmp.desktop</launchable>
+  <launchable type="desktop-id">dev.sparkamp.Sparkamp.desktop</launchable>
   <url type="homepage">https://github.com/sparkamp/sparkamp</url>
   <url type="bugtracker">https://github.com/sparkamp/sparkamp/issues</url>
   <categories>
@@ -28,6 +28,16 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="0.2.0" date="2026-04-06">
+      <description>
+        <p>GTK4 is now the default interface (launch with sparkamp); TUI is
+        available via sparkamp --tui. Adds media library with background
+        scanning, spectrum visualizer with configurable color zones and mirror
+        mode, bar visualizer improvements, shuffle persistence, and numerous
+        GTK fixes including jump-window search, scroll-to-row, and
+        replace-mode autoplay.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-03-22">
       <description>
         <p>Initial public release featuring GStreamer audio backend, GTK4 GUI,

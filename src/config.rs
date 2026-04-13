@@ -86,8 +86,21 @@ pub enum VisualizerMode {
     /// Animated frequency-bar display.  Default.
     #[default]
     Bars,
-    /// Waveform oscilloscope display.
-    Oscilloscope,
+    /// Real-audio waveform display (center-line oscilloscope style).
+    /// Serialised as "waveform"; the legacy "oscilloscope" value is accepted
+    /// on load for backward compatibility.
+    Waveform,
+}
+
+/// How the waveform trace is rendered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WaveformStyle {
+    /// Draw only the waveform stroke; each segment coloured by zone.
+    #[default]
+    Lines,
+    /// Fill the area between the waveform and the centre baseline; coloured by zone.
+    Filled,
 }
 
 /// Wraps [`VisualizerMode`] so it lives under its own `[visualizer]` section
@@ -95,6 +108,87 @@ pub enum VisualizerMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualizerConfig {
     pub mode: VisualizerMode,
+    /// Number of frequency bands for spectrum analysis (8, 16, 32, or 64).
+    /// Only used when a real audio source is connected.
+    #[serde(default = "VisualizerConfig::default_spectrum_bands")]
+    pub spectrum_bands: u32,
+    /// Number of display bars for the Bars visualizer.
+    /// Uses logarithmic frequency mapping from 30 Hz to 15000 Hz.
+    #[serde(default = "VisualizerConfig::default_display_bands")]
+    pub display_bands: u32,
+    /// Whether to show a mirror effect for bars visualizer.
+    /// The bar extends both above and below the center line.
+    #[serde(default = "VisualizerConfig::default_bars_mirror")]
+    pub bars_mirror: bool,
+    /// Number of color zones for bars (1-6). Each zone shows a different color.
+    #[serde(default = "VisualizerConfig::default_color_zones")]
+    pub color_zones: u8,
+    /// Per-zone colors as hex strings (e.g., "#006600"). Index 0 is bottom zone.
+    #[serde(default = "VisualizerConfig::default_zone_colors")]
+    pub zone_colors: Vec<String>,
+    /// Number of color zones for the waveform (1-6).
+    #[serde(default = "VisualizerConfig::default_waveform_color_zones")]
+    pub waveform_color_zones: u8,
+    /// Per-zone colors for the waveform as hex strings. Index 0 is bottom zone.
+    #[serde(default = "VisualizerConfig::default_waveform_zone_colors")]
+    pub waveform_zone_colors: Vec<String>,
+    /// Whether the waveform is drawn as a stroke line or a filled shape.
+    #[serde(default)]
+    pub waveform_style: WaveformStyle,
+}
+
+impl VisualizerConfig {
+    fn default_spectrum_bands() -> u32 {
+        64
+    }
+    fn default_display_bands() -> u32 {
+        16
+    }
+    fn default_bars_mirror() -> bool {
+        true
+    }
+    fn default_color_zones() -> u8 {
+        5
+    }
+    fn default_zone_colors() -> Vec<String> {
+        vec![
+            "#006600".to_string(), // dark green
+            "#00cc00".to_string(), // light green
+            "#cccc00".to_string(), // yellow
+            "#cc8000".to_string(), // orange
+            "#cc3300".to_string(), // red
+            "#ff0000".to_string(), // bright red
+        ]
+    }
+    fn default_waveform_color_zones() -> u8 {
+        5
+    }
+    fn default_waveform_zone_colors() -> Vec<String> {
+        vec![
+            "#006600".to_string(), // dark green
+            "#00cc00".to_string(), // light green
+            "#cccc00".to_string(), // yellow
+            "#cc8000".to_string(), // orange
+            "#cc3300".to_string(), // red
+            "#ff0000".to_string(), // bright red
+        ]
+    }
+}
+
+impl Default for VisualizerConfig {
+    fn default() -> Self {
+        Self {
+            mode: VisualizerMode::default(),
+            spectrum_bands: Self::default_spectrum_bands(),
+            display_bands: Self::default_display_bands(),
+            bars_mirror: true,
+            color_zones: Self::default_color_zones(),
+            zone_colors: Self::default_zone_colors(),
+            waveform_color_zones: Self::default_waveform_color_zones(),
+            waveform_zone_colors: Self::default_waveform_zone_colors(),
+            waveform_style: WaveformStyle::default(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +278,59 @@ pub enum ThemeChoice {
     Light,
 }
 
+/// Accent/highlight color choices.
+/// GNOME provides these built-in accent colors that match the desktop theme.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "type", content = "value")]
+pub enum AccentColorChoice {
+    /// Use the system accent color from GNOME settings.
+    System,
+    /// GNOME blue (default).
+    Blue,
+    /// GNOME green.
+    Green,
+    /// GNOME purple.
+    Purple,
+    /// GNOME red/pink.
+    Red,
+    /// GNOME orange.
+    Orange,
+    /// GNOME yellow.
+    Yellow,
+    /// GNOME white.
+    White,
+    /// GNOME grey.
+    Grey,
+    /// Custom hex color (e.g., "#ff5500").
+    Custom(String),
+}
+
+impl Default for AccentColorChoice {
+    fn default() -> Self {
+        AccentColorChoice::System
+    }
+}
+
+impl AccentColorChoice {
+    /// Return the hex color string for this accent choice.
+    /// Returns None for System (to be resolved from gsettings).
+    /// Returns Some(hex) for built-in and custom colors.
+    pub fn hex(&self) -> Option<&str> {
+        match self {
+            AccentColorChoice::System => None,
+            AccentColorChoice::Blue => Some("#3584e4"),
+            AccentColorChoice::Green => Some("#3a944a"),
+            AccentColorChoice::Purple => Some("#9141ac"),
+            AccentColorChoice::Red => Some("#e01b24"),
+            AccentColorChoice::Orange => Some("#ff7800"),
+            AccentColorChoice::Yellow => Some("#f6d32d"),
+            AccentColorChoice::White => Some("#ffffff"),
+            AccentColorChoice::Grey => Some("#77767b"),
+            AccentColorChoice::Custom(hex) => Some(hex),
+        }
+    }
+}
+
 /// Visual-appearance preferences that live under `[appearance]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearanceConfig {
@@ -191,6 +338,11 @@ pub struct AppearanceConfig {
     /// Defaults to [`ThemeChoice::Dark`].
     #[serde(default)]
     pub theme: ThemeChoice,
+
+    /// Accent/highlight color for the UI.
+    /// Defaults to [`AccentColorChoice::System`] (reads from GNOME settings).
+    #[serde(default)]
+    pub accent_color: AccentColorChoice,
 
     /// Name of a user-provided skin to load from
     /// `~/.config/sparkamp/skins/<name>.css`.  When non-empty this overrides
@@ -211,6 +363,7 @@ impl Default for AppearanceConfig {
     fn default() -> Self {
         AppearanceConfig {
             theme: ThemeChoice::Dark,
+            accent_color: AccentColorChoice::default(),
             custom_skin: String::new(),
             hidden_skins: Vec::new(),
         }
@@ -221,6 +374,17 @@ impl Default for AppearanceConfig {
 // BehaviorConfig
 // ---------------------------------------------------------------------------
 
+/// How tracks from the media library are added to the playlist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistAddBehavior {
+    /// Append tracks to the end of the current playlist (default).
+    #[default]
+    Append,
+    /// Clear the playlist and add only the selected tracks.
+    Replace,
+}
+
 /// Miscellaneous behaviour tweaks under `[behavior]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorConfig {
@@ -228,12 +392,18 @@ pub struct BehaviorConfig {
     /// Defaults to `false`.
     #[serde(default)]
     pub autoplay_on_add: bool,
+
+    /// How tracks from the media library are added to the playlist.
+    /// Defaults to [`PlaylistAddBehavior::Append`].
+    #[serde(default)]
+    pub playlist_add_behavior: PlaylistAddBehavior,
 }
 
 impl Default for BehaviorConfig {
     fn default() -> Self {
         BehaviorConfig {
             autoplay_on_add: false,
+            playlist_add_behavior: PlaylistAddBehavior::default(),
         }
     }
 }
@@ -556,9 +726,7 @@ impl Default for Config {
                 repeat_mode: RepeatMode::Off,
                 shuffle_enabled: false,
             },
-            visualizer: VisualizerConfig {
-                mode: VisualizerMode::Bars,
-            },
+            visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),
             appearance: AppearanceConfig::default(),
             behavior: BehaviorConfig::default(),

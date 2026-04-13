@@ -55,8 +55,8 @@ impl RepeatMode {
     /// Useful for a single "repeat" button that steps through all modes.
     pub fn cycle(self) -> Self {
         match self {
-            Self::Off      => Self::Song,
-            Self::Song     => Self::Playlist,
+            Self::Off => Self::Song,
+            Self::Song => Self::Playlist,
             Self::Playlist => Self::Off,
         }
     }
@@ -64,8 +64,8 @@ impl RepeatMode {
     /// Short human-readable label for UI display (e.g. status bars, buttons).
     pub fn label(self) -> &'static str {
         match self {
-            Self::Off      => "Repeat: Off",
-            Self::Song     => "Repeat: Song",
+            Self::Off => "Repeat: Off",
+            Self::Song => "Repeat: Song",
             Self::Playlist => "Repeat: Playlist",
         }
     }
@@ -77,9 +77,9 @@ impl RepeatMode {
     /// the skin system gains button-label theming support.
     pub fn symbol(self) -> &'static str {
         match self {
-            Self::Off      => "🔁—",  // repeat off
-            Self::Song     => "🔁1",  // repeat this track
-            Self::Playlist => "🔁A",  // repeat all tracks
+            Self::Off => "🔁—",      // repeat off
+            Self::Song => "🔁1",     // repeat this track
+            Self::Playlist => "🔁A", // repeat all tracks
         }
     }
 }
@@ -135,9 +135,16 @@ impl ShuffleState {
 
     /// Record that `index` has started playing.
     ///
-    /// Appends to history (truncating any "future" entries that existed if the
-    /// user had stepped back) and marks the index as played.
+    /// Only populates history when shuffle is enabled.
+    /// When shuffle is off, history is not used and this method only marks
+    /// the track as played.
     pub fn record_played(&mut self, index: usize) {
+        if !self.enabled {
+            // When shuffle is off, history is not used - just mark as played
+            self.played.insert(index);
+            return;
+        }
+
         // Truncate any forward history (user stepped back, then a new track
         // started — the old "future" is now stale).
         if !self.history.is_empty() {
@@ -203,12 +210,7 @@ impl ShuffleState {
     }
 
     /// Shuffle next-track logic: pick a random unplayed track.
-    fn next_shuffle(
-        &mut self,
-        _current: usize,
-        total: usize,
-        repeat: RepeatMode,
-    ) -> Option<usize> {
+    fn next_shuffle(&mut self, current: usize, total: usize, repeat: RepeatMode) -> Option<usize> {
         let all_indices: Vec<usize> = (0..total).collect();
 
         // Collect indices not yet played this pass.
@@ -222,9 +224,22 @@ impl ShuffleState {
             // Every track has been played once this pass.
             match repeat {
                 RepeatMode::Playlist => {
-                    // Start a new pass: clear played set and pick from the full list.
+                    // Start a new pass: clear played set and pick from the full list,
+                    // but exclude the track that just finished so we never immediately
+                    // repeat it.  A duplicate at the pass boundary creates a fake entry
+                    // in the shuffle history, which makes the back-button appear broken.
                     self.played.clear();
-                    available = all_indices;
+                    let without_current: Vec<usize> = all_indices
+                        .iter()
+                        .copied()
+                        .filter(|&i| i != current)
+                        .collect();
+                    // Fall back to the full list only for a single-track playlist.
+                    available = if without_current.is_empty() {
+                        all_indices
+                    } else {
+                        without_current
+                    };
                 }
                 RepeatMode::Off | RepeatMode::Song => {
                     // No more tracks to play.
@@ -380,7 +395,11 @@ mod tests {
         // Drain all 5 tracks; each should be unique in one pass.
         for _ in 0..total {
             let idx = s.next_index(0, total, RepeatMode::Off).unwrap();
-            assert!(!seen.contains(&idx), "Duplicate index {} in shuffle pass", idx);
+            assert!(
+                !seen.contains(&idx),
+                "Duplicate index {} in shuffle pass",
+                idx
+            );
             seen.insert(idx);
             s.record_played(idx);
         }
@@ -394,12 +413,13 @@ mod tests {
     #[test]
     fn history_prev_steps_back() {
         let mut s = fresh();
+        s.toggle(); // Enable shuffle - history only populates when shuffle is ON
         s.record_played(0);
         s.record_played(1);
         s.record_played(2);
         assert_eq!(s.prev_from_history(), Some(1)); // step back to 1
         assert_eq!(s.prev_from_history(), Some(0)); // step back to 0
-        assert_eq!(s.prev_from_history(), None);    // at beginning
+        assert_eq!(s.prev_from_history(), None); // at beginning
     }
 
     #[test]

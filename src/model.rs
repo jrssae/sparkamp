@@ -207,9 +207,40 @@ pub struct Track {
     /// user can try a repaired or re-mounted file next launch.
     #[serde(skip)]
     pub broken: bool,
+    /// Set at runtime when the file has read-only permissions.
+    /// Used to display a lock indicator in the UI.
+    #[serde(skip)]
+    pub read_only: bool,
 }
 
 impl Track {
+    /// Construct a `Track` from a path without reading metadata (fast).
+    ///
+    /// Only sets the path and title from the filename. Metadata (artist, album, etc.)
+    /// must be read separately via `from_path()`. Use this for fast UI population
+    /// when adding files to a playlist.
+    pub fn from_path_fast(path: &Path) -> Result<Self> {
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("Cannot resolve path: {}", path.display()))?;
+        let title = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        let read_only = crate::media_library::is_read_only(&path);
+        Ok(Track {
+            path,
+            title,
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only,
+        })
+    }
+
     /// Construct a `Track` from an arbitrary filesystem path.
     ///
     /// `path` is canonicalised (resolved to an absolute path with symlinks
@@ -272,6 +303,7 @@ impl Track {
             }
         };
 
+        let read_only = crate::media_library::is_read_only(&path);
         Ok(Track {
             path,
             title,
@@ -280,6 +312,7 @@ impl Track {
             album,
             duration: None,
             broken: false,
+            read_only,
         })
     }
 
@@ -328,14 +361,17 @@ impl Track {
 /// without re-probing the file. This is much faster when adding tracks from ML.
 impl From<&crate::media_library::LibTrack> for Track {
     fn from(lib: &crate::media_library::LibTrack) -> Self {
+        let path = PathBuf::from(&lib.path);
+        let read_only = crate::media_library::is_read_only(&path);
         Track {
-            path: PathBuf::from(&lib.path),
+            path,
             title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
             artist: lib.artist.clone().unwrap_or_default(),
             album_artist: String::new(),
             album: lib.album.clone().unwrap_or_default(),
             duration: lib.length_secs.map(Duration::from_secs_f64),
             broken: false,
+            read_only,
         }
     }
 }
@@ -384,6 +420,12 @@ impl Playlist {
     /// Append a track to the end of the playlist.
     pub fn add(&mut self, track: Track) {
         self.tracks.push(track);
+    }
+
+    /// Clear all tracks from the playlist, resetting current_index to 0.
+    pub fn clear(&mut self) {
+        self.tracks.clear();
+        self.current_index = 0;
     }
 
     /// Return `true` if the playlist contains no tracks.
@@ -504,15 +546,42 @@ impl Playlist {
     /// contain `query` (case-insensitive substring match).
     ///
     /// An empty `query` returns all indices.  Results are in playlist order.
+    /// Return playlist indices whose tracks match every word in `query`.
+    ///
+    /// Each whitespace-delimited word must appear somewhere in the combined
+    /// "title artist album_artist album filename" string, so cross-field
+    /// queries like "ed sheeran don't" correctly match a track titled
+    /// "Don't" by "Ed Sheeran".  An empty query returns an empty vec —
+    /// callers decide what to show when there is no input.
     pub fn search_indices(&self, query: &str) -> Vec<usize> {
-        let q = query.to_lowercase();
+        let words: Vec<String> = query
+            .split_whitespace()
+            .map(|w| w.to_lowercase())
+            .collect();
+        if words.is_empty() {
+            return Vec::new();
+        }
         self.tracks
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                t.title.to_lowercase().contains(&q)
-                    || t.artist.to_lowercase().contains(&q)
-                    || t.album.to_lowercase().contains(&q)
+                // Include the filename stem so bare filename searches work
+                // even when metadata is absent.
+                let filename = t
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let combined = format!(
+                    "{} {} {} {} {}",
+                    t.title.to_lowercase(),
+                    t.artist.to_lowercase(),
+                    t.album_artist.to_lowercase(),
+                    t.album.to_lowercase(),
+                    filename,
+                );
+                words.iter().all(|w| combined.contains(w.as_str()))
             })
             .map(|(i, _)| i)
             .collect()
@@ -574,6 +643,7 @@ impl Playlist {
             track.artist = sanitize(&track.artist);
             track.album_artist = sanitize(&track.album_artist);
             track.album = sanitize(&track.album);
+            track.read_only = crate::media_library::is_read_only(&track.path);
         }
         Ok(playlist)
     }
@@ -608,6 +678,139 @@ impl Playlist {
         let mut files = Vec::new();
         Self::collect_audio_files_inner(dir, extra_exts, &mut files);
         files
+    }
+
+    /// Core scanning logic shared by [`scan_folder_for_ui`] and [`scan_files_for_ui`].
+    ///
+    /// Must be called from inside a background thread — never on the GTK main thread.
+    ///
+    /// ## Phase 1 — fast tracks
+    /// Each audio file produces a `Track` with only its path and filename stem set
+    /// (no ID3 reads).  Tracks are sent one at a time via `fast_tx` as they are
+    /// created so the receiver can start displaying them immediately without waiting
+    /// for the whole directory to be walked.  Successfully-created fast tracks are
+    /// collected in `successful` to drive Phase 2.
+    ///
+    /// ## Phase 2 — metadata
+    /// Full ID3/Vorbis tags are read for each file in `successful`.  Results are
+    /// sent as `(scan_index, title, artist, album_artist, album)` where `scan_index`
+    /// is the 0-based position within the fast tracks that were sent.  This lets the
+    /// receiver patch `playlist.tracks[scan_start + scan_index]` in O(1) without any
+    /// search.
+    ///
+    /// Phase 2 only starts after all of Phase 1 has been sent, so when the first
+    /// metadata message arrives the receiver can be certain every fast track is
+    /// already in the channel (or has been received).
+    fn scan_paths_in_thread(
+        files: Vec<PathBuf>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fast_tx: std::sync::mpsc::Sender<Track>,
+        metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
+        done_tx: std::sync::mpsc::Sender<usize>,
+        phase1_done_tx: std::sync::mpsc::Sender<usize>,
+    ) {
+        if files.is_empty() {
+            // Signal Phase 1 complete (with 0 tracks) before the final done.
+            let _ = phase1_done_tx.send(0);
+            let _ = done_tx.send(0);
+            return;
+        }
+
+        // Phase 1: stream fast tracks one at a time so the UI can start showing
+        // them without waiting for the full directory walk to finish.
+        let mut successful: Vec<PathBuf> = Vec::with_capacity(files.len());
+        for f in &files {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                // Signal Phase 1 complete with however many tracks were sent.
+                let _ = phase1_done_tx.send(successful.len());
+                let _ = done_tx.send(successful.len());
+                return;
+            }
+            if let Ok(t) = Track::from_path_fast(f) {
+                let _ = fast_tx.send(t);
+                successful.push(f.clone());
+            }
+        }
+
+        // All Phase 1 tracks have been sent; tell the poller it can now treat an
+        // empty fast_rx as "exhausted" rather than "not started yet".
+        let _ = phase1_done_tx.send(successful.len());
+
+        // Phase 2: read full metadata for each successfully-added fast track and
+        // send by index so the receiver can patch the playlist in O(1).
+        for (idx, path) in successful.iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            if let Ok(track) = Track::from_path(path) {
+                let _ = metadata_tx.send((
+                    idx,
+                    track.title,
+                    track.artist,
+                    track.album_artist,
+                    track.album,
+                ));
+            }
+        }
+
+        let _ = done_tx.send(successful.len());
+    }
+
+    /// Scan a folder for audio files and stream results to the playlist UI.
+    ///
+    /// Spawns a background thread that recursively walks `folder`, then runs
+    /// the two-phase fast-track / metadata scan.  Results arrive via four
+    /// channels; the caller must poll them with `glib::timeout_add_local` —
+    /// never block the GTK main thread waiting on them.
+    ///
+    /// See [`scan_paths_in_thread`] for channel semantics.
+    pub fn scan_folder_for_ui(
+        folder: PathBuf,
+        extra_extensions: Vec<String>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fast_tx: std::sync::mpsc::Sender<Track>,
+        metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
+        done_tx: std::sync::mpsc::Sender<usize>,
+        phase1_done_tx: std::sync::mpsc::Sender<usize>,
+    ) {
+        std::thread::spawn(move || {
+            let files = Self::collect_audio_files_extended(&folder, &extra_extensions);
+            Self::scan_paths_in_thread(
+                files,
+                cancel,
+                fast_tx,
+                metadata_tx,
+                done_tx,
+                phase1_done_tx,
+            );
+        });
+    }
+
+    /// Scan an explicit list of audio file paths and stream results to the playlist UI.
+    ///
+    /// Identical to [`scan_folder_for_ui`] but takes a pre-collected list of paths
+    /// rather than walking a directory.  Used by "Add Files" to handle large
+    /// multi-file selections without blocking the GTK main thread.
+    ///
+    /// See [`scan_paths_in_thread`] for channel semantics.
+    pub fn scan_files_for_ui(
+        files: Vec<PathBuf>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fast_tx: std::sync::mpsc::Sender<Track>,
+        metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
+        done_tx: std::sync::mpsc::Sender<usize>,
+        phase1_done_tx: std::sync::mpsc::Sender<usize>,
+    ) {
+        std::thread::spawn(move || {
+            Self::scan_paths_in_thread(
+                files,
+                cancel,
+                fast_tx,
+                metadata_tx,
+                done_tx,
+                phase1_done_tx,
+            );
+        });
     }
 
     /// Internal recursive helper for [`collect_audio_files`].
@@ -699,6 +902,175 @@ impl Playlist {
 }
 
 // ---------------------------------------------------------------------------
+// Spectrum data
+// ---------------------------------------------------------------------------
+
+/// Stores the frequency spectrum data from GStreamer's spectrum element.
+///
+/// This data is populated from GStreamer bus messages and read by the visualizer
+/// to display real audio frequency bars instead of synthetic animation.
+#[derive(Debug, Clone)]
+pub struct SpectrumData {
+    /// Raw frequency band magnitudes, normalized to [0.0, 1.0].
+    /// Each entry represents one frequency band from low to high frequencies.
+    pub bands: Vec<f64>,
+    /// Smoothed band magnitudes for display. Uses attack/release ballistics.
+    smoothed_bands: Vec<f64>,
+    /// Whether real spectrum data has been received from GStreamer.
+    /// Used to distinguish between "no data yet" vs "data received but all zeros".
+    has_received_data: bool,
+}
+
+impl SpectrumData {
+    /// Create a new SpectrumData with the given number of bands initialized to zero.
+    pub fn new(num_bands: usize) -> Self {
+        Self {
+            bands: vec![0.0; num_bands],
+            smoothed_bands: vec![0.0; num_bands],
+            has_received_data: false,
+        }
+    }
+
+    /// Create an empty SpectrumData with no bands.
+    pub fn empty() -> Self {
+        Self {
+            bands: vec![],
+            smoothed_bands: vec![],
+            has_received_data: false,
+        }
+    }
+
+    /// Update the spectrum bands with new values from GStreamer.
+    /// Applies attack/release smoothing for smooth bar animation.
+    /// Sets has_received_data to true.
+    pub fn update(&mut self, new_bands: Vec<f64>) {
+        let attack = 0.7_f64;
+        let release = 0.92_f64;
+
+        // Ensure smoothed_bands is the right size
+        if self.smoothed_bands.len() != new_bands.len() {
+            self.smoothed_bands = vec![0.0; new_bands.len()];
+        }
+
+        for (i, &new_val) in new_bands.iter().enumerate() {
+            let current = self.smoothed_bands[i];
+            self.smoothed_bands[i] = if new_val > current {
+                // Attack: rise quickly toward target
+                current + (new_val - current) * attack
+            } else {
+                // Release: fall slowly toward target
+                current + (new_val - current) * release
+            };
+        }
+
+        self.bands = new_bands;
+        self.has_received_data = true;
+    }
+
+    /// Return the smoothed band values for display.
+    pub fn smoothed(&self) -> &[f64] {
+        &self.smoothed_bands
+    }
+
+    /// Return the number of frequency bands.
+    pub fn len(&self) -> usize {
+        self.bands.len()
+    }
+
+    /// Return true if there are no bands (empty or all zeros).
+    pub fn is_empty(&self) -> bool {
+        self.bands.is_empty()
+    }
+
+    /// Return true if real spectrum data has been received from GStreamer.
+    /// Distinguishes between "no data yet" and "data received but all zeros".
+    pub fn has_received_data(&self) -> bool {
+        self.has_received_data
+    }
+
+    /// Reset the spectrum data, clearing received flag.
+    /// Call this when reinitializing the pipeline.
+    pub fn reset(&mut self) {
+        let len = self.bands.len().max(64);
+        self.bands = vec![0.0; len];
+        self.smoothed_bands = vec![0.0; len];
+        self.has_received_data = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Waveform ring buffer
+// ---------------------------------------------------------------------------
+
+/// Fixed-capacity ring buffer that stores recent raw PCM samples for the
+/// waveform visualizer.
+///
+/// Samples are written from the GStreamer streaming thread (via a pad probe)
+/// and read from the draw/UI thread.  Access is guarded by the caller via
+/// `Arc<RwLock<WaveformBuffer>>`.
+pub struct WaveformBuffer {
+    samples: std::collections::VecDeque<f64>,
+    capacity: usize,
+}
+
+impl WaveformBuffer {
+    /// Create a new buffer that holds at most `capacity` samples.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            samples: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Append PCM samples, evicting the oldest when full.
+    pub fn push_samples(&mut self, new_samples: &[f64]) {
+        for &s in new_samples {
+            if self.samples.len() >= self.capacity {
+                self.samples.pop_front();
+            }
+            self.samples.push_back(s);
+        }
+    }
+
+    /// Return `count` evenly-spaced samples with light smoothing applied.
+    ///
+    /// Returns silence (all zeros) when not enough samples have been buffered.
+    /// Samples are in `[-1.0, 1.0]`.
+    pub fn get_samples(&self, count: usize) -> Vec<f64> {
+        let n = self.samples.len();
+        if n < count / 2 {
+            return vec![0.0; count];
+        }
+
+        // Linearly interpolate from the ring buffer to `count` output points.
+        let resampled: Vec<f64> = (0..count)
+            .map(|i| {
+                let src_f = i as f64 * (n - 1).max(1) as f64 / (count - 1).max(1) as f64;
+                let lo = src_f.floor() as usize;
+                let hi = (src_f.ceil() as usize).min(n - 1);
+                let t = src_f.fract();
+                self.samples[lo] * (1.0 - t) + self.samples[hi] * t
+            })
+            .collect();
+
+        // Gaussian-style 5-tap moving average for Winamp-style smoothness.
+        let half = 2usize;
+        (0..count)
+            .map(|i| {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(count);
+                resampled[lo..hi].iter().sum::<f64>() / (hi - lo) as f64
+            })
+            .collect()
+    }
+
+    /// Clear all buffered samples (e.g. when a new track starts).
+    pub fn reset(&mut self) {
+        self.samples.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -766,6 +1138,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
 
@@ -811,6 +1184,7 @@ mod tests {
             encoded_by: None,
             lyric: None,
             artwork_path: None,
+            last_scanned: None,
             sort_keys: SortKeys::default(),
         };
 
@@ -831,6 +1205,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -1096,5 +1471,280 @@ mod tests {
         p.move_track(3, 1); // move D (after C) to before C → [A,D,B,C,E]
         assert_eq!(p.current_index, 3); // C shifted from 2 to 3
         assert_eq!(p.tracks[p.current_index].title, "C");
+    }
+
+    // -----------------------------------------------------------------------
+    // Track::from_path_fast()
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn from_path_fast_uses_file_stem_as_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my_song.mp3");
+        std::fs::write(&path, b"fake").unwrap();
+        let track = Track::from_path_fast(&path).unwrap();
+        assert_eq!(track.title, "my_song");
+    }
+
+    #[test]
+    fn from_path_fast_leaves_metadata_fields_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.mp3");
+        std::fs::write(&path, b"fake").unwrap();
+        let track = Track::from_path_fast(&path).unwrap();
+        assert!(track.artist.is_empty());
+        assert!(track.album_artist.is_empty());
+        assert!(track.album.is_empty());
+        assert!(track.duration.is_none());
+        assert!(!track.broken);
+    }
+
+    #[test]
+    fn from_path_fast_fails_on_nonexistent_path() {
+        let result = Track::from_path_fast(Path::new("/nonexistent/ghost.mp3"));
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Playlist::scan_files_for_ui() and scan_folder_for_ui()
+    //
+    // These share the same scan_paths_in_thread core.  scan_files_for_ui is
+    // tested directly (simpler setup); one test verifies scan_folder_for_ui
+    // discovers files via directory walk.
+    // -----------------------------------------------------------------------
+
+    /// Receive all fast tracks and all metadata from a completed scan.
+    fn drain_scan(
+        fast_rx: std::sync::mpsc::Receiver<Track>,
+        meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
+        done_rx: std::sync::mpsc::Receiver<usize>,
+    ) -> (
+        Vec<Track>,
+        Vec<(usize, String, String, String, String)>,
+        usize,
+    ) {
+        let timeout = std::time::Duration::from_secs(5);
+        let total = done_rx
+            .recv_timeout(timeout)
+            .expect("scan did not complete");
+        let fast: Vec<_> = fast_rx.try_iter().collect();
+        let meta: Vec<_> = meta_rx.try_iter().collect();
+        (fast, meta, total)
+    }
+
+    #[test]
+    fn scan_files_for_ui_empty_input_completes_with_zero() {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_files_for_ui(vec![], cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+        let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
+        assert_eq!(total, 0);
+        assert!(fast.is_empty());
+        assert!(meta.is_empty());
+    }
+
+    #[test]
+    fn scan_files_for_ui_sends_one_fast_track_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = ["a.mp3", "b.mp3", "c.mp3"]
+            .iter()
+            .map(|name| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, b"fake").unwrap();
+                p
+            })
+            .collect();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_files_for_ui(
+            paths.clone(),
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
+        let (fast, _meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
+
+        assert_eq!(total, 3);
+        assert_eq!(fast.len(), 3);
+    }
+
+    #[test]
+    fn scan_files_for_ui_metadata_indices_match_fast_track_order() {
+        let dir = tempfile::tempdir().unwrap();
+        // Named so alphabetical order is deterministic: 1, 2, 3
+        let paths: Vec<PathBuf> = ["1_track.mp3", "2_track.mp3", "3_track.mp3"]
+            .iter()
+            .map(|name| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, b"fake").unwrap();
+                p
+            })
+            .collect();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_files_for_ui(
+            paths.clone(),
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
+        let (fast, meta, _total) = drain_scan(fast_rx, meta_rx, done_rx);
+
+        assert_eq!(fast.len(), 3, "expected 3 fast tracks");
+        assert_eq!(meta.len(), 3, "expected 3 metadata updates");
+
+        // Indices must be 0, 1, 2 in the order the background thread processed them.
+        let indices: Vec<usize> = meta.iter().map(|(idx, ..)| *idx).collect();
+        assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn scan_files_for_ui_metadata_index_addresses_corresponding_fast_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = ["alpha.mp3", "beta.mp3"]
+            .iter()
+            .map(|name| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, b"fake").unwrap();
+                p
+            })
+            .collect();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_files_for_ui(
+            paths.clone(),
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
+        let (fast, meta, _total) = drain_scan(fast_rx, meta_rx, done_rx);
+
+        // For each metadata update, the index should point at the fast track for
+        // the same file (fast tracks arrive in the same order as paths).
+        for (idx, title, ..) in &meta {
+            let fast_title = &fast[*idx].title;
+            // Both title (from from_path) and fast title (from from_path_fast)
+            // fall back to the filename stem, so they must match.
+            assert_eq!(
+                fast_title, title,
+                "metadata index {idx} should match fast track title"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_files_for_ui_cancel_stops_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = (0..10)
+            .map(|i| {
+                let p = dir.path().join(format!("{:02}.mp3", i));
+                std::fs::write(&p, b"fake").unwrap();
+                p
+            })
+            .collect();
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        // Set cancel before starting — scan should abort and still send done.
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_files_for_ui(paths, cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
+
+        let timeout = std::time::Duration::from_secs(5);
+        let total = done_rx
+            .recv_timeout(timeout)
+            .expect("scan did not send done");
+        // With cancel pre-set, at most 0 fast tracks should have been sent.
+        let fast: Vec<_> = fast_rx.try_iter().collect();
+        assert!(
+            fast.len() <= total,
+            "fast tracks must not exceed done count"
+        );
+        // No metadata should have been sent since Phase 1 was aborted.
+        let meta: Vec<_> = meta_rx.try_iter().collect();
+        assert!(
+            meta.is_empty(),
+            "no metadata expected when cancelled before Phase 2"
+        );
+    }
+
+    #[test]
+    fn scan_folder_for_ui_empty_folder_completes_with_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_folder_for_ui(
+            dir.path().to_path_buf(),
+            vec![],
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
+        let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
+        assert_eq!(total, 0);
+        assert!(fast.is_empty());
+        assert!(meta.is_empty());
+    }
+
+    #[test]
+    fn scan_folder_for_ui_discovers_audio_files_in_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("song1.mp3"), b"fake").unwrap();
+        std::fs::write(dir.path().join("song2.flac"), b"fake").unwrap();
+        std::fs::write(dir.path().join("cover.jpg"), b"fake").unwrap(); // not audio
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+        Playlist::scan_folder_for_ui(
+            dir.path().to_path_buf(),
+            vec![],
+            cancel,
+            fast_tx,
+            meta_tx,
+            done_tx,
+            phase1_done_tx,
+        );
+        let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
+
+        assert_eq!(total, 2, "only the two audio files should be scanned");
+        assert_eq!(fast.len(), 2);
+        assert_eq!(meta.len(), 2);
+        // Non-audio files must not appear in fast tracks.
+        assert!(
+            fast.iter().all(|t| !t.title.contains("cover")),
+            "cover.jpg must not appear as a track"
+        );
     }
 }

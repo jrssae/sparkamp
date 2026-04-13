@@ -1,6 +1,17 @@
 # Rust build artifacts (~1.7 GB — never commit these)
 /target
 
+# macOS system files
+.DS_Store
+
+# Xcode user-specific state (not project configuration)
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Compiled static library produced by the Cargo build phase — regenerated on
+# every Xcode build; committing it would bloat the repo with binary churn.
+frontends/SparkampMac/libsparkamp_macos.a
+
 # Vendored dependencies (cargo vendor)
 /vendor/
 
@@ -23,3 +34,4 @@ dev.txt
 *.jpg
 *.png
 !square logo.png
+!frontends/SparkampMac/Assets.xcassets/**/*.png

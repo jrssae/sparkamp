@@ -4,10 +4,10 @@
 //!
 //! | Command | Behaviour |
 //! |---------|-----------|
-//! | `sparkamp` | Launch the terminal UI (TUI) |
-//! | `sparkamp --ui` | Launch the GTK4 graphical UI |
-//! | `sparkamp file1.mp3 …` | Pre-load files into the playlist, then open the TUI |
-//! | `sparkamp --ui file1.mp3 …` | Pre-load files into the playlist, then open the GTK4 UI |
+//! | `sparkamp` | Launch the GTK4 graphical UI |
+//! | `sparkamp --tui` | Launch the terminal UI (TUI) |
+//! | `sparkamp file1.mp3 …` | Pre-load files into the playlist, then open the GTK4 UI |
+//! | `sparkamp --tui file1.mp3 …` | Pre-load files into the playlist, then open the TUI |
 //!
 //! GStreamer is initialised once here, before either UI is entered, so that
 //! both frontends can assume the library is ready.
@@ -17,12 +17,11 @@ use clap::Parser;
 
 mod config;
 mod controller;
+mod dedupe;
 mod duration_cache;
 mod duration_probe;
 mod engine;
 mod filetype_plugin;
-#[path = "../frontends/gtk/mod.rs"]
-mod gtk_ui;
 mod id3_editor;
 mod loaded_plugin;
 mod media_library;
@@ -32,9 +31,26 @@ mod plugin_manager;
 mod plugin_settings;
 mod shuffle;
 mod skin;
+mod viz_plugin;
+
+// GTK4 frontend — Linux only. On macOS the SwiftUI app bundle replaces it.
+#[cfg(target_os = "linux")]
+#[path = "../frontends/gtk/mod.rs"]
+mod gtk_ui;
+
+#[cfg(target_os = "macos")]
+mod gtk_ui {
+    pub fn run(
+        _playlist: crate::model::Playlist,
+        _config: crate::config::Config,
+    ) -> anyhow::Result<()> {
+        eprintln!("Use the Sparkamp.app bundle for the GUI on macOS.");
+        std::process::exit(1);
+    }
+}
+
 #[path = "../frontends/tui/mod.rs"]
 mod tui;
-mod viz_plugin;
 
 /// Command-line arguments parsed by [`clap`].
 #[derive(Parser)]
@@ -44,11 +60,11 @@ mod viz_plugin;
     long_about = "Sparkamp — a Winamp-style audio player for Linux/GNOME.\n\
 \n\
 USAGE EXAMPLES:\n\
-  sparkamp                          Launch the terminal UI\n\
-  sparkamp --ui                     Launch the GTK4 graphical UI\n\
-  sparkamp file1.mp3 file2.flac     Load files, then open the TUI\n\
-  sparkamp ~/music/                 Load a folder recursively, then open the TUI\n\
-  sparkamp --ui ~/music/*.mp3       Shell-glob expansion into the GTK4 UI\n\
+  sparkamp                          Launch the GTK4 graphical UI\n\
+  sparkamp --tui                    Launch the terminal UI\n\
+  sparkamp file1.mp3 file2.flac     Load files, then open the GTK4 UI\n\
+  sparkamp ~/music/                 Load a folder recursively, then open the GTK4 UI\n\
+  sparkamp --tui ~/music/*.mp3      Shell-glob expansion into the TUI\n\
   sparkamp \"song.mp3,~/albums/rock\" Comma-separated file and folder in one argument\n\
 \n\
 FILES:\n\
@@ -62,9 +78,9 @@ FILES:\n\
 Press 'i' inside the app to view all keyboard shortcuts."
 )]
 struct Args {
-    /// Open the GTK4 graphical interface instead of the terminal UI.
+    /// Open the terminal UI instead of the GTK4 graphical interface.
     #[arg(long)]
-    ui: bool,
+    tui: bool,
 
     /// Audio files or folders to load at startup.
     ///
@@ -125,9 +141,9 @@ fn main() -> Result<()> {
     }
 
     // Dispatch to the appropriate frontend.
-    if args.ui {
-        gtk_ui::run(playlist, config)
-    } else {
+    if args.tui {
         tui::run(playlist, config)
+    } else {
+        gtk_ui::run(playlist, config)
     }
 }

@@ -1762,6 +1762,7 @@ dependencies = [
  "dirs",
  "gstreamer",
  "gstreamer-pbutils",
+ "gstreamer-sys",
  "gtk4",
  "id3",
  "libloading",
@@ -1773,6 +1774,13 @@ dependencies = [
  "symphonia",
  "tempfile",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "sparkamp-macos"
+version = "0.1.0"
+dependencies = [
+ "sparkamp",
 ]
 
 [[package]]

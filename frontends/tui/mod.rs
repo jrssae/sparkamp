@@ -54,7 +54,6 @@ pub enum Mode {
     AddFile {
         input: String,
         scan_cancel: Option<Arc<AtomicBool>>,
-        scan_total: usize,
         scan_added: usize,
     },
     /// m key: two-step entry — first the source position, then the destination.
@@ -83,14 +82,40 @@ pub enum Mode {
     MediaLibrary(MediaLibraryState),
 }
 
-/// Messages sent by the background add-file scan thread to the main loop.
-enum AddFileScanMsg {
-    /// New track discovered and fully scanned.
-    Track(Track),
-    /// File-count update during directory walk (before Track messages start).
-    Found { count: usize },
-    /// Scan finished: `errors` tracks failed to load.
-    Done { errors: usize },
+/// State for an in-progress background add-file scan.
+///
+/// Holds the three channels returned by `scan_files_for_ui` / `scan_folder_for_ui`
+/// plus the playlist index at which this scan started (needed for O(1) metadata patching).
+struct ScanChannels {
+    fast_rx: mpsc::Receiver<Track>,
+    meta_rx: mpsc::Receiver<(usize, String, String, String, String)>,
+    done_rx: mpsc::Receiver<usize>,
+    /// Receives a single usize once the scan thread finishes Phase 1.
+    /// The TUI uses recv_timeout so it does not need this signal for
+    /// correctness, but it must be kept alive so the scan thread's send
+    /// does not return Err and abort early.
+    phase1_done_rx: mpsc::Receiver<usize>,
+    /// Index of the first track added by this scan, so metadata patches can
+    /// address `playlist.tracks[scan_start + idx]` directly.
+    scan_start: usize,
+    /// Set to true once Phase 1 (fast tracks) has finished.
+    fast_done: bool,
+}
+
+/// Expand a leading `~/` or lone `~` to the user's home directory.
+///
+/// The TUI prompt is not run through a shell, so `~` is never expanded
+/// automatically.  GTK uses native file dialogs and does not need this.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else if path == "~" {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -212,10 +237,10 @@ pub struct EqState {
 /// Tabs: 0=Appearance, 1=Behavior, 2=Visualizer, 3=Filetypes, 4=Media Library.
 pub(super) fn settings_tab_len(tab: usize) -> usize {
     match tab {
-        // Appearance: 2 items (theme, custom_skin)
-        0 => 2,
-        // Behavior: 1 item (autoplay_on_add)
-        1 => 1,
+        // Appearance: 3 items (theme, accent_color, custom_skin)
+        0 => 3,
+        // Behavior: 2 items (autoplay_on_add, playlist_add_behavior)
+        1 => 2,
         // Visualizer: 1 item (mode)
         2 => 1,
         // Filetypes: 2 items (visualizer_dir, filetype_dir)
@@ -272,8 +297,8 @@ pub struct App {
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<crate::media_library::MediaLibrary>,
-    /// Receiving end of the add-file background scan channel.
-    scan_rx: Option<mpsc::Receiver<AddFileScanMsg>>,
+    /// Active background scan channels, present while a scan is running.
+    scan_channels: Option<ScanChannels>,
 }
 
 impl App {
@@ -357,7 +382,7 @@ impl App {
             broken_tx,
             plugin_manager,
             media_lib,
-            scan_rx: None,
+            scan_channels: None,
         })
     }
 
@@ -547,14 +572,10 @@ impl App {
     /// Returns `count` (minimum 10) normalised amplitude values [0.0, 1.0] for
     /// the current visualizer frame.  When the player is not active all values
     /// are 0.0 (idle state).  Values are generated from the current playback
-    /// position using composite sine waves so they animate naturally while a
-    /// track plays.
+    /// Return visualizer data for the current mode.
     ///
-    /// For `Bars` mode each bar uses a frequency-scaled phase so lower-indexed
-    /// bars simulate bass frequencies (slower, higher amplitude) and
-    /// higher-indexed bars simulate treble (faster, lower amplitude).
-    /// For `Oscilloscope` mode a smooth periodic waveform spanning [0.0, 1.0]
-    /// is returned in column order.
+    /// Returns frequency data from GStreamer's spectrum analysis when available.
+    /// Falls back to minimal bars when spectrum data is not yet received.
     pub fn visualizer_data(&self, count: usize) -> Vec<f64> {
         // Enforce a minimum of 10 data points so the visualizer always looks
         // reasonable even in very narrow terminal windows.
@@ -574,25 +595,28 @@ impl App {
         }
 
         match self.config.visualizer.mode {
-            VisualizerMode::Bars => (0..count)
-                .map(|i| {
-                    // Scale the animation phase by a per-bar frequency so that
-                    // bar 0 (leftmost) oscillates slowly (bass) and bar N-1
-                    // (rightmost) oscillates quickly (treble).
-                    let freq = 1.0 + i as f64 * 0.5;
-                    let phase = pos * freq + i as f64 * 0.7;
-                    // Mix two harmonics for a richer, less mechanical look.
-                    (phase.sin() * 0.4 + (phase * 1.5).sin() * 0.2 + 0.55).clamp(0.05, 1.0)
-                })
-                .collect(),
-            VisualizerMode::Oscilloscope => (0..count)
-                .map(|i| {
-                    // Normalised x position in [0.0, 1.0] across the display width.
-                    let t = i as f64 / (count - 1).max(1) as f64;
-                    // TAU * t traces one full cycle; pos * 4.0 animates it over time.
-                    (std::f64::consts::TAU * t + pos * 4.0).sin() * 0.5 + 0.5
-                })
-                .collect(),
+            VisualizerMode::Bars => {
+                // Use display_bands from config
+                let display_count = self.config.visualizer.display_bands as usize;
+                // Get display-ready spectrum bands (logarithmically mapped)
+                let display_bands = self.player.get_spectrum_display_bands(display_count as u32);
+
+                // Check if we got real data
+                if !display_bands.iter().all(|&v| v == 0.0) {
+                    display_bands
+                } else {
+                    // Spectrum not available: return minimal bars
+                    vec![0.05; count]
+                }
+            }
+            VisualizerMode::Waveform => {
+                // Get real PCM waveform samples from the audio pipeline.
+                // Samples are in [-1, 1] (bipolar, centred); map to [0, 1] for display.
+                let raw = self.player.get_waveform_samples(count);
+                raw.iter()
+                    .map(|&s| (0.5 + s * 0.45).clamp(0.0, 1.0))
+                    .collect()
+            }
         }
     }
 
@@ -602,7 +626,7 @@ impl App {
 
     /// Advance the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars.
+    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
     /// Delegates the mode-cycling logic to the shared controller and then
     /// enables the visualizer and clears any status message.
     fn cycle_visualizer_mode(&mut self) {
@@ -638,21 +662,8 @@ impl App {
             if part.is_empty() {
                 continue;
             }
-            // Expand a leading ~ to the user's home directory, since the TUI
-            // prompt is not run through a shell and ~ won't be resolved otherwise.
-            let expanded;
-            let part = if let Some(rest) = part.strip_prefix("~/") {
-                expanded = dirs::home_dir()
-                    .map(|h| h.join(rest))
-                    .unwrap_or_else(|| std::path::PathBuf::from(part));
-                expanded.to_str().unwrap_or(part)
-            } else if part == "~" {
-                expanded = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(part));
-                expanded.to_str().unwrap_or(part)
-            } else {
-                part
-            };
-            let path = std::path::Path::new(part);
+            let expanded = expand_tilde(part);
+            let path = expanded.as_path();
 
             if path.is_dir() {
                 // Use extended scan so filetype plugins' formats are included.
@@ -859,7 +870,6 @@ impl App {
                 self.mode = Mode::AddFile {
                     input: String::new(),
                     scan_cancel: None,
-                    scan_total: 0,
                     scan_added: 0,
                 };
             }
@@ -909,7 +919,7 @@ impl App {
             KeyCode::Left => self.seek_delta_secs(-5.0),
             KeyCode::Right => self.seek_delta_secs(5.0),
 
-            // Visualizer mode cycle: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars
+            // Visualizer mode cycle: Bars → Waveform → plugin 0 → plugin 1 → … → Bars
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 self.cycle_visualizer_mode();
             }
@@ -1199,63 +1209,53 @@ impl App {
                 } else {
                     return;
                 };
+                // Collect all audio files from the comma-separated input.  Dir
+                // walks are fast (readdir only, no metadata), so we do this on
+                // the main thread before handing the list to the background scan.
                 let extra = self.plugin_manager.extra_extensions();
-                let cancel = std::sync::Arc::new(AtomicBool::new(false));
-                let (tx, rx) = mpsc::channel::<AddFileScanMsg>();
-                let cancel_thread = cancel.clone();
-                std::thread::spawn(move || {
-                    let mut total = 0usize;
-                    let mut errors = 0usize;
-                    for part in input.split(',') {
-                        let part = part.trim();
-                        if part.is_empty() {
-                            continue;
-                        }
-                        let expanded;
-                        let part = if let Some(rest) = part.strip_prefix("~/") {
-                            expanded = dirs::home_dir()
-                                .map(|h| h.join(rest))
-                                .unwrap_or_else(|| PathBuf::from(part));
-                            expanded.to_str().unwrap_or(part)
-                        } else if part == "~" {
-                            expanded = dirs::home_dir().unwrap_or_else(|| PathBuf::from(part));
-                            expanded.to_str().unwrap_or(part)
-                        } else {
-                            part
-                        };
-                        let path = PathBuf::from(part);
-                        if cancel_thread.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        if path.is_dir() {
-                            let files = Playlist::collect_audio_files_extended(&path, &extra);
-                            total += files.len();
-                            let _ = tx.send(AddFileScanMsg::Found { count: total });
-                            for f in files {
-                                if cancel_thread.load(Ordering::Relaxed) {
-                                    break;
-                                }
-                                match Track::from_path(&f) {
-                                    Ok(track) => {
-                                        let _ = tx.send(AddFileScanMsg::Track(track));
-                                    }
-                                    Err(_) => errors += 1,
-                                }
-                            }
-                        } else {
-                            total += 1;
-                            let _ = tx.send(AddFileScanMsg::Found { count: total });
-                            match Track::from_path(&path) {
-                                Ok(track) => {
-                                    let _ = tx.send(AddFileScanMsg::Track(track));
-                                }
-                                Err(_) => errors += 1,
-                            }
-                        }
+                let mut all_files: Vec<PathBuf> = Vec::new();
+                for part in input.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
                     }
-                    let _ = tx.send(AddFileScanMsg::Done { errors });
+                    let path = expand_tilde(part);
+                    if path.is_dir() {
+                        let files = Playlist::collect_audio_files_extended(&path, &extra);
+                        all_files.extend(files);
+                    } else {
+                        all_files.push(path);
+                    }
+                }
+                let scan_start = self.playlist.tracks.len();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let (fast_tx, fast_rx) = mpsc::channel::<Track>();
+                let (meta_tx, meta_rx) = mpsc::channel::<(usize, String, String, String, String)>();
+                let (done_tx, done_rx) = mpsc::channel::<usize>();
+                let (phase1_done_tx, phase1_done_rx) = mpsc::channel::<usize>();
+                Playlist::scan_files_for_ui(
+                    all_files,
+                    cancel.clone(),
+                    fast_tx,
+                    meta_tx,
+                    done_tx,
+                    phase1_done_tx,
+                );
+                if let Mode::AddFile {
+                    ref mut scan_cancel,
+                    ..
+                } = self.mode
+                {
+                    *scan_cancel = Some(cancel);
+                }
+                self.scan_channels = Some(ScanChannels {
+                    fast_rx,
+                    meta_rx,
+                    done_rx,
+                    phase1_done_rx,
+                    scan_start,
+                    fast_done: false,
                 });
-                self.scan_rx = Some(rx);
                 self.status_message = Some("Scanning…".to_string());
                 self.status_ticks = STATUS_TICKS;
                 self.drain_add_file_scan();
@@ -1571,9 +1571,20 @@ impl App {
                             let p = std::path::Path::new(&path_str);
                             match crate::model::Track::from_path(p) {
                                 Ok(track) => {
+                                    let was_empty = self.playlist.is_empty();
+                                    if self.config.behavior.playlist_add_behavior
+                                        == crate::config::PlaylistAddBehavior::Replace
+                                    {
+                                        self.playlist.tracks.clear();
+                                        self.playlist.current_index = 0;
+                                        self.shuffle_state.reset();
+                                    }
                                     let before = self.playlist.tracks.len();
                                     self.playlist.add(track);
                                     self.probe_new_tracks(before);
+                                    if self.config.behavior.autoplay_on_add && was_empty {
+                                        self.play_current();
+                                    }
                                     self.set_status("Track added to playlist");
                                 }
                                 Err(e) => {
@@ -2212,7 +2223,7 @@ impl App {
     ///   Enter                  — confirm and write the value back to config
     ///   Esc                    — abandon the edit (revert to previous value)
     fn handle_settings(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        use crate::config::{ThemeChoice, VisualizerMode};
+        use crate::config::{AccentColorChoice, PlaylistAddBehavior, ThemeChoice, VisualizerMode};
 
         // Alt + transport keys pass through to the player without closing settings.
         if modifiers.contains(KeyModifiers::ALT) {
@@ -2274,7 +2285,7 @@ impl App {
                     };
                     // Dispatch by (tab, cursor).
                     match (tab, cursor) {
-                        (0, 1) => self.config.appearance.custom_skin = val,
+                        (0, 2) => self.config.appearance.custom_skin = val,
                         (3, 0) => self.config.plugins.visualizer_dir = val,
                         (3, 1) => self.config.plugins.filetype_dir = val,
                         (4, 2) => {
@@ -2339,7 +2350,16 @@ impl App {
                 }
             }
             // Down / j: move cursor down within the active tab.
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
+                let tab_len = settings_tab_len(tab);
+                if let Mode::Settings(s) = &mut self.mode {
+                    if s.cursor + 1 < tab_len {
+                        s.cursor += 1;
+                    }
+                }
+            }
+            // Also use 'j' for down navigation in settings (not jump).
+            KeyCode::Char('j') if !modifiers.contains(KeyModifiers::ALT) => {
                 let tab_len = settings_tab_len(tab);
                 if let Mode::Settings(s) = &mut self.mode {
                     if s.cursor + 1 < tab_len {
@@ -2351,7 +2371,7 @@ impl App {
             // Space / Enter: act on the focused setting.
             KeyCode::Enter | KeyCode::Char(' ') => {
                 match tab {
-                    // Appearance: row 0 = cycle theme; row 1 = edit custom skin name.
+                    // Appearance: row 0 = cycle theme; row 1 = cycle highlight color; row 2 = edit custom skin name.
                     0 => {
                         match cursor {
                             0 => {
@@ -2361,6 +2381,24 @@ impl App {
                                 };
                             }
                             1 => {
+                                // Cycle through accent colors.
+                                self.config.appearance.accent_color =
+                                    match self.config.appearance.accent_color {
+                                        AccentColorChoice::System => AccentColorChoice::Blue,
+                                        AccentColorChoice::Blue => AccentColorChoice::Green,
+                                        AccentColorChoice::Green => AccentColorChoice::Purple,
+                                        AccentColorChoice::Purple => AccentColorChoice::Red,
+                                        AccentColorChoice::Red => AccentColorChoice::Orange,
+                                        AccentColorChoice::Orange => AccentColorChoice::Yellow,
+                                        AccentColorChoice::Yellow => AccentColorChoice::White,
+                                        AccentColorChoice::White => AccentColorChoice::Grey,
+                                        AccentColorChoice::Grey => {
+                                            AccentColorChoice::Custom("#3584e4".to_string())
+                                        }
+                                        AccentColorChoice::Custom(_) => AccentColorChoice::System,
+                                    };
+                            }
+                            2 => {
                                 // Enter text-edit mode for the custom skin name.
                                 let current = self.config.appearance.custom_skin.clone();
                                 if let Mode::Settings(s) = &mut self.mode {
@@ -2370,16 +2408,26 @@ impl App {
                             _ => {}
                         }
                     }
-                    // Behavior: toggle autoplay-on-add.
-                    1 => {
-                        self.config.behavior.autoplay_on_add =
-                            !self.config.behavior.autoplay_on_add;
-                    }
-                    // Visualizer: cycle between Bars and Oscilloscope.
+                    // Behavior: row 0 = toggle autoplay; row 1 = cycle playlist add behavior.
+                    1 => match cursor {
+                        0 => {
+                            self.config.behavior.autoplay_on_add =
+                                !self.config.behavior.autoplay_on_add;
+                        }
+                        1 => {
+                            self.config.behavior.playlist_add_behavior =
+                                match self.config.behavior.playlist_add_behavior {
+                                    PlaylistAddBehavior::Append => PlaylistAddBehavior::Replace,
+                                    PlaylistAddBehavior::Replace => PlaylistAddBehavior::Append,
+                                };
+                        }
+                        _ => {}
+                    },
+                    // Visualizer: cycle between Bars and Waveform.
                     2 => {
                         self.config.visualizer.mode = match self.config.visualizer.mode {
-                            VisualizerMode::Bars => VisualizerMode::Oscilloscope,
-                            VisualizerMode::Oscilloscope => VisualizerMode::Bars,
+                            VisualizerMode::Bars => VisualizerMode::Waveform,
+                            VisualizerMode::Waveform => VisualizerMode::Bars,
                         };
                     }
                     // Filetypes: enter text-edit mode for the focused path field.
@@ -2583,39 +2631,24 @@ impl App {
     ///    the pipeline is Playing; this catches it on the first tick).
     /// 3. Advance to the next track on end-of-stream.
     fn drain_add_file_scan(&mut self) {
-        if let Some(rx) = self.scan_rx.take() {
-            let mut keep_receiver = false;
-            // First, use a blocking recv with a short timeout to let fast scans
-            // (single file / broken file) complete before we return.
-            let timeout = std::time::Duration::from_millis(50);
-            let first = rx.recv_timeout(timeout);
-            if let Ok(msg) = first {
-                self.process_add_file_scan_msg(msg, &mut keep_receiver);
-            }
-            // Drain any remaining messages that arrived within the timeout.
-            while let Ok(msg) = rx.try_recv() {
-                self.process_add_file_scan_msg(msg, &mut keep_receiver);
-            }
-            if keep_receiver {
-                self.scan_rx = Some(rx);
-            }
-        }
-    }
+        let Some(channels) = self.scan_channels.take() else {
+            return;
+        };
+        let ScanChannels {
+            fast_rx,
+            meta_rx,
+            done_rx,
+            phase1_done_rx,
+            scan_start,
+            mut fast_done,
+        } = channels;
 
-    fn process_add_file_scan_msg(&mut self, msg: AddFileScanMsg, keep_receiver: &mut bool) {
-        match msg {
-            AddFileScanMsg::Found { count } => {
-                if let Mode::AddFile {
-                    ref mut scan_total, ..
-                } = self.mode
-                {
-                    *scan_total = count;
-                }
-                self.status_message = Some(format!("Scanning… {count} files"));
-                self.status_ticks = STATUS_TICKS;
-                *keep_receiver = true;
-            }
-            AddFileScanMsg::Track(track) => {
+        // Phase 1: drain fast tracks (path + filename, no metadata yet).
+        // Use a short blocking recv first so tiny scans (single file) complete
+        // without waiting for the next tick.
+        if !fast_done {
+            let timeout = std::time::Duration::from_millis(50);
+            if let Ok(track) = fast_rx.recv_timeout(timeout) {
                 let count = if let Mode::AddFile { scan_added, .. } = &mut self.mode {
                     *scan_added += 1;
                     *scan_added
@@ -2628,29 +2661,58 @@ impl App {
                     if count == 1 { "" } else { "s" }
                 ));
                 self.status_ticks = STATUS_TICKS;
-                *keep_receiver = true;
             }
-            AddFileScanMsg::Done { errors } => {
-                let added = if let Mode::AddFile { scan_added, .. } = &self.mode {
-                    *scan_added
-                } else {
-                    0
-                };
-                self.mode = Mode::Normal;
-                self.shuffle_state.reset();
-                let msg = match (added, errors) {
-                    (0, _) => "No audio files found".to_string(),
-                    (n, 0) => format!("Added {n} file{}", if n == 1 { "" } else { "s" }),
-                    (n, e) => format!(
-                        "Added {n} file{}; {e} error{}",
-                        if n == 1 { "" } else { "s" },
-                        if e == 1 { "" } else { "s" }
-                    ),
-                };
-                self.status_message = Some(msg);
-                self.status_ticks = STATUS_TICKS;
+            while let Ok(track) = fast_rx.try_recv() {
+                if let Mode::AddFile { scan_added, .. } = &mut self.mode {
+                    *scan_added += 1;
+                }
+                self.playlist.add(track);
             }
         }
+
+        // Phase 2: apply metadata patches from the background thread.
+        // Each message is (index-within-scan, title, artist, album_artist, album).
+        while let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() {
+            fast_done = true; // metadata arriving means Phase 1 is done
+            let pos = scan_start + idx;
+            if let Some(track) = self.playlist.tracks.get_mut(pos) {
+                track.title = title;
+                track.artist = artist;
+                track.album_artist = album_artist;
+                track.album = album;
+            }
+        }
+
+        // Check for completion signal.
+        if let Ok(_total) = done_rx.try_recv() {
+            let added = if let Mode::AddFile { scan_added, .. } = &self.mode {
+                *scan_added
+            } else {
+                self.playlist.tracks.len().saturating_sub(scan_start)
+            };
+            // Probe durations for all newly added tracks.
+            let before = scan_start;
+            self.probe_new_tracks(before);
+            self.mode = Mode::Normal;
+            self.shuffle_state.reset();
+            let msg = match added {
+                0 => "No audio files found".to_string(),
+                n => format!("Added {n} file{}", if n == 1 { "" } else { "s" }),
+            };
+            self.status_message = Some(msg);
+            self.status_ticks = STATUS_TICKS;
+            return; // scan complete, do not restore channels
+        }
+
+        // Scan still running — put channels back.
+        self.scan_channels = Some(ScanChannels {
+            fast_rx,
+            meta_rx,
+            done_rx,
+            phase1_done_rx,
+            scan_start,
+            fast_done,
+        });
     }
 
     pub fn tick(&mut self) {
@@ -2852,6 +2914,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -2864,6 +2927,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -2997,7 +3061,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: "some/path".into(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
@@ -3010,7 +3073,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: String::new(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         for c in "/tmp/track.mp3".chars() {
@@ -3028,7 +3090,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: "abc".into(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
@@ -3044,7 +3105,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: "/nonexistent/file.mp3".into(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -3067,7 +3127,6 @@ mod tests {
         app.mode = Mode::AddFile {
             input: String::new(),
             scan_cancel: None,
-            scan_total: 0,
             scan_added: 0,
         };
         for c in "/tmp/my music/track.mp3".chars() {
@@ -3887,29 +3946,29 @@ mod tests {
     #[test]
     fn visualizer_uses_mode_from_config_not_reset_on_play() {
         let mut cfg = Config::default();
-        cfg.visualizer.mode = VisualizerMode::Oscilloscope;
+        cfg.visualizer.mode = VisualizerMode::Waveform;
         gstreamer::init().unwrap();
         let mut app = App::new(Playlist::new(), cfg).unwrap();
         app.visualizer_active = true;
-        assert_eq!(app.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
         // Simulate a play_current() call (no tracks, so it's a no-op)
         app.play_current();
         // Mode must be unchanged
-        assert_eq!(app.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
     }
 
     #[test]
-    fn a_key_toggles_bars_to_oscilloscope() {
+    fn a_key_toggles_bars_to_waveform() {
         let mut app = make_app();
         assert_eq!(app.config.visualizer.mode, VisualizerMode::Bars);
         app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        assert_eq!(app.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
     }
 
     #[test]
-    fn a_key_toggles_oscilloscope_back_to_bars() {
+    fn a_key_toggles_waveform_back_to_bars() {
         let mut app = make_app();
-        app.config.visualizer.mode = VisualizerMode::Oscilloscope;
+        app.config.visualizer.mode = VisualizerMode::Waveform;
         app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(app.config.visualizer.mode, VisualizerMode::Bars);
     }
@@ -3932,10 +3991,10 @@ mod tests {
     }
 
     #[test]
-    fn visualizer_data_oscilloscope_returns_at_least_8_points() {
+    fn visualizer_data_waveform_returns_at_least_8_points() {
         let mut app = make_app();
         app.visualizer_active = true;
-        app.config.visualizer.mode = VisualizerMode::Oscilloscope;
+        app.config.visualizer.mode = VisualizerMode::Waveform;
         let data = app.visualizer_data(8);
         assert!(data.len() >= 8);
     }
@@ -3969,7 +4028,7 @@ mod tests {
     fn visualizer_data_values_in_range() {
         let mut app = make_app();
         app.visualizer_active = true;
-        for mode in [VisualizerMode::Bars, VisualizerMode::Oscilloscope] {
+        for mode in [VisualizerMode::Bars, VisualizerMode::Waveform] {
             app.config.visualizer.mode = mode;
             let data = app.visualizer_data(16);
             for &v in &data {
@@ -3987,7 +4046,7 @@ mod tests {
         // mode must be one of the two valid variants
         assert!(matches!(
             app.config.visualizer.mode,
-            VisualizerMode::Bars | VisualizerMode::Oscilloscope
+            VisualizerMode::Bars | VisualizerMode::Waveform
         ));
     }
 
@@ -4336,6 +4395,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         };
         let before = app.playlist.tracks.len();
         app.playlist.add(t);

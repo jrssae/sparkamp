@@ -1,0 +1,173 @@
+# Sparkamp Settings Extravaganza - Remaining Work
+
+## Phase 1: Skins Manager (Current)
+Status: IMPLEMENTED - awaiting user testing
+
+### Completed Features
+- [x] Skins ListBox in Settings → Appearance tab
+- [x] Add Skin button (file browser for .css files)
+- [x] Hide button (removes skin from picker, adds to hidden_skins config)
+- [x] Refresh button (re-scans skins directory)
+- [x] Built-in skins protected from hiding
+- [x] Skin selection updates custom_skin config immediately
+
+### Remaining Phase 1 Work
+- [ ] Apply selected skin immediately (currently only saves to config, doesn't reload CSS)
+- [ ] Show "Unhide All" option to reset hidden_skins
+- [ ] Add CSS preview/thumbnail in the list (stretch goal)
+- [ ] Graceful fallback: if custom_skin doesn't exist, fall back to theme-based skin
+
+## Phase 2: Enhanced CSS Variable System (Future)
+Purpose: Enable more flexible skin customization, including button images
+
+### CSS Variable Expansion
+Create comprehensive CSS variable system in style_dark.css/style_light.css:
+```css
+:root {
+  /* Transport buttons */
+  --btn-bg: #333;
+  --btn-fg: #fff;
+  --btn-hover-bg: #444;
+  --btn-active-bg: var(--accent_bg_color);
+
+  /* Transport button images (future) */
+  --btn-play-image: url("buttons/play.png");
+  --btn-play-active-image: url("buttons/play_active.png");
+  --btn-pause-image: url("buttons/pause.png");
+  --btn-pause-active-image: url("buttons/pause_active.png");
+  --btn-prev-image: url("buttons/prev.png");
+  --btn-prev-active-image: url("buttons/prev_active.png");
+  --btn-next-image: url("buttons/next.png");
+  --btn-next-active-image: url("buttons/next_active.png");
+  --btn-stop-image: url("buttons/stop.png");
+  --btn-stop-active-image: url("buttons/stop_active.png");
+  --btn-shuffle-image: url("buttons/shuffle.png");
+  --btn-shuffle-active-image: url("buttons/shuffle_active.png");
+  --btn-repeat-image: url("buttons/repeat.png");
+  --btn-repeat-active-image: url("buttons/repeat_active.png");
+
+  /* Background images */
+  --bg-image: none;
+  --bg-repeat: no-repeat;
+  --bg-size: cover;
+
+  /* Now-playing area */
+  --np-bg: transparent;
+  --np-title-color: #fff;
+  --np-artist-color: #ccc;
+}
+```
+
+### Image Directory Support
+- Skins can include images/ directory
+- Button states: image.png (normal), image_active.png (active/playing)
+- Background images, logo replacement
+
+## Phase 3: CSS Skin Creation Documentation (Future)
+Purpose: Guide for users creating custom skins
+
+### Document Structure (docs/SKIN_CREATION.md)
+```
+docs/
+  SKIN_CREATION.md    # Main guide
+  CSS_REFERENCE.md    # All available CSS classes/variables
+  EXAMPLES/           # Example skin files
+    minimal.css
+    winamp_classic.css
+```
+
+### Document Content
+1. Getting Started
+   - Required files (minimum: .css)
+   - Directory structure
+   - Testing locally
+
+2. CSS Basics
+   - Selector reference (all Sparkamp CSS classes)
+   - Available CSS variables
+   - Color formats (hex, rgb, named colors)
+
+3. Advanced: Images
+   - Button image system
+   - Background images
+   - Logo replacement
+   - Image formats supported (PNG, SVG)
+
+4. Tips & Tricks
+   - Testing in browser vs app
+   - Debugging CSS
+   - Sharing skins
+
+## Phase 4: Zip-Based Skin Packaging (Future)
+Purpose: Distribute skins as single files (like Winamp .wsz files)
+
+### Implementation Ideas
+1. Rename .zip to .sparkamp-skin
+2. Structure:
+   ```
+   myskin.sparkamp-skin (zip archive)
+   ├── skin.css
+   ├── images/
+   │   ├── play.png
+   │   ├── play_active.png
+   │   └── background.png
+   └── manifest.toml (optional)
+       name = "My Skin"
+       author = "..."
+       version = "1.0"
+   ```
+
+3. File operations:
+   - Extract to ~/.config/sparkamp/skins/myskin/
+   - OR: Load directly from zip without extraction
+   - Registry: ~/.config/sparkamp/known_skins.toml
+
+### Benefits
+- Single file distribution
+- Integrity verification (checksum)
+- Easy uninstall (delete extracted folder)
+
+## Keyboard Shortcuts Customization (Future - Lower Priority)
+Purpose: Allow users to rebind transport controls
+
+### Config Structure
+```toml
+[keyboard_shortcuts]
+prev = "z"
+play = "x"
+pause = "c"
+stop = "v"
+next = "b"
+volume_down = "minus"
+volume_up = "equal"
+seek_back = "Left"
+seek_forward = "Right"
+add_files = "a"
+jump = "j"
+repeat = "r"
+shuffle = "s"
+library = "e"
+settings = "comma"
+```
+
+### UI Considerations
+- Settings tab for keyboard shortcuts
+- "Record key" mode for assignment
+- Conflict detection
+- Reset to defaults button
+
+## EQ Presets Save/Load (Nice to Have)
+Purpose: Save custom EQ configurations
+
+### Config Addition
+```toml
+[equalizer.presets]
+"Flat" = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+"Custom1" = [-2.0, 0.0, 2.0, 4.0, -1.0, -2.0, 0.0, 2.0, 3.0, 4.0]
+```
+
+### UI
+- Save button in EQ section
+- Name input dialog
+- Delete preset option
+- Load from dropdown

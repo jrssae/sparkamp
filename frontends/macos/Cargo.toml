@@ -1,0 +1,16 @@
+[package]
+name = "sparkamp-macos"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sparkamp_macos"
+# staticlib: linked directly into the Swift/Xcode app bundle.
+crate-type = ["staticlib"]
+
+[dependencies]
+# Pull in the core library with the FFI layer enabled.
+sparkamp = { path = "../.." }
+
+# No build dependencies — sparkamp.h is maintained by hand in include/.
+# See frontends/macos/build.rs for rationale.

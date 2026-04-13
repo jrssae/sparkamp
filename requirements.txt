@@ -221,6 +221,8 @@ File browser and library management.
 - Add Folder/Rescan/Remove buttons
 - Double-click or Enter to add to playlist
 - Column customization dialog
+- Progress display during rescan ("Scanning X of Y...")
+- Cancel button for rescan operations
 
 ### Shared Features Required
 - Browse audio files by folder
@@ -229,6 +231,13 @@ File browser and library management.
 - Add tracks to playlist
 - Remove from library (not disk)
 - Folder management
+
+### Rescan Implementation
+- `MediaLibrary::scan_folder()` - scans single folder with progress callback
+- `MediaLibrary::scan_all_folders()` - scans all watched folders
+- Smart skip: only rescans files where mtime > last_scanned
+- Progress callback: `FnMut(current, total)`
+- Cancellation via AtomicBool flag
 
 ---
 
@@ -257,6 +266,21 @@ Display keyboard bindings.
 
 Add audio files to playlist or library.
 
+### Unified Scan Architecture
+Both TUI and GUI use shared scanning logic for consistent behavior:
+
+#### Smart Skip Logic
+- Tracks store `last_scanned` timestamp in database
+- Rescan compares file modification time vs last_scanned
+- Only rescans files where mtime > last_scanned (+2 second buffer)
+- Unchanged files are skipped for faster rescans
+
+#### Background Scanning
+- File discovery runs in background thread (non-blocking UI)
+- Metadata reading runs in background thread
+- Progress updates via callback or channel
+- Cancel support via AtomicBool flag
+
 ### TUI Specific
 - Path entry overlay
 - Comma-separated paths supported
@@ -267,7 +291,19 @@ Add audio files to playlist or library.
 ### GUI Specific
 - Native GTK FileDialog for Add Files
 - Native GTK FileDialog for Add Folder
-- Immediate playlist/library update
+- Progress display during scan ("Scanning X of Y...")
+- Cancel button visible during scan
+- Fast tracks appear immediately (filename only)
+- Metadata updates every ~500ms during background scan
+- Final rebuild when scan completes
+
+### Playlist Add Folder (GUI)
+- Fast scan: file discovery + create tracks with filename only
+- Background scan: metadata reading (title, artist, album)
+- Progress label updates ("Adding N tracks...", then "Scanning metadata X/Y...")
+- Cancel button stops scan gracefully
+- Tracks visible immediately after fast scan completes
+- CSS: `.unscanned-row` class for tracks without metadata
 
 ---
 
@@ -352,6 +388,64 @@ Edit additional ID3v2 frames beyond basic tags.
 - Individual save per frame (checkmark button)
 - Enter key to save
 - Opens from ID3 Editor Customize button
+
+---
+
+## 15. Unified Scanning with Progress and Cancel
+
+Unified scanning implementation for both playlist and media library operations.
+
+### Status: IMPLEMENTED
+
+| Feature                      | TUI | GUI |
+|------------------------------|-----|-----|
+| Background file discovery     | [X] | [X] |
+| Fast track creation (no metadata) | [X] | [X] |
+| Background metadata scanning | [X] | [X] |
+| Progress display            | [X] | [X] |
+| Cancel button/functionality | [X] | [X] |
+| Smart skip (mtime check)    | [X] | [X] |
+| Periodic UI updates (~500ms) | N/A | [X] |
+| Unscanned row styling (CSS)| N/A | [X] |
+
+[X] = Done   [ ] = Missing   N/A = Not applicable
+
+### Implementation Details
+
+#### Core Library (`src/media_library.rs`)
+- `last_scanned` column in tracks table
+- `needs_metadata_scan(path, last_scanned)` - checks if file needs rescanning
+- `parse_iso_timestamp()` / `format_current_timestamp()` - timestamp handling
+- `scan_folder(folder_id, cancel, progress)` - scan single folder
+- `scan_all_folders(cancel, progress)` - scan all watched folders
+
+#### Unified UI Function (`src/model.rs`)
+- `Playlist::scan_folder_for_ui()` - unified scan for playlist use
+- Channels: fast_track_tx, metadata_tx, done_tx
+- Non-blocking: runs in background thread
+- Cancellation: checks AtomicBool flag periodically
+
+#### GTK UI (`frontends/gtk/window.rs`)
+- Progress label using existing `files_status` / `pl_status` labels
+- Cancel button visible during scan, hidden when idle
+- Button order: [Cancel] [Rescan] in ML, [Cancel] in Playlist
+- Poller: checks channels every 100-200ms
+- Periodic rebuild every ~500ms during metadata scan
+
+#### Tests (`src/media_library.rs`)
+14 tests covering:
+- Timestamp parsing and formatting
+- Smart skip logic (never scanned, changed, unchanged)
+- Scan functions with progress callbacks
+- Cancellation handling
+
+### CSS Styling (GUI Only)
+```css
+.unscanned-row {
+    background: black;
+}
+```
+Applied to playlist rows without metadata during background scan.
 
 ---
 

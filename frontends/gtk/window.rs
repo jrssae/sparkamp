@@ -1,4 +1,5 @@
 //! GTK4 main window — widget layout, callbacks, and application logic.
+#![allow(deprecated)]
 //!
 //! ## Architecture
 //!
@@ -18,7 +19,7 @@
 //! ## GUI features
 //! - Now-playing title and artist labels
 //! - Seek bar with drag-detection (prevents the tick loop from fighting user)
-//! - Animated visualizer (bars / oscilloscope, toggled with `a`)
+//! - Animated visualizer (bars / waveform, toggled with `a`; waveform fullscreen with `f`)
 //! - Transport buttons: ⏮ ▶ ⏸ ⏹ ⏭
 //! - Volume slider (0 – 100 %)
 //! - Live search / jump overlay (`j` key)
@@ -29,19 +30,25 @@
 use anyhow::Result;
 use glib::ControlFlow;
 use gtk4::prelude::*;
+// Suppress deprecated warnings for GTK4 APIs that are still widely used
+// but have modern replacements (ComboBoxText, ColorButton, ListStore, TreeView, etc.)
+// TODO: Migrate to modern APIs (DropDown, ListStore, TreeView, etc.) when feasible
+#[allow(deprecated)]
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
-    Button, CheckButton, ColumnView, ColumnViewColumn, CustomSorter, DragSource, DrawingArea,
-    DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, Image, Label, ListBox,
-    ListBoxRow, MultiSelection, Notebook, Orientation, PolicyType, Popover, Scale, ScrolledWindow,
-    Separator, SignalListItemFactory, SortListModel, Stack, StackTransitionType,
+    Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn, CustomSorter,
+    DragSource, DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid,
+    Image, Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation,
+    PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, SpinButton,
+    Stack, StackTransitionType, TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 use crate::{
-    config::{Config, ThemeChoice, VisualizerMode},
+    config::{Config, VisualizerMode, WaveformStyle},
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player, PlayerState},
@@ -106,6 +113,14 @@ struct AppState {
     id3_editor_window: Option<gtk4::Window>,
     /// Callback to refresh the media library window, registered by the window itself.
     rebuild_ml_callback: Option<Rc<dyn Fn()>>,
+    /// Callback to update ML scan UI in all windows, registered by each window.
+    ml_scan_ui_callback: Option<Rc<dyn Fn()>>,
+    /// Callback to rebuild the playlist widget, set during build().
+    rebuild_pl_callback: Option<Rc<dyn Fn()>>,
+    /// Callback that plays the current track and updates all UI labels, set during build().
+    play_and_update_callback: Option<Rc<dyn Fn()>>,
+    /// Callback that updates the marquee with a new display string, set during build().
+    set_track_callback: Option<Rc<dyn Fn(&str)>>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -114,6 +129,123 @@ struct AppState {
     /// Reset to `None` when a new track starts playing so the same track can be
     /// counted again after a user-initiated restart.
     counted_play_path: Option<String>,
+    /// Scan state for media library operations.
+    ml_scan: Option<ScanState>,
+    /// Scan state for playlist operations.
+    playlist_scan: Option<ScanState>,
+}
+
+/// State for tracking background scan operations.
+#[derive(Clone)]
+#[allow(dead_code)]
+struct ScanState {
+    /// Type of scan operation.
+    scan_type: ScanType,
+    /// Number of files processed so far.
+    current: usize,
+    /// Total number of files to process.
+    total: usize,
+    /// Flag to signal cancellation.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Type of scan operation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ScanType {
+    AddFolder,
+    AddFiles,
+    Rescan,
+}
+
+/// Shared helper: start an ML scan with the given scan type and total count.
+fn start_ml_scan(
+    state: &Rc<RefCell<AppState>>,
+    scan_type: ScanType,
+    total: usize,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_clone = cancel_flag.clone();
+    {
+        let mut s = state.borrow_mut();
+        s.ml_scan = Some(ScanState {
+            scan_type,
+            current: 0,
+            total,
+            cancel: cancel_clone,
+        });
+        s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+    cancel_flag
+}
+
+/// Shared helper: update ML scan progress and notify UI.
+fn update_ml_scan_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
+    {
+        let mut s = state.borrow_mut();
+        if let Some(ref mut scan) = s.ml_scan {
+            scan.current = current;
+            scan.total = total;
+        }
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+}
+
+/// Shared helper: complete an ML scan and notify UI.
+fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
+    {
+        let mut s = state.borrow_mut();
+        s.ml_scan = None;
+        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+}
+
+/// Shared helper: cancel an ML scan and notify UI.
+fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
+    {
+        let s = state.borrow_mut();
+        if let Some(ref scan) = s.ml_scan {
+            scan.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
+        cb();
+    }
+}
+
+/// Shared helper: update scan UI elements based on current ml_scan state.
+/// Returns true if scanning is in progress.
+#[allow(dead_code)]
+fn update_scan_ui_elements(
+    state: &Rc<RefCell<AppState>>,
+    status_label: &gtk4::Label,
+    rescan_btn: &gtk4::Button,
+    cancel_btn: &gtk4::Button,
+) -> bool {
+    let scan_state = state.borrow().ml_scan.clone();
+    if let Some(scan) = scan_state {
+        rescan_btn.set_visible(false);
+        cancel_btn.set_visible(true);
+        if scan.total > 0 {
+            status_label.set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
+        } else {
+            status_label.set_text("Reading tags…");
+        }
+        true
+    } else {
+        rescan_btn.set_visible(true);
+        cancel_btn.set_visible(false);
+        status_label.set_text("");
+        false
+    }
 }
 
 impl AppState {
@@ -135,11 +267,27 @@ impl AppState {
         let mut plugin_manager = PluginManager::new();
         plugin_manager.load_from_config(&config);
         let media_lib = crate::media_library::MediaLibrary::open().ok();
+
+        // Startup cleanup: purge any soft-deleted records from previous sessions
+        {
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            std::thread::spawn(move || {
+                if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                    let _ = lib.cleanup_on_startup();
+                }
+            });
+        }
+
+        let shuffle_state = {
+            let mut s = ShuffleState::new();
+            s.enabled = config.playback.shuffle_enabled;
+            s
+        };
         Ok(AppState {
             player,
             playlist,
             config,
-            shuffle_state: ShuffleState::new(),
+            shuffle_state,
             pending_seek: None,
             last_duration: None,
             mute_pending: None,
@@ -152,8 +300,14 @@ impl AppState {
             ml_window: None,
             id3_editor_window: None,
             rebuild_ml_callback: None,
+            ml_scan_ui_callback: None,
+            rebuild_pl_callback: None,
+            play_and_update_callback: None,
+            set_track_callback: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
+            ml_scan: None,
+            playlist_scan: None,
         })
     }
 
@@ -191,6 +345,23 @@ impl AppState {
         Some(display)
     }
 
+    /// Same as `play_current()` but does not record to shuffle history.
+    /// Used for back navigation via history to avoid corrupting the history cursor.
+    fn play_current_no_record(&mut self) -> Option<String> {
+        let track = self.playlist.current()?;
+        let uri = track.uri();
+        let display = track.display_name();
+        // Reset so the new track can be counted when it plays long enough.
+        self.counted_play_path = None;
+        let _ = self.player.load(&uri);
+        if self.pending_seek.is_some() {
+            self.mute_pending = Some(self.config.playback.volume);
+            self.player.set_volume(0.0);
+        }
+        let _ = self.player.play();
+        Some(display)
+    }
+
     /// Advance to the next track, respecting shuffle and repeat modes.
     ///
     /// Returns `Some(display_name)` if a next track was found, or `None` if
@@ -210,51 +381,69 @@ impl AppState {
 
     /// Implement the "back button" behaviour with shuffle history support.
     ///
-    /// - ≥ 2 s elapsed → restart the current track from the beginning.
-    /// - < 2 s elapsed + shuffle history → step back through session history.
-    /// - < 2 s elapsed + no history → linear previous track.
+    /// - ≥ 5 s elapsed → restart the current track from the beginning.
+    /// - < 5 s elapsed + shuffle on → step back through session history.
+    /// - < 5 s elapsed + shuffle off → linear previous track (wraps with Repeat::Playlist).
     ///
     /// Returns `Some(display_name)` of the track that will now play.
     fn play_prev(&mut self) -> Option<String> {
         let pos = self.player.position().unwrap_or(Duration::ZERO);
         let do_play = *self.player.state() != PlayerState::Stopped;
-        if pos.as_secs() >= 2 {
-            // Restart the current track.
-            if do_play {
+
+        if pos.as_secs() >= 5 {
+            return if do_play {
                 self.play_current()
             } else {
                 self.playlist.current().map(|t| t.display_name())
-            }
-        } else if let Some(idx) = self.shuffle_state.prev_from_history() {
-            // Step back through the session's playback history.
-            self.playlist.jump_to(idx);
-            if do_play {
-                self.play_current()
-            } else {
-                self.playlist.current().map(|t| t.display_name())
+            };
+        }
+
+        if self.shuffle_state.enabled {
+            if let Some(idx) = self.shuffle_state.prev_from_history() {
+                self.playlist.jump_to(idx);
+                return if do_play {
+                    self.play_current_no_record()
+                } else {
+                    self.playlist.current().map(|t| t.display_name())
+                };
             }
         } else {
-            // No history (beginning of session) — fall back to linear prev.
-            self.playlist.previous();
-            if do_play {
+            if self.playlist.current_index == 0 {
+                if self.config.playback.repeat_mode == crate::shuffle::RepeatMode::Playlist {
+                    self.playlist.jump_to(self.playlist.len().saturating_sub(1));
+                }
+            } else {
+                self.playlist.previous();
+            }
+            return if do_play {
                 self.play_current()
             } else {
                 self.playlist.current().map(|t| t.display_name())
-            }
+            };
+        }
+
+        if self.playlist.current_index == 0 {
+            return None;
+        }
+        self.playlist.previous();
+        if do_play {
+            self.play_current_no_record()
+        } else {
+            self.playlist.current().map(|t| t.display_name())
         }
     }
 
     /// Cycle the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Oscilloscope → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is simply Bars ↔ Oscilloscope.
+    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
+    /// When no plugins are loaded the cycle is simply Bars ↔ Waveform.
     fn toggle_visualizer_mode(&mut self) {
         match self.active_plugin_idx {
             None => match self.config.visualizer.mode {
                 VisualizerMode::Bars => {
-                    self.config.visualizer.mode = VisualizerMode::Oscilloscope;
+                    self.config.visualizer.mode = VisualizerMode::Waveform;
                 }
-                VisualizerMode::Oscilloscope => {
+                VisualizerMode::Waveform => {
                     if !self.viz_plugins.is_empty() {
                         self.active_plugin_idx = Some(0);
                     } else {
@@ -271,6 +460,25 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Attempt to retry spectrum initialization.
+    ///
+    /// Returns Ok(()) if retry was initiated, Err if spectrum is not available.
+    fn retry_spectrum(&mut self) -> Result<(), &'static str> {
+        if !self.player.has_spectrum() {
+            return Err("Spectrum element not available");
+        }
+
+        // If currently playing, just trigger a pipeline state change to help
+        // re-establish links. Don't stop playback.
+        let current_state = self.player.state().clone();
+        if current_state == PlayerState::Playing {
+            // The spectrum element is already in the pipeline; a state nudge
+            // can help re-establish links if no data is flowing.
+        }
+
+        Ok(())
     }
 
     /// Seek to a fractional position `[0.0, 1.0]` within the current track.
@@ -357,10 +565,12 @@ impl AppState {
             .collect()
     }
 
-    fn apply_probed_duration(&mut self, path: &std::path::PathBuf, dur: Duration) {
-        for track in &mut self.playlist.tracks {
+    fn apply_probed_duration(&mut self, path: &std::path::PathBuf, dur: Duration) -> Option<usize> {
+        let mut found_idx = None;
+        for (i, track) in self.playlist.tracks.iter_mut().enumerate() {
             if &track.path == path {
                 track.duration = Some(dur);
+                found_idx = Some(i);
                 break;
             }
         }
@@ -372,6 +582,7 @@ impl AppState {
                 self.last_duration = Some(dur);
             }
         }
+        found_idx
     }
 
     /// Format a time display string for the given seek `fraction` [0.0, 1.0].
@@ -597,27 +808,27 @@ fn format_last_played(iso_timestamp: &str) -> String {
     )
 }
 
-fn make_genre_combo(initial_value: &str) -> (gtk4::ComboBoxText, gtk4::Entry) {
-    use gtk4::prelude::ComboBoxExt;
+#[allow(deprecated)]
+fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
+    let dd = DropDown::from_strings(crate::id3_editor::ID3V1_GENRES);
+    let entry = Entry::new();
+    entry.set_width_chars(16);
 
-    let combo = gtk4::ComboBoxText::with_entry();
-    for genre in crate::id3_editor::ID3V1_GENRES {
-        combo.append(Some(genre), genre);
+    // Try to match initial value to a predefined genre
+    if let Some(idx) = crate::id3_editor::ID3V1_GENRES
+        .iter()
+        .position(|g| *g == initial_value)
+    {
+        dd.set_selected(idx as u32);
+    } else {
+        entry.set_text(initial_value);
     }
-    combo.set_entry_text_column(0);
-    let entry = combo
-        .child()
-        .and_then(|w| w.downcast::<gtk4::Entry>().ok())
-        .expect("Genre combo should have an Entry child");
-    entry.set_text(initial_value);
-    (combo, entry)
+
+    (dd, entry)
 }
 
-fn get_entry_text(entry: &gtk4::Entry) -> String {
-    entry.text().to_string()
-}
-
-fn accent_hex() -> &'static str {
+/// Get the system accent color from GNOME settings.
+fn system_accent_hex() -> &'static str {
     let output = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "accent-color"])
         .output();
@@ -637,6 +848,34 @@ fn accent_hex() -> &'static str {
         "purple" => "#9141ac",
         "slate" => "#6f8396",
         _ => "#3584e4", // GNOME default blue
+    }
+}
+
+/// Resolve the accent color hex from config. Returns the hex string.
+fn resolve_accent_hex(accent_choice: &crate::config::AccentColorChoice) -> String {
+    match accent_choice {
+        crate::config::AccentColorChoice::System => system_accent_hex().to_string(),
+        crate::config::AccentColorChoice::Custom(hex) => hex.clone(),
+        _ => accent_choice.hex().unwrap_or("#3584e4").to_string(),
+    }
+}
+
+/// Reload the CSS with a new accent color. Called when the accent color setting changes.
+fn reload_css_accent(
+    provider: &gtk4::CssProvider,
+    _dark_css: &str,
+    _light_css: &str,
+    is_dark: bool,
+    accent_hex: &str,
+) {
+    use crate::skin::prepare_css;
+    let css = prepare_css(
+        if is_dark { DARK_CSS_RAW } else { LIGHT_CSS_RAW },
+        accent_hex,
+    );
+    provider.load_from_data(&css);
+    if let Some(gtk_settings) = gtk4::Settings::default() {
+        gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
     }
 }
 
@@ -677,14 +916,237 @@ fn invert_pixbuf(src: &gdk_pixbuf::Pixbuf) -> gdk_pixbuf::Pixbuf {
     pb
 }
 
-pub fn build(app: &Application, playlist: Playlist, config: Config) {
+/// Set up a 100ms polling timer that drains the three scan channels and updates
+/// the playlist UI.  Shared by "Add Folder" and "Add Files" so both use identical
+/// behaviour.
+///
+/// `scan_start` is the index into `playlist.tracks` where this scan's tracks begin.
+/// It is captured at the moment the user confirms the dialog, before any tracks are
+/// added, so that `playlist.tracks[scan_start + scan_index]` always addresses the
+/// right track during the metadata phase.
+///
+/// ## Poller phases
+/// 1. **Fast phase** – drain up to 100 fast tracks per tick, rebuild once per batch.
+/// 2. **Transition** – when the first metadata message arrives, all fast tracks are
+///    guaranteed to have been sent (the background thread completes Phase 1 before
+///    starting Phase 2).  Drain any remaining fast tracks, rebuild, spawn duration
+///    probes for all newly-added tracks.
+/// 3. **Metadata phase** – patch `playlist.tracks[scan_start + idx]` in O(1);
+///    rebuild every 5 ticks (~500 ms) so tags fill in gradually.
+/// 4. **Done** – drain any remaining metadata, final rebuild, clear scan state.
+fn start_playlist_scan_poller(
+    state: std::rc::Rc<RefCell<AppState>>,
+    status: Label,
+    rebuild: std::rc::Rc<dyn Fn()>,
+    cancel_btn: Button,
+    probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
+    broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
+    patch_row: std::rc::Rc<dyn Fn(usize)>,
+    // Called when Phase 2 updates the currently playing track's metadata so the
+    // marquee immediately reflects the new "Artist - Title" display name.
+    set_track: std::rc::Rc<dyn Fn(&str)>,
+    fast_rx: std::sync::mpsc::Receiver<crate::model::Track>,
+    meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
+    done_rx: std::sync::mpsc::Receiver<usize>,
+    phase1_done_rx: std::sync::mpsc::Receiver<usize>,
+    scan_start: usize,
+) {
+    use gtk4::prelude::*;
+    use std::cell::Cell;
+
+    // How many fast tracks this scan has added to state.playlist so far.
+    let fast_added = Cell::new(0usize);
+    // True once the scan thread has confirmed it finished sending all Phase 1 tracks.
+    // We wait for this signal before treating an empty fast_rx as "exhausted" —
+    // without it we'd give up on Phase 1 as soon as the channel is momentarily
+    // empty (e.g. while the scan thread is still walking the directory).
+    let phase1_signal_received = Cell::new(false);
+    // True once fast_rx is empty AND phase1_signal_received — all fast tracks are
+    // now in state.playlist and Phase 2 / probe spawning can proceed.
+    let fast_exhausted = Cell::new(false);
+    // True once duration probes have been spawned for the fast tracks.
+    let probes_spawned = Cell::new(false);
+    // Set when done_rx fires; we keep polling until meta_rx is also empty.
+    let completion_pending = Cell::new(false);
+    // True once we have done the one intermediate rebuild that shows initial filenames.
+    let phase1_rebuilt = Cell::new(false);
+
+    // Phase 1 and Phase 2 update only the in-memory model during the scan.
+    // The TreeView is rebuilt once after Phase 1 (first_display) and again at
+    // FINALISING.  Because TreeView virtualizes rows, a full rebuild() is O(n)
+    // in data and O(visible_rows) in paint cost — no row cap needed.
+
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        // ── Phase 1: add tracks to the in-memory model ───────────────────
+        // We update the model here and let the TreeView render whatever is
+        // visible on demand — no O(n²) layout penalty from per-row widgets.
+
+        // Check whether the scan thread has finished sending all Phase 1 tracks.
+        // We must receive this signal before treating an empty fast_rx as truly
+        // exhausted — without it we would give up on tick 1 when the channel is
+        // momentarily empty while the scan thread is still walking the directory.
+        if !phase1_signal_received.get() && phase1_done_rx.try_recv().is_ok() {
+            phase1_signal_received.set(true);
+        }
+
+        let p1_before = fast_added.get();
+        if !fast_exhausted.get() {
+            // Drain all available fast tracks with no per-tick cap.  The scan
+            // thread produces them almost instantly (filesystem stat + canonicalize
+            // only), so all tracks usually land in the channel within the first
+            // 100 ms and are consumed in a single tick.
+            loop {
+                match fast_rx.try_recv() {
+                    Ok(track) => {
+                        state.borrow_mut().playlist.add(track);
+                        fast_added.set(fast_added.get() + 1);
+                    }
+                    Err(_) => {
+                        // Channel temporarily empty.  Only mark Phase 1 exhausted if
+                        // the scan thread has confirmed it sent everything — otherwise
+                        // the directory walk may still be in progress and more tracks
+                        // will arrive on a future tick.
+                        if phase1_signal_received.get() {
+                            fast_exhausted.set(true);
+                        }
+                        break;
+                    }
+                }
+            }
+            if fast_added.get() > p1_before {
+                status.set_text(&format!("Adding {}…", fast_added.get()));
+            }
+        }
+        // Rebuild to show all Phase 1 filenames once the channel is drained.
+        // Phase 2 starts immediately after and updates rows in place via
+        // patch_row(), so the user sees names replace filenames live.
+        if !phase1_rebuilt.get() && fast_exhausted.get() {
+            phase1_rebuilt.set(true);
+            rebuild();
+        }
+
+        // Once all fast tracks are in, spawn duration probes.
+        if fast_exhausted.get() && !probes_spawned.get() {
+            probes_spawned.set(true);
+            let paths = state.borrow().uncached_paths_from(scan_start);
+            if !paths.is_empty() {
+                duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
+            }
+            let total = fast_added.get();
+            if total > 0 {
+                status.set_text(&format!("Reading tags… 0/{}", total));
+            }
+        }
+
+        // ── Phase 2: apply metadata and update individual rows ───────────
+        // patch_row is O(1) per call: it finds the store iter by position
+        // and updates that row's text in place, so live updates are cheap.
+        let mut meta_drained = 0usize;
+        while meta_drained < 200 {
+            let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() else {
+                break;
+            };
+            let playlist_idx = scan_start + idx;
+            let is_current = {
+                let mut s = state.borrow_mut();
+                if let Some(track) = s.playlist.tracks.get_mut(playlist_idx) {
+                    track.title = title;
+                    track.artist = artist;
+                    track.album_artist = album_artist;
+                    track.album = album;
+                }
+                if let Some(ref mut scan) = s.playlist_scan {
+                    scan.current += 1;
+                }
+                s.playlist.current_index == playlist_idx
+            };
+            // Update just this row in the ListView store; O(1), no full rebuild needed.
+            patch_row(playlist_idx);
+            // If Phase 2 just filled in metadata for the currently playing track,
+            // refresh the marquee so it shows "Artist - Title" instead of the
+            // filename that was used as a placeholder during Phase 1.
+            if is_current {
+                let display = state
+                    .borrow()
+                    .playlist
+                    .tracks
+                    .get(playlist_idx)
+                    .map(|t| t.display_name())
+                    .unwrap_or_default();
+                if !display.is_empty() {
+                    set_track(&display);
+                }
+            }
+            meta_drained += 1;
+        }
+        // Update the status label with metadata progress.
+        if meta_drained > 0 {
+            let s = state.borrow();
+            let current = s.playlist_scan.as_ref().map(|sc| sc.current).unwrap_or(0);
+            let total = fast_added.get();
+            drop(s);
+            status.set_text(&format!("Reading tags… {}/{}", current, total));
+        }
+
+        // ── Completion ────────────────────────────────────────────────────
+        if !completion_pending.get() && done_rx.try_recv().is_ok() {
+            completion_pending.set(true);
+            // Edge case: folder had no files or all failed Phase 1.
+            if !probes_spawned.get() {
+                probes_spawned.set(true);
+                let paths = state.borrow().uncached_paths_from(scan_start);
+                if !paths.is_empty() {
+                    duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
+                }
+            }
+        }
+
+        // Finalise when done_rx has fired, all fast tracks are received, and
+        // meta_rx is drained for this tick.
+        if completion_pending.get() && fast_exhausted.get() && meta_drained == 0 {
+            let added = fast_added.get();
+            {
+                let mut s = state.borrow_mut();
+                s.playlist_scan = None;
+                s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+            }
+            status.set_text(&format!(
+                "Added {} track{}",
+                added,
+                if added == 1 { "" } else { "s" }
+            ));
+            // Apply any durations that are already in the on-disk cache for the
+            // newly-added tracks, so the final rebuild can show them immediately
+            // without waiting for background probes to return.
+            state.borrow_mut().apply_cached_durations();
+            // TreeView rebuild() is O(n) in data and O(visible_rows) in paint —
+            // no row cap needed; all tracks are inserted and rendered efficiently.
+            rebuild();
+            cancel_btn.set_visible(false);
+            return ControlFlow::Break;
+        }
+
+        ControlFlow::Continue
+    });
+}
+
+pub fn build(
+    app: &Application,
+    playlist: Playlist,
+    config: Config,
+    // Receives batches of file paths from the `open` GApplication signal so that
+    // "Open with Sparkamp" in the file manager reaches the running instance
+    // rather than spawning a new one.
+    open_rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
     // Inject the accent colour at startup so @accent_bg_color always resolves.
     // If the user has configured a custom skin name, try to load it; fall back
     // to the built-in dark or light skin based on AppearanceConfig.theme.
-    let accent = accent_hex();
-    let dark_css_rc = Rc::new(prepare_css(DARK_CSS_RAW, accent));
-    let light_css_rc = Rc::new(prepare_css(LIGHT_CSS_RAW, accent));
+    let accent_hex_initial = resolve_accent_hex(&config.appearance.accent_color);
+    let accent_hex_current = Rc::new(RefCell::new(accent_hex_initial.clone()));
+    let dark_css_rc = Rc::new(prepare_css(DARK_CSS_RAW, &accent_hex_initial));
+    let light_css_rc = Rc::new(prepare_css(LIGHT_CSS_RAW, &accent_hex_initial));
 
     // Determine the initial CSS to load.
     let initial_css = {
@@ -693,7 +1155,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let custom = &config.appearance.custom_skin;
         if !custom.is_empty() {
             // Try to load the user-specified skin; fall back to dark on failure.
-            skin::load_prepared(custom, accent).unwrap_or_else(|| dark_css_rc.as_ref().clone())
+            skin::load_prepared(custom, &accent_hex_initial)
+                .unwrap_or_else(|| dark_css_rc.as_ref().clone())
         } else {
             match config.appearance.theme {
                 ThemeChoice::Dark => dark_css_rc.as_ref().clone(),
@@ -702,6 +1165,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         }
     };
 
+    // Determine initial dark/light state from config (custom skins are treated as dark).
+    let initial_dark = config.appearance.custom_skin.is_empty()
+        && !matches!(config.appearance.theme, crate::config::ThemeChoice::Light);
+
     let provider = Rc::new(gtk4::CssProvider::new());
     provider.load_from_data(&initial_css);
     gtk4::style_context_add_provider_for_display(
@@ -709,7 +1176,18 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         &*provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    let dark_mode = Rc::new(Cell::new(true));
+    // Tell GTK to use the dark/light Adwaita variant for built-in widgets
+    // (title bars, entries, notebooks, etc.).  Without this, Flatpak apps
+    // default to light regardless of the system setting.
+    if let Some(gtk_settings) = gtk4::Settings::default() {
+        gtk_settings.set_gtk_application_prefer_dark_theme(initial_dark);
+    }
+    let dark_mode = Rc::new(Cell::new(initial_dark));
+
+    // Clone provider and CSS for use by handlers that need them.
+    let provider_for_settings = provider.clone();
+    let dark_css_for_settings = dark_css_rc.clone();
+    let light_css_for_settings = light_css_rc.clone();
 
     // ── AppState ──────────────────────────────────────────────────────────────
     let state = match AppState::new(playlist, config) {
@@ -726,6 +1204,12 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // (try_recv), keeping the GTK main thread fully responsive.
     let (probe_tx, probe_rx) = std::sync::mpsc::channel::<(std::path::PathBuf, Duration)>();
     let (broken_tx, broken_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
+
+    // ── Current track metadata scan channel ─────────────────────────────────────
+    // When the player starts a track that has no metadata (empty artist/album_artist),
+    // this channel receives the scanned metadata so we can update the marquee display.
+    let (current_track_meta_tx, current_track_meta_rx) =
+        std::sync::mpsc::channel::<(std::path::PathBuf, String, String, String, String)>();
 
     // Populate durations from the on-disk cache for the already-loaded
     // playlist, then probe any tracks that are still unknown.
@@ -792,6 +1276,11 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         .build();
 
     let root = GtkBox::new(Orientation::Vertical, 0);
+
+    // Deferred fullscreen opener — set after handle_key is built (chicken-and-egg).
+    // Declared early so the visualiser click handler can reference it.
+    let open_fullscreen_fn: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(RefCell::new(None));
 
     // ── Marquee / scrolling-title state ───────────────────────────────────────
     // The full "Title — Artist" string is stored as a Vec<char> so we can slice
@@ -871,9 +1360,27 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     viz.add_css_class("mini-viz");
     {
         let state_vc = state.clone();
+        let open_fs_vc = open_fullscreen_fn.clone();
         let click = GestureClick::new();
-        click.connect_released(move |_, _, _, _| {
-            state_vc.borrow_mut().toggle_visualizer_mode();
+        // Single click: cycle mode (or retry spectrum).
+        // Double click: open waveform fullscreen when in Waveform mode.
+        click.connect_released(move |_, n_press, _, _| {
+            let is_waveform = state_vc.borrow().config.visualizer.mode == VisualizerMode::Waveform;
+            if n_press == 2 && is_waveform {
+                if let Some(ref opener) = *open_fs_vc.borrow() {
+                    opener();
+                }
+                return;
+            }
+            let needs_retry = {
+                let s = state_vc.borrow();
+                !s.player.has_spectrum_data() && s.config.visualizer.mode == VisualizerMode::Bars
+            };
+            if needs_retry {
+                let _ = state_vc.borrow_mut().retry_spectrum();
+            } else {
+                state_vc.borrow_mut().toggle_visualizer_mode();
+            }
         });
         viz.add_controller(click);
     }
@@ -1045,6 +1552,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         btn.add_css_class("transport");
     }
     btn_play.add_css_class("transport-play");
+    // Sparkamp skin-format CSS classes — used by skins to target individual
+    // buttons with background-image overrides (.sparkamp-button-play { ... }).
+    btn_prev.add_css_class("sparkamp-button-prev");
+    btn_play.add_css_class("sparkamp-button-play");
+    btn_pause.add_css_class("sparkamp-button-pause");
+    btn_stop.add_css_class("sparkamp-button-stop");
+    btn_next.add_css_class("sparkamp-button-next");
 
     // Load logo at ~42 px (50 % larger than the transport buttons).
     // If the PNG fails to load (e.g. asset missing), the image slot stays blank.
@@ -1097,32 +1611,22 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     status_label.set_margin_end(8);
     status_label.set_margin_bottom(4);
     root.append(&status_label);
+    // Hidden probe label carries .np-title CSS class.  Appended to the main
+    // window root so it is realized — and its computed text color readable —
+    // as soon as the main window opens, not only when the playlist opens.
+    let np_probe = Label::builder()
+        .css_classes(["np-title"])
+        .visible(false)
+        .build();
+    root.append(&np_probe);
 
     window.set_child(Some(&root));
-
-    // ── Left-click on the logo → open settings window ────────────────────────
-    {
-        let state_rc = state.clone();
-        let win_wk = window.downgrade();
-        let lclick = GestureClick::new();
-        lclick.set_button(1); // primary button only
-        lclick.connect_released(move |_, _, _, _| {
-            let parent_win = win_wk.upgrade();
-            open_settings_window(
-                parent_win.as_ref().map(|w| w.upcast_ref()),
-                state_rc.clone(),
-                None,
-            );
-        });
-        logo_img.add_controller(lclick);
-    }
 
     // ── Right-click on the player body → toggle dark / light theme ───────────
     {
         let provider_rc = provider.clone();
         let dark_ref = dark_mode.clone();
-        let dark_css = dark_css_rc.clone();
-        let light_css = light_css_rc.clone();
+        let accent_cell = accent_hex_current.clone();
         let logo_img_rc = logo_img.clone();
         let logo_light_t = logo_light_rc.clone();
         let logo_dark_t = logo_dark_rc.clone();
@@ -1131,7 +1635,16 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         rclick.connect_released(move |_, _, _, _| {
             let now_dark = !dark_ref.get();
             dark_ref.set(now_dark);
-            provider_rc.load_from_data(if now_dark { &**dark_css } else { &**light_css });
+            let accent_hex = accent_cell.borrow().clone();
+            let css = if now_dark {
+                prepare_css(DARK_CSS_RAW, &accent_hex)
+            } else {
+                prepare_css(LIGHT_CSS_RAW, &accent_hex)
+            };
+            provider_rc.load_from_data(&css);
+            if let Some(gtk_settings) = gtk4::Settings::default() {
+                gtk_settings.set_gtk_application_prefer_dark_theme(now_dark);
+            }
             // Swap logo to match the new theme.
             if now_dark {
                 if let Some(ref pb) = *logo_dark_t {
@@ -1189,6 +1702,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let btn_add_dir = Button::with_label("+ Folder"); // directory (recursive scan)
     let btn_remove = Button::with_label("✕ Remove"); // remove selected row(s)
     let btn_clear_all = Button::with_label("✕ All"); // clear entire playlist
+    let btn_cancel = Button::with_label("✕ Cancel Scan");
+    btn_cancel.add_css_class("pl-btn");
+    btn_cancel.add_css_class("destructive");
+    btn_cancel.set_visible(false);
 
     for btn in [&btn_add_files, &btn_add_dir] {
         btn.add_css_class("pl-btn");
@@ -1206,21 +1723,127 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     pl_btn_row.append(&spacer);
     pl_btn_row.append(&btn_remove);
     pl_btn_row.append(&btn_clear_all);
+    pl_btn_row.append(&btn_cancel);
 
-    // ── Playlist ListBox: multi-select, with drag-and-drop reordering ──────────
-    // `SelectionMode::Multiple` lets the user select a contiguous or
-    // discontiguous set of rows and remove them all in one Remove click.
-    // (Search/jump lives in its own window, not here — see jump_win below.)
-    let playlist_box = ListBox::new();
-    playlist_box.add_css_class("playlist");
-    playlist_box.set_selection_mode(gtk4::SelectionMode::Multiple);
+    // ── Playlist TreeView + ListStore ─────────────────────────────────────────
+    // GtkTreeView uses virtual scrolling — only visible rows create cell renderers,
+    // so 30k+ tracks render instantly without memory pressure.
+    // Four-column ListStore: position | display name | duration | font weight.
+    // Col 3 (i32): Pango weight — 700 for the active track, 400 for all others.
+    // Col 4 (RGBA): Foreground color — accent for active, white for selected, grey for default.
+    // Using attribute binding instead of cell_data_func for reliable color updates.
+    #[allow(deprecated)]
+    let pl_store = ListStore::new(&[
+        String::static_type(),    // col 0: position ("1.", "2.", …)
+        String::static_type(),    // col 1: display name ("Artist - Title" or filename)
+        String::static_type(),    // col 2: duration ("-:--" or "3:45")
+        i32::static_type(),       // col 3: Pango font weight (700 = active, 400 = normal)
+        gdk::RGBA::static_type(), // col 4: foreground color
+    ]);
+
+    // Shared accent RGBA populated after main window realization by reading the
+    // computed color of the hidden .np-title probe label.
+    let accent_rgba: Rc<RefCell<Option<gdk::RGBA>>> = Rc::new(RefCell::new(None));
+
+    // ── Left-click on the logo → open settings window ────────────────────────
+    {
+        let state_rc = state.clone();
+        let win_wk = window.downgrade();
+        let dark_mode_clone = dark_mode.clone();
+        let accent_hex_for_settings = accent_hex_current.clone();
+        let accent_rgba_for_settings = accent_rgba.clone();
+        let pl_store_ref = pl_store.clone();
+        let lclick = GestureClick::new();
+        lclick.set_button(1); // primary button only
+        lclick.connect_released(move |_, _, _, _| {
+            let parent_win = win_wk.upgrade();
+            open_settings_window(
+                parent_win.as_ref().map(|w| w.upcast_ref()),
+                state_rc.clone(),
+                None,
+                dark_mode_clone.clone(),
+                accent_hex_for_settings.clone(),
+                accent_rgba_for_settings.clone(),
+                provider_for_settings.clone(),
+                dark_css_for_settings.clone(),
+                light_css_for_settings.clone(),
+                pl_store_ref.clone(),
+            );
+        });
+        logo_img.add_controller(lclick);
+    }
+
+    // Track the single-clicked row index (separate from the playing row).
+    // usize::MAX means no row is selected.
+    let pl_selected_idx: Rc<Cell<usize>> = Rc::new(Cell::new(usize::MAX));
+
+    // Track the currently-playing row index (active row styling).
+    // usize::MAX means no row is playing.
+    let pl_active_idx: Rc<Cell<usize>> = Rc::new(Cell::new(usize::MAX));
+
+    #[allow(deprecated)]
+    let pl_view = TreeView::builder()
+        .model(&pl_store)
+        .headers_visible(false)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    pl_view.add_css_class("playlist");
+    #[allow(deprecated)]
+    pl_view.selection().set_mode(gtk4::SelectionMode::Multiple);
+
+    // Position column — narrow, right-aligned, monospace.
+    #[allow(deprecated)]
+    let pos_col = TreeViewColumn::new();
+    #[allow(deprecated)]
+    let pos_cell = CellRendererText::new();
+    pos_cell.set_xalign(1.0);
+    #[allow(deprecated)]
+    pos_col.pack_start(&pos_cell, false);
+    #[allow(deprecated)]
+    pos_col.add_attribute(&pos_cell, "text", 0);
+    #[allow(deprecated)]
+    pl_view.append_column(&pos_col);
+
+    // Name column — expands to fill remaining width, ellipsizes long strings.
+    // Using add_attribute for all properties (text, weight, foreground-rgba).
+    // Foreground color is stored in column 4 and updated by patch_pl_row.
+    #[allow(deprecated)]
+    let name_col = TreeViewColumn::new();
+    name_col.set_expand(true);
+    #[allow(deprecated)]
+    let name_cell = CellRendererText::new();
+    name_cell.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    #[allow(deprecated)]
+    name_col.pack_start(&name_cell, true);
+    #[allow(deprecated)]
+    name_col.add_attribute(&name_cell, "text", 1);
+    #[allow(deprecated)]
+    name_col.add_attribute(&name_cell, "weight", 3);
+    #[allow(deprecated)]
+    name_col.add_attribute(&name_cell, "foreground-rgba", 4);
+    #[allow(deprecated)]
+    pl_view.append_column(&name_col);
+
+    // Duration column — fixed width, right-aligned, monospace.
+    #[allow(deprecated)]
+    let dur_col = TreeViewColumn::new();
+    #[allow(deprecated)]
+    let dur_cell = CellRendererText::new();
+    dur_cell.set_xalign(1.0);
+    #[allow(deprecated)]
+    dur_col.pack_start(&dur_cell, false);
+    #[allow(deprecated)]
+    dur_col.add_attribute(&dur_cell, "text", 2);
+    #[allow(deprecated)]
+    pl_view.append_column(&dur_col);
 
     let pl_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .vexpand(true)
         .min_content_height(350)
-        .child(&playlist_box)
+        .child(&pl_view)
         .build();
     pl_root.append(&pl_scroll);
 
@@ -1270,126 +1893,271 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // Shared closures
     // ══════════════════════════════════════════════════════════════════════════
 
-    // rebuild_playlist — clear and recreate all ListBox rows.
+    // rebuild_playlist — repopulate the ListStore from the current playlist model.
     //
-    // Called after any playlist modification.  Attaches a DragSource to each
-    // row so that rows can be dragged to a new position.  Also updates the
-    // pl_count_label so the playlist window header stays current.
-    //
-    // Borrow discipline: we extract all data from `state` into local Vecs
-    // while holding the borrow, then drop the borrow before touching GTK
-    // widgets (widget operations can trigger callbacks that need to borrow
-    // state themselves — overlapping borrows would panic the RefCell).
+    // The TreeView is temporarily disconnected from the model while the store is
+    // cleared and repopulated.  This prevents the TreeView from processing one
+    // row-deleted / row-inserted signal per track (which would block the UI for
+    // several seconds on a 30k-track playlist).  Reconnecting the model triggers
+    // a single bulk re-read; only visible rows are painted, so it remains O(1).
     let rebuild_playlist = {
         let state = state.clone();
-        let playlist_box = playlist_box.clone();
+        let pl_store = pl_store.clone();
+        let pl_view = pl_view.clone();
         let pl_count_label = pl_count_label.clone();
+        let pl_selected_idx = pl_selected_idx.clone();
+        let pl_active_idx = pl_active_idx.clone();
+        let accent_rgba = accent_rgba.clone();
         Rc::new(move || {
-            // ── Collect track data while holding the borrow ────────────────
-            let (rows_data, current_idx, n_tracks) = {
-                let s = state.borrow();
-                // (label, duration, is_current, is_broken)
-                let data: Vec<(String, String, bool, bool)> = s
-                    .playlist
-                    .tracks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        let label = format!("{:2}. {}", i + 1, t.display_name());
-                        let dur = fmt_duration(t.duration);
-                        let is_current = i == s.playlist.current_index;
-                        (label, dur, is_current, t.broken)
-                    })
-                    .collect();
-                (data, s.playlist.current_index, s.playlist.len())
-            };
-            // Borrow dropped here — safe to call GTK methods now.
-
-            // ── Update the count label ─────────────────────────────────────
+            let s = state.borrow();
+            let current = s.playlist.current_index;
+            let is_playing = matches!(
+                *s.player.state(),
+                PlayerState::Playing | PlayerState::Paused
+            );
+            let n = s.playlist.tracks.len();
+            let saved_selected = pl_selected_idx.get();
+            // Update pl_active_idx to match current playing track.
+            if is_playing {
+                pl_active_idx.set(current);
+            } else {
+                pl_active_idx.set(usize::MAX);
+            }
+            // Detach TreeView so bulk model changes don't trigger per-row signals.
+            #[allow(deprecated)]
+            pl_view.set_model(None::<&ListStore>);
+            #[allow(deprecated)]
+            pl_store.clear();
+            for (i, t) in s.playlist.tracks.iter().enumerate() {
+                let lock_suffix = if t.read_only { " 🔒" } else { "" };
+                let pos = format!("{}.{}", i + 1, lock_suffix);
+                let name = t.display_name();
+                let is_active = is_playing && i == current;
+                let is_row_selected = saved_selected != usize::MAX && saved_selected == i;
+                let display = if t.broken {
+                    format!("⚠ {}", name)
+                } else if is_active {
+                    format!("▶ {}", name)
+                } else {
+                    name
+                };
+                let weight: i32 = if is_active { 700 } else { 400 };
+                // Compute foreground color: active > selected > default.
+                let fg_rgba = if is_active {
+                    accent_rgba
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
+                } else if is_row_selected {
+                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                } else {
+                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                };
+                #[allow(deprecated)]
+                pl_store.insert_with_values(
+                    None,
+                    &[
+                        (0, &gtk_safe(&pos) as &dyn ToValue),
+                        (1, &gtk_safe(&display) as &dyn ToValue),
+                        (2, &gtk_safe(&fmt_duration(t.duration)) as &dyn ToValue),
+                        (3, &weight as &dyn ToValue),
+                        (4, &fg_rgba as &dyn ToValue),
+                    ],
+                );
+            }
+            drop(s);
+            // Reconnect — TreeView does one bulk re-read, only paints visible rows.
+            #[allow(deprecated)]
+            pl_view.set_model(Some(&pl_store));
             pl_count_label.set_label(&format!(
                 "Playlist — {} track{}",
-                n_tracks,
-                if n_tracks == 1 { "" } else { "s" }
+                n,
+                if n == 1 { "" } else { "s" },
             ));
+        })
+    };
 
-            // ── Rebuild the ListBox rows ───────────────────────────────────
-            while let Some(child) = playlist_box.first_child() {
-                playlist_box.remove(&child);
+    // scroll_to_row_if_needed — scroll the playlist to make a row visible.
+    //
+    // Uses TreeView::visible_range + scroll_to_cell so that GTK's actual
+    // rendered row heights drive the math rather than a hardcoded estimate.
+    // A hardcoded estimate drifts after many skips and the row stops scrolling
+    // into view.
+    let scroll_to_row_if_needed = {
+        let pl_scroll = pl_scroll.clone();
+        let state    = state.clone();
+        Rc::new(move |target_idx: usize| {
+            let adj       = pl_scroll.vadjustment();
+            let page_size = adj.page_size();
+            let upper     = adj.upper();
+            let current   = adj.value();
+            let n         = state.borrow().playlist.len();
+
+            if n == 0 || upper <= 0.0 || page_size <= 0.0 {
+                return;
             }
 
-            for (i, (label_text, dur_text, is_current, is_broken)) in rows_data.iter().enumerate() {
-                let row = ListBoxRow::new();
-                let row_box = GtkBox::new(Orientation::Horizontal, 0);
+            let row_h       = upper / n as f64;
+            let row_top     = target_idx as f64 * row_h;
+            let row_bottom  = row_top + row_h;
+            let visible_end = current + page_size;
 
-                // Prefix broken rows with ⚠ so the user can see which files
-                // could not be found / played.
-                let display_label = if *is_broken {
-                    format!("⚠ {}", label_text.trim_start())
-                } else {
-                    label_text.clone()
-                };
-                let lbl = Label::builder()
-                    .label(&display_label)
-                    .halign(Align::Start)
-                    .hexpand(true)
-                    .ellipsize(gtk4::pango::EllipsizeMode::End)
-                    .build();
-                let dur_lbl = Label::builder()
-                    .label(dur_text)
-                    .halign(Align::End)
-                    .css_classes(["pl-dur-label"])
-                    .build();
-                row_box.append(&lbl);
-                row_box.append(&dur_lbl);
-                row.set_child(Some(&row_box));
-                if *is_current {
-                    row.add_css_class("playing");
-                }
-                if *is_broken {
-                    row.add_css_class("broken");
-                }
-
-                // ── Drag source for reordering ─────────────────────────────
-                // Each row carries its 0-based index as the drag payload so
-                // the DropTarget can call move_track(src, dst).
-                let idx = i as i32;
-                let drag_src = DragSource::new();
-                drag_src.set_actions(gdk::DragAction::MOVE);
-
-                // Prepare: return a ContentProvider wrapping the row index.
-                drag_src.connect_prepare(move |src, _, _| {
-                    src.set_state(gtk4::EventSequenceState::Claimed);
-                    Some(gdk::ContentProvider::for_value(&idx.to_value()))
-                });
-
-                // Dim the row while it is being dragged.
-                let row_weak = row.downgrade();
-                drag_src.connect_drag_begin(move |_, _| {
-                    if let Some(r) = row_weak.upgrade() {
-                        r.add_css_class("dragging");
-                    }
-                });
-
-                // Remove the dim class when the drag ends.
-                let row_weak2 = row.downgrade();
-                drag_src.connect_drag_end(move |_, _, _| {
-                    if let Some(r) = row_weak2.upgrade() {
-                        r.remove_css_class("dragging");
-                    }
-                });
-
-                row.add_controller(drag_src);
-                playlist_box.append(&row);
-            }
-
-            // Scroll the currently playing track into view.
-            if n_tracks > 0 {
-                if let Some(row) = playlist_box.row_at_index(current_idx as i32) {
-                    playlist_box.select_row(Some(&row));
-                }
+            if row_top < current || row_bottom > visible_end {
+                let target = (row_top - page_size / 2.0 + row_h / 2.0)
+                    .clamp(0.0, (upper - page_size).max(0.0));
+                adj.set_value(target);
             }
         })
     };
+
+    // patch_pl_row — update a single store row's text without a full rebuild.
+    //
+    // Called by the probe drain so name and duration updates appear row by row
+    // as background probes complete.  O(1): finds the iter by position and
+    // calls set() on just that row.
+    let patch_pl_row = {
+        let state = state.clone();
+        let pl_store = pl_store.clone();
+        let pl_selected_idx = pl_selected_idx.clone();
+        let pl_active_idx = pl_active_idx.clone();
+        let accent_rgba = accent_rgba.clone();
+        Rc::new(move |idx: usize| {
+            let (display, duration_str, weight, is_active) = {
+                let s = state.borrow();
+                let Some(t) = s.playlist.tracks.get(idx) else {
+                    return;
+                };
+                let name = t.display_name();
+                let is_playing = matches!(
+                    *s.player.state(),
+                    PlayerState::Playing | PlayerState::Paused
+                );
+                let is_active = is_playing && idx == s.playlist.current_index;
+                let display = if t.broken {
+                    format!("⚠ {}", name)
+                } else if is_active {
+                    format!("▶ {}", name)
+                } else {
+                    name
+                };
+                let weight: i32 = if is_active { 700 } else { 400 };
+                (display, fmt_duration(t.duration), weight, is_active)
+            };
+            #[allow(deprecated)]
+            let Some(iter) = pl_store.iter_nth_child(None, idx as i32) else {
+                return;
+            };
+            // Update pl_active_idx state.
+            let current_active = pl_active_idx.get();
+            if is_active && current_active != idx {
+                pl_active_idx.set(idx);
+            } else if !is_active && current_active == idx {
+                pl_active_idx.set(usize::MAX);
+            }
+            // Compute foreground color: active > selected > default.
+            let fg_rgba = {
+                let active_idx = pl_active_idx.get();
+                let selected_idx = pl_selected_idx.get();
+                let is_row_active = active_idx != usize::MAX && active_idx == idx;
+                let is_row_selected = selected_idx != usize::MAX && selected_idx == idx;
+                if is_row_active {
+                    accent_rgba
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
+                } else if is_row_selected {
+                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                } else {
+                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                }
+            };
+            // Update name, duration, weight, and foreground color columns.
+            #[allow(deprecated)]
+            pl_store.set(
+                &iter,
+                &[
+                    (1, &gtk_safe(&display) as &dyn ToValue),
+                    (2, &gtk_safe(&duration_str) as &dyn ToValue),
+                    (3, &weight as &dyn ToValue),
+                    (4, &fg_rgba as &dyn ToValue),
+                ],
+            );
+        })
+    };
+
+    // Handle single-click row selection changes for highlighting.
+    // Updates pl_selected_idx and repaints old/new selected rows.
+    {
+        let pl_selected_idx = pl_selected_idx.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let pl_view = pl_view.clone();
+        #[allow(deprecated)]
+        pl_view.selection().connect_changed(move |selection| {
+            // Guard against model being detached (e.g., during rebuild_playlist).
+            #[allow(deprecated)]
+            if pl_view.model().is_none() {
+                return;
+            }
+            // Guard against initial model setup (count is 0 when model is initializing).
+            #[allow(deprecated)]
+            if selection.count_selected_rows() == 0 && pl_selected_idx.get() == usize::MAX {
+                return;
+            }
+            let old_idx = pl_selected_idx.get();
+            #[allow(deprecated)]
+            let (paths, _model): (Vec<_>, _) = selection.selected_rows();
+            let new_idx = paths
+                .into_iter()
+                .next()
+                .and_then(|p| p.indices().first().copied())
+                .map(|i| i as usize)
+                .unwrap_or(usize::MAX);
+            if old_idx != new_idx {
+                pl_selected_idx.set(new_idx);
+                // Repaint old and new selected rows.
+                if old_idx != usize::MAX {
+                    patch_pl_row(old_idx);
+                }
+                if new_idx != usize::MAX {
+                    patch_pl_row(new_idx);
+                }
+            }
+        });
+    }
+
+    // scan_current_track_metadata — if the current track has no metadata (empty
+    // artist AND album_artist), spawn a background thread to read the ID3 tags
+    // and send the result via current_track_meta_tx so the marquee can be updated.
+    fn scan_current_track_metadata(
+        state: &Rc<RefCell<AppState>>,
+        meta_tx: std::sync::mpsc::Sender<(PathBuf, String, String, String, String)>,
+    ) {
+        let (path, has_metadata) = {
+            let s = state.borrow();
+            match s.playlist.current() {
+                Some(t) => {
+                    let has_meta = !t.artist.is_empty() || !t.album_artist.is_empty();
+                    (t.path.clone(), has_meta)
+                }
+                None => return,
+            }
+        };
+        if has_metadata {
+            return;
+        }
+        let path_for_thread = path.clone();
+        std::thread::spawn(move || {
+            if let Ok(track) = crate::model::Track::from_path(&path_for_thread) {
+                let _ = meta_tx.send((
+                    track.path,
+                    track.title,
+                    track.artist,
+                    track.album_artist,
+                    track.album,
+                ));
+            }
+        });
+    }
 
     // play_and_update — play the current track and refresh the UI labels.
     //
@@ -1400,15 +2168,39 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     let play_and_update = {
         let state = state.clone();
         let set_track = set_track.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
+        let current_track_meta_tx = current_track_meta_tx.clone();
         Rc::new(move || {
+            // Record which row was playing before so we can un-bold it.
+            let old_idx = state.borrow().playlist.current_index;
             let result = { state.borrow_mut().play_current() };
             if let Some(display) = result {
+                let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                rebuild_playlist();
+                // Scan metadata for the current track if it hasn't been scanned yet.
+                // This updates the marquee with "Artist - Title" once the scan completes.
+                scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                // Scroll to make the new current track visible
+                scroll_to_row_if_needed(new_idx);
+                // Patch the new current track to ensure active styling is applied.
+                // Also patch old track if it was different.
+                if old_idx != new_idx {
+                    patch_pl_row(old_idx);
+                }
+                patch_pl_row(new_idx);
             }
         })
     };
+
+    // Store play/rebuild callbacks in AppState so secondary windows (dedupe,
+    // etc.) can trigger playlist updates without needing direct closure refs.
+    {
+        let mut s = state.borrow_mut();
+        s.rebuild_pl_callback = Some(rebuild_playlist.clone());
+        s.play_and_update_callback = Some(play_and_update.clone());
+        s.set_track_callback = Some(set_track.clone());
+    }
 
     // remove_selected — remove every currently selected playlist row.
     //
@@ -1417,43 +2209,46 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // disk; only removes the entries from the in-memory playlist.
     let remove_selected = {
         let state = state.clone();
-        let playlist_box_rm = playlist_box.clone();
+        let pl_view = pl_view.clone();
+        let pl_scroll = pl_scroll.clone();
         let rebuild_rm = rebuild_playlist.clone();
         let set_track_rm = set_track.clone();
         Rc::new(move || {
-            // Collect selected indices before modifying the playlist.
-            let mut indices: Vec<usize> = playlist_box_rm
-                .selected_rows()
+            #[allow(deprecated)]
+            let (paths, _) = pl_view.selection().selected_rows();
+            let mut indices: Vec<usize> = paths
                 .iter()
-                .map(|r| r.index() as usize)
+                .filter_map(|p| p.indices().first().copied())
+                .map(|i| i as usize)
                 .collect();
             if indices.is_empty() {
                 return;
             }
-
             // Highest first so earlier removes don't invalidate later indices.
             indices.sort_unstable_by(|a, b| b.cmp(a));
-
             let mut last_nowplaying: Option<String> = None;
             for idx in indices {
-                // remove_track handles current_index adjustment and auto-advance.
                 if let Some(display) = { state.borrow_mut().remove_track(idx) } {
                     last_nowplaying = Some(display);
                 }
             }
-            // If auto-advance happened, push the new track into the marquee.
             if let Some(display) = last_nowplaying {
                 set_track_rm(&display);
             }
+            // Save and restore the scroll position around the rebuild so the
+            // visible region doesn't jump after a removal.
+            let adj = pl_scroll.vadjustment();
+            let saved_scroll = adj.value();
             rebuild_rm();
+            // The model re-attach resets the scroll; restore on next idle tick
+            // after GTK has committed the new layout.
+            glib::idle_add_local_once(move || {
+                adj.set_value(saved_scroll);
+            });
         })
     };
 
     // ── Initial state ─────────────────────────────────────────────────────────
-    // Single click selects (highlights) a row; double click or Enter plays it.
-    // GTK's default for ListBox is activate-on-single-click = true, which would
-    // fire row-activated on the first click and immediately start playback.
-    playlist_box.set_activate_on_single_click(false);
 
     rebuild_playlist();
     {
@@ -1463,80 +2258,60 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Drag-and-drop: DropTarget on the ListBox (row reorder)
-    // ══════════════════════════════════════════════════════════════════════════
-    //
-    // Set up ONCE here (not inside rebuild_playlist) so the target persists
-    // across rebuilds.  The per-row DragSource is re-created each rebuild.
-    //
-    // A live drop-indicator line (thin accent border on `drop-target` class) is
-    // shown on the row currently under the cursor so the user can see exactly
-    // where the dragged entry will land.
+    // ── DragSource on the TreeView — initiates row reorder drags ─────────────
+    // prepare() fires before the drag starts; x/y are the pointer coordinates
+    // within the widget.  path_at_pos identifies which row is being dragged and
+    // packs its index as u32 into the content provider.
     {
-        let drop_tgt = DropTarget::new(i32::static_type(), gdk::DragAction::MOVE);
+        let drag_src = DragSource::new();
+        drag_src.set_actions(gdk::DragAction::MOVE);
+        let pl_view_ds = pl_view.clone();
+        drag_src.connect_prepare(move |_, x, y| {
+            #[allow(deprecated)]
+            let row_idx = match pl_view_ds.path_at_pos(x as i32, y as i32) {
+                Some((Some(path), _, _, _)) => path.indices().first().copied().unwrap_or(0) as u32,
+                _ => return None,
+            };
+            Some(gdk::ContentProvider::for_value(&row_idx.to_value()))
+        });
+        pl_view.add_controller(drag_src);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Drag-and-drop: DropTarget on the TreeView (row reorder)
+    // ══════════════════════════════════════════════════════════════════════════
+    //
+    // The DragSource on the TreeView carries the model index as u32.
+    // path_at_pos converts the drop coordinate to the destination row index.
+    {
+        let drop_tgt = DropTarget::new(u32::static_type(), gdk::DragAction::MOVE);
         let state_dnd = state.clone();
         let rebuild_dnd = rebuild_playlist.clone();
-        let playlist_box_dnd = playlist_box.clone();
-        // Track which row currently carries the drop-target indicator (-1 = none).
-        let hover_idx = Rc::new(Cell::new(-1i32));
+        let pl_view_dnd = pl_view.clone();
 
-        // Motion: move the indicator line to the row under the cursor.
-        drop_tgt.connect_motion({
-            let pb = playlist_box_dnd.clone();
-            let hi = hover_idx.clone();
-            move |_, _x, y| {
-                let prev = hi.get();
-                if prev >= 0 {
-                    if let Some(r) = pb.row_at_index(prev) {
-                        r.remove_css_class("drop-target");
-                    }
+        drop_tgt.connect_drop(move |_, value, x, y| {
+            if let Ok(src_pos) = value.get::<u32>() {
+                let n = state_dnd.borrow().playlist.len();
+                if n == 0 {
+                    return false;
                 }
-                if let Some(row) = pb.row_at_y(y as i32) {
-                    let idx = row.index();
-                    row.add_css_class("drop-target");
-                    hi.set(idx);
-                } else {
-                    hi.set(-1);
-                }
-                gdk::DragAction::MOVE
-            }
-        });
-
-        // Leave: clear the indicator when the drag exits the playlist area.
-        drop_tgt.connect_leave({
-            let pb = playlist_box_dnd.clone();
-            let hi = hover_idx.clone();
-            move |_| {
-                let prev = hi.get();
-                if prev >= 0 {
-                    if let Some(r) = pb.row_at_index(prev) {
-                        r.remove_css_class("drop-target");
+                #[allow(deprecated)]
+                let dst_pos = match pl_view_dnd.path_at_pos(x as i32, y as i32) {
+                    Some((Some(path), _, _, _)) => {
+                        path.indices().first().copied().unwrap_or(0) as usize
                     }
-                    hi.set(-1);
+                    _ => n.saturating_sub(1),
+                };
+                let src_idx = src_pos as usize;
+                if src_idx != dst_pos {
+                    state_dnd.borrow_mut().playlist.move_track(src_idx, dst_pos);
+                    rebuild_dnd();
                 }
             }
+            true
         });
 
-        drop_tgt.connect_drop(move |_, value, _x, y| {
-            // The drag payload is the source row index packed as i32.
-            if let Ok(src_idx) = value.get::<i32>() {
-                let src_idx = src_idx as usize;
-                // Determine destination row from the drop y-coordinate.
-                if let Some(dst_row) = playlist_box_dnd.row_at_y(y as i32) {
-                    let dst_idx = dst_row.index() as usize;
-                    if src_idx != dst_idx {
-                        // move_track keeps current_index pointing at the same
-                        // logical track even when the row order changes.
-                        state_dnd.borrow_mut().playlist.move_track(src_idx, dst_idx);
-                        rebuild_dnd(); // rebuilds all rows, indicator gone
-                    }
-                }
-            }
-            true // signal: drop was handled
-        });
-
-        playlist_box.add_controller(drop_tgt);
+        pl_view.add_controller(drop_tgt);
     }
 
     // ── Drop target: accept files dragged from an external file manager ───────
@@ -1614,9 +2389,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     btn_stop.connect_clicked({
         let state = state.clone();
         let seek_bar = seek_bar.clone();
+        let patch_pl_row = patch_pl_row.clone();
         move |_| {
+            let old_idx = state.borrow().playlist.current_index;
             let _ = state.borrow_mut().player.stop();
             seek_bar.set_value(0.0);
+            // Remove the bold/arrow from the now-stopped track.
+            patch_pl_row(old_idx);
         }
     });
 
@@ -1624,12 +2403,20 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     btn_next.connect_clicked({
         let state = state.clone();
         let set_track = set_track.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
+        let current_track_meta_tx = current_track_meta_tx.clone();
         move |_| {
-            let result = { state.borrow_mut().play_next() };
-            if let Some(display) = result {
+            let old_idx = state.borrow().playlist.current_index;
+            if let Some(display) = { state.borrow_mut().play_next() } {
+                let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                rebuild_playlist();
+                scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                scroll_to_row_if_needed(new_idx);
+                if old_idx != new_idx {
+                    patch_pl_row(old_idx);
+                }
+                patch_pl_row(new_idx);
             }
         }
     });
@@ -1638,12 +2425,20 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     btn_prev.connect_clicked({
         let state = state.clone();
         let set_track = set_track.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
+        let current_track_meta_tx = current_track_meta_tx.clone();
         move |_| {
-            let result = { state.borrow_mut().play_prev() };
-            if let Some(display) = result {
+            let old_idx = state.borrow().playlist.current_index;
+            if let Some(display) = { state.borrow_mut().play_prev() } {
+                let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
-                rebuild_playlist();
+                scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                scroll_to_row_if_needed(new_idx);
+                if old_idx != new_idx {
+                    patch_pl_row(old_idx);
+                }
+                patch_pl_row(new_idx);
             }
         }
     });
@@ -1682,7 +2477,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 s.shuffle_state.toggle();
                 // Reset the shuffle history so the new setting takes effect cleanly.
                 s.shuffle_state.reset();
-                s.shuffle_state.enabled
+                let on = s.shuffle_state.enabled;
+                // Mirror to config so the setting survives to the next session.
+                s.config.playback.shuffle_enabled = on;
+                on
             };
             if enabled {
                 btn_shuffle.add_css_class("mode-btn-active");
@@ -1713,26 +2511,168 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ℹ Info button — connected after handle_key is defined (see below).
 
     // ══════════════════════════════════════════════════════════════════════════
-    // Playlist ListBox interactions
+    // Playlist TreeView interactions
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Double-click / Enter on a row: jump to that track and play it.
-    playlist_box.connect_row_activated({
+    // Double-click / Enter on a row: jump to that track and start playback.
+    #[allow(deprecated)]
+    pl_view.connect_row_activated({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
-        move |_, row| {
-            state.borrow_mut().playlist.jump_to(row.index() as usize);
-            play_and_update();
+        let patch_pl_row = patch_pl_row.clone();
+        move |_, path, _| {
+            if let Some(&idx) = path.indices().first() {
+                // Record the previously-playing track before changing current_index
+                // so we can de-highlight it after the jump.
+                let old_idx = state.borrow().playlist.current_index;
+                state.borrow_mut().playlist.jump_to(idx as usize);
+                play_and_update();
+                if old_idx != idx as usize {
+                    patch_pl_row(old_idx);
+                }
+            }
         }
     });
 
-    // Single-click on a broken row: show a plain-language explanation.
-    playlist_box.connect_row_selected({
-        let state      = state.clone();
-        let pl_status  = pl_status_label.clone();
-        move |_, row| {
-            let Some(row) = row else { return; };
-            let idx = row.index() as usize;
+    // Right-click context menu on a row: Play / View+Edit ID3 / Remove.
+    // NOTE: Attached to ScrolledWindow instead of TreeView to work around GTK4 bug
+    // where PopoverMenu doesn't receive hover events when attached directly to TreeView.
+    {
+        let ctx_click = GestureClick::new();
+        ctx_click.set_button(3); // right mouse button
+        let pl_view_ctx = pl_view.clone();
+        let pl_scroll_ctx = pl_scroll.clone();
+
+        // Create action group and attach to the ScrolledWindow (not TreeView)
+        let pl_action_group = gio::SimpleActionGroup::new();
+        pl_scroll_ctx.insert_action_group("pl", Some(&pl_action_group));
+
+        // Store the current row index for the action handlers
+        let current_row: Rc<RefCell<Option<i64>>> = Rc::new(RefCell::new(None));
+
+        // Register playlist menu actions in the action group
+        let action_play = gio::SimpleAction::new("play", None); // Short name
+        let state_play = state.clone();
+        let play_callback = play_and_update.clone();
+        let patch_callback = patch_pl_row.clone();
+        let scroll_callback = scroll_to_row_if_needed.clone();
+        let row_play = current_row.clone();
+        action_play.connect_activate(move |_, _| {
+            let row_idx = *row_play.borrow();
+            if let Some(idx) = row_idx {
+                let idx = idx as usize;
+                let old_idx = state_play.borrow().playlist.current_index;
+                state_play.borrow_mut().playlist.jump_to(idx);
+                play_callback();
+                scroll_callback(idx);
+                if old_idx != idx {
+                    patch_callback(old_idx);
+                }
+            }
+        });
+        pl_action_group.add_action(&action_play);
+
+        let action_id3 = gio::SimpleAction::new("edit-id3", None); // Short name
+        let state_id3 = state.clone();
+        let win_id3 = window.downgrade();
+        let rebuild_id3 = rebuild_playlist.clone();
+        let row_id3 = current_row.clone();
+        action_id3.connect_activate(move |_, _| {
+            let row_idx = *row_id3.borrow();
+            if let Some(idx) = row_idx {
+                let path = state_id3
+                    .borrow()
+                    .playlist
+                    .tracks
+                    .get(idx as usize)
+                    .map(|t| t.path.clone());
+                if let Some(path) = path {
+                    open_id3_editor_window(
+                        win_id3.upgrade().as_ref(),
+                        path,
+                        state_id3.clone(),
+                        rebuild_id3.clone(),
+                        None,
+                    );
+                }
+            }
+        });
+        pl_action_group.add_action(&action_id3);
+
+        let action_remove = gio::SimpleAction::new("remove", None); // Short name
+        let remove_callback = remove_selected.clone();
+        action_remove.connect_activate(move |_, _| {
+            remove_callback();
+        });
+        pl_action_group.add_action(&action_remove);
+
+        ctx_click.connect_pressed(move |_, _, x, y| {
+            #[allow(deprecated)]
+            let row_idx = match pl_view_ctx.path_at_pos(x as i32, y as i32) {
+                Some((Some(path), _, _, _)) => match path.indices().first().copied() {
+                    Some(i) => i as i64,
+                    None => return,
+                },
+                _ => return,
+            };
+
+            // Store the row index for the action handlers
+            *current_row.borrow_mut() = Some(row_idx);
+
+            // Select the right-clicked row so Remove acts on it.
+            #[allow(deprecated)]
+            pl_view_ctx.selection().unselect_all();
+            #[allow(deprecated)]
+            if let Some(iter) = pl_view_ctx
+                .model()
+                .and_then(|m| m.iter_nth_child(None, row_idx as i32))
+            {
+                #[allow(deprecated)]
+                pl_view_ctx.selection().select_iter(&iter);
+            }
+
+            // Build menu model with prefixed action names
+            let menu = gio::Menu::new();
+            menu.append_item(&gio::MenuItem::new(Some("▶ Play"), Some("pl.play")));
+            menu.append_item(&gio::MenuItem::new(
+                Some("🎵 View / Edit ID3"),
+                Some("pl.edit-id3"),
+            ));
+            menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));
+
+            // Create popover menu
+            let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+            popover.set_parent(&pl_scroll_ctx);
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+        });
+        #[allow(deprecated)]
+        pl_view.add_controller(ctx_click);
+    }
+
+    // Selection change: show a status hint when a broken track is selected.
+    #[allow(deprecated)]
+    pl_view.selection().connect_changed({
+        let state     = state.clone();
+        let pl_status = pl_status_label.clone();
+        let pl_view_sc = pl_view.clone();
+        move |_| {
+            // set_model(None) during a bulk rebuild fires this signal with a null
+            // model; selected_rows() would then panic.  Bail early if no model.
+            #[allow(deprecated)]
+            if pl_view_sc.model().is_none() { return; }
+            #[allow(deprecated)]
+            let (paths, _) = pl_view_sc.selection().selected_rows();
+            let Some(path) = paths.first() else {
+                pl_status.set_text("");
+                return;
+            };
+            let Some(&idx) = path.indices().first() else {
+                pl_status.set_text("");
+                return;
+            };
+            let idx = idx as usize;
             let is_broken = state.borrow().playlist.tracks
                 .get(idx)
                 .map(|t| t.broken)
@@ -1777,125 +2717,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             rebuild_playlist();
         }
     });
-
-    // ── Right-click context menu on playlist rows ─────────────────────────────
-    // A single GestureClick on the ListBox handles all rows so that the handler
-    // does not need to be re-wired every time the playlist is rebuilt.
-    // Menu items: "View/Edit ID3 Information" · "Play Entry" · "Remove Entry".
-    {
-        let ctx_state = state.clone();
-        let ctx_rebuild = rebuild_playlist.clone();
-        let ctx_play = play_and_update.clone();
-        let ctx_set_track = set_track.clone();
-        let ctx_pb = playlist_box.clone();
-        let ctx_win = window.downgrade();
-
-        let rclick = GestureClick::new();
-        rclick.set_button(3); // right mouse button
-        rclick.connect_released(move |_, _, x, y| {
-            // Identify which row received the click.
-            let Some(row) = ctx_pb.row_at_y(y as i32) else {
-                return;
-            };
-            let row_idx = row.index() as usize;
-
-            let path = ctx_state
-                .borrow()
-                .playlist
-                .tracks
-                .get(row_idx)
-                .map(|t| t.path.clone());
-            let Some(path) = path else {
-                return;
-            };
-
-            // Build a plain-GtkBox popover (no gio::Menu needed).
-            let menu_box = GtkBox::new(Orientation::Vertical, 0);
-            menu_box.set_margin_top(4);
-            menu_box.set_margin_bottom(4);
-            menu_box.set_margin_start(4);
-            menu_box.set_margin_end(4);
-
-            let btn_edit = Button::with_label("View/Edit ID3 Information");
-            let btn_play_e = Button::with_label("Play Entry");
-            let btn_rm = Button::with_label("Remove Entry");
-            for btn in [&btn_edit, &btn_play_e, &btn_rm] {
-                btn.set_has_frame(false);
-                btn.set_hexpand(true);
-                btn.add_css_class("popover-button");
-            }
-            btn_rm.add_css_class("destructive-action");
-
-            menu_box.append(&btn_edit);
-            menu_box.append(&Separator::new(Orientation::Horizontal));
-            menu_box.append(&btn_play_e);
-            menu_box.append(&Separator::new(Orientation::Horizontal));
-            menu_box.append(&btn_rm);
-
-            let popover = Popover::new();
-            popover.set_child(Some(&menu_box));
-            popover.set_parent(&ctx_pb);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-
-            // "View/Edit ID3 Information" — open the editor window.
-            {
-                let path2 = path.clone();
-                let state2 = ctx_state.clone();
-                let rebuild2 = ctx_rebuild.clone();
-                let win_wk = ctx_win.clone();
-                let pop_wk = popover.downgrade();
-                btn_edit.connect_clicked(move |_| {
-                    if let Some(pop) = pop_wk.upgrade() {
-                        pop.popdown();
-                    }
-                    if let Some(w) = win_wk.upgrade() {
-                        open_id3_editor_window(
-                            Some(&w),
-                            path2.clone(),
-                            state2.clone(),
-                            rebuild2.clone(),
-                            None,
-                        );
-                    }
-                });
-            }
-
-            // "Play Entry" — jump to this track and play it.
-            {
-                let state3 = ctx_state.clone();
-                let play3 = ctx_play.clone();
-                let pop_wk3 = popover.downgrade();
-                btn_play_e.connect_clicked(move |_| {
-                    if let Some(pop) = pop_wk3.upgrade() {
-                        pop.popdown();
-                    }
-                    state3.borrow_mut().playlist.jump_to(row_idx);
-                    play3();
-                });
-            }
-
-            // "Remove Entry" — remove from playlist, handle auto-advance.
-            {
-                let state4 = ctx_state.clone();
-                let rebuild4 = ctx_rebuild.clone();
-                let set_track4 = ctx_set_track.clone();
-                let pop_wk4 = popover.downgrade();
-                btn_rm.connect_clicked(move |_| {
-                    if let Some(pop) = pop_wk4.upgrade() {
-                        pop.popdown();
-                    }
-                    let auto_track = state4.borrow_mut().remove_track(row_idx);
-                    if let Some(display) = auto_track {
-                        set_track4(&display);
-                    }
-                    rebuild4();
-                });
-            }
-
-            popover.popup();
-        });
-        playlist_box.add_controller(rclick);
-    }
 
     // ── Left-click on the marquee title → open ID3 editor for current track ──
     // Adding the click controller to title_label so only the text area is
@@ -1957,7 +2778,27 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         f
     };
 
+    // Cancel button: stops any active playlist scan (Add Folder or Add Files).
+    // Wired once here, before the add handlers, so it is always connected.
+    btn_cancel.connect_clicked({
+        let state = state.clone();
+        let pl_status = pl_status_label.clone();
+        let cancel_btn = btn_cancel.clone();
+        move |_| {
+            let s = state.borrow();
+            if let Some(ref scan) = s.playlist_scan {
+                scan.cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            drop(s);
+            pl_status.set_text("Cancelling…");
+            cancel_btn.set_visible(false);
+        }
+    });
+
     // [+ Files]: open the desktop file browser to pick one or more audio files.
+    // For small selections this is near-instant; for large selections it uses the
+    // same two-phase background scan as Add Folder to avoid blocking the UI.
     btn_add_files.connect_clicked({
         let state = state.clone();
         let rebuild_playlist = rebuild_playlist.clone();
@@ -1966,6 +2807,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let make_filt = make_audio_filter.clone();
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
+        let cancel_btn = btn_cancel.clone();
+        let patch_pl_row_af = patch_pl_row.clone();
+        let set_track_af = set_track.clone();
         move |_| {
             let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
             let filter_store = gio::ListStore::new::<gtk4::FileFilter>();
@@ -1977,46 +2821,79 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let status_cb = pl_status.clone();
             let probe_tx_cb = probe_tx.clone();
             let broken_tx_cb = broken_tx.clone();
+            let cancel_ref = cancel_btn.clone();
+            let patch_cb = patch_pl_row_af.clone();
+            let set_track_cb = set_track_af.clone();
             let parent = window_wk.upgrade();
             dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
-                if let Ok(list) = result {
-                    let before = state_cb.borrow().playlist.tracks.len();
-                    let mut added = 0usize;
-                    let n = list.n_items();
-                    for i in 0..n {
-                        if let Some(obj) = list.item(i) {
-                            if let Ok(file) = obj.downcast::<gio::File>() {
-                                if let Some(path) = file.path() {
-                                    let ok = state_cb.borrow_mut().add_path(&path).is_ok();
-                                    if ok {
-                                        added += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if added > 0 {
-                        status_cb.set_text(&format!(
-                            "Added {} file{}",
-                            added,
-                            if added == 1 { "" } else { "s" }
-                        ));
-                        rebuild_cb();
-                        let paths = state_cb.borrow().uncached_paths_from(before);
-                        if !paths.is_empty() {
-                            duration_probe::spawn_probes(
-                                paths,
-                                probe_tx_cb.clone(),
-                                broken_tx_cb.clone(),
-                            );
-                        }
-                    }
+                let Ok(list) = result else { return };
+
+                // Collect selected paths on the main thread before spawning.
+                let files: Vec<PathBuf> = (0..list.n_items())
+                    .filter_map(|i| list.item(i))
+                    .filter_map(|obj| obj.downcast::<gio::File>().ok())
+                    .filter_map(|f| f.path())
+                    .collect();
+
+                if files.is_empty() {
+                    return;
                 }
+
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                {
+                    let mut s = state_cb.borrow_mut();
+                    s.playlist_scan = Some(ScanState {
+                        scan_type: ScanType::AddFiles,
+                        current: 0,
+                        total: 0,
+                        cancel: cancel.clone(),
+                    });
+                    s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+                }
+
+                status_cb.set_text("Scanning…");
+                cancel_ref.set_visible(true);
+
+                // Capture where the new tracks will start before any are added.
+                let scan_start = state_cb.borrow().playlist.len();
+
+                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
+                let (meta_tx, meta_rx) =
+                    std::sync::mpsc::channel::<(usize, String, String, String, String)>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
+                let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
+
+                crate::model::Playlist::scan_files_for_ui(
+                    files,
+                    cancel,
+                    fast_tx,
+                    meta_tx,
+                    done_tx,
+                    phase1_done_tx,
+                );
+
+                start_playlist_scan_poller(
+                    state_cb.clone(),
+                    status_cb.clone(),
+                    rebuild_cb.clone(),
+                    cancel_ref.clone(),
+                    probe_tx_cb.clone(),
+                    broken_tx_cb.clone(),
+                    patch_cb.clone(),
+                    set_track_cb.clone(),
+                    fast_rx,
+                    meta_rx,
+                    done_rx,
+                    phase1_done_rx,
+                    scan_start,
+                );
             });
         }
     });
 
     // [+ Folder]: open the desktop folder browser; recursively add all audio files.
+    // Uses the same two-phase scan as Add Files: fast tracks appear immediately,
+    // metadata fills in as it is read in the background.
     btn_add_dir.connect_clicked({
         let state = state.clone();
         let rebuild_playlist = rebuild_playlist.clone();
@@ -2024,6 +2901,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let window_wk = playlist_win.downgrade();
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
+        let cancel_btn = btn_cancel.clone();
+        let patch_pl_row_adir = patch_pl_row.clone();
+        let set_track_adir = set_track.clone();
         move |_| {
             let dialog = gtk4::FileDialog::new();
             dialog.set_title("Add Folder to Playlist");
@@ -2033,81 +2913,66 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let status_cb = pl_status.clone();
             let probe_tx_cb = probe_tx.clone();
             let broken_tx_cb = broken_tx.clone();
+            let cancel_ref = cancel_btn.clone();
+            let patch_cb = patch_pl_row_adir.clone();
+            let set_track_cb = set_track_adir.clone();
             let parent = window_wk.upgrade();
             dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                 let Ok(file) = result else { return };
                 let Some(folder) = file.path() else { return };
 
-                status_cb.set_text("Scanning…");
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                {
+                    let mut s = state_cb.borrow_mut();
+                    s.playlist_scan = Some(ScanState {
+                        scan_type: ScanType::AddFolder,
+                        current: 0,
+                        total: 0,
+                        cancel: cancel.clone(),
+                    });
+                    s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+                }
 
-                // Collect extra extensions from plugins while still on the
-                // main thread (plugin_manager is not Send).
+                status_cb.set_text("Scanning…");
+                cancel_ref.set_visible(true);
+
+                // Collect extra extensions on the main thread — plugin_manager is not Send.
                 let extra = state_cb.borrow().plugin_manager.extra_extensions();
 
-                state_cb.borrow().pending_bg_ops.set(state_cb.borrow().pending_bg_ops.get() + 1);
-                // Batch result type: (tracks, total_found, errors)
-                type ScanMsg = (Vec<crate::model::Track>, usize, usize);
-                let (sender, receiver) = std::sync::mpsc::channel::<ScanMsg>();
+                // Capture where the new tracks will start before any are added.
+                let scan_start = state_cb.borrow().playlist.len();
 
-                std::thread::spawn(move || {
-                    let files = crate::model::Playlist::collect_audio_files_extended(&folder, &extra);
-                    let total = files.len();
-                    let mut tracks: Vec<crate::model::Track> = Vec::new();
-                    let mut errors = 0usize;
-                    for f in files {
-                        match crate::model::Track::from_path(&f) {
-                            Ok(t) => tracks.push(t),
-                            Err(_) => errors += 1,
-                        }
-                    }
-                    let _ = sender.send((tracks, total, errors));
-                });
+                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
+                let (meta_tx, meta_rx) =
+                    std::sync::mpsc::channel::<(usize, String, String, String, String)>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
+                let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
 
-                // Poll the receiver on the GTK main thread via idle_add_local.
-                let receiver = std::cell::RefCell::new(receiver);
-                glib::idle_add_local(move || {
-                    let result = receiver.borrow().try_recv();
-                    if result.is_err() {
-                        return glib::ControlFlow::Continue;
-                    }
-                    let (tracks, total, errors) = result.unwrap();
-                    let added = tracks.len();
-                    if added == 0 && total == 0 {
-                        status_cb.set_text("No audio files found in the selected folder");
-                        state_cb.borrow().pending_bg_ops.set(state_cb.borrow().pending_bg_ops.get() - 1);
-                        return glib::ControlFlow::Break;
-                    }
-                    let before = state_cb.borrow().playlist.tracks.len();
-                    for t in tracks {
-                        state_cb.borrow_mut().playlist.add(t);
-                    }
-                    let msg = if errors == 0 {
-                        format!(
-                            "Added {} track{}",
-                            added,
-                            if added == 1 { "" } else { "s" }
-                        )
-                    } else {
-                        format!(
-                            "Added {} track{}; {} of {} file{} could not be added due to restricted access",
-                            added,
-                            if added == 1 { "" } else { "s" },
-                            errors,
-                            total,
-                            if total == 1 { "" } else { "s" },
-                        )
-                    };
-                    status_cb.set_text(&msg);
-                    rebuild_cb();
-                    let paths = state_cb.borrow().uncached_paths_from(before);
-                    if !paths.is_empty() {
-                        duration_probe::spawn_probes(
-                            paths, probe_tx_cb.clone(), broken_tx_cb.clone(),
-                        );
-                    }
-                    state_cb.borrow().pending_bg_ops.set(state_cb.borrow().pending_bg_ops.get() - 1);
-                    glib::ControlFlow::Break
-                });
+                crate::model::Playlist::scan_folder_for_ui(
+                    folder,
+                    extra,
+                    cancel,
+                    fast_tx,
+                    meta_tx,
+                    done_tx,
+                    phase1_done_tx,
+                );
+
+                start_playlist_scan_poller(
+                    state_cb.clone(),
+                    status_cb.clone(),
+                    rebuild_cb.clone(),
+                    cancel_ref.clone(),
+                    probe_tx_cb.clone(),
+                    broken_tx_cb.clone(),
+                    patch_cb.clone(),
+                    set_track_cb.clone(),
+                    fast_rx,
+                    meta_rx,
+                    done_rx,
+                    phase1_done_rx,
+                    scan_start,
+                );
             });
         }
     });
@@ -2120,7 +2985,9 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     vol_bar.connect_change_value({
         let state = state.clone();
         move |_, _, value| {
-            state.borrow_mut().player.set_volume(value);
+            let mut s = state.borrow_mut();
+            s.config.playback.volume = value;
+            s.player.set_volume(value);
             glib::Propagation::Proceed
         }
     });
@@ -2174,31 +3041,137 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let marquee_tick = marquee_tick.clone();
         let show_remaining = show_remaining.clone();
         let state_label = state_label.clone();
-        let rebuild_playlist = rebuild_playlist.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let current_track_meta_rx = std::cell::RefCell::new(current_track_meta_rx);
+        let set_track = set_track.clone();
+        let rebuild_playlist_tick = rebuild_playlist.clone();
+        let play_update_tick = play_and_update.clone();
+        let scroll_tick = scroll_to_row_if_needed.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
         glib::timeout_add_local(Duration::from_millis(100), move || {
             // 0. Drain probe results from background threads.
-            // Rebuild the playlist once per tick if any durations arrived so
-            // the new "M:SS" values appear without an extra user action.
-            let mut any_probed = false;
-            while let Ok((path, dur)) = probe_rx.try_recv() {
-                state.borrow_mut().apply_probed_duration(&path, dur);
-                any_probed = true;
+            // patch_pl_row is O(1) per call (updates a single TreeView store row).
+            // Cap to 50 per tick so we never block the main thread for long when
+            // a large library delivers thousands of results at once.
+            let is_scanning = state.borrow().playlist_scan.is_some();
+            let probe_cap = if is_scanning { 50usize } else { 500usize };
+            let mut probes_this_tick = 0usize;
+            while probes_this_tick < probe_cap {
+                let Ok((path, dur)) = probe_rx.try_recv() else {
+                    break;
+                };
+                // Bind the return value to a `let` so the temporary RefMut is
+                // dropped at the semicolon — before patch_pl_row tries to borrow.
+                let probed_idx = state.borrow_mut().apply_probed_duration(&path, dur);
+                if let Some(idx) = probed_idx {
+                    patch_pl_row(idx);
+                }
+                probes_this_tick += 1;
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.
             while let Ok(path) = broken_rx.try_recv() {
-                for track in &mut state.borrow_mut().playlist.tracks {
-                    if track.path == path {
-                        track.broken = true;
-                        any_probed = true;
-                        break;
+                let found_idx = {
+                    let mut s = state.borrow_mut();
+                    let mut found = None;
+                    for (idx, track) in s.playlist.tracks.iter_mut().enumerate() {
+                        if track.path == path {
+                            track.broken = true;
+                            found = Some(idx);
+                            break;
+                        }
                     }
+                    found
+                };
+                if let Some(idx) = found_idx {
+                    patch_pl_row(idx);
                 }
             }
-            if any_probed {
-                rebuild_playlist();
+
+            // 0c. Drain current track metadata scan results.
+            // This is separate from the playlist scan (meta_rx) — it handles metadata
+            // reads triggered by play_and_update when a track starts without metadata.
+            while let Ok((path, title, artist, album_artist, album)) =
+                current_track_meta_rx.borrow().try_recv()
+            {
+                let (updated_idx, is_current) = {
+                    let mut s = state.borrow_mut();
+                    let mut updated_idx = None;
+                    let mut is_current = false;
+                    for (idx, track) in s.playlist.tracks.iter_mut().enumerate() {
+                        if track.path == path {
+                            track.title = title;
+                            track.artist = artist;
+                            track.album_artist = album_artist;
+                            track.album = album;
+                            updated_idx = Some(idx);
+                            is_current = idx == s.playlist.current_index;
+                            break;
+                        }
+                    }
+                    (updated_idx, is_current)
+                };
+                // Update the marquee with the new "Artist - Title" display name.
+                if is_current {
+                    let display = state
+                        .borrow()
+                        .playlist
+                        .current()
+                        .map(|t| t.display_name())
+                        .unwrap_or_default();
+                    if !display.is_empty() {
+                        set_track(&display);
+                    }
+                }
+                // Patch the row to show the new title/artist.
+                if let Some(idx) = updated_idx {
+                    patch_pl_row(idx);
+                }
+            }
+
+            // 0d. Handle files received from "Open with Sparkamp" in the file manager.
+            // Each batch respects playlist_add_behavior (append/replace) and
+            // autoplay_on_add from config.
+            while let Ok(paths) = open_rx.try_recv() {
+                if paths.is_empty() {
+                    continue;
+                }
+                use crate::config::PlaylistAddBehavior;
+                let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+                let autoplay = state.borrow().config.behavior.autoplay_on_add;
+
+                if behavior == PlaylistAddBehavior::Replace {
+                    let _ = state.borrow_mut().player.stop();
+                    {
+                        let mut s = state.borrow_mut();
+                        s.playlist.tracks.clear();
+                        s.playlist.current_index = 0;
+                        s.last_duration = None;
+                        s.pending_seek = None;
+                        s.mute_pending = None;
+                    }
+                }
+
+                let insert_start = state.borrow().playlist.len();
+                for path in &paths {
+                    if let Ok(track) = crate::model::Track::from_path_fast(path) {
+                        state.borrow_mut().playlist.tracks.push(track);
+                    }
+                }
+                let inserted = state.borrow().playlist.len() - insert_start;
+                if inserted == 0 {
+                    continue;
+                }
+                rebuild_playlist_tick();
+
+                if autoplay
+                    && (behavior == PlaylistAddBehavior::Replace || insert_start == 0)
+                {
+                    state.borrow_mut().playlist.jump_to(insert_start);
+                    play_update_tick();
+                    scroll_tick(insert_start);
+                }
             }
 
             // 1. Check for end-of-stream or GStreamer error.
@@ -2232,6 +3205,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 }
             }
             if let Some(event) = bus_event {
+                // Record which track just finished so we can de-highlight it
+                // after the advance changes current_index.
+                let pre_advance_idx = state.borrow().playlist.current_index;
+
                 // On error, mark the current track broken so it shows a
                 // warning indicator and is skipped in future auto-advances.
                 if matches!(event, BusEvent::Error) {
@@ -2277,8 +3254,15 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     found
                 };
                 if advanced {
+                    // play_update (play_and_update) patches the new current track.
+                    // We also patch pre_advance_idx because jump_to() already
+                    // updated current_index before play_and_update runs, so
+                    // play_and_update won't know the finished track is different.
                     play_update();
-                    rebuild_playlist();
+                    let new_idx = state.borrow().playlist.current_index;
+                    if pre_advance_idx != new_idx {
+                        patch_pl_row(pre_advance_idx);
+                    }
                 }
             }
 
@@ -2312,11 +3296,16 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 false
             };
             if gst_dur_written {
-                rebuild_playlist();
+                // Only the current track's duration changed; patch just that row.
+                let idx = state.borrow().playlist.current_index;
+                patch_pl_row(idx);
             }
 
             // Record play in media library after 20 seconds of playback.
-            {
+            // The rebuild_ml_callback borrows state immutably, so it must be
+            // called AFTER the mutable borrow is released — extract the Rc
+            // first, then drop the borrow, then invoke the callback.
+            let ml_rebuild_needed: Option<Rc<dyn Fn()>> = {
                 let mut s = state.borrow_mut();
                 let pos = pos.unwrap_or(Duration::ZERO);
                 let path_str = s
@@ -2329,13 +3318,22 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                             if let Some(ref ml) = s.media_lib {
                                 let _ = ml.record_play(p);
                                 s.counted_play_path = Some(p.clone());
-                                if let Some(ref rebuild_ml) = s.rebuild_ml_callback {
-                                    rebuild_ml();
-                                }
+                                s.rebuild_ml_callback.clone()
+                            } else {
+                                None
                             }
+                        } else {
+                            None
                         }
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            };
+            if let Some(rebuild_ml) = ml_rebuild_needed {
+                rebuild_ml();
             }
 
             {
@@ -2448,11 +3446,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             // 5. Trigger a Cairo repaint of the visualizer.
             viz.queue_draw();
 
-            // 6. Periodically flush the duration cache to disk (every 30 s).
+            // 6. Periodically flush the duration cache and config to disk (every 30 s).
+            // Saving config here ensures settings survive force-kills.
             cache_save_countdown -= 1;
             if cache_save_countdown == 0 {
                 cache_save_countdown = 300;
                 state.borrow_mut().duration_cache.save_if_dirty();
+                let _ = state.borrow().config.save();
             }
 
             ControlFlow::Continue
@@ -2462,11 +3462,13 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // ══════════════════════════════════════════════════════════════════════════
     // Visualizer draw function (mini box in the now-playing row)
     // ══════════════════════════════════════════════════════════════════════════
+    // Note: parse_hex_color / draw_zoned_bar / draw_waveform are module-level
+    // functions defined near the bottom of this file so they can also be called
+    // from open_waveform_fullscreen.
+
     {
         let state = state.clone();
         viz.set_draw_func(move |_da, cr, width, height| {
-            use std::f64::consts::PI;
-
             // ── Background ────────────────────────────────────────────────
             cr.set_source_rgb(0.05, 0.05, 0.05);
             cr.paint().ok();
@@ -2476,28 +3478,49 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let pos_secs = s.player.position().unwrap_or(Duration::ZERO).as_secs_f64();
             let mode = s.config.visualizer.mode.clone();
             let plugin_idx = s.active_plugin_idx;
+            let display_bands_count = s.config.visualizer.display_bands;
+            let bars_mirror = s.config.visualizer.bars_mirror;
+            let color_zones = s.config.visualizer.color_zones as usize;
+            let zone_colors = s.config.visualizer.zone_colors.clone();
+            let wf_zones = s.config.visualizer.waveform_color_zones as usize;
+            let wf_zone_colors = s.config.visualizer.waveform_zone_colors.clone();
+            let wf_style = s.config.visualizer.waveform_style.clone();
 
-            // If a plugin is selected and active, delegate the frame to it.
-            if is_playing {
+            // Get spectrum, waveform, and plugin data before dropping the borrow.
+            let display_bands_data = s.player.get_spectrum_display_bands(display_bands_count);
+            let waveform_samples = s.player.get_waveform_samples(width.max(64) as usize);
+            // Render plugin frame if one is active.
+            let plugin_frame: Option<Vec<f64>> = if is_playing {
                 if let Some(idx) = plugin_idx {
-                    if let Some(plugin) = s.viz_plugins.get(idx) {
-                        let count = (width / 5).max(10) as usize;
-                        let values = plugin.render(pos_secs, true, count);
-                        drop(s); // release borrow after last plugin access
-                        let bar_w = width as f64 / count as f64;
-                        for (i, &v) in values.iter().enumerate() {
-                            let bar_h = (v * height as f64 * 0.92).max(2.0);
-                            let x = i as f64 * bar_w + 0.5;
-                            let y = height as f64 - bar_h;
-                            cr.set_source_rgb(0.0, 0.55 + v * 0.35, v * 0.7);
-                            cr.rectangle(x, y, bar_w - 1.5, bar_h);
-                            cr.fill().ok();
-                        }
-                        return;
-                    }
+                    s.viz_plugins
+                        .get(idx)
+                        .map(|plugin| plugin.render(pos_secs, true, (width / 5).max(10) as usize))
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+            drop(s);
+
+            if let Some(values) = plugin_frame {
+                let count = values.len();
+                let bar_w = width as f64 / count.max(1) as f64;
+                for (i, &v) in values.iter().enumerate() {
+                    let x = i as f64 * bar_w;
+                    draw_zoned_bar(
+                        &cr,
+                        x,
+                        bar_w,
+                        height as f64,
+                        v,
+                        bars_mirror,
+                        color_zones,
+                        &zone_colors,
+                    );
+                }
+                return;
             }
-            drop(s); // release borrow before built-in rendering
 
             if !is_playing {
                 // Idle: flat dim centre line.
@@ -2510,52 +3533,57 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 return;
             }
 
-            let pos_ms = (pos_secs * 1000.0) as u64;
             match mode {
                 VisualizerMode::Bars => {
-                    // Minimum 10 bars; more bars at wider widths.
-                    // Each bar uses a frequency-scaled oscillation so lower-
-                    // indexed bars move slowly (bass) and higher ones fast
-                    // (treble), giving the classic spectrum analyser feel.
-                    let num_bars = (width / 5).max(10) as usize;
+                    let num_bars = display_bands_count.max(10) as usize;
                     let bar_w = width as f64 / num_bars as f64;
-                    let t = pos_ms as f64 / 80.0;
-                    for i in 0..num_bars {
-                        let freq = 1.0 + i as f64 * 0.5;
-                        let amp = ((t * freq).sin() * 0.4 + (t * freq * 1.5).sin() * 0.2 + 0.55)
-                            .clamp(0.05, 1.0);
-                        let bar_h = (amp * height as f64 * 0.92).max(2.0);
-                        let x = i as f64 * bar_w + 0.5;
-                        let y = height as f64 - bar_h;
-                        // Colour: dark green (low) → bright cyan (high).
-                        cr.set_source_rgb(0.0, 0.55 + amp * 0.35, amp * 0.7);
-                        cr.rectangle(x, y, bar_w - 1.5, bar_h);
-                        cr.fill().ok();
+
+                    if !display_bands_data.iter().all(|&v| v == 0.0) {
+                        for (i, &amp) in display_bands_data.iter().enumerate() {
+                            let x = i as f64 * bar_w;
+                            draw_zoned_bar(
+                                &cr,
+                                x,
+                                bar_w,
+                                height as f64,
+                                amp,
+                                bars_mirror,
+                                color_zones,
+                                &zone_colors,
+                            );
+                        }
+                    } else {
+                        cr.set_source_rgb(0.0, 0.3, 0.1);
+                        cr.set_line_width(1.0);
+                        let mid = height as f64 / 2.0;
+                        cr.move_to(0.0, mid);
+                        cr.line_to(width as f64, mid);
+                        cr.stroke().ok();
+
+                        cr.set_source_rgb(0.0, 0.5, 0.2);
+                        let font_size = 10.0_f64.min(height as f64 * 0.4);
+                        cr.set_font_size(font_size);
+                        let text = "Retry";
+                        if let Ok(extents) = cr.text_extents(text) {
+                            let text_x =
+                                (width as f64 - extents.width()) / 2.0 - extents.x_bearing();
+                            let text_y =
+                                (height as f64 - extents.height()) / 2.0 - extents.y_bearing();
+                            cr.move_to(text_x, text_y);
+                            cr.show_text(text).ok();
+                        }
                     }
                 }
-                VisualizerMode::Oscilloscope => {
-                    let t0 = pos_ms as f64 / 80.0;
-
-                    // ── Dim centre baseline (orientation reference) ────────
-                    cr.set_source_rgb(0.0, 0.2, 0.08);
-                    cr.set_line_width(0.5);
-                    cr.move_to(0.0, height as f64 / 2.0);
-                    cr.line_to(width as f64, height as f64 / 2.0);
-                    cr.stroke().ok();
-
-                    // ── Animated waveform ──────────────────────────────────
-                    // Composite of two sine waves at the golden-ratio interval
-                    // (φ ≈ 1.618) for a natural, non-repeating look.
-                    cr.set_source_rgb(0.0, 0.85, 0.35);
-                    cr.set_line_width(2.0);
-                    cr.move_to(0.0, height as f64 / 2.0);
-                    for x in 0..width {
-                        let t = x as f64 / width as f64;
-                        let ph = t0 + t * PI * 6.0;
-                        let amp = (ph.sin() + (ph * 1.618).sin() * 0.4) * 0.28;
-                        cr.line_to(x as f64, height as f64 * (0.5 + amp));
-                    }
-                    cr.stroke().ok();
+                VisualizerMode::Waveform => {
+                    draw_waveform(
+                        &cr,
+                        width as f64,
+                        height as f64,
+                        &waveform_samples,
+                        wf_zones,
+                        &wf_zone_colors,
+                        &wf_style,
+                    );
                 }
             }
         });
@@ -2573,7 +3601,17 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     jump_entry.set_margin_top(8);
     jump_entry.set_margin_bottom(4);
     jump_entry.set_margin_start(8);
-    jump_entry.set_margin_end(8);
+    jump_entry.set_hexpand(true);
+
+    let jump_clear_btn = Button::with_label("✕");
+    jump_clear_btn.add_css_class("pl-btn");
+    jump_clear_btn.set_margin_top(8);
+    jump_clear_btn.set_margin_bottom(4);
+    jump_clear_btn.set_margin_end(8);
+
+    let jump_search_row = GtkBox::new(Orientation::Horizontal, 4);
+    jump_search_row.append(&jump_entry);
+    jump_search_row.append(&jump_clear_btn);
 
     let jump_box = ListBox::new();
     jump_box.add_css_class("playlist");
@@ -2587,9 +3625,20 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         .child(&jump_box)
         .build();
 
+    // Status line below the results box: shows match count or a hint.
+    let jump_status = gtk4::Label::builder()
+        .halign(Align::Start)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(2)
+        .margin_bottom(4)
+        .build();
+    jump_status.add_css_class("status-label");
+
     let jump_root = gtk4::Box::new(Orientation::Vertical, 0);
-    jump_root.append(&jump_entry);
+    jump_root.append(&jump_search_row);
     jump_root.append(&jump_scroll);
+    jump_root.append(&jump_status);
 
     let jump_win = gtk4::Window::builder()
         .title("Jump to Track")
@@ -2607,30 +3656,42 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     // Maps each visible row in jump_box → the original track index in the playlist.
     let jump_indices: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
 
+    // Maximum rows shown in the jump list.  Caps widget creation so the window
+    // stays responsive on playlists with tens of thousands of tracks.
+    const MAX_JUMP_RESULTS: usize = 500;
+
     // Closure: clear and repopulate jump_box based on the current query.
     let rebuild_jump: Rc<dyn Fn()> = {
         let state = state.clone();
         let jump_entry = jump_entry.clone();
         let jump_box = jump_box.clone();
         let jump_indices = jump_indices.clone();
+        let jump_status = jump_status.clone();
         Rc::new(move || {
-            // Remove all existing rows.
-            while let Some(row) = jump_box.row_at_index(0) {
-                jump_box.remove(&row);
-            }
+            // remove_all() is a single GTK call instead of O(n) individual removes.
+            jump_box.remove_all();
             let mut indices = jump_indices.borrow_mut();
             indices.clear();
 
-            let q = jump_entry.text().to_lowercase();
+            let q = jump_entry.text();
+            // Empty query: show a hint and leave the list empty.
+            // Without this guard, an empty query would match every track and
+            // create tens of thousands of widgets, freezing the UI.
+            if q.trim().is_empty() {
+                let total = state.borrow().playlist.len();
+                jump_status.set_text(&format!("{total} tracks — type to search"));
+                return;
+            }
+
+            let all_matches = {
+                let s = state.borrow();
+                s.playlist.search_indices(&q)
+            };
+            let total_matches = all_matches.len();
+            let capped = total_matches > MAX_JUMP_RESULTS;
             let s = state.borrow();
-            for (idx, track) in s.playlist.tracks.iter().enumerate() {
-                if !q.is_empty()
-                    && !track.title.to_lowercase().contains(&q)
-                    && !track.artist.to_lowercase().contains(&q)
-                    && !track.album.to_lowercase().contains(&q)
-                {
-                    continue;
-                }
+            for &idx in all_matches.iter().take(MAX_JUMP_RESULTS) {
+                let track = &s.playlist.tracks[idx];
                 let label_text = if track.artist.is_empty() {
                     format!("{:2}. {}", idx + 1, track.title)
                 } else {
@@ -2650,6 +3711,20 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 jump_box.append(&row);
                 indices.push(idx);
             }
+            drop(s);
+
+            // Status line.
+            if total_matches == 0 {
+                jump_status.set_text("No matches");
+            } else if capped {
+                jump_status.set_text(&format!(
+                    "Showing {} of {} matches — type more to narrow",
+                    MAX_JUMP_RESULTS, total_matches
+                ));
+            } else {
+                jump_status.set_text(&format!("{total_matches} match{}", if total_matches == 1 { "" } else { "es" }));
+            }
+
             // Auto-select the first row so Enter immediately plays.
             if let Some(row) = jump_box.row_at_index(0) {
                 jump_box.select_row(Some(&row));
@@ -2657,9 +3732,20 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         })
     };
 
+    // Wire up the jump-window clear button now that rebuild_jump is in scope.
+    {
+        let e = jump_entry.clone();
+        let rj = rebuild_jump.clone();
+        jump_clear_btn.connect_clicked(move |_| {
+            gtk4::prelude::EditableExt::set_text(&e, "");
+            rj();
+        });
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     // Keyboard shortcuts — shared handler applied to player + playlist windows.
     // ══════════════════════════════════════════════════════════════════════════
+
     let handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation> = {
         let state = state.clone();
         let play_and_update = play_and_update.clone();
@@ -2684,15 +3770,26 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
         let kbd_btn_shuffle = btn_shuffle.clone();
+        // Clones for z/b (prev/next) handlers — use patch instead of rebuild
+        // so the scroll position is preserved rather than reset to the top.
+        let kbd_patch_row = patch_pl_row.clone();
+        let kbd_scroll = scroll_to_row_if_needed.clone();
+        let kbd_open_fs = open_fullscreen_fn.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
                 // ── Winamp transport bindings ──────────────────────────────
                 gdk::Key::z => {
+                    let old_idx = state.borrow().playlist.current_index;
                     let result = { state.borrow_mut().play_prev() };
                     if let Some(d) = result {
                         kbd_set_track(&d);
-                        kbd_rebuild();
+                        let new_idx = state.borrow().playlist.current_index;
+                        if old_idx != new_idx {
+                            kbd_patch_row(old_idx);
+                        }
+                        kbd_patch_row(new_idx);
+                        kbd_scroll(new_idx);
                     }
                     glib::Propagation::Stop
                 }
@@ -2714,10 +3811,16 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                     glib::Propagation::Stop
                 }
                 gdk::Key::b => {
+                    let old_idx = state.borrow().playlist.current_index;
                     let result = { state.borrow_mut().play_next() };
                     if let Some(d) = result {
                         kbd_set_track(&d);
-                        kbd_rebuild();
+                        let new_idx = state.borrow().playlist.current_index;
+                        if old_idx != new_idx {
+                            kbd_patch_row(old_idx);
+                        }
+                        kbd_patch_row(new_idx);
+                        kbd_scroll(new_idx);
                     }
                     glib::Propagation::Stop
                 }
@@ -2767,6 +3870,18 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 // ── Visualizer mode toggle ─────────────────────────────────
                 gdk::Key::a | gdk::Key::A => {
                     state.borrow_mut().toggle_visualizer_mode();
+                    glib::Propagation::Stop
+                }
+
+                // ── Waveform fullscreen (f — only in Waveform mode) ────────
+                gdk::Key::f | gdk::Key::F => {
+                    let is_waveform = state.borrow().config.visualizer.mode
+                        == VisualizerMode::Waveform;
+                    if is_waveform {
+                        if let Some(ref opener) = *kbd_open_fs.borrow() {
+                            opener();
+                        }
+                    }
                     glib::Propagation::Stop
                 }
 
@@ -2835,7 +3950,6 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                                     }
                                     Err(msg) => {
                                         status_cb.set_text(&msg);
-                                        eprintln!("{msg}");
                                     }
                                 }
                             }
@@ -2882,7 +3996,10 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                         let mut s = state.borrow_mut();
                         s.shuffle_state.toggle();
                         s.shuffle_state.reset();
-                        s.shuffle_state.enabled
+                        let on = s.shuffle_state.enabled;
+                        // Mirror to config so the setting survives to the next session.
+                        s.config.playback.shuffle_enabled = on;
+                        on
                     };
                     if enabled {
                         kbd_btn_shuffle.add_css_class("mode-btn-active");
@@ -2934,6 +4051,26 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             }
         })
     };
+
+    // Wire up the fullscreen opener now that handle_key is fully defined.
+    {
+        let hk = handle_key.clone();
+        let state_fs = state.clone();
+        let jump_win_fs = jump_win.clone();
+        let jump_entry_fs = jump_entry.clone();
+        let rebuild_jump_fs = rebuild_jump.clone();
+        let btn_info_fs = btn_info.clone();
+        *open_fullscreen_fn.borrow_mut() = Some(Rc::new(move || {
+            open_waveform_fullscreen(
+                state_fs.clone(),
+                hk.clone(),
+                jump_win_fs.clone(),
+                jump_entry_fs.clone(),
+                rebuild_jump_fs.clone(),
+                btn_info_fs.clone(),
+            );
+        }));
+    }
 
     // Attach the shared handler to the main player window.
     // Capture phase ensures keys reach the handler even when a child widget
@@ -2987,7 +4124,8 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
   p          Toggle playlist window
 
 ── View & Tags ─────────────────────────────────────
-  a          Cycle visualizer mode (bars / oscilloscope)
+  a          Cycle visualizer mode (bars / waveform)
+  f          Waveform fullscreen (in Waveform mode; Esc to exit)
   d          View/Edit ID3 tags for current track
   u          Open EQ (TUI only — use EQ button in GUI)
   Click logo Open settings
@@ -3054,6 +4192,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         let window_wk = window.downgrade();
         let state_rc = state.clone();
         let rebuild_pl = rebuild_playlist.clone();
+        let set_track_ml = set_track.clone();
         move |_| {
             // Destroy any existing ML window before opening a new one.
             {
@@ -3071,6 +4210,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 parent.as_ref(),
                 state_rc.clone(),
                 rebuild_pl.clone(),
+                set_track_ml.clone(),
                 w,
                 h,
             );
@@ -3105,6 +4245,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     jump_entry.connect_activate({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
+        let patch_pl_row = patch_pl_row.clone();
         let jump_box = jump_box.clone();
         let jump_indices = jump_indices.clone();
         let jump_win_wk = jump_win.downgrade();
@@ -3112,8 +4253,12 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
             let sel_row_idx = jump_box.selected_row().map(|r| r.index() as usize);
             if let Some(list_pos) = sel_row_idx {
                 if let Some(&track_idx) = jump_indices.borrow().get(list_pos) {
+                    let old_idx = state.borrow().playlist.current_index;
                     state.borrow_mut().playlist.jump_to(track_idx);
                     play_and_update();
+                    if old_idx != track_idx {
+                        patch_pl_row(old_idx);
+                    }
                 }
             }
             if let Some(w) = jump_win_wk.upgrade() {
@@ -3146,14 +4291,14 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Up | gdk::Key::k => {
+            gdk::Key::Up => {
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(1);
                 if let Some(row) = jb.row_at_index((cur - 1).max(0)) {
                     jb.select_row(Some(&row));
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Down | gdk::Key::l => {
+            gdk::Key::Down => {
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(-1);
                 if let Some(row) = jb.row_at_index(cur + 1) {
                     jb.select_row(Some(&row));
@@ -3169,13 +4314,18 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
     jump_box.connect_row_activated({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
+        let patch_pl_row = patch_pl_row.clone();
         let jump_indices = jump_indices.clone();
         let jump_win_wk = jump_win.downgrade();
         move |_, row| {
             let list_pos = row.index() as usize;
             if let Some(&track_idx) = jump_indices.borrow().get(list_pos) {
+                let old_idx = state.borrow().playlist.current_index;
                 state.borrow_mut().playlist.jump_to(track_idx);
                 play_and_update();
+                if old_idx != track_idx {
+                    patch_pl_row(old_idx);
+                }
             }
             if let Some(w) = jump_win_wk.upgrade() {
                 w.close();
@@ -3230,6 +4380,25 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         }
     });
 
+    // After the main window is realized, read the computed text color of the
+    // hidden .np-title probe label and cache it as gdk::RGBA.  The cell data
+    // func reads this directly — no string parsing, no GTK color warnings.
+    // Hooking the main window (not the playlist window) means the color is
+    // available the moment the app starts.
+    {
+        let accent_rgba = accent_rgba.clone();
+        let np_probe = np_probe.clone();
+        let patch_pl_row = patch_pl_row.clone();
+        let state = state.clone();
+        window.connect_realize(move |_| {
+            *accent_rgba.borrow_mut() = Some(np_probe.color());
+            // Re-patch the current row so it immediately gets the accent color
+            // if a track is already playing when the app starts.
+            let idx = state.borrow().playlist.current_index;
+            patch_pl_row(idx);
+        });
+    }
+
     window.present();
     if init_playlist_visible {
         // Delay the playlist window slightly so the Wayland compositor has
@@ -3241,6 +4410,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
         });
     }
     if init_ml_visible {
+        let set_track_init_ml = set_track.clone();
         glib::timeout_add_local_once(Duration::from_millis(50), move || {
             let state_rc = state.clone();
             let rebuild_pl = rebuild_playlist.clone();
@@ -3248,6 +4418,7 @@ pub fn build(app: &Application, playlist: Playlist, config: Config) {
                 Some(&window.upcast::<gtk4::Window>()),
                 state_rc.clone(),
                 rebuild_pl.clone(),
+                set_track_init_ml.clone(),
                 init_ml_width,
                 init_ml_height,
             );
@@ -3427,8 +4598,7 @@ fn open_customize_columns_dialog(
 
     let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
         Rc::new(RefCell::new(Vec::new()));
-    let dropdowns: Rc<RefCell<Vec<(String, gtk4::ComboBoxText)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let dropdowns: Rc<RefCell<Vec<(String, gtk4::DropDown)>>> = Rc::new(RefCell::new(Vec::new()));
     let skipping_callback: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
     for col in &cols_to_show {
@@ -3490,22 +4660,19 @@ fn open_customize_columns_dialog(
                 .get(col.id)
                 .cloned()
                 .unwrap_or_else(|| "left".to_string());
-            let dropdown = gtk4::ComboBoxText::new();
-            dropdown.append(Some("left"), "Left");
-            dropdown.append(Some("right"), "Right");
-            dropdown.set_active_id(Some(if pos == "right" { "right" } else { "left" }));
+            let dropdown = DropDown::from_strings(&["Left", "Right"]);
+            dropdown.set_selected(if pos == "right" { 1 } else { 0 });
 
             let id_for_dropdown = col.id.to_string();
             let state_dropdown = state.clone();
-            dropdown.connect_changed(move |dd| {
-                if let Some(position) = dd.active_id() {
-                    let mut s = state_dropdown.borrow_mut();
-                    s.config
-                        .media_library
-                        .id3_column_position
-                        .insert(id_for_dropdown.clone(), position.to_string());
-                    let _ = s.config.save();
-                }
+            dropdown.connect_selected_notify(move |dd| {
+                let position = if dd.selected() == 1 { "right" } else { "left" };
+                let mut s = state_dropdown.borrow_mut();
+                s.config
+                    .media_library
+                    .id3_column_position
+                    .insert(id_for_dropdown.clone(), position.to_string());
+                let _ = s.config.save();
             });
 
             row.append(&dropdown);
@@ -3567,7 +4734,7 @@ fn open_customize_columns_dialog(
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| "left".to_string());
-            dd.set_active_id(Some(&pos));
+            dd.set_selected(if pos == "right" { 1 } else { 0 });
         }
     });
 
@@ -3743,7 +4910,7 @@ fn open_id3_editor_window(
             get_id3_field_value(&fields, &track_meta, id)
         };
         if *id == "genre" {
-            let (combo, entry) = make_genre_combo(&value);
+            let (combo, _entry) = make_genre_combo(&value);
             combo.set_hexpand(true);
             grid.attach(&combo, 1, row as i32, 1, 1);
         } else {
@@ -3789,6 +4956,9 @@ fn open_id3_editor_window(
     for (id, entry) in left_entries.into_iter().chain(right_entries) {
         entries.borrow_mut().insert(id, entry);
     }
+
+    // ── Check if file is read-only ───────────────────────────────────────────
+    let is_read_only = crate::media_library::is_read_only(&path);
 
     // ── Artwork section ─────────────────────────────────────────────────────
     let artwork_vbox = GtkBox::new(Orientation::Vertical, 4);
@@ -3882,6 +5052,24 @@ fn open_id3_editor_window(
     status_lbl.set_margin_start(12);
     status_lbl.set_margin_bottom(4);
 
+    // ── Read-only notice (only shown for read-only files) ────────────────────
+    let read_only_notice = Label::builder()
+        .label("🔒 This file is read only")
+        .halign(Align::Center)
+        .build();
+    read_only_notice.set_margin_start(12);
+    read_only_notice.set_margin_end(12);
+    read_only_notice.set_margin_top(8);
+    read_only_notice.set_margin_bottom(4);
+    read_only_notice.set_visible(is_read_only);
+
+    // Disable all entry widgets for read-only files
+    if is_read_only {
+        for (_, entry) in entries.borrow().iter() {
+            entry.set_sensitive(false);
+        }
+    }
+
     // ── Button row ───────────────────────────────────────────────────────────
     let btn_row = GtkBox::new(Orientation::Horizontal, 8);
     btn_row.set_margin_top(4);
@@ -3893,6 +5081,7 @@ fn open_id3_editor_window(
     let btn_cancel = Button::with_label("Cancel");
     let btn_save = Button::with_label("Save");
     btn_save.add_css_class("suggested-action");
+    btn_save.set_visible(!is_read_only);
 
     let spring = GtkBox::new(Orientation::Horizontal, 0);
     spring.set_hexpand(true);
@@ -3907,6 +5096,7 @@ fn open_id3_editor_window(
     vbox.append(&artwork_vbox);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&status_lbl);
+    vbox.append(&read_only_notice);
     vbox.append(&btn_row);
     win.set_child(Some(&vbox));
 
@@ -3990,20 +5180,47 @@ fn open_id3_editor_window(
                         }
                     }
 
-                    // Re-extract and update cached artwork from the saved file
+                    // If the saved track is currently playing, update the marquee
+                    // immediately so the new artist/title is reflected without
+                    // requiring a track change.
+                    let is_current = state_s
+                        .borrow()
+                        .playlist
+                        .current()
+                        .map(|t| t.path == path)
+                        .unwrap_or(false);
+                    if is_current {
+                        let display = state_s
+                            .borrow()
+                            .playlist
+                            .current()
+                            .map(|t| t.display_name())
+                            .unwrap_or_default();
+                        if let Some(ref cb) = state_s.borrow().set_track_callback.clone() {
+                            cb(&display);
+                        }
+                    }
+
+                    // Update the Media Library DB record and artwork cache for
+                    // the edited file, then refresh the ML window if it is open.
                     if let Some(lib) = state_s.borrow().media_lib.as_ref() {
                         let path_str = path.to_string_lossy().into_owned();
+                        let _ = lib.rescan_track(&path_str);
                         if let Ok(lib_track) = lib.track_by_path(&path_str) {
                             let _ = lib.refresh_artwork(lib_track.id, &path_str);
                         }
                     }
 
                     let rebuild = rebuild_s.clone();
+                    let rebuild_ml = state_s.borrow().rebuild_ml_callback.clone();
                     if let Some(w) = win_wk.upgrade() {
                         w.close();
                     }
                     glib::idle_add_local(move || {
                         rebuild();
+                        if let Some(ref cb) = rebuild_ml {
+                            cb();
+                        }
                         glib::ControlFlow::Break
                     });
                 }
@@ -4096,132 +5313,8 @@ fn open_id3_editor_window(
     win.present();
 }
 
-/// Open the "Customize" extra-frames editor window for `path`.
-///
-/// Lists every ID3v2 frame present in the file that is *not* represented in
-/// the default 12-field editor.  Each frame's value is shown in an editable
-/// Entry; clicking ✓ or pressing Enter writes the new value back to the file
-/// immediately (per-frame saves, not batched).
-fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf) {
-    use crate::id3_editor::{read_extra_frames, write_extra_frame};
-    use gtk4::prelude::*;
-
-    let extra_frames = read_extra_frames(&path);
-
-    let win = gtk4::Window::builder()
-        .title("ID3 Extra Frames — Customize")
-        .default_width(500)
-        .default_height(320)
-        .modal(false)
-        .build();
-    if let Some(p) = parent {
-        win.set_transient_for(Some(p));
-    }
-
-    if extra_frames.is_empty() {
-        let lbl = Label::new(Some("No extra frames found in this file."));
-        lbl.set_margin_top(24);
-        lbl.set_margin_start(16);
-        win.set_child(Some(&lbl));
-        win.present();
-        return;
-    }
-
-    // Build a grid: ID (col 0) | Label (col 1) | Entry (col 2) | ✓ btn (col 3).
-    let grid = Grid::new();
-    grid.set_margin_top(12);
-    grid.set_margin_bottom(12);
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_row_spacing(6);
-    grid.set_column_spacing(8);
-
-    for (i, frame) in extra_frames.iter().enumerate() {
-        let id_lbl = Label::builder()
-            .label(&frame.id)
-            .xalign(0.0)
-            .width_chars(6)
-            .build();
-
-        let desc_lbl = Label::builder()
-            .label(&gtk_safe(&frame.label))
-            .xalign(0.0)
-            .width_chars(20)
-            .build();
-
-        let entry = Entry::new();
-        entry.set_text(&gtk_safe(&frame.value));
-        entry.set_hexpand(true);
-
-        let btn_ok = Button::with_label("✓");
-        btn_ok.set_tooltip_text(Some("Save this frame"));
-
-        // Save the frame when ✓ is clicked.
-        {
-            let path2 = path.clone();
-            let frame_id = frame.id.clone();
-            let entry_c = entry.clone();
-            let btn_c = btn_ok.clone();
-            btn_ok.connect_clicked(move |_| {
-                let value = entry_c.text().to_string();
-                match write_extra_frame(&path2, &frame_id, &value) {
-                    Ok(()) => {
-                        btn_c.set_label("✓");
-                    }
-                    Err(e) => {
-                        btn_c.set_label("!");
-                        eprintln!("extra frame save: {e}");
-                    }
-                }
-            });
-        }
-
-        // Also save when Enter is pressed inside the Entry.
-        {
-            let path3 = path.clone();
-            let frame_id2 = frame.id.clone();
-            entry.connect_activate(move |e| {
-                let value = e.text().to_string();
-                let _ = write_extra_frame(&path3, &frame_id2, &value);
-            });
-        }
-
-        let row = i as i32;
-        grid.attach(&id_lbl, 0, row, 1, 1);
-        grid.attach(&desc_lbl, 1, row, 1, 1);
-        grid.attach(&entry, 2, row, 1, 1);
-        grid.attach(&btn_ok, 3, row, 1, 1);
-    }
-
-    // Wrap the grid in a ScrolledWindow so long frame lists are navigable.
-    let scroll = gtk4::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk4::PolicyType::Never)
-        .vscrollbar_policy(gtk4::PolicyType::Automatic)
-        .vexpand(true)
-        .child(&grid)
-        .build();
-
-    let close_btn = Button::with_label("Close");
-    close_btn.set_margin_top(8);
-    close_btn.set_margin_bottom(8);
-    close_btn.set_margin_end(12);
-    close_btn.set_halign(Align::End);
-    {
-        let win_wk = win.downgrade();
-        close_btn.connect_clicked(move |_| {
-            if let Some(w) = win_wk.upgrade() {
-                w.close();
-            }
-        });
-    }
-
-    let vbox = GtkBox::new(Orientation::Vertical, 0);
-    vbox.append(&scroll);
-    vbox.append(&close_btn);
-    win.set_child(Some(&vbox));
-    win.present();
-}
-
+// ---------------------------------------------------------------------------
+// Settings window
 // ---------------------------------------------------------------------------
 // Settings window
 // ---------------------------------------------------------------------------
@@ -4230,13 +5323,25 @@ fn open_id3_extra_window(parent: Option<&gtk4::Window>, path: std::path::PathBuf
 /// Filetypes, Media Library.
 ///
 /// Changes made in any tab are written back to `state.config` immediately
-/// when a control's value changes.  Pressing "Save & Close" (or closing the
+/// when a control's value changes.  Pressing "Close" (or closing the
 /// window) persists the config to disk.  `initial_tab` selects the starting
 /// tab page (0-indexed), or opens at the default page if `None`.
+/// `dark_mode` tracks the current theme for CSS reloads.
+/// `accent_hex_current` stores the current accent hex for theme toggles.
+/// `accent_rgba` is updated when accent changes to refresh playlist playing row color.
+/// `pl_store` is used to repaint the playing row when accent changes.
+#[allow(deprecated)]
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     initial_tab: Option<u32>,
+    dark_mode: Rc<Cell<bool>>,
+    accent_hex_current: Rc<RefCell<String>>,
+    accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
+    css_provider: Rc<gtk4::CssProvider>,
+    dark_css: Rc<String>,
+    light_css: Rc<String>,
+    pl_store: gtk4::ListStore,
 ) {
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — SparkAmp"));
@@ -4254,6 +5359,8 @@ fn open_settings_window(
 
     // ── Tab 0: Appearance ─────────────────────────────────────────────────
     {
+        use crate::config::{AccentColorChoice, ThemeChoice};
+
         let grid = Grid::new();
         grid.set_row_spacing(12);
         grid.set_column_spacing(16);
@@ -4277,20 +5384,237 @@ fn open_settings_window(
         }
         {
             let state_rc = state.clone();
+            let dark_mode_rc = dark_mode.clone();
+            let provider_rc = css_provider.clone();
+            let dark_css_rc = dark_css.clone();
+            let light_css_rc = light_css.clone();
             dd.connect_selected_notify(move |d| {
-                let mut s = state_rc.borrow_mut();
-                s.config.appearance.theme = match d.selected() {
+                let theme = match d.selected() {
                     0 => ThemeChoice::Dark,
                     _ => ThemeChoice::Light,
                 };
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.appearance.theme = theme.clone();
+                }
+                dark_mode_rc.set(matches!(theme, ThemeChoice::Dark));
+                // Reload CSS with new theme and current accent color.
+                let is_dark = matches!(theme, ThemeChoice::Dark);
+                let accent_hex =
+                    resolve_accent_hex(&state_rc.borrow().config.appearance.accent_color);
+                reload_css_accent(
+                    &provider_rc,
+                    &dark_css_rc,
+                    &light_css_rc,
+                    is_dark,
+                    &accent_hex,
+                );
             });
         }
         grid.attach(&dd, 1, 0, 1, 1);
 
-        // Row 1: Custom skin name (overrides Theme when non-empty).
+        // Row 1: Highlight color dropdown.
+        let accent_color_labels = [
+            "System Default",
+            "Blue",
+            "Green",
+            "Purple",
+            "Red",
+            "Orange",
+            "Yellow",
+            "White",
+            "Grey",
+            "Custom…",
+        ];
+        let lbl_accent = Label::new(Some("Highlight color"));
+        lbl_accent.set_halign(Align::Start);
+        grid.attach(&lbl_accent, 0, 1, 1, 1);
+
+        let dd_accent = DropDown::from_strings(&accent_color_labels);
+        let accent_container = GtkBox::new(Orientation::Horizontal, 4);
+        #[allow(deprecated)]
+        let custom_color_btn = gtk4::ColorButton::new();
+        custom_color_btn.set_visible(false);
+        accent_container.append(&dd_accent);
+        accent_container.append(&custom_color_btn);
+
+        // Initialize dropdown selection from config.
+        {
+            let accent_choice = state.borrow().config.appearance.accent_color.clone();
+            let custom_hex = match &accent_choice {
+                AccentColorChoice::Custom(hex) => Some(hex.clone()),
+                _ => None,
+            };
+            let selection = match &accent_choice {
+                AccentColorChoice::System => 0,
+                AccentColorChoice::Blue => 1,
+                AccentColorChoice::Green => 2,
+                AccentColorChoice::Purple => 3,
+                AccentColorChoice::Red => 4,
+                AccentColorChoice::Orange => 5,
+                AccentColorChoice::Yellow => 6,
+                AccentColorChoice::White => 7,
+                AccentColorChoice::Grey => 8,
+                AccentColorChoice::Custom(_) => {
+                    custom_color_btn.set_visible(true);
+                    9
+                }
+            };
+            dd_accent.set_selected(selection as u32);
+            if let Some(hex) = custom_hex {
+                if let Ok(color) = gdk::RGBA::parse(&hex) {
+                    custom_color_btn.set_rgba(&color);
+                }
+            }
+        }
+
+        // Handle accent color changes.
+        {
+            let state_rc = state.clone();
+            let provider_rc = css_provider.clone();
+            let dark_css_rc = dark_css.clone();
+            let light_css_rc = light_css.clone();
+            let dark_mode_rc = dark_mode.clone();
+            let accent_cell = accent_hex_current.clone();
+            let accent_rgba_rc = accent_rgba.clone();
+            let custom_btn = custom_color_btn.clone();
+            let pl_store_rc = pl_store.clone();
+
+            dd_accent.connect_selected_notify(move |d| {
+                let selection = d.selected();
+                let (accent_choice, _custom_hex) = match selection {
+                    0 => (AccentColorChoice::System, None),
+                    1 => (AccentColorChoice::Blue, None),
+                    2 => (AccentColorChoice::Green, None),
+                    3 => (AccentColorChoice::Purple, None),
+                    4 => (AccentColorChoice::Red, None),
+                    5 => (AccentColorChoice::Orange, None),
+                    6 => (AccentColorChoice::Yellow, None),
+                    7 => (AccentColorChoice::White, None),
+                    8 => (AccentColorChoice::Grey, None),
+                    _ => {
+                        // Custom: read from color button
+                        let rgba = custom_btn.rgba();
+                        let hex = format!(
+                            "#{:02x}{:02x}{:02x}",
+                            (rgba.red() * 255.0) as u8,
+                            (rgba.green() * 255.0) as u8,
+                            (rgba.blue() * 255.0) as u8
+                        );
+                        (AccentColorChoice::Custom(hex.clone()), Some(hex))
+                    }
+                };
+
+                // Show/hide custom color button.
+                custom_btn.set_visible(selection == 9);
+
+                // Update config.
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.appearance.accent_color = accent_choice.clone();
+                }
+
+                // Reload CSS with new accent color.
+                let is_dark = dark_mode_rc.get();
+                let accent_hex = resolve_accent_hex(&accent_choice);
+                *accent_cell.borrow_mut() = accent_hex.clone();
+                reload_css_accent(
+                    &provider_rc,
+                    &dark_css_rc,
+                    &light_css_rc,
+                    is_dark,
+                    &accent_hex,
+                );
+                // Update accent_rgba for playlist playing row color
+                if let Ok(rgba) = gdk::RGBA::parse(&accent_hex) {
+                    *accent_rgba_rc.borrow_mut() = Some(rgba);
+                }
+                // Repaint the currently playing row with new accent color
+                let playing_idx = state_rc.borrow().playlist.current_index;
+                let is_playing = matches!(
+                    *state_rc.borrow().player.state(),
+                    PlayerState::Playing | PlayerState::Paused
+                );
+                if is_playing && !state_rc.borrow().playlist.is_empty() {
+                    #[allow(deprecated)]
+                    if let Some(iter) = pl_store_rc.iter_nth_child(None, playing_idx as i32) {
+                        let rgba = accent_rgba_rc
+                            .borrow()
+                            .clone()
+                            .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
+                        #[allow(deprecated)]
+                        pl_store_rc.set_value(&iter, 4, &rgba.to_value());
+                    }
+                }
+            });
+
+            // Handle custom color button changes.
+            {
+                let state_rc2 = state.clone();
+                let provider_rc2 = css_provider.clone();
+                let dark_css_rc2 = dark_css.clone();
+                let light_css_rc2 = light_css.clone();
+                let dark_mode_rc2 = dark_mode.clone();
+                let accent_cell2 = accent_hex_current.clone();
+                let accent_rgba_rc2 = accent_rgba.clone();
+                let pl_store_rc2 = pl_store.clone();
+                #[allow(deprecated)]
+                custom_color_btn.connect_color_set(move |btn| {
+                    let rgba = btn.rgba();
+                    let hex = format!(
+                        "#{:02x}{:02x}{:02x}",
+                        (rgba.red() * 255.0) as u8,
+                        (rgba.green() * 255.0) as u8,
+                        (rgba.blue() * 255.0) as u8
+                    );
+                    let accent_choice = AccentColorChoice::Custom(hex.clone());
+
+                    // Update config.
+                    {
+                        let mut s = state_rc2.borrow_mut();
+                        s.config.appearance.accent_color = accent_choice.clone();
+                    }
+
+                    // Reload CSS with new accent color.
+                    let is_dark = dark_mode_rc2.get();
+                    let accent_hex = resolve_accent_hex(&accent_choice);
+                    *accent_cell2.borrow_mut() = accent_hex.clone();
+                    reload_css_accent(
+                        &provider_rc2,
+                        &dark_css_rc2,
+                        &light_css_rc2,
+                        is_dark,
+                        &accent_hex,
+                    );
+                    // Update accent_rgba for playlist playing row color
+                    *accent_rgba_rc2.borrow_mut() = Some(rgba.clone());
+                    // Repaint the currently playing row with new accent color
+                    let playing_idx = state_rc2.borrow().playlist.current_index;
+                    let is_playing = matches!(
+                        *state_rc2.borrow().player.state(),
+                        PlayerState::Playing | PlayerState::Paused
+                    );
+                    if is_playing && !state_rc2.borrow().playlist.is_empty() {
+                        #[allow(deprecated)]
+                        if let Some(iter) = pl_store_rc2.iter_nth_child(None, playing_idx as i32) {
+                            #[allow(deprecated)]
+                            let rgba = accent_rgba_rc2
+                                .borrow()
+                                .clone()
+                                .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
+                            #[allow(deprecated)]
+                            pl_store_rc2.set_value(&iter, 4, &rgba.to_value());
+                        }
+                    }
+                });
+            }
+        }
+        grid.attach(&accent_container, 1, 1, 1, 1);
+
+        // Row 2: Custom skin name (overrides Theme when non-empty).
         let lbl_skin = Label::new(Some("Custom skin name"));
         lbl_skin.set_halign(Align::Start);
-        grid.attach(&lbl_skin, 0, 1, 1, 1);
+        grid.attach(&lbl_skin, 0, 2, 1, 1);
 
         let entry_skin = Entry::new();
         entry_skin.set_text(&state.borrow().config.appearance.custom_skin);
@@ -4302,7 +5626,7 @@ fn open_settings_window(
                 state_rc.borrow_mut().config.appearance.custom_skin = e.text().to_string();
             });
         }
-        grid.attach(&entry_skin, 1, 1, 1, 1);
+        grid.attach(&entry_skin, 1, 2, 1, 1);
 
         let tab_lbl = Label::new(Some("Appearance"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -4310,6 +5634,8 @@ fn open_settings_window(
 
     // ── Tab 1: Behavior ───────────────────────────────────────────────────
     {
+        use crate::config::PlaylistAddBehavior;
+
         let grid = Grid::new();
         grid.set_row_spacing(12);
         grid.set_column_spacing(16);
@@ -4332,6 +5658,31 @@ fn open_settings_window(
         }
         grid.attach(&chk, 1, 0, 1, 1);
 
+        // Row 1: Default playlist behavior for media library add.
+        let lbl_add = Label::new(Some("Media library → playlist"));
+        lbl_add.set_halign(Align::Start);
+        grid.attach(&lbl_add, 0, 1, 1, 1);
+
+        let dd_add = DropDown::from_strings(&["Append to current", "Replace current"]);
+        {
+            let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+            dd_add.set_selected(match behavior {
+                PlaylistAddBehavior::Append => 0,
+                PlaylistAddBehavior::Replace => 1,
+            });
+        }
+        {
+            let state_rc = state.clone();
+            dd_add.connect_selected_notify(move |d| {
+                let behavior = match d.selected() {
+                    1 => PlaylistAddBehavior::Replace,
+                    _ => PlaylistAddBehavior::Append,
+                };
+                state_rc.borrow_mut().config.behavior.playlist_add_behavior = behavior;
+            });
+        }
+        grid.attach(&dd_add, 1, 1, 1, 1);
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
@@ -4346,30 +5697,296 @@ fn open_settings_window(
         grid.set_margin_start(16);
         grid.set_margin_end(16);
 
+        // ── Mode selector ──────────────────────────────────────────────
         let lbl = Label::new(Some("Visualizer mode"));
         lbl.set_halign(Align::Start);
         grid.attach(&lbl, 0, 0, 1, 1);
 
-        // DropDown: index 0 = Bars, index 1 = Oscilloscope.
-        let dd = DropDown::from_strings(&["Bars", "Oscilloscope"]);
+        // DropDown: index 0 = Bars, index 1 = Waveform.
+        let dd_mode = DropDown::from_strings(&["Bars", "Waveform"]);
         {
             let mode = state.borrow().config.visualizer.mode.clone();
-            dd.set_selected(match mode {
+            dd_mode.set_selected(match mode {
                 VisualizerMode::Bars => 0,
-                VisualizerMode::Oscilloscope => 1,
+                VisualizerMode::Waveform => 1,
             });
         }
         {
             let state_rc = state.clone();
-            dd.connect_selected_notify(move |d| {
+            dd_mode.connect_selected_notify(move |d| {
                 let mut s = state_rc.borrow_mut();
                 s.config.visualizer.mode = match d.selected() {
                     0 => VisualizerMode::Bars,
-                    _ => VisualizerMode::Oscilloscope,
+                    _ => VisualizerMode::Waveform,
                 };
             });
         }
-        grid.attach(&dd, 1, 0, 1, 1);
+        grid.attach(&dd_mode, 1, 0, 1, 1);
+
+        // ── Bars Settings (visible only when Bars mode is selected) ───
+        let bars_settings_box = Grid::new();
+        bars_settings_box.set_row_spacing(12);
+        bars_settings_box.set_column_spacing(16);
+        bars_settings_box.set_margin_top(16);
+        bars_settings_box.set_margin_start(16);
+        bars_settings_box.attach(&Label::new(Some("Bars Settings")), 0, 0, 2, 1);
+
+        // Mirror bars toggle
+        let lbl_mirror = Label::new(Some("Mirror bars"));
+        lbl_mirror.set_halign(Align::Start);
+        bars_settings_box.attach(&lbl_mirror, 0, 1, 1, 1);
+
+        let chk_mirror = CheckButton::new();
+        {
+            let bars_mirror = state.borrow().config.visualizer.bars_mirror;
+            chk_mirror.set_active(bars_mirror);
+        }
+        {
+            let state_rc = state.clone();
+            chk_mirror.connect_toggled(move |c| {
+                state_rc.borrow_mut().config.visualizer.bars_mirror = c.is_active();
+            });
+        }
+        bars_settings_box.attach(&chk_mirror, 1, 1, 1, 1);
+
+        // Color zones selector
+        let lbl_zones = Label::new(Some("Color zones"));
+        lbl_zones.set_halign(Align::Start);
+        bars_settings_box.attach(&lbl_zones, 0, 2, 1, 1);
+
+        let spin_zones = SpinButton::with_range(1.0, 6.0, 1.0);
+        {
+            let zones = state.borrow().config.visualizer.color_zones;
+            spin_zones.set_value(zones as f64);
+        }
+        bars_settings_box.attach(&spin_zones, 1, 2, 1, 1);
+
+        // Zone colors - create 6 color buttons (one per possible zone)
+        let zone_color_buttons: Vec<(Label, ColorButton)> = (0..6)
+            .map(|i| {
+                let lbl = Label::new(Some(&format!("Zone {} color:", i + 1)));
+                lbl.set_halign(Align::Start);
+
+                let btn = ColorButton::new();
+                let zone_colors = state.borrow().config.visualizer.zone_colors.clone();
+                if let Some(hex) = zone_colors.get(i) {
+                    if let Ok(rgba) = gdk::RGBA::parse(hex) {
+                        btn.set_rgba(&rgba);
+                    }
+                }
+
+                (lbl, btn)
+            })
+            .collect();
+
+        // Add color buttons to grid (start at row 3)
+        for (i, (lbl, btn)) in zone_color_buttons.iter().enumerate() {
+            bars_settings_box.attach(lbl, 0, 3 + i as i32, 1, 1);
+            bars_settings_box.attach(btn, 1, 3 + i as i32, 1, 1);
+            // Start with all hidden; they'll be shown based on zone count
+            lbl.set_visible(false);
+            btn.set_visible(false);
+        }
+
+        // Helper to update zone button visibility
+        let update_zone_visibility = {
+            let zone_labels: Vec<_> = zone_color_buttons.iter().map(|(l, _)| l.clone()).collect();
+            let zone_buttons: Vec<_> = zone_color_buttons.iter().map(|(_, b)| b.clone()).collect();
+            move |num_zones: u8| {
+                for i in 0..6 {
+                    let visible = (i as u8) < num_zones;
+                    zone_labels[i].set_visible(visible);
+                    zone_buttons[i].set_visible(visible);
+                }
+            }
+        };
+
+        // Connect zone count changes
+        {
+            let state_rc = state.clone();
+            let update_zone_visibility = update_zone_visibility.clone();
+            spin_zones.connect_value_changed(move |s| {
+                let num_zones = s.value() as u8;
+                state_rc.borrow_mut().config.visualizer.color_zones = num_zones;
+                update_zone_visibility(num_zones);
+            });
+        }
+
+        // Connect color button signals
+        for (i, (_, btn)) in zone_color_buttons.iter().enumerate() {
+            let state_rc = state.clone();
+            btn.connect_color_set(move |button| {
+                let rgba = button.rgba();
+                let hex = format!(
+                    "#{:02x}{:02x}{:02x}",
+                    (rgba.red() * 255.0) as u8,
+                    (rgba.green() * 255.0) as u8,
+                    (rgba.blue() * 255.0) as u8,
+                );
+                let mut s = state_rc.borrow_mut();
+                let zone_colors = &mut s.config.visualizer.zone_colors;
+                // Ensure we have at least i+1 entries
+                while zone_colors.len() <= i {
+                    zone_colors.push("#000000".to_string());
+                }
+                zone_colors[i] = hex;
+            });
+        }
+
+        // Set initial visibility based on current zone count
+        {
+            let num_zones = state.borrow().config.visualizer.color_zones;
+            update_zone_visibility(num_zones);
+        }
+
+        // Show/hide bars settings based on mode
+        bars_settings_box.set_visible(false); // Start hidden
+        {
+            let bars_settings = bars_settings_box.clone();
+            dd_mode.connect_selected_notify(move |d| {
+                bars_settings.set_visible(d.selected() == 0);
+            });
+        }
+        {
+            let bars_settings = bars_settings_box.clone();
+            bars_settings.set_visible(
+                state.borrow().config.visualizer.mode == VisualizerMode::Bars,
+            );
+        }
+
+        grid.attach(&bars_settings_box, 0, 1, 2, 1);
+
+        // ── Waveform Settings (visible only when Waveform mode is selected) ─
+        let wf_settings_box = Grid::new();
+        wf_settings_box.set_row_spacing(12);
+        wf_settings_box.set_column_spacing(16);
+        wf_settings_box.set_margin_top(16);
+        wf_settings_box.set_margin_start(16);
+        wf_settings_box.attach(&Label::new(Some("Waveform Settings")), 0, 0, 2, 1);
+
+        // Style selector (Lines / Filled)
+        let lbl_wf_style = Label::new(Some("Style"));
+        lbl_wf_style.set_halign(Align::Start);
+        wf_settings_box.attach(&lbl_wf_style, 0, 1, 1, 1);
+
+        let dd_wf_style = DropDown::from_strings(&["Lines", "Filled"]);
+        {
+
+            let cur = state.borrow().config.visualizer.waveform_style.clone();
+            dd_wf_style.set_selected(match cur {
+                WaveformStyle::Lines => 0,
+                WaveformStyle::Filled => 1,
+            });
+        }
+        {
+
+            let state_rc = state.clone();
+            dd_wf_style.connect_selected_notify(move |d| {
+                state_rc.borrow_mut().config.visualizer.waveform_style = match d.selected() {
+                    1 => WaveformStyle::Filled,
+                    _ => WaveformStyle::Lines,
+                };
+            });
+        }
+        wf_settings_box.attach(&dd_wf_style, 1, 1, 1, 1);
+
+        // Color zones count
+        let lbl_wf_zones = Label::new(Some("Color zones"));
+        lbl_wf_zones.set_halign(Align::Start);
+        wf_settings_box.attach(&lbl_wf_zones, 0, 2, 1, 1);
+
+        let spin_wf_zones = SpinButton::with_range(1.0, 6.0, 1.0);
+        {
+            let zones = state.borrow().config.visualizer.waveform_color_zones;
+            spin_wf_zones.set_value(zones as f64);
+        }
+        wf_settings_box.attach(&spin_wf_zones, 1, 2, 1, 1);
+
+        // 6 zone colour buttons
+        let wf_zone_color_buttons: Vec<(Label, ColorButton)> = (0..6)
+            .map(|i| {
+                let lbl = Label::new(Some(&format!("Zone {} color:", i + 1)));
+                lbl.set_halign(Align::Start);
+                let btn = ColorButton::new();
+                let colors = state.borrow().config.visualizer.waveform_zone_colors.clone();
+                if let Some(hex) = colors.get(i) {
+                    if let Ok(rgba) = gdk::RGBA::parse(hex) {
+                        btn.set_rgba(&rgba);
+                    }
+                }
+                (lbl, btn)
+            })
+            .collect();
+
+        for (i, (lbl, btn)) in wf_zone_color_buttons.iter().enumerate() {
+            wf_settings_box.attach(lbl, 0, 3 + i as i32, 1, 1);
+            wf_settings_box.attach(btn, 1, 3 + i as i32, 1, 1);
+            lbl.set_visible(false);
+            btn.set_visible(false);
+        }
+
+        let update_wf_zone_visibility = {
+            let lbls: Vec<_> = wf_zone_color_buttons.iter().map(|(l, _)| l.clone()).collect();
+            let btns: Vec<_> = wf_zone_color_buttons.iter().map(|(_, b)| b.clone()).collect();
+            move |num: u8| {
+                for i in 0..6 {
+                    let v = (i as u8) < num;
+                    lbls[i].set_visible(v);
+                    btns[i].set_visible(v);
+                }
+            }
+        };
+
+        {
+            let state_rc = state.clone();
+            let upd = update_wf_zone_visibility.clone();
+            spin_wf_zones.connect_value_changed(move |s| {
+                let n = s.value() as u8;
+                state_rc.borrow_mut().config.visualizer.waveform_color_zones = n;
+                upd(n);
+            });
+        }
+
+        for (i, (_, btn)) in wf_zone_color_buttons.iter().enumerate() {
+            let state_rc = state.clone();
+            btn.connect_color_set(move |button| {
+                let rgba = button.rgba();
+                let hex = format!(
+                    "#{:02x}{:02x}{:02x}",
+                    (rgba.red() * 255.0) as u8,
+                    (rgba.green() * 255.0) as u8,
+                    (rgba.blue() * 255.0) as u8,
+                );
+                let mut s = state_rc.borrow_mut();
+                let colors = &mut s.config.visualizer.waveform_zone_colors;
+                while colors.len() <= i {
+                    colors.push("#000000".to_string());
+                }
+                colors[i] = hex;
+            });
+        }
+
+        {
+            let n = state.borrow().config.visualizer.waveform_color_zones;
+            update_wf_zone_visibility(n);
+        }
+
+        // Show/hide waveform settings based on mode
+        wf_settings_box.set_visible(false);
+        {
+            let wf_settings = wf_settings_box.clone();
+            dd_mode.connect_selected_notify(move |d| {
+                wf_settings.set_visible(d.selected() == 1);
+            });
+        }
+        {
+            let wf_settings = wf_settings_box.clone();
+            wf_settings.set_visible(
+                state.borrow().config.visualizer.mode == VisualizerMode::Waveform,
+            );
+        }
+
+        grid.attach(&wf_settings_box, 0, 2, 2, 1);
 
         let tab_lbl = Label::new(Some("Visualizer"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -4527,89 +6144,113 @@ fn open_settings_window(
                     let Some(path_str) = path else {
                         return;
                     };
+                    // Refuse to start a second concurrent scan — only one ML
+                    // scan may run at a time, from any source.
+                    if state_rc.borrow().ml_scan.is_some() {
+                        status_rc.set_text("Scan already in progress — please wait");
+                        return;
+                    }
                     let path_for_thread = path_str.clone();
 
-                    state_rc
-                        .borrow()
-                        .pending_bg_ops
-                        .set(state_rc.borrow().pending_bg_ops.get() + 1);
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let tx2 = tx.clone();
+                    let cancel_flag = start_ml_scan(&state_rc, ScanType::AddFolder, 0);
+                    status_rc.set_text("Reading tags…");
+
+                    // Three channels: fast done, metadata progress, final result.
+                    let (fast_tx, fast_rx) = std::sync::mpsc::channel::<Result<usize, String>>();
+                    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
+                    let (result_tx, result_rx) =
+                        std::sync::mpsc::channel::<Result<(bool, usize), String>>();
 
                     std::thread::spawn(move || {
-                        let result = {
-                            let lib = match crate::media_library::MediaLibrary::open_at(
-                                &crate::media_library::MediaLibrary::db_path_pub(),
-                            ) {
-                                Ok(l) => l,
-                                Err(e) => {
-                                    let _ = tx2.send(MlSettingsMsg::Error(e.to_string()));
-                                    return;
-                                }
-                            };
-                            use crate::media_library::AddFolderResult;
-                            match lib.add_folder(&path_for_thread) {
-                                Ok(add_result) => {
-                                    let folder_id = add_result.id();
-                                    let is_new = matches!(add_result, AddFolderResult::New(_));
-                                    match lib.rescan_folder_fast(folder_id, &path_for_thread) {
-                                        Ok((added, _removed)) => {
-                                            MlSettingsMsg::Done { is_new, added }
-                                        }
-                                        Err(e) => MlSettingsMsg::Error(e.to_string()),
-                                    }
-                                }
-                                Err(e) => MlSettingsMsg::Error(e.to_string()),
+                        let lib = match crate::media_library::MediaLibrary::open_at(
+                            &crate::media_library::MediaLibrary::db_path_pub(),
+                        ) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                let _ = fast_tx.send(Err(format!("DB error: {e}")));
+                                return;
                             }
                         };
-                        let _ = tx.send(result);
+
+                        let folder_id = match lib.add_folder(&path_for_thread) {
+                            Ok(r) => r.id(),
+                            Err(e) => {
+                                let _ = fast_tx.send(Err(format!("Could not add: {e}")));
+                                return;
+                            }
+                        };
+
+                        // Phase 1: fast scan
+                        if let Err(e) = lib.rescan_folder_fast(folder_id, &path_for_thread) {
+                            let _ = fast_tx.send(Err(format!("Fast scan error: {e}")));
+                            return;
+                        }
+                        let _ = fast_tx.send(Ok(0usize));
+
+                        // Phase 2: metadata scan
+                        let count = lib
+                            .scan_folder(folder_id, &cancel_flag, |c, t| {
+                                let _ = progress_tx.send((c, t));
+                            })
+                            .map(|(scanned, _, _)| scanned)
+                            .unwrap_or(0);
+                        let _ = result_tx.send(Ok((true, count)));
                     });
 
-                    #[derive(Debug)]
-                    enum MlSettingsMsg {
-                        Done { is_new: bool, added: usize },
-                        Error(String),
-                    }
+                    let fast_rx = std::cell::RefCell::new(fast_rx);
+                    let progress_rx = std::cell::RefCell::new(progress_rx);
+                    let result_rx = std::cell::RefCell::new(result_rx);
+                    let fast_handled = std::cell::Cell::new(false);
+                    let path_str_clone = path_str.clone();
+                    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                        // Handle fast scan completion
+                        if !fast_handled.get() {
+                            if let Ok(fast_result) = fast_rx.borrow().try_recv() {
+                                fast_handled.set(true);
+                                if let Err(e) = fast_result {
+                                    status_rc.set_text(&e);
+                                    complete_ml_scan(&state_rc);
+                                    return glib::ControlFlow::Break;
+                                }
+                                rebuild_cb();
+                                // Rebuild ML window to show added files
+                                if let Some(ref cb) = state_rc.borrow().rebuild_ml_callback {
+                                    cb();
+                                }
+                            }
+                        }
 
-                    let rebuild = rebuild_cb.clone();
-                    let status = status_rc.clone();
-                    glib::idle_add_local(move || {
-                        let msg = match rx.recv() {
-                            Ok(m) => m,
-                            Err(_) => return glib::ControlFlow::Continue,
-                        };
-                        rebuild();
-                        match msg {
-                            MlSettingsMsg::Done { is_new, added } => {
-                                let path_short = if path_str.len() > 40 {
-                                    format!("{}…", &path_str[..40])
-                                } else {
-                                    path_str.clone()
-                                };
-                                if is_new {
-                                    status.set_text(&format!(
-                                        "Added: {} ({added} track{})",
-                                        path_short,
-                                        if added == 1 { "" } else { "s" }
-                                    ));
-                                } else {
-                                    status.set_text(&format!(
-                                        "Rescanned: {} — {} track{} in library",
-                                        path_short,
-                                        added,
-                                        if added == 1 { "" } else { "s" }
+                        // Drain progress updates
+                        while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                            update_ml_scan_progress(&state_rc, current, total);
+                            status_rc.set_text(&format!("Reading tags {}/{}…", current, total));
+                        }
+
+                        // Check for completion
+                        if let Ok(result) = result_rx.borrow().try_recv() {
+                            rebuild_cb();
+                            match result {
+                                Err(e) => status_rc.set_text(&e),
+                                Ok((_, count)) => {
+                                    let path_short = if path_str_clone.len() > 40 {
+                                        format!("{}…", &path_str_clone[..40])
+                                    } else {
+                                        path_str_clone.clone()
+                                    };
+                                    status_rc.set_text(&format!(
+                                        "Added: {} ({} tracks)",
+                                        path_short, count
                                     ));
                                 }
                             }
-                            MlSettingsMsg::Error(e) => {
-                                status.set_text(&format!("Error: {e}"));
+                            if let Some(ref cb) = state_rc.borrow().rebuild_ml_callback {
+                                cb();
                             }
+                            complete_ml_scan(&state_rc);
+                            return glib::ControlFlow::Break;
                         }
-                        state_rc
-                            .borrow()
-                            .pending_bg_ops
-                            .set(state_rc.borrow().pending_bg_ops.get() - 1);
-                        glib::ControlFlow::Break
+
+                        glib::ControlFlow::Continue
                     });
                 },
             );
@@ -4630,12 +6271,64 @@ fn open_settings_window(
                     .unwrap_or_default();
                 if idx < folders.len() {
                     let (folder_id, folder_path) = folders[idx].clone();
-                    if let Some(ref lib) = btn_rm_state.borrow().media_lib {
-                        if lib.remove_folder(folder_id).is_ok() {
-                            btn_rm_rebuild();
-                            btn_rm_status.set_text(&format!("Removed: {}", folder_path));
-                        }
-                    }
+
+                    // Clone for use in dialog callback
+                    let state_for_dialog = btn_rm_state.clone();
+                    let rebuild_for_dialog = btn_rm_rebuild.clone();
+                    let status_for_dialog = btn_rm_status.clone();
+
+                    let dialog = gtk4::AlertDialog::builder()
+                        .message("Remove Folder from Library")
+                        .detail("Removing this folder will remove all files in this folder from the media library.\n\nNo files will be deleted from your disk, but they will not appear in the library any longer.\n\nContinue?")
+                        .buttons(vec!["Cancel".to_string(), "Continue".to_string()])
+                        .cancel_button(0)
+                        .default_button(0)
+                        .modal(true)
+                        .build();
+
+                    let folder_id_cb = folder_id;
+                    let folder_path_cb = folder_path.clone();
+
+                    dialog.choose(
+                        None::<&gtk4::Window>,
+                        None::<&gio::Cancellable>,
+                        move |result| {
+                            if result == Ok(1) {
+                                status_for_dialog.set_text(&format!("Removing: {}", folder_path_cb));
+
+                                // Soft delete tracks on main thread
+                                if let Some(ref lib) = state_for_dialog.borrow().media_lib {
+                                    if let Ok(track_ids) = lib.track_ids_for_folder(folder_id_cb) {
+                                        let _ = lib.soft_delete_tracks(&track_ids);
+                                    }
+                                }
+
+                                // Rebuild UI immediately
+                                rebuild_for_dialog();
+                                status_for_dialog.set_text(&format!("Removed: {}", folder_path_cb));
+
+                                // Trigger Media Library window to refresh if open
+                                if let Some(ref cb) = state_for_dialog.borrow().rebuild_ml_callback {
+                                    cb();
+                                }
+
+                                // Background: purge deleted tracks, then delete folder
+                                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                                let folder_id_bg = folder_id_cb;
+
+                                std::thread::spawn(move || {
+                                    if let Ok(lib) =
+                                        crate::media_library::MediaLibrary::open_at(&db_path)
+                                    {
+                                        // Purge all soft-deleted records
+                                        let _ = lib.purge_deleted_tracks();
+                                        // Then delete the folder entry
+                                        let _ = lib.remove_folder(folder_id_bg);
+                                    }
+                                });
+                            }
+                        },
+                    );
                 }
             }
         });
@@ -4646,6 +6339,178 @@ fn open_settings_window(
         grid.attach(&folder_scroll, 0, 1, 4, 1);
         grid.attach(&status_lbl, 0, 2, 4, 1);
 
+        // Row 3: Rescan button (shares state with media library window).
+        let lbl_rescan = Label::new(Some("Scan:"));
+        lbl_rescan.set_halign(Align::Start);
+
+        let btn_rescan = Button::with_label("⟳ Rescan");
+        let btn_cancel_scan = Button::with_label("✕ Cancel Scan");
+        btn_cancel_scan.set_visible(false);
+
+        let status_scan = Label::new(None);
+        status_scan.set_halign(Align::Start);
+        status_scan.add_css_class("dim-label");
+
+        // Update button visibility based on scan state.
+        // Clone references for the closure to avoid moving the originals.
+        let state_rc_for_update = state.clone();
+        let btn_rescan_ref = btn_rescan.clone();
+        let btn_cancel_ref = btn_cancel_scan.clone();
+        let btn_add_folder_ref = btn_add_folder.clone();
+        let status_ref = status_scan.clone();
+        let update_scan_ui = Rc::new(move || {
+            let scan_state = state_rc_for_update.borrow().ml_scan.clone();
+            if let Some(scan) = scan_state {
+                btn_rescan_ref.set_visible(false);
+                btn_cancel_ref.set_visible(true);
+                // Disable Add Folder so a second concurrent scan cannot be started.
+                btn_add_folder_ref.set_sensitive(false);
+                if scan.total > 0 {
+                    status_ref.set_text(&format!("Scanning {} / {}…", scan.current, scan.total));
+                } else {
+                    status_ref.set_text("Scanning…");
+                }
+            } else {
+                btn_rescan_ref.set_visible(true);
+                btn_cancel_ref.set_visible(false);
+                btn_add_folder_ref.set_sensitive(true);
+                status_ref.set_text("");
+            }
+        });
+
+        // Initial UI state.
+        update_scan_ui();
+
+        // Refresh scan UI when this tab is shown.
+        {
+            let update_cb = update_scan_ui.clone();
+            notebook.connect_switch_page(move |_, _, _| {
+                update_cb();
+            });
+        }
+
+        // Rescan button: trigger a full rescan of all watched folders.
+        // Note: This shares state with the media library window via state.ml_scan.
+        {
+            let state_rc = state.clone();
+            let btn_rescan_ref = btn_rescan.clone();
+            let btn_cancel_ref = btn_cancel_scan.clone();
+            let status_ref = status_scan.clone();
+
+            btn_rescan.connect_clicked(move |_| {
+                if state_rc.borrow().ml_scan.is_some() {
+                    status_ref.set_text("Scan already in progress");
+                    return;
+                }
+                if state_rc.borrow().media_lib.is_none() {
+                    status_ref.set_text("Error: Media library not available");
+                    return;
+                }
+
+                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+
+                let cancel_flag = start_ml_scan(&state_rc, ScanType::Rescan, 0);
+                status_ref.set_text("Reading tags…");
+                btn_rescan_ref.set_sensitive(false);
+                btn_cancel_ref.set_visible(true);
+
+                let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+                std::thread::spawn(move || {
+                    let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            let _ = result_tx.send(Err(format!("DB error: {e}")));
+                            return;
+                        }
+                    };
+                    let result = lib
+                        .scan_all_folders(&cancel_flag, |current, total| {
+                            let _ = progress_tx.send((current, total));
+                        })
+                        .map_err(|e| e.to_string());
+                    let _ = result_tx.send(result);
+                });
+
+                let progress_rx = std::cell::RefCell::new(progress_rx);
+                let result_rx = std::cell::RefCell::new(result_rx);
+                let state_rc2 = state_rc.clone();
+                let status_ref2 = status_ref.clone();
+                let btn_rescan_ref2 = btn_rescan_ref.clone();
+                let btn_cancel_ref2 = btn_cancel_ref.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                    // Check for progress updates
+                    while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                        update_ml_scan_progress(&state_rc2, current, total);
+                        status_ref2.set_text(&format!("Reading tags {}/{}…", current, total));
+                    }
+
+                    // Check for completion
+                    if let Ok(result) = result_rx.borrow().try_recv() {
+                        complete_ml_scan(&state_rc2);
+                        match result {
+                            Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
+                            Ok(_) => status_ref2.set_text("Scan complete"),
+                        }
+                        btn_rescan_ref2.set_sensitive(true);
+                        btn_cancel_ref2.set_visible(false);
+                        glib::ControlFlow::Break
+                    } else {
+                        glib::ControlFlow::Continue
+                    }
+                });
+            });
+        }
+
+        // Cancel scan button.
+        {
+            let state_rc = state.clone();
+            let status_ref = status_scan.clone();
+            btn_cancel_scan.connect_clicked(move |_| {
+                cancel_ml_scan(&state_rc);
+                status_ref.set_text("Cancelling…");
+            });
+        }
+
+        // Polling timer to sync scan state with UI.
+        {
+            let update_ui = update_scan_ui.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                update_ui();
+                glib::ControlFlow::Continue
+            });
+        }
+
+        grid.attach(&lbl_rescan, 0, 3, 1, 1);
+        grid.attach(&btn_rescan, 1, 3, 1, 1);
+        grid.attach(&btn_cancel_scan, 1, 3, 1, 1);
+        grid.attach(&status_scan, 2, 3, 2, 1);
+
+        // Row 4: Deduplication
+        let sep_row4 = gtk4::Separator::new(Orientation::Horizontal);
+        sep_row4.set_margin_top(4);
+        sep_row4.set_margin_bottom(4);
+        grid.attach(&sep_row4, 0, 4, 4, 1);
+
+        let btn_dedupe = Button::with_label("Deduplicate Music…");
+        btn_dedupe.set_tooltip_text(Some(
+            "Find tracks that appear more than once in your library",
+        ));
+        btn_dedupe.set_hexpand(false);
+        btn_dedupe.set_halign(Align::Start);
+        {
+            let state_rc = state.clone();
+            let win_wk = win.downgrade();
+            btn_dedupe.connect_clicked(move |_| {
+                open_dedupe_window(
+                    win_wk.upgrade().as_ref(),
+                    state_rc.clone(),
+                );
+            });
+        }
+        grid.attach(&btn_dedupe, 0, 5, 4, 1);
+
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
@@ -4655,25 +6520,24 @@ fn open_settings_window(
         notebook.set_current_page(Some(tab));
     }
 
-    // ── Save & Close button ───────────────────────────────────────────────
-    let save_btn = Button::with_label("Save & Close");
-    save_btn.set_margin_top(4);
-    save_btn.set_margin_bottom(8);
-    save_btn.set_margin_start(8);
-    save_btn.set_margin_end(8);
-    save_btn.set_halign(Align::End);
+    // ── Close button ───────────────────────────────────────────────────────
+    // Changes are applied immediately; this button just closes the window.
+    let close_btn = Button::with_label("Close");
+    close_btn.set_margin_top(4);
+    close_btn.set_margin_bottom(8);
+    close_btn.set_margin_start(8);
+    close_btn.set_margin_end(8);
+    close_btn.set_halign(Align::End);
     {
-        let state_rc = state.clone();
         let win_wk = win.downgrade();
-        save_btn.connect_clicked(move |_| {
-            let _ = state_rc.borrow().config.save();
+        close_btn.connect_clicked(move |_| {
             if let Some(w) = win_wk.upgrade() {
                 w.close();
             }
         });
     }
 
-    // Also save when the window is closed via the window-manager button.
+    // Save when the window is closed via the window-manager button.
     {
         let state_rc = state.clone();
         win.connect_close_request(move |_| {
@@ -4684,7 +6548,7 @@ fn open_settings_window(
 
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&notebook);
-    vbox.append(&save_btn);
+    vbox.append(&close_btn);
     win.set_child(Some(&vbox));
     win.present();
 }
@@ -4761,6 +6625,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     let init_preamp = state.borrow().config.equalizer.preamp.clamp(0.5, 1.5);
     let preamp_adj = Adjustment::new(init_preamp, 0.5, 1.5, 0.01, 0.1, 0.0);
     let preamp_scale = Scale::new(Orientation::Horizontal, Some(&preamp_adj));
+    preamp_scale.add_css_class("eq-scale");
     preamp_scale.set_hexpand(true);
     preamp_scale.set_draw_value(false);
     preamp_scale.add_mark(0.5, gtk4::PositionType::Bottom, Some("50%"));
@@ -4818,6 +6683,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
         // Vertical scale: range −24..+12, step 1, page 3.
         let adj = Adjustment::new(bands_snapshot[i], -24.0, 12.0, 1.0, 3.0, 0.0);
         let scale = Scale::new(Orientation::Vertical, Some(&adj));
+        scale.add_css_class("eq-scale");
         scale.set_inverted(true); // top = positive, bottom = negative
         scale.set_draw_value(false);
         scale.set_vexpand(true);
@@ -4929,11 +6795,8 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     // ── Save config on close ─────────────────────────────────────────────────
     win.connect_close_request({
         let state_rc = state.clone();
-        move |w| {
-            let mut cfg = state_rc.borrow().config.clone();
-            cfg.window.ml_width = w.width();
-            cfg.window.ml_height = w.height();
-            let _ = cfg.save();
+        move |_w| {
+            let _ = state_rc.borrow().config.save();
             glib::Propagation::Proceed
         }
     });
@@ -4943,16 +6806,650 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Deduplication window
 // ---------------------------------------------------------------------------
-//
-// These tests cover `AppState` business logic without requiring a running
-// GTK display.  They mirror the TUI test suite in `tui/mod.rs` so that the
-// two frontends are held to the same behavioural contract.
-//
-// GStreamer must be initialised before any `Player` is created, so every
-// test helper calls `gstreamer::init()` (which is idempotent after the first
-// call).
+
+/// Messages sent from the background scan thread to the GTK tick loop.
+enum DedupeMsg {
+    Status(String),
+    Done(Vec<crate::dedupe::DupeGroup>),
+}
+
+/// Open the standalone Deduplicate Music window.
+///
+/// Results are shown in a single virtualised `TreeView` backed by a
+/// `TreeStore` so that scrolling stays smooth even with thousands of
+/// duplicate groups.  Group rows are collapsed by default; clicking the
+/// expander reveals each group's individual file rows.
+///
+/// The window immediately starts a background scan of the media library.  It
+/// is independent and non-modal so the user can continue playback while
+/// waiting.  A cancel button with a confirmation prompt guards against
+/// accidental cancellation; closing the window while scanning also prompts.
+///
+/// ## TreeStore column layout
+///
+/// | # | Type   | Meaning                                          |
+/// |---|--------|--------------------------------------------------|
+/// | 0 | String | Primary label (group heading or track path)      |
+/// | 1 | String | Secondary (confidence+count, or track title)     |
+/// | 2 | String | Artist (empty for group rows)                    |
+/// | 3 | String | Album  (empty for group rows)                    |
+/// | 4 | String | Duration (empty for group rows)                  |
+/// | 5 | String | File size (empty for group rows)                 |
+/// | 6 | String | Bitrate  (empty for group rows)                  |
+/// | 7 | String | Format   (empty for group rows)                  |
+/// | 8 | i64    | Track ID (0 for group rows)                      |
+/// | 9 | bool   | `true` → group row, `false` → track row          |
+/// |10 | i32    | Pango weight (700 group, 400 track)              |
+/// |11 | String | Full path (empty for group rows; for file-open)  |
+fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    let win = gtk4::Window::new();
+    win.set_title(Some("Deduplicate Music — Sparkamp"));
+    win.set_default_size(900, 600);
+    win.set_resizable(true);
+    if let Some(p) = parent {
+        win.set_transient_for(Some(p));
+    }
+
+    // ── Layout ───────────────────────────────────────────────────────────────
+    let root = GtkBox::new(Orientation::Vertical, 0);
+
+    // Status bar
+    let status_row = GtkBox::new(Orientation::Horizontal, 8);
+    status_row.set_margin_top(8);
+    status_row.set_margin_bottom(4);
+    status_row.set_margin_start(10);
+    status_row.set_margin_end(10);
+
+    let status_lbl = Label::new(Some("Preparing scan…"));
+    status_lbl.set_hexpand(true);
+    status_lbl.set_halign(Align::Start);
+
+    let action_btn = Button::with_label("✕ Cancel");
+    action_btn.add_css_class("pl-btn");
+
+    status_row.append(&status_lbl);
+    status_row.append(&action_btn);
+
+    // ── Single virtualised TreeView for all groups and their tracks ───────────
+    // Using TreeStore so GTK only creates widgets for visible rows regardless
+    // of the total group count — essential for libraries with thousands of dupes.
+    #[allow(deprecated)]
+    let tree_store = gtk4::TreeStore::new(&[
+        String::static_type(), // 0  primary label
+        String::static_type(), // 1  secondary
+        String::static_type(), // 2  artist
+        String::static_type(), // 3  album
+        String::static_type(), // 4  duration
+        String::static_type(), // 5  size
+        String::static_type(), // 6  bitrate
+        String::static_type(), // 7  format
+        i64::static_type(),    // 8  track id (0 for group rows)
+        bool::static_type(),   // 9  is_group
+        i32::static_type(),    // 10 pango weight
+        String::static_type(), // 11 full path (empty for group rows)
+    ]);
+
+    #[allow(deprecated)]
+    let tree_view = TreeView::with_model(&tree_store);
+    tree_view.set_headers_visible(true);
+    tree_view.set_enable_search(false);
+    tree_view.set_activate_on_single_click(false);
+    tree_view.add_css_class("playlist");
+    tree_view.set_hexpand(true);
+    tree_view.set_vexpand(true);
+
+    // Build visible columns: expander on col 0, then cols 1-7.
+    {
+        let col_defs: &[(&str, i32, bool)] = &[
+            ("Group / Path", 0, true),
+            ("Title / Info", 1, false),
+            ("Artist",       2, false),
+            ("Album",        3, false),
+            ("Duration",     4, false),
+            ("Size",         5, false),
+            ("Bitrate",      6, false),
+            ("Format",       7, false),
+        ];
+        for (title, data_col, expands) in col_defs {
+            #[allow(deprecated)]
+            let renderer = CellRendererText::new();
+            #[allow(deprecated)]
+            let col = TreeViewColumn::new();
+            col.set_title(title);
+            col.set_resizable(true);
+            col.set_expand(*expands);
+            #[allow(deprecated)]
+            col.pack_start(&renderer, true);
+            #[allow(deprecated)]
+            col.add_attribute(&renderer, "text", *data_col);
+            #[allow(deprecated)]
+            col.add_attribute(&renderer, "weight", 10); // pango weight col
+            #[allow(deprecated)]
+            tree_view.append_column(&col);
+        }
+    }
+
+    let scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Automatic)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .hexpand(true)
+        .vexpand(true)
+        .child(&tree_view)
+        .build();
+
+    root.append(&status_row);
+    root.append(&gtk4::Separator::new(Orientation::Horizontal));
+    root.append(&scroll);
+    win.set_child(Some(&root));
+
+    // ── Shared scan state ────────────────────────────────────────────────────
+    // cancel_flag is shared with the background thread.
+    let cancel_flag: Rc<RefCell<Arc<AtomicBool>>> =
+        Rc::new(RefCell::new(Arc::new(AtomicBool::new(false))));
+    let is_scanning = Rc::new(Cell::new(false));
+    // Channel receiver is replaceable so Rescan can start a new thread.
+    let result_rx: Rc<RefCell<Option<std::sync::mpsc::Receiver<DedupeMsg>>>> =
+        Rc::new(RefCell::new(None));
+
+    // ── Helper: format a file size as "X.X MB" / "X KB" ────────────────────
+    fn fmt_size(bytes: Option<u64>) -> String {
+        match bytes {
+            None => "—".to_string(),
+            Some(b) if b >= 1_000_000 => format!("{:.1} MB", b as f64 / 1_000_000.0),
+            Some(b) if b >= 1_000 => format!("{} KB", b / 1_000),
+            Some(b) => format!("{} B", b),
+        }
+    }
+
+    // ── Helper: format duration as "M:SS" ───────────────────────────────────
+    fn fmt_dur(secs: Option<f64>) -> String {
+        match secs {
+            None => "—".to_string(),
+            Some(s) => {
+                let total = s as u64;
+                format!("{}:{:02}", total / 60, total % 60)
+            }
+        }
+    }
+
+    // ── Helper: shorten a path for display ──────────────────────────────────
+    fn shorten_path(path: &str, max_chars: usize) -> String {
+        if path.len() <= max_chars {
+            return path.to_string();
+        }
+        format!("…{}", &path[path.len().saturating_sub(max_chars)..])
+    }
+
+    // ── Track info lookup for playlist operations ────────────────────────────
+    // Populated by `populate`; keyed by track id.
+    let track_map: Rc<RefCell<std::collections::HashMap<i64, crate::dedupe::DupeTrackInfo>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+
+    // ── Populate the TreeStore after scan completes ──────────────────────────
+    let populate = {
+        let tree_store = tree_store.clone();
+        let status_lbl = status_lbl.clone();
+        let action_btn = action_btn.clone();
+        let is_scanning = is_scanning.clone();
+        let track_map = track_map.clone();
+
+        Rc::new(move |groups: Vec<crate::dedupe::DupeGroup>| {
+            let probable = groups
+                .iter()
+                .filter(|g| g.confidence == crate::dedupe::DupeConfidence::Probable)
+                .count();
+            let total = groups.len();
+
+            #[allow(deprecated)]
+            tree_store.clear();
+            track_map.borrow_mut().clear();
+
+            if total == 0 {
+                status_lbl.set_text("No duplicates found.");
+                action_btn.set_label("↺ Rescan");
+                action_btn.set_visible(true);
+                is_scanning.set(false);
+                return;
+            }
+            status_lbl.set_text(&format!(
+                "{probable} probable group(s), {} less-likely group(s) found",
+                total - probable
+            ));
+            action_btn.set_label("↺ Rescan");
+            action_btn.set_visible(true);
+            is_scanning.set(false);
+
+            let mut tm = track_map.borrow_mut();
+            for group in &groups {
+                let bullet = if group.confidence == crate::dedupe::DupeConfidence::Probable {
+                    "●"
+                } else {
+                    "◎"
+                };
+                let conf_str = if group.confidence == crate::dedupe::DupeConfidence::Probable {
+                    "Probable"
+                } else {
+                    "Less likely"
+                };
+                let n = group.tracks.len();
+                let group_label =
+                    format!("{bullet} {}  ({conf_str} · {n} files)", group.label);
+
+                #[allow(deprecated)]
+                let group_iter = tree_store.insert_with_values(
+                    None,
+                    None,
+                    &[
+                        (0, &group_label),
+                        (1, &conf_str.to_string()),
+                        (2, &String::new()),
+                        (3, &String::new()),
+                        (4, &String::new()),
+                        (5, &String::new()),
+                        (6, &String::new()),
+                        (7, &String::new()),
+                        (8, &0i64),
+                        (9, &true),
+                        (10, &700i32),
+                        (11, &String::new()),
+                    ],
+                );
+
+                for info in &group.tracks {
+                    tm.insert(info.track.id, info.clone());
+                    let title = info
+                        .track
+                        .title
+                        .as_deref()
+                        .unwrap_or(info.track.filename.as_str())
+                        .to_string();
+                    let artist =
+                        info.track.artist.as_deref().unwrap_or("—").to_string();
+                    let album =
+                        info.track.album.as_deref().unwrap_or("—").to_string();
+                    let dur = fmt_dur(info.track.length_secs);
+                    let size = fmt_size(info.file_size_bytes);
+                    let kbps = info
+                        .track
+                        .bitrate
+                        .map_or("—".to_string(), |b| format!("{b} kbps"));
+                    let fmt =
+                        info.track.filetype.as_deref().unwrap_or("—").to_string();
+                    let short = shorten_path(&info.track.path, 55);
+
+                    #[allow(deprecated)]
+                    tree_store.insert_with_values(
+                        Some(&group_iter),
+                        None,
+                        &[
+                            (0, &short),
+                            (1, &title),
+                            (2, &artist),
+                            (3, &album),
+                            (4, &dur),
+                            (5, &size),
+                            (6, &kbps),
+                            (7, &fmt),
+                            (8, &info.track.id),
+                            (9, &false),
+                            (10, &400i32),
+                            (11, &info.track.path),
+                        ],
+                    );
+                }
+            }
+        })
+    };
+
+    // ── Right-click on a group or track row ──────────────────────────────────
+    {
+        let tree_store_rc = tree_store.clone();
+        let tree_view_rc = tree_view.clone();
+        let track_map_rc = track_map.clone();
+        let state_rc = state.clone();
+
+        let rclick = GestureClick::new();
+        rclick.set_button(gdk::BUTTON_SECONDARY);
+        rclick.connect_pressed(move |_, _, x, y| {
+            // GestureClick gives widget-space coordinates (origin at top-left of
+            // the TreeView widget, including the column-header row).
+            // path_at_pos expects bin-window coordinates (origin at the top of
+            // the scrollable content area, below the headers).
+            // Convert before calling so the header row does not cause an
+            // off-by-one in row detection.
+            #[allow(deprecated)]
+            let (bx, by) = tree_view_rc.convert_widget_to_bin_window_coords(x as i32, y as i32);
+            #[allow(deprecated)]
+            let Some((Some(tpath), _, _, _)) =
+                tree_view_rc.path_at_pos(bx, by)
+            else {
+                return;
+            };
+            #[allow(deprecated)]
+            let Some(row_iter) = tree_store_rc.iter(&tpath) else { return };
+
+            // Determine row type by position in the tree: top-level rows are
+            // groups, child rows are individual tracks.
+            #[allow(deprecated)]
+            let is_group = tree_store_rc.iter_parent(&row_iter).is_none();
+
+            let pop_box = GtkBox::new(Orientation::Vertical, 0);
+
+            if is_group {
+                // ── Group row: add/replace playlist ──────────────────────
+                let add_group = {
+                    let ts = tree_store_rc.clone();
+                    let giter = row_iter.clone();
+                    let tm = track_map_rc.clone();
+                    let st = state_rc.clone();
+                    move |replace: bool| {
+                        let giter = giter.clone();
+                        let autoplay = st.borrow().config.behavior.autoplay_on_add;
+                        let was_empty = st.borrow().playlist.is_empty();
+                        if replace {
+                            let _ = st.borrow_mut().player.stop();
+                            st.borrow_mut().playlist.clear();
+                        }
+                        let insert_start = st.borrow().playlist.len();
+                        let tm_borrow = tm.borrow();
+                        #[allow(deprecated)]
+                        if let Some(ci) = ts.iter_children(Some(&giter)) {
+                            loop {
+                                #[allow(deprecated)]
+                                let tid: i64 =
+                                    ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
+                                if let Some(info) = tm_borrow.get(&tid) {
+                                    st.borrow_mut()
+                                        .playlist
+                                        .add(libtrack_to_track(&info.track));
+                                }
+                                #[allow(deprecated)]
+                                if !ts.iter_next(&ci) {
+                                    break;
+                                }
+                            }
+                        }
+                        drop(tm_borrow);
+                        if let Some(ref cb) =
+                            st.borrow().rebuild_pl_callback.clone()
+                        {
+                            cb();
+                        }
+                        if autoplay && (was_empty || replace) {
+                            st.borrow_mut().playlist.jump_to(insert_start);
+                            if let Some(ref cb) =
+                                st.borrow().play_and_update_callback.clone()
+                            {
+                                cb();
+                            }
+                        }
+                    }
+                };
+                let add_group = Rc::new(add_group);
+
+                let btn_add = Button::with_label("Add to playlist");
+                btn_add.add_css_class("popover-button");
+                {
+                    let ag = add_group.clone();
+                    btn_add.connect_clicked(move |_| ag(false));
+                }
+                let btn_replace = Button::with_label("Replace playlist");
+                btn_replace.add_css_class("popover-button");
+                {
+                    let ag = add_group;
+                    btn_replace.connect_clicked(move |_| ag(true));
+                }
+
+                pop_box.append(&btn_add);
+                pop_box.append(&btn_replace);
+            } else {
+                // ── Track row: open file location / dismiss ───────────────
+                #[allow(deprecated)]
+                let full_path: String = tree_store_rc
+                    .get_value(&row_iter, 11)
+                    .get::<String>()
+                    .unwrap_or_default();
+
+                let parent_dir = std::path::Path::new(&full_path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+
+                let btn_open = Button::with_label("Open file location");
+                btn_open.add_css_class("popover-button");
+                {
+                    let dir = parent_dir.clone();
+                    btn_open.connect_clicked(move |_| {
+                        let uri = format!("file://{dir}");
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gio::AppLaunchContext>,
+                        );
+                    });
+                }
+
+                let btn_dismiss = Button::with_label("Not a duplicate");
+                btn_dismiss.add_css_class("popover-button");
+                {
+                    let ts = tree_store_rc.clone();
+                    let path_str = tpath.to_str().map(|s| s.to_string()).unwrap_or_default();
+                    btn_dismiss.connect_clicked(move |_| {
+                        #[allow(deprecated)]
+                        let Some(ti) = ts.iter_from_string(&path_str) else {
+                            return;
+                        };
+                        #[allow(deprecated)]
+                        let parent_opt = ts.iter_parent(&ti);
+                        #[allow(deprecated)]
+                        ts.remove(&ti);
+                        // Remove the group row when fewer than 2 tracks remain.
+                        if let Some(pi) = parent_opt {
+                            #[allow(deprecated)]
+                            let remaining = ts.iter_n_children(Some(&pi));
+                            if remaining < 2 {
+                                #[allow(deprecated)]
+                                ts.remove(&pi);
+                            }
+                        }
+                    });
+                }
+
+                pop_box.append(&btn_open);
+                pop_box.append(&btn_dismiss);
+            }
+
+            let popover = gtk4::Popover::new();
+            popover.set_child(Some(&pop_box));
+            popover.set_parent(&tree_view_rc);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(
+                x as i32, y as i32, 1, 1,
+            )));
+            popover.popup();
+        });
+        #[allow(deprecated)]
+        tree_view.add_controller(rclick);
+    }
+
+    // ── Start a background scan ──────────────────────────────────────────────
+    let start_scan = {
+        let cancel_flag = cancel_flag.clone();
+        let result_rx = result_rx.clone();
+        let is_scanning = is_scanning.clone();
+        let status_lbl = status_lbl.clone();
+        let action_btn = action_btn.clone();
+        let tree_store = tree_store.clone();
+
+        Rc::new(move || {
+            #[allow(deprecated)]
+            tree_store.clear();
+
+            // Fresh cancel flag for the new scan.
+            let new_cancel = Arc::new(AtomicBool::new(false));
+            *cancel_flag.borrow_mut() = new_cancel.clone();
+
+            let (tx, rx) = std::sync::mpsc::channel::<DedupeMsg>();
+            *result_rx.borrow_mut() = Some(rx);
+
+            is_scanning.set(true);
+            status_lbl.set_text("Loading tracks from library…");
+            action_btn.set_label("✕ Cancel");
+            action_btn.set_visible(true);
+
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            std::thread::spawn(move || {
+                let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = tx.send(DedupeMsg::Status(format!("Error opening library: {e}")));
+                        return;
+                    }
+                };
+
+                if new_cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let tracks = match lib.scanned_tracks() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = tx.send(DedupeMsg::Status(format!("Error reading tracks: {e}")));
+                        return;
+                    }
+                };
+
+                if new_cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let n = tracks.len();
+                let _ = tx.send(DedupeMsg::Status(format!("Analyzing {n} tracks…")));
+
+                let groups = crate::dedupe::find_duplicates(tracks);
+
+                if new_cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let _ = tx.send(DedupeMsg::Done(groups));
+            });
+        })
+    };
+
+    // ── Tick loop — drain the channel while the window is open ───────────────
+    {
+        let result_rx = result_rx.clone();
+        let status_lbl = status_lbl.clone();
+        let is_scanning = is_scanning.clone();
+        let populate = populate.clone();
+        let win_wk = win.downgrade();
+
+        glib::timeout_add_local(Duration::from_millis(200), move || {
+            if win_wk.upgrade().is_none() {
+                return ControlFlow::Break;
+            }
+            if !is_scanning.get() {
+                return ControlFlow::Continue;
+            }
+            let msg = result_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
+            match msg {
+                Some(DedupeMsg::Status(s)) => {
+                    status_lbl.set_text(&s);
+                }
+                Some(DedupeMsg::Done(groups)) => {
+                    populate(groups);
+                }
+                None => {} // still scanning or disconnected
+            }
+            ControlFlow::Continue
+        });
+    }
+
+    // ── Cancel / Rescan button ────────────────────────────────────────────────
+    {
+        let cancel_flag = cancel_flag.clone();
+        let is_scanning = is_scanning.clone();
+        let status_lbl = status_lbl.clone();
+        let action_btn2 = action_btn.clone();
+        let start_scan2 = start_scan.clone();
+        let win_wk = win.downgrade();
+
+        action_btn.connect_clicked(move |btn| {
+            if is_scanning.get() {
+                // Show confirmation before cancelling.
+                let dialog = gtk4::AlertDialog::builder()
+                    .message("Cancel scan?")
+                    .detail(
+                        "The scan will need to restart from the beginning if you cancel.",
+                    )
+                    .buttons(vec!["Keep scanning".to_string(), "Cancel scan".to_string()])
+                    .cancel_button(0)
+                    .default_button(0)
+                    .modal(true)
+                    .build();
+                let flag = cancel_flag.borrow().clone();
+                let scanning = is_scanning.clone();
+                let lbl = status_lbl.clone();
+                let btn2 = action_btn2.clone();
+                dialog.choose(
+                    win_wk.upgrade().as_ref(),
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        if result == Ok(1) {
+                            flag.store(true, Ordering::Relaxed);
+                            scanning.set(false);
+                            lbl.set_text("Scan cancelled.");
+                            btn2.set_label("↺ Rescan");
+                        }
+                    },
+                );
+            } else {
+                // Rescan.
+                start_scan2();
+            }
+        });
+    }
+
+    // ── Confirm close if scan is in progress ─────────────────────────────────
+    win.connect_close_request({
+        let cancel_flag = cancel_flag.clone();
+        let is_scanning = is_scanning.clone();
+        move |w| {
+            if is_scanning.get() {
+                let dialog = gtk4::AlertDialog::builder()
+                    .message("Scan in progress")
+                    .detail("Closing this window will cancel the scan.")
+                    .buttons(vec!["Keep open".to_string(), "Close anyway".to_string()])
+                    .cancel_button(0)
+                    .default_button(0)
+                    .modal(true)
+                    .build();
+                let flag = cancel_flag.borrow().clone();
+                let scanning = is_scanning.clone();
+                let win_wk = w.downgrade();
+                dialog.choose(None::<&gtk4::Window>, None::<&gio::Cancellable>, move |result| {
+                    if result == Ok(1) {
+                        flag.store(true, Ordering::Relaxed);
+                        scanning.set(false);
+                        if let Some(w) = win_wk.upgrade() {
+                            w.destroy();
+                        }
+                    }
+                });
+                return glib::Propagation::Stop; // prevent default close
+            }
+            glib::Propagation::Proceed
+        }
+    });
+
+    win.present();
+
+    // Start the initial scan immediately after presenting the window.
+    start_scan();
+}
 
 // ---------------------------------------------------------------------------
 // Media Library browser window
@@ -5042,6 +7539,14 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
     MlColumnDef {
         id: "last_played",
         header: "Last Played",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "last_scanned",
+        header: "Last Scanned",
         expand: false,
         id3_editable: false,
         default_ml_visible: false,
@@ -5217,6 +7722,7 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
         "path" => t.path.to_lowercase(),
         "play_count" => format!("{:010}", t.play_count),
         "last_played" => t.last_played.clone().unwrap_or_default(),
+        "last_scanned" => t.last_scanned.clone().unwrap_or_default(),
         "comment" => t.sort_keys.comment.clone(),
         "album_artist" => t.sort_keys.album_artist.clone(),
         "disc_num" => format!("{:010}", t.disc_num.unwrap_or(0)),
@@ -5235,8 +7741,10 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
 
 fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track {
     use std::time::Duration;
+    let path = std::path::PathBuf::from(&t.path);
+    let read_only = crate::media_library::is_read_only(&path);
     crate::model::Track {
-        path: std::path::PathBuf::from(&t.path),
+        path,
         title: t.title.clone().unwrap_or_else(|| t.filename.clone()),
         artist: t.artist.clone().unwrap_or_default(),
         album_artist: String::new(),
@@ -5245,10 +7753,375 @@ fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track 
             .length_secs
             .map(|s| Duration::try_from_secs_f64(s).unwrap_or_default()),
         broken: false,
+        read_only,
     }
 }
 
 // ---------------------------------------------------------------------------
+// Visualizer draw helpers (module-level so both build() and open_waveform_fullscreen can use them)
+// ---------------------------------------------------------------------------
+
+/// Parse a hex color string (`"#RRGGBB"`) to RGB components in [0, 1].
+fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() >= 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f64 / 255.0;
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f64 / 255.0;
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f64 / 255.0;
+        (r, g, b)
+    } else {
+        (0.0, 0.4, 0.0) // fallback dark green
+    }
+}
+
+/// Draw a single zone-coloured frequency bar.
+/// For singular mode: bar extends from bottom to `amp × height`.
+/// For mirrored mode: bar extends `amp × height / 2` above and below centre.
+fn draw_zoned_bar(
+    cr: &gtk4::cairo::Context,
+    x: f64,
+    bar_w: f64,
+    height: f64,
+    amp: f64,
+    mirror: bool,
+    num_zones: usize,
+    zone_colors: &[String],
+) {
+    let num_zones = num_zones.max(1);
+    let half_gap = 0.75;
+    let bar_w = bar_w - half_gap;
+
+    let get_color = |zone: usize| -> (f64, f64, f64) {
+        let idx = zone.min(zone_colors.len().saturating_sub(1));
+        parse_hex_color(&zone_colors[idx])
+    };
+
+    if mirror {
+        let center = height / 2.0;
+        let max_extent = amp * center;
+
+        for zone in 0..num_zones {
+            let zone_inner = zone as f64 * (center / num_zones as f64);
+            let zone_outer = (zone + 1) as f64 * (center / num_zones as f64);
+
+            if zone_outer <= max_extent {
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                let y = center + zone_inner;
+                let h = zone_outer - zone_inner;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+                let y = center - zone_outer;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+            } else if zone_inner < max_extent {
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                let y = center + zone_inner;
+                let h = max_extent - zone_inner;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+                let y = center - max_extent;
+                cr.rectangle(x + 0.5, y, bar_w, h);
+                cr.fill().ok();
+            }
+        }
+    } else {
+        let bar_height = amp * height;
+        let bar_top = height - bar_height;
+        let zone_h = height / num_zones as f64;
+
+        for zone in 0..num_zones {
+            let zone_bottom = height - (zone + 1) as f64 * zone_h;
+            let zone_top = height - zone as f64 * zone_h;
+
+            if zone_top > bar_top {
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                let draw_bottom = zone_bottom.max(bar_top);
+                let draw_top = zone_top.min(height);
+                let h = (draw_top - draw_bottom).max(1.0);
+                cr.rectangle(x + 0.5, draw_bottom, bar_w, h);
+                cr.fill().ok();
+            }
+        }
+    }
+}
+
+/// Draw the real-audio waveform visualizer using Cairo.
+///
+/// `samples` are bipolar PCM in `[-1, 1]` (0 = centre / silence).
+/// Zones are horizontal bands; zone 0 (index 0 in `zone_colors`) is the
+/// bottom of the widget and zone N-1 is the top.
+///
+/// - **Lines** — draws the stroke only; each segment coloured by zone.
+/// - **Filled** — fills the area between the waveform and the centre
+///   baseline, coloured per zone.
+fn draw_waveform(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    height: f64,
+    samples: &[f64],
+    num_zones: usize,
+    zone_colors: &[String],
+    style: &WaveformStyle,
+) {
+    let num_zones = num_zones.max(1);
+    let center_y = height / 2.0;
+    let n = samples.len();
+    if n == 0 {
+        return;
+    }
+
+    // Dim centre baseline.
+    cr.set_source_rgb(0.0, 0.2, 0.08);
+    cr.set_line_width(0.5);
+    cr.move_to(0.0, center_y);
+    cr.line_to(width, center_y);
+    cr.stroke().ok();
+
+    // Zone index for a Cairo y-coordinate. Zone 0 = bottom, zone N-1 = top.
+    let zone_for_y = |y: f64| -> usize {
+        let frac = (height - y) / height;
+        ((frac * num_zones as f64) as usize).min(num_zones - 1)
+    };
+
+    let get_color = |zone: usize| -> (f64, f64, f64) {
+        let idx = zone.min(zone_colors.len().saturating_sub(1));
+        parse_hex_color(&zone_colors[idx])
+    };
+
+    // sample ∈ [-1, 1] → y = center - sample × (center × 0.9)
+    let ys: Vec<f64> = samples
+        .iter()
+        .map(|&s| (center_y - s * center_y * 0.9).clamp(0.0, height))
+        .collect();
+
+    match style {
+        WaveformStyle::Lines => {
+            cr.set_line_width(1.5);
+            for i in 0..n.saturating_sub(1) {
+                let x0 = i as f64 * width / n as f64;
+                let x1 = (i + 1) as f64 * width / n as f64;
+                let y0 = ys[i];
+                let y1 = ys[i + 1];
+                let zone = zone_for_y((y0 + y1) / 2.0);
+                let (r, g, b) = get_color(zone);
+                cr.set_source_rgb(r, g, b);
+                cr.move_to(x0, y0);
+                cr.line_to(x1, y1);
+                cr.stroke().ok();
+            }
+        }
+        WaveformStyle::Filled => {
+            for i in 0..n {
+                let x = i as f64 * width / n as f64;
+                let col_w = (width / n as f64).max(1.0);
+                let y = ys[i];
+                let (y_top, y_bot) = if y < center_y { (y, center_y) } else { (center_y, y) };
+                for zone in 0..num_zones {
+                    let zone_top_y = height - (zone + 1) as f64 * height / num_zones as f64;
+                    let zone_bot_y = height - zone as f64 * height / num_zones as f64;
+                    let draw_top = y_top.max(zone_top_y);
+                    let draw_bot = y_bot.min(zone_bot_y);
+                    if draw_top < draw_bot {
+                        let (r, g, b) = get_color(zone);
+                        cr.set_source_rgb(r, g, b);
+                        cr.rectangle(x, draw_top, col_w, draw_bot - draw_top);
+                        cr.fill().ok();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Waveform fullscreen
+// ---------------------------------------------------------------------------
+
+/// Open the waveform visualizer in fullscreen mode.
+///
+/// The window covers all other windows on the desktop.  While open:
+/// - `z x c v b r s` are passed to the shared `handle_key` handler.
+/// - `i` opens the information/shortcuts window.
+/// - `j` opens the jump-to-track window.
+/// - Status changes appear as a 3-second translucent toast at the bottom.
+/// - `Esc` closes the fullscreen window.
+///
+/// Double-clicking the mini visualiser or pressing `f` when Waveform mode is
+/// active triggers this function.
+fn open_waveform_fullscreen(
+    state: Rc<RefCell<AppState>>,
+    handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation>,
+    jump_win: gtk4::Window,
+    jump_entry: gtk4::SearchEntry,
+    rebuild_jump: Rc<dyn Fn()>,
+    btn_info: gtk4::Button,
+) {
+    let fs_win = gtk4::Window::new();
+    fs_win.set_decorated(false);
+
+    // ── Canvas + toast overlay ─────────────────────────────────────────────
+    let overlay = gtk4::Overlay::new();
+
+    let canvas = DrawingArea::new();
+    canvas.set_hexpand(true);
+    canvas.set_vexpand(true);
+    overlay.set_child(Some(&canvas));
+
+    // Translucent status toast label at the bottom of the screen.
+    let toast = gtk4::Label::new(None);
+    toast.add_css_class("wf-fs-toast");
+    toast.set_halign(Align::Center);
+    toast.set_valign(Align::End);
+    toast.set_margin_bottom(48);
+    toast.set_visible(false);
+    overlay.add_overlay(&toast);
+
+    fs_win.set_child(Some(&overlay));
+
+    // ── Draw function ──────────────────────────────────────────────────────
+    let state_draw = state.clone();
+    canvas.set_draw_func(move |_da, cr, width, height| {
+        cr.set_source_rgb(0.0, 0.0, 0.0);
+        cr.paint().ok();
+
+        let s = state_draw.borrow();
+        let is_playing = *s.player.state() == PlayerState::Playing;
+        let wf_zones = s.config.visualizer.waveform_color_zones as usize;
+        let wf_zone_colors = s.config.visualizer.waveform_zone_colors.clone();
+        let wf_style = s.config.visualizer.waveform_style.clone();
+        // Use 2× width for sharper fullscreen detail.
+        let sample_count = (width * 2).max(512) as usize;
+        let waveform_samples = s.player.get_waveform_samples(sample_count);
+        drop(s);
+
+        if !is_playing {
+            // Flat dim centre line when idle.
+            cr.set_source_rgb(0.0, 0.15, 0.05);
+            cr.set_line_width(1.0);
+            cr.move_to(0.0, height as f64 / 2.0);
+            cr.line_to(width as f64, height as f64 / 2.0);
+            cr.stroke().ok();
+            return;
+        }
+
+        draw_waveform(
+            cr,
+            width as f64,
+            height as f64,
+            &waveform_samples,
+            wf_zones,
+            &wf_zone_colors,
+            &wf_style,
+        );
+    });
+
+    // ── Redraw timer (~30 fps) ─────────────────────────────────────────────
+    let canvas_weak = canvas.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+        match canvas_weak.upgrade() {
+            Some(c) => {
+                c.queue_draw();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        }
+    });
+
+    // ── Toast helpers ──────────────────────────────────────────────────────
+    let toast_label = toast.clone();
+    let toast_source: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+
+    let show_toast = {
+        let tl = toast_label.clone();
+        let ts = toast_source.clone();
+        Rc::new(move |msg: String| {
+            tl.set_text(&msg);
+            tl.set_visible(true);
+            if let Some(id) = ts.take() {
+                id.remove();
+            }
+            let tl2 = tl.clone();
+            let ts2 = ts.clone();
+            let id = glib::timeout_add_local(std::time::Duration::from_secs(3), move || {
+                tl2.set_visible(false);
+                ts2.set(None);
+                glib::ControlFlow::Break
+            });
+            ts.set(Some(id));
+        })
+    };
+
+    // ── Key bindings ───────────────────────────────────────────────────────
+    let key_ctrl = EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+    let fs_win_weak = fs_win.downgrade();
+    let state_keys = state.clone();
+    let show_toast_key = show_toast.clone();
+
+    key_ctrl.connect_key_pressed(move |_, key, _, _| {
+        match key {
+            gdk::Key::Escape => {
+                if let Some(w) = fs_win_weak.upgrade() {
+                    w.close();
+                }
+                glib::Propagation::Stop
+            }
+            // Jump window
+            gdk::Key::j | gdk::Key::J => {
+                gtk4::prelude::EditableExt::set_text(&jump_entry, "");
+                rebuild_jump();
+                jump_win.present();
+                jump_entry.grab_focus();
+                glib::Propagation::Stop
+            }
+            // Info / shortcuts window
+            gdk::Key::i | gdk::Key::I => {
+                btn_info.activate();
+                glib::Propagation::Stop
+            }
+            // Transport + mode keys — pass through, then show toast
+            gdk::Key::z
+            | gdk::Key::x
+            | gdk::Key::c
+            | gdk::Key::v
+            | gdk::Key::b
+            | gdk::Key::r
+            | gdk::Key::R
+            | gdk::Key::s
+            | gdk::Key::S => {
+                let result = handle_key(key);
+                let msg = {
+                    let s = state_keys.borrow();
+                    if let Some(track) = s.playlist.current() {
+                        let ps = s.player.state().clone();
+                        let verb = match ps {
+                            PlayerState::Playing => "Playing",
+                            PlayerState::Paused => "Paused",
+                            PlayerState::Stopped => "Stopped",
+                        };
+                        format!("{}: {}", verb, track.display_name())
+                    } else {
+                        String::new()
+                    }
+                };
+                if !msg.is_empty() {
+                    show_toast_key(msg);
+                }
+                result
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    fs_win.add_controller(key_ctrl);
+
+    // ── Show fullscreen ────────────────────────────────────────────────────
+    fs_win.present();
+    fs_win.fullscreen();
+}
+
 // Image viewer popup
 // ---------------------------------------------------------------------------
 
@@ -5276,6 +8149,7 @@ fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     rebuild_playlist: Rc<dyn Fn()>,
+    set_track: Rc<dyn Fn(&str)>,
     init_width: i32,
     init_height: i32,
 ) -> gtk4::Window {
@@ -5334,19 +8208,233 @@ fn open_media_library_window(
 
         let search_entry = Entry::new();
         search_entry.set_placeholder_text(Some("Search artist, title, album…"));
-        search_entry.set_margin_top(4);
-        search_entry.set_margin_start(4);
-        search_entry.set_margin_end(4);
-        files_vbox.append(&search_entry);
+        search_entry.set_hexpand(true);
+
+        let search_clear_btn = Button::with_label("✕");
+        search_clear_btn.add_css_class("pl-btn");
+        {
+            let e = search_entry.clone();
+            search_clear_btn.connect_clicked(move |_| {
+                e.set_text("");
+            });
+        }
+
+        let search_row = GtkBox::new(Orientation::Horizontal, 4);
+        search_row.set_margin_top(4);
+        search_row.set_margin_start(4);
+        search_row.set_margin_end(4);
+        search_row.append(&search_entry);
+        search_row.append(&search_clear_btn);
+        files_vbox.append(&search_row);
 
         let track_store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let sort_model = SortListModel::new(Some(track_store.clone()), None::<gtk4::Sorter>);
         let multi_sel = MultiSelection::new(Some(sort_model.clone()));
         let col_view = ColumnView::new(Some(multi_sel.clone()));
+        col_view.add_css_class("ml-col-view");
         col_view.set_show_row_separators(true);
         col_view.set_show_column_separators(true);
         col_view.set_hexpand(true);
         col_view.set_vexpand(true);
+
+        // Create action group and actions for ML right-click menu
+        let ml_action_group = gio::SimpleActionGroup::new();
+        col_view.insert_action_group("ml", Some(&ml_action_group));
+
+        // Store for selected tracks (used by action handlers)
+        let ml_selected_tracks: Rc<RefCell<Vec<std::path::PathBuf>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
+        // Append to Playlist action
+        let ml_action_append_state = state.clone();
+        let _ml_action_append_sel = multi_sel.clone();
+        let ml_action_append_rebuild = rebuild_playlist.clone();
+        let ml_action_append_tracks = ml_selected_tracks.clone();
+        let action_append = gio::SimpleAction::new("append", None); // Note: action name without "ml." prefix
+        action_append.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_append_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            let was_empty = ml_action_append_state.borrow().playlist.is_empty();
+            for path in tracks {
+                let track = crate::model::Track::from_path(&path).ok();
+                if let Some(track) = track {
+                    ml_action_append_state.borrow_mut().playlist.add(track);
+                }
+            }
+            if ml_action_append_state
+                .borrow()
+                .config
+                .behavior
+                .autoplay_on_add
+                && was_empty
+            {
+                ml_action_append_state.borrow_mut().play_current();
+            }
+            ml_action_append_rebuild();
+        });
+        ml_action_group.add_action(&action_append);
+
+        // Replace current playlist action
+        let ml_action_replace_state = state.clone();
+        let ml_action_replace_tracks = ml_selected_tracks.clone();
+        let ml_action_replace_rebuild = rebuild_playlist.clone();
+        let action_replace = gio::SimpleAction::new("replace", None); // Note: action name without "ml." prefix
+        action_replace.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_replace_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            let _ = ml_action_replace_state.borrow_mut().player.stop();
+            ml_action_replace_state.borrow_mut().playlist.clear();
+            for path in tracks {
+                let track = crate::model::Track::from_path(&path).ok();
+                if let Some(track) = track {
+                    ml_action_replace_state.borrow_mut().playlist.add(track);
+                }
+            }
+            if ml_action_replace_state
+                .borrow()
+                .config
+                .behavior
+                .autoplay_on_add
+                && !ml_action_replace_state.borrow().playlist.is_empty()
+            {
+                ml_action_replace_state.borrow_mut().play_current();
+            }
+            ml_action_replace_rebuild();
+        });
+        ml_action_group.add_action(&action_replace);
+
+        // View/Edit ID3 Info action (for single selection)
+        let ml_action_id3_state = state.clone();
+        let ml_action_id3_tracks = ml_selected_tracks.clone();
+        let ml_action_id3_rebuild = rebuild_playlist.clone();
+        let action_id3 = gio::SimpleAction::new("edit-id3", None); // Note: action name without "ml." prefix
+        action_id3.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_id3_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            // Only open for the first (single) selected track
+            let path = tracks[0].clone();
+            open_id3_editor_window(
+                None::<&gtk4::Window>,
+                path,
+                ml_action_id3_state.clone(),
+                ml_action_id3_rebuild.clone(),
+                None,
+            );
+        });
+        ml_action_group.add_action(&action_id3);
+
+        // Rescan Metadata action
+        let ml_action_rescan_state = state.clone();
+        let ml_action_rescan_tracks = ml_selected_tracks.clone();
+        let ml_action_rescan_store = track_store.clone();
+        let action_rescan = gio::SimpleAction::new("rescan", None); // Note: action name without "ml." prefix
+        action_rescan.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_rescan_tracks.borrow().clone();
+            if tracks.is_empty() {
+                return;
+            }
+            if ml_action_rescan_state.borrow().ml_scan.is_some() {
+                return;
+            }
+            let paths: Vec<String> = tracks
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            let total = paths.len();
+            let cancel_flag = start_ml_scan(&ml_action_rescan_state, ScanType::AddFiles, total);
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+            let (result_tx, result_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                    Ok(l) => l,
+                    Err(_) => {
+                        let _ = result_tx.send(());
+                        return;
+                    }
+                };
+                for (i, path) in paths.iter().enumerate() {
+                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = lib.rescan_track(path);
+                    let _ = progress_tx.send(i + 1);
+                }
+                let _ = result_tx.send(());
+            });
+            let progress_rx = std::cell::RefCell::new(progress_rx);
+            let result_rx = std::cell::RefCell::new(result_rx);
+            let state_for_timer = ml_action_rescan_state.clone();
+            let store_for_timer = ml_action_rescan_store.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                while let Ok(current) = progress_rx.borrow().try_recv() {
+                    update_ml_scan_progress(&state_for_timer, current, total);
+                }
+                if result_rx.borrow().try_recv().is_ok() {
+                    complete_ml_scan(&state_for_timer);
+                    let tracks: Vec<crate::media_library::LibTrack> = state_for_timer
+                        .borrow()
+                        .media_lib
+                        .as_ref()
+                        .and_then(|lib| lib.all_tracks().ok())
+                        .unwrap_or_default();
+                    let boxed: Vec<glib::BoxedAnyObject> =
+                        tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
+                    store_for_timer.splice(0, store_for_timer.n_items(), &boxed);
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        });
+        ml_action_group.add_action(&action_rescan);
+
+        // Remove from Media Library action
+        let ml_action_remove_tracks = ml_selected_tracks.clone();
+        let ml_action_remove_store = track_store.clone();
+        let action_remove = gio::SimpleAction::new("remove", None);
+        action_remove.connect_activate(move |_, _| {
+            let paths = ml_action_remove_tracks.borrow().clone();
+            if paths.is_empty() {
+                return;
+            }
+
+            let path_set: std::collections::HashSet<String> = paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            let paths_owned: Vec<String> = path_set.iter().cloned().collect();
+
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            std::thread::spawn(move || {
+                if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                    let _ = lib.soft_delete_tracks_by_paths(&paths_owned);
+                    let _ = lib.purge_deleted_tracks();
+                }
+            });
+
+            let mut rows_to_remove: Vec<u32> = Vec::new();
+            for i in 0..ml_action_remove_store.n_items() {
+                if let Some(item) = ml_action_remove_store.item(i) {
+                    if let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() {
+                        let track = boxed.borrow::<crate::media_library::LibTrack>();
+                        if path_set.contains(&track.path) {
+                            rows_to_remove.push(i);
+                        }
+                    }
+                }
+            }
+
+            for idx in rows_to_remove.into_iter().rev() {
+                ml_action_remove_store.remove(idx);
+            }
+        });
+        ml_action_group.add_action(&action_remove);
 
         let col_defs: &[(&str, &str, i32, bool)] = ALL_COLUMNS
             .iter()
@@ -5364,6 +8452,55 @@ fn open_media_library_window(
         // Capture store_ref before factory so it's available for the factory's right-click handler
         let store_for_ctx = track_store.clone();
 
+        // ── Unscanned indicator column (always first, always visible) ──────────
+        {
+            let unscanned_factory = SignalListItemFactory::new();
+
+            unscanned_factory.connect_setup(|_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                if li.child().is_some() {
+                    return;
+                }
+                let lbl = Label::builder()
+                    .halign(Align::Center)
+                    .valign(Align::Center)
+                    .css_classes(["ml-col-label"])
+                    .build();
+                li.set_child(Some(&lbl));
+            });
+
+            unscanned_factory.connect_bind(move |_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                let boxed = li
+                    .item()
+                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok());
+                let Some(boxed) = boxed else {
+                    return;
+                };
+                let t = boxed.borrow::<crate::media_library::LibTrack>();
+                let lbl = li.child().and_then(|c| c.downcast::<Label>().ok());
+                let Some(lbl) = lbl else {
+                    return;
+                };
+                let path = std::path::Path::new(&t.path);
+                let needs_scan = crate::media_library::MediaLibrary::needs_metadata_scan(
+                    &t.path,
+                    t.last_scanned.as_deref(),
+                );
+                if needs_scan {
+                    lbl.set_label("❓");
+                } else if crate::media_library::is_read_only(path) {
+                    lbl.set_label("🔒");
+                } else {
+                    lbl.set_label("");
+                }
+            });
+
+            let unscanned_col = ColumnViewColumn::new(Some(""), Some(unscanned_factory));
+            unscanned_col.set_fixed_width(24);
+            col_view.append_column(&unscanned_col);
+        }
+
         let all_cols: Vec<(String, ColumnViewColumn)> = col_defs
             .iter()
             .map(|(id, header, _min_w, expand)| {
@@ -5371,11 +8508,10 @@ fn open_media_library_window(
                 let id_str = id.to_string();
                 let is_artwork = id_str == "artwork_path";
                 let connected = connected_artwork.clone();
-                let ctx_state = state.clone();
                 let ctx_multi_sel = multi_sel.clone();
-                let ctx_rebuild_pl = rebuild_playlist.clone();
                 let ctx_col_view = col_view.clone();
-                let ctx_store = store_for_ctx.clone();
+                let _ctx_store = store_for_ctx.clone();
+                let ml_tracks_gest = ml_selected_tracks.clone();
 
                 factory.connect_setup(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -5422,12 +8558,10 @@ fn open_media_library_window(
                     // Add right-click gesture to each row
                     let gesture = gtk4::GestureClick::new();
                     gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
-                    let state_gest = ctx_state.clone();
                     let sel_gest = ctx_multi_sel.clone();
-                    let rebuild_pl_gest = ctx_rebuild_pl.clone();
                     let col_popup = ctx_col_view.clone();
                     let li_gest = li.clone();
-                    let store_gest = ctx_store.clone();
+                    let ml_tracks_for_gest = ml_tracks_gest.clone();
                     gesture.connect_pressed(move |_gest, n_press, x, y| {
                         if n_press != 1 {
                             return;
@@ -5437,22 +8571,43 @@ fn open_media_library_window(
                             return;
                         };
                         let item_clone = item.clone();
-                        let Some(boxed) = item.downcast::<glib::BoxedAnyObject>().ok() else {
-                            return;
-                        };
-                        let track = boxed.borrow::<crate::media_library::LibTrack>();
 
-                        // Select only this item in the selection model
-                        let n_items = sel_gest.n_items();
-                        for i in 0..n_items {
+                        // Find the index of the clicked item by checking each item
+                        let mut clicked_index: Option<u32> = None;
+                        for i in 0..sel_gest.n_items() {
                             if let Some(model_item) = sel_gest.item(i) {
                                 if model_item == item_clone {
-                                    sel_gest.unselect_all();
-                                    sel_gest.select_item(i, true);
+                                    clicked_index = Some(i);
                                     break;
                                 }
                             }
                         }
+
+                        // Only change selection if clicked on non-selected item
+                        // This preserves multi-selection when right-clicking on selected items
+                        if let Some(idx) = clicked_index {
+                            if !sel_gest.is_selected(idx) {
+                                sel_gest.unselect_all();
+                                sel_gest.select_item(idx, true);
+                            }
+                        }
+
+                        // Collect selected tracks into shared state for action handlers
+                        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+                        let mut selected_count = 0usize;
+                        for i in 0..sel_gest.n_items() {
+                            if sel_gest.is_selected(i) {
+                                if let Some(obj) = sel_gest
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                {
+                                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                                    paths.push(std::path::PathBuf::from(&t.path));
+                                    selected_count += 1;
+                                }
+                            }
+                        }
+                        *ml_tracks_for_gest.borrow_mut() = paths;
 
                         // Convert coordinates from gesture widget to ColumnView
                         // The gesture gives coords in the child widget's space
@@ -5469,8 +8624,36 @@ fn open_media_library_window(
                             (x, y)
                         };
 
-                        // Create popover at converted position
-                        let popover = gtk4::Popover::new();
+                        // Build menu model
+                        let menu = gio::Menu::new();
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Append to Playlist"),
+                            Some("ml.append"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Replace current playlist"),
+                            Some("ml.replace"),
+                        ));
+
+                        // Only show View/Edit ID3 for single selection
+                        if selected_count == 1 {
+                            menu.append_item(&gio::MenuItem::new(
+                                Some("View/Edit ID3 Info"),
+                                Some("ml.edit-id3"),
+                            ));
+                        }
+
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Rescan Metadata"),
+                            Some("ml.rescan"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Remove from Media Library"),
+                            Some("ml.remove"),
+                        ));
+
+                        // Create popover menu
+                        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
                         popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
                             popup_x as i32,
                             popup_y as i32,
@@ -5478,106 +8661,6 @@ fn open_media_library_window(
                             1,
                         )));
                         popover.set_parent(&col_popup);
-
-                        let vbox = GtkBox::new(Orientation::Vertical, 0);
-                        vbox.set_margin_top(4);
-                        vbox.set_margin_bottom(4);
-                        vbox.set_margin_start(4);
-                        vbox.set_margin_end(4);
-
-                        // Add to Playlist
-                        let btn_add = Button::with_label("Add to Playlist");
-                        let state_add = state_gest.clone();
-                        let sel_add = sel_gest.clone();
-                        let rebuild_add = rebuild_pl_gest.clone();
-                        let popover_add = popover.clone();
-                        btn_add.connect_clicked(move |_btn| {
-                            for i in 0..sel_add.n_items() {
-                                if sel_add.is_selected(i) {
-                                    if let Some(obj) = sel_add
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        let track = libtrack_to_track(&t);
-                                        state_add.borrow_mut().playlist.add(track);
-                                    }
-                                }
-                            }
-                            rebuild_add();
-                            popover_add.unparent();
-                        });
-                        vbox.append(&btn_add);
-
-                        // View/Edit ID3 Info
-                        let btn_id3 = Button::with_label("View/Edit ID3 Info");
-                        let state_id3 = state_gest.clone();
-                        let sel_id3 = sel_gest.clone();
-                        let rebuild_id3 = rebuild_pl_gest.clone();
-                        let popover_id3 = popover.clone();
-                        btn_id3.connect_clicked(move |_btn| {
-                            for i in 0..sel_id3.n_items() {
-                                if sel_id3.is_selected(i) {
-                                    if let Some(obj) = sel_id3
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        let path = std::path::PathBuf::from(&t.path);
-                                        open_id3_editor_window(
-                                            None::<&gtk4::Window>,
-                                            path,
-                                            state_id3.clone(),
-                                            rebuild_id3.clone(),
-                                            None,
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                            popover_id3.unparent();
-                        });
-                        vbox.append(&btn_id3);
-
-                        let sep = Separator::new(Orientation::Horizontal);
-                        vbox.append(&sep);
-
-                        // Remove from Media Library
-                        let btn_remove = Button::with_label("Remove from Media Library");
-                        let state_remove = state_gest.clone();
-                        let sel_remove = sel_gest.clone();
-                        let popover_remove = popover.clone();
-                        let store_remove = store_gest.clone();
-                        btn_remove.connect_clicked(move |_btn| {
-                            for i in 0..sel_remove.n_items() {
-                                if sel_remove.is_selected(i) {
-                                    if let Some(obj) = sel_remove
-                                        .item(i)
-                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                    {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
-                                        if let Some(lib) = state_remove.borrow().media_lib.as_ref()
-                                        {
-                                            let _ = lib.remove_track(t.id);
-                                        }
-                                    }
-                                }
-                            }
-                            // Rebuild the store to reflect removed tracks
-                            let tracks: Vec<crate::media_library::LibTrack> = state_remove
-                                .borrow()
-                                .media_lib
-                                .as_ref()
-                                .and_then(|lib| lib.all_tracks().ok())
-                                .unwrap_or_default();
-                            let boxed: Vec<glib::BoxedAnyObject> =
-                                tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
-                            store_remove.splice(0, store_remove.n_items(), &boxed);
-                            popover_remove.unparent();
-                        });
-                        vbox.append(&btn_remove);
-
-                        popover.set_child(Some(&vbox));
                         popover.popup();
                     });
                     child.add_controller(gesture);
@@ -5647,6 +8730,7 @@ fn open_media_library_window(
                         "path" => t.path.clone(),
                         "play_count" => t.play_count.to_string(),
                         "last_played" => format_last_played(t.last_played.as_deref().unwrap_or("")),
+                        "last_scanned" => t.last_scanned.as_deref().unwrap_or("").to_string(),
                         "disc_num" => {
                             let d = t.disc_num.unwrap_or(0);
                             if d == 0 {
@@ -5728,12 +8812,22 @@ fn open_media_library_window(
         let rebuild_files: Rc<dyn Fn() -> usize> = {
             let state_rc = state.clone();
             let store_ref = track_store.clone();
+            let search_ref = search_entry.clone();
             Rc::new(move || {
+                // Respect any active search filter so that background rebuilds
+                // (rescan, folder add, ID3 save) don't discard the current query.
+                let query = search_ref.text().to_lowercase();
                 let tracks: Vec<crate::media_library::LibTrack> = state_rc
                     .borrow()
                     .media_lib
                     .as_ref()
-                    .and_then(|lib| lib.all_tracks().ok())
+                    .and_then(|lib| {
+                        if query.is_empty() {
+                            lib.all_tracks().ok()
+                        } else {
+                            lib.search_tracks(&query).ok()
+                        }
+                    })
                     .unwrap_or_default();
                 let count = tracks.len();
                 let boxed: Vec<glib::BoxedAnyObject> =
@@ -5818,10 +8912,15 @@ fn open_media_library_window(
         btn_add_folder.add_css_class("pl-btn");
         let btn_rescan = Button::with_label("⟳ Rescan");
         btn_rescan.add_css_class("pl-btn");
+        let btn_cancel = Button::with_label("✕ Cancel Scan");
+        btn_cancel.add_css_class("pl-btn");
+        btn_cancel.add_css_class("destructive");
+        btn_cancel.set_visible(false);
         let btn_rm_from_ml = Button::with_label("✕ Remove");
         btn_rm_from_ml.add_css_class("pl-btn");
         btn_rm_from_ml.add_css_class("destructive");
 
+        // Button row: add-to-playlist on the left, management buttons on the right.
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
         btn_row.append(&btn_add_to_pl);
@@ -5830,6 +8929,7 @@ fn open_media_library_window(
         btn_row.append(&btn_customize);
         btn_row.append(&btn_add_folder);
         btn_row.append(&btn_rescan);
+        btn_row.append(&btn_cancel);
         files_vbox.append(&btn_row);
 
         // Add selected tracks to playlist.
@@ -5837,7 +8937,16 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
+            let set_track_add = set_track.clone();
             Rc::new(move || {
+                let was_empty = state_rc.borrow().playlist.is_empty();
+                let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
+                let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
+                    == crate::config::PlaylistAddBehavior::Replace;
+                if should_replace {
+                    let _ = state_rc.borrow_mut().player.stop();
+                    state_rc.borrow_mut().playlist.clear();
+                }
                 let mut added = 0usize;
                 for i in 0..sel_ref.n_items() {
                     if sel_ref.is_selected(i) {
@@ -5853,6 +8962,13 @@ fn open_media_library_window(
                     }
                 }
                 if added > 0 {
+                    // Autoplay when replacing (always start fresh) or when the
+                    // playlist was empty and a track just arrived.
+                    if autoplay && (was_empty || should_replace) {
+                        if let Some(display) = state_rc.borrow_mut().play_current() {
+                            set_track_add(&display);
+                        }
+                    }
                     rebuild_pl();
                 }
             })
@@ -5870,14 +8986,33 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let rebuild_pl = rebuild_playlist.clone();
+            let set_track_ml = set_track.clone();
             col_view.connect_activate(move |_, pos| {
                 if let Some(obj) = sel_ref
                     .item(pos)
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                 {
+                    let was_empty = state_rc.borrow().playlist.is_empty();
+                    let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
+                    let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
+                        == crate::config::PlaylistAddBehavior::Replace;
                     let t = obj.borrow::<crate::media_library::LibTrack>();
                     let track = libtrack_to_track(&t);
+                    drop(t);
+                    if should_replace {
+                        // Stop before clearing so the current track doesn't
+                        // keep playing after the playlist is replaced.
+                        let _ = state_rc.borrow_mut().player.stop();
+                        state_rc.borrow_mut().playlist.clear();
+                    }
                     state_rc.borrow_mut().playlist.add(track);
+                    // Autoplay when: the playlist was empty (append mode), or
+                    // when replacing (the new track should always start playing).
+                    if autoplay && (was_empty || should_replace) {
+                        if let Some(display) = state_rc.borrow_mut().play_current() {
+                            set_track_ml(&display);
+                        }
+                    }
                     rebuild_pl();
                 }
             });
@@ -5913,12 +9048,16 @@ fn open_media_library_window(
             let win_wk = win.downgrade();
             let rebuild_ref = rebuild_files.clone();
             let status_ref = files_status.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
             btn_add_folder.connect_clicked(move |_| {
                 let chooser = gtk4::FileDialog::new();
                 chooser.set_title("Add Folder to Media Library");
                 let state_inner = state_rc.clone();
                 let rebuild_inner = rebuild_ref.clone();
                 let status_inner = status_ref.clone();
+                let cancel_btn = cancel_ref.clone();
+                let rescan_btn = rescan_ref.clone();
                 if let Some(w) = win_wk.upgrade() {
                     chooser.select_folder(Some(&w), None::<&gio::Cancellable>, move |result| {
                         let Ok(file) = result else {
@@ -5928,7 +9067,6 @@ fn open_media_library_window(
                             return;
                         };
                         let path_str = folder.to_string_lossy().to_string();
-                        status_inner.set_text("Scanning…");
 
                         let db_path = {
                             let s = state_inner.borrow();
@@ -5940,70 +9078,115 @@ fn open_media_library_window(
                             status_inner.set_text("Media library not available");
                             return;
                         };
+                        // Refuse to start a second concurrent scan.
+                        if state_inner.borrow().ml_scan.is_some() {
+                            status_inner.set_text("Scan already in progress — please wait");
+                            return;
+                        }
 
-                        state_inner
-                            .borrow()
-                            .pending_bg_ops
-                            .set(state_inner.borrow().pending_bg_ops.get() + 1);
-                        type ScanMsg = Result<usize, String>;
-                        let (sender, receiver) = std::sync::mpsc::channel::<ScanMsg>();
+                        // Set up scan state: shows cancel button and disables rescan.
+                        let cancel_flag = start_ml_scan(&state_inner, ScanType::AddFolder, 0);
+                        status_inner.set_text("Reading tags…");
+                        cancel_btn.set_visible(true);
+                        rescan_btn.set_sensitive(false);
+
+                        // Three channels: fast done, metadata progress, final result.
+                        let (fast_tx, fast_rx) =
+                            std::sync::mpsc::channel::<Result<usize, String>>();
+                        let (progress_tx, progress_rx) =
+                            std::sync::mpsc::channel::<(usize, usize)>();
+                        let (result_tx, result_rx) =
+                            std::sync::mpsc::channel::<Result<usize, String>>();
+
+                        let cancel_thread = cancel_flag.clone();
                         std::thread::spawn(move || {
                             let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
                                 Err(e) => {
-                                    let _ = sender.send(Err(format!("DB error: {e}")));
+                                    let _ = fast_tx.send(Err(format!("DB error: {e}")));
                                     return;
                                 }
                             };
-                            let add_result = lib.add_folder(&path_str);
-                            match add_result {
+                            let folder_id = match lib.add_folder(&path_str) {
                                 Err(e) => {
-                                    let _ = sender
+                                    let _ = fast_tx
                                         .send(Err(format!("Could not add '{}': {e}", path_str)));
+                                    return;
                                 }
-                                Ok(folder_id_enum) => {
-                                    let folder_id = folder_id_enum.id();
-                                    match lib.rescan_folder_fast(folder_id, &path_str) {
-                                        Ok((added, _)) => {
-                                            let _ = sender.send(Ok(added));
-                                        }
-                                        Err(e) => {
-                                            let _ = sender.send(Err(format!(
-                                                "Scan error for '{}': {e}",
-                                                path_str
-                                            )));
-                                        }
-                                    }
-                                }
+                                Ok(r) => r.id(),
+                            };
+                            // Phase 1: insert file paths into DB (fast).
+                            if let Err(e) = lib.rescan_folder_fast(folder_id, &path_str) {
+                                let _ = fast_tx
+                                    .send(Err(format!("Scan error for '{}': {e}", path_str)));
+                                return;
                             }
+                            let _ = fast_tx.send(Ok(folder_id as usize));
+                            // Phase 2: read metadata for tracks that need it.
+                            let count = lib
+                                .scan_folder(folder_id, &cancel_thread, |c, t| {
+                                    let _ = progress_tx.send((c, t));
+                                })
+                                .map(|(scanned, _, _)| scanned)
+                                .unwrap_or(0);
+                            let _ = result_tx.send(Ok(count));
                         });
 
-                        let receiver = std::cell::RefCell::new(receiver);
-                        glib::idle_add_local(move || {
-                            let result = receiver.borrow().try_recv();
-                            if result.is_err() {
-                                return glib::ControlFlow::Continue;
-                            }
-                            // Re-open main library so in-memory instance picks up changes.
-                            {
-                                let mut s = state_inner.borrow_mut();
-                                s.media_lib = crate::media_library::MediaLibrary::open().ok();
-                            }
-                            match result.unwrap() {
-                                Err(msg) => status_inner.set_text(&msg),
-                                Ok(added) => {
-                                    let count = rebuild_inner();
-                                    status_inner.set_text(&format!(
-                                        "Added {added} track{}. {count} tracks in library",
-                                        if added == 1 { "" } else { "s" }
-                                    ));
+                        let fast_rx = std::cell::RefCell::new(fast_rx);
+                        let progress_rx = std::cell::RefCell::new(progress_rx);
+                        let result_rx = std::cell::RefCell::new(result_rx);
+                        let fast_handled = std::cell::Cell::new(false);
+                        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                            // Handle fast scan completion — rebuild immediately so
+                            // tracks appear in the library while metadata loads.
+                            if !fast_handled.get() {
+                                if let Ok(fast_result) = fast_rx.borrow().try_recv() {
+                                    fast_handled.set(true);
+                                    {
+                                        let mut s = state_inner.borrow_mut();
+                                        s.media_lib =
+                                            crate::media_library::MediaLibrary::open().ok();
+                                    }
+                                    if let Err(e) = fast_result {
+                                        status_inner.set_text(&e);
+                                        complete_ml_scan(&state_inner);
+                                        cancel_btn.set_visible(false);
+                                        rescan_btn.set_sensitive(true);
+                                        return glib::ControlFlow::Break;
+                                    }
+                                    rebuild_inner();
+                                    status_inner.set_text("Reading tags…");
                                 }
                             }
-                            state_inner
-                                .borrow()
-                                .pending_bg_ops
-                                .set(state_inner.borrow().pending_bg_ops.get() - 1);
-                            glib::ControlFlow::Break
+
+                            // Drain metadata progress updates.
+                            while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                                update_ml_scan_progress(&state_inner, current, total);
+                                status_inner
+                                    .set_text(&format!("Reading tags {}/{}…", current, total));
+                            }
+
+                            // Check for final completion.
+                            if let Ok(result) = result_rx.borrow().try_recv() {
+                                {
+                                    let mut s = state_inner.borrow_mut();
+                                    s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                                }
+                                complete_ml_scan(&state_inner);
+                                match result {
+                                    Err(e) => status_inner.set_text(&e),
+                                    Ok(_) => {
+                                        let count = rebuild_inner();
+                                        status_inner
+                                            .set_text(&format!("{count} tracks in library"));
+                                    }
+                                }
+                                cancel_btn.set_visible(false);
+                                rescan_btn.set_sensitive(true);
+                                return glib::ControlFlow::Break;
+                            }
+
+                            glib::ControlFlow::Continue
                         });
                     });
                 }
@@ -6015,6 +9198,8 @@ fn open_media_library_window(
             let state_rc = state.clone();
             let rebuild_ref = rebuild_files.clone();
             let status_ref = files_status.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
             btn_rescan.connect_clicked(move |_| {
                 let db_path = {
                     let s = state_rc.borrow();
@@ -6026,59 +9211,117 @@ fn open_media_library_window(
                         Some(_) => crate::media_library::MediaLibrary::db_path_pub(),
                     }
                 };
-                status_ref.set_text("Scanning…");
-                state_rc
-                    .borrow()
-                    .pending_bg_ops
-                    .set(state_rc.borrow().pending_bg_ops.get() + 1);
-                let (tx, rx) = std::sync::mpsc::channel();
+
+                let cancel_flag = start_ml_scan(&state_rc, ScanType::Rescan, 0);
+                status_ref.set_text("Reading tags…");
+                cancel_ref.set_visible(true);
+                rescan_ref.set_sensitive(false);
+
+                let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
                     let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                         Ok(l) => l,
                         Err(e) => {
-                            let _ = tx.send(Err(format!("DB error: {e}")));
+                            let _ = result_tx.send(Err(format!("DB error: {e}")));
                             return;
                         }
                     };
-                    let result = lib.rescan_all().map_err(|e| e.to_string());
-                    let _ = tx.send(result);
+                    let result = lib
+                        .scan_all_folders(&cancel_flag, |current, total| {
+                            let _ = progress_tx.send((current, total));
+                        })
+                        .map_err(|e| e.to_string());
+                    let _ = result_tx.send(result);
                 });
-                let rx = std::cell::RefCell::new(rx);
+                let progress_rx = std::cell::RefCell::new(progress_rx);
+                let result_rx = std::cell::RefCell::new(result_rx);
                 let state_rc2 = state_rc.clone();
                 let rebuild_ref2 = rebuild_ref.clone();
                 let status_ref2 = status_ref.clone();
-                glib::idle_add_local(move || {
-                    let result = rx.borrow().try_recv();
-                    if result.is_err() {
-                        return glib::ControlFlow::Continue;
+                let cancel_ref2 = cancel_ref.clone();
+                let rescan_ref2 = rescan_ref.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                    // Check for progress updates
+                    while let Ok((current, total)) = progress_rx.borrow().try_recv() {
+                        update_ml_scan_progress(&state_rc2, current, total);
+                        status_ref2.set_text(&format!("Reading tags {}/{}…", current, total));
                     }
-                    {
-                        let mut s = state_rc2.borrow_mut();
-                        s.media_lib = crate::media_library::MediaLibrary::open().ok();
-                    }
-                    match result.unwrap() {
-                        Err(e) => status_ref2.set_text(&format!("Rescan error: {e}")),
-                        Ok(_) => {
-                            let count = rebuild_ref2();
-                            status_ref2.set_text(&format!("{count} tracks in library"));
+
+                    // Check for completion
+                    if let Ok(result) = result_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            s.media_lib = crate::media_library::MediaLibrary::open().ok();
                         }
+                        complete_ml_scan(&state_rc2);
+                        match result {
+                            Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
+                            Ok(_) => {
+                                let count = rebuild_ref2();
+                                status_ref2.set_text(&format!("{count} tracks in library"));
+                            }
+                        }
+                        cancel_ref2.set_visible(false);
+                        rescan_ref2.set_sensitive(true);
+                        return glib::ControlFlow::Break;
                     }
-                    state_rc2
-                        .borrow()
-                        .pending_bg_ops
-                        .set(state_rc2.borrow().pending_bg_ops.get() - 1);
-                    glib::ControlFlow::Break
+
+                    glib::ControlFlow::Continue
                 });
+            });
+        }
+
+        // Cancel scan handler
+        {
+            let state_rc = state.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
+            let status_ref = files_status.clone();
+            btn_cancel.connect_clicked(move |_| {
+                cancel_ml_scan(&state_rc);
+                status_ref.set_text("Cancelling…");
+                cancel_ref.set_visible(false);
+                rescan_ref.set_sensitive(true);
+            });
+        }
+
+        // Polling timer to sync scan state with UI.
+        {
+            let state_rc = state.clone();
+            let cancel_ref = btn_cancel.clone();
+            let rescan_ref = btn_rescan.clone();
+            let add_folder_ref = btn_add_folder.clone();
+            let status_ref = files_status.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                let scan_state = state_rc.borrow().ml_scan.clone();
+                if let Some(scan) = scan_state {
+                    cancel_ref.set_visible(true);
+                    rescan_ref.set_sensitive(false);
+                    // Disable Add Folder so a second concurrent scan cannot be started.
+                    add_folder_ref.set_sensitive(false);
+                    if scan.total > 0 {
+                        status_ref
+                            .set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
+                    } else {
+                        status_ref.set_text("Reading tags…");
+                    }
+                } else {
+                    cancel_ref.set_visible(false);
+                    rescan_ref.set_sensitive(true);
+                    add_folder_ref.set_sensitive(true);
+                }
+                glib::ControlFlow::Continue
             });
         }
 
         // Remove selected tracks from library.
         {
-            let state_rc = state.clone();
             let sel_ref = multi_sel.clone();
             let store_ref = track_store.clone();
             let status_ref = files_status.clone();
             btn_rm_from_ml.connect_clicked(move |_| {
+                // Collect IDs of every selected item in one pass.
                 let mut ids_vec: Vec<i64> = Vec::new();
                 for i in 0..sel_ref.n_items() {
                     if sel_ref.is_selected(i) {
@@ -6086,44 +9329,50 @@ fn open_media_library_window(
                             .item(i)
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            let t = obj.borrow::<crate::media_library::LibTrack>();
-                            ids_vec.push(t.id);
+                            ids_vec.push(obj.borrow::<crate::media_library::LibTrack>().id);
                         }
                     }
                 }
                 if ids_vec.is_empty() {
                     return;
                 }
-                let removed = {
-                    let s = state_rc.borrow();
-                    match s.media_lib.as_ref() {
-                        None => 0,
-                        Some(lib) => lib.remove_tracks_batch(&ids_vec).unwrap_or(0),
-                    }
-                };
-                let ids_set: std::collections::HashSet<i64> = ids_vec.into_iter().collect();
+                let ids_set: std::collections::HashSet<i64> =
+                    ids_vec.iter().copied().collect();
                 let n_items = store_ref.n_items();
-                let mut positions: Vec<u32> = (0..n_items)
-                    .filter(|&i| {
-                        store_ref
-                            .item(i)
-                            .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            .map(|obj| {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
-                                ids_set.contains(&t.id)
-                            })
-                            .unwrap_or(false)
+
+                // Build the kept list and splice in one shot — a single
+                // items-changed signal instead of one per removed row.
+                // This is the same pattern used by rebuild_files/search and
+                // avoids blocking the main thread on large selections.
+                let kept: Vec<glib::Object> = (0..n_items)
+                    .filter_map(|i| store_ref.item(i))
+                    .filter(|obj| {
+                        obj.downcast_ref::<glib::BoxedAnyObject>()
+                            .map(|b| !ids_set.contains(
+                                &b.borrow::<crate::media_library::LibTrack>().id,
+                            ))
+                            .unwrap_or(true)
                     })
                     .collect();
-                positions.sort_by(|a, b| b.cmp(a));
-                for pos in positions {
-                    store_ref.remove(pos);
-                }
-                let count = n_items as usize - removed as usize;
+                let removed = n_items as usize - kept.len();
+                store_ref.splice(0, n_items, &kept);
+
                 status_ref.set_text(&format!(
-                    "Removed {removed} track{}. {count} tracks in library",
-                    if removed == 1 { "" } else { "s" }
+                    "Removed {removed} track{}. {} tracks in library",
+                    if removed == 1 { "" } else { "s" },
+                    kept.len(),
                 ));
+
+                // Soft-delete in background, then purge — same pattern as
+                // folder removal.  Opens its own DB connection because
+                // rusqlite::Connection is not Send.
+                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                std::thread::spawn(move || {
+                    if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                        let _ = lib.soft_delete_tracks(&ids_vec);
+                        let _ = lib.purge_deleted_tracks();
+                    }
+                });
             });
         }
 
@@ -6350,6 +9599,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -6362,6 +9612,7 @@ mod tests {
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
         }
     }
 
@@ -6440,7 +9691,7 @@ mod tests {
     // ── AppState::play_prev ───────────────────────────────────────────────────
 
     /// Without real audio the player has no position, so `position()` returns
-    /// `None` → `Duration::ZERO`, which is always < 2 s, so the back button
+    /// `None` → `Duration::ZERO`, which is always < 5 s, so the back button
     /// always steps to the previous track in tests.
     #[test]
     fn play_prev_when_position_is_zero_goes_to_previous_track() {
@@ -6448,6 +9699,41 @@ mod tests {
         s.playlist.current_index = 1;
         s.play_prev();
         assert_eq!(s.playlist.current_index, 0);
+    }
+
+    /// At exactly 4 seconds, back button should go to previous track.
+    #[test]
+    fn play_prev_at_position_4_secs_goes_to_previous() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        s.player
+            .set_position_for_test(std::time::Duration::from_secs(4));
+        s.play_prev();
+        assert_eq!(s.playlist.current_index, 0);
+    }
+
+    /// At exactly 5 seconds, back button should restart the current track.
+    #[test]
+    fn play_prev_at_position_5_secs_restarts_track() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        s.player
+            .set_position_for_test(std::time::Duration::from_secs(5));
+        s.play_prev();
+        // Should stay at index 1 (restart, not go to previous)
+        assert_eq!(s.playlist.current_index, 1);
+    }
+
+    /// At 6 seconds, back button should restart the current track.
+    #[test]
+    fn play_prev_at_position_6_secs_restarts_track() {
+        let mut s = state_with_tracks(&["A", "B"]);
+        s.playlist.current_index = 1;
+        s.player
+            .set_position_for_test(std::time::Duration::from_secs(6));
+        s.play_prev();
+        // Should stay at index 1 (restart, not go to previous)
+        assert_eq!(s.playlist.current_index, 1);
     }
 
     #[test]
@@ -6516,17 +9802,17 @@ mod tests {
     // ── AppState::toggle_visualizer_mode ──────────────────────────────────────
 
     #[test]
-    fn toggle_visualizer_mode_bars_becomes_oscilloscope() {
+    fn toggle_visualizer_mode_bars_becomes_waveform() {
         let mut s = make_state();
         assert_eq!(s.config.visualizer.mode, VisualizerMode::Bars);
         s.toggle_visualizer_mode();
-        assert_eq!(s.config.visualizer.mode, VisualizerMode::Oscilloscope);
+        assert_eq!(s.config.visualizer.mode, VisualizerMode::Waveform);
     }
 
     #[test]
-    fn toggle_visualizer_mode_oscilloscope_becomes_bars() {
+    fn toggle_visualizer_mode_waveform_becomes_bars() {
         let mut s = make_state();
-        s.config.visualizer.mode = VisualizerMode::Oscilloscope;
+        s.config.visualizer.mode = VisualizerMode::Waveform;
         s.toggle_visualizer_mode();
         assert_eq!(s.config.visualizer.mode, VisualizerMode::Bars);
     }
@@ -6804,11 +10090,23 @@ mod tests {
     }
 
     #[test]
-    fn search_indices_returns_all_tracks_for_empty_query() {
+    fn search_indices_matches_across_fields() {
+        // "ed sheeran don't" — artist and title words in a single query.
+        let mut s = make_state();
+        s.playlist.add(named_track("Don't", "Ed Sheeran"));
+        s.playlist.add(named_track("Perfect", "Ed Sheeran"));
+        s.playlist.add(named_track("Don't Stop", "Journey"));
+        let results = s.playlist.search_indices("ed sheeran don't");
+        assert_eq!(results, vec![0]);
+    }
+
+    #[test]
+    fn search_indices_returns_empty_for_empty_query() {
         let s = state_with_tracks(&["A", "B", "C"]);
-        // search_indices is called with "" from the search bar before any typing
+        // Empty query returns nothing so the jump window doesn't create
+        // thousands of widgets on open, which would freeze the UI.
         let results = s.playlist.search_indices("");
-        assert_eq!(results.len(), 3);
+        assert!(results.is_empty());
     }
 
     // ── fmt_duration ──────────────────────────────────────────────────────────
@@ -6846,7 +10144,7 @@ mod tests {
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
         let dur = Duration::from_secs(180);
-        s.apply_probed_duration(&path, dur);
+        let _ = s.apply_probed_duration(&path, dur);
         assert_eq!(s.playlist.tracks[0].duration, Some(dur));
     }
 
@@ -6855,7 +10153,7 @@ mod tests {
         let mut s = make_state();
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
-        s.apply_probed_duration(&path, Duration::from_secs(120));
+        let _ = s.apply_probed_duration(&path, Duration::from_secs(120));
         assert!(s.duration_cache.dirty);
         assert_eq!(s.duration_cache.get(&path), Some(Duration::from_secs(120)));
     }
@@ -6866,7 +10164,7 @@ mod tests {
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
         let dur = Duration::from_secs(200);
-        s.apply_probed_duration(&path, dur);
+        let _ = s.apply_probed_duration(&path, dur);
         // Player is Stopped (freshly created), current track matches → last_duration set.
         assert_eq!(s.last_duration, Some(dur));
     }
@@ -6878,7 +10176,7 @@ mod tests {
         s.playlist.add(fake_track("B"));
         s.playlist.current_index = 0;
         let path_b = s.playlist.tracks[1].path.clone();
-        s.apply_probed_duration(&path_b, Duration::from_secs(99));
+        let _ = s.apply_probed_duration(&path_b, Duration::from_secs(99));
         // Track B is not current → last_duration unchanged.
         assert_eq!(s.last_duration, None);
     }
