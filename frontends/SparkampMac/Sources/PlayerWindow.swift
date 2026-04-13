@@ -137,14 +137,6 @@ struct PlayerWindow: View {
                             model.playlistVisible.toggle()
                         }
                         .help("Show / hide Playlist (p)")
-
-                        // App icon logo (42 px, matching Linux Sparkamp)
-                        Image(nsImage: NSApp.applicationIconImage)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: 42, height: 42)
-                            .cornerRadius(8)
-                            .help("Sparkamp")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -185,6 +177,13 @@ struct PlayerWindow: View {
             SkinButton(id: "stop",  icon: "stop.fill",          iconSize: 14) { model.stop() }
             SkinButton(id: "next",  icon: "forward.end.fill",   iconSize: 14) { model.next() }
             Spacer()
+            // App icon logo — right-aligned in the transport row, matching Linux Sparkamp
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 42, height: 42)
+                .cornerRadius(8)
+                .help("Sparkamp")
         }
         .padding(.horizontal, 10)
         .padding(.top, 6)
