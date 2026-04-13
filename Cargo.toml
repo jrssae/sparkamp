@@ -1,8 +1,9 @@
 # Workspace root — includes the main Sparkamp binary and all plugin crates.
 [workspace]
 members = [
-    ".",                     # sparkamp main binary
+    ".",                     # sparkamp main binary + library
     "plugins/viz_granite",   # Granite OpenGL visualizer plugin
+    "frontends/macos",       # macOS static library bridge (Rust → Swift FFI)
 ]
 resolver = "2"
 
@@ -11,6 +12,10 @@ name = "sparkamp"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
+
+[lib]
+name = "sparkamp"
+path = "src/lib.rs"
 
 [[bin]]
 name = "sparkamp"
@@ -28,9 +33,6 @@ id3 = "1"
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
-
-# GTK4 GUI
-gtk4 = { version = "0.9", features = ["v4_12"] }
 
 # Config & playlist persistence
 serde = { version = "1", features = ["derive"] }
@@ -56,6 +58,10 @@ libloading = "0.8"
 
 # Media library database (SQLite, bundled so no system dep needed)
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# GTK4 GUI — Linux only; not needed on macOS where SwiftUI replaces it.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = { version = "0.9", features = ["v4_12"] }
 
 [dev-dependencies]
 # Temporary files for ID3 editor tests

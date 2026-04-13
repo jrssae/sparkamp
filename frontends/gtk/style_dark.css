@@ -1,5 +1,90 @@
-/* SparkAmp — Dark skin. @accent_bg_color resolves from the active GTK/Adwaita
-   theme, automatically picking up the user's system accent colour choice. */
+/* Sparkamp Dark Skin
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This file is a dual-format skin:
+ *
+ *  1. GTK4 CSS — all the widget-selector rules below are applied directly by
+ *     GTK's CSS engine on Linux.
+ *
+ *  2. Sparkamp Skin Format — the :root { --sparkamp-* } block at the top is
+ *     parsed by every Sparkamp frontend (Linux, macOS, future ports) so that
+ *     a single file can skin the application on all platforms.
+ *
+ * To create a custom skin, copy this file, edit the --sparkamp-* variables
+ * (and optionally the GTK rules below), and place it in:
+ *   ~/.config/sparkamp/skins/myskin.css
+ *
+ * Button image overrides — place PNGs alongside the CSS file and uncomment:
+ *   .sparkamp-button-prev  { background-image: url("buttons/prev.png"); }
+ *   .sparkamp-button-prev:hover  { background-image: url("buttons/prev_hover.png"); }
+ *   .sparkamp-button-prev:active { background-image: url("buttons/prev_pressed.png"); }
+ *   .sparkamp-button-play  { background-image: url("buttons/play.png"); }
+ *   .sparkamp-button-pause { background-image: url("buttons/pause.png"); }
+ *   .sparkamp-button-stop  { background-image: url("buttons/stop.png"); }
+ *   .sparkamp-button-next  { background-image: url("buttons/next.png"); }
+ *   (rewind / ffwd are macOS-only; safe to include, ignored on GTK)
+ *   .sparkamp-button-rewind { background-image: url("buttons/rewind.png"); }
+ *   .sparkamp-button-ffwd   { background-image: url("buttons/ffwd.png"); }
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+:root {
+    /* ── Window chrome ──────────────────────────────────────────────────── */
+    --sparkamp-background:              #1a1a1a;
+    --sparkamp-window-border:           #2a2a2a;
+
+    /* ── LCD / Now-Playing panel ────────────────────────────────────────── */
+    --sparkamp-lcd-background:          #080c0e;
+    --sparkamp-lcd-border:              #1e3040;
+    --sparkamp-title-text:              #00ccff;
+    --sparkamp-artist-text:             #6a8fa0;
+    --sparkamp-time-text:               #00ccff;
+
+    /* ── Transport buttons ──────────────────────────────────────────────── */
+    --sparkamp-transport-bg:            #212121;
+    --sparkamp-transport-border:        #363636;
+    --sparkamp-transport-text:          #aaaaaa;
+    --sparkamp-transport-hover-bg:      #2e2e2e;
+    --sparkamp-transport-active-bg:     #3a3a3a;
+    --sparkamp-play-button-bg:          #002e3e;
+    --sparkamp-play-button-text:        #00ccff;
+    --sparkamp-play-button-border:      #005577;
+
+    /* ── Seek bar ───────────────────────────────────────────────────────── */
+    --sparkamp-seek-track:              #0d1a1f;
+    --sparkamp-seek-fill:               #007799;
+    --sparkamp-seek-thumb:              #00ccff;
+
+    /* ── Volume slider ──────────────────────────────────────────────────── */
+    --sparkamp-volume-track:            #111111;
+    --sparkamp-volume-fill:             #004455;
+    --sparkamp-volume-thumb:            #00aacc;
+
+    /* ── Playlist ───────────────────────────────────────────────────────── */
+    --sparkamp-playlist-bg:             #101010;
+    --sparkamp-playlist-text:           #bbbbbb;
+    --sparkamp-playlist-current-text:   #00ff88;
+    --sparkamp-playlist-current-bg:     #001a10;
+    --sparkamp-playlist-selected-bg:    #002233;
+    --sparkamp-playlist-broken-text:    #ff7700;
+    --sparkamp-playlist-duration-text:  #3d5566;
+
+    /* ── Mode buttons (repeat / shuffle / PL toggle) ────────────────────── */
+    --sparkamp-mode-btn-bg:             #1c1c1c;
+    --sparkamp-mode-btn-border:         #303030;
+    --sparkamp-mode-btn-text:           #666666;
+    --sparkamp-mode-btn-active-bg:      #002e3e;
+    --sparkamp-mode-btn-active-text:    #00ccff;
+
+    /* ── Logo (macOS only — GTK uses a raster image) ────────────────────── */
+    --sparkamp-logo-text:               #00ccff;
+    --sparkamp-logo-subtext:            #005566;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GTK4 structural rules follow.  These are ignored by non-GTK frontends.
+ * @accent_bg_color resolves from the active GTK/Adwaita theme, automatically
+ * picking up the user's system accent colour choice.
+ * ─────────────────────────────────────────────────────────────────────────── */
 
 window {
     background-color: #1a1a1a;

@@ -93,8 +93,12 @@ pub struct Player {
     /// The GStreamer `uridecodebin` element for decoding audio.
     decodebin: gst::Element,
     /// The GStreamer `audioconvert` element for format conversion.
+    /// Kept alive here — dropping it would disconnect the pipeline.
+    #[allow(dead_code)]
     audioconvert: gst::Element,
     /// The GStreamer `spectrum` element for visualizer FFT analysis.
+    /// Kept alive here — dropping it would remove it from the pipeline.
+    #[allow(dead_code)]
     spectrum_elem: Option<gst::Element>,
     /// Our local view of the pipeline state, updated synchronously on every
     /// transport method call.

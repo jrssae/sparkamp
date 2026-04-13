@@ -22,8 +22,6 @@ mod duration_cache;
 mod duration_probe;
 mod engine;
 mod filetype_plugin;
-#[path = "../frontends/gtk/mod.rs"]
-mod gtk_ui;
 mod id3_editor;
 mod loaded_plugin;
 mod media_library;
@@ -33,9 +31,26 @@ mod plugin_manager;
 mod plugin_settings;
 mod shuffle;
 mod skin;
+mod viz_plugin;
+
+// GTK4 frontend — Linux only. On macOS the SwiftUI app bundle replaces it.
+#[cfg(target_os = "linux")]
+#[path = "../frontends/gtk/mod.rs"]
+mod gtk_ui;
+
+#[cfg(target_os = "macos")]
+mod gtk_ui {
+    pub fn run(
+        _playlist: crate::model::Playlist,
+        _config: crate::config::Config,
+    ) -> anyhow::Result<()> {
+        eprintln!("Use the Sparkamp.app bundle for the GUI on macOS.");
+        std::process::exit(1);
+    }
+}
+
 #[path = "../frontends/tui/mod.rs"]
 mod tui;
-mod viz_plugin;
 
 /// Command-line arguments parsed by [`clap`].
 #[derive(Parser)]

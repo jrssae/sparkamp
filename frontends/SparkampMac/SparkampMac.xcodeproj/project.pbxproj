@@ -1,0 +1,399 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA5000000000000000000000 /* SparkampMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* SparkampMacApp.swift */; };
+		AA5000000000000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000002 /* ContentView.swift */; };
+		AA5000000000000000000002 /* SparkampModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000005 /* SparkampModel.swift */; };
+		AA5000000000000000000003 /* PlayerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000006 /* PlayerWindow.swift */; };
+		AA5000000000000000000004 /* MarqueeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000007 /* MarqueeView.swift */; };
+		AA5000000000000000000006 /* PlaylistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000009 /* PlaylistView.swift */; };
+		AA5000000000000000000007 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000010 /* Theme.swift */; };
+		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AA4000000000000000000000 /* SparkampMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SparkampMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA4000000000000000000001 /* SparkampMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampMacApp.swift; sourceTree = "<group>"; };
+		AA4000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000003 /* sparkamp_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sparkamp_bridge.h; sourceTree = "<group>"; };
+		AA4000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA4000000000000000000005 /* SparkampModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampModel.swift; sourceTree = "<group>"; };
+		AA4000000000000000000006 /* PlayerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000007 /* MarqueeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarqueeView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000009 /* PlaylistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000010 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA2000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA3000000000000000000000 = {
+			isa = PBXGroup;
+			children = (
+				AA3000000000000000000002 /* Sources */,
+				AA3000000000000000000003 /* SparkampCore */,
+				AA4000000000000000000004 /* Info.plist */,
+				AA4000000000000000000011 /* Assets.xcassets */,
+				AA3000000000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA3000000000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA4000000000000000000000 /* SparkampMac.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA3000000000000000000002 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				AA4000000000000000000001 /* SparkampMacApp.swift */,
+				AA4000000000000000000002 /* ContentView.swift */,
+				AA4000000000000000000005 /* SparkampModel.swift */,
+				AA4000000000000000000006 /* PlayerWindow.swift */,
+				AA4000000000000000000007 /* MarqueeView.swift */,
+				AA4000000000000000000009 /* PlaylistView.swift */,
+				AA4000000000000000000010 /* Theme.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		AA3000000000000000000003 /* SparkampCore */ = {
+			isa = PBXGroup;
+			children = (
+				AA4000000000000000000003 /* sparkamp_bridge.h */,
+			);
+			path = SparkampCore;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA1000000000000000000001 /* SparkampMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA6000000000000000000001 /* Build configuration list for PBXNativeTarget "SparkampMac" */;
+			buildPhases = (
+				AA2000000000000000000003 /* Cargo Build */,
+				AA2000000000000000000000 /* Sources */,
+				AA2000000000000000000001 /* Frameworks */,
+				AA2000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SparkampMac;
+			productName = SparkampMac;
+			productReference = AA4000000000000000000000 /* SparkampMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA1000000000000000000000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 2640;
+			};
+			buildConfigurationList = AA6000000000000000000000 /* Build configuration list for PBXProject "SparkampMac" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA3000000000000000000000;
+			productRefGroup = AA3000000000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA1000000000000000000001 /* SparkampMac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA2000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA5000000000000000000008 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AA2000000000000000000003 /* Cargo Build */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Cargo Build";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Build the Rust static library.\n# SRCROOT = frontends/SparkampMac/\ncd \"$SRCROOT/../..\"\n\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nexport PKG_CONFIG_PATH=\"/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:$PKG_CONFIG_PATH\"\n\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    cargo build --release -p sparkamp-macos\n    cp target/release/libsparkamp_macos.a \"$SRCROOT\"\nelse\n    cargo build -p sparkamp-macos\n    cp target/debug/libsparkamp_macos.a \"$SRCROOT\"\nfi\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA2000000000000000000000 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA5000000000000000000000 /* SparkampMacApp.swift in Sources */,
+				AA5000000000000000000001 /* ContentView.swift in Sources */,
+				AA5000000000000000000002 /* SparkampModel.swift in Sources */,
+				AA5000000000000000000003 /* PlayerWindow.swift in Sources */,
+				AA5000000000000000000004 /* MarqueeView.swift in Sources */,
+				AA5000000000000000000006 /* PlaylistView.swift in Sources */,
+				AA5000000000000000000007 /* Theme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AA6000000000000000000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AA6000000000000000000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		AA6000000000000000000004 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../include",
+				);
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)",
+				);
+				MARKETING_VERSION = 0.4.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsparkamp_macos",
+					"-L/opt/homebrew/lib",
+					"-lgstreamer-1.0",
+					"-lgstbase-1.0",
+					"-lgstvideo-1.0",
+					"-lglib-2.0",
+					"-lgobject-2.0",
+					"-lgstaudio-1.0",
+					"-lgstpbutils-1.0",
+					"-lgio-2.0",
+					"-lintl",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.SparkampMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AA6000000000000000000005 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../include",
+				);
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)",
+				);
+				MARKETING_VERSION = 0.4.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsparkamp_macos",
+					"-L/opt/homebrew/lib",
+					"-lgstreamer-1.0",
+					"-lgstbase-1.0",
+					"-lgstvideo-1.0",
+					"-lglib-2.0",
+					"-lgobject-2.0",
+					"-lgstaudio-1.0",
+					"-lgstpbutils-1.0",
+					"-lgio-2.0",
+					"-lintl",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.SparkampMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA6000000000000000000000 /* Build configuration list for PBXProject "SparkampMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA6000000000000000000002 /* Debug */,
+				AA6000000000000000000003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA6000000000000000000001 /* Build configuration list for PBXNativeTarget "SparkampMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA6000000000000000000004 /* Debug */,
+				AA6000000000000000000005 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA1000000000000000000000 /* Project object */;
+}

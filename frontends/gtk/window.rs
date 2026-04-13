@@ -1552,6 +1552,13 @@ pub fn build(
         btn.add_css_class("transport");
     }
     btn_play.add_css_class("transport-play");
+    // Sparkamp skin-format CSS classes — used by skins to target individual
+    // buttons with background-image overrides (.sparkamp-button-play { ... }).
+    btn_prev.add_css_class("sparkamp-button-prev");
+    btn_play.add_css_class("sparkamp-button-play");
+    btn_pause.add_css_class("sparkamp-button-pause");
+    btn_stop.add_css_class("sparkamp-button-stop");
+    btn_next.add_css_class("sparkamp-button-next");
 
     // Load logo at ~42 px (50 % larger than the transport buttons).
     // If the PNG fails to load (e.g. asset missing), the image slot stays blank.

@@ -1,4 +1,65 @@
-/* SparkAmp — Light skin. Same accent wiring as the dark skin. */
+/* Sparkamp Light Skin
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Dual-format skin file — see style_dark.css for full format documentation.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+:root {
+    /* ── Window chrome ──────────────────────────────────────────────────── */
+    --sparkamp-background:              #ededed;
+    --sparkamp-window-border:           #c8c8c8;
+
+    /* ── LCD / Now-Playing panel ────────────────────────────────────────── */
+    --sparkamp-lcd-background:          #f5f5f5;
+    --sparkamp-lcd-border:              #cccccc;
+    --sparkamp-title-text:              #004e8a;
+    --sparkamp-artist-text:             #5577aa;
+    --sparkamp-time-text:               #004e8a;
+
+    /* ── Transport buttons ──────────────────────────────────────────────── */
+    --sparkamp-transport-bg:            #dcdcdc;
+    --sparkamp-transport-border:        #b8b8b8;
+    --sparkamp-transport-text:          #444444;
+    --sparkamp-transport-hover-bg:      #cccccc;
+    --sparkamp-transport-active-bg:     #bbbbbb;
+    --sparkamp-play-button-bg:          #cce5f7;
+    --sparkamp-play-button-text:        #004e8a;
+    --sparkamp-play-button-border:      #88bbdd;
+
+    /* ── Seek bar ───────────────────────────────────────────────────────── */
+    --sparkamp-seek-track:              #cccccc;
+    --sparkamp-seek-fill:               #3388bb;
+    --sparkamp-seek-thumb:              #004e8a;
+
+    /* ── Volume slider ──────────────────────────────────────────────────── */
+    --sparkamp-volume-track:            #d4d4d4;
+    --sparkamp-volume-fill:             #88bbdd;
+    --sparkamp-volume-thumb:            #3388bb;
+
+    /* ── Playlist ───────────────────────────────────────────────────────── */
+    --sparkamp-playlist-bg:             #f0f0f0;
+    --sparkamp-playlist-text:           #333333;
+    --sparkamp-playlist-current-text:   #006633;
+    --sparkamp-playlist-current-bg:     #ddf4e8;
+    --sparkamp-playlist-selected-bg:    #cce0f4;
+    --sparkamp-playlist-broken-text:    #cc5500;
+    --sparkamp-playlist-duration-text:  #999999;
+
+    /* ── Mode buttons ───────────────────────────────────────────────────── */
+    --sparkamp-mode-btn-bg:             #e0e0e0;
+    --sparkamp-mode-btn-border:         #bbbbbb;
+    --sparkamp-mode-btn-text:           #888888;
+    --sparkamp-mode-btn-active-bg:      #bbdaf0;
+    --sparkamp-mode-btn-active-text:    #004e8a;
+
+    /* ── Logo (macOS only) ──────────────────────────────────────────────── */
+    --sparkamp-logo-text:               #004e8a;
+    --sparkamp-logo-subtext:            #88bbdd;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * GTK4 structural rules follow.  Same accent wiring as the dark skin.
+ * ─────────────────────────────────────────────────────────────────────────── */
 
 window {
     background-color: #f0f0f0;

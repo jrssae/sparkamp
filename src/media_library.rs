@@ -1505,7 +1505,6 @@ impl MediaLibrary {
             .collect();
 
         let total = tracks.len();
-        let mut skipped = 0usize;
 
         // Separate tracks into those needing scan and those to skip
         let paths_to_scan: Vec<(i64, String)> = tracks
@@ -1531,7 +1530,7 @@ impl MediaLibrary {
             progress(scanned, to_scan_count);
         }
 
-        skipped = total - scanned;
+        let skipped = total - scanned;
 
         Ok((scanned, skipped, to_scan_count - scanned))
     }

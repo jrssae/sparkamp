@@ -1,0 +1,9 @@
+language = "C"
+include_guard = "SPARKAMP_H"
+pragma_once = false
+
+[export]
+# SparkampCtx contains non-C Rust fields; cbindgen generates it as an opaque
+# forward declaration (`typedef struct SparkampCtx SparkampCtx;`) automatically
+# because it has no #[repr(C)]. Swift consumes it as UnsafeMutablePointer<SparkampCtx>.
+exclude = []

@@ -210,7 +210,7 @@ impl ShuffleState {
     }
 
     /// Shuffle next-track logic: pick a random unplayed track.
-    fn next_shuffle(&mut self, _current: usize, total: usize, repeat: RepeatMode) -> Option<usize> {
+    fn next_shuffle(&mut self, current: usize, total: usize, repeat: RepeatMode) -> Option<usize> {
         let all_indices: Vec<usize> = (0..total).collect();
 
         // Collect indices not yet played this pass.
@@ -224,9 +224,22 @@ impl ShuffleState {
             // Every track has been played once this pass.
             match repeat {
                 RepeatMode::Playlist => {
-                    // Start a new pass: clear played set and pick from the full list.
+                    // Start a new pass: clear played set and pick from the full list,
+                    // but exclude the track that just finished so we never immediately
+                    // repeat it.  A duplicate at the pass boundary creates a fake entry
+                    // in the shuffle history, which makes the back-button appear broken.
                     self.played.clear();
-                    available = all_indices;
+                    let without_current: Vec<usize> = all_indices
+                        .iter()
+                        .copied()
+                        .filter(|&i| i != current)
+                        .collect();
+                    // Fall back to the full list only for a single-track playlist.
+                    available = if without_current.is_empty() {
+                        all_indices
+                    } else {
+                        without_current
+                    };
                 }
                 RepeatMode::Off | RepeatMode::Song => {
                     // No more tracks to play.
