@@ -116,7 +116,7 @@ These are the directions the project is heading, in no particular order. Nothing
 - **Plugin Settings UI** — in-app settings panel for installed plugins (schema-driven widgets auto-generated from the plugin's declared settings)
 - **Plugin install dialog** — browse and install `.so` files from within the app
 - **Skin format and migration tool** — a new skin format with a migration path from classic Winamp `.wsz` skins
-- **macOS support** — would be nice to have on a laptop
+- **macOS support** — Milestone 1 complete: native SwiftUI player with full playback, playlist, background metadata scanning, broken-file detection, and CSS skin system. Milestone 2 in progress.
 - **Equalizer UI polish** — save named custom presets, per-band labels in the GTK window
 - **TUI media library** — browse/search the media library from the terminal UI
 - **Confirmation when adding non-library files** — interstitial dialog when adding files that aren't in the ML
@@ -139,6 +139,7 @@ These are the directions the project is heading, in no particular order. Nothing
 | Media library | SQLite via `rusqlite` (bundled, no system dep) |
 | Plugin loading | `libloading` (dlopen) |
 | CLI | Clap |
+| macOS frontend | Swift / SwiftUI + Rust FFI staticlib |
 
 ---
 
@@ -166,6 +167,14 @@ cargo build --release
 ./target/release/sparkamp --ui      # GTK4 graphical interface
 ./target/release/sparkamp           # Terminal UI
 ```
+
+**macOS (Xcode):**
+
+Requires Xcode and GStreamer installed via Homebrew:
+```bash
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+```
+Open `frontends/SparkampMac/SparkampMac.xcodeproj` and build. The Cargo build phase runs `cargo build -p sparkamp-macos` automatically and links the result as a static library.
 
 Build and install just the Granite visualizer plugin:
 ```bash
