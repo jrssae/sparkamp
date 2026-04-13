@@ -18,11 +18,18 @@ struct PlayerWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            lcdPanel
+            // ┌──────────────────────────────────────┐
+            // │ [TIME large] │ Marquee title          │
+            // │              │   [spring] [RPT] [SHF] │
+            // │              │ [🔊 vol≈1/3] [PL][logo]│
+            // ├──────────────────────────────────────┤
+            // │ [seek bar full width]                 │
+            // ├──────────────────────────────────────┤
+            // │ [◀ ▶ ⏸ ⏹ ▶]                        │
+            // └──────────────────────────────────────┘
+            infoPanel
             seekRow
             transportRow
-            modeRow
-            bottomRow
         }
         .frame(width: 480)
         .background(theme.background)
@@ -31,80 +38,120 @@ struct PlayerWindow: View {
                 .stroke(theme.windowBorder, lineWidth: 1)
                 .allowsHitTesting(false)
         )
-        // Drop zone
         .onDrop(of: [.fileURL], isTargeted: $isFileTargeted) { providers in
             handleDrop(providers: providers)
         }
         .overlay(dropOverlay)
-        // Notifications
         .onReceive(NotificationCenter.default.publisher(for: .openFilePicker)) { _ in
             model.openFilePicker()
         }
         .onAppear { model.refreshAll() }
-        // Playlist window sync
         .onChange(of: model.playlistVisible) { _, visible in
             if visible { openWindow(id: "playlist") }
             else       { dismissWindow(id: "playlist") }
         }
-        // Right-click / two-finger-tap context menu for theme switching
-        .contextMenu {
-            themeMenu
-        }
+        .contextMenu { themeMenu }
     }
 
-    // MARK: – LCD Panel (Winamp-style)
-    // Left: large tappable time display. Right: marquee title.
+    // MARK: – Info Panel
+    // Left column: large tappable time. Right column (VStack): marquee, mode row, vol row.
+    // Mirrors the Linux Sparkamp / Winamp layout exactly.
 
-    private var lcdPanel: some View {
+    private var infoPanel: some View {
         ZStack {
             theme.lcdBackground
 
             HStack(spacing: 0) {
-                // ── Time display (tappable — toggles remaining/elapsed) ───────
+
+                // ── Left column: time display ────────────────────────────────
                 Button { model.toggleRemainingTime() } label: {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .center, spacing: 2) {
                         Text(timeDisplay)
-                            .font(.system(size: 26, weight: .bold, design: .monospaced))
+                            .font(.system(size: 28, weight: .bold, design: .monospaced))
                             .foregroundStyle(theme.timeText)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.6)
+                            .minimumScaleFactor(0.5)
+                            .fixedSize()
                         Text(model.showRemainingTime ? "REMAIN" : "ELAPSED")
                             .font(.system(size: 7, weight: .medium))
                             .foregroundStyle(theme.timeText.opacity(0.5))
+                            .fixedSize()
                     }
-                    .padding(.horizontal, 10)
+                    .frame(width: 118)
                     .padding(.vertical, 8)
-                    .frame(width: 110, alignment: .leading)
                 }
                 .buttonStyle(.plain)
-                .help("Click to toggle remaining/elapsed time")
+                .help("Click to toggle remaining / elapsed time")
 
-                Divider()
-                    .background(theme.lcdBorder)
+                // ── Divider ──────────────────────────────────────────────────
+                Rectangle()
+                    .fill(theme.lcdBorder)
+                    .frame(width: 1)
                     .padding(.vertical, 6)
 
-                // ── Track info: state icon + marquee title ───────────────────
-                VStack(alignment: .leading, spacing: 3) {
+                // ── Right column: song info + controls ───────────────────────
+                VStack(alignment: .leading, spacing: 5) {
+
+                    // Row 1 — state icon + scrolling "Artist — Title"
                     HStack(spacing: 5) {
                         Image(systemName: stateIcon)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(stateColor)
                             .frame(width: 12)
                         MarqueeView(text: marqueeText)
-                            .frame(height: 16)
                     }
-                    Text(artistText)
-                        .font(.system(size: 10))
-                        .foregroundStyle(theme.artistText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+
+                    // Row 2 — repeat + shuffle, right-aligned
+                    HStack(spacing: 5) {
+                        Spacer()
+                        ModeButton(label: repeatLabel, isActive: model.repeatMode != 0) {
+                            model.cycleRepeat()
+                        }
+                        .help("Cycle repeat (r)")
+                        ModeButton(icon: "shuffle", isActive: model.shuffleEnabled) {
+                            model.toggleShuffle()
+                        }
+                        .help("Toggle shuffle (s)")
+                    }
+
+                    // Row 3 — volume slider (~1/3 player width) + playlist + logo
+                    HStack(spacing: 6) {
+                        Image(systemName: "speaker.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(theme.volumeThumb.opacity(0.7))
+
+                        ThemedVolumeSlider(
+                            value: Binding(get: { model.volume },
+                                           set: { model.setVolume($0) })
+                        )
+                        // ~1/3 of the 480px player minus left col (118) and padding
+                        .frame(maxWidth: 140)
+
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(theme.volumeThumb.opacity(0.7))
+
+                        Spacer()
+
+                        ModeButton(icon: "list.bullet", isActive: model.playlistVisible) {
+                            model.playlistVisible.toggle()
+                        }
+                        .help("Show / hide Playlist (p)")
+
+                        // App icon logo (42 px, matching Linux Sparkamp)
+                        Image(nsImage: NSApp.applicationIconImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: 42, height: 42)
+                            .cornerRadius(8)
+                            .help("Sparkamp")
+                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
         }
-        .frame(height: 62)
         .overlay(
             RoundedRectangle(cornerRadius: 0)
                 .stroke(theme.lcdBorder, lineWidth: 1)
@@ -123,10 +170,10 @@ struct PlayerWindow: View {
             onSeek: { model.seek(to: $0) }
         )
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
     }
 
-    // MARK: – Transport row (prev ▶ ⏸ ⏹ next)
+    // MARK: – Transport row (prev ▶ ⏸ ⏹ next — full width, left-aligned)
 
     private var transportRow: some View {
         HStack(spacing: 8) {
@@ -140,51 +187,7 @@ struct PlayerWindow: View {
             Spacer()
         }
         .padding(.horizontal, 10)
-        .padding(.top, 5)
-        .padding(.bottom, 2)
-    }
-
-    // MARK: – Mode row (repeat + shuffle, smaller, above the bottom row)
-
-    private var modeRow: some View {
-        HStack(spacing: 6) {
-            ModeButton(label: repeatLabel, isActive: model.repeatMode != 0) { model.cycleRepeat() }
-                .help("Cycle repeat (r)")
-            ModeButton(icon: "shuffle", isActive: model.shuffleEnabled) { model.toggleShuffle() }
-                .help("Toggle shuffle (s)")
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 3)
-    }
-
-    // MARK: – Bottom row (volume + playlist toggle + logo)
-
-    private var bottomRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "speaker.fill")
-                .font(.system(size: 9))
-                .foregroundStyle(theme.volumeThumb.opacity(0.6))
-
-            ThemedVolumeSlider(
-                value: Binding(get: { model.volume }, set: { model.setVolume($0) })
-            )
-
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 9))
-                .foregroundStyle(theme.volumeThumb.opacity(0.6))
-
-            Spacer()
-
-            ModeButton(icon: "list.bullet", isActive: model.playlistVisible) {
-                model.playlistVisible.toggle()
-            }
-            .help("Show/hide Playlist (p)")
-
-            SparkampLogoView()
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 3)
+        .padding(.top, 6)
         .padding(.bottom, 8)
     }
 
@@ -210,14 +213,12 @@ struct PlayerWindow: View {
                 Label(themeManager.themeSource == .system ? "✓ System Default" : "System Default",
                       systemImage: "macwindow")
             }
-
             Button {
                 themeManager.useDark()
             } label: {
                 Label(themeManager.themeSource == .dark ? "✓ Dark" : "Dark",
                       systemImage: "moon.fill")
             }
-
             Button {
                 themeManager.useLight()
             } label: {
@@ -225,17 +226,13 @@ struct PlayerWindow: View {
                       systemImage: "sun.max.fill")
             }
         }
-
         Divider()
-
         Button("Load Skin (CSS)…") {
             themeManager.openSkinPicker(colorScheme: colorScheme)
         }
-
         Button("Export Default Skin…") {
             themeManager.exportDefaultCSS()
         }
-
         if case .custom(_) = themeManager.themeSource {
             Button("Remove Custom Skin", role: .destructive) {
                 themeManager.removeCustomSkin(colorScheme: colorScheme)
@@ -257,16 +254,16 @@ struct PlayerWindow: View {
         return theme.modeBtnText
     }
 
+    /// Marquee shows "Artist — Title" (or just title when no artist).
     private var marqueeText: String {
         if model.currentTitle.isEmpty { return "Sparkamp" }
+        if !model.currentArtist.isEmpty {
+            return "\(model.currentArtist) — \(model.currentTitle)"
+        }
         return model.currentTitle
     }
 
-    private var artistText: String {
-        model.currentArtist.isEmpty ? " " : model.currentArtist
-    }
-
-    /// Large time string shown in the LCD: elapsed or (negative) remaining.
+    /// Large time string: elapsed or (negative) remaining.
     private var timeDisplay: String {
         if model.showRemainingTime, model.duration > 0 {
             let remaining = max(0, model.duration - model.position)
@@ -289,7 +286,8 @@ struct PlayerWindow: View {
         for p in providers {
             group.enter()
             p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                if let data = item as? Data,
+                   let url = URL(dataRepresentation: data, relativeTo: nil) {
                     urls.append(url)
                 }
                 group.leave()
@@ -325,7 +323,7 @@ struct ModeButton: View {
                 }
             }
             .foregroundStyle(isActive ? theme.modeBtnActiveText : theme.modeBtnText)
-            .frame(minWidth: 22, minHeight: 18)
+            .frame(minWidth: 24, minHeight: 18)
             .padding(.horizontal, 4)
             .background(
                 RoundedRectangle(cornerRadius: 3)
@@ -334,7 +332,9 @@ struct ModeButton: View {
                           : isHovered ? theme.transportHoverBg : theme.modeBtnBg)
                     .overlay(
                         RoundedRectangle(cornerRadius: 3)
-                            .stroke(isActive ? theme.modeBtnActiveText.opacity(0.4) : theme.modeBtnBorder,
+                            .stroke(isActive
+                                    ? theme.modeBtnActiveText.opacity(0.4)
+                                    : theme.modeBtnBorder,
                                     lineWidth: 1)
                     )
             )
@@ -364,29 +364,26 @@ struct ThemedSeekBar: View {
 
     var body: some View {
         let t = themeManager.currentTheme
-        let trackH: CGFloat  = 4
-        let thumbD: CGFloat  = isHovered || isDragging ? 13 : 9
+        let trackH: CGFloat = 4
+        let thumbD: CGFloat = isHovered || isDragging ? 13 : 9
 
         GeometryReader { geo in
-            let W    = geo.size.width
-            let midY = geo.size.height / 2
-            let pad  = thumbD / 2
+            let W     = geo.size.width
+            let midY  = geo.size.height / 2
+            let pad   = thumbD / 2
             let fillW = CGFloat(displayFraction) * (W - thumbD)
             let thumbX = pad + fillW
 
             ZStack(alignment: .leading) {
-                // Track background
                 Capsule()
                     .fill(t.seekTrack)
                     .frame(height: trackH)
                     .padding(.horizontal, pad)
 
-                // Filled portion
                 Capsule()
                     .fill(t.seekFill)
                     .frame(width: max(pad, fillW + pad), height: trackH)
 
-                // Thumb
                 Circle()
                     .fill(t.seekThumb)
                     .frame(width: thumbD, height: thumbD)
@@ -421,8 +418,7 @@ struct ThemedVolumeSlider: View {
     @EnvironmentObject var themeManager: ThemeManager
 
     var body: some View {
-        let t = themeManager.currentTheme
         Slider(value: $value, in: 0...1)
-            .tint(t.volumeThumb)
+            .tint(themeManager.currentTheme.volumeThumb)
     }
 }
