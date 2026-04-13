@@ -19,13 +19,13 @@ struct PlayerWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             // ┌──────────────────────────────────────┐
-            // │ [TIME large] │ Marquee title          │
-            // │              │   [spring] [RPT] [SHF] │
-            // │              │ [🔊 vol≈1/3] [PL][logo]│
+            // │ [▶ TIME]  │ Marquee title             │
+            // │           │   [spring]                │
+            // │           │ [🔊 vol≈1/3] [ℹ][PL]     │
             // ├──────────────────────────────────────┤
             // │ [seek bar full width]                 │
             // ├──────────────────────────────────────┤
-            // │ [◀ ▶ ⏸ ⏹ ▶]                        │
+            // │ [◀ ▶ ⏸ ⏹ ▶]  [RPT][SHF]  [logo]   │
             // └──────────────────────────────────────┘
             infoPanel
             seekRow
@@ -50,12 +50,22 @@ struct PlayerWindow: View {
             if visible { openWindow(id: "playlist") }
             else       { dismissWindow(id: "playlist") }
         }
+        .onChange(of: model.keyboardShortcutsVisible) { _, visible in
+            if visible { openWindow(id: "shortcuts") }
+            else       { dismissWindow(id: "shortcuts") }
+        }
         .contextMenu { themeMenu }
     }
 
     // MARK: – Info Panel
-    // Left column: large tappable time. Right column (VStack): marquee, mode row, vol row.
-    // Mirrors the Linux Sparkamp / Winamp layout exactly.
+    //
+    // Left column  (118 px, top-aligned):
+    //   [stateIcon] [large time]   ← tappable; toggles remaining/elapsed
+    //
+    // Right column (fills rest, top-aligned):
+    //   Row 1: Marquee "Artist — Title"
+    //   Row 2: (Spacer — pushes vol row to bottom)
+    //   Row 3: 🔊 [vol slider≈140 px] 🔊🔊  [ℹ] [PL]
 
     private var infoPanel: some View {
         ZStack {
@@ -63,22 +73,25 @@ struct PlayerWindow: View {
 
             HStack(spacing: 0) {
 
-                // ── Left column: time display ────────────────────────────────
+                // ── Left column: state icon + time (top-aligned, tappable) ────
                 Button { model.toggleRemainingTime() } label: {
-                    VStack(alignment: .center, spacing: 2) {
+                    HStack(alignment: .top, spacing: 4) {
+                        Image(systemName: stateIcon)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(stateColor)
+                            .padding(.top, 4)   // optical alignment with cap-height of time digits
                         Text(timeDisplay)
                             .font(.system(size: 28, weight: .bold, design: .monospaced))
                             .foregroundStyle(theme.timeText)
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
                             .fixedSize()
-                        Text(model.showRemainingTime ? "REMAIN" : "ELAPSED")
-                            .font(.system(size: 7, weight: .medium))
-                            .foregroundStyle(theme.timeText.opacity(0.5))
-                            .fixedSize()
                     }
                     .frame(width: 118)
-                    .padding(.vertical, 8)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
+                    .padding(.leading, 8)
                 }
                 .buttonStyle(.plain)
                 .help("Click to toggle remaining / elapsed time")
@@ -89,32 +102,16 @@ struct PlayerWindow: View {
                     .frame(width: 1)
                     .padding(.vertical, 6)
 
-                // ── Right column: song info + controls ───────────────────────
-                VStack(alignment: .leading, spacing: 5) {
+                // ── Right column: song info + vol/mode controls ───────────────
+                VStack(alignment: .leading, spacing: 0) {
 
-                    // Row 1 — state icon + scrolling "Artist — Title"
-                    HStack(spacing: 5) {
-                        Image(systemName: stateIcon)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(stateColor)
-                            .frame(width: 12)
-                        MarqueeView(text: marqueeText)
-                    }
+                    // Row 1 — scrolling "Artist — Title"
+                    MarqueeView(text: marqueeText)
+                        .padding(.top, 2)
 
-                    // Row 2 — repeat + shuffle, right-aligned
-                    HStack(spacing: 5) {
-                        Spacer()
-                        ModeButton(label: repeatLabel, isActive: model.repeatMode != 0) {
-                            model.cycleRepeat()
-                        }
-                        .help("Cycle repeat (r)")
-                        ModeButton(icon: "shuffle", isActive: model.shuffleEnabled) {
-                            model.toggleShuffle()
-                        }
-                        .help("Toggle shuffle (s)")
-                    }
+                    Spacer()
 
-                    // Row 3 — volume slider (~1/3 player width) + playlist + logo
+                    // Row 2 — volume slider + ℹ + playlist
                     HStack(spacing: 6) {
                         Image(systemName: "speaker.fill")
                             .font(.system(size: 9))
@@ -124,7 +121,6 @@ struct PlayerWindow: View {
                             value: Binding(get: { model.volume },
                                            set: { model.setVolume($0) })
                         )
-                        // ~1/3 of the 480px player minus left col (118) and padding
                         .frame(maxWidth: 140)
 
                         Image(systemName: "speaker.wave.2.fill")
@@ -132,6 +128,11 @@ struct PlayerWindow: View {
                             .foregroundStyle(theme.volumeThumb.opacity(0.7))
 
                         Spacer()
+
+                        ModeButton(icon: "info.circle", isActive: model.keyboardShortcutsVisible) {
+                            model.keyboardShortcutsVisible.toggle()
+                        }
+                        .help("Keyboard shortcuts (i)")
 
                         ModeButton(icon: "list.bullet", isActive: model.playlistVisible) {
                             model.playlistVisible.toggle()
@@ -165,10 +166,14 @@ struct PlayerWindow: View {
         .padding(.vertical, 6)
     }
 
-    // MARK: – Transport row (prev ▶ ⏸ ⏹ next — full width, left-aligned)
+    // MARK: – Transport row
+    //
+    // Layout: [prev ▶ ⏸ ⏹ next]  [Spacer]  [RPT][SHF]  [Spacer]  [logo]
+    //   — Spacers create visual separation without hard-coding gaps.
 
     private var transportRow: some View {
         HStack(spacing: 8) {
+            // ── Playback controls ───────────────────────────────────────────
             SkinButton(id: "prev",  icon: "backward.end.fill",  iconSize: 14) { model.prev() }
             SkinButton(id: "play",  icon: "play.fill",          iconSize: 16,
                        isHighlighted: model.isPlaying)  { model.play() }
@@ -176,8 +181,23 @@ struct PlayerWindow: View {
                        isHighlighted: model.isPaused)   { model.pause() }
             SkinButton(id: "stop",  icon: "stop.fill",          iconSize: 14) { model.stop() }
             SkinButton(id: "next",  icon: "forward.end.fill",   iconSize: 14) { model.next() }
+
             Spacer()
-            // App icon logo — right-aligned in the transport row, matching Linux Sparkamp
+
+            // ── Repeat / Shuffle — same row, visually separated ─────────────
+            ModeButton(label: repeatLabel, isActive: model.repeatMode != 0) {
+                model.cycleRepeat()
+            }
+            .help("Cycle repeat (r)")
+
+            ModeButton(icon: "shuffle", isActive: model.shuffleEnabled) {
+                model.toggleShuffle()
+            }
+            .help("Toggle shuffle (s)")
+
+            Spacer()
+
+            // ── App icon logo — right-aligned ───────────────────────────────
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
@@ -297,7 +317,7 @@ struct PlayerWindow: View {
     }
 }
 
-// MARK: - Mode button (repeat / shuffle / playlist)
+// MARK: - Mode button (repeat / shuffle / playlist / shortcuts)
 
 struct ModeButton: View {
     var label: String? = nil

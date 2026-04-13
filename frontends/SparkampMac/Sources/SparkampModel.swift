@@ -60,6 +60,8 @@ final class SparkampModel: ObservableObject {
     /// Non-nil when a runtime playback error fires from the GStreamer bus.
     @Published var playbackError: String? = nil
     @Published var playlistVisible: Bool = false
+    /// When true, the keyboard shortcuts window is open.
+    @Published var keyboardShortcutsVisible: Bool = false
     /// When true, the LCD time display shows remaining time as a negative value.
     @Published var showRemainingTime: Bool = false
 
@@ -329,6 +331,10 @@ final class SparkampModel: ObservableObject {
         showRemainingTime.toggle()
     }
 
+    func toggleKeyboardShortcuts() {
+        keyboardShortcutsVisible.toggle()
+    }
+
     func jumpTo(index: Int) {
         guard let ctx = ctx else { return }
         sparkamp_playlist_jump(ctx, Int32(index))
@@ -457,11 +463,12 @@ final class SparkampModel: ObservableObject {
         case "c": togglePlay();    return true
         case "v": stop();          return true
         case "b": next();          return true
-        case "r": cycleRepeat();   return true
-        case "s": toggleShuffle(); return true
-        case "-": adjustVolume(by: -0.05); return true
-        case "=": adjustVolume(by:  0.05); return true
-        case "p": playlistVisible.toggle(); return true
+        case "r": cycleRepeat();              return true
+        case "s": toggleShuffle();            return true
+        case "-": adjustVolume(by: -0.05);   return true
+        case "=": adjustVolume(by:  0.05);   return true
+        case "p": playlistVisible.toggle();  return true
+        case "i": toggleKeyboardShortcuts(); return true
         default: break
         }
 

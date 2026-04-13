@@ -70,6 +70,15 @@ struct SparkampMacApp: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 480, height: 360)
+
+        // ── Keyboard shortcuts (small fixed reference window) ─────────────────
+        WindowGroup("Keyboard Shortcuts", id: "shortcuts") {
+            KeyboardShortcutsView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 340, height: 420)
     }
 }
 
@@ -124,6 +133,9 @@ struct SparkampCommands: Commands {
 
             Button("Show Playlist") { model.playlistVisible = true }
                 .keyboardShortcut("p", modifiers: [])
+
+            Button("Keyboard Shortcuts") { model.keyboardShortcutsVisible.toggle() }
+                .keyboardShortcut("i", modifiers: [])
         }
     }
 }
