@@ -51,6 +51,13 @@ pub struct SparkampCtx {
     plugin_manager: PluginManager,
     /// Duration-probe results written by Rayon threads; applied in `sparkamp_tick`.
     pending_durations: Arc<Mutex<Vec<(usize, Duration)>>>,
+    /// Full metadata (title, artist, album_artist) read by Rayon threads after a
+    /// fast-add; applied in `sparkamp_tick` and triggers a `dirty_count` increment.
+    pending_metadata: Arc<Mutex<Vec<(usize, String, String, String)>>>,
+    /// Incremented each time `sparkamp_tick` applies any pending result (duration or
+    /// metadata). Swift calls `sparkamp_take_playlist_dirty_count` to read and reset
+    /// this counter so it knows when to refresh playlist rows.
+    dirty_count: u32,
     /// Last duration successfully reported by GStreamer while playing/paused.
     /// Kept after stop so the seek bar and time display remain correct.
     last_known_duration: Option<Duration>,
@@ -100,6 +107,8 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         shuffle_state,
         plugin_manager,
         pending_durations: Arc::new(Mutex::new(Vec::new())),
+        pending_metadata: Arc::new(Mutex::new(Vec::new())),
+        dirty_count: 0,
         last_known_duration: None,
         eos_cb: None,
         eos_userdata: std::ptr::null_mut(),
@@ -153,11 +162,24 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
     }
     let ctx = &mut *ctx;
 
+    // Apply background metadata-scan results (title, artist, album_artist).
+    if let Ok(mut pending) = ctx.pending_metadata.try_lock() {
+        for (index, title, artist, album_artist) in pending.drain(..) {
+            if let Some(track) = ctx.playlist.tracks.get_mut(index) {
+                track.title = title;
+                track.artist = artist;
+                track.album_artist = album_artist;
+                ctx.dirty_count += 1;
+            }
+        }
+    }
+
     // Apply background duration-probe results.
     if let Ok(mut pending) = ctx.pending_durations.try_lock() {
         for (index, dur) in pending.drain(..) {
             if index < ctx.playlist.tracks.len() {
                 ctx.playlist.tracks[index].duration = Some(dur);
+                ctx.dirty_count += 1;
             }
         }
     }
@@ -344,6 +366,10 @@ pub unsafe extern "C" fn sparkamp_get_state(ctx: *const SparkampCtx) -> c_int {
 // ---------------------------------------------------------------------------
 
 /// Add an audio file or folder (recursively scanned) to the playlist.
+///
+/// Uses the full `Track::from_path` path — reads ID3 tags synchronously.
+/// Prefer `sparkamp_playlist_add_fast` when adding many files and following
+/// up with `sparkamp_scan_metadata` to fill tags in the background.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_playlist_add(ctx: *mut SparkampCtx, path: *const c_char) {
     if ctx.is_null() || path.is_null() {
@@ -356,6 +382,34 @@ pub unsafe extern "C" fn sparkamp_playlist_add(ctx: *mut SparkampCtx, path: *con
         ctx.playlist.add_paths(&[p]);
     } else if let Ok(track) = Track::from_path(p) {
         ctx.playlist.add(track);
+    }
+}
+
+/// Fast-add a single audio file to the playlist using only the filename as a
+/// temporary title (no disk I/O beyond path validation).
+///
+/// Returns the 0-based playlist index of the newly added track, or -1 on
+/// failure (file not found, not audio, etc.).  Immediately call
+/// `sparkamp_scan_metadata` and `sparkamp_probe_duration` on the returned
+/// index to fill in real tags and duration in the background.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_add_fast(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) -> c_int {
+    if ctx.is_null() || path.is_null() {
+        return -1;
+    }
+    let ctx = &mut *ctx;
+    let s = CStr::from_ptr(path).to_string_lossy();
+    let p = Path::new(s.as_ref());
+    match Track::from_path_fast(p) {
+        Ok(track) => {
+            let idx = ctx.playlist.tracks.len() as c_int;
+            ctx.playlist.add(track);
+            idx
+        }
+        Err(_) => -1,
     }
 }
 
@@ -801,12 +855,66 @@ pub unsafe extern "C" fn sparkamp_probe_duration(ctx: *mut SparkampCtx, index: c
     let path = ctx.playlist.tracks[i].path.clone();
     let pending = Arc::clone(&ctx.pending_durations);
     rayon::spawn(move || {
-        if let Some(dur) = duration_probe::probe_duration(&path) {
+        // Try Symphonia first (fast container-header read), then fall back to
+        // GStreamer Discoverer (handles CBR MP3 and any format Symphonia misses).
+        // This mirrors the two-tier strategy used by spawn_probes on Linux.
+        let dur = duration_probe::probe_duration(&path)
+            .or_else(|| duration_probe::discover_duration(&path));
+        if let Some(dur) = dur {
             if let Ok(mut guard) = pending.lock() {
                 guard.push((i, dur));
             }
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Background metadata scanning
+// ---------------------------------------------------------------------------
+
+/// Scan full ID3/Vorbis metadata for the track at `index` on a Rayon worker
+/// thread.  When done, queues `(index, title, artist, album_artist)` into
+/// `pending_metadata`; the next `sparkamp_tick` call applies it to the
+/// playlist and increments `dirty_count`.
+///
+/// Call immediately after `sparkamp_playlist_add` for each newly added track
+/// so the quick-added filename placeholder is replaced by real tag data.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_scan_metadata(ctx: *mut SparkampCtx, index: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &*ctx;
+    let i = index as usize;
+    if i >= ctx.playlist.tracks.len() {
+        return;
+    }
+    let path = ctx.playlist.tracks[i].path.clone();
+    let pending = Arc::clone(&ctx.pending_metadata);
+    rayon::spawn(move || {
+        if let Ok(track) = crate::model::Track::from_path(&path) {
+            if let Ok(mut guard) = pending.lock() {
+                guard.push((i, track.title, track.artist, track.album_artist));
+            }
+        }
+    });
+}
+
+/// Return the number of playlist updates applied by `sparkamp_tick` since the
+/// last call to this function, then reset the counter to zero.
+///
+/// A non-zero return means at least one track's title, artist, or duration
+/// changed — Swift should re-read the affected items and refresh the playlist
+/// display.  Returns 0 when no background work is pending.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_take_playlist_dirty_count(ctx: *mut SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let n = ctx.dirty_count as c_int;
+    ctx.dirty_count = 0;
+    n
 }
 
 // ---------------------------------------------------------------------------

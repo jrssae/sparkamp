@@ -63,7 +63,13 @@ final class SparkampModel: ObservableObject {
     /// When true, the LCD time display shows remaining time as a negative value.
     @Published var showRemainingTime: Bool = false
 
-    // MARK: Private
+    // MARK: Private — background scan tracking
+
+    /// Set to `Date()` whenever files are added; the tick polls for incomplete
+    /// data (missing duration or metadata) for up to `scanWindowSeconds` after
+    /// the last add, regardless of whether dirty_count fired.
+    private var lastAddTime: Date? = nil
+    private let scanWindowSeconds: TimeInterval = 15.0
 
     /// Raw pointer to the Rust SparkampCtx.
     private var ctx: OpaquePointer?
@@ -105,6 +111,7 @@ final class SparkampModel: ObservableObject {
     private func tick() {
         guard let ctx = ctx else { return }
         sparkamp_tick(ctx)
+
         // Sync lightweight state that changes during playback.
         let state = sparkamp_get_state(ctx)
         isPlaying = (state == 1)
@@ -116,21 +123,70 @@ final class SparkampModel: ObservableObject {
             currentIndex = idx
             refreshCurrentTrackInfo()
         }
-        // Keep the current track's duration in playlistItems up-to-date as
-        // GStreamer reports it (it may not be available when the track is added).
-        if idx >= 0, idx < playlistItems.count {
-            let liveDur = sparkamp_playlist_get_duration(ctx, Int32(idx))
-            if liveDur >= 0, playlistItems[idx].duration < 0 {
-                let item = playlistItems[idx]
-                playlistItems[idx] = PlaylistItem(
-                    id: item.id,
-                    title: item.title,
-                    artist: item.artist,
-                    albumArtist: item.albumArtist,
-                    duration: liveDur,
-                    broken: item.broken
+
+        // Poll for background scan results in two cases:
+        //  1. dirty_count > 0 — Rust applied at least one metadata or duration
+        //     update this tick (fast path; always triggers when scans land).
+        //  2. Within the scan window — keeps polling even if dirty_count is 0,
+        //     which handles formats where Symphonia + Discoverer take a few ticks
+        //     to return OR where the probe result lands between tick boundaries.
+        let dirty = Int(sparkamp_take_playlist_dirty_count(ctx))
+        let scanActive = lastAddTime.map { Date().timeIntervalSince($0) < scanWindowSeconds } ?? false
+        if dirty > 0 || scanActive {
+            refreshDirtyPlaylistItems()
+        }
+    }
+
+    /// Re-read every playlist row that still has incomplete data (missing
+    /// duration or placeholder title/artist), then write the whole array back
+    /// in a single assignment so SwiftUI triggers exactly one re-render.
+    /// Once all background scans have landed this becomes a cheap no-op:
+    /// the inner guard skips every complete row without any FFI call.
+    private func refreshDirtyPlaylistItems() {
+        guard let ctx = ctx else { return }
+        let count = Int(sparkamp_playlist_len(ctx))
+        guard count == playlistItems.count else {
+            // Playlist length changed while we were scanning — full rebuild.
+            refreshPlaylist()
+            return
+        }
+
+        var newItems = playlistItems
+        var changed  = false
+
+        for i in 0..<count {
+            let item = newItems[i]
+            // Skip rows that are already complete — no FFI call needed.
+            guard item.duration < 0 || item.artist.isEmpty else { continue }
+
+            let titlePtr       = sparkamp_playlist_get_title(ctx, Int32(i))
+            let artistPtr      = sparkamp_playlist_get_artist(ctx, Int32(i))
+            let albumArtistPtr = sparkamp_playlist_get_album_artist(ctx, Int32(i))
+            let newTitle       = titlePtr.map       { String(cString: $0) } ?? ""
+            let newArtist      = artistPtr.map      { String(cString: $0) } ?? ""
+            let newAlbumArtist = albumArtistPtr.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(titlePtr)
+            sparkamp_free_string(artistPtr)
+            sparkamp_free_string(albumArtistPtr)
+            let newDuration    = sparkamp_playlist_get_duration(ctx, Int32(i))
+
+            if newTitle != item.title || newArtist != item.artist
+                || newAlbumArtist != item.albumArtist || newDuration != item.duration {
+                newItems[i] = PlaylistItem(
+                    id: i,
+                    title: newTitle,
+                    artist: newArtist,
+                    albumArtist: newAlbumArtist,
+                    duration: newDuration,
+                    broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0
                 )
+                changed = true
             }
+        }
+
+        if changed {
+            playlistItems = newItems     // single assignment → one SwiftUI re-render
+            refreshCurrentTrackInfo()
         }
     }
 
@@ -283,16 +339,49 @@ final class SparkampModel: ObservableObject {
 
     func addFiles(_ urls: [URL]) {
         guard let ctx = ctx else { return }
+
+        // Indices of tracks we fast-added — we'll scan just those.
+        var newIndices: [Int] = []
+
         for url in urls {
-            url.path.withCString { sparkamp_playlist_add(ctx, $0) }
-        }
-        refreshPlaylist()
-        // Probe durations for any tracks that don't have them yet.
-        let count = Int(sparkamp_playlist_len(ctx))
-        for i in 0..<count {
-            if sparkamp_playlist_get_duration(ctx, Int32(i)) < 0 {
-                sparkamp_probe_duration(ctx, Int32(i))
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+
+            if isDir.boolValue {
+                // Folder: use the existing recursive-scan path (adds all audio
+                // files found under the folder, reads full tags — acceptable here
+                // because folder scans are done by the user deliberately and the
+                // existing implementation already handles this path).
+                let countBefore = Int(sparkamp_playlist_len(ctx))
+                url.path.withCString { sparkamp_playlist_add(ctx, $0) }
+                let countAfter = Int(sparkamp_playlist_len(ctx))
+                newIndices.append(contentsOf: countBefore..<countAfter)
+            } else {
+                // Individual file: fast-add (filename as placeholder, no ID3 read).
+                // sparkamp_playlist_add_fast returns the new track's index or -1.
+                let idx = url.path.withCString { sparkamp_playlist_add_fast(ctx, $0) }
+                if idx >= 0 { newIndices.append(Int(idx)) }
             }
+        }
+
+        // Show the playlist immediately — new tracks appear with their filename
+        // stems as placeholder titles before background scanning completes.
+        refreshPlaylist()
+
+        // Kick off background scans for every newly added track:
+        //   sparkamp_scan_metadata  — reads ID3/Vorbis on a Rayon thread
+        //   sparkamp_probe_duration — reads container header on a Rayon thread
+        // Both write results to Arc<Mutex<>> queues; sparkamp_tick drains them
+        // each 100 ms tick and increments dirty_count so Swift knows to refresh.
+        for i in newIndices {
+            sparkamp_scan_metadata(ctx, Int32(i))
+            sparkamp_probe_duration(ctx, Int32(i))
+        }
+
+        // Mark the start of the scan window so tick() keeps polling for
+        // incomplete rows even if dirty_count hasn't fired yet.
+        if !newIndices.isEmpty {
+            lastAddTime = Date()
         }
     }
 

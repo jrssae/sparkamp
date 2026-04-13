@@ -44,6 +44,9 @@ int32_t sparkamp_get_state(const SparkampCtx *ctx);
 /* ── Playlist ────────────────────────────────────────────────────────────── */
 
 void    sparkamp_playlist_add(SparkampCtx *ctx, const char *path);
+/** Fast add — uses filename as placeholder; call scan_metadata + probe_duration after.
+ *  Returns the new track's playlist index, or -1 on failure. */
+int32_t sparkamp_playlist_add_fast(SparkampCtx *ctx, const char *path);
 void    sparkamp_playlist_clear(SparkampCtx *ctx);
 void    sparkamp_playlist_remove(SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_move(SparkampCtx *ctx, int32_t from, int32_t to);
@@ -91,6 +94,17 @@ void sparkamp_set_position_callback(
     SparkampCtx *ctx,
     void (*cb)(void *userdata, double position, double duration),
     void *userdata);
+
+/* ── Background metadata scanning ───────────────────────────────────────── */
+
+/** Scan full ID3/Vorbis tags for track at index on a Rayon thread.
+ *  Results are applied by the next sparkamp_tick call.
+ *  Call immediately after sparkamp_playlist_add for each new track. */
+void    sparkamp_scan_metadata(SparkampCtx *ctx, int32_t index);
+
+/** Return and reset the count of playlist items updated since the last call.
+ *  Non-zero means at least one title/artist/duration changed — refresh UI. */
+int32_t sparkamp_take_playlist_dirty_count(SparkampCtx *ctx);
 
 /* ── Duration probing ────────────────────────────────────────────────────── */
 
