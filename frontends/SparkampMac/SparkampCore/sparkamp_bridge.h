@@ -112,6 +112,53 @@ int32_t sparkamp_take_playlist_dirty_count(SparkampCtx *ctx);
 
 void sparkamp_probe_duration(SparkampCtx *ctx, int32_t index);
 
+/* ── Visualizer data ─────────────────────────────────────────────────────── */
+
+/** Fill `out` with `len` spectrum display-band amplitudes (0–1). */
+void    sparkamp_get_spectrum(const SparkampCtx *ctx, float *out, int32_t len);
+/** Return the configured number of spectrum display bands. */
+int32_t sparkamp_get_spectrum_bands(const SparkampCtx *ctx);
+/** Fill `out` with `len` waveform PCM samples in [-1, 1]. */
+void    sparkamp_get_waveform(const SparkampCtx *ctx, float *out, int32_t len);
+
+/* ── Visualizer mode ─────────────────────────────────────────────────────── */
+
+/** Return current viz mode: 0 = Bars, 1 = Waveform. */
+int32_t sparkamp_get_viz_mode(const SparkampCtx *ctx);
+/** Set viz mode: 0 = Bars, 1 = Waveform. */
+void    sparkamp_set_viz_mode(SparkampCtx *ctx, int32_t mode);
+/** Cycle Bars → Waveform → Bars → … */
+void    sparkamp_cycle_viz_mode(SparkampCtx *ctx);
+
+/* ── Waveform style ──────────────────────────────────────────────────────── */
+
+/** Return waveform style: 0 = Lines, 1 = Filled. */
+int32_t sparkamp_get_waveform_style(const SparkampCtx *ctx);
+/** Set waveform style: 0 = Lines, 1 = Filled. */
+void    sparkamp_set_waveform_style(SparkampCtx *ctx, int32_t style);
+
+/* ── Bars zone config ────────────────────────────────────────────────────── */
+
+/** Return the number of color zones for the bars visualizer (1–6). */
+int32_t sparkamp_get_viz_zones(const SparkampCtx *ctx);
+/** Set the number of color zones for the bars visualizer. */
+void    sparkamp_set_viz_zones(SparkampCtx *ctx, int32_t count);
+/** Return hex color for bars zone `zone_index` (0 = bottom). Free with sparkamp_free_string. */
+char   *sparkamp_get_zone_color(const SparkampCtx *ctx, int32_t zone_index);
+/** Set hex color for bars zone `zone_index`. */
+void    sparkamp_set_zone_color(SparkampCtx *ctx, int32_t zone_index, const char *hex);
+
+/* ── Waveform zone config ────────────────────────────────────────────────── */
+
+/** Return the number of color zones for the waveform visualizer (1–6). */
+int32_t sparkamp_get_waveform_zones(const SparkampCtx *ctx);
+/** Set the number of color zones for the waveform visualizer. */
+void    sparkamp_set_waveform_zones(SparkampCtx *ctx, int32_t count);
+/** Return hex color for waveform zone `zone_index` (0 = bottom). Free with sparkamp_free_string. */
+char   *sparkamp_get_waveform_zone_color(const SparkampCtx *ctx, int32_t zone_index);
+/** Set hex color for waveform zone `zone_index`. */
+void    sparkamp_set_waveform_zone_color(SparkampCtx *ctx, int32_t zone_index, const char *hex);
+
 /* ── String utilities ────────────────────────────────────────────────────── */
 
 void sparkamp_free_string(char *s);

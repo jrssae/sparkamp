@@ -23,11 +23,14 @@ struct PlayerWindow: View {
             // │           │   [spring]                │
             // │           │ [🔊 vol≈1/3] [ℹ][PL]     │
             // ├──────────────────────────────────────┤
+            // │ [visualizer 60 px — bars or waveform] │
+            // ├──────────────────────────────────────┤
             // │ [seek bar full width]                 │
             // ├──────────────────────────────────────┤
             // │ [◀ ▶ ⏸ ⏹ ▶]  [RPT][SHF]  [logo]   │
             // └──────────────────────────────────────┘
             infoPanel
+            vizRow
             seekRow
             transportRow
         }
@@ -53,6 +56,16 @@ struct PlayerWindow: View {
         .onChange(of: model.keyboardShortcutsVisible) { _, visible in
             if visible { openWindow(id: "shortcuts") }
             else       { dismissWindow(id: "shortcuts") }
+        }
+        .onChange(of: model.fullscreenVizVisible) { _, visible in
+            if visible { openWindow(id: "fullscreen-viz") }
+            else       { dismissWindow(id: "fullscreen-viz") }
+        }
+        .sheet(isPresented: $model.jumpToTrackVisible) {
+            JumpToTrackView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+                .frame(width: 500, height: 380)
         }
         .contextMenu { themeMenu }
     }
@@ -149,6 +162,18 @@ struct PlayerWindow: View {
                 .stroke(theme.lcdBorder, lineWidth: 1)
                 .allowsHitTesting(false)
         )
+    }
+
+    // MARK: – Visualizer row
+
+    private var vizRow: some View {
+        VisualizerView()
+            .frame(height: 60)
+            .overlay(
+                RoundedRectangle(cornerRadius: 0)
+                    .stroke(theme.lcdBorder, lineWidth: 1)
+                    .allowsHitTesting(false)
+            )
     }
 
     // MARK: – Seek row

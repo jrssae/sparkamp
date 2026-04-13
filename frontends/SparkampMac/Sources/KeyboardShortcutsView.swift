@@ -49,6 +49,16 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "s",          action: "Toggle shuffle"),
                 ShortcutEntry(key: "p",          action: "Toggle playlist window"),
                 ShortcutEntry(key: "i",          action: "Toggle this shortcuts window"),
+                ShortcutEntry(key: "j",          action: "Jump to track (search)"),
+            ]
+        ),
+        (
+            title: "Visualizer",
+            entries: [
+                ShortcutEntry(key: "a",          action: "Cycle visualizer mode (Bars / Waveform)"),
+                ShortcutEntry(key: "f",          action: "Fullscreen waveform (Waveform mode only)"),
+                ShortcutEntry(key: "dbl-click",  action: "Fullscreen visualizer (double-click)"),
+                ShortcutEntry(key: "Esc",        action: "Exit fullscreen"),
             ]
         ),
         (

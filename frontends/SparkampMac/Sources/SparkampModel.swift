@@ -64,6 +64,12 @@ final class SparkampModel: ObservableObject {
     @Published var keyboardShortcutsVisible: Bool = false
     /// When true, the LCD time display shows remaining time as a negative value.
     @Published var showRemainingTime: Bool = false
+    /// Current visualizer mode mirrored from config: 0 = Bars, 1 = Waveform.
+    @Published var vizMode: Int = 0
+    /// When true, the fullscreen visualizer window is open.
+    @Published var fullscreenVizVisible: Bool = false
+    /// When true, the jump-to-track overlay is open.
+    @Published var jumpToTrackVisible: Bool = false
 
     // MARK: Private — background scan tracking
 
@@ -74,7 +80,9 @@ final class SparkampModel: ObservableObject {
     private let scanWindowSeconds: TimeInterval = 15.0
 
     /// Raw pointer to the Rust SparkampCtx.
-    private var ctx: OpaquePointer?
+    /// Internal (not private) so Canvas-based visualizer views can call FFI
+    /// directly at 30 fps without routing data through @Published properties.
+    var ctx: OpaquePointer?
     private var tickTimer: Timer?
     private var keyMonitor: Any?
 
@@ -137,6 +145,10 @@ final class SparkampModel: ObservableObject {
         if dirty > 0 || scanActive {
             refreshDirtyPlaylistItems()
         }
+
+        // Keep vizMode in sync so views can observe it reactively.
+        let newVizMode = Int(sparkamp_get_viz_mode(ctx))
+        if newVizMode != vizMode { vizMode = newVizMode }
     }
 
     /// Re-read every playlist row that still has incomplete data (missing
@@ -347,6 +359,17 @@ final class SparkampModel: ObservableObject {
         keyboardShortcutsVisible.toggle()
     }
 
+    func cycleVizMode() {
+        guard let ctx = ctx else { return }
+        sparkamp_cycle_viz_mode(ctx)
+        vizMode = Int(sparkamp_get_viz_mode(ctx))
+    }
+
+    func openFullscreenViz() {
+        guard let ctx = ctx, sparkamp_get_viz_mode(ctx) == 1 else { return }
+        fullscreenVizVisible = true
+    }
+
     func jumpTo(index: Int) {
         guard let ctx = ctx else { return }
         sparkamp_playlist_jump(ctx, Int32(index))
@@ -481,6 +504,9 @@ final class SparkampModel: ObservableObject {
         case "=": adjustVolume(by:  0.05);   return true
         case "p": playlistVisible.toggle();  return true
         case "i": toggleKeyboardShortcuts(); return true
+        case "a": cycleVizMode();            return true
+        case "f": openFullscreenViz();       return true
+        case "j": jumpToTrackVisible.toggle(); return true
         default: break
         }
 
