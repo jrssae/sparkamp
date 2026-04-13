@@ -10,9 +10,10 @@
 //! `Timer` and is the only place callbacks fire — so they also run on the main
 //! thread.  Swift does **not** need to dispatch-to-main inside the callbacks.
 //!
-//! The one exception is duration probing: `sparkamp_probe_duration` hands work
-//! to Rayon threads that write results into an `Arc<Mutex<>>` field; the next
-//! `sparkamp_tick` call applies them on the main thread.
+//! Background work (metadata scanning, duration probing) runs on Rayon threads.
+//! Results are delivered via `std::sync::mpsc` channels — the same delivery
+//! mechanism used by the GTK frontend — and applied in `sparkamp_tick` via
+//! non-blocking `try_recv()` loops, mirroring GTK's `glib::timeout_add_local`.
 //!
 //! ## Ownership rules
 //! - `sparkamp_create` allocates a `SparkampCtx` on the heap; returns a raw pointer.
@@ -23,8 +24,18 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
+
+/// Serialises all GStreamer Discoverer calls to one at a time.
+///
+/// Each `discover_duration` call internally creates a GLib main loop.
+/// On macOS, spinning up multiple GLib main loops simultaneously from
+/// Rayon threads causes GLib's GObject type system to access freed or
+/// uninitialised memory (EXC_BAD_ACCESS at 0x1).  A single Mutex is
+/// sufficient: Symphonia probing (`probe_duration`) is still fully
+/// parallel — only the GStreamer fallback is serialised.
+static DISCOVER_LOCK: Mutex<()> = Mutex::new(());
 
 use crate::config::Config;
 use crate::controller::{Controller, NavResult};
@@ -49,11 +60,14 @@ pub struct SparkampCtx {
     config: Config,
     shuffle_state: ShuffleState,
     plugin_manager: PluginManager,
-    /// Duration-probe results written by Rayon threads; applied in `sparkamp_tick`.
-    pending_durations: Arc<Mutex<Vec<(usize, Duration)>>>,
-    /// Full metadata (title, artist, album_artist) read by Rayon threads after a
-    /// fast-add; applied in `sparkamp_tick` and triggers a `dirty_count` increment.
-    pending_metadata: Arc<Mutex<Vec<(usize, String, String, String)>>>,
+    /// Sender half kept in the ctx so `sparkamp_scan_metadata` can clone it for
+    /// each Rayon task.  Receiver half is polled in `sparkamp_tick`.
+    meta_tx: mpsc::Sender<(usize, String, String, String)>,
+    meta_rx: mpsc::Receiver<(usize, String, String, String)>,
+    /// Sender half kept in the ctx so `sparkamp_probe_duration` can clone it for
+    /// each Rayon task.  Receiver half is polled in `sparkamp_tick`.
+    duration_tx: mpsc::Sender<(usize, Duration)>,
+    duration_rx: mpsc::Receiver<(usize, Duration)>,
     /// Incremented each time `sparkamp_tick` applies any pending result (duration or
     /// metadata). Swift calls `sparkamp_take_playlist_dirty_count` to read and reset
     /// this counter so it knows when to refresh playlist rows.
@@ -100,14 +114,19 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
 
     let plugin_manager = PluginManager::new();
 
+    let (meta_tx, meta_rx) = mpsc::channel();
+    let (duration_tx, duration_rx) = mpsc::channel();
+
     let mut ctx = Box::new(SparkampCtx {
         player,
         playlist,
         config,
         shuffle_state,
         plugin_manager,
-        pending_durations: Arc::new(Mutex::new(Vec::new())),
-        pending_metadata: Arc::new(Mutex::new(Vec::new())),
+        meta_tx,
+        meta_rx,
+        duration_tx,
+        duration_rx,
         dirty_count: 0,
         last_known_duration: None,
         eos_cb: None,
@@ -163,24 +182,21 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
     let ctx = &mut *ctx;
 
     // Apply background metadata-scan results (title, artist, album_artist).
-    if let Ok(mut pending) = ctx.pending_metadata.try_lock() {
-        for (index, title, artist, album_artist) in pending.drain(..) {
-            if let Some(track) = ctx.playlist.tracks.get_mut(index) {
-                track.title = title;
-                track.artist = artist;
-                track.album_artist = album_artist;
-                ctx.dirty_count += 1;
-            }
+    // Non-blocking: mirrors GTK's glib::timeout_add_local + try_recv pattern.
+    while let Ok((index, title, artist, album_artist)) = ctx.meta_rx.try_recv() {
+        if let Some(track) = ctx.playlist.tracks.get_mut(index) {
+            track.title = title;
+            track.artist = artist;
+            track.album_artist = album_artist;
+            ctx.dirty_count += 1;
         }
     }
 
     // Apply background duration-probe results.
-    if let Ok(mut pending) = ctx.pending_durations.try_lock() {
-        for (index, dur) in pending.drain(..) {
-            if index < ctx.playlist.tracks.len() {
-                ctx.playlist.tracks[index].duration = Some(dur);
-                ctx.dirty_count += 1;
-            }
+    while let Ok((index, dur)) = ctx.duration_rx.try_recv() {
+        if index < ctx.playlist.tracks.len() {
+            ctx.playlist.tracks[index].duration = Some(dur);
+            ctx.dirty_count += 1;
         }
     }
 
@@ -853,17 +869,18 @@ pub unsafe extern "C" fn sparkamp_probe_duration(ctx: *mut SparkampCtx, index: c
         return;
     }
     let path = ctx.playlist.tracks[i].path.clone();
-    let pending = Arc::clone(&ctx.pending_durations);
+    let tx = ctx.duration_tx.clone();
     rayon::spawn(move || {
-        // Try Symphonia first (fast container-header read), then fall back to
-        // GStreamer Discoverer (handles CBR MP3 and any format Symphonia misses).
-        // This mirrors the two-tier strategy used by spawn_probes on Linux.
-        let dur = duration_probe::probe_duration(&path)
-            .or_else(|| duration_probe::discover_duration(&path));
+        // Fast path: Symphonia reads the container header with no GStreamer involvement.
+        // Slow path: GStreamer Discoverer handles CBR MP3 and formats Symphonia misses.
+        //   Serialised via DISCOVER_LOCK — concurrent GLib main loops from Rayon
+        //   threads crash on macOS (EXC_BAD_ACCESS at 0x1 in the GObject type system).
+        let dur = duration_probe::probe_duration(&path).or_else(|| {
+            let _guard = DISCOVER_LOCK.lock().ok()?;
+            duration_probe::discover_duration(&path)
+        });
         if let Some(dur) = dur {
-            if let Ok(mut guard) = pending.lock() {
-                guard.push((i, dur));
-            }
+            let _ = tx.send((i, dur));
         }
     });
 }
@@ -890,12 +907,10 @@ pub unsafe extern "C" fn sparkamp_scan_metadata(ctx: *mut SparkampCtx, index: c_
         return;
     }
     let path = ctx.playlist.tracks[i].path.clone();
-    let pending = Arc::clone(&ctx.pending_metadata);
+    let tx = ctx.meta_tx.clone();
     rayon::spawn(move || {
         if let Ok(track) = crate::model::Track::from_path(&path) {
-            if let Ok(mut guard) = pending.lock() {
-                guard.push((i, track.title, track.artist, track.album_artist));
-            }
+            let _ = tx.send((i, track.title, track.artist, track.album_artist));
         }
     });
 }
