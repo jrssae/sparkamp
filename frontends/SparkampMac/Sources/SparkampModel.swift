@@ -205,12 +205,12 @@ final class SparkampModel: ObservableObject {
             model.handleEOS()
         }, selfPtr)
 
-        // Error: surface in the UI as a dismissable playback error (not a fatal alert).
-        sparkamp_set_error_callback(ctx, { userdata, msg in
+        // Error: mark the current track broken and skip to the next one.
+        // Broken tracks show an X indicator in the playlist; no popup is shown.
+        sparkamp_set_error_callback(ctx, { userdata, _ in
             guard let userdata = userdata else { return }
             let model = Unmanaged<SparkampModel>.fromOpaque(userdata).takeUnretainedValue()
-            let str = msg.flatMap { String(cString: $0) } ?? "Unknown playback error"
-            model.playbackError = str
+            model.handlePlaybackError()
         }, selfPtr)
 
         // Position: update seek bar and duration display.
@@ -224,6 +224,18 @@ final class SparkampModel: ObservableObject {
 
     private func handleEOS() {
         guard let ctx = ctx else { return }
+        sparkamp_advance_after_eos(ctx)
+        refreshAll()
+    }
+
+    private func handlePlaybackError() {
+        guard let ctx = ctx else { return }
+        // Mark the current track broken so the playlist shows the X indicator.
+        let idx = sparkamp_playlist_current_index(ctx)
+        if idx >= 0 {
+            sparkamp_playlist_mark_broken(ctx, idx)
+        }
+        // Advance past the broken track the same way EOS does (respects repeat/shuffle).
         sparkamp_advance_after_eos(ctx)
         refreshAll()
     }

@@ -56,6 +56,8 @@ char   *sparkamp_playlist_get_title(const SparkampCtx *ctx, int32_t index);
 char   *sparkamp_playlist_get_artist(const SparkampCtx *ctx, int32_t index);
 char   *sparkamp_playlist_get_album_artist(const SparkampCtx *ctx, int32_t index);
 double  sparkamp_playlist_get_duration(const SparkampCtx *ctx, int32_t index);
+/** Mark track at index as broken; call before advancing on a playback error. */
+void    sparkamp_playlist_mark_broken(SparkampCtx *ctx, int32_t index);
 int32_t sparkamp_playlist_is_broken(const SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_jump(SparkampCtx *ctx, int32_t index);
 

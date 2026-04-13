@@ -75,11 +75,10 @@ struct PlayerWindow: View {
 
                 // ── Left column: state icon + time (top-aligned, tappable) ────
                 Button { model.toggleRemainingTime() } label: {
-                    HStack(alignment: .top, spacing: 4) {
+                    HStack(alignment: .center, spacing: 4) {
                         Image(systemName: stateIcon)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(stateColor)
-                            .padding(.top, 4)   // optical alignment with cap-height of time digits
                         Text(timeDisplay)
                             .font(.system(size: 28, weight: .bold, design: .monospaced))
                             .foregroundStyle(theme.timeText)

@@ -563,6 +563,22 @@ pub unsafe extern "C" fn sparkamp_playlist_get_duration(
         .unwrap_or(-1.0)
 }
 
+/// Mark the track at `index` as broken (file missing or unreadable).
+///
+/// Broken tracks are skipped by navigation and shown with an error indicator
+/// in the playlist.  Call this from the error callback before advancing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_mark_broken(ctx: *mut SparkampCtx, index: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let i = index as usize;
+    if let Some(track) = ctx.playlist.tracks.get_mut(i) {
+        track.broken = true;
+    }
+}
+
 /// Return 1 if the track at `index` is marked broken (file missing or unreadable),
 /// 0 otherwise.
 #[unsafe(no_mangle)]
