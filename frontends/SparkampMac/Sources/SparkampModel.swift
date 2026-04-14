@@ -97,9 +97,22 @@ final class SparkampModel: ObservableObject {
         }
 
         setupCallbacks()
+        // Restore Swift-side UI state
+        playlistVisible = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
         refreshAll()
         startTick()
         startKeyMonitor()
+
+        // Save on graceful quit (Cmd+Q / applicationWillTerminate).
+        // Note: Xcode's Stop button sends SIGKILL — no cleanup runs in that case.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let ctx = self.ctx else { return }
+            sparkamp_save_config(ctx)
+        }
     }
 
     deinit {
@@ -238,6 +251,7 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_advance_after_eos(ctx)
         refreshAll()
+        saveState()
     }
 
     private func handlePlaybackError() {
@@ -316,12 +330,14 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_nav_next(ctx)
         refreshAll()
+        saveState()
     }
 
     func prev() {
         guard let ctx = ctx else { return }
         sparkamp_nav_prev(ctx)
         refreshAll()
+        saveState()
     }
 
     func seek(to fraction: Double) {
@@ -343,12 +359,14 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_cycle_repeat(ctx)
         repeatMode = Int(sparkamp_get_repeat_mode(ctx))
+        saveState()
     }
 
     func toggleShuffle() {
         guard let ctx = ctx else { return }
         sparkamp_toggle_shuffle(ctx)
         shuffleEnabled = sparkamp_get_shuffle(ctx) != 0
+        saveState()
     }
 
     func toggleRemainingTime() {
@@ -366,14 +384,30 @@ final class SparkampModel: ObservableObject {
     }
 
     func openFullscreenViz() {
+        if fullscreenVizVisible { closeFullscreenViz(); return }
         guard let ctx = ctx, sparkamp_get_viz_mode(ctx) == 1 else { return }
         fullscreenVizVisible = true
+    }
+
+    func closeFullscreenViz() {
+        // Exit OS fullscreen before SwiftUI dismisses the window so the
+        // animation completes cleanly.  Finding by styleMask is reliable;
+        // SwiftUI WindowGroup doesn't expose the NSWindow directly.
+        if let win = NSApp.windows.first(where: { $0.styleMask.contains(.fullScreen) }) {
+            win.toggleFullScreen(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                self.fullscreenVizVisible = false
+            }
+        } else {
+            fullscreenVizVisible = false
+        }
     }
 
     func jumpTo(index: Int) {
         guard let ctx = ctx else { return }
         sparkamp_playlist_jump(ctx, Int32(index))
         refreshAll()
+        saveState()
     }
 
     // MARK: Playlist actions
@@ -423,6 +457,7 @@ final class SparkampModel: ObservableObject {
         // incomplete rows even if dirty_count hasn't fired yet.
         if !newIndices.isEmpty {
             lastAddTime = Date()
+            saveState()
         }
     }
 
@@ -430,6 +465,7 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_playlist_remove(ctx, Int32(index))
         refreshPlaylist()
+        saveState()
     }
 
     func moveTrack(from: IndexSet, to: Int) {
@@ -437,12 +473,14 @@ final class SparkampModel: ObservableObject {
         let dest = source < to ? to - 1 : to
         sparkamp_playlist_move(ctx, Int32(source), Int32(dest))
         refreshPlaylist()
+        saveState()
     }
 
     func clearPlaylist() {
         guard let ctx = ctx else { return }
         sparkamp_playlist_clear(ctx)
         refreshPlaylist()
+        saveState()
     }
 
     // MARK: File picker
@@ -470,11 +508,25 @@ final class SparkampModel: ObservableObject {
         }
     }
 
+    // MARK: Persistence
+
+    /// Flush Rust-side config + playlist to disk and persist Swift-side UI
+    /// state in UserDefaults.  Called after every meaningful state change so
+    /// the most recent state survives an unexpected kill (e.g. Xcode stop).
+    private func saveState() {
+        if let ctx = ctx { sparkamp_save_config(ctx) }
+        UserDefaults.standard.set(playlistVisible, forKey: "sparkamp.playlistVisible")
+    }
+
     // MARK: Keyboard shortcuts
 
     private func startKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
+            // Don't intercept keys when a text field has focus — SwiftUI's
+            // TextField is backed by NSTextView on macOS, so this one check
+            // covers all text inputs (jump-to-track search, etc.).
+            if NSApp.keyWindow?.firstResponder is NSTextView { return event }
             let chars   = event.charactersIgnoringModifiers
             let keyCode = event.keyCode
             let hasMods = !event.modifierFlags
@@ -498,15 +550,21 @@ final class SparkampModel: ObservableObject {
         case "c": togglePlay();    return true
         case "v": stop();          return true
         case "b": next();          return true
-        case "r": cycleRepeat();              return true
-        case "s": toggleShuffle();            return true
-        case "-": adjustVolume(by: -0.05);   return true
-        case "=": adjustVolume(by:  0.05);   return true
-        case "p": playlistVisible.toggle();  return true
-        case "i": toggleKeyboardShortcuts(); return true
-        case "a": cycleVizMode();            return true
-        case "f": openFullscreenViz();       return true
+        case "r": cycleRepeat();               return true
+        case "s": toggleShuffle();             return true
+        case "-": adjustVolume(by: -0.05);    return true
+        case "=": adjustVolume(by:  0.05);    return true
+        case "p":
+            playlistVisible.toggle()
+            UserDefaults.standard.set(playlistVisible, forKey: "sparkamp.playlistVisible")
+            return true
+        case "i": toggleKeyboardShortcuts();  return true
+        case "a": cycleVizMode();             return true
+        case "f": openFullscreenViz();        return true  // toggles open/close
         case "j": jumpToTrackVisible.toggle(); return true
+        case "\u{1B}":  // Escape — close fullscreen if open
+            if fullscreenVizVisible { closeFullscreenViz(); return true }
+            return false
         default: break
         }
 

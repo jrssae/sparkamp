@@ -3,25 +3,37 @@ import AppKit
 
 // MARK: - Window accessor
 
-/// Bridges SwiftUI to AppKit so we can obtain the actual NSWindow reference
-/// from within a SwiftUI view.  SwiftUI's WindowGroup does NOT set
-/// `window.identifier` to the group id string, so NSApp.windows lookup by
-/// identifier fails.  Instead we embed this zero-size NSView and retrieve
-/// its `.window` property once it has been added to the view hierarchy.
+/// Bridges SwiftUI to AppKit to obtain the real NSWindow reference.
+/// SwiftUI's WindowGroup does NOT set `window.identifier` to the group id,
+/// so NSApp.windows lookup by identifier fails.
+///
+/// Using `viewDidMoveToWindow` instead of `DispatchQueue.main.async` is key:
+/// the override fires synchronously on the same run-loop turn that the view
+/// is inserted into the window, before the first layout/draw pass.  This lets
+/// us set `alphaValue = 0` before the window becomes visible at its initial
+/// size, eliminating the brief "wrong-size" flash before fullscreen entry.
+private final class _WinHostView: NSView {
+    var onWindow: ((NSWindow) -> Void)?
+    private var fired = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let w = window, !fired else { return }
+        fired = true
+        onWindow?(w)
+    }
+}
+
 private struct WindowAccessor: NSViewRepresentable {
     var onWindow: (NSWindow) -> Void
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            if let window = view.window {
-                onWindow(window)
-            }
-        }
-        return view
+    func makeNSView(context: Context) -> _WinHostView {
+        let v = _WinHostView()
+        v.onWindow = onWindow
+        return v
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: _WinHostView, context: Context) {}
 }
 
 // MARK: - Fullscreen visualizer window
@@ -75,18 +87,21 @@ struct FullscreenVisualizerView: View {
                 .animation(.easeInOut(duration: 0.3), value: toastVisible)
             }
         }
-        // WindowAccessor: zero-size background view that captures the NSWindow
-        // reference as soon as SwiftUI inserts it into the AppKit hierarchy.
-        // This is the only reliable way to call toggleFullScreen on the window
-        // that SwiftUI's WindowGroup creates for us.
+        // WindowAccessor fires synchronously via viewDidMoveToWindow, before
+        // the first layout pass.  We hide the window (alphaValue = 0) so the
+        // initial 800×600 frame never flashes, then restore full opacity once
+        // the OS fullscreen animation completes.
         .background(
             WindowAccessor { win in
                 guard hostWindow == nil else { return }
                 hostWindow = win
-                // Enter OS-level fullscreen now that we have the real window.
-                if !win.styleMask.contains(.fullScreen) {
-                    win.toggleFullScreen(nil)
-                }
+                win.alphaValue = 0
+                win.toggleFullScreen(nil)
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.didEnterFullScreenNotification,
+                    object: win,
+                    queue: .main
+                ) { _ in win.alphaValue = 1 }
             }
         )
         .onDisappear {
