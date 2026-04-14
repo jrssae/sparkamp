@@ -93,8 +93,6 @@ struct SparkampMacApp: App {
         .defaultSize(width: 800, height: 600)
 
         // ── Jump to Track ─────────────────────────────────────────────────────
-        // Standalone repositionable window opened via `j` key or Playback menu.
-        // Dismissed when model.jumpToTrackVisible becomes false.
         WindowGroup("Jump to Track", id: "jump-to-track") {
             JumpToTrackView()
                 .environmentObject(model)
@@ -102,6 +100,33 @@ struct SparkampMacApp: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 480, height: 360)
+
+        // ── Equalizer ─────────────────────────────────────────────────────────
+        WindowGroup("Equalizer", id: "equalizer") {
+            EqualizerView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 480, height: 320)
+
+        // ── Settings ──────────────────────────────────────────────────────────
+        WindowGroup("Settings", id: "settings") {
+            SettingsView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 480, height: 500)
+
+        // ── ID3 Tag Editor ────────────────────────────────────────────────────
+        WindowGroup("Tag Editor", id: "id3-editor") {
+            Id3EditorView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 520, height: 460)
     }
 }
 
@@ -139,6 +164,10 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut("f", modifiers: [])
             Button("Jump to Track…") { model.jumpToTrackVisible.toggle() }
                 .keyboardShortcut("j", modifiers: [])
+            Button("Equalizer…")     { model.equalizerVisible.toggle() }
+                .keyboardShortcut("u", modifiers: [])
+            Button("Edit Tags…")     { model.openId3Editor() }
+                .keyboardShortcut("d", modifiers: [])
         }
 
         CommandMenu("Appearance") {
@@ -163,6 +192,9 @@ struct SparkampCommands: Commands {
 
             Button("Show Playlist") { model.playlistVisible = true }
                 .keyboardShortcut("p", modifiers: [])
+
+            Button("Equalizer") { model.equalizerVisible.toggle() }
+            Button("Settings")  { model.settingsVisible.toggle() }
 
             Button("Keyboard Shortcuts") { model.keyboardShortcutsVisible.toggle() }
                 .keyboardShortcut("i", modifiers: [])

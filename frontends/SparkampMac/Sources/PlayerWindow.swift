@@ -68,6 +68,18 @@ struct PlayerWindow: View {
             if visible { openWindow(id: "jump-to-track") }
             else       { dismissWindow(id: "jump-to-track") }
         }
+        .onChange(of: model.equalizerVisible) { _, visible in
+            if visible { openWindow(id: "equalizer") }
+            else       { dismissWindow(id: "equalizer") }
+        }
+        .onChange(of: model.settingsVisible) { _, visible in
+            if visible { openWindow(id: "settings") }
+            else       { dismissWindow(id: "settings") }
+        }
+        .onChange(of: model.id3EditorVisible) { _, visible in
+            if visible { openWindow(id: "id3-editor") }
+            else       { dismissWindow(id: "id3-editor") }
+        }
         .contextMenu { themeMenu }
     }
 

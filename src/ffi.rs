@@ -1229,3 +1229,427 @@ pub unsafe extern "C" fn sparkamp_free_string(s: *mut c_char) {
     }
     drop(CString::from_raw(s));
 }
+
+// ---------------------------------------------------------------------------
+// Equalizer
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_has_eq(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.player.has_eq()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_eq_enabled(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.equalizer.enabled
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_eq_enabled(ctx: *mut SparkampCtx, enabled: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.equalizer.enabled = enabled;
+    if enabled {
+        let bands = ctx.config.equalizer.effective_bands();
+        ctx.player.apply_eq_bands(&bands);
+        let preamp = ctx.config.equalizer.effective_preamp();
+        ctx.player.set_preamp(preamp);
+    } else {
+        ctx.player.apply_eq_bands(&[0.0f64; 10]);
+        ctx.player.set_preamp(1.0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_eq_band(ctx: *const SparkampCtx, band: c_int) -> f32 {
+    if ctx.is_null() || band < 0 || band >= 10 {
+        return 0.0;
+    }
+    let ctx = &*ctx;
+    ctx.config.equalizer.effective_bands()[band as usize] as f32
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_eq_band(ctx: *mut SparkampCtx, band: c_int, db: f32) {
+    if ctx.is_null() || band < 0 || band >= 10 {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let clamped = ctx.config.equalizer.set_band_gain(band as usize, db as f64);
+    if ctx.config.equalizer.enabled {
+        ctx.player.set_eq_band(band as usize, clamped);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_apply_eq_preset(ctx: *mut SparkampCtx, preset_index: c_int) {
+    if ctx.is_null() || preset_index < 0 {
+        return;
+    }
+    let idx = preset_index as usize;
+    if idx >= crate::config::EQ_PRESETS.len() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let (name, bands) = crate::config::EQ_PRESETS[idx];
+    ctx.config.equalizer.preset = name.to_string();
+    ctx.config.equalizer.bands = bands.to_vec();
+    if ctx.config.equalizer.enabled {
+        ctx.player.apply_eq_bands(&bands);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_eq_preset_count(_ctx: *const SparkampCtx) -> c_int {
+    crate::config::EQ_PRESETS.len() as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_eq_preset_name(
+    _ctx: *const SparkampCtx,
+    preset_index: c_int,
+) -> *mut c_char {
+    if preset_index < 0 || preset_index as usize >= crate::config::EQ_PRESETS.len() {
+        return CString::new("").unwrap().into_raw();
+    }
+    let name = crate::config::EQ_PRESETS[preset_index as usize].0;
+    CString::new(name).unwrap_or_default().into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_preamp(ctx: *const SparkampCtx) -> f32 {
+    if ctx.is_null() {
+        return 1.0;
+    }
+    let ctx = &*ctx;
+    ctx.config.equalizer.effective_preamp() as f32
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_preamp(ctx: *mut SparkampCtx, multiplier: f32) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.equalizer.preamp = (multiplier as f64).clamp(0.5, 1.5);
+    if ctx.config.equalizer.enabled {
+        ctx.player.set_preamp(ctx.config.equalizer.preamp);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_reset_eq(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.equalizer.bands = vec![0.0f64; 10];
+    ctx.config.equalizer.preset = String::new();
+    ctx.config.equalizer.preamp = 1.0;
+    if ctx.config.equalizer.enabled {
+        ctx.player.apply_eq_bands(&[0.0f64; 10]);
+        ctx.player.set_preamp(1.0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_eq_band_label(band: c_int) -> *mut c_char {
+    if band < 0 || band as usize >= crate::config::EQ_BAND_FREQS.len() {
+        return CString::new("").unwrap().into_raw();
+    }
+    let label = crate::config::EQ_BAND_FREQS[band as usize];
+    CString::new(label).unwrap_or_default().into_raw()
+}
+
+// ---------------------------------------------------------------------------
+// Behavior / Settings
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_playlist_add_behavior(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    match ctx.config.behavior.playlist_add_behavior {
+        crate::config::PlaylistAddBehavior::Append => 0,
+        crate::config::PlaylistAddBehavior::Replace => 1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_playlist_add_behavior(
+    ctx: *mut SparkampCtx,
+    value: c_int,
+) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.behavior.playlist_add_behavior = match value {
+        1 => crate::config::PlaylistAddBehavior::Replace,
+        _ => crate::config::PlaylistAddBehavior::Append,
+    };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_autoplay_on_add(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.behavior.autoplay_on_add
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_autoplay_on_add(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.behavior.autoplay_on_add = value;
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_ml_rescan_interval(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.rescan_interval_mins as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_ml_rescan_interval(ctx: *mut SparkampCtx, mins: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.rescan_interval_mins = if mins <= 0 {
+        0
+    } else {
+        (mins as u64).max(1)
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Playlist path accessor
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_get_path(
+    ctx: *const SparkampCtx,
+    index: c_int,
+) -> *mut c_char {
+    if ctx.is_null() || index < 0 {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let idx = index as usize;
+    if idx >= ctx.playlist.tracks.len() {
+        return std::ptr::null_mut();
+    }
+    let path_str = ctx.playlist.tracks[idx].path.to_string_lossy().into_owned();
+    CString::new(path_str).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+// ---------------------------------------------------------------------------
+// ID3 Tag Editor
+// ---------------------------------------------------------------------------
+
+pub struct SparkampTagCtx {
+    path: String,
+    fields: crate::id3_editor::TagFields,
+    extra_frames: Vec<crate::id3_editor::ExtraFrame>,
+    artwork: Option<Vec<u8>>,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_open(path: *const c_char) -> *mut SparkampTagCtx {
+    if path.is_null() {
+        return std::ptr::null_mut();
+    }
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s.to_owned(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let path_buf = Path::new(&path_str);
+    let fields = crate::id3_editor::read_tag_fields(path_buf);
+    let extra_frames = crate::id3_editor::read_extra_frames(path_buf);
+    let artwork = id3::Tag::read_from_path(path_buf)
+        .ok()
+        .and_then(|tag| tag.pictures().next().map(|p| p.data.clone()));
+    let tag_ctx = SparkampTagCtx {
+        path: path_str,
+        fields,
+        extra_frames,
+        artwork,
+    };
+    Box::into_raw(Box::new(tag_ctx))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_close(tag: *mut SparkampTagCtx) {
+    if tag.is_null() {
+        return;
+    }
+    drop(Box::from_raw(tag));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_get(
+    tag: *const SparkampTagCtx,
+    frame_id: *const c_char,
+) -> *mut c_char {
+    if tag.is_null() || frame_id.is_null() {
+        return CString::new("").unwrap().into_raw();
+    }
+    let tag = &*tag;
+    let frame = CStr::from_ptr(frame_id).to_string_lossy();
+    let value = match frame.as_ref() {
+        "TIT2" => &tag.fields.title,
+        "TPE1" => &tag.fields.artist,
+        "TALB" => &tag.fields.album,
+        "TPE2" => &tag.fields.album_artist,
+        "TCON" => &tag.fields.genre,
+        "TDRC" => &tag.fields.year,
+        "TRCK" => &tag.fields.track_number,
+        "TPOS" => &tag.fields.disc_number,
+        "TBPM" => &tag.fields.bpm,
+        "COMM" => &tag.fields.comment,
+        _ => return CString::new("").unwrap().into_raw(),
+    };
+    CString::new(value.as_str()).unwrap_or_default().into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_set(
+    tag: *mut SparkampTagCtx,
+    frame_id: *const c_char,
+    value: *const c_char,
+) {
+    if tag.is_null() || frame_id.is_null() || value.is_null() {
+        return;
+    }
+    let tag = &mut *tag;
+    let frame = CStr::from_ptr(frame_id).to_string_lossy();
+    let val = CStr::from_ptr(value).to_string_lossy().into_owned();
+    match frame.as_ref() {
+        "TIT2" => tag.fields.title = val,
+        "TPE1" => tag.fields.artist = val,
+        "TALB" => tag.fields.album = val,
+        "TPE2" => tag.fields.album_artist = val,
+        "TCON" => tag.fields.genre = val,
+        "TDRC" => tag.fields.year = val,
+        "TRCK" => tag.fields.track_number = val,
+        "TPOS" => tag.fields.disc_number = val,
+        "TBPM" => tag.fields.bpm = val,
+        "COMM" => tag.fields.comment = val,
+        _ => {}
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_frame_count(tag: *const SparkampTagCtx) -> c_int {
+    if tag.is_null() {
+        return 0;
+    }
+    let tag = &*tag;
+    tag.extra_frames.len() as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_frame_id(
+    tag: *const SparkampTagCtx,
+    index: c_int,
+) -> *mut c_char {
+    if tag.is_null() || index < 0 {
+        return CString::new("").unwrap().into_raw();
+    }
+    let tag = &*tag;
+    let idx = index as usize;
+    if idx >= tag.extra_frames.len() {
+        return CString::new("").unwrap().into_raw();
+    }
+    CString::new(tag.extra_frames[idx].id.as_str())
+        .unwrap_or_default()
+        .into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_frame_value(
+    tag: *const SparkampTagCtx,
+    index: c_int,
+) -> *mut c_char {
+    if tag.is_null() || index < 0 {
+        return CString::new("").unwrap().into_raw();
+    }
+    let tag = &*tag;
+    let idx = index as usize;
+    if idx >= tag.extra_frames.len() {
+        return CString::new("").unwrap().into_raw();
+    }
+    CString::new(tag.extra_frames[idx].value.as_str())
+        .unwrap_or_default()
+        .into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
+    if tag.is_null() {
+        return -2;
+    }
+    let tag = &mut *tag;
+    let path = Path::new(&tag.path);
+    // Check if file is read-only
+    match std::fs::metadata(path).map(|m| m.permissions().readonly()) {
+        Ok(true) => return -1,
+        Err(_) => return -1,
+        Ok(false) => {}
+    }
+    match crate::id3_editor::write_tag_fields(path, &tag.fields) {
+        Ok(_) => 0,
+        Err(_) => -2,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_get_artwork_data(
+    tag: *const SparkampTagCtx,
+    len_out: *mut c_int,
+) -> *mut u8 {
+    if tag.is_null() {
+        return std::ptr::null_mut();
+    }
+    let tag = &*tag;
+    match &tag.artwork {
+        None => std::ptr::null_mut(),
+        Some(bytes) => {
+            if !len_out.is_null() {
+                *len_out = bytes.len() as c_int;
+            }
+            let mut boxed: Box<[u8]> = bytes.clone().into_boxed_slice();
+            let ptr = boxed.as_mut_ptr();
+            std::mem::forget(boxed);
+            ptr
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_free_artwork(ptr: *mut u8, len: c_int) {
+    if ptr.is_null() {
+        return;
+    }
+    drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len as usize)));
+}

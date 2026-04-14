@@ -60,6 +60,8 @@ struct PlaylistView: View {
             .contextMenu(forSelectionType: Int.self, menu: { items in
                 if let idx = items.first {
                     Button("Play") { model.jumpTo(index: idx) }
+                    Button("Edit Tags…") { model.openId3Editor(trackIndex: idx) }
+                    Divider()
                     Button("Remove", role: .destructive) { model.removeTrack(at: idx) }
                 }
             }, primaryAction: { items in

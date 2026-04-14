@@ -70,6 +70,14 @@ final class SparkampModel: ObservableObject {
     @Published var fullscreenVizVisible: Bool = false
     /// When true, the jump-to-track overlay is open.
     @Published var jumpToTrackVisible: Bool = false
+    /// When true, the equalizer window is open.
+    @Published var equalizerVisible: Bool = false
+    /// When true, the settings window is open.
+    @Published var settingsVisible: Bool = false
+    /// When true, the ID3 tag editor window is open.
+    @Published var id3EditorVisible: Bool = false
+    /// Playlist index to open in the ID3 editor; -1 means the current track.
+    @Published var id3TrackIndex: Int = -1
 
     // MARK: Private — background scan tracking
 
@@ -389,6 +397,11 @@ final class SparkampModel: ObservableObject {
         fullscreenVizVisible = true
     }
 
+    func openId3Editor(trackIndex: Int = -1) {
+        id3TrackIndex = trackIndex
+        id3EditorVisible = true
+    }
+
     func closeFullscreenViz() {
         // Exit OS fullscreen before SwiftUI dismisses the window so the
         // animation completes cleanly.  Finding by styleMask is reliable;
@@ -562,6 +575,11 @@ final class SparkampModel: ObservableObject {
         case "a": cycleVizMode();             return true
         case "f": openFullscreenViz();        return true  // toggles open/close
         case "j": jumpToTrackVisible.toggle(); return true
+        case "u": equalizerVisible.toggle();   return true
+        case "d":
+            id3TrackIndex = -1  // current track
+            id3EditorVisible = true
+            return true
         case "\u{1B}":  // Escape — close fullscreen if open
             if fullscreenVizVisible { closeFullscreenViz(); return true }
             return false

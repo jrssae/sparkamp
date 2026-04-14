@@ -19,6 +19,9 @@
 		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
 		AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */; };
 		AA5000000000000000000012 /* JumpToTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000015 /* JumpToTrackView.swift */; };
+		AA5000000000000000000013 /* EqualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000016 /* EqualizerWindow.swift */; };
+		AA5000000000000000000014 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000017 /* SettingsWindow.swift */; };
+		AA5000000000000000000015 /* Id3EditorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000018 /* Id3EditorWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +40,9 @@
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenVisualizerWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000015 /* JumpToTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpToTrackView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000016 /* EqualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000017 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000018 /* Id3EditorWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Id3EditorWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -83,6 +89,9 @@
 				AA4000000000000000000013 /* VisualizerView.swift */,
 				AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */,
 				AA4000000000000000000015 /* JumpToTrackView.swift */,
+				AA4000000000000000000016 /* EqualizerWindow.swift */,
+				AA4000000000000000000017 /* SettingsWindow.swift */,
+				AA4000000000000000000018 /* Id3EditorWindow.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -194,6 +203,9 @@
 				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
 				AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */,
 				AA5000000000000000000012 /* JumpToTrackView.swift in Sources */,
+				AA5000000000000000000013 /* EqualizerWindow.swift in Sources */,
+				AA5000000000000000000014 /* SettingsWindow.swift in Sources */,
+				AA5000000000000000000015 /* Id3EditorWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
