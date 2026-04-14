@@ -18,15 +18,15 @@ struct PlayerWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // ┌──────────────────────────────────────┐
-            // │ [▶ TIME]  │ Marquee title             │
-            // │           │   [spring]                │
-            // │           │ [🔊 vol≈1/3] [ℹ][PL]     │
-            // ├──────────────────────────────────────┤
-            // │ [seek bar full width]                 │
-            // ├──────────────────────────────────────┤
-            // │ [◀ ▶ ⏸ ⏹ ▶]  [RPT][SHF]  [logo]   │
-            // └──────────────────────────────────────┘
+            // ┌───────────────────────────────────────────────────────┐
+            // │ [▶ TIME ]  │ Marquee title                            │
+            // │ [viz 52px] │   [spacer]                               │
+            // │            │ [🔊 vol≈140px 🔊🔊]  [ℹ] [PL]           │
+            // ├───────────────────────────────────────────────────────┤
+            // │ [seek bar — full width, thick]                        │
+            // ├───────────────────────────────────────────────────────┤
+            // │ [◀ ▶ ⏸ ⏹ ▶]  [Repeat][⇌ Shuffle]  [logo]          │
+            // └───────────────────────────────────────────────────────┘
             infoPanel
             seekRow
             transportRow
@@ -45,7 +45,13 @@ struct PlayerWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .openFilePicker)) { _ in
             model.openFilePicker()
         }
-        .onAppear { model.refreshAll() }
+        .onAppear {
+            model.refreshAll()
+            // onChange only fires on transitions, not on the initial value.
+            // Open any windows whose state was restored as true from UserDefaults.
+            if model.playlistVisible          { openWindow(id: "playlist") }
+            if model.keyboardShortcutsVisible { openWindow(id: "shortcuts") }
+        }
         .onChange(of: model.playlistVisible) { _, visible in
             if visible { openWindow(id: "playlist") }
             else       { dismissWindow(id: "playlist") }
@@ -54,18 +60,27 @@ struct PlayerWindow: View {
             if visible { openWindow(id: "shortcuts") }
             else       { dismissWindow(id: "shortcuts") }
         }
+        .onChange(of: model.fullscreenVizVisible) { _, visible in
+            if visible { openWindow(id: "fullscreen-viz") }
+            else       { dismissWindow(id: "fullscreen-viz") }
+        }
+        .onChange(of: model.jumpToTrackVisible) { _, visible in
+            if visible { openWindow(id: "jump-to-track") }
+            else       { dismissWindow(id: "jump-to-track") }
+        }
         .contextMenu { themeMenu }
     }
 
     // MARK: – Info Panel
     //
-    // Left column  (118 px, top-aligned):
-    //   [stateIcon] [large time]   ← tappable; toggles remaining/elapsed
+    // Left column  (118 px):
+    //   Top:    [stateIcon] [large time]  ← tappable; toggles remaining/elapsed
+    //   Bottom: [mini visualizer — bars or waveform, 52 px tall]
     //
-    // Right column (fills rest, top-aligned):
+    // Right column (fills rest):
     //   Row 1: Marquee "Artist — Title"
     //   Row 2: (Spacer — pushes vol row to bottom)
-    //   Row 3: 🔊 [vol slider≈140 px] 🔊🔊  [ℹ] [PL]
+    //   Row 3: 🔊 [thin vol slider] 🔊🔊  [ℹ] [PL]
 
     private var infoPanel: some View {
         ZStack {
@@ -73,27 +88,36 @@ struct PlayerWindow: View {
 
             HStack(spacing: 0) {
 
-                // ── Left column: state icon + time (top-aligned, tappable) ────
-                Button { model.toggleRemainingTime() } label: {
-                    HStack(alignment: .center, spacing: 4) {
-                        Image(systemName: stateIcon)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(stateColor)
-                        Text(timeDisplay)
-                            .font(.system(size: 28, weight: .bold, design: .monospaced))
-                            .foregroundStyle(theme.timeText)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-                            .fixedSize()
+                // ── Left column: time + mini visualizer ──────────────────────
+                VStack(spacing: 0) {
+                    // Time display (tappable)
+                    Button { model.toggleRemainingTime() } label: {
+                        HStack(alignment: .center, spacing: 4) {
+                            Image(systemName: stateIcon)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(stateColor)
+                            Text(timeDisplay)
+                                .font(.system(size: 28, weight: .bold, design: .monospaced))
+                                .foregroundStyle(theme.timeText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
+                                .fixedSize()
+                        }
+                        .frame(width: 118, alignment: .leading)
+                        .padding(.top, 8)
+                        .padding(.leading, 8)
+                        .padding(.bottom, 4)
                     }
-                    .frame(width: 118)
-                    .frame(maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
-                    .padding(.leading, 8)
+                    .buttonStyle(.plain)
+                    .help("Click to toggle remaining / elapsed time")
+
+                    // Mini visualizer — same width as left column
+                    VisualizerView()
+                        .frame(width: 118)
+                        .frame(maxHeight: .infinity)
+                        .padding(.bottom, 6)
                 }
-                .buttonStyle(.plain)
-                .help("Click to toggle remaining / elapsed time")
+                .frame(width: 118)
 
                 // ── Divider ──────────────────────────────────────────────────
                 Rectangle()
@@ -151,7 +175,7 @@ struct PlayerWindow: View {
         )
     }
 
-    // MARK: – Seek row
+    // MARK: – Seek row (thick track)
 
     private var seekRow: some View {
         ThemedSeekBar(
@@ -166,9 +190,6 @@ struct PlayerWindow: View {
     }
 
     // MARK: – Transport row
-    //
-    // Layout: [prev ▶ ⏸ ⏹ next]  [Spacer]  [RPT][SHF]  [Spacer]  [logo]
-    //   — Spacers create visual separation without hard-coding gaps.
 
     private var transportRow: some View {
         HStack(spacing: 8) {
@@ -183,20 +204,20 @@ struct PlayerWindow: View {
 
             Spacer()
 
-            // ── Repeat / Shuffle — same row, visually separated ─────────────
+            // ── Repeat / Shuffle ─────────────────────────────────────────────
             ModeButton(label: repeatLabel, isActive: model.repeatMode != 0) {
                 model.cycleRepeat()
             }
             .help("Cycle repeat (r)")
 
-            ModeButton(icon: "shuffle", isActive: model.shuffleEnabled) {
+            ModeButton(label: "Shuffle", icon: "shuffle", isActive: model.shuffleEnabled) {
                 model.toggleShuffle()
             }
             .help("Toggle shuffle (s)")
 
             Spacer()
 
-            // ── App icon logo — right-aligned ───────────────────────────────
+            // ── App icon logo ───────────────────────────────────────────────
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
@@ -220,7 +241,7 @@ struct PlayerWindow: View {
         }
     }
 
-    // MARK: – Context menu (right-click / two-finger tap)
+    // MARK: – Context menu
 
     @ViewBuilder
     private var themeMenu: some View {
@@ -272,7 +293,6 @@ struct PlayerWindow: View {
         return theme.modeBtnText
     }
 
-    /// Marquee shows "Artist — Title" (or just title when no artist).
     private var marqueeText: String {
         if model.currentTitle.isEmpty { return "Sparkamp" }
         if !model.currentArtist.isEmpty {
@@ -281,7 +301,6 @@ struct PlayerWindow: View {
         return model.currentTitle
     }
 
-    /// Large time string: elapsed or (negative) remaining.
     private var timeDisplay: String {
         if model.showRemainingTime, model.duration > 0 {
             let remaining = max(0, model.duration - model.position)
@@ -292,9 +311,9 @@ struct PlayerWindow: View {
 
     private var repeatLabel: String {
         switch model.repeatMode {
-        case 1: return "RPT1"
-        case 2: return "RPTA"
-        default: return "RPT"
+        case 1: return "Repeat 1"
+        case 2: return "Repeat All"
+        default: return "Repeat"
         }
     }
 
@@ -316,7 +335,7 @@ struct PlayerWindow: View {
     }
 }
 
-// MARK: - Mode button (repeat / shuffle / playlist / shortcuts)
+// MARK: - Mode button (repeat / shuffle / playlist / shortcuts / info)
 
 struct ModeButton: View {
     var label: String? = nil
@@ -331,18 +350,19 @@ struct ModeButton: View {
 
     var body: some View {
         Button(action: action) {
-            Group {
+            HStack(spacing: 3) {
                 if let icon {
                     Image(systemName: icon)
                         .font(.system(size: 10, weight: .medium))
-                } else if let label {
+                }
+                if let label {
                     Text(label)
                         .font(.system(size: 9, weight: .bold))
                 }
             }
             .foregroundStyle(isActive ? theme.modeBtnActiveText : theme.modeBtnText)
-            .frame(minWidth: 24, minHeight: 18)
-            .padding(.horizontal, 4)
+            .frame(minHeight: 18)
+            .padding(.horizontal, 6)
             .background(
                 RoundedRectangle(cornerRadius: 3)
                     .fill(isActive
@@ -362,7 +382,7 @@ struct ModeButton: View {
     }
 }
 
-// MARK: - Themed seek bar
+// MARK: - Themed seek bar (thick track)
 
 struct ThemedSeekBar: View {
     let position: Double
@@ -382,8 +402,8 @@ struct ThemedSeekBar: View {
 
     var body: some View {
         let t = themeManager.currentTheme
-        let trackH: CGFloat = 4
-        let thumbD: CGFloat = isHovered || isDragging ? 13 : 9
+        let trackH: CGFloat = 7                              // thick progress bar
+        let thumbD: CGFloat = isHovered || isDragging ? 14 : 11
 
         GeometryReader { geo in
             let W     = geo.size.width
@@ -425,18 +445,55 @@ struct ThemedSeekBar: View {
                     }
             )
         }
-        .frame(height: 18)
+        .frame(height: 20)
     }
 }
 
-// MARK: - Themed volume slider
+// MARK: - Themed volume slider (thin track — visually lighter than seek bar)
 
 struct ThemedVolumeSlider: View {
     @Binding var value: Double
     @EnvironmentObject var themeManager: ThemeManager
+    @State private var isHovered = false
 
     var body: some View {
-        Slider(value: $value, in: 0...1)
-            .tint(themeManager.currentTheme.volumeThumb)
+        let t = themeManager.currentTheme
+        let trackH: CGFloat = 3                              // thin volume track
+        let thumbD: CGFloat = isHovered ? 10 : 7
+
+        GeometryReader { geo in
+            let W     = geo.size.width
+            let midY  = geo.size.height / 2
+            let pad   = thumbD / 2
+            let fillW = CGFloat(value) * (W - thumbD)
+            let thumbX = pad + fillW
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(t.seekTrack)
+                    .frame(height: trackH)
+                    .padding(.horizontal, pad)
+
+                Capsule()
+                    .fill(t.volumeThumb)
+                    .frame(width: max(pad, fillW + pad), height: trackH)
+
+                Circle()
+                    .fill(t.volumeThumb)
+                    .frame(width: thumbD, height: thumbD)
+                    .position(x: thumbX, y: midY)
+                    .animation(.easeOut(duration: 0.08), value: thumbD)
+            }
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        value = ((v.location.x - pad) / max(W - thumbD, 1))
+                            .clamped(to: 0...1)
+                    }
+            )
+        }
+        .frame(height: 14)
     }
 }

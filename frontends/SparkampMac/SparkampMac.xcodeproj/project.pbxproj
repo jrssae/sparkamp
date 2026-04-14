@@ -16,6 +16,9 @@
 		AA5000000000000000000007 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000010 /* Theme.swift */; };
 		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
 		AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
+		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
+		AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */; };
+		AA5000000000000000000012 /* JumpToTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000015 /* JumpToTrackView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +34,9 @@
 		AA4000000000000000000010 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenVisualizerWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000015 /* JumpToTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpToTrackView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -74,6 +80,9 @@
 				AA4000000000000000000009 /* PlaylistView.swift */,
 				AA4000000000000000000010 /* Theme.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
+				AA4000000000000000000013 /* VisualizerView.swift */,
+				AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */,
+				AA4000000000000000000015 /* JumpToTrackView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -182,6 +191,9 @@
 				AA5000000000000000000006 /* PlaylistView.swift in Sources */,
 				AA5000000000000000000007 /* Theme.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,
+				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
+				AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */,
+				AA5000000000000000000012 /* JumpToTrackView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

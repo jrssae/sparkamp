@@ -79,6 +79,29 @@ struct SparkampMacApp: App {
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 340, height: 420)
+
+        // ── Fullscreen visualizer ─────────────────────────────────────────────
+        // Opened programmatically from PlayerWindow when model.fullscreenVizVisible
+        // becomes true.  The view itself calls toggleFullScreen via WindowAccessor.
+        WindowGroup("Visualizer", id: "fullscreen-viz") {
+            FullscreenVisualizerView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 800, height: 600)
+
+        // ── Jump to Track ─────────────────────────────────────────────────────
+        // Standalone repositionable window opened via `j` key or Playback menu.
+        // Dismissed when model.jumpToTrackVisible becomes false.
+        WindowGroup("Jump to Track", id: "jump-to-track") {
+            JumpToTrackView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 480, height: 360)
     }
 }
 
@@ -109,6 +132,13 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut("r", modifiers: [])
             Button("Toggle Shuffle") { model.toggleShuffle() }
                 .keyboardShortcut("s", modifiers: [])
+            Divider()
+            Button("Cycle Visualizer Mode") { model.cycleVizMode() }
+                .keyboardShortcut("a", modifiers: [])
+            Button("Fullscreen Visualizer") { model.openFullscreenViz() }
+                .keyboardShortcut("f", modifiers: [])
+            Button("Jump to Track…") { model.jumpToTrackVisible.toggle() }
+                .keyboardShortcut("j", modifiers: [])
         }
 
         CommandMenu("Appearance") {
