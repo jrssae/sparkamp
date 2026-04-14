@@ -204,7 +204,7 @@ struct PlayerWindow: View {
             }
             .help("Cycle repeat (r)")
 
-            ModeButton(icon: "shuffle", label: "Shuffle", isActive: model.shuffleEnabled) {
+            ModeButton(label: "Shuffle", icon: "shuffle", isActive: model.shuffleEnabled) {
                 model.toggleShuffle()
             }
             .help("Toggle shuffle (s)")
