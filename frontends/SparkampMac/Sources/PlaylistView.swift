@@ -76,6 +76,11 @@ struct PlaylistView: View {
         }
         .background(theme.playlistBg)
         .preferredColorScheme(themeManager.preferredColorScheme)
+        .onDisappear {
+            // Sync model flag when window is closed via the system X button
+            // so the playlist button in the player reflects the correct state.
+            model.playlistVisible = false
+        }
     }
 
     // MARK: Bottom control bar

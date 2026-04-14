@@ -57,48 +57,7 @@ struct EqualizerView: View {
                 .padding(24)
                 .background(theme.background)
             } else {
-                // ── Preset row ────────────────────────────────────────────────
-                HStack(spacing: 8) {
-                    Text("Preset:")
-                        .font(.system(size: 10))
-                        .foregroundStyle(theme.transportText)
-
-                    Picker("Preset", selection: $selectedPreset) {
-                        Text("Custom").tag(-1)
-                        ForEach(presetNames.indices, id: \.self) { i in
-                            Text(presetNames[i]).tag(i)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .frame(maxWidth: 160)
-
-                    Button("Apply") {
-                        guard selectedPreset >= 0, let ctx = model.ctx else { return }
-                        sparkamp_apply_eq_preset(ctx, Int32(selectedPreset))
-                        loadBandsFromFFI()
-                        sparkamp_save_config(ctx)
-                    }
-                    .buttonStyle(EQControlButtonStyle(theme: theme))
-                    .disabled(selectedPreset < 0)
-
-                    Spacer()
-
-                    Button("Reset") {
-                        guard let ctx = model.ctx else { return }
-                        sparkamp_reset_eq(ctx)
-                        loadBandsFromFFI()
-                        sparkamp_save_config(ctx)
-                    }
-                    .buttonStyle(EQControlButtonStyle(theme: theme))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(theme.background)
-
-                Divider().background(theme.windowBorder)
-
-                // ── Pre-amp row (above band sliders) ──────────────────────────
+                // ── Pre-amp row ───────────────────────────────────────────────
                 HStack(spacing: 8) {
                     Text("Pre-amp:")
                         .font(.system(size: 10))
@@ -123,6 +82,42 @@ struct EqualizerView: View {
 
                 Divider().background(theme.windowBorder)
 
+                // ── Preset row ────────────────────────────────────────────────
+                HStack(spacing: 8) {
+                    Picker("", selection: $selectedPreset) {
+                        Text("Custom").tag(-1)
+                        ForEach(presetNames.indices, id: \.self) { i in
+                            Text(presetNames[i]).tag(i)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(maxWidth: 160)
+                    .onChange(of: selectedPreset) { _, newValue in
+                        guard newValue >= 0, let ctx = model.ctx else { return }
+                        sparkamp_apply_eq_preset(ctx, Int32(newValue))
+                        loadBandsFromFFI()
+                        sparkamp_save_config(ctx)
+                    }
+
+                    Spacer()
+
+                    Button("Reset") {
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_reset_eq(ctx)
+                        loadBandsFromFFI()
+                        selectedPreset = -1
+                        sparkamp_save_config(ctx)
+                    }
+                    .buttonStyle(EQControlButtonStyle(theme: theme))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(theme.background)
+
+                Divider().background(theme.windowBorder)
+
                 // ── Band sliders ──────────────────────────────────────────────
                 HStack(alignment: .bottom, spacing: 4) {
                     ForEach(0..<10, id: \.self) { i in
@@ -138,21 +133,23 @@ struct EqualizerView: View {
                             }
                         )
                     }
+                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(theme.lcdBackground)
+                .clipped()
             }
         }
         .frame(width: 460)
         .background(theme.background)
-        .overlay(
-            RoundedRectangle(cornerRadius: 0)
-                .stroke(theme.windowBorder, lineWidth: 1)
-        )
         .preferredColorScheme(themeManager.preferredColorScheme)
         .onAppear {
             loadAllFromFFI()
+        }
+        .onDisappear {
+            // Sync model flag when window is closed via the system X button.
+            model.equalizerVisible = false
         }
     }
 
@@ -197,12 +194,6 @@ private struct BandSliderColumn: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            // dB value label
-            Text(dbLabel)
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(theme.transportText)
-                .frame(width: 36)
-
             // Vertical slider via rotation.
             // The first .frame sets the track length (160 pt); rotationEffect
             // turns it 90°; the second .frame gives it a bounding box that
@@ -211,6 +202,7 @@ private struct BandSliderColumn: View {
                 .frame(width: 160)
                 .rotationEffect(.degrees(-90))
                 .frame(width: 36, height: 160)
+                .clipped()
                 .onChange(of: value) { _, newVal in
                     onChange(newVal)
                 }
@@ -228,12 +220,6 @@ private struct BandSliderColumn: View {
             labelText = ptr.map { String(cString: $0) } ?? "\(bandIndex)"
             sparkamp_free_string(ptr)
         }
-    }
-
-    private var dbLabel: String {
-        let v = value
-        if v >= 0 { return String(format: "+%.1f", v) }
-        return String(format: "%.1f", v)
     }
 }
 

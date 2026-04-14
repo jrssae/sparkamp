@@ -35,6 +35,10 @@ struct SettingsView: View {
         }
         .frame(minWidth: 540, minHeight: 380)
         .preferredColorScheme(themeManager.preferredColorScheme)
+        .onDisappear {
+            // Sync model flag when window is closed via the system X button.
+            model.settingsVisible = false
+        }
     }
 }
 
@@ -97,9 +101,9 @@ private struct AboutPane: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("License")
                     .font(.headline)
-                Text("MIT")
+                Link("GNU Affero General Public License v3 (AGPL-3.0)",
+                     destination: URL(string: "https://www.gnu.org/licenses/agpl-3.0.html")!)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
             }
 
             Spacer()

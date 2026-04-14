@@ -156,6 +156,7 @@ struct Id3EditorView: View {
                 sparkamp_tag_close(t)
                 tagCtx = nil
             }
+            model.id3EditorVisible = false
         }
         .onChange(of: model.id3TrackIndex) { _, _ in
             loadTag()

@@ -106,7 +106,8 @@ final class SparkampModel: ObservableObject {
 
         setupCallbacks()
         // Restore Swift-side UI state
-        playlistVisible = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
+        playlistVisible    = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
+        equalizerVisible   = UserDefaults.standard.bool(forKey: "sparkamp.equalizerVisible")
         refreshAll()
         startTick()
         startKeyMonitor()
@@ -122,8 +123,9 @@ final class SparkampModel: ObservableObject {
             // queue: .main guarantees main-thread delivery; assumeIsolated
             // satisfies the compiler's Sendable check without a Task hop.
             MainActor.assumeIsolated {
-                guard let ctx = self.ctx else { return }
-                sparkamp_save_config(ctx)
+                // Save full state (Rust config + Swift UserDefaults) at quit time
+                // so window visibility is correctly restored on next launch.
+                self.saveState()
             }
         }
     }
@@ -433,6 +435,12 @@ final class SparkampModel: ObservableObject {
     func addFiles(_ urls: [URL]) {
         guard let ctx = ctx else { return }
 
+        // If "Replace playlist" is the configured behavior, clear before adding.
+        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        if shouldReplace {
+            sparkamp_playlist_clear(ctx)
+        }
+
         // Indices of tracks we fast-added — we'll scan just those.
         var newIndices: [Int] = []
 
@@ -475,6 +483,14 @@ final class SparkampModel: ObservableObject {
         // incomplete rows even if dirty_count hasn't fired yet.
         if !newIndices.isEmpty {
             lastAddTime = Date()
+
+            // Auto-play the first newly added track if configured to do so.
+            if sparkamp_get_autoplay_on_add(ctx) {
+                sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
+                sparkamp_play(ctx)
+                refreshCurrentTrackInfo()
+            }
+
             saveState()
         }
     }
@@ -531,9 +547,10 @@ final class SparkampModel: ObservableObject {
     /// Flush Rust-side config + playlist to disk and persist Swift-side UI
     /// state in UserDefaults.  Called after every meaningful state change so
     /// the most recent state survives an unexpected kill (e.g. Xcode stop).
-    private func saveState() {
+    func saveState() {
         if let ctx = ctx { sparkamp_save_config(ctx) }
-        UserDefaults.standard.set(playlistVisible, forKey: "sparkamp.playlistVisible")
+        UserDefaults.standard.set(playlistVisible,  forKey: "sparkamp.playlistVisible")
+        UserDefaults.standard.set(equalizerVisible, forKey: "sparkamp.equalizerVisible")
     }
 
     // MARK: Keyboard shortcuts
@@ -580,7 +597,7 @@ final class SparkampModel: ObservableObject {
         case "a": cycleVizMode();             return true
         case "f": openFullscreenViz();        return true  // toggles open/close
         case "j": jumpToTrackVisible.toggle(); return true
-        case "u": equalizerVisible.toggle();   return true
+        case "u": equalizerVisible.toggle(); saveState(); return true
         case "d":
             id3TrackIndex = -1  // current track
             id3EditorVisible = true

@@ -5,6 +5,7 @@ import SwiftUI
 /// Displays all keyboard shortcuts in the same visual style as the playlist.
 /// Opened via the ℹ button in the player info panel or by pressing `i`.
 struct KeyboardShortcutsView: View {
+    @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
 
     private var theme: SkinTheme { themeManager.currentTheme }
@@ -127,5 +128,8 @@ struct KeyboardShortcutsView: View {
         }
         .background(theme.playlistBg)
         .preferredColorScheme(themeManager.preferredColorScheme)
+        .onDisappear {
+            model.keyboardShortcutsVisible = false
+        }
     }
 }

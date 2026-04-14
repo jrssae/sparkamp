@@ -51,6 +51,7 @@ struct PlayerWindow: View {
             // Open any windows whose state was restored as true from UserDefaults.
             if model.playlistVisible          { openWindow(id: "playlist") }
             if model.keyboardShortcutsVisible { openWindow(id: "shortcuts") }
+            if model.equalizerVisible         { openWindow(id: "equalizer") }
         }
         .onChange(of: model.playlistVisible) { _, visible in
             if visible { openWindow(id: "playlist") }
@@ -164,20 +165,21 @@ struct PlayerWindow: View {
 
                         Spacer()
 
-                        ModeButton(icon: "slider.horizontal.3", isActive: model.equalizerVisible) {
-                            model.equalizerVisible.toggle()
+                        ModeButton(icon: "info.circle", isActive: model.keyboardShortcutsVisible) {
+                            model.keyboardShortcutsVisible.toggle()
                         }
-                        .help("Equalizer (u)")
+                        .help("Keyboard shortcuts (i)")
 
                         ModeButton(icon: "magnifyingglass", isActive: model.jumpToTrackVisible) {
                             model.jumpToTrackVisible.toggle()
                         }
                         .help("Jump to Track (j)")
 
-                        ModeButton(icon: "info.circle", isActive: model.keyboardShortcutsVisible) {
-                            model.keyboardShortcutsVisible.toggle()
+                        ModeButton(icon: "slider.horizontal.3", isActive: model.equalizerVisible) {
+                            model.equalizerVisible.toggle()
+                            model.saveState()
                         }
-                        .help("Keyboard shortcuts (i)")
+                        .help("Equalizer (u)")
 
                         ModeButton(icon: "list.bullet", isActive: model.playlistVisible) {
                             model.playlistVisible.toggle()

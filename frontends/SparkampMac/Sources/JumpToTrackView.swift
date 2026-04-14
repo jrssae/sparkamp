@@ -116,6 +116,9 @@ struct JumpToTrackView: View {
             // happened yet at onAppear time.
             DispatchQueue.main.async { fieldFocused = true }
         }
+        .onDisappear {
+            model.jumpToTrackVisible = false
+        }
         .onKeyPress(.escape) {
             model.jumpToTrackVisible = false
             return .handled
