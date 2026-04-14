@@ -118,8 +118,13 @@ final class SparkampModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let ctx = self.ctx else { return }
-            sparkamp_save_config(ctx)
+            guard let self else { return }
+            // queue: .main guarantees main-thread delivery; assumeIsolated
+            // satisfies the compiler's Sendable check without a Task hop.
+            MainActor.assumeIsolated {
+                guard let ctx = self.ctx else { return }
+                sparkamp_save_config(ctx)
+            }
         }
     }
 

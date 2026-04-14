@@ -164,6 +164,16 @@ struct PlayerWindow: View {
 
                         Spacer()
 
+                        ModeButton(icon: "slider.horizontal.3", isActive: model.equalizerVisible) {
+                            model.equalizerVisible.toggle()
+                        }
+                        .help("Equalizer (u)")
+
+                        ModeButton(icon: "magnifyingglass", isActive: model.jumpToTrackVisible) {
+                            model.jumpToTrackVisible.toggle()
+                        }
+                        .help("Jump to Track (j)")
+
                         ModeButton(icon: "info.circle", isActive: model.keyboardShortcutsVisible) {
                             model.keyboardShortcutsVisible.toggle()
                         }
@@ -229,13 +239,14 @@ struct PlayerWindow: View {
 
             Spacer()
 
-            // ── App icon logo ───────────────────────────────────────────────
+            // ── App icon logo — click to open Settings ──────────────────────
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 42, height: 42)
                 .cornerRadius(8)
-                .help("Sparkamp")
+                .help("Sparkamp — click for Settings")
+                .onTapGesture { model.settingsVisible.toggle() }
         }
         .padding(.horizontal, 10)
         .padding(.top, 6)

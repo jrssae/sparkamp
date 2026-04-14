@@ -129,6 +129,10 @@ int32_t sparkamp_get_viz_mode(const SparkampCtx *ctx);
 void    sparkamp_set_viz_mode(SparkampCtx *ctx, int32_t mode);
 /** Cycle Bars → Waveform → Bars → … */
 void    sparkamp_cycle_viz_mode(SparkampCtx *ctx);
+/** Return whether bars mirror mode is on (bar extends above+below center). */
+bool    sparkamp_get_viz_mirror(const SparkampCtx *ctx);
+/** Set bars mirror mode. true = mirrored, false = grow from bottom. */
+void    sparkamp_set_viz_mirror(SparkampCtx *ctx, bool mirror);
 
 /* ── Waveform style ──────────────────────────────────────────────────────── */
 

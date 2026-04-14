@@ -1060,6 +1060,24 @@ pub unsafe extern "C" fn sparkamp_cycle_viz_mode(ctx: *mut SparkampCtx) {
     };
 }
 
+/// Return whether bars mirror mode is enabled (bar extends above and below center).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_viz_mirror(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    (*ctx).config.visualizer.bars_mirror
+}
+
+/// Set bars mirror mode. `true` = mirrored (above+below center), `false` = normal (grow from bottom).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_viz_mirror(ctx: *mut SparkampCtx, mirror: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).config.visualizer.bars_mirror = mirror;
+}
+
 // ---------------------------------------------------------------------------
 // Waveform style
 // ---------------------------------------------------------------------------

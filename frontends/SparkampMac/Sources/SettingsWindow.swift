@@ -7,30 +7,119 @@ struct SettingsView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
 
-    // Appearance
-    @State private var themeChoice: Int = 0   // 0=System, 1=Dark, 2=Light
-
-    // Playback
-    @State private var autoplayOnAdd: Bool = false
-    @State private var addBehavior: Int = 0   // 0=Append, 1=Replace
-
-    // Visualizer — bars
-    @State private var vizMode: Int = 0       // 0=Bars, 1=Waveform
-    @State private var barsZones: Int = 3
-    @State private var barsZoneColors: [Color] = Array(repeating: .green, count: 6)
-
-    // Visualizer — waveform
-    @State private var waveformStyle: Int = 0  // 0=Lines, 1=Filled
-    @State private var waveformZones: Int = 3
-    @State private var waveformZoneColors: [Color] = Array(repeating: .green, count: 6)
-
+    @State private var selectedTab: SettingsTab = .about
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        HStack(spacing: 0) {
+            // ── Sidebar ───────────────────────────────────────────────────────
+            List(SettingsTab.allCases, id: \.self, selection: $selectedTab) { tab in
+                Label(tab.label, systemImage: tab.icon)
+                    .tag(tab)
+            }
+            .listStyle(.sidebar)
+            .frame(width: 160)
+
+            Divider()
+
+            // ── Content area ──────────────────────────────────────────────────
+            Group {
+                switch selectedTab {
+                case .about:       AboutPane()
+                case .appearance:  AppearancePane()
+                case .playback:    PlaybackPane()
+                case .visualizer:  VisualizerPane()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(minWidth: 540, minHeight: 380)
+        .preferredColorScheme(themeManager.preferredColorScheme)
+    }
+}
+
+// MARK: - Tab definition
+
+private enum SettingsTab: String, CaseIterable {
+    case about, appearance, playback, visualizer
+
+    var label: String {
+        switch self {
+        case .about:       return "About"
+        case .appearance:  return "Appearance"
+        case .playback:    return "Playback"
+        case .visualizer:  return "Visualizer"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .about:       return "info.circle"
+        case .appearance:  return "paintbrush"
+        case .playback:    return "play.circle"
+        case .visualizer:  return "waveform"
+        }
+    }
+}
+
+// MARK: - About pane
+
+private struct AboutPane: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 16) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 64, height: 64)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sparkamp")
+                        .font(.title2.bold())
+                    Text("Version 0.3.0")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Open source Winamp-style audio player")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Engine")
+                    .font(.headline)
+                Text("GStreamer — playbin, equalizer-10bands, volume")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("License")
+                    .font(.headline)
+                Text("MIT")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(24)
+    }
+}
+
+// MARK: - Appearance pane
+
+private struct AppearancePane: View {
+    @EnvironmentObject var themeManager: ThemeManager
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var themeChoice: Int = 0   // 0=System, 1=Dark, 2=Light
+
+    var body: some View {
         Form {
-            // ── Appearance ────────────────────────────────────────────────────
-            Section {
-                Picker("Theme", selection: $themeChoice) {
+            Section("Theme") {
+                Picker("Color scheme", selection: $themeChoice) {
                     Text("System").tag(0)
                     Text("Dark").tag(1)
                     Text("Light").tag(2)
@@ -43,12 +132,47 @@ struct SettingsView: View {
                     default: themeManager.useSystem(colorScheme: colorScheme)
                     }
                 }
-            } header: {
-                Text("Appearance")
-            }
 
-            // ── Playback ──────────────────────────────────────────────────────
-            Section {
+                Button("Load Custom Skin…") {
+                    themeManager.openSkinPicker(colorScheme: colorScheme)
+                }
+
+                if case .custom(let url) = themeManager.themeSource {
+                    HStack {
+                        Text(url.lastPathComponent)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove", role: .destructive) {
+                            themeManager.removeCustomSkin(colorScheme: colorScheme)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            switch themeManager.themeSource {
+            case .dark:   themeChoice = 1
+            case .light:  themeChoice = 2
+            default:      themeChoice = 0
+            }
+        }
+    }
+}
+
+// MARK: - Playback pane
+
+private struct PlaybackPane: View {
+    @EnvironmentObject var model: SparkampModel
+
+    @State private var autoplayOnAdd: Bool = false
+    @State private var addBehavior: Int    = 0    // 0=Append, 1=Replace
+
+    var body: some View {
+        Form {
+            Section("On Add") {
                 Toggle("Autoplay when files are added", isOn: $autoplayOnAdd)
                     .onChange(of: autoplayOnAdd) { _, newValue in
                         guard let ctx = model.ctx else { return }
@@ -56,23 +180,44 @@ struct SettingsView: View {
                         sparkamp_save_config(ctx)
                     }
 
-                Picker("When adding from Media Library", selection: $addBehavior) {
-                    Text("Append").tag(0)
-                    Text("Replace").tag(1)
+                Picker("When adding files", selection: $addBehavior) {
+                    Text("Append to playlist").tag(0)
+                    Text("Replace playlist").tag(1)
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.radioGroup)
                 .onChange(of: addBehavior) { _, newValue in
                     guard let ctx = model.ctx else { return }
                     sparkamp_set_playlist_add_behavior(ctx, Int32(newValue))
                     sparkamp_save_config(ctx)
                 }
-            } header: {
-                Text("Playback")
             }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            guard let ctx = model.ctx else { return }
+            autoplayOnAdd = sparkamp_get_autoplay_on_add(ctx)
+            addBehavior   = Int(sparkamp_get_playlist_add_behavior(ctx))
+        }
+    }
+}
 
-            // ── Visualizer ────────────────────────────────────────────────────
-            Section {
-                Picker("Mode", selection: $vizMode) {
+// MARK: - Visualizer pane
+
+private struct VisualizerPane: View {
+    @EnvironmentObject var model: SparkampModel
+
+    @State private var vizMode: Int          = 0     // 0=Bars, 1=Waveform
+    @State private var barsMirror: Bool      = true
+    @State private var barsZones: Int        = 3
+    @State private var barsZoneColors: [Color]     = Array(repeating: .green, count: 6)
+    @State private var waveformStyle: Int    = 0     // 0=Lines, 1=Filled
+    @State private var waveformZones: Int    = 3
+    @State private var waveformZoneColors: [Color] = Array(repeating: .green, count: 6)
+
+    var body: some View {
+        Form {
+            Section("Mode") {
+                Picker("Visualizer mode", selection: $vizMode) {
                     Text("Bars").tag(0)
                     Text("Waveform").tag(1)
                 }
@@ -82,9 +227,18 @@ struct SettingsView: View {
                     sparkamp_set_viz_mode(ctx, Int32(newValue))
                     sparkamp_save_config(ctx)
                 }
+            }
 
-                if vizMode == 0 {
-                    Stepper("Bars Zones: \(barsZones)", value: $barsZones, in: 1...6)
+            if vizMode == 0 {
+                Section("Bars") {
+                    Toggle("Mirror (extend above and below center)", isOn: $barsMirror)
+                        .onChange(of: barsMirror) { _, newValue in
+                            guard let ctx = model.ctx else { return }
+                            sparkamp_set_viz_mirror(ctx, newValue)
+                            sparkamp_save_config(ctx)
+                        }
+
+                    Stepper("Zones: \(barsZones)", value: $barsZones, in: 1...6)
                         .onChange(of: barsZones) { _, newValue in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_viz_zones(ctx, Int32(newValue))
@@ -93,22 +247,22 @@ struct SettingsView: View {
 
                     ForEach(0..<barsZones, id: \.self) { i in
                         HStack {
-                            Text("Zone \(i + 1)")
+                            Text("Zone \(i + 1) color")
                             Spacer()
                             ColorPicker("", selection: $barsZoneColors[i])
                                 .labelsHidden()
                                 .onChange(of: barsZoneColors[i]) { _, newColor in
                                     guard let ctx = model.ctx else { return }
                                     let hex = colorToHex(newColor)
-                                    hex.withCString { cStr in
-                                        sparkamp_set_zone_color(ctx, Int32(i), cStr)
-                                    }
+                                    hex.withCString { sparkamp_set_zone_color(ctx, Int32(i), $0) }
                                     sparkamp_save_config(ctx)
                                 }
                         }
                     }
-                } else {
-                    Picker("Waveform Style", selection: $waveformStyle) {
+                }
+            } else {
+                Section("Waveform") {
+                    Picker("Style", selection: $waveformStyle) {
                         Text("Lines").tag(0)
                         Text("Filled").tag(1)
                     }
@@ -119,7 +273,7 @@ struct SettingsView: View {
                         sparkamp_save_config(ctx)
                     }
 
-                    Stepper("Waveform Zones: \(waveformZones)", value: $waveformZones, in: 1...6)
+                    Stepper("Zones: \(waveformZones)", value: $waveformZones, in: 1...6)
                         .onChange(of: waveformZones) { _, newValue in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_waveform_zones(ctx, Int32(newValue))
@@ -128,58 +282,31 @@ struct SettingsView: View {
 
                     ForEach(0..<waveformZones, id: \.self) { i in
                         HStack {
-                            Text("Zone \(i + 1)")
+                            Text("Zone \(i + 1) color")
                             Spacer()
                             ColorPicker("", selection: $waveformZoneColors[i])
                                 .labelsHidden()
                                 .onChange(of: waveformZoneColors[i]) { _, newColor in
                                     guard let ctx = model.ctx else { return }
                                     let hex = colorToHex(newColor)
-                                    hex.withCString { cStr in
-                                        sparkamp_set_waveform_zone_color(ctx, Int32(i), cStr)
-                                    }
+                                    hex.withCString { sparkamp_set_waveform_zone_color(ctx, Int32(i), $0) }
                                     sparkamp_save_config(ctx)
                                 }
                         }
                     }
                 }
-            } header: {
-                Text("Visualizer")
-            }
-
-            // ── About ─────────────────────────────────────────────────────────
-            Section {
-                Text("Sparkamp — open source Winamp-style player")
-                    .foregroundStyle(.secondary)
-                Text("v0.3.0")
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("About")
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 400, idealWidth: 480)
-        .preferredColorScheme(themeManager.preferredColorScheme)
-        .onAppear {
-            loadFromFFI()
-            // Sync theme choice from themeManager state
-            switch themeManager.themeSource {
-            case .dark:   themeChoice = 1
-            case .light:  themeChoice = 2
-            default:      themeChoice = 0
-            }
-        }
+        .onAppear { loadFromFFI() }
     }
-
-    // MARK: Load from FFI
 
     private func loadFromFFI() {
         guard let ctx = model.ctx else { return }
 
-        autoplayOnAdd = sparkamp_get_autoplay_on_add(ctx)
-        addBehavior   = Int(sparkamp_get_playlist_add_behavior(ctx))
-        vizMode       = Int(sparkamp_get_viz_mode(ctx))
-        barsZones     = Int(sparkamp_get_viz_zones(ctx)).clamped(to: 1...6)
+        vizMode      = Int(sparkamp_get_viz_mode(ctx))
+        barsMirror   = sparkamp_get_viz_mirror(ctx)
+        barsZones    = Int(sparkamp_get_viz_zones(ctx)).clamped(to: 1...6)
         waveformStyle = Int(sparkamp_get_waveform_style(ctx))
         waveformZones = Int(sparkamp_get_waveform_zones(ctx)).clamped(to: 1...6)
 
@@ -198,13 +325,10 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Color helpers
-
     private func colorToHex(_ color: Color) -> String {
         let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         ns.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let ri = Int(r * 255), gi = Int(g * 255), bi = Int(b * 255)
-        return String(format: "#%02x%02x%02x", ri, gi, bi)
+        return String(format: "#%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
     }
 }

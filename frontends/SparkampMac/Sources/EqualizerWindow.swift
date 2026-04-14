@@ -98,29 +98,7 @@ struct EqualizerView: View {
 
                 Divider().background(theme.windowBorder)
 
-                // ── Band sliders ──────────────────────────────────────────────
-                HStack(alignment: .bottom, spacing: 4) {
-                    ForEach(0..<10, id: \.self) { i in
-                        BandSliderColumn(
-                            bandIndex: i,
-                            value: $bands[i],
-                            theme: theme,
-                            onChange: { newVal in
-                                guard let ctx = model.ctx else { return }
-                                sparkamp_set_eq_band(ctx, Int32(i), Float(newVal))
-                                sparkamp_save_config(ctx)
-                                selectedPreset = -1
-                            }
-                        )
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(theme.lcdBackground)
-
-                Divider().background(theme.windowBorder)
-
-                // ── Pre-amp row ───────────────────────────────────────────────
+                // ── Pre-amp row (above band sliders) ──────────────────────────
                 HStack(spacing: 8) {
                     Text("Pre-amp:")
                         .font(.system(size: 10))
@@ -140,8 +118,30 @@ struct EqualizerView: View {
                         .frame(width: 36, alignment: .trailing)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 .background(theme.background)
+
+                Divider().background(theme.windowBorder)
+
+                // ── Band sliders ──────────────────────────────────────────────
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(0..<10, id: \.self) { i in
+                        BandSliderColumn(
+                            bandIndex: i,
+                            value: $bands[i],
+                            theme: theme,
+                            onChange: { newVal in
+                                guard let ctx = model.ctx else { return }
+                                sparkamp_set_eq_band(ctx, Int32(i), Float(newVal))
+                                sparkamp_save_config(ctx)
+                                selectedPreset = -1
+                            }
+                        )
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(theme.lcdBackground)
             }
         }
         .frame(width: 460)
@@ -203,10 +203,14 @@ private struct BandSliderColumn: View {
                 .foregroundStyle(theme.transportText)
                 .frame(width: 36)
 
-            // Vertical slider via rotation
+            // Vertical slider via rotation.
+            // The first .frame sets the track length (160 pt); rotationEffect
+            // turns it 90°; the second .frame gives it a bounding box that
+            // fits the column width while preserving the 160-pt travel.
             Slider(value: $value, in: -12...12, step: 0.1)
+                .frame(width: 160)
                 .rotationEffect(.degrees(-90))
-                .frame(width: 36, height: 120)
+                .frame(width: 36, height: 160)
                 .onChange(of: value) { _, newVal in
                     onChange(newVal)
                 }
