@@ -28,6 +28,9 @@ dev.txt
 # Test media files — copyrighted, must never reach GitHub
 /Testing/
 
+# Built distribution artifacts (DMGs, installers) — too large for git
+/dist/
+
 # Other large binaries not needed in the repo
 *.wsz
 *.mp3
