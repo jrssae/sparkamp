@@ -1294,7 +1294,14 @@ pub unsafe extern "C" fn sparkamp_get_eq_band(ctx: *const SparkampCtx, band: c_i
         return 0.0;
     }
     let ctx = &*ctx;
-    ctx.config.equalizer.effective_bands()[band as usize] as f32
+    // Read directly from the configured bands (not effective_bands which returns
+    // all zeros when EQ is disabled) so the UI always shows the true values.
+    let idx = band as usize;
+    if idx < ctx.config.equalizer.bands.len() {
+        ctx.config.equalizer.bands[idx] as f32
+    } else {
+        0.0
+    }
 }
 
 #[unsafe(no_mangle)]

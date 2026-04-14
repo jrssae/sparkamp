@@ -61,7 +61,7 @@ struct Id3EditorView: View {
 
             // ── Main content ──────────────────────────────────────────────────
             HStack(alignment: .top, spacing: 12) {
-                // Artwork thumbnail
+                // Artwork thumbnail — click to open full-size zoom window
                 if let img = artwork {
                     Image(nsImage: img)
                         .resizable()
@@ -74,6 +74,11 @@ struct Id3EditorView: View {
                         )
                         .padding(.top, 8)
                         .padding(.leading, 12)
+                        .help("Click to view full size")
+                        .onTapGesture {
+                            model.artworkImage = img
+                            model.artworkWindowVisible = true
+                        }
                 }
 
                 // Tag form
@@ -226,6 +231,8 @@ struct Id3EditorView: View {
             artwork = NSImage(data: data)
             sparkamp_tag_free_artwork(artPtr, artLen)
         }
+        // Keep the shared artwork window in sync if it's open.
+        model.artworkImage = artwork
     }
 
     // MARK: Save tag

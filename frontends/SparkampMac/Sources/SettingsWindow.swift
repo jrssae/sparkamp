@@ -82,9 +82,10 @@ private struct AboutPane: View {
                     Text("Version 0.3.0")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Text("Open source Winamp-style audio player")
+                    Text("A compact, fast, open-source Winamp-style music player with the backend built in Rust and support for UI in GNOME desktop with GTK4 & macOS with Swift.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -101,9 +102,13 @@ private struct AboutPane: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("License")
                     .font(.headline)
-                Link("GNU Affero General Public License v3 (AGPL-3.0)",
-                     destination: URL(string: "https://www.gnu.org/licenses/agpl-3.0.html")!)
-                    .font(.subheadline)
+                Button("GNU Affero General Public License v3 (AGPL-3.0)") {
+                    NSWorkspace.shared.open(
+                        URL(string: "https://www.gnu.org/licenses/agpl-3.0.html")!
+                    )
+                }
+                .buttonStyle(.link)
+                .font(.subheadline)
             }
 
             Spacer()

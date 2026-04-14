@@ -27,6 +27,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // When any Sparkamp window is clicked, raise all other Sparkamp windows
+        // so the complete set stays together in the window stack.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let keyWindow = notification.object as? NSWindow else { return }
+        // Raise all visible, non-panel, non-sheet Sparkamp windows beneath the key window.
+        let others = NSApp.windows.filter {
+            $0 !== keyWindow &&
+            $0.isVisible &&
+            !$0.isMiniaturized &&
+            !($0 is NSPanel) &&
+            $0.sheetParent == nil
+        }
+        others.forEach { $0.orderFront(nil) }
+        // Re-raise the key window on top of the group.
+        keyWindow.orderFront(nil)
+    }
 }
 
 // MARK: - Main app
@@ -127,6 +153,14 @@ struct SparkampMacApp: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 520, height: 460)
+
+        // ── Artwork zoom window ───────────────────────────────────────────────
+        WindowGroup("Artwork", id: "artwork") {
+            ArtworkView()
+                .environmentObject(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 512, height: 512)
     }
 }
 

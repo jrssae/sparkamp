@@ -78,6 +78,10 @@ final class SparkampModel: ObservableObject {
     @Published var id3EditorVisible: Bool = false
     /// Playlist index to open in the ID3 editor; -1 means the current track.
     @Published var id3TrackIndex: Int = -1
+    /// Artwork image currently shown in the ID3 editor (shared with the artwork zoom window).
+    @Published var artworkImage: NSImage? = nil
+    /// When true, the artwork zoom window is open.
+    @Published var artworkWindowVisible: Bool = false
 
     // MARK: Private — background scan tracking
 

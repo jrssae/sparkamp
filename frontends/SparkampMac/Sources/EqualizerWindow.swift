@@ -84,6 +84,10 @@ struct EqualizerView: View {
 
                 // ── Preset row ────────────────────────────────────────────────
                 HStack(spacing: 8) {
+                    Text("Preset:")
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.transportText)
+
                     Picker("", selection: $selectedPreset) {
                         Text("Custom").tag(-1)
                         ForEach(presetNames.indices, id: \.self) { i in
