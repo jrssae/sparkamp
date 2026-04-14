@@ -109,9 +109,12 @@ struct JumpToTrackView: View {
         .background(theme.playlistBg)
         .preferredColorScheme(themeManager.preferredColorScheme)
         .onAppear {
-            fieldFocused = true
-            // Pre-select the currently playing track
+            // Pre-select the currently playing track immediately.
             selectedPlaylistIndex = model.currentIndex >= 0 ? model.currentIndex : filteredItems.first?.id
+            // Defer focus by one run-loop cycle: @FocusState only works after
+            // the WindowGroup window becomes the key window, which hasn't
+            // happened yet at onAppear time.
+            DispatchQueue.main.async { fieldFocused = true }
         }
         .onKeyPress(.escape) {
             model.jumpToTrackVisible = false

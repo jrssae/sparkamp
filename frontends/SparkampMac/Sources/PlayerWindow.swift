@@ -45,7 +45,13 @@ struct PlayerWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .openFilePicker)) { _ in
             model.openFilePicker()
         }
-        .onAppear { model.refreshAll() }
+        .onAppear {
+            model.refreshAll()
+            // onChange only fires on transitions, not on the initial value.
+            // Open any windows whose state was restored as true from UserDefaults.
+            if model.playlistVisible          { openWindow(id: "playlist") }
+            if model.keyboardShortcutsVisible { openWindow(id: "shortcuts") }
+        }
         .onChange(of: model.playlistVisible) { _, visible in
             if visible { openWindow(id: "playlist") }
             else       { dismissWindow(id: "playlist") }
