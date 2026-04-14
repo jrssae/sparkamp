@@ -1,12 +1,12 @@
 # Sparkamp
 
-A compact, fast, open-source Winamp-style music player for the GNOME desktop — built in Rust with GTK4.
+A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
 > **v0.3.0** — see [What's New](#whats-new-v030) for everything added in this release.
 
 ---
 
-There are a number of various Winamp clones and other audio players available for linux — but the specific combination of features that made Winamp my favorite audio player does not exist in the way I want it to in any other audio player I've found. Sparkamp is a personal attempt to build exactly that: an audio player that gives me the things from Winamp that I miss most since leaving Windows. If those are the things you've been missing too, this might be for you.
+There are a number of various Winamp clones and other audio players available for linux and MacOS — but the specific combination of features that made Winamp my favorite audio player does not exist in the way I want it to in any other audio player I've found. Sparkamp is a personal attempt to build exactly that: an audio player that gives me the things from Winamp that I miss most since leaving Windows. If those are the things you've been missing too, this might be for you.
 
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
 
@@ -116,7 +116,7 @@ These are the directions the project is heading, in no particular order. Nothing
 - **Plugin Settings UI** — in-app settings panel for installed plugins (schema-driven widgets auto-generated from the plugin's declared settings)
 - **Plugin install dialog** — browse and install `.so` files from within the app
 - **Skin format and migration tool** — a new skin format with a migration path from classic Winamp `.wsz` skins
-- **macOS support** — Milestone 1 complete: native SwiftUI player with full playback, playlist, background metadata scanning, broken-file detection, and CSS skin system. Milestone 2 in progress.
+- **macOS support** — Milestone 1 complete: native SwiftUI player with full playback, playlist, background metadata scanning, broken-file detection, and CSS skin system. Milestone 2 complete: Bars + Waveform visualizers (zoned colors, Lines/Filled styles, OS-level fullscreen), Jump-to-Track window (`j`), state persistence across launches. Milestone 3 in progress.
 - **Equalizer UI polish** — save named custom presets, per-band labels in the GTK window
 - **TUI media library** — browse/search the media library from the terminal UI
 - **Confirmation when adding non-library files** — interstitial dialog when adding files that aren't in the ML
@@ -128,18 +128,19 @@ These are the directions the project is heading, in no particular order. Nothing
 | Layer | Technology |
 |---|---|
 | Language | Rust (2024 edition) |
-| GUI toolkit | GTK4 (`gtk4 = "0.9"`) |
+| GNOME frontend | GUI toolkit | GTK4 (`gtk4 = "0.9"`) |
+| CLI | Clap |
+| macOS frontend | Swift / SwiftUI + Rust FFI staticlib |
+| TUI | Ratatui + Crossterm |
 | Audio backend | GStreamer (`gstreamer = "0.22"`) |
 | Equalizer | GStreamer `equalizer-10bands` (gst-plugins-good) |
 | Duration probing | Symphonia + GStreamer Discoverer |
 | Parallel probing | Rayon |
-| TUI | Ratatui + Crossterm |
 | Metadata | id3 + Symphonia (OGG/FLAC/Opus fallback) |
 | Config / playlist | TOML + Serde |
 | Media library | SQLite via `rusqlite` (bundled, no system dep) |
 | Plugin loading | `libloading` (dlopen) |
-| CLI | Clap |
-| macOS frontend | Swift / SwiftUI + Rust FFI staticlib |
+
 
 ---
 
@@ -215,77 +216,6 @@ Plugins declare a null-terminated array of `SparkSettingDef` entries. Sparkamp r
 ### Backward compatibility
 
 Plugins compiled against the v1 API (`sparkamp_viz_plugin` / `sparkamp_filetype_plugin` entry points) are automatically shimmed to the v2 interface at load time. No rebuild required.
-
----
-
-## Keyboard Shortcuts
-
-### Player window (GTK4)
-
-| Key | Action |
-|---|---|
-| `z` | Previous track |
-| `x` | Play |
-| `c` | Pause / Resume |
-| `v` | Stop |
-| `b` | Next track |
-| `j` | Jump to track (search) |
-| `i` | Info / keyboard shortcuts |
-| `p` | Toggle playlist window |
-| `o` | Add file |
-| `r` | Cycle repeat mode (off / 🔁1 / 🔁A) |
-| `s` | Toggle shuffle |
-| `u` | Equalizer |
-| `a` | Cycle visualizer mode (built-in → plugins) |
-| `f` | Fullscreen waveform visualizer (Waveform mode only; also opens on double-click) |
-| `←` / `→` | Seek backward / forward 5 s |
-| `[` / `]` | Volume down / up |
-
-### Playlist window
-
-| Key | Action |
-|---|---|
-| `j` | Jump to track (search) |
-| `Del` | Remove selected track |
-
-### Jump window
-
-| Key | Action |
-|---|---|
-| Type | Filter results live |
-| `↑` / `↓` | Navigate results |
-| `Enter` | Play selected track |
-| `Esc` | Close |
-
-### TUI (terminal UI)
-
-| Key | Action |
-|---|---|
-| `z` / `x` / `c` / `v` / `b` | Previous / Play / Pause / Stop / Next |
-| `j` | Jump to track |
-| `a` | Cycle visualizer mode |
-| `f` | Fullscreen waveform (Waveform mode only) |
-| `r` / `s` | Repeat / Shuffle |
-| `u` | Open EQ overlay |
-| `d` | ID3 tag editor |
-| `e` | Settings overlay |
-| `m` | Media library |
-| `←` / `→` | Seek ±5 s |
-| `[` / `]` | Volume ±5 % |
-| `q` | Quit |
-
-### Equalizer overlay (TUI)
-
-| Key | Action |
-|---|---|
-| `←` / `→` | Select band |
-| `↑` / `↓` | ±1 dB |
-| `PgUp` / `PgDn` | ±3 dB |
-| `[` / `]` | Pre-amp ±5 % |
-| `p` | Cycle preset |
-| `r` | Reset to flat |
-| `t` | Toggle EQ on/off |
-| `u` / `Esc` | Close |
 
 ---
 
