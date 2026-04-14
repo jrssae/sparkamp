@@ -70,6 +70,18 @@ final class SparkampModel: ObservableObject {
     @Published var fullscreenVizVisible: Bool = false
     /// When true, the jump-to-track overlay is open.
     @Published var jumpToTrackVisible: Bool = false
+    /// When true, the equalizer window is open.
+    @Published var equalizerVisible: Bool = false
+    /// When true, the settings window is open.
+    @Published var settingsVisible: Bool = false
+    /// When true, the ID3 tag editor window is open.
+    @Published var id3EditorVisible: Bool = false
+    /// Playlist index to open in the ID3 editor; -1 means the current track.
+    @Published var id3TrackIndex: Int = -1
+    /// Artwork image currently shown in the ID3 editor (shared with the artwork zoom window).
+    @Published var artworkImage: NSImage? = nil
+    /// When true, the artwork zoom window is open.
+    @Published var artworkWindowVisible: Bool = false
 
     // MARK: Private — background scan tracking
 
@@ -98,7 +110,8 @@ final class SparkampModel: ObservableObject {
 
         setupCallbacks()
         // Restore Swift-side UI state
-        playlistVisible = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
+        playlistVisible    = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
+        equalizerVisible   = UserDefaults.standard.bool(forKey: "sparkamp.equalizerVisible")
         refreshAll()
         startTick()
         startKeyMonitor()
@@ -110,8 +123,14 @@ final class SparkampModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let ctx = self.ctx else { return }
-            sparkamp_save_config(ctx)
+            guard let self else { return }
+            // queue: .main guarantees main-thread delivery; assumeIsolated
+            // satisfies the compiler's Sendable check without a Task hop.
+            MainActor.assumeIsolated {
+                // Save full state (Rust config + Swift UserDefaults) at quit time
+                // so window visibility is correctly restored on next launch.
+                self.saveState()
+            }
         }
     }
 
@@ -389,6 +408,11 @@ final class SparkampModel: ObservableObject {
         fullscreenVizVisible = true
     }
 
+    func openId3Editor(trackIndex: Int = -1) {
+        id3TrackIndex = trackIndex
+        id3EditorVisible = true
+    }
+
     func closeFullscreenViz() {
         // Exit OS fullscreen before SwiftUI dismisses the window so the
         // animation completes cleanly.  Finding by styleMask is reliable;
@@ -414,6 +438,12 @@ final class SparkampModel: ObservableObject {
 
     func addFiles(_ urls: [URL]) {
         guard let ctx = ctx else { return }
+
+        // If "Replace playlist" is the configured behavior, clear before adding.
+        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        if shouldReplace {
+            sparkamp_playlist_clear(ctx)
+        }
 
         // Indices of tracks we fast-added — we'll scan just those.
         var newIndices: [Int] = []
@@ -457,6 +487,14 @@ final class SparkampModel: ObservableObject {
         // incomplete rows even if dirty_count hasn't fired yet.
         if !newIndices.isEmpty {
             lastAddTime = Date()
+
+            // Auto-play the first newly added track if configured to do so.
+            if sparkamp_get_autoplay_on_add(ctx) {
+                sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
+                sparkamp_play(ctx)
+                refreshCurrentTrackInfo()
+            }
+
             saveState()
         }
     }
@@ -513,9 +551,10 @@ final class SparkampModel: ObservableObject {
     /// Flush Rust-side config + playlist to disk and persist Swift-side UI
     /// state in UserDefaults.  Called after every meaningful state change so
     /// the most recent state survives an unexpected kill (e.g. Xcode stop).
-    private func saveState() {
+    func saveState() {
         if let ctx = ctx { sparkamp_save_config(ctx) }
-        UserDefaults.standard.set(playlistVisible, forKey: "sparkamp.playlistVisible")
+        UserDefaults.standard.set(playlistVisible,  forKey: "sparkamp.playlistVisible")
+        UserDefaults.standard.set(equalizerVisible, forKey: "sparkamp.equalizerVisible")
     }
 
     // MARK: Keyboard shortcuts
@@ -562,6 +601,11 @@ final class SparkampModel: ObservableObject {
         case "a": cycleVizMode();             return true
         case "f": openFullscreenViz();        return true  // toggles open/close
         case "j": jumpToTrackVisible.toggle(); return true
+        case "u": equalizerVisible.toggle(); saveState(); return true
+        case "d":
+            id3TrackIndex = -1  // current track
+            id3EditorVisible = true
+            return true
         case "\u{1B}":  // Escape — close fullscreen if open
             if fullscreenVizVisible { closeFullscreenViz(); return true }
             return false

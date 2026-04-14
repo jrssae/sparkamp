@@ -706,19 +706,6 @@ void sparkamp_open_file_location(const char* path);               // Finder reve
 - [ ] Closing window during scan shows confirmation dialog
 - [ ] "Add to Playlist" appends all group tracks
 
----
-
-### Milestone 9 — Info / Keyboard Shortcuts Window
-
-**Goal:** The `i` key (and info button) opens a non-modal shortcuts reference window. Straightforward.
-
-#### 9.1 No FFI needed
-
-Pure SwiftUI. No Rust calls.
-
-#### 9.2 SwiftUI components
-
-`ShortcutsWindow`: a read-only `Form` listing all keyboard shortcuts. Matches the GTK info dialog content. Close with `Esc` or `i`.
 
 ---
 

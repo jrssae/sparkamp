@@ -8,11 +8,12 @@ struct PlayerWindow: View {
     @EnvironmentObject var themeManager: ThemeManager
     @Environment(\.openWindow)    var openWindow
     @Environment(\.dismissWindow) var dismissWindow
-    @Environment(\.colorScheme)   var colorScheme
 
     @State private var isDraggingSeek = false
     @State private var seekPreview: Double = 0
     @State private var isFileTargeted = false
+    @State private var volumeLabelOpacity: Double = 0
+    @State private var volumeHideTask: DispatchWorkItem? = nil
 
     private var theme: SkinTheme { themeManager.currentTheme }
 
@@ -51,6 +52,7 @@ struct PlayerWindow: View {
             // Open any windows whose state was restored as true from UserDefaults.
             if model.playlistVisible          { openWindow(id: "playlist") }
             if model.keyboardShortcutsVisible { openWindow(id: "shortcuts") }
+            if model.equalizerVisible         { openWindow(id: "equalizer") }
         }
         .onChange(of: model.playlistVisible) { _, visible in
             if visible { openWindow(id: "playlist") }
@@ -68,7 +70,22 @@ struct PlayerWindow: View {
             if visible { openWindow(id: "jump-to-track") }
             else       { dismissWindow(id: "jump-to-track") }
         }
-        .contextMenu { themeMenu }
+        .onChange(of: model.equalizerVisible) { _, visible in
+            if visible { openWindow(id: "equalizer") }
+            else       { dismissWindow(id: "equalizer") }
+        }
+        .onChange(of: model.settingsVisible) { _, visible in
+            if visible { openWindow(id: "settings") }
+            else       { dismissWindow(id: "settings") }
+        }
+        .onChange(of: model.id3EditorVisible) { _, visible in
+            if visible { openWindow(id: "id3-editor") }
+            else       { dismissWindow(id: "id3-editor") }
+        }
+        .onChange(of: model.artworkWindowVisible) { _, visible in
+            if visible { openWindow(id: "artwork") }
+            else       { dismissWindow(id: "artwork") }
+        }
     }
 
     // MARK: – Info Panel
@@ -129,8 +146,12 @@ struct PlayerWindow: View {
                 VStack(alignment: .leading, spacing: 0) {
 
                     // Row 1 — scrolling "Artist — Title"
+                    // Double-click opens the ID3 tag editor for the current track.
                     MarqueeView(text: marqueeText)
                         .padding(.top, 2)
+                        .gesture(TapGesture(count: 2).onEnded {
+                            model.openId3Editor()
+                        })
 
                     Spacer()
 
@@ -141,8 +162,12 @@ struct PlayerWindow: View {
                             .foregroundStyle(theme.volumeThumb.opacity(0.7))
 
                         ThemedVolumeSlider(
-                            value: Binding(get: { model.volume },
-                                           set: { model.setVolume($0) })
+                            value: Binding(
+                                get: { model.volume },
+                                set: { newVol in
+                                    model.setVolume(newVol)
+                                    showVolumeLabel()
+                                })
                         )
                         .frame(maxWidth: 140)
 
@@ -150,12 +175,30 @@ struct PlayerWindow: View {
                             .font(.system(size: 9))
                             .foregroundStyle(theme.volumeThumb.opacity(0.7))
 
+                        // Fade-out volume percentage label
+                        Text("\(Int(model.volume * 100))%")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(theme.transportText)
+                            .opacity(volumeLabelOpacity)
+                            .animation(.easeOut(duration: 0.3), value: volumeLabelOpacity)
+
                         Spacer()
 
                         ModeButton(icon: "info.circle", isActive: model.keyboardShortcutsVisible) {
                             model.keyboardShortcutsVisible.toggle()
                         }
                         .help("Keyboard shortcuts (i)")
+
+                        ModeButton(icon: "magnifyingglass", isActive: model.jumpToTrackVisible) {
+                            model.jumpToTrackVisible.toggle()
+                        }
+                        .help("Jump to Track (j)")
+
+                        ModeButton(icon: "slider.horizontal.3", isActive: model.equalizerVisible) {
+                            model.equalizerVisible.toggle()
+                            model.saveState()
+                        }
+                        .help("Equalizer (u)")
 
                         ModeButton(icon: "list.bullet", isActive: model.playlistVisible) {
                             model.playlistVisible.toggle()
@@ -217,13 +260,14 @@ struct PlayerWindow: View {
 
             Spacer()
 
-            // ── App icon logo ───────────────────────────────────────────────
+            // ── App icon logo — click to open Settings ──────────────────────
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 42, height: 42)
                 .cornerRadius(8)
-                .help("Sparkamp")
+                .help("Sparkamp — click for Settings")
+                .onTapGesture { model.settingsVisible.toggle() }
         }
         .padding(.horizontal, 10)
         .padding(.top, 6)
@@ -238,44 +282,6 @@ struct PlayerWindow: View {
             RoundedRectangle(cornerRadius: 0)
                 .stroke(theme.seekThumb, lineWidth: 2)
                 .background(theme.seekThumb.opacity(0.06))
-        }
-    }
-
-    // MARK: – Context menu
-
-    @ViewBuilder
-    private var themeMenu: some View {
-        Section("Theme") {
-            Button {
-                themeManager.useSystem(colorScheme: colorScheme)
-            } label: {
-                Label(themeManager.themeSource == .system ? "✓ System Default" : "System Default",
-                      systemImage: "macwindow")
-            }
-            Button {
-                themeManager.useDark()
-            } label: {
-                Label(themeManager.themeSource == .dark ? "✓ Dark" : "Dark",
-                      systemImage: "moon.fill")
-            }
-            Button {
-                themeManager.useLight()
-            } label: {
-                Label(themeManager.themeSource == .light ? "✓ Light" : "Light",
-                      systemImage: "sun.max.fill")
-            }
-        }
-        Divider()
-        Button("Load Skin (CSS)…") {
-            themeManager.openSkinPicker(colorScheme: colorScheme)
-        }
-        Button("Export Default Skin…") {
-            themeManager.exportDefaultCSS()
-        }
-        if case .custom(_) = themeManager.themeSource {
-            Button("Remove Custom Skin", role: .destructive) {
-                themeManager.removeCustomSkin(colorScheme: colorScheme)
-            }
         }
     }
 
@@ -315,6 +321,16 @@ struct PlayerWindow: View {
         case 2: return "Repeat All"
         default: return "Repeat"
         }
+    }
+
+    private func showVolumeLabel() {
+        volumeHideTask?.cancel()
+        volumeLabelOpacity = 1
+        let task = DispatchWorkItem {
+            withAnimation { volumeLabelOpacity = 0 }
+        }
+        volumeHideTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: task)
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {

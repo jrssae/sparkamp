@@ -27,6 +27,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // When any Sparkamp window is clicked, raise all other Sparkamp windows
+        // so the complete set stays together in the window stack.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let keyWindow = notification.object as? NSWindow else { return }
+        // Raise all visible, non-panel, non-sheet Sparkamp windows beneath the key window.
+        let others = NSApp.windows.filter {
+            $0 !== keyWindow &&
+            $0.isVisible &&
+            !$0.isMiniaturized &&
+            !($0 is NSPanel) &&
+            $0.sheetParent == nil
+        }
+        others.forEach { $0.orderFront(nil) }
+        // Re-raise the key window on top of the group.
+        keyWindow.orderFront(nil)
+    }
 }
 
 // MARK: - Main app
@@ -93,8 +119,6 @@ struct SparkampMacApp: App {
         .defaultSize(width: 800, height: 600)
 
         // ── Jump to Track ─────────────────────────────────────────────────────
-        // Standalone repositionable window opened via `j` key or Playback menu.
-        // Dismissed when model.jumpToTrackVisible becomes false.
         WindowGroup("Jump to Track", id: "jump-to-track") {
             JumpToTrackView()
                 .environmentObject(model)
@@ -102,6 +126,41 @@ struct SparkampMacApp: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 480, height: 360)
+
+        // ── Equalizer ─────────────────────────────────────────────────────────
+        WindowGroup("Equalizer", id: "equalizer") {
+            EqualizerView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 480, height: 320)
+
+        // ── Settings ──────────────────────────────────────────────────────────
+        WindowGroup("Settings", id: "settings") {
+            SettingsView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 480, height: 500)
+
+        // ── ID3 Tag Editor ────────────────────────────────────────────────────
+        WindowGroup("Tag Editor", id: "id3-editor") {
+            Id3EditorView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 520, height: 460)
+
+        // ── Artwork zoom window ───────────────────────────────────────────────
+        WindowGroup("Artwork", id: "artwork") {
+            ArtworkView()
+                .environmentObject(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 512, height: 512)
     }
 }
 
@@ -139,6 +198,10 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut("f", modifiers: [])
             Button("Jump to Track…") { model.jumpToTrackVisible.toggle() }
                 .keyboardShortcut("j", modifiers: [])
+            Button("Equalizer…")     { model.equalizerVisible.toggle() }
+                .keyboardShortcut("u", modifiers: [])
+            Button("Edit Tags…")     { model.openId3Editor() }
+                .keyboardShortcut("d", modifiers: [])
         }
 
         CommandMenu("Appearance") {
@@ -163,6 +226,9 @@ struct SparkampCommands: Commands {
 
             Button("Show Playlist") { model.playlistVisible = true }
                 .keyboardShortcut("p", modifiers: [])
+
+            Button("Equalizer") { model.equalizerVisible.toggle() }
+            Button("Settings")  { model.settingsVisible.toggle() }
 
             Button("Keyboard Shortcuts") { model.keyboardShortcutsVisible.toggle() }
                 .keyboardShortcut("i", modifiers: [])

@@ -129,6 +129,10 @@ int32_t sparkamp_get_viz_mode(const SparkampCtx *ctx);
 void    sparkamp_set_viz_mode(SparkampCtx *ctx, int32_t mode);
 /** Cycle Bars → Waveform → Bars → … */
 void    sparkamp_cycle_viz_mode(SparkampCtx *ctx);
+/** Return whether bars mirror mode is on (bar extends above+below center). */
+bool    sparkamp_get_viz_mirror(const SparkampCtx *ctx);
+/** Set bars mirror mode. true = mirrored, false = grow from bottom. */
+void    sparkamp_set_viz_mirror(SparkampCtx *ctx, bool mirror);
 
 /* ── Waveform style ──────────────────────────────────────────────────────── */
 
@@ -162,5 +166,51 @@ void    sparkamp_set_waveform_zone_color(SparkampCtx *ctx, int32_t zone_index, c
 /* ── String utilities ────────────────────────────────────────────────────── */
 
 void sparkamp_free_string(char *s);
+
+// ---------------------------------------------------------------------------
+// Equalizer
+// ---------------------------------------------------------------------------
+bool    sparkamp_has_eq(SparkampCtx *ctx);
+bool    sparkamp_get_eq_enabled(SparkampCtx *ctx);
+void    sparkamp_set_eq_enabled(SparkampCtx *ctx, bool enabled);
+float   sparkamp_get_eq_band(SparkampCtx *ctx, int band);
+void    sparkamp_set_eq_band(SparkampCtx *ctx, int band, float db);
+void    sparkamp_apply_eq_preset(SparkampCtx *ctx, int preset_index);
+int     sparkamp_eq_preset_count(SparkampCtx *ctx);
+char   *sparkamp_eq_preset_name(SparkampCtx *ctx, int preset_index);
+float   sparkamp_get_preamp(SparkampCtx *ctx);
+void    sparkamp_set_preamp(SparkampCtx *ctx, float multiplier);
+void    sparkamp_reset_eq(SparkampCtx *ctx);
+char   *sparkamp_eq_band_label(int band);
+
+// ---------------------------------------------------------------------------
+// Settings / Behavior
+// ---------------------------------------------------------------------------
+int     sparkamp_get_playlist_add_behavior(SparkampCtx *ctx);
+void    sparkamp_set_playlist_add_behavior(SparkampCtx *ctx, int value);
+bool    sparkamp_get_autoplay_on_add(SparkampCtx *ctx);
+void    sparkamp_set_autoplay_on_add(SparkampCtx *ctx, bool value);
+int     sparkamp_get_ml_rescan_interval(SparkampCtx *ctx);
+void    sparkamp_set_ml_rescan_interval(SparkampCtx *ctx, int mins);
+
+// ---------------------------------------------------------------------------
+// Playlist path
+// ---------------------------------------------------------------------------
+char   *sparkamp_playlist_get_path(SparkampCtx *ctx, int index);
+
+// ---------------------------------------------------------------------------
+// ID3 Tag Editor
+// ---------------------------------------------------------------------------
+typedef struct SparkampTagCtx SparkampTagCtx;
+SparkampTagCtx *sparkamp_tag_open(const char *path);
+void            sparkamp_tag_close(SparkampTagCtx *tag);
+char           *sparkamp_tag_get(SparkampTagCtx *tag, const char *frame_id);
+void            sparkamp_tag_set(SparkampTagCtx *tag, const char *frame_id, const char *value);
+int             sparkamp_tag_frame_count(SparkampTagCtx *tag);
+char           *sparkamp_tag_frame_id(SparkampTagCtx *tag, int index);
+char           *sparkamp_tag_frame_value(SparkampTagCtx *tag, int index);
+int             sparkamp_tag_save(SparkampTagCtx *tag);
+uint8_t        *sparkamp_tag_get_artwork_data(SparkampTagCtx *tag, int *len_out);
+void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
 
 #endif /* sparkamp_bridge_h */

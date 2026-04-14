@@ -24,6 +24,9 @@
 	<string>NSApplication</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- Disable macOS automatic window restoration so we control it ourselves -->
+	<key>NSQuitAlwaysKeepsWindows</key>
+	<false/>
 	<!-- Audio file type associations -->
 	<key>CFBundleDocumentTypes</key>
 	<array>

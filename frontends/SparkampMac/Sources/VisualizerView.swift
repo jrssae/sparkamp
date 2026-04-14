@@ -39,8 +39,9 @@ struct VisualizerView: View {
     // MARK: Bars renderer
 
     private func drawBars(gctx: GraphicsContext, size: CGSize, ctx: OpaquePointer) {
-        let numBands  = Int(sparkamp_get_spectrum_bands(ctx))
-        let numZones  = Int(sparkamp_get_viz_zones(ctx))
+        let numBands   = Int(sparkamp_get_spectrum_bands(ctx))
+        let numZones   = Int(sparkamp_get_viz_zones(ctx))
+        let mirror     = sparkamp_get_viz_mirror(ctx)
         let zoneColors = barsZoneColors(ctx: ctx, numZones: numZones)
 
         var bands = [Float](repeating: 0, count: numBands)
@@ -56,14 +57,16 @@ struct VisualizerView: View {
                 barW: barW,
                 height: size.height,
                 amp: CGFloat(bands[i]),
-                mirror: true,
+                mirror: mirror,
                 numZones: numZones,
                 zoneColors: zoneColors
             )
         }
     }
 
-    /// Draw a single bar with zone-based coloring, mirrored above/below center.
+    /// Draw a single bar with zone-based coloring.
+    /// `mirror = true`: bar extends both above and below the center line.
+    /// `mirror = false`: bar grows upward from the bottom of the view.
     private func drawZonedBar(
         gctx: GraphicsContext,
         x: CGFloat, barW: CGFloat, height: CGFloat,
@@ -71,29 +74,47 @@ struct VisualizerView: View {
         numZones: Int, zoneColors: [Color]
     ) {
         let bw = barW - 0.75
-        let center = height / 2.0
-        let maxExtent = amp * center
 
-        for zone in 0..<numZones {
-            let zoneInner = CGFloat(zone)     * (center / CGFloat(numZones))
-            let zoneOuter = CGFloat(zone + 1) * (center / CGFloat(numZones))
-            let color = zoneColors[min(zone, zoneColors.count - 1)]
+        if mirror {
+            let center    = height / 2.0
+            let maxExtent = amp * center
 
-            if zoneOuter <= maxExtent {
-                // Full zone segment
-                gctx.fill(Path(CGRect(x: x + 0.5, y: center + zoneInner,
-                                      width: bw, height: zoneOuter - zoneInner)),
-                          with: .color(color))
-                gctx.fill(Path(CGRect(x: x + 0.5, y: center - zoneOuter,
-                                      width: bw, height: zoneOuter - zoneInner)),
-                          with: .color(color))
-            } else if zoneInner < maxExtent {
-                // Partial zone segment
-                let h = maxExtent - zoneInner
-                gctx.fill(Path(CGRect(x: x + 0.5, y: center + zoneInner,
-                                      width: bw, height: h)), with: .color(color))
-                gctx.fill(Path(CGRect(x: x + 0.5, y: center - maxExtent,
-                                      width: bw, height: h)), with: .color(color))
+            for zone in 0..<numZones {
+                let zoneInner = CGFloat(zone)     * (center / CGFloat(numZones))
+                let zoneOuter = CGFloat(zone + 1) * (center / CGFloat(numZones))
+                let color = zoneColors[min(zone, zoneColors.count - 1)]
+
+                if zoneOuter <= maxExtent {
+                    gctx.fill(Path(CGRect(x: x + 0.5, y: center + zoneInner,
+                                          width: bw, height: zoneOuter - zoneInner)),
+                              with: .color(color))
+                    gctx.fill(Path(CGRect(x: x + 0.5, y: center - zoneOuter,
+                                          width: bw, height: zoneOuter - zoneInner)),
+                              with: .color(color))
+                } else if zoneInner < maxExtent {
+                    let h = maxExtent - zoneInner
+                    gctx.fill(Path(CGRect(x: x + 0.5, y: center + zoneInner,
+                                          width: bw, height: h)), with: .color(color))
+                    gctx.fill(Path(CGRect(x: x + 0.5, y: center - maxExtent,
+                                          width: bw, height: h)), with: .color(color))
+                }
+            }
+        } else {
+            // Non-mirrored: bar grows upward from bottom
+            let barH = amp * height
+            let topY  = height - barH
+
+            for zone in 0..<numZones {
+                let zoneTopY = height - CGFloat(zone + 1) * (height / CGFloat(numZones))
+                let zoneBotY = height - CGFloat(zone)     * (height / CGFloat(numZones))
+                let drawTop  = max(topY,   zoneTopY)
+                let drawBot  = min(height, zoneBotY)
+                if drawTop < drawBot {
+                    let color = zoneColors[min(zone, zoneColors.count - 1)]
+                    gctx.fill(Path(CGRect(x: x + 0.5, y: drawTop,
+                                          width: bw, height: drawBot - drawTop)),
+                              with: .color(color))
+                }
             }
         }
     }

@@ -2,13 +2,48 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v0.3.0** — see [What's New](#whats-new-v030) for everything added in this release.
+> **v0.4.0** — see [What's New](#whats-new-v040) for everything added in this release.
 
 ---
 
 There are a number of various Winamp clones and other audio players available for linux and MacOS — but the specific combination of features that made Winamp my favorite audio player does not exist in the way I want it to in any other audio player I've found. Sparkamp is a personal attempt to build exactly that: an audio player that gives me the things from Winamp that I miss most since leaving Windows. If those are the things you've been missing too, this might be for you.
 
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
+
+---
+
+## What's New (v0.4.0)
+
+### macOS — Milestone 3 + Standalone Distribution
+
+**Equalizer**
+- Full 10-band EQ window with preamp slider and built-in preset selector (Rock, Jazz, Classical, Pop, Bass Boost, …)
+- Preset applies immediately on selection (no Apply button); preamp is above the preset selector matching Winamp layout
+- EQ window position and open/close state persisted across launches
+- Fixed preset sliders resetting to flat when EQ was disabled — bands are now read from raw config, not the audio pipeline
+
+**ID3 Tag Editor**
+- Edit Title, Artist, Album, Year, Track #, Genre, and Comment for any file in the playlist
+- Album artwork embedded in tags displayed as a thumbnail; click the thumbnail to open a 512 × 512 zoom window that auto-updates when a different track is loaded
+- Double-click the marquee banner in the player to open the editor instantly
+
+**UI improvements**
+- Volume slider shows a percentage label that fades out after 1 second
+- All Sparkamp windows come to the front together when any window is clicked
+- Button order corrected to: Info → Jump → EQ → Playlist (matching Winamp)
+- Window active state now clears correctly when a secondary window is closed via the × button
+- Removed right-click theme selector from the player window (accessible via Appearance menu)
+
+**Settings / About**
+- About description updated to match project scope (Rust backend, GTK4 + Swift frontends)
+- License corrected to AGPL-3.0 with a working clickable link that opens the browser
+
+**Standalone macOS DMG**
+- `packaging/macos/build-dmg.sh` builds a fully self-contained `Sparkamp-<version>.dmg`
+- All GStreamer dylibs and required audio plug-ins bundled into `Contents/Frameworks/`
+- Install names rewritten with `install_name_tool`; ad-hoc signed with `codesign`
+- A thin launcher shell script sets `GST_PLUGIN_PATH` before `gst_init()` so plug-ins are found without Homebrew present
+- Result: ~8 MB DMG, drag-and-drop install, no Xcode / Homebrew / Rust required on the target machine
 
 ---
 
@@ -116,7 +151,7 @@ These are the directions the project is heading, in no particular order. Nothing
 - **Plugin Settings UI** — in-app settings panel for installed plugins (schema-driven widgets auto-generated from the plugin's declared settings)
 - **Plugin install dialog** — browse and install `.so` files from within the app
 - **Skin format and migration tool** — a new skin format with a migration path from classic Winamp `.wsz` skins
-- **macOS support** — Milestone 1 complete: native SwiftUI player with full playback, playlist, background metadata scanning, broken-file detection, and CSS skin system. Milestone 2 complete: Bars + Waveform visualizers (zoned colors, Lines/Filled styles, OS-level fullscreen), Jump-to-Track window (`j`), state persistence across launches. Milestone 3 in progress.
+- **macOS support** — Milestone 1 complete: native SwiftUI player with full playback, playlist, background metadata scanning, broken-file detection, and CSS skin system. Milestone 2 complete: Bars + Waveform visualizers (zoned colors, Lines/Filled styles, OS-level fullscreen), Jump-to-Track window (`j`), state persistence across launches. Milestone 3 complete: Equalizer window with presets, ID3 tag editor, album artwork zoom window, volume fade label, AGPL-linked About panel, standalone self-contained DMG distribution (no Xcode or Homebrew required).
 - **Equalizer UI polish** — save named custom presets, per-band labels in the GTK window
 - **TUI media library** — browse/search the media library from the terminal UI
 - **Confirmation when adding non-library files** — interstitial dialog when adding files that aren't in the ML
@@ -169,13 +204,30 @@ cargo build --release
 ./target/release/sparkamp           # Terminal UI
 ```
 
-**macOS (Xcode):**
+**macOS — Standalone DMG (recommended, no dependencies):**
 
-Requires Xcode and GStreamer installed via Homebrew:
+Download `Sparkamp-<version>.dmg` from the [Releases](../../releases) page, open it, and drag **Sparkamp** into Applications.
+
+First launch: right-click the app → **Open** to bypass Gatekeeper (the app is ad-hoc signed, not notarized).  
+Or from Terminal: `xattr -cr /Applications/SparkampMac.app`
+
+**macOS — Build from source:**
+
+Requires Xcode Command Line Tools, Rust, and GStreamer via Homebrew:
 ```bash
-brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+xcode-select --install
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+brew install gstreamer gst-plugins-base gst-plugins-good \
+             gst-plugins-bad gst-plugins-ugly gst-libav mpg123
 ```
-Open `frontends/SparkampMac/SparkampMac.xcodeproj` and build. The Cargo build phase runs `cargo build -p sparkamp-macos` automatically and links the result as a static library.
+
+To build a self-contained DMG:
+```bash
+bash packaging/macos/build-dmg.sh
+# → dist/Sparkamp-<version>.dmg
+```
+
+To build and run directly in Xcode, open `frontends/SparkampMac/SparkampMac.xcodeproj`. The Cargo build phase runs automatically and links the Rust static library.
 
 Build and install just the Granite visualizer plugin:
 ```bash

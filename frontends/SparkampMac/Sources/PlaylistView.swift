@@ -60,6 +60,8 @@ struct PlaylistView: View {
             .contextMenu(forSelectionType: Int.self, menu: { items in
                 if let idx = items.first {
                     Button("Play") { model.jumpTo(index: idx) }
+                    Button("Edit Tags…") { model.openId3Editor(trackIndex: idx) }
+                    Divider()
                     Button("Remove", role: .destructive) { model.removeTrack(at: idx) }
                 }
             }, primaryAction: { items in
@@ -74,6 +76,11 @@ struct PlaylistView: View {
         }
         .background(theme.playlistBg)
         .preferredColorScheme(themeManager.preferredColorScheme)
+        .onDisappear {
+            // Sync model flag when window is closed via the system X button
+            // so the playlist button in the player reflects the correct state.
+            model.playlistVisible = false
+        }
     }
 
     // MARK: Bottom control bar
