@@ -82,7 +82,7 @@ struct SparkampMacApp: App {
 
         // ── Fullscreen visualizer ─────────────────────────────────────────────
         // Opened programmatically from PlayerWindow when model.fullscreenVizVisible
-        // becomes true.  The view itself calls toggleFullScreen on appear.
+        // becomes true.  The view itself calls toggleFullScreen via WindowAccessor.
         WindowGroup("Visualizer", id: "fullscreen-viz") {
             FullscreenVisualizerView()
                 .environmentObject(model)
@@ -91,6 +91,17 @@ struct SparkampMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .defaultSize(width: 800, height: 600)
+
+        // ── Jump to Track ─────────────────────────────────────────────────────
+        // Standalone repositionable window opened via `j` key or Playback menu.
+        // Dismissed when model.jumpToTrackVisible becomes false.
+        WindowGroup("Jump to Track", id: "jump-to-track") {
+            JumpToTrackView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 480, height: 360)
     }
 }
 

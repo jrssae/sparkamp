@@ -1,6 +1,29 @@
 import SwiftUI
 import AppKit
 
+// MARK: - Window accessor
+
+/// Bridges SwiftUI to AppKit so we can obtain the actual NSWindow reference
+/// from within a SwiftUI view.  SwiftUI's WindowGroup does NOT set
+/// `window.identifier` to the group id string, so NSApp.windows lookup by
+/// identifier fails.  Instead we embed this zero-size NSView and retrieve
+/// its `.window` property once it has been added to the view hierarchy.
+private struct WindowAccessor: NSViewRepresentable {
+    var onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                onWindow(window)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 // MARK: - Fullscreen visualizer window
 
 /// Full-screen waveform or bars visualizer.
@@ -12,10 +35,10 @@ import AppKit
 struct FullscreenVisualizerView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
-    @Environment(\.dismiss) var dismiss
 
-    @State private var toastMessage: String = ""
-    @State private var toastVisible: Bool   = false
+    @State private var hostWindow: NSWindow? = nil
+    @State private var toastMessage: String  = ""
+    @State private var toastVisible: Bool    = false
 
     var body: some View {
         ZStack {
@@ -51,28 +74,21 @@ struct FullscreenVisualizerView: View {
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.3), value: toastVisible)
             }
-
-            // Jump-to-track sheet triggered from this window
-            if model.jumpToTrackVisible {
-                JumpToTrackView()
-                    .environmentObject(model)
-                    .environmentObject(themeManager)
-                    .frame(width: 500, height: 400)
-                    .background(themeManager.currentTheme.background)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .shadow(radius: 20)
-                    .transition(.opacity)
-                    .animation(.easeInOut(duration: 0.15), value: model.jumpToTrackVisible)
-            }
         }
-        .onAppear {
-            // Go OS-level fullscreen when the window appears.
-            DispatchQueue.main.async {
-                NSApp.windows
-                    .first { $0.identifier?.rawValue == "fullscreen-viz" }?
-                    .toggleFullScreen(nil)
+        // WindowAccessor: zero-size background view that captures the NSWindow
+        // reference as soon as SwiftUI inserts it into the AppKit hierarchy.
+        // This is the only reliable way to call toggleFullScreen on the window
+        // that SwiftUI's WindowGroup creates for us.
+        .background(
+            WindowAccessor { win in
+                guard hostWindow == nil else { return }
+                hostWindow = win
+                // Enter OS-level fullscreen now that we have the real window.
+                if !win.styleMask.contains(.fullScreen) {
+                    win.toggleFullScreen(nil)
+                }
             }
-        }
+        )
         .onDisappear {
             model.fullscreenVizVisible = false
         }
@@ -81,36 +97,34 @@ struct FullscreenVisualizerView: View {
             closeFullscreen()
             return .handled
         }
-        .onKeyPress("z") { model.prev();         showPlaybackToast(); return .handled }
-        .onKeyPress("x") { model.play();         showPlaybackToast(); return .handled }
-        .onKeyPress("c") { model.togglePlay();   showPlaybackToast(); return .handled }
-        .onKeyPress("v") { model.stop();         showToast("Stopped");  return .handled }
-        .onKeyPress("b") { model.next();         showPlaybackToast(); return .handled }
-        .onKeyPress("r") { model.cycleRepeat();  showRepeatToast();   return .handled }
-        .onKeyPress("s") { model.toggleShuffle(); showShuffleToast(); return .handled }
-        .onKeyPress("i") {
-            model.keyboardShortcutsVisible.toggle()
-            return .handled
-        }
-        .onKeyPress("j") {
-            model.jumpToTrackVisible.toggle()
-            return .handled
-        }
+        .onKeyPress("z") { model.prev();          showPlaybackToast(); return .handled }
+        .onKeyPress("x") { model.play();          showPlaybackToast(); return .handled }
+        .onKeyPress("c") { model.togglePlay();    showPlaybackToast(); return .handled }
+        .onKeyPress("v") { model.stop();          showToast("Stopped"); return .handled }
+        .onKeyPress("b") { model.next();          showPlaybackToast(); return .handled }
+        .onKeyPress("r") { model.cycleRepeat();   showRepeatToast();   return .handled }
+        .onKeyPress("s") { model.toggleShuffle(); showShuffleToast();  return .handled }
+        .onKeyPress("i") { model.keyboardShortcutsVisible.toggle(); return .handled }
+        .onKeyPress("j") { model.jumpToTrackVisible.toggle();       return .handled }
+        .onKeyPress("a") { model.cycleVizMode();  return .handled }
         .focusable()
-        // Monitor state changes to show toasts automatically when triggered
-        // by external events (next track auto-advance, etc.)
+        // Show a toast whenever the track changes (auto-advance, etc.)
         .onChange(of: model.currentTitle) { _, title in
             if !title.isEmpty { showToast(title) }
         }
     }
 
     private func closeFullscreen() {
-        // Exit OS fullscreen before closing so the window restores correctly.
-        if let win = NSApp.windows.first(where: { $0.identifier?.rawValue == "fullscreen-viz" }),
-           win.styleMask.contains(.fullScreen) {
+        // Exit OS fullscreen first; dismiss the window after the animation
+        // completes (~0.6 s) so SwiftUI doesn't tear down the view mid-animation.
+        if let win = hostWindow, win.styleMask.contains(.fullScreen) {
             win.toggleFullScreen(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                model.fullscreenVizVisible = false
+            }
+        } else {
+            model.fullscreenVizVisible = false
         }
-        model.fullscreenVizVisible = false
     }
 
     private func showToast(_ message: String) {

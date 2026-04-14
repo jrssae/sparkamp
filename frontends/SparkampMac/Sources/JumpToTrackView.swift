@@ -1,185 +1,131 @@
 import SwiftUI
+import AppKit
 
-// MARK: - Jump-to-track overlay
+// MARK: - Jump-to-track window
 
-/// Live search sheet: type to filter, ↑↓ to navigate, Enter to jump and play, Esc to close.
-///
-/// Available from the main window (j key) and the fullscreen visualizer (j key).
-/// Filters SparkampModel.playlistItems client-side — no extra FFI needed.
+/// Standalone search window: type to filter, ↑↓ to navigate, Enter to jump and play.
+/// Uses the exact same PlaylistRow component and List styling as the playlist window.
+/// Opened via `j` key or Playback menu; dismisses with Esc or after playing a track.
 struct JumpToTrackView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
-    @FocusState private var fieldFocused: Bool
 
-    @State private var query        = ""
-    @State private var selectedRow: Int = 0   // index into `filtered`
+    @State private var query = ""
+    @State private var selectedPlaylistIndex: Int? = nil
+    @FocusState private var fieldFocused: Bool
 
     private var theme: SkinTheme { themeManager.currentTheme }
 
-    // Filtered playlist items with their original playlist indices.
-    private var filtered: [(playlistIndex: Int, item: PlaylistItem)] {
-        if query.isEmpty {
-            return model.playlistItems.enumerated().map { (i, item) in (i, item) }
-        }
-        return model.playlistItems.enumerated().compactMap { (i, item) in
-            let match = item.title.localizedCaseInsensitiveContains(query)
-                     || item.artist.localizedCaseInsensitiveContains(query)
-                     || item.albumArtist.localizedCaseInsensitiveContains(query)
-            return match ? (i, item) : nil
+    /// Playlist items that match the current query (or all items when query is empty).
+    private var filteredItems: [PlaylistItem] {
+        if query.isEmpty { return model.playlistItems }
+        let q = query
+        return model.playlistItems.filter {
+            $0.title.localizedCaseInsensitiveContains(q) ||
+            $0.artist.localizedCaseInsensitiveContains(q) ||
+            $0.albumArtist.localizedCaseInsensitiveContains(q)
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Search field ──────────────────────────────────────────────
+
+            // ── Header — matches playlist header exactly ───────────────────────
+            HStack {
+                let n = filteredItems.count
+                let total = model.playlistItems.count
+                Text(query.isEmpty
+                     ? "\(total) track\(total == 1 ? "" : "s")"
+                     : "\(n) of \(total) tracks")
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.playlistDurationText)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(theme.playlistBg.opacity(0.7))
+
+            Divider()
+                .background(theme.windowBorder)
+
+            // ── Search field ──────────────────────────────────────────────────
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.playlistText.opacity(0.6))
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
 
                 TextField("Search tracks…", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundStyle(theme.playlistText)
                     .focused($fieldFocused)
-                    .onChange(of: query) { _, _ in selectedRow = 0 }
+                    .onChange(of: query) { _, _ in
+                        // Keep the selection valid when filter changes
+                        if let sel = selectedPlaylistIndex,
+                           !filteredItems.contains(where: { $0.id == sel }) {
+                            selectedPlaylistIndex = filteredItems.first?.id
+                        }
+                    }
                     .onSubmit { playSelected() }
 
                 if !query.isEmpty {
                     Button {
                         query = ""
-                        selectedRow = 0
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(theme.playlistText.opacity(0.5))
+                            .foregroundStyle(theme.playlistDurationText)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(theme.lcdBackground)
 
             Divider()
-                .background(theme.lcdBorder)
+                .background(theme.windowBorder)
 
-            // ── Results list ──────────────────────────────────────────────
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(filtered.enumerated()), id: \.element.playlistIndex) { rowIdx, entry in
-                            JumpRow(
-                                item: entry.item,
-                                isSelected: rowIdx == selectedRow,
-                                theme: theme
-                            )
-                            .id(rowIdx)
-                            .onTapGesture {
-                                selectedRow = rowIdx
-                                playSelected()
-                            }
-                        }
-
-                        if filtered.isEmpty {
-                            Text("No results")
-                                .font(.system(size: 12))
-                                .foregroundStyle(theme.playlistText.opacity(0.5))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 24)
-                        }
-                    }
-                }
-                .onChange(of: selectedRow) { _, row in
-                    withAnimation(.easeOut(duration: 0.1)) {
-                        proxy.scrollTo(row, anchor: .center)
-                    }
+            // ── Results list — identical styling to PlaylistView ──────────────
+            List(selection: $selectedPlaylistIndex) {
+                ForEach(filteredItems) { item in
+                    PlaylistRow(item: item, isCurrent: item.id == model.currentIndex)
+                        .listRowBackground(
+                            item.id == model.currentIndex
+                            ? theme.playlistCurrentBg
+                            : Color.clear
+                        )
+                        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+                        .tag(item.id)
                 }
             }
+            .listStyle(.plain)
+            .background(theme.playlistBg)
+            .scrollContentBackground(.hidden)
+            .onKeyPress(.return) { playSelected(); return .handled }
+
+            Divider()
+                .background(theme.windowBorder)
         }
-        .background(theme.background)
-        // Keyboard navigation handled at this level so it works regardless
-        // of which child view has focus.
-        .onKeyPress(.upArrow) {
-            if selectedRow > 0 { selectedRow -= 1 }
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            if selectedRow < filtered.count - 1 { selectedRow += 1 }
-            return .handled
-        }
-        .onKeyPress(.return) {
-            playSelected()
-            return .handled
+        .background(theme.playlistBg)
+        .preferredColorScheme(themeManager.preferredColorScheme)
+        .onAppear {
+            fieldFocused = true
+            // Pre-select the currently playing track
+            selectedPlaylistIndex = model.currentIndex >= 0 ? model.currentIndex : filteredItems.first?.id
         }
         .onKeyPress(.escape) {
             model.jumpToTrackVisible = false
             return .handled
-        }
-        .onAppear {
-            fieldFocused = true
-            // Pre-select the currently playing track if the query is empty.
-            if query.isEmpty, model.currentIndex >= 0 {
-                let idx = filtered.firstIndex { $0.playlistIndex == model.currentIndex } ?? 0
-                selectedRow = idx
-            }
         }
     }
 
     // MARK: Actions
 
     private func playSelected() {
-        guard selectedRow < filtered.count else { return }
-        let playlistIndex = filtered[selectedRow].playlistIndex
-        model.jumpTo(index: playlistIndex)
+        let idx = selectedPlaylistIndex ?? filteredItems.first?.id
+        guard let idx else { return }
+        model.jumpTo(index: idx)
         model.play()
         model.jumpToTrackVisible = false
-    }
-}
-
-// MARK: - Single result row
-
-private struct JumpRow: View {
-    let item: PlaylistItem
-    let isSelected: Bool
-    let theme: SkinTheme
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Track indicator
-            Image(systemName: isSelected ? "play.fill" : "music.note")
-                .font(.system(size: 10))
-                .foregroundStyle(isSelected ? theme.playlistCurrentText : theme.playlistText.opacity(0.4))
-                .frame(width: 14)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.title.isEmpty ? "Unknown" : item.title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? theme.playlistCurrentText : theme.playlistText)
-                    .lineLimit(1)
-
-                if !item.artist.isEmpty || !item.albumArtist.isEmpty {
-                    let artist = item.artist.isEmpty ? item.albumArtist : item.artist
-                    Text(artist)
-                        .font(.system(size: 11))
-                        .foregroundStyle((isSelected ? theme.playlistCurrentText : theme.playlistText).opacity(0.65))
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer()
-
-            Text(item.durationString)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle((isSelected ? theme.playlistCurrentText : theme.playlistText).opacity(0.6))
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .background(
-            isSelected
-                ? theme.playlistCurrentBg.opacity(0.6)
-                : Color.clear
-        )
-        .contentShape(Rectangle())
     }
 }
