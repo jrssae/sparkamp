@@ -75,6 +75,7 @@ impl RepeatMode {
     /// The distinguishing suffix (`—` / `1` / `A`) is intentionally ASCII so
     /// that the character can eventually be replaced via CSS content rules when
     /// the skin system gains button-label theming support.
+    #[allow(dead_code)]
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Off => "🔁—",      // repeat off

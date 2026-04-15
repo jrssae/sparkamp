@@ -2488,6 +2488,7 @@ pub struct SparkampDedupGroup {
 }
 
 /// Opaque context for a deduplication scan.
+#[allow(dead_code)]
 pub struct SparkampDedupCtx {
     cancel: Arc<AtomicBool>,
     /// Dismissed track paths ("not a duplicate").

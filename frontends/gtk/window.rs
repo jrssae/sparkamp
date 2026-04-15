@@ -749,6 +749,15 @@ use crate::skin::{prepare_css, DARK_CSS_RAW, LIGHT_CSS_RAW};
 /// Read the user's GNOME accent-colour choice from gsettings and return
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.
+/// Returns the label for the repeat button based on the current mode.
+fn repeat_btn_label(mode: crate::shuffle::RepeatMode) -> &'static str {
+    match mode {
+        crate::shuffle::RepeatMode::Off      => "🔁 Repeat",
+        crate::shuffle::RepeatMode::Song     => "🔁 Repeat 1",
+        crate::shuffle::RepeatMode::Playlist => "🔁 Repeat all",
+    }
+}
+
 fn gtk_safe(s: &str) -> String {
     if s.contains('\0') {
         s.replace('\0', "")
@@ -1443,15 +1452,15 @@ pub fn build(
     // ── Buttons created early so they can all live in the vol row ───────────
     // Repeat button: label and active state reflect saved config.
     let init_repeat = state.borrow().config.playback.repeat_mode;
-    let btn_repeat = Button::with_label(init_repeat.symbol());
+    let btn_repeat = Button::with_label(repeat_btn_label(init_repeat));
     btn_repeat.add_css_class("mode-btn");
-    btn_repeat.set_tooltip_text(Some("Repeat: off / 1 (song) / A (all)"));
+    btn_repeat.set_tooltip_text(Some("Repeat: off / 1 (song) / all"));
     if init_repeat != crate::shuffle::RepeatMode::Off {
         btn_repeat.add_css_class("mode-btn-active");
     }
     // Shuffle button: active state reflects saved shuffle state.
     let init_shuffle = state.borrow().shuffle_state.enabled;
-    let btn_shuffle = Button::with_label("🔀");
+    let btn_shuffle = Button::with_label("🔀 Shuffle");
     btn_shuffle.add_css_class("mode-btn");
     btn_shuffle.set_tooltip_text(Some("Shuffle on/off"));
     if init_shuffle {
@@ -1466,6 +1475,9 @@ pub fn build(
     let btn_info = Button::with_label("ℹ");
     btn_info.add_css_class("mode-btn");
     btn_info.set_tooltip_text(Some("Keyboard shortcuts"));
+    let btn_jump_vol = Button::with_label("J");
+    btn_jump_vol.add_css_class("mode-btn");
+    btn_jump_vol.set_tooltip_text(Some("Jump to track (j)"));
     let btn_ml = Button::with_label("ML");
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
@@ -1499,21 +1511,11 @@ pub fn build(
     vol_row.append(&vol_bar);
     vol_row.append(&vol_spring);
     vol_row.append(&btn_info);
+    vol_row.append(&btn_jump_vol);
     vol_row.append(&btn_ml);
     vol_row.append(&btn_eq);
     vol_row.append(&btn_pl);
 
-    // ── Mode row: repeat + shuffle, above the vol row ───────────────────────
-    let mode_row = GtkBox::new(Orientation::Horizontal, 4);
-    mode_row.set_margin_start(8);
-    mode_row.set_margin_end(8);
-    mode_row.set_margin_bottom(14);
-    let mode_spring = GtkBox::new(Orientation::Horizontal, 0);
-    mode_spring.set_hexpand(true);
-    mode_row.append(&mode_spring);
-    mode_row.append(&btn_repeat);
-    mode_row.append(&btn_shuffle);
-    np_info.append(&mode_row);
     np_info.append(&vol_row);
 
     // ── Progress / seek row ───────────────────────────────────────────────────
@@ -1586,17 +1588,26 @@ pub fn build(
     let logo_light_rc = Rc::new(logo_light);
     let logo_dark_rc = Rc::new(logo_dark);
 
-    // Spring between buttons and logo.
-    let transport_spring = GtkBox::new(Orientation::Horizontal, 0);
-    transport_spring.set_hexpand(true);
+    // Two equal springs place repeat/shuffle equidistant between Next and logo.
+    let transport_spring_l = GtkBox::new(Orientation::Horizontal, 0);
+    transport_spring_l.set_hexpand(true);
+    let transport_spring_r = GtkBox::new(Orientation::Horizontal, 0);
+    transport_spring_r.set_hexpand(true);
+
+    // Repeat/shuffle sit at natural (shorter) height rather than stretching
+    // to fill the transport row.
+    btn_repeat.set_valign(Align::Center);
+    btn_shuffle.set_valign(Align::Center);
 
     transport.append(&btn_prev);
     transport.append(&btn_play);
     transport.append(&btn_pause);
     transport.append(&btn_stop);
     transport.append(&btn_next);
-    // Spring pushes the logo to the right.
-    transport.append(&transport_spring);
+    transport.append(&transport_spring_l);
+    transport.append(&btn_repeat);
+    transport.append(&btn_shuffle);
+    transport.append(&transport_spring_r);
     transport.append(&logo_img);
     root.append(&transport);
 
@@ -2456,8 +2467,8 @@ pub fn build(
                 s.config.playback.repeat_mode = m;
                 m
             };
-            // Update button label to show the active mode symbol.
-            btn_repeat.set_label(new_mode.symbol());
+            // Update button label to show the active mode.
+            btn_repeat.set_label(repeat_btn_label(new_mode));
             // Highlight with accent class when not off.
             if new_mode == crate::shuffle::RepeatMode::Off {
                 btn_repeat.remove_css_class("mode-btn-active");
@@ -3980,7 +3991,7 @@ pub fn build(
                         s.config.playback.repeat_mode = m;
                         m
                     };
-                    kbd_btn_repeat.set_label(new_mode.symbol());
+                    kbd_btn_repeat.set_label(repeat_btn_label(new_mode));
                     if new_mode == crate::shuffle::RepeatMode::Off {
                         kbd_btn_repeat.remove_css_class("mode-btn-active");
                     } else {
@@ -4094,13 +4105,25 @@ pub fn build(
         playlist_win.add_controller(key_ctrl);
     }
 
-    // ℹ Info button — show keyboard shortcuts window.
-    // Connected here (after handle_key is defined) so shortcuts work inside it.
-    btn_info.connect_clicked({
-        let window_wk = window.downgrade();
-        let handle_key = handle_key.clone();
-        move |_| {
-            let shortcuts_text = "SparkAmp — Keyboard Shortcuts
+    // ── Persistent shortcuts window (created once; shown/hidden as a toggle) ──
+    // Built here after handle_key is defined so the Esc/transport shortcuts
+    // work inside it.
+    let shortcuts_win = {
+        let win = gtk4::Window::builder()
+            .title("Keyboard Shortcuts")
+            .modal(false)
+            .default_width(420)
+            .default_height(480)
+            .build();
+        win.set_transient_for(Some(window.upcast_ref::<gtk4::Window>()));
+        let scroll = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .margin_top(12).margin_bottom(12)
+            .margin_start(12).margin_end(12)
+            .child(
+                &gtk4::Label::builder()
+                    .label("SparkAmp — Keyboard Shortcuts
 
 ── Playback ────────────────────────────────────────
   z          Previous track / restart
@@ -4135,72 +4158,75 @@ pub fn build(
   s          Toggle shuffle on/off
 
 ── Other ───────────────────────────────────────────
-  i          Show this help
-  q / Esc    Quit";
-
-            let win = gtk4::Window::builder()
-                .title("Keyboard Shortcuts")
-                .modal(false)
-                .default_width(420)
-                .default_height(480)
-                .build();
-            if let Some(parent) = window_wk.upgrade() {
-                win.set_transient_for(Some(&parent));
+  i          Toggle this help
+  q / Esc    Quit")
+                    .halign(gtk4::Align::Start)
+                    .valign(gtk4::Align::Start)
+                    .use_markup(false)
+                    .selectable(false)
+                    .css_classes(["info-text"])
+                    .build(),
+            )
+            .build();
+        let key_ctrl = gtk4::EventControllerKey::new();
+        let handler = handle_key.clone();
+        let win_wk = win.downgrade();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                if let Some(w) = win_wk.upgrade() { w.hide(); }
+                return glib::Propagation::Stop;
             }
+            handler(key)
+        });
+        win.add_controller(key_ctrl);
+        win.set_child(Some(&scroll));
+        win.set_hide_on_close(true);
+        win
+    };
 
-            let scroll = gtk4::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk4::PolicyType::Never)
-                .vscrollbar_policy(gtk4::PolicyType::Automatic)
-                .margin_top(12)
-                .margin_bottom(12)
-                .margin_start(12)
-                .margin_end(12)
-                .child(
-                    &gtk4::Label::builder()
-                        .label(shortcuts_text)
-                        .halign(gtk4::Align::Start)
-                        .valign(gtk4::Align::Start)
-                        .use_markup(false)
-                        .selectable(false)
-                        .css_classes(["info-text"])
-                        .build(),
-                )
-                .build();
-
-            // Esc closes; all transport shortcuts also work.
-            let key_ctrl = gtk4::EventControllerKey::new();
-            let handler = handle_key.clone();
-            let win_wk2 = win.downgrade();
-            key_ctrl.connect_key_pressed(move |_, key, _, _| {
-                if key == gdk::Key::Escape {
-                    if let Some(w) = win_wk2.upgrade() {
-                        w.close();
-                    }
-                    return glib::Propagation::Stop;
-                }
-                handler(key)
-            });
-            win.add_controller(key_ctrl);
-
-            win.set_child(Some(&scroll));
-            win.present();
+    // ℹ Info button — toggle keyboard shortcuts window.
+    btn_info.connect_clicked({
+        let sw = shortcuts_win.clone();
+        move |_| {
+            if sw.is_visible() { sw.hide(); } else { sw.present(); }
         }
     });
 
-    // ML button — open the media library browser window.
+    // J button — toggle jump window.
+    btn_jump_vol.connect_clicked({
+        let jump_win_wk = jump_win.downgrade();
+        let entry = jump_entry.clone();
+        let rebuild = rebuild_jump.clone();
+        move |_| {
+            if let Some(w) = jump_win_wk.upgrade() {
+                if w.is_visible() {
+                    w.hide();
+                } else {
+                    entry.set_text("");
+                    rebuild();
+                    w.present();
+                    entry.grab_focus();
+                }
+            }
+        }
+    });
+
+    // ML button — toggle the media library browser window.
     btn_ml.connect_clicked({
         let window_wk = window.downgrade();
         let state_rc = state.clone();
         let rebuild_pl = rebuild_playlist.clone();
         let set_track_ml = set_track.clone();
         move |_| {
-            // Destroy any existing ML window before opening a new one.
+            // If already open (visible or hidden), toggle visibility.
             {
-                let s = state_rc.borrow_mut();
+                let s = state_rc.borrow();
                 if let Some(ref w) = s.ml_window {
-                    w.destroy();
+                    if w.is_visible() { w.hide(); } else { w.present(); }
+                    return;
                 }
             }
+            // First open: create the window.
             let parent = window_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
             let (w, h) = {
                 let cfg = &state_rc.borrow().config.window;
@@ -4214,17 +4240,30 @@ pub fn build(
                 w,
                 h,
             );
+            ml_win.set_hide_on_close(true);
             state_rc.borrow_mut().ml_window = Some(ml_win);
         }
     });
 
-    // EQ button — open the 10-band equalizer window.
+    // EQ button — toggle the 10-band equalizer window.
+    let eq_win_ref: Rc<RefCell<Option<gtk4::Window>>> = Rc::new(RefCell::new(None));
     btn_eq.connect_clicked({
         let window_wk = window.downgrade();
         let state_rc = state.clone();
+        let eq_ref = eq_win_ref.clone();
         move |_| {
+            // Toggle if already created.
+            {
+                let existing = eq_ref.borrow();
+                if let Some(ref w) = *existing {
+                    if w.is_visible() { w.hide(); } else { w.present(); }
+                    return;
+                }
+            }
+            // First open: create the window.
             let parent = window_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
-            open_eq_window(parent.as_ref(), state_rc.clone());
+            let win = open_eq_window(parent.as_ref(), state_rc.clone());
+            *eq_ref.borrow_mut() = Some(win);
         }
     });
 
@@ -6565,7 +6604,7 @@ fn open_settings_window(
 /// All control changes update `state.config.equalizer` immediately AND apply
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
-fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
+fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
     use crate::config::{EQ_BAND_FREQS, EQ_PRESETS};
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 
@@ -6802,7 +6841,9 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     });
 
     win.set_child(Some(&vbox));
+    win.set_hide_on_close(true);
     win.present();
+    win
 }
 
 // ---------------------------------------------------------------------------
@@ -7377,7 +7418,7 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
         let start_scan2 = start_scan.clone();
         let win_wk = win.downgrade();
 
-        action_btn.connect_clicked(move |btn| {
+        action_btn.connect_clicked(move |_btn| {
             if is_scanning.get() {
                 // Show confirmation before cancelling.
                 let dialog = gtk4::AlertDialog::builder()
@@ -8174,7 +8215,7 @@ fn open_media_library_window(
     sidebar.add_css_class("ml-sidebar");
     sidebar.set_vexpand(true);
 
-    let sidebar_scroll = ScrolledWindow::builder()
+    let _sidebar_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .width_request(165)
@@ -8240,7 +8281,7 @@ fn open_media_library_window(
         gesture.connect_released(move |g, _n, x, _y| {
             // Only handle clicks in the right ~20px (chevron area)
             let widget = g.widget();
-            let width  = widget.width() as f64;
+            let width  = widget.map(|w| w.width()).unwrap_or(0) as f64;
             if x < width - 24.0 {
                 return; // let the row selection handle the left area
             }
@@ -9565,7 +9606,7 @@ fn open_media_library_window(
 
     // ── Helper: add a sub-row to both the sidebar and pl_manage_list ──────
     // Returns the sidebar row so the caller can select it.
-    let add_pl_sidebar_row = {
+    let _add_pl_sidebar_row = {
         let sidebar_ref  = sidebar.clone();
         let sub_rows_ref = pl_sub_rows.clone();
         let expanded_ref = playlists_expanded.clone();
