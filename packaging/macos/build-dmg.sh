@@ -84,7 +84,11 @@ echo
 
 echo "==> [1/6] Building Rust library (release)…"
 cd "$REPO_ROOT"
-cargo build --release 2>&1 | grep -E "^error|Finished|Compiling sparkamp" | tail -3 || true
+# Build the macOS static library (FFI bridge used by the Swift app).
+cargo build --release --manifest-path frontends/macos/Cargo.toml \
+    2>&1 | grep -E "^error|Finished|Compiling" | tail -3 || true
+# Copy the freshly-built static lib into the Xcode project directory.
+cp target/release/libsparkamp_macos.a frontends/SparkampMac/libsparkamp_macos.a
 
 # ── Step 2: Xcode archive ────────────────────────────────────────────────────
 
@@ -312,6 +316,7 @@ hdiutil create \
     -format UDRW \
     "$DMG_TEMP" 2>&1 | tail -2
 
+rm -f "$DIST_DIR/$DMG_NAME"
 hdiutil convert \
     "$DMG_TEMP" \
     -format UDZO \
