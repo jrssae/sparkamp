@@ -590,3 +590,7 @@ button.suggested-action:hover {
     background-color: alpha(@accent_bg_color, 0.85);
     background-image: none;
 }
+
+.pl-missing {
+    color: #ff4444;
+}

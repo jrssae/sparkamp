@@ -240,6 +240,7 @@ typedef struct {
     uint8_t  composer[256];
     int32_t  read_only;       /* 1 = file is read-only on disk */
     int32_t  has_art;         /* 1 = cached album art exists */
+    int32_t  file_missing;    /* 1 = file does not exist at recorded path */
 } SparkampLibTrack;
 
 /** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */
@@ -309,8 +310,26 @@ void    sparkamp_ml_add_tracks_to_playlist(SparkampCtx *ctx, const int64_t *ids,
 int32_t sparkamp_ml_playlist_count(const SparkampCtx *ctx);
 /** Name of saved playlist at index.  Caller frees with sparkamp_free_string. */
 char   *sparkamp_ml_playlist_name(const SparkampCtx *ctx, int32_t index);
+/** Row ID of saved playlist at index, or -1 on error. */
+int64_t sparkamp_ml_playlist_id(const SparkampCtx *ctx, int32_t index);
 /** Replace the active playlist with the saved playlist at index. */
 void    sparkamp_ml_set_current_playlist(SparkampCtx *ctx, int32_t index);
+
+/** Create a new empty playlist with name.  Returns row id or -1 on failure. */
+int64_t sparkamp_ml_create_playlist(SparkampCtx *ctx, const char *name);
+/** Delete playlist by row id from the DB (file on disk is kept). */
+void    sparkamp_ml_delete_playlist(SparkampCtx *ctx, int64_t playlist_id);
+/** Rename playlist by row id; also renames the .m3u file on disk. */
+void    sparkamp_ml_rename_playlist(SparkampCtx *ctx, int64_t playlist_id, const char *new_name);
+/** Overwrite playlist .m3u with the given track IDs (in order). */
+void    sparkamp_ml_save_playlist(SparkampCtx *ctx, int64_t playlist_id,
+                                  const int64_t *track_ids, int32_t count);
+/** Fill buf with up to limit tracks from playlist_id.  Returns count written. */
+int32_t sparkamp_ml_get_playlist_tracks(const SparkampCtx *ctx, int64_t playlist_id,
+                                        SparkampLibTrack *buf, int32_t limit);
+
+/** Returns 1 if the file at playlist[index] is missing from disk. */
+int32_t sparkamp_playlist_file_missing(const SparkampCtx *ctx, int32_t index);
 
 /** Record a play event for the given path (increments play_count, updates last_played). */
 void    sparkamp_ml_record_play(SparkampCtx *ctx, const char *path);

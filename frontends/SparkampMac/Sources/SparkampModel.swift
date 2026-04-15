@@ -36,6 +36,7 @@ struct MLTrack: Identifiable {
     let composer: String
     let readOnly: Bool
     let hasArt: Bool
+    let fileMissing: Bool
 
     var durationString: String { formatDuration(lengthSecs) }
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
@@ -61,13 +62,14 @@ struct MLTrack: Identifiable {
         composer    = cBytesToString(&c.composer)
         readOnly    = c.read_only != 0
         hasArt      = c.has_art != 0
+        fileMissing = c.file_missing != 0
     }
 }
 
 // MARK: - Media Library playlist item
 
 struct MLPlaylistItem: Identifiable {
-    let id: Int    // playlist index
+    let id: Int64   // DB row id — stable key for CRUD operations
     let name: String
 }
 
@@ -106,6 +108,7 @@ struct PlaylistItem: Identifiable {
     let duration: Double // seconds, -1 = unknown
     let broken: Bool
     let readOnly: Bool
+    let fileMissing: Bool
 
     var durationString: String { formatDuration(duration) }
 
@@ -368,7 +371,8 @@ final class SparkampModel: ObservableObject {
                     albumArtist: newAlbumArtist,
                     duration: newDuration,
                     broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
-                    readOnly: item.readOnly   // read-only status doesn't change mid-scan
+                    readOnly: item.readOnly,        // read-only status doesn't change mid-scan
+                    fileMissing: item.fileMissing   // idem
                 )
                 changed = true
             }
@@ -461,7 +465,8 @@ final class SparkampModel: ObservableObject {
                 albumArtist: albumArtist,
                 duration: sparkamp_playlist_get_duration(ctx, Int32(i)),
                 broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
-                readOnly: sparkamp_playlist_is_read_only(ctx, Int32(i)) != 0
+                readOnly: sparkamp_playlist_is_read_only(ctx, Int32(i)) != 0,
+                fileMissing: sparkamp_playlist_file_missing(ctx, Int32(i)) != 0
             )
         }
     }
@@ -733,7 +738,8 @@ final class SparkampModel: ObservableObject {
         mlSavedPlaylists = (0..<count).compactMap { i in
             guard let ptr = sparkamp_ml_playlist_name(ctx, Int32(i)) else { return nil }
             defer { sparkamp_free_string(ptr) }
-            return MLPlaylistItem(id: i, name: String(cString: ptr))
+            let dbId = sparkamp_ml_playlist_id(ctx, Int32(i))
+            return MLPlaylistItem(id: dbId, name: String(cString: ptr))
         }
     }
 
@@ -869,6 +875,49 @@ final class SparkampModel: ObservableObject {
     func mlOpenTagEditorForPath(_ path: String) {
         id3DirectPath = path
         id3EditorVisible = true
+    }
+
+    // MARK: ML Playlist CRUD
+
+    /// Fetch all tracks in a saved playlist by its row ID.
+    func mlGetPlaylistTracks(id: Int64) -> [MLTrack] {
+        guard let ctx = ctx else { return [] }
+        let limit = 10_000
+        let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
+        defer { buf.deallocate() }
+        let count = sparkamp_ml_get_playlist_tracks(ctx, id, buf, Int32(limit))
+        return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+    }
+
+    /// Create a new empty playlist.  Returns the new playlist's row ID, or -1 on failure.
+    func mlCreatePlaylist(name: String) -> Int64 {
+        guard let ctx = ctx else { return -1 }
+        let id = name.withCString { sparkamp_ml_create_playlist(ctx, $0) }
+        if id >= 0 { mlRefreshSavedPlaylists() }
+        return id
+    }
+
+    /// Delete a playlist by row ID (DB only; .m3u file is kept on disk).
+    func mlDeletePlaylist(id: Int64) {
+        guard let ctx = ctx else { return }
+        sparkamp_ml_delete_playlist(ctx, id)
+        mlRefreshSavedPlaylists()
+    }
+
+    /// Rename a playlist by row ID.
+    func mlRenamePlaylist(id: Int64, name: String) {
+        guard let ctx = ctx else { return }
+        name.withCString { sparkamp_ml_rename_playlist(ctx, id, $0) }
+        mlRefreshSavedPlaylists()
+    }
+
+    /// Overwrite a saved playlist's .m3u file with the given ordered track IDs.
+    func mlSavePlaylist(id: Int64, trackIds: [Int64]) {
+        guard let ctx = ctx else { return }
+        var ids = trackIds
+        ids.withUnsafeMutableBufferPointer { buf in
+            sparkamp_ml_save_playlist(ctx, id, buf.baseAddress, Int32(trackIds.count))
+        }
     }
 
     func mlOpenAddFolderPicker() {

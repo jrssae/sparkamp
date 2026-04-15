@@ -814,3 +814,82 @@ Each milestone branch merges to `main` (not `OSX-port`) once tests pass. The Lin
 2. **cbindgen vs manual header**: `cbindgen` auto-generates `sparkamp.h` from `src/ffi.rs`. The alternative is a hand-written header, which is more work but easier to review. Recommend `cbindgen`.
 3. **Swift version and Xcode requirement**: Swift 5.9 + Xcode 15 supports macOS 13 deployment. Confirm Xcode version available.
 4. **App signing**: Unsigned `.app` bundles require `xattr -cr SparkampMac.app` to open on macOS. For development this is fine; for distribution, a Developer ID is needed.
+
+
+
+Linux vs macOS Skin System: Delta Analysis & Plan
+Current Delta
+1. Color variable mismatches between the two style_dark.css and macOS dark defaults
+
+The portable :root { --sparkamp-* } block exists in style_dark.css, but several values differ from what macOS uses in its built-in dark skin:
+
+Variable    macOS dark default    Linux style_dark.css
+--sparkamp-playlist-current-text    #00ccff (cyan)    #00ff88 (green)
+--sparkamp-accent    #00aaff    not defined; falls back to GTK @accent_bg_color
+2. Linux uses GTK dynamic variables; macOS uses hardcoded hex
+
+style_dark.css references @accent_bg_color, @accent_fg_color, and @headerbar_bg_color — GTK CSS-only tokens that don't exist in macOS's CSS parser. The macOS CSSParser ignores unknown @ tokens but the intent — "use the system accent color" — is completely lost on macOS. Since macOS uses hardcoded hex values, the equivalent portable fix is to pick a single accent hex value for the skin file and use that everywhere.
+
+3. GTK-specific widget rules below the separator comment are macOS-invisible
+
+The skin file has a separator comment /* === GTK-specific === */ (or similar) after the :root block. Everything below it is ignored by macOS. Currently this section contains critical layout rules for:
+
+entry (text input fields)
+columnview, listview (the ML table and playlist list)
+notebook (tab widget for ML Files/Playlists)
+popover modelbutton (context menu items)
+button.text-button, button.suggested-action
+scale.eq-scale (equalizer sliders)
+.np-frame (the now-playing area border)
+.unscanned-row (ML rows where metadata hasn't loaded yet — black background on Linux)
+macOS renders these through SwiftUI native components and reads only the :root CSS variables. So as long as variables are defined correctly, all the widget styling flows through automatically on macOS. The GTK-specific section is fine to keep as-is.
+
+4. macOS-only variables are undefined in the Linux skin
+
+macOS reads several variables that style_dark.css doesn't define:
+
+--sparkamp-logo-text / --sparkamp-logo-subtext — used for the SPARKAMP/version text overlay on the player logo. Linux uses a raster PNG and ignores these.
+--sparkamp-lcd-background — used for the time display LCD area
+--sparkamp-mode-btn-text — toolbar icon color
+The GTK frontend ignores undefined custom properties, so this is silent. But a truly shared skin file needs these defined so macOS renders them correctly.
+
+5. style.css (light skin) has no :root block at all
+
+style.css is the legacy light-mode file with hardcoded color values throughout. It has no portable :root block, so macOS can't use it as a skin at all. It would need to be converted to the same dual-format structure as style_dark.css.
+
+6. .unscanned-row vs Swift scanned bool
+
+Linux colors unscanned ML rows using a .unscanned-row CSS class (black background). macOS uses the scanned Bool on MLTrack to dim the text to playlistDurationText color instead. The approaches are equivalent in intent but different in mechanism — no shared CSS variable needed here, but the behavior should be documented.
+
+Plan (no code changes)
+Step 1 — Unify the accent color
+
+Replace all @accent_bg_color / @accent_fg_color references in style_dark.css with a concrete --sparkamp-accent hex value (e.g. #0099ff). Add a --sparkamp-accent-fg: #ffffff companion. In the GTK-specific section, reference var(--sparkamp-accent) instead of the GTK token. This makes the skin file self-contained for both frontends.
+
+Step 2 — Fix --sparkamp-playlist-current-text
+
+Change the Linux dark skin value from #00ff88 to #00ccff to match macOS. (Or decide macOS should use #00ff88 — pick one canonical value and apply it to both.) One shared source of truth.
+
+Step 3 — Add the macOS-only variables to the :root block
+
+Add --sparkamp-logo-text, --sparkamp-logo-subtext, --sparkamp-lcd-background, --sparkamp-mode-btn-text to the :root block in style_dark.css (and eventually style.css). GTK ignores extras silently; macOS needs them. Dark skin values to add:
+
+--sparkamp-logo-text:     #e0e0e0;
+--sparkamp-logo-subtext:  #888888;
+--sparkamp-lcd-background: #0a0a0a;
+--sparkamp-mode-btn-text: #aaaaaa;
+Step 4 — Convert style.css to dual-format
+
+Audit all hardcoded hex values in style.css, extract them into a :root { --sparkamp-* } block mirroring the dark skin's variable names but with light-mode values, then replace inline colors with var(--sparkamp-*) references. Add the same macOS-only variables with light values.
+
+Step 5 — Document the separator convention in the skin format spec
+
+Add a comment block at the top of both CSS files (or a SKINS.md) explaining:
+
+Everything inside :root { } is portable — read by both macOS CSSParser and GTK CSS engine
+GTK-specific rules (widget selectors) go after /* === GTK-specific === */ and are silently ignored by macOS
+macOS-only variables should still be defined in :root — GTK ignores unknown custom properties
+No @accent_bg_color or other GTK CSS level 4 tokens in the :root block
+After steps 1–5, the same .css file can be dropped into either frontend's skin directory and render correctly on both platforms with no modifications.
+
+

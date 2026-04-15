@@ -189,6 +189,10 @@ struct PlaylistRow: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(theme.playlistBrokenText)
+                } else if item.fileMissing {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.red)
                 } else if item.readOnly {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 9))

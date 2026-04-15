@@ -1747,6 +1747,8 @@ pub struct SparkampLibTrack {
     pub read_only: c_int,
     /// 1 if cached album artwork exists for this track; 0 otherwise.
     pub has_art: c_int,
+    /// 1 if the file no longer exists at its recorded path; 0 otherwise.
+    pub file_missing: c_int,
 }
 
 impl SparkampLibTrack {
@@ -1771,6 +1773,7 @@ impl SparkampLibTrack {
             composer: [0u8; 256],
             read_only: 0,
             has_art: if t.artwork_path.is_some() { 1 } else { 0 },
+            file_missing: 0,
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -1790,7 +1793,9 @@ impl SparkampLibTrack {
         copy_str(&mut out.bpm, t.bpm.as_deref().unwrap_or(""));
         copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
         copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
-        out.read_only = if crate::media_library::is_read_only(std::path::Path::new(&t.path)) { 1 } else { 0 };
+        let p = std::path::Path::new(&t.path);
+        out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
+        out.file_missing = if p.exists() { 0 } else { 1 };
         out
     }
 }
@@ -2304,6 +2309,136 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
             }
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — playlist CRUD
+// ---------------------------------------------------------------------------
+
+/// Return the row ID of the playlist at `index`, or -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_playlist_id(
+    ctx: *const SparkampCtx,
+    index: c_int,
+) -> i64 {
+    if ctx.is_null() { return -1; }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return -1 };
+    let playlists = ml.all_playlists().unwrap_or_default();
+    let idx = index as usize;
+    if idx >= playlists.len() { return -1; }
+    playlists[idx].id
+}
+
+/// Create a new empty playlist with `name`.
+///
+/// Writes `~/.config/sparkamp/playlists/<name>.m3u` and registers it in the
+/// library DB.  Returns the new playlist row id, or -1 on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_create_playlist(
+    ctx: *mut SparkampCtx,
+    name: *const c_char,
+) -> i64 {
+    if ctx.is_null() || name.is_null() { return -1; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return -1 };
+    let Ok(name_str) = CStr::from_ptr(name).to_str() else { return -1 };
+    match ml.create_playlist(name_str) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("[sparkamp] create_playlist: {e}"); -1 }
+    }
+}
+
+/// Delete the playlist with `id` from the DB.  The `.m3u` file is not removed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_delete_playlist(
+    ctx: *mut SparkampCtx,
+    playlist_id: i64,
+) {
+    if ctx.is_null() { return; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    if let Err(e) = ml.remove_playlist(playlist_id) {
+        eprintln!("[sparkamp] delete_playlist {playlist_id}: {e}");
+    }
+}
+
+/// Rename playlist `id`.  Updates both the DB record and the `.m3u` file.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_rename_playlist(
+    ctx: *mut SparkampCtx,
+    playlist_id: i64,
+    new_name: *const c_char,
+) {
+    if ctx.is_null() || new_name.is_null() { return; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let Ok(name_str) = CStr::from_ptr(new_name).to_str() else { return };
+    if let Err(e) = ml.rename_playlist(playlist_id, name_str) {
+        eprintln!("[sparkamp] rename_playlist {playlist_id}: {e}");
+    }
+}
+
+/// Overwrite playlist `id` with the given track IDs (in order).
+///
+/// Writes the new track list to the `.m3u` file on disk.  Track IDs not found
+/// in the library are silently skipped.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_save_playlist(
+    ctx: *mut SparkampCtx,
+    playlist_id: i64,
+    track_ids: *const i64,
+    count: c_int,
+) {
+    if ctx.is_null() || track_ids.is_null() || count < 0 { return; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let ids = std::slice::from_raw_parts(track_ids, count as usize);
+    if let Err(e) = ml.save_playlist_tracks(playlist_id, ids) {
+        eprintln!("[sparkamp] save_playlist {playlist_id}: {e}");
+    }
+}
+
+/// Fill `buf` with up to `limit` tracks from playlist `playlist_id`.
+///
+/// Returns the number of tracks written.  Returns 0 on error or if the
+/// playlist is empty.  Caller must allocate `buf` with at least `limit`
+/// elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_get_playlist_tracks(
+    ctx: *const SparkampCtx,
+    playlist_id: i64,
+    buf: *mut SparkampLibTrack,
+    limit: c_int,
+) -> c_int {
+    if ctx.is_null() || buf.is_null() || limit <= 0 { return 0; }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let pl = match ml.playlist_by_id(playlist_id) {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    let tracks = ml.load_playlist_tracks(&pl).unwrap_or_default();
+    let n = tracks.len().min(limit as usize);
+    let slice = std::slice::from_raw_parts_mut(buf, n);
+    for (i, t) in tracks[..n].iter().enumerate() {
+        slice[i] = SparkampLibTrack::from_lib_track(t);
+    }
+    n as c_int
+}
+
+/// Returns 1 if the file at playlist index `index` is missing from disk.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_file_missing(
+    ctx: *const SparkampCtx,
+    index: c_int,
+) -> c_int {
+    if ctx.is_null() { return 0; }
+    let ctx = &*ctx;
+    let i = index as usize;
+    if i >= ctx.playlist.tracks.len() { return 0; }
+    let path = std::path::Path::new(&ctx.playlist.tracks[i].path);
+    if path.exists() { 0 } else { 1 }
 }
 
 /// Record a play event for the track at `path`.

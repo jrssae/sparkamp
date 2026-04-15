@@ -225,6 +225,9 @@ pub struct WindowConfig {
     /// Media library window height.
     #[serde(default = "WindowConfig::default_ml_height")]
     pub ml_height: i32,
+    /// Whether the playlist sub-section in the ML sidebar is expanded.
+    #[serde(default = "WindowConfig::default_ml_playlists_expanded")]
+    pub ml_playlists_expanded: bool,
 }
 
 impl Default for WindowConfig {
@@ -238,6 +241,7 @@ impl Default for WindowConfig {
             ml_visible: false,
             ml_width: Self::default_ml_width(),
             ml_height: Self::default_ml_height(),
+            ml_playlists_expanded: true,
         }
     }
 }
@@ -254,6 +258,9 @@ impl WindowConfig {
     }
     pub fn default_playlist_height() -> i32 {
         500
+    }
+    pub fn default_ml_playlists_expanded() -> bool {
+        true
     }
     pub fn default_ml_width() -> i32 {
         1000

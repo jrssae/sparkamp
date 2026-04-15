@@ -129,6 +129,10 @@ scale.vol-scale slider {
     font-weight: bold;
 }
 
+.pl-missing {
+    color: #ff4444;
+}
+
 .status-label {
     font-size: 10px;
     color: #666666;

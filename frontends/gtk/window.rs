@@ -8168,15 +8168,24 @@ fn open_media_library_window(
     root.set_margin_end(8);
 
     // ── Left sidebar ──────────────────────────────────────────────────────
+    // Wrap sidebar in a ScrolledWindow so many playlists don't overflow.
     let sidebar = ListBox::new();
     sidebar.set_selection_mode(gtk4::SelectionMode::Single);
     sidebar.add_css_class("ml-sidebar");
-    sidebar.set_width_request(130);
     sidebar.set_vexpand(true);
 
-    let make_nav_row = |text: &str| {
+    let sidebar_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .width_request(165)
+        .vexpand(true)
+        .child(&sidebar)
+        .build();
+
+    // ── "Files" row ───────────────────────────────────────────────────────
+    {
         let lbl = Label::builder()
-            .label(text)
+            .label("Files")
             .halign(Align::Start)
             .margin_start(10)
             .margin_end(10)
@@ -8184,13 +8193,93 @@ fn open_media_library_window(
             .margin_bottom(7)
             .build();
         let row = ListBoxRow::new();
+        row.set_widget_name("files");
         row.set_child(Some(&lbl));
-        row
-    };
-    let row_files = make_nav_row("Files");
-    let row_playlists = make_nav_row("Playlists");
-    sidebar.append(&row_files);
-    sidebar.append(&row_playlists);
+        sidebar.append(&row);
+    }
+
+    // ── "Playlists" header row (with expand/collapse chevron) ─────────────
+    let playlists_expanded = Rc::new(Cell::new(
+        state.borrow().config.window.ml_playlists_expanded
+    ));
+
+    // Track sub-rows so we can show/hide them on toggle
+    let pl_sub_rows: Rc<RefCell<Vec<ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
+
+    {
+        let pl_header_box = GtkBox::new(Orientation::Horizontal, 0);
+
+        let pl_lbl = Label::builder()
+            .label("Playlists")
+            .halign(Align::Start)
+            .hexpand(true)
+            .margin_start(10)
+            .margin_top(7)
+            .margin_bottom(7)
+            .build();
+
+        // Chevron label — "▾" expanded, "▸" collapsed
+        let chevron_lbl = Label::builder()
+            .label(if playlists_expanded.get() { "▾" } else { "▸" })
+            .margin_end(8)
+            .build();
+
+        pl_header_box.append(&pl_lbl);
+        pl_header_box.append(&chevron_lbl);
+
+        let row_playlists = ListBoxRow::new();
+        row_playlists.set_widget_name("playlists");
+        row_playlists.set_child(Some(&pl_header_box));
+        sidebar.append(&row_playlists);
+
+        // Chevron click toggles expansion (separate from navigation)
+        let gesture = GestureClick::new();
+        let expanded_rc = playlists_expanded.clone();
+        let sub_rows_rc  = pl_sub_rows.clone();
+        let chev = chevron_lbl.clone();
+        gesture.connect_released(move |g, _n, x, _y| {
+            // Only handle clicks in the right ~20px (chevron area)
+            let widget = g.widget();
+            let width  = widget.width() as f64;
+            if x < width - 24.0 {
+                return; // let the row selection handle the left area
+            }
+            let new_val = !expanded_rc.get();
+            expanded_rc.set(new_val);
+            chev.set_text(if new_val { "▾" } else { "▸" });
+            for r in sub_rows_rc.borrow().iter() {
+                r.set_visible(new_val);
+            }
+        });
+        row_playlists.add_controller(gesture);
+    }
+
+    // Populate initial playlist sub-rows
+    {
+        let playlists_initial = state
+            .borrow()
+            .media_lib
+            .as_ref()
+            .and_then(|lib| lib.all_playlists().ok())
+            .unwrap_or_default();
+        let expanded = playlists_expanded.get();
+        for pl in &playlists_initial {
+            let lbl = Label::builder()
+                .label(&pl.name)
+                .halign(Align::Start)
+                .margin_start(24)  // indent
+                .margin_end(8)
+                .margin_top(4)
+                .margin_bottom(4)
+                .build();
+            let row = ListBoxRow::new();
+            row.set_widget_name(&format!("pl:{}", pl.id));
+            row.set_child(Some(&lbl));
+            row.set_visible(expanded);
+            sidebar.append(&row);
+            pl_sub_rows.borrow_mut().push(row);
+        }
+    }
 
     let vsep = Separator::new(Orientation::Vertical);
     vsep.set_margin_start(4);
@@ -9384,170 +9473,721 @@ fn open_media_library_window(
     }
 
     // ── Page: Playlists ──────────────────────────────────────────────────
+    //
+    // Two sub-pages within the "playlists" stack page:
+    //   "pl-manage" – full-width list of saved playlists + New/Rename/Delete
+    //   "pl-edit"   – track editor for the selected playlist
+    //
+    // pl_sub_stack is stored in an Rc so the sidebar wiring can switch pages.
+    let pl_sub_stack: Rc<Stack> = Rc::new({
+        let s = Stack::new();
+        s.set_hexpand(true);
+        s.set_vexpand(true);
+        s.set_transition_type(StackTransitionType::None);
+        s
+    });
+
+    // Shared: currently-editing playlist id and LibTrack list
+    let editing_tracks: Rc<RefCell<Vec<crate::media_library::LibTrack>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let saved_track_ids: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Widget handles for pl-manage playlist list (shared with sidebar)
+    let pl_manage_list: Rc<ListBox> = Rc::new({
+        let lb = ListBox::new();
+        lb.add_css_class("playlist");
+        lb.set_selection_mode(gtk4::SelectionMode::Single);
+        lb.set_vexpand(true);
+        lb
+    });
+
+    // Track editor ListBox
+    let track_list: Rc<ListBox> = Rc::new({
+        let lb = ListBox::new();
+        lb.add_css_class("playlist");
+        lb.set_selection_mode(gtk4::SelectionMode::Multiple);
+        lb.set_vexpand(true);
+        lb
+    });
+
+    // ── Helper: rebuild track editor list from editing_tracks ─────────────
+    let rebuild_track_list = {
+        let tl = track_list.clone();
+        let et = editing_tracks.clone();
+        Rc::new(move || {
+            while let Some(child) = tl.first_child() {
+                tl.remove(&child);
+            }
+            for t in et.borrow().iter() {
+                let missing = !std::path::Path::new(&t.path).exists();
+                let artist = t.artist.as_deref().unwrap_or("-");
+                let title  = t.title.as_deref().unwrap_or(&t.filename);
+                let text   = format!("{} — {}", artist, title);
+                let lbl = Label::builder()
+                    .label(&text)
+                    .halign(Align::Start)
+                    .margin_start(8).margin_end(8)
+                    .margin_top(2).margin_bottom(2)
+                    .build();
+                if missing {
+                    lbl.add_css_class("pl-missing");
+                }
+                let row = ListBoxRow::new();
+                row.set_child(Some(&lbl));
+                tl.append(&row);
+            }
+        })
+    };
+
+    // ── Helper: load a playlist by DB id into editing state ───────────────
+    let load_pl_by_id = {
+        let state_rc = state.clone();
+        let et = editing_tracks.clone();
+        let saved = saved_track_ids.clone();
+        let rebuild = rebuild_track_list.clone();
+        Rc::new(move |id: i64| {
+            let tracks = state_rc
+                .borrow()
+                .media_lib
+                .as_ref()
+                .and_then(|lib| {
+                    lib.playlist_by_id(id)
+                        .ok()
+                        .and_then(|pl| lib.load_playlist_tracks(&pl).ok())
+                })
+                .unwrap_or_default();
+            let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
+            *et.borrow_mut() = tracks;
+            *saved.borrow_mut() = ids;
+            rebuild();
+        })
+    };
+
+    // ── Helper: add a sub-row to both the sidebar and pl_manage_list ──────
+    // Returns the sidebar row so the caller can select it.
+    let add_pl_sidebar_row = {
+        let sidebar_ref  = sidebar.clone();
+        let sub_rows_ref = pl_sub_rows.clone();
+        let expanded_ref = playlists_expanded.clone();
+        Rc::new(move |id: i64, name: &str| -> ListBoxRow {
+            // Sidebar sub-row
+            let s_lbl = Label::builder()
+                .label(name)
+                .halign(Align::Start)
+                .margin_start(24).margin_end(8)
+                .margin_top(4).margin_bottom(4)
+                .build();
+            let s_row = ListBoxRow::new();
+            s_row.set_widget_name(&format!("pl:{}", id));
+            s_row.set_child(Some(&s_lbl));
+            s_row.set_visible(expanded_ref.get());
+            sidebar_ref.append(&s_row);
+            sub_rows_ref.borrow_mut().push(s_row.clone());
+            s_row
+        })
+    };
+
+    // ── Build "pl-manage" page ────────────────────────────────────────────
     {
-        let hbox = GtkBox::new(Orientation::Horizontal, 4);
+        let manage_vbox = GtkBox::new(Orientation::Vertical, 0);
 
-        let pl_list = ListBox::new();
-        pl_list.add_css_class("playlist");
-        pl_list.set_selection_mode(gtk4::SelectionMode::Single);
-
-        let playlists = state
+        // Populate the manage list from DB
+        let playlists_initial = state
             .borrow()
             .media_lib
             .as_ref()
             .and_then(|lib| lib.all_playlists().ok())
             .unwrap_or_default();
-        for pl in &playlists {
+        for pl in &playlists_initial {
             let lbl = Label::builder()
                 .label(&pl.name)
                 .halign(Align::Start)
-                .margin_start(8)
-                .margin_end(8)
-                .margin_top(2)
-                .margin_bottom(2)
+                .margin_start(8).margin_end(8)
+                .margin_top(3).margin_bottom(3)
                 .build();
             let row = ListBoxRow::new();
-            row.set_widget_name(&pl.path);
+            row.set_widget_name(&pl.id.to_string());
             row.set_child(Some(&lbl));
-            pl_list.append(&row);
+            pl_manage_list.append(&row);
         }
 
-        let pl_scroll = ScrolledWindow::builder()
+        let manage_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Never)
             .vscrollbar_policy(PolicyType::Automatic)
             .vexpand(true)
-            .min_content_height(300)
-            .width_request(200)
-            .child(&pl_list)
+            .child(&*pl_manage_list)
             .build();
-        hbox.append(&pl_scroll);
+        manage_vbox.append(&manage_scroll);
 
-        let preview_list = ListBox::new();
-        preview_list.add_css_class("playlist");
-        preview_list.set_selection_mode(gtk4::SelectionMode::None);
+        // Clicking a manage-list row → select its sidebar sub-row
+        {
+            let sidebar_ref   = sidebar.clone();
+            let pl_sub_ref    = pl_sub_stack.clone();
+            pl_manage_list.connect_row_selected(move |_, opt_row| {
+                let row = match opt_row { Some(r) => r, None => return };
+                let id_str = row.widget_name().to_string();
+                // Find matching sidebar "pl:ID" row and select it
+                let target = format!("pl:{}", id_str);
+                let mut i = 0i32;
+                loop {
+                    match sidebar_ref.row_at_index(i) {
+                        Some(sr) if sr.widget_name() == target => {
+                            sidebar_ref.select_row(Some(&sr));
+                            break;
+                        }
+                        Some(_) => { i += 1; }
+                        None => break,
+                    }
+                }
+                // Also switch sub-stack directly (sidebar handler may not fire
+                // if the row is already selected)
+                pl_sub_ref.set_visible_child_name("pl-edit");
+            });
+        }
 
-        let preview_scroll = ScrolledWindow::builder()
+        // Manage list bottom buttons: New / Rename / Delete
+        let manage_btn_row = GtkBox::new(Orientation::Horizontal, 4);
+        manage_btn_row.set_margin_start(4);
+        manage_btn_row.set_margin_end(4);
+        manage_btn_row.set_margin_top(4);
+        manage_btn_row.set_margin_bottom(4);
+
+        let btn_new_pl    = Button::with_label("+ New");
+        btn_new_pl.add_css_class("pl-btn");
+        let btn_rename_pl = Button::with_label("Rename");
+        btn_rename_pl.add_css_class("pl-btn");
+        btn_rename_pl.set_sensitive(false);
+        let btn_delete_pl = Button::with_label("Delete");
+        btn_delete_pl.add_css_class("pl-btn");
+        btn_delete_pl.set_sensitive(false);
+
+        manage_btn_row.append(&btn_new_pl);
+        manage_btn_row.append(&btn_rename_pl);
+        manage_btn_row.append(&btn_delete_pl);
+        manage_vbox.append(&manage_btn_row);
+
+        // Enable/disable rename+delete based on manage list selection
+        {
+            let btn_ren = btn_rename_pl.clone();
+            let btn_del = btn_delete_pl.clone();
+            pl_manage_list.connect_row_selected(move |_, opt| {
+                let has = opt.is_some();
+                btn_ren.set_sensitive(has);
+                btn_del.set_sensitive(has);
+            });
+        }
+
+        // ── New playlist ──────────────────────────────────────────────────
+        {
+            let state_rc      = state.clone();
+            let pl_list_ref   = pl_manage_list.clone();
+            let sidebar_ref   = sidebar.clone();
+            let sub_rows_ref  = pl_sub_rows.clone();
+            let expanded_ref  = playlists_expanded.clone();
+            let pl_sub_ref    = pl_sub_stack.clone();
+            let load          = load_pl_by_id.clone();
+            let win_wk        = win.downgrade();
+            btn_new_pl.connect_clicked(move |_| {
+                let dialog = gtk4::Window::builder()
+                    .title("New Playlist").modal(true).resizable(false).default_width(300)
+                    .build();
+                if let Some(w) = win_wk.upgrade() { dialog.set_transient_for(Some(&w)); }
+                let vbox = GtkBox::new(Orientation::Vertical, 8);
+                vbox.set_margin_top(12); vbox.set_margin_bottom(12);
+                vbox.set_margin_start(12); vbox.set_margin_end(12);
+                let lbl = Label::builder().label("Playlist name:").halign(Align::Start).build();
+                let name_entry = Entry::new();
+                name_entry.set_text("New Playlist");
+                name_entry.set_hexpand(true);
+                let dialog_btns = GtkBox::new(Orientation::Horizontal, 6);
+                dialog_btns.set_halign(Align::End);
+                let cancel_btn = Button::with_label("Cancel");
+                let ok_btn = Button::with_label("Create");
+                ok_btn.add_css_class("suggested-action");
+                dialog_btns.append(&cancel_btn);
+                dialog_btns.append(&ok_btn);
+                vbox.append(&lbl); vbox.append(&name_entry); vbox.append(&dialog_btns);
+                dialog.set_child(Some(&vbox));
+                let d = dialog.clone();
+                cancel_btn.connect_clicked(move |_| { d.close(); });
+                let d       = dialog.clone();
+                let e       = name_entry.clone();
+                let state2  = state_rc.clone();
+                let pl_ref2 = pl_list_ref.clone();
+                let sid2    = sidebar_ref.clone();
+                let sub2    = sub_rows_ref.clone();
+                let exp2    = expanded_ref.clone();
+                let pls2    = pl_sub_ref.clone();
+                let load2   = load.clone();
+                ok_btn.connect_clicked(move |_| {
+                    let name = e.text().to_string();
+                    if name.is_empty() { return; }
+                    if let Some(id) = state2.borrow().media_lib.as_ref()
+                        .and_then(|lib| lib.create_playlist(&name).ok())
+                    {
+                        // Add to manage list
+                        let row_lbl = Label::builder().label(&name)
+                            .halign(Align::Start)
+                            .margin_start(8).margin_end(8)
+                            .margin_top(3).margin_bottom(3).build();
+                        let manage_row = ListBoxRow::new();
+                        manage_row.set_widget_name(&id.to_string());
+                        manage_row.set_child(Some(&row_lbl));
+                        pl_ref2.append(&manage_row);
+                        pl_ref2.select_row(Some(&manage_row));
+
+                        // Add sidebar sub-row and select it
+                        let s_lbl = Label::builder().label(&name)
+                            .halign(Align::Start)
+                            .margin_start(24).margin_end(8)
+                            .margin_top(4).margin_bottom(4).build();
+                        let s_row = ListBoxRow::new();
+                        s_row.set_widget_name(&format!("pl:{}", id));
+                        s_row.set_child(Some(&s_lbl));
+                        s_row.set_visible(exp2.get());
+                        sid2.append(&s_row);
+                        sub2.borrow_mut().push(s_row.clone());
+                        sid2.select_row(Some(&s_row));
+
+                        load2(id);
+                        pls2.set_visible_child_name("pl-edit");
+                    }
+                    d.close();
+                });
+                let ok2 = ok_btn.clone();
+                name_entry.connect_activate(move |_| { ok2.activate(); });
+                dialog.present();
+            });
+        }
+
+        // ── Rename playlist ───────────────────────────────────────────────
+        {
+            let state_rc    = state.clone();
+            let pl_list_ref = pl_manage_list.clone();
+            let sidebar_ref = sidebar.clone();
+            let win_wk      = win.downgrade();
+            btn_rename_pl.connect_clicked(move |_| {
+                let sel_row = match pl_list_ref.selected_row() { Some(r) => r, None => return };
+                let id = match sel_row.widget_name().to_string().parse::<i64>() {
+                    Ok(v) => v, Err(_) => return,
+                };
+                let current = sel_row.child()
+                    .and_then(|c| c.downcast::<Label>().ok())
+                    .map(|l| l.text().to_string()).unwrap_or_default();
+
+                let dialog = gtk4::Window::builder()
+                    .title("Rename Playlist").modal(true).resizable(false).default_width(300)
+                    .build();
+                if let Some(w) = win_wk.upgrade() { dialog.set_transient_for(Some(&w)); }
+                let vbox = GtkBox::new(Orientation::Vertical, 8);
+                vbox.set_margin_top(12); vbox.set_margin_bottom(12);
+                vbox.set_margin_start(12); vbox.set_margin_end(12);
+                let lbl = Label::builder().label("New name:").halign(Align::Start).build();
+                let name_entry = Entry::new();
+                name_entry.set_text(&gtk_safe(&current));
+                name_entry.set_hexpand(true);
+                let dialog_btns = GtkBox::new(Orientation::Horizontal, 6);
+                dialog_btns.set_halign(Align::End);
+                let cancel_btn = Button::with_label("Cancel");
+                let ok_btn     = Button::with_label("Rename");
+                ok_btn.add_css_class("suggested-action");
+                dialog_btns.append(&cancel_btn); dialog_btns.append(&ok_btn);
+                vbox.append(&lbl); vbox.append(&name_entry); vbox.append(&dialog_btns);
+                dialog.set_child(Some(&vbox));
+                let d = dialog.clone();
+                cancel_btn.connect_clicked(move |_| { d.close(); });
+                let d        = dialog.clone();
+                let e        = name_entry.clone();
+                let state2   = state_rc.clone();
+                let sel2     = sel_row.clone();
+                let sid2     = sidebar_ref.clone();
+                ok_btn.connect_clicked(move |_| {
+                    let name = e.text().to_string();
+                    if name.is_empty() { return; }
+                    if let Some(ref lib) = state2.borrow().media_lib {
+                        let _ = lib.rename_playlist(id, &name);
+                    }
+                    // Update manage-list label
+                    if let Some(c) = sel2.child() {
+                        if let Ok(l) = c.downcast::<Label>() { l.set_text(&gtk_safe(&name)); }
+                    }
+                    // Update sidebar sub-row label
+                    let target = format!("pl:{}", id);
+                    let mut i = 0i32;
+                    loop {
+                        match sid2.row_at_index(i) {
+                            Some(sr) if sr.widget_name() == target => {
+                                if let Some(c) = sr.child() {
+                                    if let Ok(l) = c.downcast::<Label>() {
+                                        l.set_text(&gtk_safe(&name));
+                                    }
+                                }
+                                break;
+                            }
+                            Some(_) => { i += 1; }
+                            None => break,
+                        }
+                    }
+                    d.close();
+                });
+                let ok2 = ok_btn.clone();
+                name_entry.connect_activate(move |_| { ok2.activate(); });
+                dialog.present();
+            });
+        }
+
+        // ── Delete playlist ───────────────────────────────────────────────
+        {
+            let state_rc    = state.clone();
+            let pl_list_ref = pl_manage_list.clone();
+            let sidebar_ref = sidebar.clone();
+            let sub_rows_ref = pl_sub_rows.clone();
+            let pl_sub_ref  = pl_sub_stack.clone();
+            let et          = editing_tracks.clone();
+            let saved       = saved_track_ids.clone();
+            let rebuild     = rebuild_track_list.clone();
+            let win_wk      = win.downgrade();
+            btn_delete_pl.connect_clicked(move |_| {
+                let sel_row = match pl_list_ref.selected_row() { Some(r) => r, None => return };
+                let id = match sel_row.widget_name().to_string().parse::<i64>() {
+                    Ok(v) => v, Err(_) => return,
+                };
+                let pl_name = sel_row.child()
+                    .and_then(|c| c.downcast::<Label>().ok())
+                    .map(|l| l.text().to_string()).unwrap_or_default();
+
+                let dialog = gtk4::AlertDialog::builder()
+                    .message(format!("Delete \"{}\"?", pl_name))
+                    .detail("The playlist file on disk is not deleted.")
+                    .buttons(vec!["Cancel".to_string(), "Delete".to_string()])
+                    .cancel_button(0).default_button(1).modal(true).build();
+
+                let state2    = state_rc.clone();
+                let pl_ref2   = pl_list_ref.clone();
+                let sid2      = sidebar_ref.clone();
+                let sub2      = sub_rows_ref.clone();
+                let pls2      = pl_sub_ref.clone();
+                let sel2      = sel_row.clone();
+                let et2       = et.clone();
+                let saved2    = saved.clone();
+                let rebuild2  = rebuild.clone();
+                dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |result| {
+                    if result != Ok(1) { return; }
+                    if let Some(ref lib) = state2.borrow().media_lib {
+                        let _ = lib.remove_playlist(id);
+                    }
+                    // Remove from manage list
+                    pl_ref2.remove(&sel2);
+                    // Remove sidebar sub-row
+                    let target = format!("pl:{}", id);
+                    let mut sub = sub2.borrow_mut();
+                    sub.retain(|r| {
+                        if r.widget_name() == target { sid2.remove(r); false } else { true }
+                    });
+                    // Go back to manage page
+                    et2.borrow_mut().clear();
+                    saved2.borrow_mut().clear();
+                    rebuild2();
+                    pls2.set_visible_child_name("pl-manage");
+                });
+            });
+        }
+
+        pl_sub_stack.add_named(&manage_vbox, Some("pl-manage"));
+    }
+
+    // ── Build "pl-edit" page ──────────────────────────────────────────────
+    {
+        let edit_vbox = GtkBox::new(Orientation::Vertical, 0);
+
+        // Track editor header (shows current playlist name + editor label)
+        let edit_header = Label::builder()
+            .label("Playlist Editor")
+            .halign(Align::Start)
+            .margin_start(8).margin_top(4).margin_bottom(4)
+            .build();
+        edit_header.add_css_class("ml-section-header");
+        edit_vbox.append(&edit_header);
+
+        let track_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Never)
             .vscrollbar_policy(PolicyType::Automatic)
             .vexpand(true)
             .hexpand(true)
-            .min_content_height(300)
-            .child(&preview_list)
+            .child(&*track_list)
             .build();
-        hbox.append(&preview_scroll);
+        edit_vbox.append(&track_scroll);
 
+        // Track editor controls
+        let edit_btn_row = GtkBox::new(Orientation::Horizontal, 4);
+        edit_btn_row.set_margin_start(4); edit_btn_row.set_margin_end(4);
+        edit_btn_row.set_margin_top(4);  edit_btn_row.set_margin_bottom(4);
+
+        let btn_add_files_pl  = Button::with_label("+ Files");  btn_add_files_pl.add_css_class("pl-btn");
+        let btn_add_folder_pl = Button::with_label("+ Folder"); btn_add_folder_pl.add_css_class("pl-btn");
+        let btn_remove_tracks = Button::with_label("− Remove"); btn_remove_tracks.add_css_class("pl-btn");
+        let btn_remove_all    = Button::with_label("Clear");    btn_remove_all.add_css_class("pl-btn");
+        let spring_pl         = GtkBox::new(Orientation::Horizontal, 0); spring_pl.set_hexpand(true);
+        let btn_set_pl        = Button::with_label("▶ Set as Playlist"); btn_set_pl.add_css_class("pl-btn");
+        let btn_revert_pl     = Button::with_label("↺ Revert"); btn_revert_pl.add_css_class("pl-btn");
+        let btn_save_pl       = Button::with_label("Save");     btn_save_pl.add_css_class("pl-btn");
+
+        edit_btn_row.append(&btn_add_files_pl);
+        edit_btn_row.append(&btn_add_folder_pl);
+        edit_btn_row.append(&btn_remove_tracks);
+        edit_btn_row.append(&btn_remove_all);
+        edit_btn_row.append(&spring_pl);
+        edit_btn_row.append(&btn_set_pl);
+        edit_btn_row.append(&btn_revert_pl);
+        edit_btn_row.append(&btn_save_pl);
+        edit_vbox.append(&edit_btn_row);
+
+        // ── Add Files ─────────────────────────────────────────────────────
         {
             let state_rc = state.clone();
-            let preview_ref = preview_list.clone();
-            pl_list.connect_row_selected(move |_, opt_row| {
-                while let Some(child) = preview_ref.first_child() {
-                    preview_ref.remove(&child);
+            let et       = editing_tracks.clone();
+            let rebuild  = rebuild_track_list.clone();
+            let win_wk   = win.downgrade();
+            btn_add_files_pl.connect_clicked(move |_| {
+                let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
+                let filter = gtk4::FileFilter::new();
+                filter.set_name(Some("Audio files"));
+                for mime in &["audio/mpeg","audio/flac","audio/ogg","audio/opus",
+                               "audio/wav","audio/x-wav","audio/aac","audio/mp4","audio/x-m4a"] {
+                    filter.add_mime_type(mime);
                 }
-                let row = match opt_row {
-                    Some(r) => r,
-                    None => return,
-                };
-                let path = row.widget_name().to_string();
-                if path.is_empty() {
-                    return;
+                let fs = gio::ListStore::new::<gtk4::FileFilter>();
+                fs.append(&filter);
+                dialog.set_filters(Some(&fs));
+                let state2  = state_rc.clone();
+                let et2     = et.clone();
+                let rebuild2 = rebuild.clone();
+                let parent  = win_wk.upgrade();
+                dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
+                    let Ok(list) = result else { return };
+                    let paths: Vec<PathBuf> = (0..list.n_items())
+                        .filter_map(|i| list.item(i))
+                        .filter_map(|o| o.downcast::<gio::File>().ok())
+                        .filter_map(|f| f.path())
+                        .collect();
+                    if paths.is_empty() { return; }
+                    let s = state2.borrow();
+                    if let Some(ref lib) = s.media_lib {
+                        let existing: std::collections::HashSet<String> =
+                            et2.borrow().iter().map(|t| t.path.clone()).collect();
+                        for p in &paths {
+                            if let Some(p_str) = p.to_str() {
+                                if !existing.contains(p_str) {
+                                    if let Ok(t) = lib.track_by_path(p_str) {
+                                        et2.borrow_mut().push(t);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    drop(s);
+                    rebuild2();
+                });
+            });
+        }
+
+        // ── Add Folder ────────────────────────────────────────────────────
+        {
+            let state_rc = state.clone();
+            let et       = editing_tracks.clone();
+            let rebuild  = rebuild_track_list.clone();
+            let win_wk   = win.downgrade();
+            btn_add_folder_pl.connect_clicked(move |_| {
+                let dialog = gtk4::FileDialog::builder().title("Add Folder").build();
+                let state2   = state_rc.clone();
+                let et2      = et.clone();
+                let rebuild2 = rebuild.clone();
+                let parent   = win_wk.upgrade();
+                dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
+                    let Ok(file) = result else { return };
+                    let Some(folder) = file.path() else { return };
+                    let Some(folder_str) = folder.to_str() else { return };
+                    let s = state2.borrow();
+                    if let Some(ref lib) = s.media_lib {
+                        let existing: std::collections::HashSet<String> =
+                            et2.borrow().iter().map(|t| t.path.clone()).collect();
+                        let new_tracks: Vec<_> = lib.all_tracks().unwrap_or_default()
+                            .into_iter()
+                            .filter(|t| t.path.starts_with(folder_str) && !existing.contains(&t.path))
+                            .collect();
+                        et2.borrow_mut().extend(new_tracks);
+                    }
+                    drop(s);
+                    rebuild2();
+                });
+            });
+        }
+
+        // ── Remove selected tracks ────────────────────────────────────────
+        {
+            let tl      = track_list.clone();
+            let et      = editing_tracks.clone();
+            let rebuild = rebuild_track_list.clone();
+            btn_remove_tracks.connect_clicked(move |_| {
+                let mut to_remove: Vec<usize> = Vec::new();
+                let mut i = 0i32;
+                loop {
+                    match tl.row_at_index(i) {
+                        Some(row) => { if row.is_selected() { to_remove.push(i as usize); } i += 1; }
+                        None => break,
+                    }
                 }
-                let s = state_rc.borrow();
-                if let Some(ref lib) = s.media_lib {
-                    let pl = crate::media_library::LibPlaylist {
-                        id: 0,
-                        path: path.clone(),
-                        name: String::new(),
-                        tracks: Vec::new(),
-                    };
-                    let tracks = lib.load_playlist_tracks(&pl).unwrap_or_default();
-                    for t in &tracks {
-                        let artist = t.artist.as_deref().unwrap_or("-");
-                        let title = t.title.as_deref().unwrap_or(&t.filename);
-                        let lbl = Label::builder()
-                            .label(format!("{} — {}", artist, title))
-                            .halign(Align::Start)
-                            .margin_start(8)
-                            .margin_end(8)
-                            .margin_top(2)
-                            .margin_bottom(2)
-                            .build();
-                        let prow = ListBoxRow::new();
-                        prow.set_child(Some(&lbl));
-                        preview_ref.append(&prow);
+                let mut tracks = et.borrow_mut();
+                for idx in to_remove.into_iter().rev() {
+                    if idx < tracks.len() { tracks.remove(idx); }
+                }
+                drop(tracks);
+                rebuild();
+            });
+        }
+
+        // ── Remove All ────────────────────────────────────────────────────
+        {
+            let et      = editing_tracks.clone();
+            let rebuild = rebuild_track_list.clone();
+            btn_remove_all.connect_clicked(move |_| {
+                et.borrow_mut().clear();
+                rebuild();
+            });
+        }
+
+        // ── Revert ────────────────────────────────────────────────────────
+        {
+            let load    = load_pl_by_id.clone();
+            let sidebar_ref = sidebar.clone();
+            btn_revert_pl.connect_clicked(move |_| {
+                // Find currently-selected sidebar pl: row
+                let mut i = 0i32;
+                loop {
+                    match sidebar_ref.row_at_index(i) {
+                        Some(row) => {
+                            let name = row.widget_name().to_string();
+                            if row.is_selected() {
+                                if let Some(id_str) = name.strip_prefix("pl:") {
+                                    if let Ok(id) = id_str.parse::<i64>() { load(id); }
+                                }
+                                break;
+                            }
+                            i += 1;
+                        }
+                        None => break,
                     }
                 }
             });
         }
 
-        let btn_row = GtkBox::new(Orientation::Horizontal, 4);
-        btn_row.set_margin_start(4);
-        btn_row.set_margin_end(4);
-        btn_row.set_margin_bottom(4);
-
-        let btn_set_pl = Button::with_label("▶ Set as Playlist");
-        btn_set_pl.add_css_class("pl-btn");
-
-        let spring = GtkBox::new(Orientation::Horizontal, 0);
-        spring.set_hexpand(true);
-        btn_row.append(&spring);
-        btn_row.append(&btn_set_pl);
-
+        // ── Save playlist ─────────────────────────────────────────────────
         {
-            let state_rc = state.clone();
-            let pl_ref = pl_list.clone();
+            let state_rc    = state.clone();
+            let et          = editing_tracks.clone();
+            let saved       = saved_track_ids.clone();
+            let sidebar_ref = sidebar.clone();
+            btn_save_pl.connect_clicked(move |_| {
+                let mut i = 0i32;
+                loop {
+                    match sidebar_ref.row_at_index(i) {
+                        Some(row) => {
+                            let name = row.widget_name().to_string();
+                            if row.is_selected() {
+                                if let Some(id_str) = name.strip_prefix("pl:") {
+                                    if let Ok(id) = id_str.parse::<i64>() {
+                                        let track_ids: Vec<i64> =
+                                            et.borrow().iter().map(|t| t.id).collect();
+                                        if let Some(ref lib) = state_rc.borrow().media_lib {
+                                            let _ = lib.save_playlist_tracks(id, &track_ids);
+                                            *saved.borrow_mut() = track_ids;
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                            i += 1;
+                        }
+                        None => break,
+                    }
+                }
+            });
+        }
+
+        // ── Set as active Playlist ────────────────────────────────────────
+        {
+            let state_rc   = state.clone();
+            let et         = editing_tracks.clone();
+            let rebuild_pl = rebuild_playlist.clone();
             btn_set_pl.connect_clicked(move |_| {
-                let row = match pl_ref.selected_row() {
-                    Some(r) => r,
-                    None => return,
-                };
-                let path = row.widget_name().to_string();
-                if path.is_empty() {
-                    return;
-                }
-                let pl = crate::media_library::LibPlaylist {
-                    id: 0,
-                    path: path.clone(),
-                    name: String::new(),
-                    tracks: Vec::new(),
-                };
+                let tracks: Vec<crate::media_library::LibTrack> = et.borrow().clone();
                 let mut s = state_rc.borrow_mut();
-                let tracks_opt = s
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| lib.load_playlist_tracks(&pl).ok());
-                if let Some(lib_tracks) = tracks_opt {
-                    s.playlist = crate::model::Playlist::new();
-                    for lt in &lib_tracks {
-                        let track = libtrack_to_track(lt);
-                        s.playlist.add(track);
-                    }
+                s.playlist = crate::model::Playlist::new();
+                for lt in &tracks {
+                    let track = libtrack_to_track(lt);
+                    s.playlist.add(track);
                 }
+                drop(s);
+                rebuild_pl();
             });
         }
 
-        let pl_vbox = GtkBox::new(Orientation::Vertical, 0);
-        pl_vbox.append(&hbox);
-        pl_vbox.append(&btn_row);
+        pl_sub_stack.add_named(&edit_vbox, Some("pl-edit"));
+    }
 
+    {
+        let pl_vbox = GtkBox::new(Orientation::Vertical, 0);
+        pl_vbox.append(&*pl_sub_stack);
         stack.add_named(&pl_vbox, Some("playlists"));
     }
 
     // Wire sidebar to stack.
     {
-        let stack_ref = stack.clone();
+        let stack_ref   = stack.clone();
+        let pl_sub_ref  = pl_sub_stack.clone();
+        let load        = load_pl_by_id.clone();
+        let state_rc    = state.clone();
+        let expanded_rc = playlists_expanded.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
-            let row = match opt_row {
-                Some(r) => r,
-                None => return,
-            };
-            let page = match row.index() {
-                0 => "files",
-                1 => "playlists",
-                _ => return,
-            };
-            stack_ref.set_visible_child_name(page);
+            let row = match opt_row { Some(r) => r, None => return };
+            let name = row.widget_name().to_string();
+
+            if name == "files" {
+                stack_ref.set_visible_child_name("files");
+            } else if name == "playlists" {
+                stack_ref.set_visible_child_name("playlists");
+                pl_sub_ref.set_visible_child_name("pl-manage");
+                // Expand sub-rows on navigation
+                if !expanded_rc.get() {
+                    expanded_rc.set(true);
+                }
+            } else if let Some(id_str) = name.strip_prefix("pl:") {
+                if let Ok(id) = id_str.parse::<i64>() {
+                    stack_ref.set_visible_child_name("playlists");
+                    load(id);
+                    pl_sub_ref.set_visible_child_name("pl-edit");
+                    // Update editor header with playlist name
+                    if let Some(ref lib) = state_rc.borrow().media_lib {
+                        if let Ok(pl) = lib.playlist_by_id(id) {
+                            // The edit_header label is inside the pl-edit page child chain
+                            if let Some(edit_page) = pl_sub_ref.child_by_name("pl-edit") {
+                                if let Ok(vbox) = edit_page.downcast::<GtkBox>() {
+                                    if let Some(first) = vbox.first_child() {
+                                        if let Ok(lbl) = first.downcast::<Label>() {
+                                            lbl.set_text(&gtk_safe(&pl.name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
+
+    // Persist sidebar expansion state on window close (handled in close_request below).
+
 
     sidebar.select_row(sidebar.row_at_index(0).as_ref());
 
@@ -9558,12 +10198,14 @@ fn open_media_library_window(
 
     win.connect_close_request({
         let state = state.clone();
+        let playlists_expanded = playlists_expanded.clone();
         move |w| {
             let (w_size, h_size) = (w.width(), w.height());
             {
                 let mut s = state.borrow_mut();
                 s.config.window.ml_width = w_size;
                 s.config.window.ml_height = h_size;
+                s.config.window.ml_playlists_expanded = playlists_expanded.get();
                 s.rebuild_ml_callback = None;
             }
             let _ = state.borrow().config.save();

@@ -47,6 +47,7 @@ struct Id3EditorView: View {
     @State private var tagCtx: OpaquePointer? = nil
     @State private var filePath: String = ""
     @State private var isReadOnly: Bool = false
+    @State private var fileMissing: Bool = false
     @State private var saveStatus: String = ""
 
     /// All editable field values, keyed by frame ID.
@@ -91,7 +92,17 @@ struct Id3EditorView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                if isReadOnly {
+                if fileMissing {
+                    Text("File not found")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.red)
+                        )
+                } else if isReadOnly {
                     Text("Read-only")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(theme.background)
@@ -118,6 +129,18 @@ struct Id3EditorView: View {
 
             // ── Main content ──────────────────────────────────────────────────
             ScrollView {
+                if fileMissing {
+                    HStack(spacing: 8) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                        Text("The file could not be found. It may have been moved, renamed, or deleted.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(Color.red.opacity(0.08))
+                }
                 HStack(alignment: .top, spacing: 0) {
                     // Artwork
                     if let img = artwork {
@@ -181,7 +204,7 @@ struct Id3EditorView: View {
                         .foregroundStyle(saveStatus.contains("✓") ? Color.green : Color.red)
                 }
 
-                if !isReadOnly {
+                if !isReadOnly && !fileMissing {
                     Button("Save") { saveTag() }
                         .buttonStyle(Id3ControlButtonStyle(theme: theme))
                         .disabled(tagCtx == nil)
@@ -235,6 +258,15 @@ struct Id3EditorView: View {
         }
         guard !path.isEmpty else { return }
         filePath = path
+
+        // Missing-file check
+        guard FileManager.default.fileExists(atPath: path) else {
+            fileMissing = true
+            isReadOnly = false
+            if let existing = tagCtx { sparkamp_tag_close(existing); tagCtx = nil }
+            return
+        }
+        fileMissing = false
 
         if let existing = tagCtx { sparkamp_tag_close(existing); tagCtx = nil }
         guard let newTag = path.withCString({ sparkamp_tag_open($0) }) else { return }

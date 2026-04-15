@@ -1131,6 +1131,109 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Return the standard directory for user-created playlists.
+    ///
+    /// `~/.config/sparkamp/playlists/` on Linux/macOS.  Created if it does
+    /// not exist yet.
+    pub fn playlists_dir() -> PathBuf {
+        let dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sparkamp")
+            .join("playlists");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// Create a new empty playlist with `name`.
+    ///
+    /// Writes an `#EXTM3U` header to
+    /// `~/.config/sparkamp/playlists/<name>.m3u` (sanitising the name for
+    /// the filesystem) and registers the file in the library database.
+    /// Returns the new playlist row id.
+    pub fn create_playlist(&self, name: &str) -> Result<i64> {
+        let dir = Self::playlists_dir();
+        let safe = name
+            .chars()
+            .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
+            .collect::<String>();
+        let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
+
+        // Avoid clobbering an existing file.
+        let mut path = dir.join(format!("{safe}.m3u"));
+        let mut counter = 1u32;
+        while path.exists() {
+            path = dir.join(format!("{safe}_{counter}.m3u"));
+            counter += 1;
+        }
+        std::fs::write(&path, b"#EXTM3U\n")
+            .with_context(|| format!("create playlist file {}", path.display()))?;
+        self.add_playlist_file(&path.to_string_lossy())
+    }
+
+    /// Rename playlist `id`.  Updates both the database record and the `.m3u`
+    /// file on disk.
+    pub fn rename_playlist(&self, id: i64, new_name: &str) -> Result<()> {
+        let pl = self.playlist_by_id(id)?;
+        let old_path = Path::new(&pl.path);
+        let safe = new_name
+            .chars()
+            .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
+            .collect::<String>();
+        let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
+        let new_filename = format!("{safe}.m3u");
+        let new_path = old_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(&new_filename);
+        if old_path != new_path.as_path() {
+            std::fs::rename(old_path, &new_path).with_context(|| {
+                format!("rename {} → {}", old_path.display(), new_path.display())
+            })?;
+        }
+        self.conn.execute(
+            "UPDATE playlists SET name = ?1, path = ?2 WHERE id = ?3",
+            params![new_name, new_path.to_string_lossy().as_ref(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Overwrite the playlist `.m3u` file with the tracks specified by
+    /// `track_ids` (in order).  IDs not found in the library are skipped.
+    pub fn save_playlist_tracks(&self, id: i64, track_ids: &[i64]) -> Result<()> {
+        let pl = self.playlist_by_id(id)?;
+        let mut lines = vec!["#EXTM3U".to_string()];
+        for &tid in track_ids {
+            if let Ok(path) = self.conn.query_row(
+                "SELECT path FROM tracks WHERE id = ?1",
+                params![tid],
+                |row| row.get::<_, String>(0),
+            ) {
+                lines.push(path);
+            }
+        }
+        std::fs::write(&pl.path, lines.join("\n") + "\n")
+            .with_context(|| format!("write playlist {}", pl.path))?;
+        Ok(())
+    }
+
+    /// Look up a playlist by its row ID.
+    pub fn playlist_by_id(&self, id: i64) -> Result<LibPlaylist> {
+        self.conn
+            .query_row(
+                "SELECT id, path, name FROM playlists WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(LibPlaylist {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        name: row.get(2)?,
+                        tracks: Vec::new(),
+                    })
+                },
+            )
+            .context("playlist_by_id")
+    }
+
     /// Add a playlist `.m3u` file to the library without scanning for audio tracks.
     ///
     /// Inserts the playlist into a synthetic folder (created if needed) whose
