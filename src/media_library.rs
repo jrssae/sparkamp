@@ -943,8 +943,13 @@ impl MediaLibrary {
             .context("all_playlists query")
     }
 
-    /// Parse an `.m3u` file and look up each referenced path in the `tracks`
-    /// table.  Paths not found in the library are silently skipped.
+    /// Parse an `.m3u` file and return all entries.
+    ///
+    /// Tracks found in the library are returned with full metadata.  Tracks
+    /// whose paths are not present in the library (e.g. Windows-originated
+    /// playlists, moved files) are returned as synthetic [`LibTrack`] stubs
+    /// with `id = 0` so the UI can show them as missing rather than silently
+    /// dropping them.
     pub fn load_playlist_tracks(&self, playlist: &LibPlaylist) -> Result<Vec<LibTrack>> {
         let content = std::fs::read_to_string(&playlist.path)
             .with_context(|| format!("read playlist {}", playlist.path))?;
@@ -955,29 +960,134 @@ impl MediaLibrary {
             .unwrap_or_else(|| Path::new("/"));
 
         let mut tracks = Vec::new();
+        // Title (and optionally artist) extracted from the preceding #EXTINF line.
+        let mut extinf_title: Option<String> = None;
+        let mut extinf_artist: Option<String> = None;
+        let mut extinf_secs: Option<f64> = None;
+
         for line in content.lines() {
             let line = line.trim();
-            // Skip comment lines and extended M3U directives.
-            if line.is_empty() || line.starts_with('#') {
+            if line.is_empty() { continue; }
+
+            // Capture #EXTINF metadata for the next path line.
+            if let Some(rest) = line.strip_prefix("#EXTINF:") {
+                // Format: #EXTINF:<seconds>,<display-name>
+                // display-name may be "Artist - Title" or just "Title".
+                let (secs_str, display) = rest.split_once(',').unwrap_or((rest, ""));
+                extinf_secs = secs_str.trim().parse::<f64>().ok();
+                let display = display.trim();
+                if let Some((a, t)) = display.split_once(" - ") {
+                    extinf_artist = Some(a.trim().to_string());
+                    extinf_title  = Some(t.trim().to_string());
+                } else if !display.is_empty() {
+                    extinf_title = Some(display.to_string());
+                }
                 continue;
             }
+            // Skip other directives.
+            if line.starts_with('#') { continue; }
+
+            // Extract just the filename from the raw line, handling both
+            // Unix ('/') and Windows ('\') separators.
+            let raw_line = line;
+            let filename: String = raw_line
+                .replace('\\', "/")
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .last()
+                .unwrap_or(raw_line)
+                .to_string();
+
             // Resolve the path relative to the playlist file.
-            let path = if Path::new(line).is_absolute() {
-                PathBuf::from(line)
+            // Replace Windows backslashes so Path can work with the string.
+            let normalised = raw_line.replace('\\', "/");
+            let path = if Path::new(&normalised).is_absolute() {
+                PathBuf::from(&normalised)
             } else {
-                base.join(line)
+                base.join(&normalised)
             };
             let path_str = match path.canonicalize() {
                 Ok(p) => p.to_string_lossy().into_owned(),
                 Err(_) => path.to_string_lossy().into_owned(),
             };
 
-            // Look up in the DB; skip tracks not in the library.
+            // 1. Exact path match in DB.
             if let Ok(t) = self.track_by_path(&path_str) {
                 tracks.push(t);
+                extinf_title = None;
+                extinf_artist = None;
+                extinf_secs = None;
+                continue;
             }
+
+            // 2. Filename-only fallback (handles tracks moved within the library).
+            if let Ok(t) = self.track_by_filename_first(&filename) {
+                tracks.push(t);
+                extinf_title = None;
+                extinf_artist = None;
+                extinf_secs = None;
+                continue;
+            }
+
+            // 3. Not in library — emit a synthetic missing-file stub so the UI
+            //    can display it in red rather than hiding it entirely.
+            let title  = extinf_title.take();
+            let artist = extinf_artist.take();
+            let secs   = extinf_secs.take();
+            let sort   = SortKeys {
+                title:    title.as_deref().unwrap_or(&filename).to_lowercase(),
+                artist:   artist.as_deref().unwrap_or("").to_lowercase(),
+                filename: filename.to_lowercase(),
+                ..SortKeys::default()
+            };
+            tracks.push(LibTrack {
+                id:              0,          // sentinel: not in the DB
+                path:            raw_line.to_string(),
+                filename,
+                title,
+                artist,
+                length_secs:     secs,
+                album:           None,
+                track_num:       None,
+                genre:           None,
+                year:            None,
+                bpm:             None,
+                bitrate:         None,
+                channels:        None,
+                filetype:        None,
+                play_count:      0,
+                last_played:     None,
+                comment:         None,
+                album_artist:    None,
+                disc_num:        None,
+                disc_total:      None,
+                composer:        None,
+                original_artist: None,
+                copyright:       None,
+                url:             None,
+                encoded_by:      None,
+                lyric:           None,
+                artwork_path:    None,
+                last_scanned:    None,
+                sort_keys:       sort,
+            });
         }
         Ok(tracks)
+    }
+
+    /// Return the first track in the library whose `filename` column matches
+    /// (case-sensitive).  Used as a fallback when the full path has changed.
+    fn track_by_filename_first(&self, filename: &str) -> Result<LibTrack> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
+                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                    comment, album_artist, disc_num, disc_total, composer, original_artist,
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+             FROM tracks WHERE filename = ?1 LIMIT 1",
+        )?;
+        let mut rows = Self::collect_tracks(&mut stmt, params![filename])?;
+        rows.pop()
+            .ok_or_else(|| anyhow::anyhow!("track not found by filename: {}", filename))
     }
 
     /// Remove a single track from the library by its row ID.
