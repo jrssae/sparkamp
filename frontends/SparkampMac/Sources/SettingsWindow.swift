@@ -352,14 +352,65 @@ private struct MediaLibraryPane: View {
 
     var body: some View {
         Form {
+            // ── Open / rescan ──────────────────────────────────────────────
             Section("Library") {
-                Button("Open Media Library") {
-                    model.openMediaLibrary()
-                    model.mediaLibraryVisible = true
+                HStack {
+                    Button("Open Media Library") {
+                        model.openMediaLibrary()
+                        model.mediaLibraryVisible = true
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Rescan All") {
+                        model.openMediaLibrary()
+                        model.mlRescanAll()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent)
             }
 
+            // ── Watched folders ────────────────────────────────────────────
+            Section {
+                if model.mlFolders.isEmpty {
+                    Text("No folders added yet.")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
+                } else {
+                    ForEach(model.mlFolders, id: \.self) { folder in
+                        HStack {
+                            Image(systemName: "folder")
+                                .foregroundStyle(.secondary)
+                            Text(folder)
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button {
+                                model.mlRemoveFolder(folder)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("Watched Folders")
+                    Spacer()
+                    Button {
+                        model.openMediaLibrary()
+                        model.mlOpenAddFolderPicker()
+                    } label: {
+                        Label("Add Folder…", systemImage: "plus")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            // ── Tools ──────────────────────────────────────────────────────
             Section("Tools") {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
@@ -379,5 +430,9 @@ private struct MediaLibraryPane: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            // Ensure folder list is fresh when the pane is shown.
+            if model.mlIsOpen { model.mlRefreshFolders() }
+        }
     }
 }

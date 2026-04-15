@@ -28,6 +28,12 @@ struct MLTrack: Identifiable {
     let bitrate: Int
     let playCount: Int
     let scanned: Bool
+    // Extended DB fields
+    let albumArtist: String
+    let discNum: Int
+    let bpm: String
+    let comment: String
+    let composer: String
 
     var durationString: String { formatDuration(lengthSecs) }
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
@@ -46,6 +52,11 @@ struct MLTrack: Identifiable {
         bitrate     = Int(c.bitrate)
         playCount   = Int(c.play_count)
         scanned     = c.scanned != 0
+        albumArtist = cBytesToString(&c.album_artist)
+        discNum     = Int(c.disc_num)
+        bpm         = cBytesToString(&c.bpm)
+        comment     = cBytesToString(&c.comment)
+        composer    = cBytesToString(&c.composer)
     }
 }
 
@@ -158,6 +169,8 @@ final class SparkampModel: ObservableObject {
     @Published var id3EditorVisible: Bool = false
     /// Playlist index to open in the ID3 editor; -1 means the current track.
     @Published var id3TrackIndex: Int = -1
+    /// When set, the ID3 editor opens this file path directly (bypasses playlist index).
+    @Published var id3DirectPath: String = ""
     /// Artwork image currently shown in the ID3 editor (shared with the artwork zoom window).
     @Published var artworkImage: NSImage? = nil
     /// When true, the artwork zoom window is open.
@@ -176,7 +189,9 @@ final class SparkampModel: ObservableObject {
     @Published var mlScanDone: Int = 0
     @Published var mlScanTotal: Int = 0
     /// True once `sparkamp_ml_open` has been called.
-    private(set) var mlIsOpen: Bool = false
+    var mlIsOpen: Bool = false
+    /// Counts ticks while a scan is running; used to throttle intermediate reloads.
+    private var mlScanTickCount: Int = 0
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false
@@ -292,9 +307,16 @@ final class SparkampModel: ObservableObject {
             sparkamp_ml_scan_progress(ctx, &done, &total)
             mlScanDone  = Int(done)
             mlScanTotal = Int(total)
+            mlScanTickCount += 1
+            // Refresh the track list every ~1 s so metadata fills in live.
+            if mlScanTickCount % 10 == 0 {
+                mlFetchTracks()
+            }
             if !stillRunning {
                 mlScanRunning = false
+                mlScanTickCount = 0
                 mlRefreshFolders()
+                mlFetchTracks()
             }
         }
     }
@@ -741,6 +763,9 @@ final class SparkampModel: ObservableObject {
         mlScanDone = 0
         mlScanTotal = 0
         mlRefreshFolders()
+        // Phase 1 (fast, synchronous) already ran inside sparkamp_ml_add_folder.
+        // Reload immediately so filename-only rows appear before Phase 2 finishes.
+        mlFetchTracks()
     }
 
     func mlRemoveFolder(_ path: String) {
@@ -756,6 +781,8 @@ final class SparkampModel: ObservableObject {
         mlScanRunning = true
         mlScanDone = 0
         mlScanTotal = 0
+        // Show current state immediately; tick() will refresh periodically.
+        mlFetchTracks()
     }
 
     func mlCancelScan() {
@@ -778,6 +805,25 @@ final class SparkampModel: ObservableObject {
         sparkamp_ml_set_current_playlist(ctx, Int32(index))
         refreshAll()
         saveState()
+    }
+
+    func mlReplacePlaylistWith(ids: [Int64]) {
+        guard let ctx = ctx else { return }
+        clearPlaylist()
+        mlAddToPlaylist(ids: ids)
+    }
+
+    func mlRemoveTracks(ids: [Int64]) {
+        guard let ctx = ctx else { return }
+        for id in ids {
+            sparkamp_ml_remove_track(ctx, id)
+        }
+        mlFetchTracks()
+    }
+
+    func mlOpenTagEditorForPath(_ path: String) {
+        id3DirectPath = path
+        id3EditorVisible = true
     }
 
     func mlOpenAddFolderPicker() {

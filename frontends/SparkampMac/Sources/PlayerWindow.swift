@@ -169,6 +169,11 @@ struct PlayerWindow: View {
                         }
                         .help("Jump to Track (j)")
 
+                        ModeButton(icon: "music.note.house", isActive: model.mediaLibraryVisible) {
+                            model.openMediaLibrary()
+                        }
+                        .help("Media Library (⌘L)")
+
                         ModeButton(icon: "slider.horizontal.3", isActive: model.equalizerVisible) {
                             model.equalizerVisible.toggle()
                             model.saveState()

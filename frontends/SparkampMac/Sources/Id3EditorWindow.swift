@@ -51,7 +51,6 @@ struct Id3EditorView: View {
 
     /// All editable field values, keyed by frame ID.
     @State private var fieldValues: [String: String] = [:]
-    @State private var extraFrames: [(id: String, value: String)] = []
     @State private var artwork: NSImage? = nil
 
     @State private var showCustomize = false
@@ -167,29 +166,6 @@ struct Id3EditorView: View {
                 }
                 .padding(.vertical, 8)
 
-                // Extra / unknown frames
-                if !extraFrames.isEmpty {
-                    Divider()
-                        .padding(.horizontal, 12)
-                    DisclosureGroup("Additional Frames (\(extraFrames.count))") {
-                        ForEach(extraFrames, id: \.id) { frame in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(frame.id)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(theme.playlistDurationText)
-                                    .frame(width: 40, alignment: .leading)
-                                Text(frame.value)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(theme.playlistText)
-                                    .lineLimit(2)
-                            }
-                            .padding(.vertical, 1)
-                            .padding(.horizontal, 12)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                }
             }
             .background(theme.lcdBackground)
 
@@ -221,6 +197,7 @@ struct Id3EditorView: View {
         .onAppear { loadTag() }
         .onDisappear {
             if let t = tagCtx { sparkamp_tag_close(t); tagCtx = nil }
+            model.id3DirectPath = ""
             model.id3EditorVisible = false
         }
         .onChange(of: model.id3TrackIndex) { _, _ in loadTag() }
@@ -245,12 +222,17 @@ struct Id3EditorView: View {
     private func loadTag() {
         guard let ctx = model.ctx else { return }
 
-        let idx = model.id3TrackIndex >= 0 ? model.id3TrackIndex : model.currentIndex
-        guard idx >= 0 else { return }
-
-        let pathPtr = sparkamp_playlist_get_path(ctx, Int32(idx))
-        let path = pathPtr.map { String(cString: $0) } ?? ""
-        sparkamp_free_string(pathPtr)
+        // If a direct path was set (e.g. from the media library), use it.
+        let path: String
+        if !model.id3DirectPath.isEmpty {
+            path = model.id3DirectPath
+        } else {
+            let idx = model.id3TrackIndex >= 0 ? model.id3TrackIndex : model.currentIndex
+            guard idx >= 0 else { return }
+            let pathPtr = sparkamp_playlist_get_path(ctx, Int32(idx))
+            path = pathPtr.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(pathPtr)
+        }
         guard !path.isEmpty else { return }
         filePath = path
 
@@ -266,20 +248,6 @@ struct Id3EditorView: View {
             values[cfg.id] = readField(tag: newTag, frameId: cfg.id)
         }
         fieldValues = values
-
-        // Collect extra (non-configured) frames
-        let configuredIds = Set(fieldConfigs.map(\.id))
-        let frameCount = Int(sparkamp_tag_frame_count(newTag))
-        extraFrames = (0..<frameCount).compactMap { i in
-            let idPtr  = sparkamp_tag_frame_id(newTag, Int32(i))
-            let valPtr = sparkamp_tag_frame_value(newTag, Int32(i))
-            let frameId  = idPtr.map  { String(cString: $0) } ?? ""
-            let frameVal = valPtr.map { String(cString: $0) } ?? ""
-            sparkamp_free_string(idPtr)
-            sparkamp_free_string(valPtr)
-            guard !frameId.isEmpty, !configuredIds.contains(frameId) else { return nil }
-            return (id: frameId, value: frameVal)
-        }
 
         // Read artwork
         artwork = nil

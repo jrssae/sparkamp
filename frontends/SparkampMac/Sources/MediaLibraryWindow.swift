@@ -18,12 +18,16 @@ struct MediaLibraryView: View {
     @State private var sortOrder: [KeyPathComparator<MLTrack>] = [KeyPathComparator(\.title)]
     @State private var selection: Set<Int64> = []
 
-    // Column visibility — stored as bitmask in UserDefaults
-    // Bit 0=Title 1=Artist 2=Album 3=Duration 4=Track# 5=Year 6=Genre 7=Bitrate 8=Filename 9=PlayCount
-    @AppStorage("sparkamp.ml.columns") private var columnMask: Int = 0b0000000111   // Title/Artist/Album visible by default
+    // Column visibility — stored as bitmask in UserDefaults.
+    // Columns match the ID3 editor field list plus ML-only fields.
+    // Bit layout:
+    //  0=Title(TIT2)  1=Artist(TPE1)  2=Album(TALB)   3=AlbumArtist(TPE2)
+    //  4=Genre(TCON)  5=Composer(TCOM) 6=Year(TDRC)   7=Track#(TRCK)
+    //  8=Disc#(TPOS)  9=BPM(TBPM)    10=Comment(COMM) 11=Duration
+    // 12=Bitrate      13=Filename     14=PlayCount
+    @AppStorage("sparkamp.ml.columns") private var columnMask: Int = 0b0000000000111   // Title/Artist/Album
 
-    // Manage Folders sheet
-    @State private var showManageFolders = false
+    private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,68 +45,67 @@ struct MediaLibraryView: View {
                 // Search field
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.playlistDurationText)
                         .font(.system(size: 11))
                     TextField("Search…", text: $searchQuery)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12))
+                        .foregroundStyle(theme.playlistText)
                         .frame(width: 180)
                         .onChange(of: searchQuery) { _, _ in debounceSearch() }
                     if !searchQuery.isEmpty {
                         Button { searchQuery = ""; reload() } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.playlistDurationText)
                                 .font(.system(size: 11))
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(4)
-                .background(Color(.textBackgroundColor).opacity(0.6))
+                .background(theme.lcdBackground.opacity(0.8))
                 .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(theme.windowBorder, lineWidth: 1)
+                )
 
-                Divider().frame(height: 16)
+                Divider()
+                    .background(theme.windowBorder)
+                    .frame(height: 16)
 
-                Button { model.mlOpenAddFolderPicker() }
-                    label: { Label("Add Folder", systemImage: "folder.badge.plus") }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-
-                Button { model.mlRescanAll() }
-                    label: { Label("Rescan", systemImage: "arrow.clockwise") }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-
-                Button { showManageFolders = true }
-                    label: { Label("Folders…", systemImage: "folder") }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-
-                // Column picker
+                // Column picker (Files tab only)
                 if selectedTab == 0 {
                     Menu {
-                        columnToggle("Title",      bit: 0)
-                        columnToggle("Artist",     bit: 1)
-                        columnToggle("Album",      bit: 2)
-                        columnToggle("Duration",   bit: 3)
-                        columnToggle("Track #",    bit: 4)
-                        columnToggle("Year",       bit: 5)
-                        columnToggle("Genre",      bit: 6)
-                        columnToggle("Bitrate",    bit: 7)
-                        columnToggle("Filename",   bit: 8)
-                        columnToggle("Play Count", bit: 9)
+                        columnToggle("Title",        bit: 0)
+                        columnToggle("Artist",        bit: 1)
+                        columnToggle("Album",         bit: 2)
+                        columnToggle("Album Artist",  bit: 3)
+                        columnToggle("Genre",         bit: 4)
+                        columnToggle("Composer",      bit: 5)
+                        columnToggle("Year",          bit: 6)
+                        columnToggle("Track #",       bit: 7)
+                        columnToggle("Disc #",        bit: 8)
+                        columnToggle("BPM",           bit: 9)
+                        columnToggle("Comment",       bit: 10)
+                        Divider()
+                        columnToggle("Duration",      bit: 11)
+                        columnToggle("Bitrate",       bit: 12)
+                        columnToggle("Filename",      bit: 13)
+                        columnToggle("Play Count",    bit: 14)
                     } label: {
                         Image(systemName: "tablecells")
                             .font(.system(size: 11))
+                            .foregroundStyle(theme.modeBtnText)
                     }
                     .menuStyle(.borderlessButton)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color(.windowBackgroundColor))
+            .background(theme.background)
 
-            Divider()
+            Divider().background(theme.windowBorder)
 
             // ── Scan progress bar ─────────────────────────────────────────────
             if model.mlScanRunning {
@@ -118,7 +121,7 @@ struct MediaLibraryView: View {
                          ? "Scanning \(model.mlScanDone)/\(model.mlScanTotal)…"
                          : "Scanning…")
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.playlistDurationText)
 
                     Button("Cancel") { model.mlCancelScan() }
                         .buttonStyle(.borderless)
@@ -127,9 +130,9 @@ struct MediaLibraryView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
-                .background(Color(.windowBackgroundColor))
+                .background(theme.background)
 
-                Divider()
+                Divider().background(theme.windowBorder)
             }
 
             // ── Tab content ───────────────────────────────────────────────────
@@ -139,20 +142,20 @@ struct MediaLibraryView: View {
                 playlistsTab
             }
 
-            Divider()
+            Divider().background(theme.windowBorder)
 
             // ── Bottom bar ────────────────────────────────────────────────────
             HStack {
                 Text("\(model.mlTracks.count) tracks")
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.playlistDurationText)
 
                 Spacer()
 
                 if !selection.isEmpty {
                     Text("\(selection.count) selected")
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.playlistDurationText)
 
                     Button("Add to Playlist") {
                         model.mlAddToPlaylist(ids: Array(selection))
@@ -163,8 +166,10 @@ struct MediaLibraryView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Color(.windowBackgroundColor))
+            .background(theme.background)
         }
+        .background(theme.background)
+        .preferredColorScheme(themeManager.preferredColorScheme)
         .onAppear {
             model.openMediaLibrary()
             reload()
@@ -174,85 +179,29 @@ struct MediaLibraryView: View {
         }
         .onChange(of: selectedTab) { _, _ in selection.removeAll() }
         .onDisappear { model.mediaLibraryVisible = false }
-        .sheet(isPresented: $showManageFolders) { manageFoldersSheet }
     }
 
     // MARK: - Files tab
 
     @ViewBuilder
     private var filesTab: some View {
-        let tracks = filteredAndSorted
-
-        Table(tracks, selection: $selection, sortOrder: $sortOrder) {
-            if isVisible(0) {
-                TableColumn("Title", value: \.title) { t in
-                    Text(t.title.isEmpty ? t.filename : t.title)
-                        .lineLimit(1)
-                        .foregroundStyle(t.scanned ? .primary : .secondary)
+        MLFilesTable(
+            tracks: model.mlTracks,
+            selection: $selection,
+            sortOrder: $sortOrder,
+            columnMask: columnMask,
+            theme: theme
+        ) { event in
+            switch event {
+            case .sortChanged:   model.mlTracks.sort(using: sortOrder)
+            case .addToPlaylist(let ids):     model.mlAddToPlaylist(ids: ids)
+            case .replacePlaylist(let ids):   model.mlReplacePlaylistWith(ids: ids)
+            case .editTags(let id):
+                if let track = model.mlTracks.first(where: { $0.id == id }) {
+                    model.mlOpenTagEditorForPath(track.path)
                 }
+            case .removeTracks(let ids):      model.mlRemoveTracks(ids: ids)
             }
-            if isVisible(1) {
-                TableColumn("Artist", value: \.artist) { t in
-                    Text(t.artist).lineLimit(1)
-                }
-            }
-            if isVisible(2) {
-                TableColumn("Album", value: \.album) { t in
-                    Text(t.album).lineLimit(1)
-                }
-            }
-            if isVisible(3) {
-                TableColumn("Duration", value: \.lengthSecs) { t in
-                    Text(t.durationString)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-                .width(60)
-            }
-            if isVisible(4) {
-                TableColumn("#", value: \.trackNum) { t in
-                    Text(t.trackNum > 0 ? "\(t.trackNum)" : "")
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-                .width(40)
-            }
-            if isVisible(5) {
-                TableColumn("Year", value: \.year) { t in
-                    Text(t.year > 0 ? "\(t.year)" : "")
-                        .lineLimit(1)
-                }
-                .width(50)
-            }
-            if isVisible(6) {
-                TableColumn("Genre", value: \.genre) { t in
-                    Text(t.genre).lineLimit(1)
-                }
-            }
-            if isVisible(7) {
-                TableColumn("Bitrate", value: \.bitrate) { t in
-                    Text(t.bitrate > 0 ? "\(t.bitrate)" : "")
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-                .width(60)
-            }
-            if isVisible(8) {
-                TableColumn("Filename", value: \.filename) { t in
-                    Text(t.filename).lineLimit(1)
-                }
-            }
-            if isVisible(9) {
-                TableColumn("Plays", value: \.playCount) { t in
-                    Text("\(t.playCount)")
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-                .width(50)
-            }
-        }
-        .onChange(of: sortOrder) { _, _ in
-            model.mlTracks.sort(using: sortOrder)
         }
     }
 
@@ -264,76 +213,18 @@ struct MediaLibraryView: View {
             VStack {
                 Spacer()
                 Text("No saved playlists found.")
-                    .foregroundStyle(.secondary)
-                Text("Add folders containing M3U playlists.")
+                    .foregroundStyle(theme.playlistDurationText)
+                Text("Add folders containing M3U playlists in Settings → Media Library.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.playlistDurationText)
                 Spacer()
             }
+            .background(theme.playlistBg)
         } else {
-            PlaylistsListView(playlists: model.mlSavedPlaylists) { idx in
+            PlaylistsListView(playlists: model.mlSavedPlaylists, theme: theme) { idx in
                 model.mlSetCurrentPlaylist(idx)
             }
         }
-    }
-
-    // MARK: - Manage Folders sheet
-
-    @ViewBuilder
-    private var manageFoldersSheet: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Watched Folders")
-                .font(.headline)
-                .padding()
-
-            Divider()
-
-            if model.mlFolders.isEmpty {
-                HStack {
-                    Spacer()
-                    Text("No folders added yet.")
-                        .foregroundStyle(.secondary)
-                        .padding()
-                    Spacer()
-                }
-            } else {
-                List {
-                    ForEach(model.mlFolders, id: \.self) { folder in
-                        HStack {
-                            Image(systemName: "folder")
-                                .foregroundStyle(.secondary)
-                            Text(folder)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer()
-                            Button {
-                                model.mlRemoveFolder(folder)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                                    .foregroundStyle(.red)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-
-            HStack {
-                Button { model.mlOpenAddFolderPicker() } label: {
-                    Label("Add Folder…", systemImage: "plus")
-                }
-                .buttonStyle(.borderless)
-
-                Spacer()
-
-                Button("Done") { showManageFolders = false }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding()
-        }
-        .frame(width: 480, height: 320)
     }
 
     // MARK: - Helpers
@@ -347,14 +238,10 @@ struct MediaLibraryView: View {
         Toggle(label, isOn: Binding(
             get: { isVisible(bit) },
             set: { on in
-                if on { columnMask |= (1 << bit) }
+                if on { columnMask |=  (1 << bit) }
                 else  { columnMask &= ~(1 << bit) }
             }
         ))
-    }
-
-    private var filteredAndSorted: [MLTrack] {
-        model.mlTracks
     }
 
     private func debounceSearch() {
@@ -368,15 +255,19 @@ struct MediaLibraryView: View {
         let q = query ?? searchQuery
         let colName = sortOrder.first.map { kp -> String? in
             switch kp.keyPath {
-            case \MLTrack.title:     return "title"
-            case \MLTrack.artist:    return "artist"
-            case \MLTrack.album:     return "album"
-            case \MLTrack.lengthSecs: return "duration"
-            case \MLTrack.trackNum:  return "num"
-            case \MLTrack.year:      return "year"
-            case \MLTrack.genre:     return "genre"
-            case \MLTrack.bitrate:   return "bitrate"
-            case \MLTrack.playCount: return "num"
+            case \MLTrack.title:       return "title"
+            case \MLTrack.artist:      return "artist"
+            case \MLTrack.album:       return "album"
+            case \MLTrack.albumArtist: return "album_artist"
+            case \MLTrack.genre:       return "genre"
+            case \MLTrack.composer:    return "composer"
+            case \MLTrack.year:        return "year"
+            case \MLTrack.trackNum:    return "num"
+            case \MLTrack.discNum:     return "disc_num"
+            case \MLTrack.bpm:         return "bpm"
+            case \MLTrack.lengthSecs:  return "duration"
+            case \MLTrack.bitrate:     return "bitrate"
+            case \MLTrack.playCount:   return "play_count"
             default: return nil
             }
         } ?? nil
@@ -386,10 +277,151 @@ struct MediaLibraryView: View {
     }
 }
 
+// MARK: - ML table event
+
+enum MLTableEvent {
+    case sortChanged
+    case addToPlaylist([Int64])
+    case replacePlaylist([Int64])
+    case editTags(Int64)
+    case removeTracks([Int64])
+}
+
+// MARK: - ML files table
+
+struct MLFilesTable: View {
+    let tracks: [MLTrack]
+    @Binding var selection: Set<Int64>
+    @Binding var sortOrder: [KeyPathComparator<MLTrack>]
+    let columnMask: Int
+    let theme: SkinTheme
+    let onEvent: (MLTableEvent) -> Void
+
+    private func isVisible(_ bit: Int) -> Bool { (columnMask >> bit) & 1 == 1 }
+
+    var body: some View {
+        Table(tracks, selection: $selection, sortOrder: $sortOrder) {
+            columnsA()
+            columnsB()
+        }
+        .onChange(of: sortOrder) { _, _ in onEvent(.sortChanged) }
+        .contextMenu(forSelectionType: Int64.self) { ids in
+            Button("Add to Playlist")          { onEvent(.addToPlaylist(Array(ids))) }
+            Button("Replace Current Playlist") { onEvent(.replacePlaylist(Array(ids))) }
+            Divider()
+            Button("Edit / View ID3 Tags") {
+                if let first = ids.first { onEvent(.editTags(first)) }
+            }
+            .disabled(ids.count != 1)
+            Divider()
+            Button("Remove from Library", role: .destructive) {
+                onEvent(.removeTracks(Array(ids)))
+            }
+        }
+        .background(theme.playlistBg)
+        .scrollContentBackground(.hidden)
+        .foregroundStyle(theme.playlistText)
+    }
+
+    // ── Split into two builders so the type-checker doesn't time out ─────────
+
+    @TableColumnBuilder<MLTrack, KeyPathComparator<MLTrack>>
+    private func columnsA() -> some TableColumnContent<MLTrack, KeyPathComparator<MLTrack>> {
+        if isVisible(0) {
+            TableColumn("Title", value: \.title) { row in
+                Text(row.title.isEmpty ? row.filename : row.title)
+                    .foregroundStyle(row.scanned ? theme.playlistText : theme.playlistDurationText)
+            }
+        }
+        if isVisible(1) {
+            TableColumn("Artist", value: \.artist) { row in
+                Text(row.artist).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(2) {
+            TableColumn("Album", value: \.album) { row in
+                Text(row.album).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(3) {
+            TableColumn("Album Artist", value: \.albumArtist) { row in
+                Text(row.albumArtist).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(4) {
+            TableColumn("Genre", value: \.genre) { row in
+                Text(row.genre).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(5) {
+            TableColumn("Composer", value: \.composer) { row in
+                Text(row.composer).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(6) {
+            TableColumn("Year", value: \.year) { row in
+                Text(row.year > 0 ? "\(row.year)" : "").foregroundStyle(theme.playlistText)
+            }
+        }
+    }
+
+    @TableColumnBuilder<MLTrack, KeyPathComparator<MLTrack>>
+    private func columnsB() -> some TableColumnContent<MLTrack, KeyPathComparator<MLTrack>> {
+        if isVisible(7) {
+            TableColumn("Track #", value: \.trackNum) { row in
+                Text(row.trackNum > 0 ? "\(row.trackNum)" : "")
+                    .foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(8) {
+            TableColumn("Disc #", value: \.discNum) { row in
+                Text(row.discNum > 0 ? "\(row.discNum)" : "")
+                    .foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(9) {
+            TableColumn("BPM", value: \.bpm) { row in
+                Text(row.bpm).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(10) {
+            TableColumn("Comment", value: \.comment) { row in
+                Text(row.comment).foregroundStyle(theme.playlistText)
+            }
+        }
+        if isVisible(11) {
+            TableColumn("Duration", value: \.lengthSecs) { row in
+                let total = Int(row.lengthSecs)
+                let m = total / 60, s = total % 60
+                Text(total > 0 ? String(format: "%d:%02d", m, s) : "")
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+        }
+        if isVisible(12) {
+            TableColumn("Bitrate", value: \.bitrate) { row in
+                Text(row.bitrate > 0 ? "\(row.bitrate) kbps" : "")
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+        }
+        if isVisible(13) {
+            TableColumn("Filename", value: \.filename) { row in
+                Text(row.filename).foregroundStyle(theme.playlistDurationText)
+            }
+        }
+        if isVisible(14) {
+            TableColumn("Play Count", value: \.playCount) { row in
+                Text(row.playCount > 0 ? "\(row.playCount)" : "")
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+        }
+    }
+}
+
 // MARK: - Playlists list subview
 
 private struct PlaylistsListView: View {
     let playlists: [MLPlaylistItem]
+    let theme: SkinTheme
     let onLoad: (Int) -> Void
 
     var body: some View {
@@ -397,16 +429,20 @@ private struct PlaylistsListView: View {
             ForEach(playlists, id: \.id) { (pl: MLPlaylistItem) in
                 HStack {
                     Image(systemName: "music.note.list")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.playlistDurationText)
                     Text(pl.name)
+                        .foregroundStyle(theme.playlistText)
                     Spacer()
                     Button("Load") { onLoad(pl.id) }
                         .buttonStyle(.borderless)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(theme.titleText)
                         .font(.system(size: 11))
                 }
                 .padding(.vertical, 2)
+                .listRowBackground(theme.playlistBg)
             }
         }
+        .background(theme.playlistBg)
+        .scrollContentBackground(.hidden)
     }
 }

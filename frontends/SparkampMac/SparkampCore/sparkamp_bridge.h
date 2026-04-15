@@ -230,7 +230,12 @@ typedef struct {
     double   length_secs;
     int32_t  bitrate;
     int32_t  play_count;
-    int32_t  scanned;   /* 1 = full metadata read; 0 = filename only */
+    int32_t  scanned;        /* 1 = full metadata read; 0 = filename only */
+    uint8_t  album_artist[256];
+    int32_t  disc_num;
+    uint8_t  bpm[32];
+    uint8_t  comment[512];
+    uint8_t  composer[256];
 } SparkampLibTrack;
 
 /** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */
@@ -256,6 +261,7 @@ void    sparkamp_ml_add_folder(
 
 /** Remove a watched folder (matched by path) and all its tracks. */
 void    sparkamp_ml_remove_folder(SparkampCtx *ctx, const char *path);
+void    sparkamp_ml_remove_track(SparkampCtx *ctx, int64_t track_id);
 
 /**
  * Rescan all watched folders.  Same two-phase approach as sparkamp_ml_add_folder.

@@ -1719,6 +1719,12 @@ pub struct SparkampLibTrack {
     pub play_count: c_int,
     /// 1 if full metadata has been read; 0 if only filename is available.
     pub scanned: c_int,
+    // Extended fields (all present in the DB after a full scan)
+    pub album_artist: [u8; 256],
+    pub disc_num: c_int,
+    pub bpm: [u8; 32],
+    pub comment: [u8; 512],
+    pub composer: [u8; 256],
 }
 
 impl SparkampLibTrack {
@@ -1736,6 +1742,11 @@ impl SparkampLibTrack {
             bitrate: t.bitrate.unwrap_or(0) as c_int,
             play_count: t.play_count as c_int,
             scanned: if t.last_scanned.is_some() { 1 } else { 0 },
+            album_artist: [0u8; 256],
+            disc_num: t.disc_num.unwrap_or(0) as c_int,
+            bpm: [0u8; 32],
+            comment: [0u8; 512],
+            composer: [0u8; 256],
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -1751,6 +1762,10 @@ impl SparkampLibTrack {
         copy_str(&mut out.artist, t.artist.as_deref().unwrap_or(""));
         copy_str(&mut out.album, t.album.as_deref().unwrap_or(""));
         copy_str(&mut out.genre, t.genre.as_deref().unwrap_or(""));
+        copy_str(&mut out.album_artist, t.album_artist.as_deref().unwrap_or(""));
+        copy_str(&mut out.bpm, t.bpm.as_deref().unwrap_or(""));
+        copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
+        copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
         out
     }
 }
@@ -1918,6 +1933,20 @@ pub unsafe extern "C" fn sparkamp_ml_remove_folder(
         if let Err(e) = ml.remove_folder(folder_id) {
             eprintln!("[sparkamp_ml_remove_folder] {e}");
         }
+    }
+}
+
+/// Remove a single track from the media library by its database ID.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_remove_track(
+    ctx: *mut SparkampCtx,
+    track_id: i64,
+) {
+    if ctx.is_null() { return; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    if let Err(e) = ml.remove_track(track_id) {
+        eprintln!("[sparkamp_ml_remove_track] {e}");
     }
 }
 
