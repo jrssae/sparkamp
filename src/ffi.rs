@@ -24,7 +24,8 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::path::Path;
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 /// Serialises all GStreamer Discoverer calls to one at a time.
@@ -41,6 +42,7 @@ use crate::config::Config;
 use crate::controller::{Controller, NavResult};
 use crate::duration_probe;
 use crate::engine::{Player, PlayerState};
+use crate::media_library::MediaLibrary;
 use crate::model::{Playlist, Track};
 use crate::plugin_manager::PluginManager;
 use crate::shuffle::{RepeatMode, ShuffleState};
@@ -82,6 +84,16 @@ pub struct SparkampCtx {
     error_userdata: *mut c_void,
     position_cb: Option<unsafe extern "C" fn(*mut c_void, c_double, c_double)>,
     position_userdata: *mut c_void,
+
+    // ── Media Library ────────────────────────────────────────────────────────
+    /// Main-thread read/query connection.  Populated by `sparkamp_ml_open`.
+    media_library: Option<MediaLibrary>,
+    /// High 32 bits = total files to scan; low 32 bits = files scanned so far.
+    ml_progress: Arc<AtomicU64>,
+    /// True while a background scan is running.
+    ml_scanning: Arc<AtomicBool>,
+    /// Set to true to request scan cancellation.
+    ml_cancel: Arc<AtomicBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +147,10 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         error_userdata: std::ptr::null_mut(),
         position_cb: None,
         position_userdata: std::ptr::null_mut(),
+        media_library: None,
+        ml_progress: Arc::new(AtomicU64::new(0)),
+        ml_scanning: Arc::new(AtomicBool::new(false)),
+        ml_cancel: Arc::new(AtomicBool::new(false)),
     });
 
     // Apply persisted volume to the player.
@@ -1677,4 +1693,815 @@ pub unsafe extern "C" fn sparkamp_tag_free_artwork(ptr: *mut u8, len: c_int) {
         return;
     }
     drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len as usize)));
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — C-compatible track struct
+// ---------------------------------------------------------------------------
+
+/// A single track row returned from the media library.
+///
+/// All string fields are null-terminated and UTF-8.  Fixed-size arrays avoid
+/// heap allocation on every row — callers should treat them as opaque blobs
+/// and copy out what they need.
+#[repr(C)]
+pub struct SparkampLibTrack {
+    pub id: i64,
+    pub path: [u8; 512],
+    pub title: [u8; 256],
+    pub artist: [u8; 256],
+    pub album: [u8; 256],
+    pub genre: [u8; 64],
+    pub year: c_int,
+    pub track_num: c_int,
+    pub length_secs: f64,
+    pub bitrate: c_int,
+    pub play_count: c_int,
+    /// 1 if full metadata has been read; 0 if only filename is available.
+    pub scanned: c_int,
+}
+
+impl SparkampLibTrack {
+    fn from_lib_track(t: &crate::media_library::LibTrack) -> Self {
+        let mut out = Self {
+            id: t.id,
+            path: [0u8; 512],
+            title: [0u8; 256],
+            artist: [0u8; 256],
+            album: [0u8; 256],
+            genre: [0u8; 64],
+            year: t.year.unwrap_or(0) as c_int,
+            track_num: t.track_num.unwrap_or(0) as c_int,
+            length_secs: t.length_secs.unwrap_or(0.0),
+            bitrate: t.bitrate.unwrap_or(0) as c_int,
+            play_count: t.play_count as c_int,
+            scanned: if t.last_scanned.is_some() { 1 } else { 0 },
+        };
+        fn copy_str(dst: &mut [u8], src: &str) {
+            let bytes = src.as_bytes();
+            let n = bytes.len().min(dst.len() - 1);
+            dst[..n].copy_from_slice(&bytes[..n]);
+            dst[n] = 0;
+        }
+        copy_str(&mut out.path, &t.path);
+        copy_str(
+            &mut out.title,
+            t.title.as_deref().unwrap_or(&t.filename),
+        );
+        copy_str(&mut out.artist, t.artist.as_deref().unwrap_or(""));
+        copy_str(&mut out.album, t.album.as_deref().unwrap_or(""));
+        copy_str(&mut out.genre, t.genre.as_deref().unwrap_or(""));
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — lifecycle
+// ---------------------------------------------------------------------------
+
+/// Open (or create) the media library database.
+///
+/// Must be called before any other `sparkamp_ml_*` function.  Safe to call
+/// multiple times — subsequent calls are no-ops if the DB is already open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_open(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    if ctx.media_library.is_none() {
+        match MediaLibrary::open() {
+            Ok(ml) => {
+                let _ = ml.cleanup_on_startup();
+                ctx.media_library = Some(ml);
+            }
+            Err(e) => eprintln!("[sparkamp_ml_open] {e}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — folder management
+// ---------------------------------------------------------------------------
+
+/// Return the number of watched folders, or 0 if the ML is not open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_folder_count(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    ml.list_folders().map(|v| v.len() as c_int).unwrap_or(0)
+}
+
+/// Return the path of the folder at `index` as a heap-allocated C string.
+///
+/// The caller must free it with `sparkamp_free_string`.
+/// Returns null if the index is out of range or the ML is not open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_folder_path(
+    ctx: *const SparkampCtx,
+    index: c_int,
+) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else {
+        return std::ptr::null_mut();
+    };
+    let folders = ml.list_folders().unwrap_or_default();
+    let idx = index as usize;
+    if idx >= folders.len() {
+        return std::ptr::null_mut();
+    }
+    CString::new(folders[idx].1.as_str())
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Add a folder to the media library and start a two-phase scan.
+///
+/// Phase 1 (fast, synchronous on calling thread): registers the folder and
+/// adds all audio file paths to the DB with filename-only metadata.
+///
+/// Phase 2 (background): reads ID3/Vorbis/Opus/FLAC tags for every new file.
+/// `progress_cb(userdata, done, total)` is called from the background thread
+/// on each file.  `done_cb(userdata)` is called when the scan completes.
+/// Both callbacks may be null.
+///
+/// The background thread opens a **separate** DB connection, so the main
+/// thread can continue querying while the scan runs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_add_folder(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+    progress_cb: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int)>,
+    done_cb: Option<unsafe extern "C" fn(*mut c_void)>,
+    userdata: *mut c_void,
+) {
+    if ctx.is_null() || path.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s.to_owned(),
+        Err(_) => return,
+    };
+
+    // Phase 1 — fast: register folder + filename-only entries (synchronous).
+    let folder_id = match ml.add_folder(&path_str) {
+        Ok(res) => res.id(),
+        Err(e) => {
+            eprintln!("[sparkamp_ml_add_folder] add_folder: {e}");
+            return;
+        }
+    };
+    if let Err(e) = ml.rescan_folder_fast(folder_id, &path_str) {
+        eprintln!("[sparkamp_ml_add_folder] rescan_fast: {e}");
+        return;
+    }
+
+    // Phase 2 — background: full metadata scan.
+    let cancel = Arc::clone(&ctx.ml_cancel);
+    let scanning = Arc::clone(&ctx.ml_scanning);
+    let progress_atomic = Arc::clone(&ctx.ml_progress);
+    cancel.store(false, Ordering::Relaxed);
+    scanning.store(true, Ordering::Relaxed);
+
+    // Cast userdata to usize so the closure is Send (raw pointers are not Send).
+    let ud_addr = userdata as usize;
+
+    rayon::spawn(move || {
+        let ud: *mut c_void = ud_addr as *mut c_void;
+        let result = MediaLibrary::open_at(&MediaLibrary::db_path_pub()).and_then(|bg_ml| {
+            let atomic = &progress_atomic;
+            bg_ml.scan_folder(folder_id, &cancel, |done, total| {
+                let packed = ((total as u64) << 32) | (done as u64);
+                atomic.store(packed, Ordering::Relaxed);
+                if let Some(cb) = progress_cb {
+                    unsafe { cb(ud, done as c_int, total as c_int) };
+                }
+            })
+        });
+        if let Err(e) = result {
+            eprintln!("[sparkamp_ml_add_folder] background scan: {e}");
+        }
+        scanning.store(false, Ordering::Relaxed);
+        if let Some(cb) = done_cb {
+            unsafe { cb(ud) };
+        }
+    });
+}
+
+/// Remove a watched folder and all its tracks from the media library.
+///
+/// The folder is matched by path string.  No-op if the path is not in the DB.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_remove_folder(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) {
+    if ctx.is_null() || path.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let folders = ml.list_folders().unwrap_or_default();
+    if let Some((folder_id, _)) = folders.into_iter().find(|(_, p)| p == path_str) {
+        if let Err(e) = ml.remove_folder(folder_id) {
+            eprintln!("[sparkamp_ml_remove_folder] {e}");
+        }
+    }
+}
+
+/// Rescan all watched folders.
+///
+/// Same two-phase pattern as `sparkamp_ml_add_folder`.  `progress_cb` and
+/// `done_cb` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_rescan_all(
+    ctx: *mut SparkampCtx,
+    progress_cb: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int)>,
+    done_cb: Option<unsafe extern "C" fn(*mut c_void)>,
+    userdata: *mut c_void,
+) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+
+    // Fast phase: re-discover any new files in all folders.
+    let folders = ml.list_folders().unwrap_or_default();
+    for (folder_id, folder_path) in &folders {
+        if let Err(e) = ml.rescan_folder_fast(*folder_id, folder_path) {
+            eprintln!("[sparkamp_ml_rescan_all] fast rescan {folder_path}: {e}");
+        }
+    }
+
+    let cancel = Arc::clone(&ctx.ml_cancel);
+    let scanning = Arc::clone(&ctx.ml_scanning);
+    let progress_atomic = Arc::clone(&ctx.ml_progress);
+    cancel.store(false, Ordering::Relaxed);
+    scanning.store(true, Ordering::Relaxed);
+
+    let ud_addr = userdata as usize;
+
+    rayon::spawn(move || {
+        let ud: *mut c_void = ud_addr as *mut c_void;
+        let result = MediaLibrary::open_at(&MediaLibrary::db_path_pub()).and_then(|bg_ml| {
+            let atomic = &progress_atomic;
+            bg_ml.scan_all_folders(&cancel, |done, total| {
+                let packed = ((total as u64) << 32) | (done as u64);
+                atomic.store(packed, Ordering::Relaxed);
+                if let Some(cb) = progress_cb {
+                    unsafe { cb(ud, done as c_int, total as c_int) };
+                }
+            })
+        });
+        if let Err(e) = result {
+            eprintln!("[sparkamp_ml_rescan_all] background scan: {e}");
+        }
+        scanning.store(false, Ordering::Relaxed);
+        if let Some(cb) = done_cb {
+            unsafe { cb(ud) };
+        }
+    });
+}
+
+/// Cancel a running background scan.  No-op if no scan is running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_cancel_scan(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).ml_cancel.store(true, Ordering::Relaxed);
+}
+
+/// Returns 1 if a background scan is running, 0 otherwise.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_scan_is_running(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    (*ctx).ml_scanning.load(Ordering::Relaxed) as c_int
+}
+
+/// Reads the scan progress atomically.
+///
+/// `done_out` and `total_out` are set to the number of files processed and
+/// the total number of files to process, respectively.  Both are set to 0
+/// if no scan is running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_scan_progress(
+    ctx: *const SparkampCtx,
+    done_out: *mut c_int,
+    total_out: *mut c_int,
+) {
+    if ctx.is_null() || done_out.is_null() || total_out.is_null() {
+        return;
+    }
+    let packed = (*ctx).ml_progress.load(Ordering::Relaxed);
+    *done_out = (packed & 0xFFFF_FFFF) as c_int;
+    *total_out = (packed >> 32) as c_int;
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — track queries
+// ---------------------------------------------------------------------------
+
+/// Return the number of tracks matching `query` (UTF-8 search string).
+///
+/// Pass an empty string or null to count all tracks.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_track_count(
+    ctx: *const SparkampCtx,
+    query: *const c_char,
+) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let q = if query.is_null() {
+        ""
+    } else {
+        match CStr::from_ptr(query).to_str() {
+            Ok(s) => s,
+            Err(_) => "",
+        }
+    };
+    let tracks = if q.is_empty() {
+        ml.all_tracks()
+    } else {
+        ml.search_tracks(q)
+    };
+    tracks.map(|v| v.len() as c_int).unwrap_or(0)
+}
+
+/// Fetch a page of tracks into a caller-allocated array.
+///
+/// - `query`: UTF-8 search string; null or empty means all tracks.
+/// - `sort_col`: column name ("title", "artist", "album", "duration", "num",
+///   "year", "genre", "bitrate", "filename"); null means default ordering.
+/// - `sort_desc`: 1 for descending, 0 for ascending.
+/// - `offset` / `limit`: pagination parameters.
+/// - `out`: caller-allocated array of at least `limit` `SparkampLibTrack` elements.
+///
+/// Returns the number of elements actually written.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_get_tracks(
+    ctx: *const SparkampCtx,
+    query: *const c_char,
+    sort_col: *const c_char,
+    sort_desc: c_int,
+    offset: c_int,
+    limit: c_int,
+    out: *mut SparkampLibTrack,
+) -> c_int {
+    if ctx.is_null() || out.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+
+    let q = if query.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(query).to_str().unwrap_or("").to_owned()
+    };
+    let col = if sort_col.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(sort_col).to_str().unwrap_or("").to_owned()
+    };
+    let desc = sort_desc != 0;
+
+    let tracks = if col.is_empty() {
+        if q.is_empty() {
+            ml.all_tracks().unwrap_or_default()
+        } else {
+            ml.search_tracks(&q).unwrap_or_default()
+        }
+    } else {
+        #[allow(clippy::collapsible_else_if)]
+        if q.is_empty() {
+            ml.all_tracks_sorted(&col, desc).unwrap_or_default()
+        } else {
+            ml.search_tracks_sorted(&q, &col, desc).unwrap_or_default()
+        }
+    };
+
+    let start = (offset as usize).min(tracks.len());
+    let end = (start + limit as usize).min(tracks.len());
+    let page = &tracks[start..end];
+
+    for (i, t) in page.iter().enumerate() {
+        let slot = out.add(i);
+        slot.write(SparkampLibTrack::from_lib_track(t));
+    }
+    page.len() as c_int
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — playlist operations
+// ---------------------------------------------------------------------------
+
+/// Add tracks (identified by their library IDs) to the active playlist.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
+    ctx: *mut SparkampCtx,
+    ids: *const i64,
+    count: c_int,
+) {
+    if ctx.is_null() || ids.is_null() || count <= 0 {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let id_slice = std::slice::from_raw_parts(ids, count as usize);
+
+    // Fetch all tracks then filter by id — avoids N individual queries.
+    let all = ml.all_tracks().unwrap_or_default();
+    let by_id: std::collections::HashMap<i64, &crate::media_library::LibTrack> =
+        all.iter().map(|t| (t.id, t)).collect();
+
+    let start_idx = ctx.playlist.tracks.len();
+    for &id in id_slice {
+        if let Some(t) = by_id.get(&id) {
+            if let Ok(track) = Track::from_path_fast(Path::new(&t.path)) {
+                ctx.playlist.tracks.push(track);
+            }
+        }
+    }
+    // Kick off metadata + duration probing for the newly added tracks.
+    let n = ctx.playlist.tracks.len();
+    for idx in start_idx..n {
+        let meta_tx = ctx.meta_tx.clone();
+        let duration_tx = ctx.duration_tx.clone();
+        let path = ctx.playlist.tracks[idx].path.clone();
+        rayon::spawn(move || {
+            if let Ok(track) = crate::model::Track::from_path(&path) {
+                let _ = meta_tx.send((
+                    idx,
+                    track.title.clone(),
+                    track.artist.clone(),
+                    track.album_artist.clone(),
+                ));
+            }
+        });
+        let path2 = ctx.playlist.tracks[idx].path.clone();
+        rayon::spawn(move || {
+            if let Some(dur) = crate::duration_probe::probe_duration(&path2) {
+                let _ = duration_tx.send((idx, dur));
+            }
+        });
+    }
+}
+
+/// Return the number of saved playlists in the library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_playlist_count(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    ml.all_playlists().map(|v| v.len() as c_int).unwrap_or(0)
+}
+
+/// Return the name of the playlist at `index` as a heap-allocated C string.
+///
+/// Caller must free with `sparkamp_free_string`.  Returns null on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_playlist_name(
+    ctx: *const SparkampCtx,
+    index: c_int,
+) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else {
+        return std::ptr::null_mut();
+    };
+    let playlists = ml.all_playlists().unwrap_or_default();
+    let idx = index as usize;
+    if idx >= playlists.len() {
+        return std::ptr::null_mut();
+    }
+    CString::new(playlists[idx].name.as_str())
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Load the saved playlist at `index` as the active playlist, replacing it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
+    ctx: *mut SparkampCtx,
+    index: c_int,
+) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let playlists = ml.all_playlists().unwrap_or_default();
+    let idx = index as usize;
+    if idx >= playlists.len() {
+        return;
+    }
+    let tracks = ml
+        .load_playlist_tracks(&playlists[idx])
+        .unwrap_or_default();
+    ctx.playlist.tracks.clear();
+    ctx.playlist.current_index = 0;
+    for t in &tracks {
+        if let Ok(track) = Track::from_path_fast(Path::new(&t.path)) {
+            ctx.playlist.tracks.push(track);
+        }
+    }
+    // Kick off background metadata + duration probing.
+    for (i, t) in tracks.iter().enumerate() {
+        let meta_tx = ctx.meta_tx.clone();
+        let duration_tx = ctx.duration_tx.clone();
+        let path = std::path::PathBuf::from(&t.path);
+        rayon::spawn(move || {
+            if let Ok(track) = crate::model::Track::from_path(&path) {
+                let _ = meta_tx.send((
+                    i,
+                    track.title.clone(),
+                    track.artist.clone(),
+                    track.album_artist.clone(),
+                ));
+            }
+        });
+        let path2 = std::path::PathBuf::from(&t.path);
+        rayon::spawn(move || {
+            if let Some(dur) = crate::duration_probe::probe_duration(&path2) {
+                let _ = duration_tx.send((i, dur));
+            }
+        });
+    }
+}
+
+/// Record a play event for the track at `path`.
+///
+/// Increments the play count and updates `last_played` in the library DB.
+/// No-op if the ML is not open or the path is not in the DB.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_record_play(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) {
+    if ctx.is_null() || path.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    if let Ok(p) = CStr::from_ptr(path).to_str() {
+        let _ = ml.record_play(p);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication — C-compatible structs and opaque context
+// ---------------------------------------------------------------------------
+
+/// A single track entry inside a duplicate group.
+#[repr(C)]
+pub struct SparkampDedupTrack {
+    pub path: [u8; 512],
+    pub title: [u8; 256],
+    pub artist: [u8; 256],
+    pub duration_secs: f64,
+}
+
+/// A group of duplicate tracks found by the deduplication scan.
+///
+/// `tracks` points to a heap-allocated array of `track_count` elements.
+/// The array is owned by the `SparkampDedupCtx` and must **not** be freed
+/// by the caller; it is freed when `sparkamp_dedup_free` is called.
+#[repr(C)]
+pub struct SparkampDedupGroup {
+    /// 0 = Probable duplicate, 1 = Less likely duplicate.
+    pub confidence: c_int,
+    pub track_count: c_int,
+    /// Pointer to a heap-allocated array; valid until `sparkamp_dedup_free`.
+    pub tracks: *mut SparkampDedupTrack,
+}
+
+/// Opaque context for a deduplication scan.
+pub struct SparkampDedupCtx {
+    cancel: Arc<AtomicBool>,
+    /// Dismissed track paths ("not a duplicate").
+    dismissed: Mutex<std::collections::HashSet<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication — FFI
+// ---------------------------------------------------------------------------
+
+/// Start a deduplication scan in the background.
+///
+/// Loads all scanned tracks from the media library, then calls
+/// `find_duplicates()` on a Rayon thread.
+///
+/// - `group_cb(userdata, group)` fires for each group found.  The `group`
+///   pointer is valid only for the duration of the callback — copy any data
+///   you need before returning.
+/// - `done_cb(userdata, group_count)` fires when the scan finishes.
+///
+/// Returns an opaque `SparkampDedupCtx*` that must be freed with
+/// `sparkamp_dedup_free`.  Returns null if the ML is not open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_dedup_start(
+    ctx: *mut SparkampCtx,
+    group_cb: Option<unsafe extern "C" fn(*mut c_void, *const SparkampDedupGroup)>,
+    done_cb: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    userdata: *mut c_void,
+) -> *mut SparkampDedupCtx {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else {
+        return std::ptr::null_mut();
+    };
+
+    // Load all tracks that have been scanned (have metadata).
+    let lib_tracks = match ml.scanned_tracks() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[sparkamp_dedup_start] {e}");
+            return std::ptr::null_mut();
+        }
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let dedup_ctx = Box::new(SparkampDedupCtx {
+        cancel: Arc::clone(&cancel),
+        dismissed: Mutex::new(std::collections::HashSet::new()),
+    });
+    let dedup_ptr = Box::into_raw(dedup_ctx);
+
+    let ud_addr = userdata as usize;
+
+    rayon::spawn(move || {
+        let ud: *mut c_void = ud_addr as *mut c_void;
+        let groups = crate::dedupe::find_duplicates(lib_tracks);
+        let mut total = 0i32;
+
+        for group in &groups {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+
+            fn copy(dst: &mut [u8], src: &str) {
+                let b = src.as_bytes();
+                let n = b.len().min(dst.len() - 1);
+                dst[..n].copy_from_slice(&b[..n]);
+                dst[n] = 0;
+            }
+
+            // Build C struct on the stack for the callback.
+            let mut c_tracks: Vec<SparkampDedupTrack> = group
+                .tracks
+                .iter()
+                .map(|info| {
+                    let t = &info.track;
+                    let mut ct = SparkampDedupTrack {
+                        path: [0u8; 512],
+                        title: [0u8; 256],
+                        artist: [0u8; 256],
+                        duration_secs: t.length_secs.unwrap_or(0.0),
+                    };
+                    copy(&mut ct.path, &t.path);
+                    copy(
+                        &mut ct.title,
+                        t.title.as_deref().unwrap_or(&t.filename),
+                    );
+                    copy(&mut ct.artist, t.artist.as_deref().unwrap_or(""));
+                    ct
+                })
+                .collect();
+
+            let confidence = match group.confidence {
+                crate::dedupe::DupeConfidence::Probable => 0,
+                crate::dedupe::DupeConfidence::LessLikely => 1,
+            };
+
+            let c_group = SparkampDedupGroup {
+                confidence,
+                track_count: c_tracks.len() as c_int,
+                tracks: c_tracks.as_mut_ptr(),
+            };
+
+            if let Some(cb) = group_cb {
+                unsafe { cb(ud, &c_group as *const _) };
+            }
+
+            total += 1;
+        }
+
+        if let Some(cb) = done_cb {
+            unsafe { cb(ud, total) };
+        }
+    });
+
+    dedup_ptr
+}
+
+/// Cancel a running deduplication scan.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_dedup_cancel(dedup_ctx: *mut SparkampDedupCtx) {
+    if dedup_ctx.is_null() {
+        return;
+    }
+    (*dedup_ctx).cancel.store(true, Ordering::Relaxed);
+}
+
+/// Free a deduplication context created by `sparkamp_dedup_start`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_dedup_free(dedup_ctx: *mut SparkampDedupCtx) {
+    if dedup_ctx.is_null() {
+        return;
+    }
+    drop(Box::from_raw(dedup_ctx));
+}
+
+/// Add all tracks in a group to the active playlist (append).
+///
+/// `paths` is a null-terminated array of C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_dedup_add_to_playlist(
+    ctx: *mut SparkampCtx,
+    paths: *const *const c_char,
+    count: c_int,
+) {
+    if ctx.is_null() || paths.is_null() || count <= 0 {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let path_ptrs = std::slice::from_raw_parts(paths, count as usize);
+    for &ptr in path_ptrs {
+        if ptr.is_null() {
+            continue;
+        }
+        if let Ok(s) = CStr::from_ptr(ptr).to_str() {
+            if let Ok(t) = Track::from_path_fast(Path::new(s)) {
+                ctx.playlist.tracks.push(t);
+            }
+        }
+    }
+}
+
+/// Replace the active playlist with all tracks in a group.
+///
+/// `paths` is a C array of `count` path strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_dedup_replace_playlist(
+    ctx: *mut SparkampCtx,
+    paths: *const *const c_char,
+    count: c_int,
+) {
+    if ctx.is_null() || paths.is_null() || count <= 0 {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.playlist.tracks.clear();
+    ctx.playlist.current_index = 0;
+    let path_ptrs = std::slice::from_raw_parts(paths, count as usize);
+    for &ptr in path_ptrs {
+        if ptr.is_null() {
+            continue;
+        }
+        if let Ok(s) = CStr::from_ptr(ptr).to_str() {
+            if let Ok(t) = Track::from_path_fast(Path::new(s)) {
+                ctx.playlist.tracks.push(t);
+            }
+        }
+    }
+}
+
+/// Open the containing folder of `path` in Finder.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_open_file_location(path: *const c_char) {
+    if path.is_null() {
+        return;
+    }
+    if let Ok(s) = CStr::from_ptr(path).to_str() {
+        let p = Path::new(s);
+        let dir = p.parent().unwrap_or(p);
+        let _ = std::process::Command::new("open")
+            .arg(dir.as_os_str())
+            .spawn();
+    }
 }

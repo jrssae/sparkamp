@@ -25,10 +25,11 @@ struct SettingsView: View {
             // ── Content area ──────────────────────────────────────────────────
             Group {
                 switch selectedTab {
-                case .about:       AboutPane()
-                case .appearance:  AppearancePane()
-                case .playback:    PlaybackPane()
-                case .visualizer:  VisualizerPane()
+                case .about:        AboutPane()
+                case .appearance:   AppearancePane()
+                case .playback:     PlaybackPane()
+                case .visualizer:   VisualizerPane()
+                case .mediaLibrary: MediaLibraryPane()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -45,23 +46,25 @@ struct SettingsView: View {
 // MARK: - Tab definition
 
 private enum SettingsTab: String, CaseIterable {
-    case about, appearance, playback, visualizer
+    case about, appearance, playback, visualizer, mediaLibrary
 
     var label: String {
         switch self {
-        case .about:       return "About"
-        case .appearance:  return "Appearance"
-        case .playback:    return "Playback"
-        case .visualizer:  return "Visualizer"
+        case .about:         return "About"
+        case .appearance:    return "Appearance"
+        case .playback:      return "Playback"
+        case .visualizer:    return "Visualizer"
+        case .mediaLibrary:  return "Media Library"
         }
     }
 
     var icon: String {
         switch self {
-        case .about:       return "info.circle"
-        case .appearance:  return "paintbrush"
-        case .playback:    return "play.circle"
-        case .visualizer:  return "waveform"
+        case .about:         return "info.circle"
+        case .appearance:    return "paintbrush"
+        case .playback:      return "play.circle"
+        case .visualizer:    return "waveform"
+        case .mediaLibrary:  return "music.note.house"
         }
     }
 }
@@ -339,5 +342,42 @@ private struct VisualizerPane: View {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         ns.getRed(&r, green: &g, blue: &b, alpha: &a)
         return String(format: "#%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
+    }
+}
+
+// MARK: - Media Library pane
+
+private struct MediaLibraryPane: View {
+    @EnvironmentObject var model: SparkampModel
+
+    var body: some View {
+        Form {
+            Section("Library") {
+                Button("Open Media Library") {
+                    model.openMediaLibrary()
+                    model.mediaLibraryVisible = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            Section("Tools") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Find Duplicates")
+                            .font(.system(size: 13, weight: .medium))
+                        Text("Scan your media library for duplicate tracks using title, artist, and duration matching.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Scan…") {
+                        model.dedupVisible = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .formStyle(.grouped)
     }
 }

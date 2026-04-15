@@ -1,6 +1,86 @@
 import Foundation
 import AppKit
 
+// MARK: - C-array string helper
+
+/// Convert a fixed-size C byte array (imported as a tuple in Swift) to a String.
+/// Stops at the first null byte; interprets as UTF-8.
+func cBytesToString<T>(_ value: inout T) -> String {
+    withUnsafeBytes(of: &value) { bytes in
+        let end = bytes.firstIndex(of: 0) ?? bytes.endIndex
+        return String(bytes: bytes[..<end], encoding: .utf8) ?? ""
+    }
+}
+
+// MARK: - Media Library types
+
+/// A single track row from the media library.
+struct MLTrack: Identifiable {
+    let id: Int64
+    let path: String
+    let title: String
+    let artist: String
+    let album: String
+    let genre: String
+    let year: Int
+    let trackNum: Int
+    let lengthSecs: Double
+    let bitrate: Int
+    let playCount: Int
+    let scanned: Bool
+
+    var durationString: String { formatDuration(lengthSecs) }
+    var filename: String { URL(fileURLWithPath: path).lastPathComponent }
+
+    init(from c: SparkampLibTrack) {
+        var c = c
+        id          = c.id
+        path        = cBytesToString(&c.path)
+        title       = cBytesToString(&c.title)
+        artist      = cBytesToString(&c.artist)
+        album       = cBytesToString(&c.album)
+        genre       = cBytesToString(&c.genre)
+        year        = Int(c.year)
+        trackNum    = Int(c.track_num)
+        lengthSecs  = c.length_secs
+        bitrate     = Int(c.bitrate)
+        playCount   = Int(c.play_count)
+        scanned     = c.scanned != 0
+    }
+}
+
+// MARK: - Media Library playlist item
+
+struct MLPlaylistItem: Identifiable {
+    let id: Int    // playlist index
+    let name: String
+}
+
+// MARK: - Dedup types
+
+struct DedupTrackItem: Identifiable {
+    let id: String   // path used as stable ID
+    let path: String
+    let title: String
+    let artist: String
+    let durationSecs: Double
+
+    var durationString: String { formatDuration(durationSecs) }
+    var filename: String { URL(fileURLWithPath: path).lastPathComponent }
+}
+
+struct DedupGroupItem: Identifiable {
+    let id: UUID
+    let confidence: Int   // 0 = Probable, 1 = Less Likely
+    let tracks: [DedupTrackItem]
+
+    var confidenceLabel: String { confidence == 0 ? "Probable" : "Less Likely" }
+    var label: String {
+        guard let first = tracks.first else { return "Unknown" }
+        return first.artist.isEmpty ? first.title : "\(first.artist) — \(first.title)"
+    }
+}
+
 // MARK: - Data types
 
 struct PlaylistItem: Identifiable {
@@ -83,6 +163,28 @@ final class SparkampModel: ObservableObject {
     /// When true, the artwork zoom window is open.
     @Published var artworkWindowVisible: Bool = false
 
+    // ── Media Library ────────────────────────────────────────────────────────
+    @Published var mediaLibraryVisible: Bool = false
+    /// Tracks currently shown in the ML window (all or filtered by query).
+    @Published var mlTracks: [MLTrack] = []
+    /// Watched folder paths.
+    @Published var mlFolders: [String] = []
+    /// Saved playlists in the library DB.
+    @Published var mlSavedPlaylists: [MLPlaylistItem] = []
+    /// True while a background scan is running.
+    @Published var mlScanRunning: Bool = false
+    @Published var mlScanDone: Int = 0
+    @Published var mlScanTotal: Int = 0
+    /// True once `sparkamp_ml_open` has been called.
+    private(set) var mlIsOpen: Bool = false
+
+    // ── Deduplication ────────────────────────────────────────────────────────
+    @Published var dedupVisible: Bool = false
+    @Published var dedupGroups: [DedupGroupItem] = []
+    @Published var dedupRunning: Bool = false
+    @Published var dedupGroupTotal: Int = 0
+    private var dedupCtxPtr: OpaquePointer? = nil
+
     // MARK: Private — background scan tracking
 
     /// Set to `Date()` whenever files are added; the tick polls for incomplete
@@ -110,8 +212,9 @@ final class SparkampModel: ObservableObject {
 
         setupCallbacks()
         // Restore Swift-side UI state
-        playlistVisible    = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
-        equalizerVisible   = UserDefaults.standard.bool(forKey: "sparkamp.equalizerVisible")
+        playlistVisible      = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
+        equalizerVisible     = UserDefaults.standard.bool(forKey: "sparkamp.equalizerVisible")
+        mediaLibraryVisible  = UserDefaults.standard.bool(forKey: "sparkamp.mlVisible")
         refreshAll()
         startTick()
         startKeyMonitor()
@@ -181,6 +284,19 @@ final class SparkampModel: ObservableObject {
         // Keep vizMode in sync so views can observe it reactively.
         let newVizMode = Int(sparkamp_get_viz_mode(ctx))
         if newVizMode != vizMode { vizMode = newVizMode }
+
+        // Poll media library scan progress (if running).
+        if mlScanRunning {
+            let stillRunning = sparkamp_ml_scan_is_running(ctx) != 0
+            var done: Int32 = 0, total: Int32 = 0
+            sparkamp_ml_scan_progress(ctx, &done, &total)
+            mlScanDone  = Int(done)
+            mlScanTotal = Int(total)
+            if !stillRunning {
+                mlScanRunning = false
+                mlRefreshFolders()
+            }
+        }
     }
 
     /// Re-read every playlist row that still has incomplete data (missing
@@ -553,8 +669,219 @@ final class SparkampModel: ObservableObject {
     /// the most recent state survives an unexpected kill (e.g. Xcode stop).
     func saveState() {
         if let ctx = ctx { sparkamp_save_config(ctx) }
-        UserDefaults.standard.set(playlistVisible,  forKey: "sparkamp.playlistVisible")
-        UserDefaults.standard.set(equalizerVisible, forKey: "sparkamp.equalizerVisible")
+        UserDefaults.standard.set(playlistVisible,     forKey: "sparkamp.playlistVisible")
+        UserDefaults.standard.set(equalizerVisible,    forKey: "sparkamp.equalizerVisible")
+        UserDefaults.standard.set(mediaLibraryVisible, forKey: "sparkamp.mlVisible")
+    }
+
+    // MARK: Media Library
+
+    /// Open (or create) the media library DB and load initial data.
+    func openMediaLibrary() {
+        guard let ctx = ctx else { return }
+        if !mlIsOpen {
+            sparkamp_ml_open(ctx)
+            mlIsOpen = true
+        }
+        mlRefreshFolders()
+        mlRefreshSavedPlaylists()
+        mediaLibraryVisible = true
+    }
+
+    func mlRefreshFolders() {
+        guard let ctx = ctx else { return }
+        let count = Int(sparkamp_ml_folder_count(ctx))
+        mlFolders = (0..<count).compactMap { i in
+            guard let ptr = sparkamp_ml_folder_path(ctx, Int32(i)) else { return nil }
+            defer { sparkamp_free_string(ptr) }
+            return String(cString: ptr)
+        }
+    }
+
+    func mlRefreshSavedPlaylists() {
+        guard let ctx = ctx else { return }
+        let count = Int(sparkamp_ml_playlist_count(ctx))
+        mlSavedPlaylists = (0..<count).compactMap { i in
+            guard let ptr = sparkamp_ml_playlist_name(ctx, Int32(i)) else { return nil }
+            defer { sparkamp_free_string(ptr) }
+            return MLPlaylistItem(id: i, name: String(cString: ptr))
+        }
+    }
+
+    /// Fetch tracks from the library, applying optional search query and sort.
+    /// Loads up to `limit` rows starting at `offset`.
+    func mlFetchTracks(
+        query: String = "",
+        sortCol: String? = nil,
+        sortDesc: Bool = false,
+        offset: Int = 0,
+        limit: Int = 10_000
+    ) {
+        guard let ctx = ctx else { return }
+        let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
+        defer { buf.deallocate() }
+        let count = query.withCString { qPtr -> Int32 in
+            if let col = sortCol {
+                return col.withCString { colPtr in
+                    sparkamp_ml_get_tracks(ctx, qPtr, colPtr, sortDesc ? 1 : 0,
+                                          Int32(offset), Int32(limit), buf)
+                }
+            } else {
+                return sparkamp_ml_get_tracks(ctx, qPtr, nil, 0,
+                                              Int32(offset), Int32(limit), buf)
+            }
+        }
+        mlTracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+    }
+
+    func mlAddFolder(_ path: String) {
+        guard let ctx = ctx else { return }
+        path.withCString { sparkamp_ml_add_folder(ctx, $0, nil, nil, nil) }
+        mlScanRunning = true
+        mlScanDone = 0
+        mlScanTotal = 0
+        mlRefreshFolders()
+    }
+
+    func mlRemoveFolder(_ path: String) {
+        guard let ctx = ctx else { return }
+        path.withCString { sparkamp_ml_remove_folder(ctx, $0) }
+        mlRefreshFolders()
+        mlFetchTracks()
+    }
+
+    func mlRescanAll() {
+        guard let ctx = ctx else { return }
+        sparkamp_ml_rescan_all(ctx, nil, nil, nil)
+        mlScanRunning = true
+        mlScanDone = 0
+        mlScanTotal = 0
+    }
+
+    func mlCancelScan() {
+        guard let ctx = ctx else { return }
+        sparkamp_ml_cancel_scan(ctx)
+    }
+
+    func mlAddToPlaylist(ids: [Int64]) {
+        guard let ctx = ctx else { return }
+        var idArray = ids
+        idArray.withUnsafeMutableBufferPointer { buf in
+            sparkamp_ml_add_tracks_to_playlist(ctx, buf.baseAddress, Int32(ids.count))
+        }
+        refreshPlaylist()
+        saveState()
+    }
+
+    func mlSetCurrentPlaylist(_ index: Int) {
+        guard let ctx = ctx else { return }
+        sparkamp_ml_set_current_playlist(ctx, Int32(index))
+        refreshAll()
+        saveState()
+    }
+
+    func mlOpenAddFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add to Library"
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let self, let url = panel.url else { return }
+            Task { @MainActor in self.mlAddFolder(url.path) }
+        }
+    }
+
+    // MARK: Deduplication
+
+    func startDedup() {
+        guard let ctx = ctx, mlIsOpen else { return }
+        dedupGroups = []
+        dedupRunning = true
+        dedupGroupTotal = 0
+
+        let selfAddr = Unmanaged.passUnretained(self).toOpaque()
+        let selfAddrInt = Int(bitPattern: selfAddr)
+
+        dedupCtxPtr = sparkamp_dedup_start(ctx,
+            // group_cb — called from a Rayon thread
+            { ud, groupPtr in
+                guard let groupPtr else { return }
+                let group = groupPtr.pointee
+                var items: [DedupTrackItem] = []
+                for i in 0..<Int(group.track_count) {
+                    var t = group.tracks[i]
+                    let p = cBytesToString(&t.path)
+                    items.append(DedupTrackItem(
+                        id: p,
+                        path: p,
+                        title:  cBytesToString(&t.title),
+                        artist: cBytesToString(&t.artist),
+                        durationSecs: t.duration_secs
+                    ))
+                }
+                let conf = Int(group.confidence)
+                let newGroup = DedupGroupItem(id: UUID(), confidence: conf, tracks: items)
+                let modelAddr = Int(bitPattern: ud)
+                DispatchQueue.main.async {
+                    let model = Unmanaged<SparkampModel>
+                        .fromOpaque(UnsafeRawPointer(bitPattern: modelAddr)!)
+                        .takeUnretainedValue()
+                    MainActor.assumeIsolated { model.dedupGroups.append(newGroup) }
+                }
+            },
+            // done_cb
+            { ud, totalCount in
+                let modelAddr = Int(bitPattern: ud)
+                DispatchQueue.main.async {
+                    let model = Unmanaged<SparkampModel>
+                        .fromOpaque(UnsafeRawPointer(bitPattern: modelAddr)!)
+                        .takeUnretainedValue()
+                    MainActor.assumeIsolated {
+                        model.dedupRunning = false
+                        model.dedupGroupTotal = Int(totalCount)
+                    }
+                }
+            },
+            UnsafeMutableRawPointer(bitPattern: selfAddrInt)
+        )
+    }
+
+    func cancelDedup() {
+        if let dctx = dedupCtxPtr {
+            sparkamp_dedup_cancel(dctx)
+        }
+    }
+
+    func freeDedup() {
+        if let dctx = dedupCtxPtr {
+            sparkamp_dedup_free(dctx)
+            dedupCtxPtr = nil
+        }
+    }
+
+    func dedupAddGroupToPlaylist(_ group: DedupGroupItem) {
+        guard let ctx = ctx else { return }
+        var ptrs: [UnsafePointer<CChar>?] = group.tracks.map { _ in nil }
+        let cStrings = group.tracks.map { ($0.path as NSString).utf8String! }
+        ptrs = cStrings.map { $0 }
+        ptrs.withUnsafeMutableBufferPointer { buf in
+            sparkamp_dedup_add_to_playlist(ctx, buf.baseAddress, Int32(group.tracks.count))
+        }
+        refreshPlaylist()
+    }
+
+    func dedupReplacePlaylistWithGroup(_ group: DedupGroupItem) {
+        guard let ctx = ctx else { return }
+        var ptrs: [UnsafePointer<CChar>?] = group.tracks.map { ($0.path as NSString).utf8String }
+        ptrs.withUnsafeMutableBufferPointer { buf in
+            sparkamp_dedup_replace_playlist(ctx, buf.baseAddress, Int32(group.tracks.count))
+        }
+        refreshAll()
+    }
+
+    func openInFinder(_ path: String) {
+        path.withCString { sparkamp_open_file_location($0) }
     }
 
     // MARK: Keyboard shortcuts

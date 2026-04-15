@@ -213,4 +213,138 @@ int             sparkamp_tag_save(SparkampTagCtx *tag);
 uint8_t        *sparkamp_tag_get_artwork_data(SparkampTagCtx *tag, int *len_out);
 void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
 
+// ---------------------------------------------------------------------------
+// Media Library
+// ---------------------------------------------------------------------------
+
+/** Track row returned from the media library.  All strings are null-terminated UTF-8. */
+typedef struct {
+    int64_t  id;
+    uint8_t  path[512];
+    uint8_t  title[256];
+    uint8_t  artist[256];
+    uint8_t  album[256];
+    uint8_t  genre[64];
+    int32_t  year;
+    int32_t  track_num;
+    double   length_secs;
+    int32_t  bitrate;
+    int32_t  play_count;
+    int32_t  scanned;   /* 1 = full metadata read; 0 = filename only */
+} SparkampLibTrack;
+
+/** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */
+void    sparkamp_ml_open(SparkampCtx *ctx);
+
+/** Number of watched folders (0 if ML not open). */
+int32_t sparkamp_ml_folder_count(const SparkampCtx *ctx);
+/** Path of folder at index.  Caller frees with sparkamp_free_string.  Returns NULL on error. */
+char   *sparkamp_ml_folder_path(const SparkampCtx *ctx, int32_t index);
+
+/**
+ * Add a folder and start a two-phase scan.
+ * Phase 1 (fast, synchronous): filename-only entries inserted.
+ * Phase 2 (background thread): full tag scan; progress_cb fires per file.
+ * done_cb fires when complete.  Both may be NULL.
+ */
+void    sparkamp_ml_add_folder(
+    SparkampCtx *ctx,
+    const char  *path,
+    void (*progress_cb)(void *userdata, int32_t done, int32_t total),
+    void (*done_cb)(void *userdata),
+    void        *userdata);
+
+/** Remove a watched folder (matched by path) and all its tracks. */
+void    sparkamp_ml_remove_folder(SparkampCtx *ctx, const char *path);
+
+/**
+ * Rescan all watched folders.  Same two-phase approach as sparkamp_ml_add_folder.
+ * Discovers new files first (fast), then reads tags in background.
+ */
+void    sparkamp_ml_rescan_all(
+    SparkampCtx *ctx,
+    void (*progress_cb)(void *userdata, int32_t done, int32_t total),
+    void (*done_cb)(void *userdata),
+    void        *userdata);
+
+/** Request cancellation of the current background scan. */
+void    sparkamp_ml_cancel_scan(SparkampCtx *ctx);
+/** Returns 1 while a background scan is running, 0 otherwise. */
+int32_t sparkamp_ml_scan_is_running(const SparkampCtx *ctx);
+/** Writes current scan progress into *done_out and *total_out. */
+void    sparkamp_ml_scan_progress(const SparkampCtx *ctx, int32_t *done_out, int32_t *total_out);
+
+/** Number of tracks matching query ("" = all). */
+int32_t sparkamp_ml_track_count(const SparkampCtx *ctx, const char *query);
+
+/**
+ * Fetch a page of tracks into caller-allocated array.
+ * sort_col: "title"|"artist"|"album"|"duration"|"num"|"year"|"genre"|"bitrate"|"filename" (NULL = default).
+ * sort_desc: 1 = descending.
+ * Returns number of elements written.
+ */
+int32_t sparkamp_ml_get_tracks(
+    const SparkampCtx *ctx,
+    const char        *query,
+    const char        *sort_col,
+    int32_t            sort_desc,
+    int32_t            offset,
+    int32_t            limit,
+    SparkampLibTrack  *out);
+
+/** Append tracks (by library ID array) to the active playlist. */
+void    sparkamp_ml_add_tracks_to_playlist(SparkampCtx *ctx, const int64_t *ids, int32_t count);
+
+/** Number of saved playlists in the library. */
+int32_t sparkamp_ml_playlist_count(const SparkampCtx *ctx);
+/** Name of saved playlist at index.  Caller frees with sparkamp_free_string. */
+char   *sparkamp_ml_playlist_name(const SparkampCtx *ctx, int32_t index);
+/** Replace the active playlist with the saved playlist at index. */
+void    sparkamp_ml_set_current_playlist(SparkampCtx *ctx, int32_t index);
+
+/** Record a play event for the given path (increments play_count, updates last_played). */
+void    sparkamp_ml_record_play(SparkampCtx *ctx, const char *path);
+
+// ---------------------------------------------------------------------------
+// Deduplication
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    uint8_t  path[512];
+    uint8_t  title[256];
+    uint8_t  artist[256];
+    double   duration_secs;
+} SparkampDedupTrack;
+
+typedef struct {
+    int32_t             confidence;    /* 0 = Probable, 1 = Less Likely */
+    int32_t             track_count;
+    SparkampDedupTrack *tracks;        /* owned by SparkampDedupCtx; do NOT free */
+} SparkampDedupGroup;
+
+typedef struct SparkampDedupCtx SparkampDedupCtx;
+
+/**
+ * Start a background dedup scan.
+ * group_cb fires per group found (pointer valid only during callback — copy data out).
+ * done_cb fires with total group count when scan completes.
+ * Returns opaque ctx; free with sparkamp_dedup_free.  Returns NULL if ML not open.
+ */
+SparkampDedupCtx *sparkamp_dedup_start(
+    SparkampCtx *ctx,
+    void (*group_cb)(void *userdata, const SparkampDedupGroup *group),
+    void (*done_cb)(void *userdata, int32_t group_count),
+    void *userdata);
+
+void sparkamp_dedup_cancel(SparkampDedupCtx *dedup_ctx);
+void sparkamp_dedup_free(SparkampDedupCtx *dedup_ctx);
+
+/** Append all paths to active playlist. paths is a C array of count strings. */
+void sparkamp_dedup_add_to_playlist(SparkampCtx *ctx, const char **paths, int32_t count);
+/** Replace active playlist with paths. */
+void sparkamp_dedup_replace_playlist(SparkampCtx *ctx, const char **paths, int32_t count);
+
+/** Reveal path's containing folder in Finder. */
+void sparkamp_open_file_location(const char *path);
+
 #endif /* sparkamp_bridge_h */

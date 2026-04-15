@@ -152,7 +152,7 @@ struct SparkampMacApp: App {
                 .environmentObject(themeManager)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 520, height: 460)
+        .defaultSize(width: 560, height: 500)
 
         // ── Artwork zoom window ───────────────────────────────────────────────
         WindowGroup("Artwork", id: "artwork") {
@@ -161,6 +161,24 @@ struct SparkampMacApp: App {
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 512, height: 512)
+
+        // ── Media Library ─────────────────────────────────────────────────────
+        WindowGroup("Media Library", id: "media-library") {
+            MediaLibraryView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 800, height: 520)
+
+        // ── Deduplicator ──────────────────────────────────────────────────────
+        WindowGroup("Find Duplicates", id: "deduplicator") {
+            DeduplicatorView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 600, height: 480)
     }
 }
 
@@ -229,6 +247,9 @@ struct SparkampCommands: Commands {
 
             Button("Equalizer") { model.equalizerVisible.toggle() }
             Button("Settings")  { model.settingsVisible.toggle() }
+            Button("Media Library") { model.openMediaLibrary() }
+                .keyboardShortcut("l", modifiers: .command)
+            Button("Find Duplicates") { model.dedupVisible = true }
 
             Button("Keyboard Shortcuts") { model.keyboardShortcutsVisible.toggle() }
                 .keyboardShortcut("i", modifiers: [])

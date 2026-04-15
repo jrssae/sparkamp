@@ -46,45 +46,20 @@ struct PlayerWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .openFilePicker)) { _ in
             model.openFilePicker()
         }
-        .onAppear {
-            model.refreshAll()
-            // onChange only fires on transitions, not on the initial value.
-            // Open any windows whose state was restored as true from UserDefaults.
-            if model.playlistVisible          { openWindow(id: "playlist") }
-            if model.keyboardShortcutsVisible { openWindow(id: "shortcuts") }
-            if model.equalizerVisible         { openWindow(id: "equalizer") }
-        }
-        .onChange(of: model.playlistVisible) { _, visible in
-            if visible { openWindow(id: "playlist") }
-            else       { dismissWindow(id: "playlist") }
-        }
-        .onChange(of: model.keyboardShortcutsVisible) { _, visible in
-            if visible { openWindow(id: "shortcuts") }
-            else       { dismissWindow(id: "shortcuts") }
-        }
-        .onChange(of: model.fullscreenVizVisible) { _, visible in
-            if visible { openWindow(id: "fullscreen-viz") }
-            else       { dismissWindow(id: "fullscreen-viz") }
-        }
-        .onChange(of: model.jumpToTrackVisible) { _, visible in
-            if visible { openWindow(id: "jump-to-track") }
-            else       { dismissWindow(id: "jump-to-track") }
-        }
-        .onChange(of: model.equalizerVisible) { _, visible in
-            if visible { openWindow(id: "equalizer") }
-            else       { dismissWindow(id: "equalizer") }
-        }
-        .onChange(of: model.settingsVisible) { _, visible in
-            if visible { openWindow(id: "settings") }
-            else       { dismissWindow(id: "settings") }
-        }
-        .onChange(of: model.id3EditorVisible) { _, visible in
-            if visible { openWindow(id: "id3-editor") }
-            else       { dismissWindow(id: "id3-editor") }
-        }
-        .onChange(of: model.artworkWindowVisible) { _, visible in
-            if visible { openWindow(id: "artwork") }
-            else       { dismissWindow(id: "artwork") }
+        .onAppear { handleAppear() }
+        .modifier(WindowManagerModifier(model: model, openWindow: openWindow, dismissWindow: dismissWindow))
+    }
+
+    private func handleAppear() {
+        model.refreshAll()
+        // onChange only fires on transitions, not on the initial value.
+        // Open any windows whose state was restored as true from UserDefaults.
+        if model.playlistVisible          { openWindow(id: "playlist") }
+        if model.keyboardShortcutsVisible { openWindow(id: "shortcuts") }
+        if model.equalizerVisible         { openWindow(id: "equalizer") }
+        if model.mediaLibraryVisible      {
+            model.openMediaLibrary()
+            openWindow(id: "media-library")
         }
     }
 
@@ -348,6 +323,28 @@ struct PlayerWindow: View {
         }
         group.notify(queue: .main) { model.addFiles(urls) }
         return true
+    }
+}
+
+// MARK: - Window manager modifier
+
+private struct WindowManagerModifier: ViewModifier {
+    @ObservedObject var model: SparkampModel
+    let openWindow: OpenWindowAction
+    let dismissWindow: DismissWindowAction
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: model.playlistVisible)          { _, v in v ? openWindow(id: "playlist")         : dismissWindow(id: "playlist") }
+            .onChange(of: model.keyboardShortcutsVisible) { _, v in v ? openWindow(id: "shortcuts")         : dismissWindow(id: "shortcuts") }
+            .onChange(of: model.fullscreenVizVisible)     { _, v in v ? openWindow(id: "fullscreen-viz")    : dismissWindow(id: "fullscreen-viz") }
+            .onChange(of: model.jumpToTrackVisible)       { _, v in v ? openWindow(id: "jump-to-track")     : dismissWindow(id: "jump-to-track") }
+            .onChange(of: model.equalizerVisible)         { _, v in v ? openWindow(id: "equalizer")         : dismissWindow(id: "equalizer") }
+            .onChange(of: model.settingsVisible)          { _, v in v ? openWindow(id: "settings")          : dismissWindow(id: "settings") }
+            .onChange(of: model.id3EditorVisible)         { _, v in v ? openWindow(id: "id3-editor")        : dismissWindow(id: "id3-editor") }
+            .onChange(of: model.artworkWindowVisible)     { _, v in v ? openWindow(id: "artwork")           : dismissWindow(id: "artwork") }
+            .onChange(of: model.mediaLibraryVisible)      { _, v in v ? openWindow(id: "media-library")     : dismissWindow(id: "media-library") }
+            .onChange(of: model.dedupVisible)             { _, v in v ? openWindow(id: "deduplicator")      : dismissWindow(id: "deduplicator") }
     }
 }
 
