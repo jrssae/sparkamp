@@ -59,6 +59,8 @@ double  sparkamp_playlist_get_duration(const SparkampCtx *ctx, int32_t index);
 /** Mark track at index as broken; call before advancing on a playback error. */
 void    sparkamp_playlist_mark_broken(SparkampCtx *ctx, int32_t index);
 int32_t sparkamp_playlist_is_broken(const SparkampCtx *ctx, int32_t index);
+/** Returns 1 if the file at playlist index is read-only on disk, 0 otherwise. */
+int32_t sparkamp_playlist_is_read_only(const SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_jump(SparkampCtx *ctx, int32_t index);
 
 /* ── Navigation ──────────────────────────────────────────────────────────── */
@@ -236,6 +238,8 @@ typedef struct {
     uint8_t  bpm[32];
     uint8_t  comment[512];
     uint8_t  composer[256];
+    int32_t  read_only;       /* 1 = file is read-only on disk */
+    int32_t  has_art;         /* 1 = cached album art exists */
 } SparkampLibTrack;
 
 /** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */

@@ -627,6 +627,24 @@ pub unsafe extern "C" fn sparkamp_playlist_is_broken(
     ctx.playlist.tracks[i].broken as c_int
 }
 
+/// Returns 1 if the file at `index` is read-only on disk, 0 otherwise.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_is_read_only(
+    ctx: *const SparkampCtx,
+    index: c_int,
+) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let i = index as usize;
+    if i >= ctx.playlist.tracks.len() {
+        return 0;
+    }
+    let path = std::path::Path::new(&ctx.playlist.tracks[i].path);
+    if crate::media_library::is_read_only(path) { 1 } else { 0 }
+}
+
 /// Jump to `index`, load the track, and begin playing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_playlist_jump(ctx: *mut SparkampCtx, index: c_int) {
@@ -1725,6 +1743,10 @@ pub struct SparkampLibTrack {
     pub bpm: [u8; 32],
     pub comment: [u8; 512],
     pub composer: [u8; 256],
+    /// 1 if the file is read-only on disk; 0 otherwise.
+    pub read_only: c_int,
+    /// 1 if cached album artwork exists for this track; 0 otherwise.
+    pub has_art: c_int,
 }
 
 impl SparkampLibTrack {
@@ -1747,6 +1769,8 @@ impl SparkampLibTrack {
             bpm: [0u8; 32],
             comment: [0u8; 512],
             composer: [0u8; 256],
+            read_only: 0,
+            has_art: if t.artwork_path.is_some() { 1 } else { 0 },
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -1766,6 +1790,7 @@ impl SparkampLibTrack {
         copy_str(&mut out.bpm, t.bpm.as_deref().unwrap_or(""));
         copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
         copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
+        out.read_only = if crate::media_library::is_read_only(std::path::Path::new(&t.path)) { 1 } else { 0 };
         out
     }
 }

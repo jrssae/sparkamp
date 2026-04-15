@@ -449,6 +449,8 @@ final class ThemeManager: ObservableObject {
     // MARK: Published state
     @Published private(set) var currentTheme: SkinTheme
     @Published private(set) var themeSource: ThemeSource
+    /// User-chosen accent color hex (nil = use theme default).
+    @Published private(set) var accentHex: String?
 
     enum ThemeSource: Equatable {
         case system, dark, light, custom(URL)
@@ -475,6 +477,8 @@ final class ThemeManager: ObservableObject {
             currentTheme = systemDark ? .defaultDark : .defaultLight
         }
 
+        accentHex = UserDefaults.standard.string(forKey: "sparkamp.accentHex")
+
         // Load custom skin if one was set (takes priority over dark/light/system).
         if let pathStr = customPathStr {
             let url = URL(fileURLWithPath: pathStr)
@@ -482,6 +486,11 @@ final class ThemeManager: ObservableObject {
                 currentTheme = custom
                 themeSource  = .custom(url)
             }
+        }
+
+        // Apply accent override if set.
+        if let hex = accentHex, let color = Color(hex: hex) {
+            Self.applyAccent(color, to: &currentTheme)
         }
 
         // If no override was saved, check for a skin file in the standard locations.
@@ -512,6 +521,7 @@ final class ThemeManager: ObservableObject {
         themeSource  = .dark
         UserDefaults.standard.set("dark", forKey: "sparkamp.themeSource")
         UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
+        applyStoredAccent()
     }
 
     func useLight() {
@@ -519,6 +529,7 @@ final class ThemeManager: ObservableObject {
         themeSource  = .light
         UserDefaults.standard.set("light", forKey: "sparkamp.themeSource")
         UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
+        applyStoredAccent()
     }
 
     func useSystem(colorScheme: ColorScheme) {
@@ -526,6 +537,7 @@ final class ThemeManager: ObservableObject {
         themeSource  = .system
         UserDefaults.standard.set("system", forKey: "sparkamp.themeSource")
         UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
+        applyStoredAccent()
     }
 
     /// Called by the root view when the system appearance changes and the
@@ -533,6 +545,40 @@ final class ThemeManager: ObservableObject {
     func systemAppearanceChanged(to colorScheme: ColorScheme) {
         guard case .system = themeSource else { return }
         currentTheme = colorScheme == .dark ? .defaultDark : .defaultLight
+        applyStoredAccent()
+    }
+
+    // MARK: Accent color
+
+    /// Set a user accent color (nil = revert to theme default).
+    func setAccentColor(_ hex: String?) {
+        accentHex = hex
+        if let hex { UserDefaults.standard.set(hex, forKey: "sparkamp.accentHex") }
+        else        { UserDefaults.standard.removeObject(forKey: "sparkamp.accentHex") }
+        applyStoredAccent()
+    }
+
+    private func applyStoredAccent() {
+        guard let hex = accentHex, let color = Color(hex: hex) else { return }
+        Self.applyAccent(color, to: &currentTheme)
+    }
+
+    /// Override all accent-derived colors in a theme.
+    private static func applyAccent(_ accent: Color, to theme: inout SkinTheme) {
+        theme.titleText           = accent
+        theme.timeText            = accent
+        theme.seekThumb           = accent
+        theme.seekFill            = accent.opacity(0.6)
+        theme.modeBtnActiveText   = accent
+        theme.modeBtnActiveBg     = accent.opacity(0.18)
+        theme.playlistCurrentText = accent
+        theme.playlistCurrentBg   = accent.opacity(0.10)
+        theme.playlistSelectedBg  = accent.opacity(0.14)
+        theme.playButtonText      = accent
+        theme.playButtonBorder    = accent.opacity(0.50)
+        theme.playButtonBg        = accent.opacity(0.08)
+        theme.volumeThumb         = accent.opacity(0.85)
+        theme.logoText            = accent
     }
 
     func loadCustomSkin(from url: URL) {
@@ -545,6 +591,7 @@ final class ThemeManager: ObservableObject {
         themeSource  = .custom(url)
         UserDefaults.standard.set("custom", forKey: "sparkamp.themeSource")
         UserDefaults.standard.set(url.path, forKey: "sparkamp.customSkinPath")
+        applyStoredAccent()
     }
 
     /// Determine whether a skin CSS string represents a dark theme by

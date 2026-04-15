@@ -34,6 +34,8 @@ struct MLTrack: Identifiable {
     let bpm: String
     let comment: String
     let composer: String
+    let readOnly: Bool
+    let hasArt: Bool
 
     var durationString: String { formatDuration(lengthSecs) }
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
@@ -57,6 +59,8 @@ struct MLTrack: Identifiable {
         bpm         = cBytesToString(&c.bpm)
         comment     = cBytesToString(&c.comment)
         composer    = cBytesToString(&c.composer)
+        readOnly    = c.read_only != 0
+        hasArt      = c.has_art != 0
     }
 }
 
@@ -101,6 +105,7 @@ struct PlaylistItem: Identifiable {
     let albumArtist: String
     let duration: Double // seconds, -1 = unknown
     let broken: Bool
+    let readOnly: Bool
 
     var durationString: String { formatDuration(duration) }
 
@@ -362,7 +367,8 @@ final class SparkampModel: ObservableObject {
                     artist: newArtist,
                     albumArtist: newAlbumArtist,
                     duration: newDuration,
-                    broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0
+                    broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
+                    readOnly: item.readOnly   // read-only status doesn't change mid-scan
                 )
                 changed = true
             }
@@ -454,7 +460,8 @@ final class SparkampModel: ObservableObject {
                 artist: artist,
                 albumArtist: albumArtist,
                 duration: sparkamp_playlist_get_duration(ctx, Int32(i)),
-                broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0
+                broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
+                readOnly: sparkamp_playlist_is_read_only(ctx, Int32(i)) != 0
             )
         }
     }
@@ -811,6 +818,44 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         clearPlaylist()
         mlAddToPlaylist(ids: ids)
+        if sparkamp_get_autoplay_on_add(ctx) {
+            sparkamp_playlist_jump(ctx, 0)
+            sparkamp_play(ctx)
+            refreshCurrentTrackInfo()
+        }
+    }
+
+    /// Called when a track is double-clicked in the ML table.
+    /// Respects the "append vs. replace" playback setting and always plays.
+    func mlDoubleClickTracks(ids: [Int64]) {
+        guard let ctx = ctx else { return }
+        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        let indexBefore = Int(sparkamp_playlist_len(ctx))
+        if shouldReplace {
+            clearPlaylist()
+            mlAddToPlaylist(ids: ids)
+            sparkamp_playlist_jump(ctx, 0)
+        } else {
+            mlAddToPlaylist(ids: ids)
+            sparkamp_playlist_jump(ctx, Int32(indexBefore))
+        }
+        sparkamp_play(ctx)
+        refreshCurrentTrackInfo()
+    }
+
+    /// Load album artwork from a file path and open the artwork zoom window.
+    func mlViewArtForPath(_ path: String) {
+        let tagCtx = path.withCString { sparkamp_tag_open($0) }
+        defer { sparkamp_tag_close(tagCtx) }
+        var artLen: Int32 = 0
+        if let dataPtr = sparkamp_tag_get_artwork_data(tagCtx, &artLen), artLen > 0 {
+            let data = Data(bytes: dataPtr, count: Int(artLen))
+            sparkamp_tag_free_artwork(dataPtr, artLen)
+            if let image = NSImage(data: data) {
+                artworkImage = image
+                artworkWindowVisible = true
+            }
+        }
     }
 
     func mlRemoveTracks(ids: [Int64]) {

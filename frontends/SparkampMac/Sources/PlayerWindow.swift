@@ -97,7 +97,7 @@ struct PlayerWindow: View {
                         }
                         .frame(width: 118, alignment: .leading)
                         .padding(.top, 8)
-                        .padding(.leading, 8)
+                        .padding(.leading, 10)
                         .padding(.bottom, 4)
                     }
                     .buttonStyle(.plain)
@@ -107,6 +107,7 @@ struct PlayerWindow: View {
                     VisualizerView()
                         .frame(width: 118)
                         .frame(maxHeight: .infinity)
+                        .padding(.leading, 10)
                         .padding(.bottom, 6)
                 }
                 .frame(width: 118)
@@ -170,7 +171,11 @@ struct PlayerWindow: View {
                         .help("Jump to Track (j)")
 
                         ModeButton(icon: "music.note.house", isActive: model.mediaLibraryVisible) {
-                            model.openMediaLibrary()
+                            if model.mediaLibraryVisible {
+                                model.mediaLibraryVisible = false
+                            } else {
+                                model.openMediaLibrary()
+                            }
                         }
                         .help("Media Library (⌘L)")
 

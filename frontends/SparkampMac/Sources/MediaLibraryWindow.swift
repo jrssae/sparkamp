@@ -7,7 +7,7 @@ struct MediaLibraryView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
 
-    // Tab selection
+    // Tab selection (now drives left sidebar)
     @State private var selectedTab = 0   // 0 = Files, 1 = Playlists
 
     // Search
@@ -19,166 +19,216 @@ struct MediaLibraryView: View {
     @State private var selection: Set<Int64> = []
 
     // Column visibility — stored as bitmask in UserDefaults.
-    // Columns match the ID3 editor field list plus ML-only fields.
     // Bit layout:
     //  0=Title(TIT2)  1=Artist(TPE1)  2=Album(TALB)   3=AlbumArtist(TPE2)
     //  4=Genre(TCON)  5=Composer(TCOM) 6=Year(TDRC)   7=Track#(TRCK)
     //  8=Disc#(TPOS)  9=BPM(TBPM)    10=Comment(COMM) 11=Duration
-    // 12=Bitrate      13=Filename     14=PlayCount
+    // 12=Bitrate      13=Filename     14=PlayCount     15=AlbumArt
     @AppStorage("sparkamp.ml.columns") private var columnMask: Int = 0b0000000000111   // Title/Artist/Album
+
+    // Column ordering — stored as JSON in UserDefaults via @AppStorage(Data)
+    @AppStorage("sparkamp.ml.columnOrder") private var columnCustomizationData: Data = Data()
+    @State private var columnCustomization = TableColumnCustomization<MLTrack>()
 
     private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // ── Toolbar ──────────────────────────────────────────────────────
-            HStack(spacing: 8) {
-                Picker("", selection: $selectedTab) {
-                    Text("Files").tag(0)
-                    Text("Playlists").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 160)
-
+        HStack(spacing: 0) {
+            // ── Left sidebar navigation ────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 2) {
+                navItem(label: "Files",     icon: "music.note.list", tab: 0)
+                navItem(label: "Playlists", icon: "music.note",      tab: 1)
                 Spacer()
-
-                // Search field
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(theme.playlistDurationText)
-                        .font(.system(size: 11))
-                    TextField("Search…", text: $searchQuery)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(theme.playlistText)
-                        .frame(width: 180)
-                        .onChange(of: searchQuery) { _, _ in debounceSearch() }
-                    if !searchQuery.isEmpty {
-                        Button { searchQuery = ""; reload() } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(theme.playlistDurationText)
-                                .font(.system(size: 11))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .background(theme.lcdBackground.opacity(0.8))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(theme.windowBorder, lineWidth: 1)
-                )
-
-                Divider()
-                    .background(theme.windowBorder)
-                    .frame(height: 16)
-
-                // Column picker (Files tab only)
-                if selectedTab == 0 {
-                    Menu {
-                        columnToggle("Title",        bit: 0)
-                        columnToggle("Artist",        bit: 1)
-                        columnToggle("Album",         bit: 2)
-                        columnToggle("Album Artist",  bit: 3)
-                        columnToggle("Genre",         bit: 4)
-                        columnToggle("Composer",      bit: 5)
-                        columnToggle("Year",          bit: 6)
-                        columnToggle("Track #",       bit: 7)
-                        columnToggle("Disc #",        bit: 8)
-                        columnToggle("BPM",           bit: 9)
-                        columnToggle("Comment",       bit: 10)
-                        Divider()
-                        columnToggle("Duration",      bit: 11)
-                        columnToggle("Bitrate",       bit: 12)
-                        columnToggle("Filename",      bit: 13)
-                        columnToggle("Play Count",    bit: 14)
-                    } label: {
-                        Image(systemName: "tablecells")
-                            .font(.system(size: 11))
-                            .foregroundStyle(theme.modeBtnText)
-                    }
-                    .menuStyle(.borderlessButton)
-                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
+            .frame(width: 110)
             .background(theme.background)
 
             Divider().background(theme.windowBorder)
 
-            // ── Scan progress bar ─────────────────────────────────────────────
-            if model.mlScanRunning {
+            // ── Right content area ─────────────────────────────────────────────
+            VStack(spacing: 0) {
+                // ── Toolbar ────────────────────────────────────────────────────
                 HStack(spacing: 8) {
-                    ProgressView(
-                        value: model.mlScanTotal > 0
-                            ? Double(model.mlScanDone) / Double(model.mlScanTotal)
-                            : nil
+                    // Search field
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(theme.playlistDurationText)
+                            .font(.system(size: 11))
+                        TextField("Search…", text: $searchQuery)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.playlistText)
+                            .frame(width: 180)
+                            .onChange(of: searchQuery) { _, _ in debounceSearch() }
+                        if !searchQuery.isEmpty {
+                            Button { searchQuery = ""; reload() } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(theme.playlistDurationText)
+                                    .font(.system(size: 11))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(4)
+                    .background(theme.lcdBackground.opacity(0.8))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(theme.windowBorder, lineWidth: 1)
                     )
-                    .frame(maxWidth: .infinity)
 
-                    Text(model.mlScanTotal > 0
-                         ? "Scanning \(model.mlScanDone)/\(model.mlScanTotal)…"
-                         : "Scanning…")
-                        .font(.system(size: 10))
-                        .foregroundStyle(theme.playlistDurationText)
+                    Spacer()
 
-                    Button("Cancel") { model.mlCancelScan() }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
+                    // Column picker (Files tab only)
+                    if selectedTab == 0 {
+                        Divider()
+                            .background(theme.windowBorder)
+                            .frame(height: 16)
+
+                        Menu {
+                            columnToggle("Title",        bit: 0)
+                            columnToggle("Artist",       bit: 1)
+                            columnToggle("Album",        bit: 2)
+                            columnToggle("Album Artist", bit: 3)
+                            columnToggle("Genre",        bit: 4)
+                            columnToggle("Composer",     bit: 5)
+                            columnToggle("Year",         bit: 6)
+                            columnToggle("Track #",      bit: 7)
+                            columnToggle("Disc #",       bit: 8)
+                            columnToggle("BPM",          bit: 9)
+                            columnToggle("Comment",      bit: 10)
+                            Divider()
+                            columnToggle("Duration",     bit: 11)
+                            columnToggle("Bitrate",      bit: 12)
+                            columnToggle("Filename",     bit: 13)
+                            columnToggle("Play Count",   bit: 14)
+                            columnToggle("Album Art",    bit: 15)
+                        } label: {
+                            Image(systemName: "tablecells")
+                                .font(.system(size: 11))
+                                .foregroundStyle(theme.modeBtnText)
+                        }
+                        .menuStyle(.borderlessButton)
+                    }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+                .padding(.vertical, 8)
                 .background(theme.background)
 
                 Divider().background(theme.windowBorder)
-            }
 
-            // ── Tab content ───────────────────────────────────────────────────
-            if selectedTab == 0 {
-                filesTab
-            } else {
-                playlistsTab
-            }
+                // ── Scan progress bar ──────────────────────────────────────────
+                if model.mlScanRunning {
+                    HStack(spacing: 8) {
+                        ProgressView(
+                            value: model.mlScanTotal > 0
+                                ? Double(model.mlScanDone) / Double(model.mlScanTotal)
+                                : nil
+                        )
+                        .frame(maxWidth: .infinity)
 
-            Divider().background(theme.windowBorder)
+                        Text(model.mlScanTotal > 0
+                             ? "Scanning \(model.mlScanDone)/\(model.mlScanTotal)…"
+                             : "Scanning…")
+                            .font(.system(size: 10))
+                            .foregroundStyle(theme.playlistDurationText)
 
-            // ── Bottom bar ────────────────────────────────────────────────────
-            HStack {
-                Text("\(model.mlTracks.count) tracks")
-                    .font(.system(size: 10))
-                    .foregroundStyle(theme.playlistDurationText)
+                        Button("Cancel") { model.mlCancelScan() }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(theme.background)
 
-                Spacer()
+                    Divider().background(theme.windowBorder)
+                }
 
-                if !selection.isEmpty {
-                    Text("\(selection.count) selected")
+                // ── Tab content ────────────────────────────────────────────────
+                if selectedTab == 0 {
+                    filesTab
+                } else {
+                    playlistsTab
+                }
+
+                Divider().background(theme.windowBorder)
+
+                // ── Bottom bar ─────────────────────────────────────────────────
+                HStack {
+                    Text("\(model.mlTracks.count) tracks")
                         .font(.system(size: 10))
                         .foregroundStyle(theme.playlistDurationText)
 
-                    Button("Add to Playlist") {
-                        model.mlAddToPlaylist(ids: Array(selection))
+                    Spacer()
+
+                    if !selection.isEmpty {
+                        Text("\(selection.count) selected")
+                            .font(.system(size: 10))
+                            .foregroundStyle(theme.playlistDurationText)
+
+                        Button("Add to Playlist") {
+                            model.mlAddToPlaylist(ids: Array(selection))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(theme.background)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(theme.background)
         }
         .background(theme.background)
         .preferredColorScheme(themeManager.preferredColorScheme)
         .onAppear {
             model.openMediaLibrary()
             reload()
+            // Restore column customization.
+            if !columnCustomizationData.isEmpty,
+               let decoded = try? JSONDecoder().decode(TableColumnCustomization<MLTrack>.self,
+                                                       from: columnCustomizationData) {
+                columnCustomization = decoded
+            }
         }
         .onChange(of: model.mlScanRunning) { _, running in
             if !running { reload() }
         }
         .onChange(of: selectedTab) { _, _ in selection.removeAll() }
+        .onChange(of: columnCustomization) { _, newValue in
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                columnCustomizationData = encoded
+            }
+        }
         .onDisappear { model.mediaLibraryVisible = false }
+    }
+
+    // MARK: - Left nav item
+
+    @ViewBuilder
+    private func navItem(label: String, icon: String, tab: Int) -> some View {
+        let isSelected = selectedTab == tab
+        Button {
+            selectedTab = tab
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                Text(label)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                Spacer()
+            }
+            .foregroundStyle(isSelected ? theme.playlistCurrentText : theme.playlistText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(isSelected ? theme.playlistCurrentBg : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
     }
 
     // MARK: - Files tab
@@ -190,17 +240,28 @@ struct MediaLibraryView: View {
             selection: $selection,
             sortOrder: $sortOrder,
             columnMask: columnMask,
+            columnCustomization: $columnCustomization,
             theme: theme
         ) { event in
             switch event {
-            case .sortChanged:   model.mlTracks.sort(using: sortOrder)
-            case .addToPlaylist(let ids):     model.mlAddToPlaylist(ids: ids)
-            case .replacePlaylist(let ids):   model.mlReplacePlaylistWith(ids: ids)
+            case .sortChanged:
+                model.mlTracks.sort(using: sortOrder)
+            case .addToPlaylist(let ids):
+                model.mlAddToPlaylist(ids: ids)
+            case .replacePlaylist(let ids):
+                model.mlReplacePlaylistWith(ids: ids)
             case .editTags(let id):
                 if let track = model.mlTracks.first(where: { $0.id == id }) {
                     model.mlOpenTagEditorForPath(track.path)
                 }
-            case .removeTracks(let ids):      model.mlRemoveTracks(ids: ids)
+            case .removeTracks(let ids):
+                model.mlRemoveTracks(ids: ids)
+            case .doubleClick(let ids):
+                model.mlDoubleClickTracks(ids: ids)
+            case .viewArt(let id):
+                if let track = model.mlTracks.first(where: { $0.id == id }) {
+                    model.mlViewArtForPath(track.path)
+                }
             }
         }
     }
@@ -285,6 +346,8 @@ enum MLTableEvent {
     case replacePlaylist([Int64])
     case editTags(Int64)
     case removeTracks([Int64])
+    case doubleClick([Int64])
+    case viewArt(Int64)
 }
 
 // MARK: - ML files table
@@ -294,17 +357,28 @@ struct MLFilesTable: View {
     @Binding var selection: Set<Int64>
     @Binding var sortOrder: [KeyPathComparator<MLTrack>]
     let columnMask: Int
+    @Binding var columnCustomization: TableColumnCustomization<MLTrack>
     let theme: SkinTheme
     let onEvent: (MLTableEvent) -> Void
 
     private func isVisible(_ bit: Int) -> Bool { (columnMask >> bit) & 1 == 1 }
 
     var body: some View {
-        Table(tracks, selection: $selection, sortOrder: $sortOrder) {
+        Table(tracks, selection: $selection, sortOrder: $sortOrder,
+              columnCustomization: $columnCustomization) {
+            // ── Status column (always visible, no picker entry) ──────────────
+            TableColumn("") { row in
+                statusCell(row)
+            }
+            .width(20)
+
             columnsA()
             columnsB()
         }
         .onChange(of: sortOrder) { _, _ in onEvent(.sortChanged) }
+        .onTapGesture(count: 2) {
+            if !selection.isEmpty { onEvent(.doubleClick(Array(selection))) }
+        }
         .contextMenu(forSelectionType: Int64.self) { ids in
             Button("Add to Playlist")          { onEvent(.addToPlaylist(Array(ids))) }
             Button("Replace Current Playlist") { onEvent(.replacePlaylist(Array(ids))) }
@@ -323,6 +397,23 @@ struct MLFilesTable: View {
         .foregroundStyle(theme.playlistText)
     }
 
+    @ViewBuilder
+    private func statusCell(_ row: MLTrack) -> some View {
+        if !row.scanned {
+            Image(systemName: "clock")
+                .font(.system(size: 9))
+                .foregroundStyle(theme.playlistDurationText)
+                .help("Not yet scanned")
+        } else if row.readOnly {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(theme.playlistDurationText)
+                .help("Read-only file")
+        } else {
+            Color.clear
+        }
+    }
+
     // ── Split into two builders so the type-checker doesn't time out ─────────
 
     @TableColumnBuilder<MLTrack, KeyPathComparator<MLTrack>>
@@ -330,38 +421,48 @@ struct MLFilesTable: View {
         if isVisible(0) {
             TableColumn("Title", value: \.title) { row in
                 Text(row.title.isEmpty ? row.filename : row.title)
+                    .font(.system(size: 12))
                     .foregroundStyle(row.scanned ? theme.playlistText : theme.playlistDurationText)
             }
+            .customizationID("col-title")
         }
         if isVisible(1) {
             TableColumn("Artist", value: \.artist) { row in
-                Text(row.artist).foregroundStyle(theme.playlistText)
+                Text(row.artist).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-artist")
         }
         if isVisible(2) {
             TableColumn("Album", value: \.album) { row in
-                Text(row.album).foregroundStyle(theme.playlistText)
+                Text(row.album).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-album")
         }
         if isVisible(3) {
             TableColumn("Album Artist", value: \.albumArtist) { row in
-                Text(row.albumArtist).foregroundStyle(theme.playlistText)
+                Text(row.albumArtist).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-albumartist")
         }
         if isVisible(4) {
             TableColumn("Genre", value: \.genre) { row in
-                Text(row.genre).foregroundStyle(theme.playlistText)
+                Text(row.genre).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-genre")
         }
         if isVisible(5) {
             TableColumn("Composer", value: \.composer) { row in
-                Text(row.composer).foregroundStyle(theme.playlistText)
+                Text(row.composer).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-composer")
         }
         if isVisible(6) {
             TableColumn("Year", value: \.year) { row in
-                Text(row.year > 0 ? "\(row.year)" : "").foregroundStyle(theme.playlistText)
+                Text(row.year > 0 ? "\(row.year)" : "")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-year")
         }
     }
 
@@ -370,49 +471,75 @@ struct MLFilesTable: View {
         if isVisible(7) {
             TableColumn("Track #", value: \.trackNum) { row in
                 Text(row.trackNum > 0 ? "\(row.trackNum)" : "")
+                    .font(.system(size: 12))
                     .foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-tracknum")
         }
         if isVisible(8) {
             TableColumn("Disc #", value: \.discNum) { row in
                 Text(row.discNum > 0 ? "\(row.discNum)" : "")
+                    .font(.system(size: 12))
                     .foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-discnum")
         }
         if isVisible(9) {
             TableColumn("BPM", value: \.bpm) { row in
-                Text(row.bpm).foregroundStyle(theme.playlistText)
+                Text(row.bpm).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-bpm")
         }
         if isVisible(10) {
             TableColumn("Comment", value: \.comment) { row in
-                Text(row.comment).foregroundStyle(theme.playlistText)
+                Text(row.comment).font(.system(size: 12)).foregroundStyle(theme.playlistText)
             }
+            .customizationID("col-comment")
         }
         if isVisible(11) {
             TableColumn("Duration", value: \.lengthSecs) { row in
                 let total = Int(row.lengthSecs)
                 let m = total / 60, s = total % 60
                 Text(total > 0 ? String(format: "%d:%02d", m, s) : "")
+                    .font(.system(size: 10))
                     .foregroundStyle(theme.playlistDurationText)
             }
+            .customizationID("col-duration")
         }
         if isVisible(12) {
             TableColumn("Bitrate", value: \.bitrate) { row in
                 Text(row.bitrate > 0 ? "\(row.bitrate) kbps" : "")
+                    .font(.system(size: 10))
                     .foregroundStyle(theme.playlistDurationText)
             }
+            .customizationID("col-bitrate")
         }
         if isVisible(13) {
             TableColumn("Filename", value: \.filename) { row in
-                Text(row.filename).foregroundStyle(theme.playlistDurationText)
+                Text(row.filename)
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.playlistDurationText)
             }
+            .customizationID("col-filename")
         }
         if isVisible(14) {
             TableColumn("Play Count", value: \.playCount) { row in
                 Text(row.playCount > 0 ? "\(row.playCount)" : "")
+                    .font(.system(size: 10))
                     .foregroundStyle(theme.playlistDurationText)
             }
+            .customizationID("col-playcount")
+        }
+        if isVisible(15) {
+            TableColumn("Art") { row in
+                if row.hasArt {
+                    Button("View") { onEvent(.viewArt(row.id)) }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.playlistCurrentText)
+                }
+            }
+            .customizationID("col-art")
         }
     }
 }

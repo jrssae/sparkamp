@@ -179,7 +179,7 @@ struct PlaylistRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // State / broken indicator
+            // State / broken / read-only indicator
             Group {
                 if isCurrent {
                     Image(systemName: "waveform")
@@ -189,6 +189,10 @@ struct PlaylistRow: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(theme.playlistBrokenText)
+                } else if item.readOnly {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(theme.playlistDurationText)
                 } else {
                     Color.clear
                 }

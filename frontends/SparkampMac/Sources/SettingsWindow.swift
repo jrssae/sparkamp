@@ -127,6 +127,8 @@ private struct AppearancePane: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var themeChoice: Int = 0   // 0=System, 1=Dark, 2=Light
+    @State private var accentColor: Color = Color(hex: "#00ccff")!
+    @State private var hasAccentOverride: Bool = false
 
     var body: some View {
         Form {
@@ -162,6 +164,36 @@ private struct AppearancePane: View {
                     }
                 }
             }
+
+            Section("Accent Color") {
+                HStack {
+                    Toggle("Override theme accent", isOn: $hasAccentOverride)
+                        .onChange(of: hasAccentOverride) { _, on in
+                            if on {
+                                let hex = colorToHex(accentColor)
+                                themeManager.setAccentColor(hex)
+                            } else {
+                                themeManager.setAccentColor(nil)
+                            }
+                        }
+                }
+
+                if hasAccentOverride {
+                    HStack {
+                        Text("Accent color")
+                        Spacer()
+                        ColorPicker("", selection: $accentColor, supportsOpacity: false)
+                            .labelsHidden()
+                            .onChange(of: accentColor) { _, newColor in
+                                let hex = colorToHex(newColor)
+                                themeManager.setAccentColor(hex)
+                            }
+                    }
+                    Text("Applies to buttons, progress bars, time display, and highlighted text.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -170,7 +202,18 @@ private struct AppearancePane: View {
             case .light:  themeChoice = 2
             default:      themeChoice = 0
             }
+            if let hex = themeManager.accentHex, let color = Color(hex: hex) {
+                accentColor = color
+                hasAccentOverride = true
+            }
         }
+    }
+
+    private func colorToHex(_ color: Color) -> String {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ns.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
     }
 }
 
