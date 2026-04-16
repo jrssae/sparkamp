@@ -4517,6 +4517,369 @@ fn get_id3_field_value(
     }
 }
 
+// ---------------------------------------------------------------------------
+// ID3 field customizer — two-column layout with up/down reorder and DnD
+// ---------------------------------------------------------------------------
+
+fn open_id3_field_customizer(
+    parent: Option<&gtk4::Window>,
+    state: Rc<RefCell<AppState>>,
+    on_close: Option<Rc<dyn Fn()>>,
+) {
+    #[derive(Clone)]
+    struct FE {
+        id: String,
+        label: String,
+        visible: bool,
+        column: usize, // 0 = left, 1 = right
+    }
+
+    let visible_ids = state.borrow().config.media_library.id3_visible_columns.clone();
+    let col_pos = state.borrow().config.media_library.id3_column_position.clone();
+    let editable: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
+
+    // Visible fields first (in their saved order), then invisible fields appended
+    let mut entries: Vec<FE> = visible_ids
+        .iter()
+        .filter_map(|id| editable.iter().find(|c| c.id == id.as_str()))
+        .map(|c| FE {
+            id: c.id.to_string(),
+            label: c.header.to_string(),
+            visible: true,
+            column: if col_pos.get(c.id).map_or(false, |p| p == "right") { 1 } else { 0 },
+        })
+        .collect();
+    for c in &editable {
+        if !visible_ids.contains(&c.id.to_string()) {
+            entries.push(FE {
+                id: c.id.to_string(),
+                label: c.header.to_string(),
+                visible: false,
+                column: if col_pos.get(c.id).map_or(false, |p| p == "right") { 1 } else { 0 },
+            });
+        }
+    }
+
+    let fs: Rc<RefCell<Vec<FE>>> = Rc::new(RefCell::new(entries));
+
+    // Persist current fs → config
+    let save_cfg = {
+        let fs = fs.clone();
+        let st = state.clone();
+        Rc::new(move || {
+            let entries = fs.borrow();
+            let vis: Vec<String> = entries.iter().filter(|e| e.visible).map(|e| e.id.clone()).collect();
+            let pos: std::collections::HashMap<String, String> = entries
+                .iter()
+                .map(|e| (e.id.clone(), if e.column == 1 { "right" } else { "left" }.to_string()))
+                .collect();
+            let mut s = st.borrow_mut();
+            s.config.media_library.id3_visible_columns = vis;
+            s.config.media_library.id3_column_position = pos;
+            let _ = s.config.save();
+        })
+    };
+
+    // Window
+    let dlg = gtk4::Window::new();
+    dlg.set_title(Some("Customize ID3 Fields"));
+    dlg.set_default_size(520, 440);
+    dlg.set_resizable(true);
+    if let Some(p) = parent {
+        dlg.set_transient_for(Some(p));
+    }
+
+    let root_vbox = GtkBox::new(Orientation::Vertical, 0);
+
+    // ── Header ──────────────────────────────────────────────────────────────
+    {
+        let hdr = GtkBox::new(Orientation::Horizontal, 8);
+        hdr.set_margin_top(8);
+        hdr.set_margin_bottom(8);
+        hdr.set_margin_start(12);
+        hdr.set_margin_end(12);
+        let hint = Label::builder()
+            .label("Use ▲ ▼ to reorder within a column, or drag rows. Use → ← to switch columns.")
+            .halign(Align::Start)
+            .hexpand(true)
+            .build();
+        hint.add_css_class("status-label");
+        let spring = GtkBox::new(Orientation::Horizontal, 0);
+        spring.set_hexpand(true);
+        let done = Button::with_label("Done");
+        done.add_css_class("suggested-action");
+        hdr.append(&hint);
+        hdr.append(&spring);
+        hdr.append(&done);
+        root_vbox.append(&hdr);
+        root_vbox.append(&Separator::new(Orientation::Horizontal));
+
+        let dlg_wk = dlg.downgrade();
+        let oc = on_close.clone();
+        done.connect_clicked(move |_| {
+            if let Some(d) = dlg_wk.upgrade() { d.close(); }
+            if let Some(ref cb) = oc { cb(); }
+        });
+    }
+
+    // ── Column header row ────────────────────────────────────────────────────
+    {
+        let chr = GtkBox::new(Orientation::Horizontal, 0);
+        let lh = Label::builder()
+            .label("Left Column")
+            .halign(Align::Center)
+            .hexpand(true)
+            .build();
+        lh.add_css_class("ml-section-header");
+        let rh = Label::builder()
+            .label("Right Column")
+            .halign(Align::Center)
+            .hexpand(true)
+            .build();
+        rh.add_css_class("ml-section-header");
+        chr.append(&lh);
+        chr.append(&Separator::new(Orientation::Vertical));
+        chr.append(&rh);
+        root_vbox.append(&chr);
+        root_vbox.append(&Separator::new(Orientation::Horizontal));
+    }
+
+    // ── Two-column list area ─────────────────────────────────────────────────
+    let panels = GtkBox::new(Orientation::Horizontal, 0);
+    panels.set_vexpand(true);
+    panels.set_hexpand(true);
+
+    let left_lb: Rc<ListBox> = Rc::new({
+        let lb = ListBox::new();
+        lb.add_css_class("playlist");
+        lb.set_selection_mode(gtk4::SelectionMode::None);
+        lb
+    });
+    let right_lb: Rc<ListBox> = Rc::new({
+        let lb = ListBox::new();
+        lb.add_css_class("playlist");
+        lb.set_selection_mode(gtk4::SelectionMode::None);
+        lb
+    });
+
+    let left_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .vexpand(true)
+        .hexpand(true)
+        .child(&*left_lb)
+        .build();
+    let right_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .vexpand(true)
+        .hexpand(true)
+        .child(&*right_lb)
+        .build();
+
+    panels.append(&left_scroll);
+    panels.append(&Separator::new(Orientation::Vertical));
+    panels.append(&right_scroll);
+    root_vbox.append(&panels);
+
+    dlg.set_child(Some(&root_vbox));
+
+    // ── Rebuild holder (allows rebuild closure to call itself) ───────────────
+    let rebuild_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+
+    let rebuild = {
+        let fs = fs.clone();
+        let left_ref = left_lb.clone();
+        let right_ref = right_lb.clone();
+        let sc = save_cfg.clone();
+        let rh = rebuild_holder.clone();
+        Rc::new(move || {
+            // Clear both panels
+            while let Some(c) = left_ref.first_child() { left_ref.remove(&c); }
+            while let Some(c) = right_ref.first_child() { right_ref.remove(&c); }
+
+            let entries = fs.borrow().clone();
+
+            // Indices per column, in Vec order
+            let col0: Vec<usize> = entries.iter().enumerate()
+                .filter(|(_, e)| e.column == 0).map(|(i, _)| i).collect();
+            let col1: Vec<usize> = entries.iter().enumerate()
+                .filter(|(_, e)| e.column == 1).map(|(i, _)| i).collect();
+
+            for (col_idx, col_globals) in [col0.as_slice(), col1.as_slice()].iter().enumerate() {
+                let lb: &ListBox = if col_idx == 0 { &left_ref } else { &right_ref };
+                let n = col_globals.len();
+
+                for (col_pos, &g_idx) in col_globals.iter().enumerate() {
+                    let entry = &entries[g_idx];
+                    let rb_box = GtkBox::new(Orientation::Horizontal, 4);
+                    rb_box.set_margin_top(2);
+                    rb_box.set_margin_bottom(2);
+                    rb_box.set_margin_start(4);
+                    rb_box.set_margin_end(4);
+
+                    // ▲ button
+                    let up_btn = Button::with_label("▲");
+                    up_btn.add_css_class("pl-btn");
+                    up_btn.set_sensitive(col_pos > 0);
+                    if col_pos > 0 {
+                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
+                        let g = g_idx; let prev = col_globals[col_pos - 1];
+                        up_btn.connect_clicked(move |_| {
+                            fs2.borrow_mut().swap(g, prev);
+                            sc2();
+                            if let Some(ref r) = *rh2.borrow() { r(); }
+                        });
+                    }
+
+                    // ▼ button
+                    let dn_btn = Button::with_label("▼");
+                    dn_btn.add_css_class("pl-btn");
+                    dn_btn.set_sensitive(col_pos + 1 < n);
+                    if col_pos + 1 < n {
+                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
+                        let g = g_idx; let next = col_globals[col_pos + 1];
+                        dn_btn.connect_clicked(move |_| {
+                            fs2.borrow_mut().swap(g, next);
+                            sc2();
+                            if let Some(ref r) = *rh2.borrow() { r(); }
+                        });
+                    }
+
+                    // Visibility checkbox
+                    let cb = CheckButton::new();
+                    cb.set_active(entry.visible);
+                    {
+                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
+                        let g = g_idx;
+                        cb.connect_toggled(move |btn| {
+                            fs2.borrow_mut()[g].visible = btn.is_active();
+                            sc2();
+                            if let Some(ref r) = *rh2.borrow() { r(); }
+                        });
+                    }
+
+                    // Field label (greyed when invisible)
+                    let lbl = Label::builder()
+                        .label(entry.label.as_str())
+                        .halign(Align::Start)
+                        .hexpand(true)
+                        .build();
+                    if !entry.visible {
+                        lbl.add_css_class("status-label");
+                    }
+
+                    // → / ← column-switch button
+                    let sw_lbl = if col_idx == 0 { "→" } else { "←" };
+                    let sw_btn = Button::with_label(sw_lbl);
+                    sw_btn.add_css_class("pl-btn");
+                    {
+                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
+                        let g = g_idx;
+                        let new_col: usize = if col_idx == 0 { 1 } else { 0 };
+                        sw_btn.connect_clicked(move |_| {
+                            // Move to end of the destination column
+                            let insert_at = {
+                                let e = fs2.borrow();
+                                e.iter().enumerate().rev()
+                                    .find(|(j, ent)| *j != g && ent.column == new_col)
+                                    .map(|(j, _)| j + 1)
+                                    .unwrap_or(e.len())
+                            };
+                            {
+                                let mut e = fs2.borrow_mut();
+                                e[g].column = new_col;
+                                let entry = e.remove(g);
+                                let adj = if insert_at > g { insert_at - 1 } else { insert_at };
+                                let cap = e.len();
+                                e.insert(adj.min(cap), entry);
+                            }
+                            sc2();
+                            if let Some(ref r) = *rh2.borrow() { r(); }
+                        });
+                    }
+
+                    // DragSource — provides global index as string
+                    {
+                        let drag_src = DragSource::new();
+                        drag_src.set_actions(gtk4::gdk::DragAction::MOVE);
+                        let g_str = g_idx.to_string();
+                        drag_src.connect_prepare(move |_, _, _| {
+                            Some(gdk::ContentProvider::for_value(&(&g_str).to_value()))
+                        });
+                        rb_box.add_controller(drag_src);
+                    }
+
+                    rb_box.append(&up_btn);
+                    rb_box.append(&dn_btn);
+                    rb_box.append(&cb);
+                    rb_box.append(&lbl);
+                    rb_box.append(&sw_btn);
+
+                    let row = ListBoxRow::new();
+                    row.set_widget_name(&g_idx.to_string());
+                    row.set_child(Some(&rb_box));
+                    lb.append(&row);
+                }
+            }
+        })
+    };
+
+    *rebuild_holder.borrow_mut() = Some(rebuild.clone());
+
+    // ── DropTargets — one per column panel; supports cross-column DnD ────────
+    for (col_target, lb_rc) in [(0usize, left_lb.clone()), (1usize, right_lb.clone())] {
+        let dt = DropTarget::new(glib::Type::STRING, gtk4::gdk::DragAction::MOVE);
+        let lb_dt = lb_rc.clone();
+        let fs_dt = fs.clone();
+        let sc_dt = save_cfg.clone();
+        let rh_dt = rebuild_holder.clone();
+        dt.connect_drop(move |_, value, _x, y| {
+            let src_global: usize = match value.get::<String>() {
+                Ok(s) => match s.parse() { Ok(n) => n, Err(_) => return false },
+                Err(_) => return false,
+            };
+            {
+                let e = fs_dt.borrow();
+                if src_global >= e.len() { return false; }
+            }
+
+            // Find the target row by y-coordinate in this ListBox
+            let target_global: Option<usize> = lb_dt.row_at_y(y as i32)
+                .and_then(|r| r.widget_name().to_string().parse::<usize>().ok());
+
+            {
+                let mut e = fs_dt.borrow_mut();
+                e[src_global].column = col_target;
+                let entry = e.remove(src_global);
+                if let Some(tg) = target_global {
+                    let adj = if tg > src_global { tg - 1 } else { tg };
+                    let cap = e.len();
+                    e.insert(adj.min(cap), entry);
+                } else {
+                    // Dropped below all rows — append to end of target column
+                    let insert_at = e.iter().enumerate().rev()
+                        .find(|(_, ent)| ent.column == col_target)
+                        .map(|(j, _)| j + 1)
+                        .unwrap_or_else(|| e.len());
+                    let cap = e.len();
+                    e.insert(insert_at.min(cap), entry);
+                }
+            }
+
+            sc_dt();
+            if let Some(ref r) = *rh_dt.borrow() { r(); }
+            true
+        });
+        lb_rc.add_controller(dt);
+    }
+
+    rebuild();
+    dlg.present();
+}
+
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
 enum ColumnCustomizerMode {
     MediaLibrary,
@@ -4532,6 +4895,12 @@ fn open_customize_columns_dialog(
     on_close: Option<Rc<dyn Fn()>>,
 ) {
     use gtk4::prelude::*;
+
+    // ID3 editor gets its own two-column customizer
+    if matches!(mode, ColumnCustomizerMode::Id3Editor) {
+        open_id3_field_customizer(parent, state, on_close);
+        return;
+    }
 
     let dlg = gtk4::Window::new();
     dlg.set_title(Some(title));
@@ -8215,7 +8584,7 @@ fn open_media_library_window(
     sidebar.add_css_class("ml-sidebar");
     sidebar.set_vexpand(true);
 
-    let _sidebar_scroll = ScrolledWindow::builder()
+    let sidebar_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .width_request(165)
@@ -8659,8 +9028,8 @@ fn open_media_library_window(
                             .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
-                            .margin_top(3)
-                            .margin_bottom(3)
+                            .margin_top(1)
+                            .margin_bottom(1)
                             .hexpand(true)
                             .vexpand(true)
                             .halign(Align::Fill)
@@ -8673,8 +9042,8 @@ fn open_media_library_window(
                             .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
-                            .margin_top(3)
-                            .margin_bottom(3)
+                            .margin_top(1)
+                            .margin_bottom(1)
                             .hexpand(true)
                             .vexpand(true)
                             .halign(Align::Fill)
@@ -9532,6 +9901,8 @@ fn open_media_library_window(
     let editing_tracks: Rc<RefCell<Vec<crate::media_library::LibTrack>>> =
         Rc::new(RefCell::new(Vec::new()));
     let saved_track_ids: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
+    // The DB row id of the playlist currently open in the editor (-1 = none)
+    let editing_pl_id: Rc<Cell<i64>> = Rc::new(Cell::new(-1));
 
     // Widget handles for pl-manage playlist list (shared with sidebar)
     let pl_manage_list: Rc<ListBox> = Rc::new({
@@ -9560,7 +9931,11 @@ fn open_media_library_window(
                 tl.remove(&child);
             }
             for t in et.borrow().iter() {
-                let missing = !std::path::Path::new(&t.path).exists();
+                // id == 0 marks a synthetic stub for files not in the DB
+                // (e.g. Windows-path entries, moved files).  Also check
+                // actual disk existence for library tracks whose file was
+                // deleted after the last scan.
+                let missing = t.id == 0 || !std::path::Path::new(&t.path).exists();
                 let artist = t.artist.as_deref().unwrap_or("-");
                 let title  = t.title.as_deref().unwrap_or(&t.filename);
                 let text   = format!("{} — {}", artist, title);
@@ -9582,11 +9957,13 @@ fn open_media_library_window(
 
     // ── Helper: load a playlist by DB id into editing state ───────────────
     let load_pl_by_id = {
-        let state_rc = state.clone();
-        let et = editing_tracks.clone();
-        let saved = saved_track_ids.clone();
-        let rebuild = rebuild_track_list.clone();
+        let state_rc   = state.clone();
+        let et         = editing_tracks.clone();
+        let saved      = saved_track_ids.clone();
+        let rebuild    = rebuild_track_list.clone();
+        let ep_id      = editing_pl_id.clone();
         Rc::new(move |id: i64| {
+            ep_id.set(id);
             let tracks = state_rc
                 .borrow()
                 .media_lib
@@ -9937,18 +10314,37 @@ fn open_media_library_window(
         pl_sub_stack.add_named(&manage_vbox, Some("pl-manage"));
     }
 
+    // ── Hoisted header widgets (shared with sidebar selection handler) ────
+    let edit_header: Label = Label::builder()
+        .label("Playlist Editor")
+        .halign(Align::Start)
+        .margin_start(8).margin_top(4).margin_bottom(0)
+        .build();
+    edit_header.add_css_class("ml-section-header");
+
+    // File path bar — shows the .m3u path so the user can see if it is an
+    // external playlist (not managed by Sparkamp).
+    let edit_path_label: Label = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .margin_start(8).margin_top(0).margin_bottom(4)
+        .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+        .build();
+    edit_path_label.add_css_class("status-label");
+
+    // Save button (hoisted so the sidebar handler can toggle its sensitivity)
+    let btn_save_pl_outer: Button = {
+        let b = Button::with_label("Save");
+        b.add_css_class("pl-btn");
+        b
+    };
+
     // ── Build "pl-edit" page ──────────────────────────────────────────────
     {
         let edit_vbox = GtkBox::new(Orientation::Vertical, 0);
 
-        // Track editor header (shows current playlist name + editor label)
-        let edit_header = Label::builder()
-            .label("Playlist Editor")
-            .halign(Align::Start)
-            .margin_start(8).margin_top(4).margin_bottom(4)
-            .build();
-        edit_header.add_css_class("ml-section-header");
         edit_vbox.append(&edit_header);
+        edit_vbox.append(&edit_path_label);
 
         let track_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Never)
@@ -9964,14 +10360,16 @@ fn open_media_library_window(
         edit_btn_row.set_margin_start(4); edit_btn_row.set_margin_end(4);
         edit_btn_row.set_margin_top(4);  edit_btn_row.set_margin_bottom(4);
 
-        let btn_add_files_pl  = Button::with_label("+ Files");  btn_add_files_pl.add_css_class("pl-btn");
-        let btn_add_folder_pl = Button::with_label("+ Folder"); btn_add_folder_pl.add_css_class("pl-btn");
-        let btn_remove_tracks = Button::with_label("− Remove"); btn_remove_tracks.add_css_class("pl-btn");
-        let btn_remove_all    = Button::with_label("Clear");    btn_remove_all.add_css_class("pl-btn");
+        let btn_add_files_pl  = Button::with_label("+ Files");    btn_add_files_pl.add_css_class("pl-btn");
+        let btn_add_folder_pl = Button::with_label("+ Folder");   btn_add_folder_pl.add_css_class("pl-btn");
+        let btn_remove_tracks = Button::with_label("− Remove");   btn_remove_tracks.add_css_class("pl-btn");
+        let btn_remove_all    = Button::with_label("Clear");      btn_remove_all.add_css_class("pl-btn");
         let spring_pl         = GtkBox::new(Orientation::Horizontal, 0); spring_pl.set_hexpand(true);
         let btn_set_pl        = Button::with_label("▶ Set as Playlist"); btn_set_pl.add_css_class("pl-btn");
-        let btn_revert_pl     = Button::with_label("↺ Revert"); btn_revert_pl.add_css_class("pl-btn");
-        let btn_save_pl       = Button::with_label("Save");     btn_save_pl.add_css_class("pl-btn");
+        let btn_revert_pl     = Button::with_label("↺ Revert");  btn_revert_pl.add_css_class("pl-btn");
+        let btn_save_as_pl    = Button::with_label("Save As…");  btn_save_as_pl.add_css_class("pl-btn");
+        // btn_save_pl_outer was hoisted so the sidebar handler can toggle sensitivity.
+        let btn_save_pl = btn_save_pl_outer.clone();
 
         edit_btn_row.append(&btn_add_files_pl);
         edit_btn_row.append(&btn_add_folder_pl);
@@ -9980,6 +10378,7 @@ fn open_media_library_window(
         edit_btn_row.append(&spring_pl);
         edit_btn_row.append(&btn_set_pl);
         edit_btn_row.append(&btn_revert_pl);
+        edit_btn_row.append(&btn_save_as_pl);
         edit_btn_row.append(&btn_save_pl);
         edit_vbox.append(&edit_btn_row);
 
@@ -10122,35 +10521,128 @@ fn open_media_library_window(
             });
         }
 
+        // ── Save As playlist ──────────────────────────────────────────────
+        {
+            let state_rc     = state.clone();
+            let et           = editing_tracks.clone();
+            let ep_id        = editing_pl_id.clone();
+            let load         = load_pl_by_id.clone();
+            let sidebar_ref  = sidebar.clone();
+            let pl_ml_ref    = pl_manage_list.clone();
+            let win_wk       = win.downgrade();
+            btn_save_as_pl.connect_clicked(move |_| {
+                // Prompt for new playlist name.
+                let dialog = gtk4::AlertDialog::builder()
+                    .message("Save As New Playlist")
+                    .detail("Enter a name for the new playlist:")
+                    .build();
+                // Use an Entry inside a popover-style dialog via a simple GTK dialog window.
+                let win_ref = win_wk.upgrade();
+                let name_dlg = gtk4::Window::builder()
+                    .title("Save As New Playlist")
+                    .modal(true)
+                    .resizable(false)
+                    .default_width(320)
+                    .build();
+                if let Some(ref w) = win_ref { name_dlg.set_transient_for(Some(w)); }
+                let dlg_vbox = GtkBox::new(Orientation::Vertical, 8);
+                dlg_vbox.set_margin_top(16); dlg_vbox.set_margin_bottom(16);
+                dlg_vbox.set_margin_start(16); dlg_vbox.set_margin_end(16);
+                let _ = dialog; // silence unused warning
+                let lbl = Label::builder().label("Playlist name:").halign(Align::Start).build();
+                let entry = gtk4::Entry::new();
+                entry.set_placeholder_text(Some("New Playlist"));
+                // Pre-fill with current playlist name if we have one.
+                if ep_id.get() >= 0 {
+                    if let Some(ref lib) = state_rc.borrow().media_lib {
+                        if let Ok(pl) = lib.playlist_by_id(ep_id.get()) {
+                            entry.set_text(&pl.name);
+                        }
+                    }
+                }
+                let btn_row = GtkBox::new(Orientation::Horizontal, 8);
+                let btn_cancel = Button::with_label("Cancel"); btn_cancel.add_css_class("pl-btn");
+                let btn_ok     = Button::with_label("Save");   btn_ok.add_css_class("pl-btn");
+                let spr = GtkBox::new(Orientation::Horizontal, 0); spr.set_hexpand(true);
+                btn_row.append(&spr);
+                btn_row.append(&btn_cancel);
+                btn_row.append(&btn_ok);
+                dlg_vbox.append(&lbl);
+                dlg_vbox.append(&entry);
+                dlg_vbox.append(&btn_row);
+                name_dlg.set_child(Some(&dlg_vbox));
+
+                // Cancel handler
+                {
+                    let d = name_dlg.clone();
+                    btn_cancel.connect_clicked(move |_| { d.close(); });
+                }
+                // Save handler
+                {
+                    let state2    = state_rc.clone();
+                    let et2       = et.clone();
+                    let ep_id2    = ep_id.clone();
+                    let load2     = load.clone();
+                    let sidebar2  = sidebar_ref.clone();
+                    let pl_ml2    = pl_ml_ref.clone();
+                    let entry2    = entry.clone();
+                    let d         = name_dlg.clone();
+                    btn_ok.connect_clicked(move |_| {
+                        let new_name = entry2.text().to_string();
+                        let new_name = new_name.trim();
+                        if new_name.is_empty() { return; }
+                        let paths: Vec<String> = et2.borrow().iter().map(|t| t.path.clone()).collect();
+                        let new_id = if let Some(ref lib) = state2.borrow().media_lib {
+                            lib.save_playlist_tracks_as(new_name, &paths).ok()
+                        } else { None };
+                        if let Some(new_id) = new_id {
+                            // Add row to manage list + sidebar
+                            let lbl = Label::builder()
+                                .label(new_name)
+                                .halign(Align::Start)
+                                .margin_start(8).margin_end(8)
+                                .margin_top(3).margin_bottom(3)
+                                .build();
+                            let manage_row = ListBoxRow::new();
+                            manage_row.set_widget_name(&new_id.to_string());
+                            manage_row.set_child(Some(&lbl));
+                            pl_ml2.append(&manage_row);
+
+                            let s_lbl = Label::builder()
+                                .label(new_name)
+                                .halign(Align::Start)
+                                .margin_start(24).margin_end(8)
+                                .margin_top(4).margin_bottom(4)
+                                .build();
+                            let s_row = ListBoxRow::new();
+                            s_row.set_widget_name(&format!("pl:{}", new_id));
+                            s_row.set_child(Some(&s_lbl));
+                            sidebar2.append(&s_row);
+                            sidebar2.select_row(Some(&s_row));
+
+                            ep_id2.set(new_id);
+                            load2(new_id);
+                        }
+                        d.close();
+                    });
+                }
+                name_dlg.present();
+            });
+        }
+
         // ── Save playlist ─────────────────────────────────────────────────
         {
             let state_rc    = state.clone();
             let et          = editing_tracks.clone();
             let saved       = saved_track_ids.clone();
-            let sidebar_ref = sidebar.clone();
+            let ep_id       = editing_pl_id.clone();
             btn_save_pl.connect_clicked(move |_| {
-                let mut i = 0i32;
-                loop {
-                    match sidebar_ref.row_at_index(i) {
-                        Some(row) => {
-                            let name = row.widget_name().to_string();
-                            if row.is_selected() {
-                                if let Some(id_str) = name.strip_prefix("pl:") {
-                                    if let Ok(id) = id_str.parse::<i64>() {
-                                        let track_ids: Vec<i64> =
-                                            et.borrow().iter().map(|t| t.id).collect();
-                                        if let Some(ref lib) = state_rc.borrow().media_lib {
-                                            let _ = lib.save_playlist_tracks(id, &track_ids);
-                                            *saved.borrow_mut() = track_ids;
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                            i += 1;
-                        }
-                        None => break,
-                    }
+                let id = ep_id.get();
+                if id < 0 { return; }
+                let track_ids: Vec<i64> = et.borrow().iter().map(|t| t.id).collect();
+                if let Some(ref lib) = state_rc.borrow().media_lib {
+                    let _ = lib.save_playlist_tracks(id, &track_ids);
+                    *saved.borrow_mut() = track_ids;
                 }
             });
         }
@@ -10184,11 +10676,14 @@ fn open_media_library_window(
 
     // Wire sidebar to stack.
     {
-        let stack_ref   = stack.clone();
-        let pl_sub_ref  = pl_sub_stack.clone();
-        let load        = load_pl_by_id.clone();
-        let state_rc    = state.clone();
-        let expanded_rc = playlists_expanded.clone();
+        let stack_ref      = stack.clone();
+        let pl_sub_ref     = pl_sub_stack.clone();
+        let load           = load_pl_by_id.clone();
+        let state_rc       = state.clone();
+        let expanded_rc    = playlists_expanded.clone();
+        let hdr_lbl        = edit_header.clone();
+        let path_lbl       = edit_path_label.clone();
+        let save_btn       = btn_save_pl_outer.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let row = match opt_row { Some(r) => r, None => return };
             let name = row.widget_name().to_string();
@@ -10207,19 +10702,15 @@ fn open_media_library_window(
                     stack_ref.set_visible_child_name("playlists");
                     load(id);
                     pl_sub_ref.set_visible_child_name("pl-edit");
-                    // Update editor header with playlist name
+                    // Update editor header, path bar, and Save sensitivity.
                     if let Some(ref lib) = state_rc.borrow().media_lib {
                         if let Ok(pl) = lib.playlist_by_id(id) {
-                            // The edit_header label is inside the pl-edit page child chain
-                            if let Some(edit_page) = pl_sub_ref.child_by_name("pl-edit") {
-                                if let Ok(vbox) = edit_page.downcast::<GtkBox>() {
-                                    if let Some(first) = vbox.first_child() {
-                                        if let Ok(lbl) = first.downcast::<Label>() {
-                                            lbl.set_text(&gtk_safe(&pl.name));
-                                        }
-                                    }
-                                }
-                            }
+                            hdr_lbl.set_text(&gtk_safe(&pl.name));
+                            path_lbl.set_text(&gtk_safe(&pl.path));
+                            // Disable Save for external playlists; user should
+                            // use Save As to get a Sparkamp-managed copy.
+                            let is_managed = lib.playlist_is_managed(id);
+                            save_btn.set_sensitive(is_managed);
                         }
                     }
                 }
@@ -10232,7 +10723,7 @@ fn open_media_library_window(
 
     sidebar.select_row(sidebar.row_at_index(0).as_ref());
 
-    root.append(&sidebar);
+    root.append(&sidebar_scroll);
     root.append(&vsep);
     root.append(&stack);
     win.set_child(Some(&root));

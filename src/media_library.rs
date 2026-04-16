@@ -294,6 +294,8 @@ impl MediaLibrary {
 
         let lib = Self { conn };
         lib.init_schema()?;
+        // Normalize any portal-path duplicates left by earlier versions.
+        let _ = lib.dedup_folders();
         Ok(lib)
     }
 
@@ -439,7 +441,19 @@ impl MediaLibrary {
     ///
     /// Use this to distinguish "add a new folder" from "rescan an existing one"
     /// so callers can show appropriate feedback (e.g. "Added" vs "Rescanning…").
+    ///
+    /// The path is canonicalized before storing so that document-portal FUSE
+    /// mounts (e.g. `/run/user/<uid>/doc/<hash>/Music` on Flatpak) resolve to
+    /// the same real path as a directly-added `~/Music`, preventing duplicates.
     pub fn add_folder(&self, path: &str) -> Result<AddFolderResult> {
+        // Canonicalize to resolve symlinks and portal FUSE mounts.
+        // Fall back to the original string if the path does not exist yet.
+        let canonical = Path::new(path)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned());
+        let path = canonical.as_str();
+
         if let Some(id) = self.folder_exists(path)? {
             return Ok(AddFolderResult::AlreadyExists(id));
         }
@@ -451,6 +465,78 @@ impl MediaLibrary {
             |row| row.get(0),
         )?;
         Ok(AddFolderResult::New(id))
+    }
+
+    /// Normalize any portal-path folder entries in the DB to their canonical
+    /// real paths.  Called once at startup to repair duplicates created before
+    /// `add_folder` gained canonicalization.
+    ///
+    /// If two folder entries resolve to the same canonical path (e.g. one is a
+    /// `/run/user/.../doc/…` mirror of `~/Music`), the one with fewer tracks is
+    /// removed and its tracks/playlists are re-homed to the surviving entry.
+    fn dedup_folders(&self) -> Result<()> {
+        let folders = self.list_folders()?;
+
+        // Build: canonical_path → list of (id, original_path)
+        let mut by_canonical: std::collections::HashMap<String, Vec<(i64, String)>> =
+            std::collections::HashMap::new();
+        for (id, orig) in &folders {
+            let canonical = Path::new(orig)
+                .canonicalize()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| orig.clone());
+            by_canonical
+                .entry(canonical)
+                .or_default()
+                .push((*id, orig.clone()));
+        }
+
+        for (canonical, mut entries) in by_canonical {
+            if entries.len() <= 1 {
+                // Only one entry for this canonical path — just ensure it is
+                // stored under the canonical string (update if it differed).
+                if let Some((id, orig)) = entries.first() {
+                    if orig != &canonical {
+                        let _ = self.conn.execute(
+                            "UPDATE folders SET path = ?1 WHERE id = ?2",
+                            params![canonical, id],
+                        );
+                    }
+                }
+                continue;
+            }
+
+            // Multiple entries → keep the one whose path already is canonical
+            // (or the first one if none is), merge the rest into it.
+            entries.sort_by_key(|(_, p)| if p == &canonical { 0 } else { 1 });
+            let (keep_id, keep_path) = entries[0].clone();
+
+            // Ensure the surviving entry uses the canonical path.
+            if keep_path != canonical {
+                let _ = self.conn.execute(
+                    "UPDATE folders SET path = ?1 WHERE id = ?2",
+                    params![canonical, keep_id],
+                );
+            }
+
+            // Re-home tracks and playlists from the duplicate entries.
+            for (dup_id, _) in &entries[1..] {
+                let _ = self.conn.execute(
+                    "UPDATE tracks    SET folder_id = ?1 WHERE folder_id = ?2",
+                    params![keep_id, dup_id],
+                );
+                let _ = self.conn.execute(
+                    "UPDATE playlists SET folder_id = ?1 WHERE folder_id = ?2",
+                    params![keep_id, dup_id],
+                );
+                let _ = self.conn.execute(
+                    "DELETE FROM folders WHERE id = ?1",
+                    params![dup_id],
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Remove a folder and all its tracks and playlists from the library.
@@ -951,8 +1037,15 @@ impl MediaLibrary {
     /// with `id = 0` so the UI can show them as missing rather than silently
     /// dropping them.
     pub fn load_playlist_tracks(&self, playlist: &LibPlaylist) -> Result<Vec<LibTrack>> {
-        let content = std::fs::read_to_string(&playlist.path)
+        // Read as raw bytes then decode: try strict UTF-8 first, then fall back
+        // to lossy replacement so Windows-1252 / Latin-1 encoded M3U files (e.g.
+        // files created by Winamp or iTunes on Windows) are not silently empty.
+        let bytes = std::fs::read(&playlist.path)
             .with_context(|| format!("read playlist {}", playlist.path))?;
+        let content = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
 
         // Base directory for resolving relative paths in the M3U.
         let base = Path::new(&playlist.path)
@@ -1001,7 +1094,13 @@ impl MediaLibrary {
             // Resolve the path relative to the playlist file.
             // Replace Windows backslashes so Path can work with the string.
             let normalised = raw_line.replace('\\', "/");
-            let path = if Path::new(&normalised).is_absolute() {
+            // `Path::is_absolute()` only returns true for Unix `/`-rooted paths.
+            // Detect Windows drive-letter roots like `C:/…` explicitly so they
+            // are not incorrectly joined with the playlist's parent directory.
+            let is_win_abs = normalised.len() >= 3
+                && normalised.as_bytes()[1] == b':'
+                && (normalised.as_bytes()[2] == b'/' || normalised.as_bytes()[2] == b'\\');
+            let path = if Path::new(&normalised).is_absolute() || is_win_abs {
                 PathBuf::from(&normalised)
             } else {
                 base.join(&normalised)
@@ -1324,6 +1423,39 @@ impl MediaLibrary {
         std::fs::write(&pl.path, lines.join("\n") + "\n")
             .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
+    }
+
+    /// Create a new playlist named `new_name` and write `track_paths` to it.
+    ///
+    /// Unlike [`save_playlist_tracks`] (which takes DB row IDs), this method
+    /// accepts raw path strings so that missing-file stubs originating from
+    /// Windows or moved-file playlists are preserved verbatim in the new file.
+    /// Returns the new playlist's row id.
+    pub fn save_playlist_tracks_as(&self, new_name: &str, track_paths: &[String]) -> Result<i64> {
+        let id = self.create_playlist(new_name)?;
+        let pl = self.playlist_by_id(id)?;
+        let mut lines = vec!["#EXTM3U".to_string()];
+        for path in track_paths {
+            lines.push(path.clone());
+        }
+        std::fs::write(&pl.path, lines.join("\n") + "\n")
+            .with_context(|| format!("write playlist {}", pl.path))?;
+        Ok(id)
+    }
+
+    /// Return `true` if the playlist file lives inside the Sparkamp-managed
+    /// playlists directory (`~/.config/sparkamp/playlists/`).
+    ///
+    /// External playlists (scanned from watched folders) should not be
+    /// overwritten via Save — the UI should offer Save As instead so the user
+    /// gets a managed copy without clobbering the original.
+    pub fn playlist_is_managed(&self, id: i64) -> bool {
+        let Ok(pl) = self.playlist_by_id(id) else { return false };
+        let pl_dir = Self::playlists_dir();
+        Path::new(&pl.path)
+            .parent()
+            .map(|p| p == pl_dir.as_path())
+            .unwrap_or(false)
     }
 
     /// Look up a playlist by its row ID.

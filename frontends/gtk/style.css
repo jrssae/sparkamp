@@ -283,6 +283,20 @@ button.pl-btn.destructive:hover {
     font-size: 9px;
 }
 
+/* ColumnView rows — compact row height for the media library table */
+columnview.ml-col-view > listview > row {
+    min-height: 0;
+    padding: 0;
+}
+
+/* Section header labels (e.g. "Left Column" / "Right Column" in customize sheet) */
+.ml-section-header {
+    font-size: 11px;
+    font-weight: bold;
+    color: #888888;
+    padding: 4px 8px;
+}
+
 /* Drop-target highlight when hovering over a playlist row during DnD */
 .playlist row.drop-target {
     background-color: #003344;

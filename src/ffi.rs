@@ -2399,6 +2399,69 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist(
     }
 }
 
+/// Create a new playlist named `new_name` and write the given track paths to
+/// it (in order).  Unlike `sparkamp_ml_save_playlist`, this accepts raw path
+/// strings so that missing/stub entries are preserved verbatim.
+///
+/// `paths` is a pointer to `count` C-string pointers (null-terminated).
+/// Returns the new playlist row id, or -1 on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_save_playlist_as(
+    ctx: *mut SparkampCtx,
+    new_name: *const c_char,
+    paths: *const *const c_char,
+    count: c_int,
+) -> i64 {
+    if ctx.is_null() || new_name.is_null() || count < 0 { return -1; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return -1 };
+    let Ok(name_str) = CStr::from_ptr(new_name).to_str() else { return -1 };
+    let track_paths: Vec<String> = if paths.is_null() || count == 0 {
+        Vec::new()
+    } else {
+        let slice = std::slice::from_raw_parts(paths, count as usize);
+        slice.iter()
+            .filter_map(|&p| if p.is_null() { None } else { CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned()) })
+            .collect()
+    };
+    match ml.save_playlist_tracks_as(name_str, &track_paths) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("[sparkamp] save_playlist_as: {e}"); -1 }
+    }
+}
+
+/// Return 1 if the playlist lives in Sparkamp's managed playlists directory,
+/// 0 if it is an external playlist (scanned from a watched folder).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_playlist_is_managed(
+    ctx: *const SparkampCtx,
+    playlist_id: i64,
+) -> c_int {
+    if ctx.is_null() { return 0; }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    if ml.playlist_is_managed(playlist_id) { 1 } else { 0 }
+}
+
+/// Return the file path of the playlist as a heap-allocated C string.
+///
+/// Caller must free with `sparkamp_free_string`.  Returns null on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_playlist_path(
+    ctx: *const SparkampCtx,
+    playlist_id: i64,
+) -> *mut c_char {
+    if ctx.is_null() { return std::ptr::null_mut(); }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return std::ptr::null_mut(); };
+    match ml.playlist_by_id(playlist_id) {
+        Ok(pl) => CString::new(pl.path.as_str())
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// Fill `buf` with up to `limit` tracks from playlist `playlist_id`.
 ///
 /// Returns the number of tracks written.  Returns 0 on error or if the

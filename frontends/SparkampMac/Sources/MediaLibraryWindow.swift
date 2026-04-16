@@ -531,53 +531,84 @@ private struct MLPlaylistEditor: View {
     @State private var editingTracks: [MLTrack] = []
     @State private var savedTrackIds: [Int64]   = []
     @State private var trackSelection: Set<Int64> = []
-    @State private var showingRename = false
-    @State private var renameText    = ""
+    @State private var showingRename  = false
+    @State private var showingSaveAs  = false
+    @State private var renameText     = ""
+    @State private var saveAsText     = ""
 
     private var hasChanges: Bool { editingTracks.map(\.id) != savedTrackIds }
 
-    private var playlistName: String {
-        model.mlSavedPlaylists.first(where: { $0.id == playlistId })?.name ?? "Playlist"
+    private var playlistInfo: MLPlaylistItem? {
+        model.mlSavedPlaylists.first(where: { $0.id == playlistId })
     }
+    private var playlistName: String { playlistInfo?.name ?? "Playlist" }
+    private var playlistPath: String { playlistInfo?.path ?? "" }
+    /// True if the playlist lives in Sparkamp's managed playlists dir; external
+    /// playlists (e.g. from ~/Music) should not be overwritten — use Save As.
+    private var isManaged: Bool { model.mlPlaylistIsManaged(id: playlistId) }
 
     var body: some View {
         VStack(spacing: 0) {
             // ── Header ─────────────────────────────────────────────────────────
-            HStack(spacing: 8) {
-                Button { nav = .playlists } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left").font(.system(size: 10))
-                        Text("Playlists").font(.system(size: 11))
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Button { nav = .playlists } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left").font(.system(size: 10))
+                            Text("Playlists").font(.system(size: 11))
+                        }
                     }
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(theme.playlistDurationText)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(theme.playlistDurationText)
 
-                Divider().frame(height: 14).background(theme.windowBorder)
+                    Divider().frame(height: 14).background(theme.windowBorder)
 
-                Text(playlistName)
-                    .font(.system(size: 12, weight: .semibold))
+                    Text(playlistName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(theme.playlistText)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button { renameText = playlistName; showingRename = true } label: {
+                        Label("Rename", systemImage: "pencil").font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
                     .foregroundStyle(theme.playlistText)
-                    .lineLimit(1)
+                    .help("Rename Playlist")
 
-                Spacer()
-
-                Button { renameText = playlistName; showingRename = true } label: {
-                    Label("Rename", systemImage: "pencil").font(.system(size: 11))
+                    Button { model.mlDeletePlaylist(id: playlistId); nav = .playlists } label: {
+                        Image(systemName: "trash").font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.red)
+                    .help("Delete Playlist")
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(theme.playlistText)
-                .help("Rename Playlist")
+                .padding(.horizontal, 12)
+                .padding(.top, 7)
+                .padding(.bottom, 2)
 
-                Button { model.mlDeletePlaylist(id: playlistId); nav = .playlists } label: {
-                    Image(systemName: "trash").font(.system(size: 11))
+                // File path bar — helps identify external vs managed playlists.
+                if !playlistPath.isEmpty {
+                    HStack {
+                        Text(playlistPath)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(isManaged
+                                ? theme.playlistDurationText
+                                : Color.orange.opacity(0.8))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        if !isManaged {
+                            Text("external")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.orange.opacity(0.8))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 5)
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.red)
-                .help("Delete Playlist")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
             .background(theme.background)
 
             Divider().background(theme.windowBorder)
@@ -659,15 +690,24 @@ private struct MLPlaylistEditor: View {
 
                 Spacer()
 
+                // Save As is always available; Save is only for managed playlists.
+                Button("Save As…") {
+                    saveAsText = playlistName
+                    showingSaveAs = true
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+
                 if hasChanges {
                     Button("Cancel") { loadPlaylist() }
                         .buttonStyle(.bordered).controlSize(.small)
 
-                    Button("Save") {
-                        model.mlSavePlaylist(id: playlistId, trackIds: editingTracks.map(\.id))
-                        savedTrackIds = editingTracks.map(\.id)
+                    if isManaged {
+                        Button("Save") {
+                            model.mlSavePlaylist(id: playlistId, trackIds: editingTracks.map(\.id))
+                            savedTrackIds = editingTracks.map(\.id)
+                        }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
                     }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
                 }
             }
             .padding(.horizontal, 10)
@@ -691,6 +731,30 @@ private struct MLPlaylistEditor: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(24).frame(width: 320)
+        }
+        .sheet(isPresented: $showingSaveAs) {
+            VStack(spacing: 16) {
+                Text("Save As New Playlist").font(.headline)
+                TextField("Playlist name", text: $saveAsText)
+                    .textFieldStyle(.roundedBorder).frame(width: 260)
+                HStack {
+                    Button("Cancel") { showingSaveAs = false }
+                    Spacer()
+                    Button("Save") {
+                        let name = saveAsText.trimmingCharacters(in: .whitespaces)
+                        let paths = editingTracks.map(\.path)
+                        let newId = model.mlSavePlaylistAs(name: name, trackPaths: paths)
+                        showingSaveAs = false
+                        if newId >= 0 {
+                            model.mlRefreshSavedPlaylists()
+                            nav = .playlist(id: newId)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saveAsText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .padding(24).frame(width: 320)

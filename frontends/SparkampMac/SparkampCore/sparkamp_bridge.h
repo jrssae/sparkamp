@@ -324,6 +324,14 @@ void    sparkamp_ml_rename_playlist(SparkampCtx *ctx, int64_t playlist_id, const
 /** Overwrite playlist .m3u with the given track IDs (in order). */
 void    sparkamp_ml_save_playlist(SparkampCtx *ctx, int64_t playlist_id,
                                   const int64_t *track_ids, int32_t count);
+/** Create a new playlist named new_name and write the given raw path strings to it.
+    Preserves missing/stub entries verbatim.  Returns new row id or -1 on failure. */
+int64_t sparkamp_ml_save_playlist_as(SparkampCtx *ctx, const char *new_name,
+                                     const char * const *paths, int32_t count);
+/** Returns 1 if the playlist lives in Sparkamp's managed playlists directory, 0 otherwise. */
+int32_t sparkamp_ml_playlist_is_managed(const SparkampCtx *ctx, int64_t playlist_id);
+/** Return the .m3u file path of the playlist as a heap string; free with sparkamp_free_string. */
+char   *sparkamp_ml_playlist_path(const SparkampCtx *ctx, int64_t playlist_id);
 /** Fill buf with up to limit tracks from playlist_id.  Returns count written. */
 int32_t sparkamp_ml_get_playlist_tracks(const SparkampCtx *ctx, int64_t playlist_id,
                                         SparkampLibTrack *buf, int32_t limit);

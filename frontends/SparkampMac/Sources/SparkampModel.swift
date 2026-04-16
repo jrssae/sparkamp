@@ -71,6 +71,8 @@ struct MLTrack: Identifiable {
 struct MLPlaylistItem: Identifiable {
     let id: Int64   // DB row id — stable key for CRUD operations
     let name: String
+    /// File path of the .m3u file on disk.
+    var path: String = ""
 }
 
 // MARK: - Dedup types
@@ -739,7 +741,8 @@ final class SparkampModel: ObservableObject {
             guard let ptr = sparkamp_ml_playlist_name(ctx, Int32(i)) else { return nil }
             defer { sparkamp_free_string(ptr) }
             let dbId = sparkamp_ml_playlist_id(ctx, Int32(i))
-            return MLPlaylistItem(id: dbId, name: String(cString: ptr))
+            let path = mlPlaylistPath(id: dbId) ?? ""
+            return MLPlaylistItem(id: dbId, name: String(cString: ptr), path: path)
         }
     }
 
@@ -918,6 +921,37 @@ final class SparkampModel: ObservableObject {
         ids.withUnsafeMutableBufferPointer { buf in
             sparkamp_ml_save_playlist(ctx, id, buf.baseAddress, Int32(trackIds.count))
         }
+    }
+
+    /// Create a new Sparkamp-managed playlist with `name`, writing the given
+    /// raw track paths verbatim (so missing/stub entries are preserved).
+    /// Returns the new playlist row id, or -1 on failure.
+    func mlSavePlaylistAs(name: String, trackPaths: [String]) -> Int64 {
+        guard let ctx = ctx else { return -1 }
+        // Keep NSString objects alive so their utf8String pointers remain valid.
+        let nsStrings = trackPaths.map { $0 as NSString }
+        let cPaths    = nsStrings.map { $0.utf8String! }
+        return cPaths.withUnsafeBufferPointer { buf in
+            name.withCString { nameCStr in
+                sparkamp_ml_save_playlist_as(ctx, nameCStr,
+                                             UnsafePointer(buf.baseAddress),
+                                             Int32(trackPaths.count))
+            }
+        }
+    }
+
+    /// Return true if the playlist lives in Sparkamp's managed playlists directory.
+    func mlPlaylistIsManaged(id: Int64) -> Bool {
+        guard let ctx = ctx else { return false }
+        return sparkamp_ml_playlist_is_managed(ctx, id) != 0
+    }
+
+    /// Return the file path of the playlist, or nil on error.
+    func mlPlaylistPath(id: Int64) -> String? {
+        guard let ctx = ctx else { return nil }
+        guard let ptr = sparkamp_ml_playlist_path(ctx, id) else { return nil }
+        defer { sparkamp_free_string(ptr) }
+        return String(cString: ptr)
     }
 
     func mlOpenAddFolderPicker() {
