@@ -8585,9 +8585,8 @@ fn open_media_library_window(
     sidebar.set_vexpand(true);
 
     let sidebar_scroll = ScrolledWindow::builder()
-        .hscrollbar_policy(PolicyType::Never)
+        .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Automatic)
-        .width_request(165)
         .vexpand(true)
         .child(&sidebar)
         .build();
@@ -8597,6 +8596,7 @@ fn open_media_library_window(
         let lbl = Label::builder()
             .label("Files")
             .halign(Align::Start)
+            .xalign(0.0)
             .margin_start(10)
             .margin_end(10)
             .margin_top(7)
@@ -8622,6 +8622,7 @@ fn open_media_library_window(
         let pl_lbl = Label::builder()
             .label("Playlists")
             .halign(Align::Start)
+            .xalign(0.0)
             .hexpand(true)
             .margin_start(10)
             .margin_top(7)
@@ -8677,6 +8678,7 @@ fn open_media_library_window(
             let lbl = Label::builder()
                 .label(&pl.name)
                 .halign(Align::Start)
+                .xalign(0.0)
                 .margin_start(24)  // indent
                 .margin_end(8)
                 .margin_top(4)
@@ -10049,6 +10051,7 @@ fn open_media_library_window(
             let s_lbl = Label::builder()
                 .label(name)
                 .halign(Align::Start)
+                .xalign(0.0)
                 .margin_start(24).margin_end(8)
                 .margin_top(4).margin_bottom(4)
                 .build();
@@ -10214,6 +10217,7 @@ fn open_media_library_window(
                         // Add sidebar sub-row and select it
                         let s_lbl = Label::builder().label(&name)
                             .halign(Align::Start)
+                            .xalign(0.0)
                             .margin_start(24).margin_end(8)
                             .margin_top(4).margin_bottom(4).build();
                         let s_row = ListBoxRow::new();
@@ -10668,6 +10672,7 @@ fn open_media_library_window(
                             let s_lbl = Label::builder()
                                 .label(new_name)
                                 .halign(Align::Start)
+                                .xalign(0.0)
                                 .margin_start(24).margin_end(8)
                                 .margin_top(4).margin_bottom(4)
                                 .build();
