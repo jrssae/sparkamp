@@ -38,7 +38,7 @@ use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn, CustomSorter,
     DragSource, DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid,
-    Image, Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation,
+    Image, Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, Paned,
     PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, SpinButton,
     Stack, StackTransitionType, TreeView, TreeViewColumn,
 };
@@ -8571,11 +8571,11 @@ fn open_media_library_window(
         win.set_transient_for(Some(p));
     }
 
-    let root = GtkBox::new(Orientation::Horizontal, 0);
-    root.set_margin_top(8);
-    root.set_margin_bottom(8);
-    root.set_margin_start(8);
-    root.set_margin_end(8);
+    let paned = Paned::new(Orientation::Horizontal);
+    paned.set_margin_top(8);
+    paned.set_margin_bottom(8);
+    paned.set_margin_start(8);
+    paned.set_margin_end(8);
 
     // ── Left sidebar ──────────────────────────────────────────────────────
     // Wrap sidebar in a ScrolledWindow so many playlists don't overflow.
@@ -8691,15 +8691,19 @@ fn open_media_library_window(
         }
     }
 
-    let vsep = Separator::new(Orientation::Vertical);
-    vsep.set_margin_start(4);
-    vsep.set_margin_end(4);
+    let _vsep_unused = (); // replaced by Paned divider
 
     // ── Content stack ─────────────────────────────────────────────────────
     let stack = Stack::new();
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     stack.set_transition_type(StackTransitionType::None);
+
+    // Holders so close_request can save Files-tab state (col_view and all_cols are
+    // defined inside the Files block scope below).
+    let col_view_holder: Rc<RefCell<Option<ColumnView>>> = Rc::new(RefCell::new(None));
+    let all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>> =
+        Rc::new(RefCell::new(Vec::new()));
 
     // ── Page: Files ──────────────────────────────────────────────────────
     {
@@ -8735,6 +8739,7 @@ fn open_media_library_window(
         col_view.set_show_column_separators(true);
         col_view.set_hexpand(true);
         col_view.set_vexpand(true);
+        col_view.set_reorderable(true);
 
         // Create action group and actions for ML right-click menu
         let ml_action_group = gio::SimpleActionGroup::new();
@@ -9307,6 +9312,38 @@ fn open_media_library_window(
             })
             .collect();
         let all_cols = Rc::new(all_cols);
+
+        // Expose col_view and all_cols for close_request (outside this block scope).
+        *col_view_holder.borrow_mut() = Some(col_view.clone());
+        *all_cols_holder.borrow_mut() = all_cols.iter().cloned().collect();
+
+        // Restore column order from config (empty list means use default order).
+        // The unscanned indicator column is always first (position 0); named
+        // columns start at position 1.
+        {
+            let saved_order = state.borrow().config.media_library.ml_file_col_order.clone();
+            if !saved_order.is_empty() {
+                // Remove all named columns from their current positions.
+                for (_, col) in all_cols.iter() {
+                    col_view.remove_column(col);
+                }
+                // Re-insert in saved order starting after the unscanned column.
+                let mut pos = 1u32;
+                for col_id in &saved_order {
+                    if let Some((_, col)) = all_cols.iter().find(|(id, _)| id == col_id) {
+                        col_view.insert_column(pos, col);
+                        pos += 1;
+                    }
+                }
+                // Append columns not present in saved_order (e.g. newly added columns).
+                for (id, col) in all_cols.iter() {
+                    if !saved_order.contains(id) {
+                        col_view.insert_column(pos, col);
+                        pos += 1;
+                    }
+                }
+            }
+        }
 
         let rebuild_files: Rc<dyn Fn() -> usize> = {
             let state_rc = state.clone();
@@ -9919,6 +9956,26 @@ fn open_media_library_window(
         lb.add_css_class("playlist");
         lb.set_selection_mode(gtk4::SelectionMode::Multiple);
         lb.set_vexpand(true);
+
+        // Plain click (no Ctrl/Shift) should deselect all others before the
+        // default handler selects the clicked row.  Without this, GTK ListBox
+        // in Multiple mode toggles selection without clearing previous rows.
+        let gc = GestureClick::new();
+        gc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let lb_ref = lb.clone();
+        gc.connect_pressed(move |gest, _n, _x, _y| {
+            let mods = gest
+                .current_event()
+                .map(|e| e.modifier_state())
+                .unwrap_or(gdk::ModifierType::empty());
+            if !mods.contains(gdk::ModifierType::CONTROL_MASK)
+                && !mods.contains(gdk::ModifierType::SHIFT_MASK)
+            {
+                lb_ref.unselect_all();
+            }
+        });
+        lb.add_controller(gc);
+
         lb
     });
 
@@ -10723,21 +10780,42 @@ fn open_media_library_window(
 
     sidebar.select_row(sidebar.row_at_index(0).as_ref());
 
-    root.append(&sidebar_scroll);
-    root.append(&vsep);
-    root.append(&stack);
-    win.set_child(Some(&root));
+    let init_sidebar_width = state.borrow().config.window.ml_sidebar_width;
+    paned.set_start_child(Some(&sidebar_scroll));
+    paned.set_end_child(Some(&stack));
+    paned.set_position(init_sidebar_width);
+    win.set_child(Some(&paned));
 
     win.connect_close_request({
         let state = state.clone();
         let playlists_expanded = playlists_expanded.clone();
+        let paned_ref = paned.clone();
+        let col_view_holder = col_view_holder.clone();
+        let all_cols_holder = all_cols_holder.clone();
         move |w| {
             let (w_size, h_size) = (w.width(), w.height());
+            // Capture current column display order before borrowing state.
+            let col_order: Vec<String> = col_view_holder
+                .borrow()
+                .as_ref()
+                .map(|cv| {
+                    let col_model = cv.columns();
+                    let ac = all_cols_holder.borrow();
+                    (0..col_model.n_items())
+                        .filter_map(|i| col_model.item(i)?.downcast::<ColumnViewColumn>().ok())
+                        .filter_map(|col| {
+                            ac.iter().find(|(_, c)| c == &col).map(|(id, _)| id.clone())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             {
                 let mut s = state.borrow_mut();
                 s.config.window.ml_width = w_size;
                 s.config.window.ml_height = h_size;
                 s.config.window.ml_playlists_expanded = playlists_expanded.get();
+                s.config.window.ml_sidebar_width = paned_ref.position();
+                s.config.media_library.ml_file_col_order = col_order;
                 s.rebuild_ml_callback = None;
             }
             let _ = state.borrow().config.save();

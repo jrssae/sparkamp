@@ -21,6 +21,10 @@ struct MediaLibraryView: View {
     // Sidebar playlist expansion — persisted across launches
     @AppStorage("sparkamp.ml.playlistsExpanded") private var playlistsExpanded: Bool = true
 
+    // Sidebar width — persisted across launches
+    @AppStorage("sparkamp.ml.sidebarWidth") private var sidebarWidth: Double = 160
+    @State private var sidebarDragStartWidth: Double? = nil
+
     // Search (Files tab)
     @State private var searchQuery = ""
     @State private var searchDebounce: DispatchWorkItem? = nil
@@ -53,10 +57,25 @@ struct MediaLibraryView: View {
                 }
                 .padding(.vertical, 10)
             }
-            .frame(width: 160)
+            .frame(width: CGFloat(sidebarWidth))
             .background(theme.background)
 
-            Divider().background(theme.windowBorder)
+            // Draggable resize handle
+            theme.windowBorder
+                .frame(width: 4)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                        .onChanged { value in
+                            if sidebarDragStartWidth == nil { sidebarDragStartWidth = sidebarWidth }
+                            let newWidth = (sidebarDragStartWidth ?? sidebarWidth) + Double(value.translation.width)
+                            sidebarWidth = min(max(newWidth, 100), 400)
+                        }
+                        .onEnded { _ in sidebarDragStartWidth = nil }
+                )
 
             // ── Right content area ─────────────────────────────────────────────
             VStack(spacing: 0) {

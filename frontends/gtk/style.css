@@ -52,14 +52,14 @@ button.transport:active {
 }
 
 button.transport-play {
-    background-color: #004455;
-    color: #00ccff;
-    border-color: #006688;
+    background-color: alpha(@accent_bg_color, 0.3);
+    color: @accent_fg_color;
+    border-color: alpha(@accent_bg_color, 0.6);
 }
 
 button.transport-play:hover {
-    background-color: #005566;
-    color: #33ddff;
+    background-color: alpha(@accent_bg_color, 0.45);
+    color: @accent_fg_color;
 }
 
 /* ── Seek / progress bar (prominent) ─────────────────────────────────── */
@@ -70,7 +70,7 @@ scale.seek-scale trough {
 }
 
 scale.seek-scale highlight {
-    background-color: #0099bb;
+    background-color: @accent_bg_color;
     border-radius: 3px;
 }
 
@@ -117,11 +117,11 @@ scale.vol-scale slider {
 }
 
 .playlist row:selected {
-    background-color: #002233;
+    background-color: alpha(@accent_bg_color, 0.25);
 }
 
 .playlist row:selected label {
-    color: #00ccff;
+    color: @accent_fg_color;
 }
 
 .playlist row.playing label {
@@ -250,18 +250,18 @@ button.pl-btn.destructive:hover {
 }
 
 .ml-sidebar row:selected {
-    background-color: #002233;
+    background-color: alpha(@accent_bg_color, 0.25);
 }
 
 .ml-sidebar row:selected label {
-    color: #00ccff;
+    color: @accent_fg_color;
     font-weight: bold;
 }
 
 /* Playlist row being dragged during drag-and-drop reordering */
 .playlist row.dragging {
     opacity: 0.5;
-    background-color: #002233;
+    background-color: alpha(@accent_bg_color, 0.25);
 }
 
 /* Play/pause/stop state indicator to the left of the time display.
@@ -299,6 +299,6 @@ columnview.ml-col-view > listview > row {
 
 /* Drop-target highlight when hovering over a playlist row during DnD */
 .playlist row.drop-target {
-    background-color: #003344;
-    border-top: 2px solid #00ccff;
+    background-color: alpha(@accent_bg_color, 0.2);
+    border-top: 2px solid @accent_bg_color;
 }

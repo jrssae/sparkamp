@@ -228,6 +228,9 @@ pub struct WindowConfig {
     /// Whether the playlist sub-section in the ML sidebar is expanded.
     #[serde(default = "WindowConfig::default_ml_playlists_expanded")]
     pub ml_playlists_expanded: bool,
+    /// Width of the ML sidebar (left navigation panel).
+    #[serde(default = "WindowConfig::default_ml_sidebar_width")]
+    pub ml_sidebar_width: i32,
 }
 
 impl Default for WindowConfig {
@@ -242,6 +245,7 @@ impl Default for WindowConfig {
             ml_width: Self::default_ml_width(),
             ml_height: Self::default_ml_height(),
             ml_playlists_expanded: true,
+            ml_sidebar_width: Self::default_ml_sidebar_width(),
         }
     }
 }
@@ -267,6 +271,9 @@ impl WindowConfig {
     }
     pub fn default_ml_height() -> i32 {
         520
+    }
+    pub fn default_ml_sidebar_width() -> i32 {
+        165
     }
 }
 
@@ -597,6 +604,11 @@ pub struct MediaLibraryConfig {
     /// Format: "left" or "right". Used for 2-column layout.
     #[serde(default)]
     pub id3_column_position: std::collections::HashMap<String, String>,
+
+    /// Column display order in the Files view (list of column IDs in left-to-right order).
+    /// Empty means use the default order defined by ALL_COLUMNS.
+    #[serde(default)]
+    pub ml_file_col_order: Vec<String>,
 }
 
 impl MediaLibraryConfig {
@@ -657,6 +669,7 @@ impl Default for MediaLibraryConfig {
             visible_columns: Self::default_visible_columns(),
             id3_visible_columns: Self::default_id3_visible_columns(),
             id3_column_position: Self::default_id3_column_position(),
+            ml_file_col_order: Vec::new(),
         }
     }
 }
