@@ -9526,9 +9526,15 @@ fn open_media_library_window(
         {
             let state_rc = state.clone();
             let all_cols_rc = all_cols.clone();
+            let cv_holder = col_view_holder.clone();
+            let ac_holder = all_cols_holder.clone();
+            let state_reorder = state.clone();
             let win_wk = win.downgrade();
             btn_customize.connect_clicked(move |_| {
                 let cols_for_callback = all_cols_rc.clone();
+                let cv_h = cv_holder.clone();
+                let ac_h = ac_holder.clone();
+                let st_r = state_reorder.clone();
                 open_customize_columns_dialog(
                     win_wk.upgrade().as_ref(),
                     state_rc.clone(),
@@ -9541,7 +9547,35 @@ fn open_media_library_window(
                             col.set_visible(visible);
                         }
                     }) as Rc<dyn Fn(String, bool)>),
-                    None::<Rc<dyn Fn()>>,
+                    Some(Rc::new(move || {
+                        let saved_order =
+                            st_r.borrow().config.media_library.ml_file_col_order.clone();
+                        if saved_order.is_empty() {
+                            return;
+                        }
+                        let cv_opt = cv_h.borrow();
+                        let all_cols = ac_h.borrow();
+                        if let Some(col_view) = &*cv_opt {
+                            for (_, col) in all_cols.iter() {
+                                col_view.remove_column(col);
+                            }
+                            let mut pos = 1u32;
+                            for col_id in &saved_order {
+                                if let Some((_, col)) =
+                                    all_cols.iter().find(|(id, _)| id == col_id)
+                                {
+                                    col_view.insert_column(pos, col);
+                                    pos += 1;
+                                }
+                            }
+                            for (id, col) in all_cols.iter() {
+                                if !saved_order.contains(id) {
+                                    col_view.insert_column(pos, col);
+                                    pos += 1;
+                                }
+                            }
+                        }
+                    }) as Rc<dyn Fn()>),
                 );
             });
         }
