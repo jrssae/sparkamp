@@ -346,7 +346,7 @@ button.pl-btn.destructive:hover {
 /* Playlist selected row — background highlight.
    Text color is controlled by the cell_data_func in the code. */
 .playlist row:selected {
-    background: rgba(255, 255, 255, 0.25);
+    background: alpha(@accent_bg_color, 0.25);
 }
 
 /* Playlist drag-reorder drop indicator */
@@ -441,7 +441,6 @@ scale.eq-scale slider {
 .state-paused  { color: #ffaa00; }
 .state-stopped { color: #888888; }
 .ml-col-label  { font-size: 12px; }
-.playlist row.drop-target { background-color: #003344; border-top: 2px solid #00ccff; }
 
 /* Popover menu buttons */
 .popover-button {
