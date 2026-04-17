@@ -546,8 +546,6 @@ notebook > header tab {
 
 notebook > header tab:checked {
     background-color: #1a1a1a;
-    color: @accent_bg_color;
-    border-top: 2px solid @accent_bg_color;
     border-bottom: 2px solid @accent_bg_color;
 }
 
