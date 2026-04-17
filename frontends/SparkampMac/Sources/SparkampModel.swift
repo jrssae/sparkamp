@@ -929,12 +929,12 @@ final class SparkampModel: ObservableObject {
     func mlSavePlaylistAs(name: String, trackPaths: [String]) -> Int64 {
         guard let ctx = ctx else { return -1 }
         // Keep NSString objects alive so their utf8String pointers remain valid.
-        let nsStrings = trackPaths.map { $0 as NSString }
-        let cPaths    = nsStrings.map { $0.utf8String! }
+        let nsStrings: [NSString]                   = trackPaths.map { $0 as NSString }
+        let cPaths:    [UnsafePointer<CChar>?]      = nsStrings.map { $0.utf8String }
         return cPaths.withUnsafeBufferPointer { buf in
             name.withCString { nameCStr in
                 sparkamp_ml_save_playlist_as(ctx, nameCStr,
-                                             UnsafePointer(buf.baseAddress),
+                                             UnsafeMutablePointer(mutating: buf.baseAddress),
                                              Int32(trackPaths.count))
             }
         }
