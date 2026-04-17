@@ -4904,7 +4904,7 @@ fn open_customize_columns_dialog(
 
     let dlg = gtk4::Window::new();
     dlg.set_title(Some(title));
-    dlg.set_default_size(400, 450);
+    dlg.set_default_size(400, 480);
     dlg.set_resizable(true);
     if let Some(p) = parent {
         dlg.set_transient_for(Some(p));
@@ -4916,236 +4916,213 @@ fn open_customize_columns_dialog(
     main_vbox.set_margin_start(12);
     main_vbox.set_margin_end(12);
 
-    let (show_header_row, show_position_dropdown, cols_to_show, defaults_vis, defaults_pos): (
-        bool,
-        bool,
-        Vec<&MlColumnDef>,
-        Vec<String>,
-        std::collections::HashMap<String, String>,
-    ) = match mode {
-        ColumnCustomizerMode::Id3Editor => {
-            let cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
-            let defaults_vis = crate::config::MediaLibraryConfig::default_id3_visible_columns();
-            let defaults_pos = crate::config::MediaLibraryConfig::default_id3_column_position();
-            (true, true, cols, defaults_vis, defaults_pos)
+    // ── Build ordered entry list ─────────────────────────────────────────────
+    #[derive(Clone)]
+    struct ColEntry {
+        id: String,
+        header: String,
+        visible: bool,
+    }
+
+    let saved_order = state.borrow().config.media_library.ml_file_col_order.clone();
+    let visible_vec: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
+    let visible_set: std::collections::HashSet<String> = visible_vec.iter().cloned().collect();
+
+    let mut init_entries: Vec<ColEntry> = Vec::new();
+    // 1. Visible columns in saved order
+    for id in &saved_order {
+        if visible_set.contains(id) {
+            if let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str()) {
+                init_entries.push(ColEntry { id: id.clone(), header: col.header.to_string(), visible: true });
+            }
         }
-        ColumnCustomizerMode::MediaLibrary => {
-            let cols: Vec<&MlColumnDef> = ALL_COLUMNS.iter().collect();
-            let defaults_vis = crate::config::MediaLibraryConfig::default_visible_columns();
-            let defaults_pos = std::collections::HashMap::new();
-            (false, false, cols, defaults_vis, defaults_pos)
+    }
+    // 2. Visible columns not in saved order (newly enabled)
+    for id in &visible_vec {
+        if !saved_order.contains(id) {
+            if let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str()) {
+                init_entries.push(ColEntry { id: id.clone(), header: col.header.to_string(), visible: true });
+            }
         }
+    }
+    // 3. Hidden columns (no order controls needed)
+    for col in ALL_COLUMNS.iter() {
+        if !visible_set.contains(col.id) {
+            init_entries.push(ColEntry { id: col.id.to_string(), header: col.header.to_string(), visible: false });
+        }
+    }
+
+    let entries: Rc<RefCell<Vec<ColEntry>>> = Rc::new(RefCell::new(init_entries));
+
+    // Persist entries → config on every change
+    let save_cfg: Rc<dyn Fn()> = {
+        let entries = entries.clone();
+        let st = state.clone();
+        Rc::new(move || {
+            let es = entries.borrow();
+            let order: Vec<String> = es.iter().filter(|e| e.visible).map(|e| e.id.clone()).collect();
+            let mut s = st.borrow_mut();
+            s.config.media_library.visible_columns = order.clone();
+            s.config.media_library.ml_file_col_order = order;
+            let _ = s.config.save();
+        })
     };
 
-    let hdr_text = if show_position_dropdown {
-        "Select fields and column position:"
-    } else {
-        "Select columns to display:"
-    };
     let hdr = Label::builder()
-        .label(hdr_text)
+        .label("Use ▲ ▼ to reorder visible columns:")
         .halign(Align::Start)
         .build();
     main_vbox.append(&hdr);
-
-    if show_header_row {
-        let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
-        col_hdrs.append(&Label::new(Some("")));
-        col_hdrs.append(&Label::new(Some("Field")));
-        let spring = GtkBox::new(Orientation::Horizontal, 0);
-        spring.set_hexpand(true);
-        col_hdrs.append(&spring);
-        col_hdrs.append(&Label::new(Some("Column")));
-        main_vbox.append(&col_hdrs);
-    } else {
-        let col_hdrs = GtkBox::new(Orientation::Horizontal, 8);
-        col_hdrs.append(&Label::new(Some("")));
-        col_hdrs.append(&Label::new(Some("Field")));
-        let spring = GtkBox::new(Orientation::Horizontal, 0);
-        spring.set_hexpand(true);
-        col_hdrs.append(&spring);
-        main_vbox.append(&col_hdrs);
-    }
 
     let scrolled = ScrolledWindow::new();
     scrolled.set_hexpand(true);
     scrolled.set_vexpand(true);
     scrolled.set_has_frame(true);
 
-    let list_vbox = GtkBox::new(Orientation::Vertical, 4);
-    list_vbox.set_margin_top(8);
-
-    let visible_ids: std::collections::HashSet<String> = match mode {
-        ColumnCustomizerMode::Id3Editor => state
-            .borrow()
-            .config
-            .media_library
-            .id3_visible_columns
-            .iter()
-            .cloned()
-            .collect(),
-        ColumnCustomizerMode::MediaLibrary => state
-            .borrow()
-            .config
-            .media_library
-            .visible_columns
-            .iter()
-            .cloned()
-            .collect(),
-    };
-
-    let column_positions: std::collections::HashMap<String, String> = match mode {
-        ColumnCustomizerMode::Id3Editor => state
-            .borrow()
-            .config
-            .media_library
-            .id3_column_position
-            .clone(),
-        ColumnCustomizerMode::MediaLibrary => std::collections::HashMap::new(),
-    };
-
-    let checkboxes: Rc<RefCell<Vec<(String, gtk4::CheckButton)>>> =
-        Rc::new(RefCell::new(Vec::new()));
-    let dropdowns: Rc<RefCell<Vec<(String, gtk4::DropDown)>>> = Rc::new(RefCell::new(Vec::new()));
-    let skipping_callback: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-    for col in &cols_to_show {
-        let row = GtkBox::new(Orientation::Horizontal, 8);
-
-        let cb = CheckButton::new();
-        cb.set_active(visible_ids.contains(col.id));
-        let state_cfg = state.clone();
-        let mode_for_cb = mode.clone();
-        let on_toggle_cb = on_toggle.clone();
-        let skip_cb = skipping_callback.clone();
-        let id_for_toggle = col.id.to_string();
-        cb.connect_toggled(move |btn| {
-            if *skip_cb.borrow() {
-                return;
-            }
-            let visible = btn.is_active();
-            let id = id_for_toggle.clone();
-            if let Some(ref cb) = on_toggle_cb {
-                cb(id.clone(), visible);
-            }
-            let mut s = state_cfg.borrow_mut();
-            match mode_for_cb {
-                ColumnCustomizerMode::Id3Editor => {
-                    let vc = &mut s.config.media_library.id3_visible_columns;
-                    if btn.is_active() {
-                        if !vc.contains(&id) {
-                            vc.push(id);
-                        }
-                    } else {
-                        vc.retain(|c| c != &id);
-                    }
-                }
-                ColumnCustomizerMode::MediaLibrary => {
-                    let vc = &mut s.config.media_library.visible_columns;
-                    if btn.is_active() {
-                        if !vc.contains(&id) {
-                            vc.push(id);
-                        }
-                    } else {
-                        vc.retain(|c| c != &id);
-                    }
-                }
-            }
-            let _ = s.config.save();
-        });
-
-        let lbl = Label::new(Some(col.header));
-        lbl.set_halign(Align::Start);
-        row.append(&cb);
-        row.append(&lbl);
-
-        let spring = GtkBox::new(Orientation::Horizontal, 0);
-        spring.set_hexpand(true);
-        row.append(&spring);
-
-        if show_position_dropdown {
-            let pos = column_positions
-                .get(col.id)
-                .cloned()
-                .unwrap_or_else(|| "left".to_string());
-            let dropdown = DropDown::from_strings(&["Left", "Right"]);
-            dropdown.set_selected(if pos == "right" { 1 } else { 0 });
-
-            let id_for_dropdown = col.id.to_string();
-            let state_dropdown = state.clone();
-            dropdown.connect_selected_notify(move |dd| {
-                let position = if dd.selected() == 1 { "right" } else { "left" };
-                let mut s = state_dropdown.borrow_mut();
-                s.config
-                    .media_library
-                    .id3_column_position
-                    .insert(id_for_dropdown.clone(), position.to_string());
-                let _ = s.config.save();
-            });
-
-            row.append(&dropdown);
-            dropdowns.borrow_mut().push((col.id.to_string(), dropdown));
-        }
-
-        list_vbox.append(&row);
-        checkboxes.borrow_mut().push((col.id.to_string(), cb));
-    }
-
-    scrolled.set_child(Some(&list_vbox));
+    let list_lb = ListBox::new();
+    list_lb.add_css_class("playlist");
+    list_lb.set_selection_mode(gtk4::SelectionMode::None);
+    scrolled.set_child(Some(&list_lb));
     main_vbox.append(&scrolled);
 
+    // rebuild_holder allows the rebuild closure to call itself recursively
+    let rebuild_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+
+    let rebuild: Rc<dyn Fn()> = {
+        let entries = entries.clone();
+        let lb_ref = list_lb.clone();
+        let sc = save_cfg.clone();
+        let rh = rebuild_holder.clone();
+        let on_toggle_rb = on_toggle.clone();
+        Rc::new(move || {
+            while let Some(c) = lb_ref.first_child() { lb_ref.remove(&c); }
+
+            let es = entries.borrow().clone();
+
+            for (i, entry) in es.iter().enumerate() {
+                let row_box = GtkBox::new(Orientation::Horizontal, 4);
+                row_box.set_margin_top(2);
+                row_box.set_margin_bottom(2);
+                row_box.set_margin_start(4);
+                row_box.set_margin_end(4);
+
+                if entry.visible {
+                    // ▲ button — enabled when a visible column precedes this one
+                    let up_btn = Button::with_label("▲");
+                    up_btn.add_css_class("pl-btn");
+                    let prev_idx = es[..i].iter().rposition(|e| e.visible);
+                    up_btn.set_sensitive(prev_idx.is_some());
+                    if let Some(prev) = prev_idx {
+                        let entries2 = entries.clone();
+                        let sc2 = sc.clone();
+                        let rh2 = rh.clone();
+                        up_btn.connect_clicked(move |_| {
+                            entries2.borrow_mut().swap(i, prev);
+                            sc2();
+                            if let Some(ref r) = *rh2.borrow() { r(); }
+                        });
+                    }
+                    row_box.append(&up_btn);
+
+                    // ▼ button — enabled when a visible column follows this one
+                    let dn_btn = Button::with_label("▼");
+                    dn_btn.add_css_class("pl-btn");
+                    let next_rel = es[i + 1..].iter().position(|e| e.visible);
+                    dn_btn.set_sensitive(next_rel.is_some());
+                    if let Some(rel) = next_rel {
+                        let next = i + 1 + rel;
+                        let entries2 = entries.clone();
+                        let sc2 = sc.clone();
+                        let rh2 = rh.clone();
+                        dn_btn.connect_clicked(move |_| {
+                            entries2.borrow_mut().swap(i, next);
+                            sc2();
+                            if let Some(ref r) = *rh2.borrow() { r(); }
+                        });
+                    }
+                    row_box.append(&dn_btn);
+                } else {
+                    // Spacer to align labels with visible rows
+                    let spacer = GtkBox::new(Orientation::Horizontal, 4);
+                    spacer.set_width_request(64);
+                    row_box.append(&spacer);
+                }
+
+                // Visibility checkbox
+                let cb = CheckButton::new();
+                cb.set_active(entry.visible);
+                {
+                    let entries2 = entries.clone();
+                    let sc2 = sc.clone();
+                    let rh2 = rh.clone();
+                    let on_tgl = on_toggle_rb.clone();
+                    cb.connect_toggled(move |btn| {
+                        let visible = btn.is_active();
+                        let id = entries2.borrow()[i].id.clone();
+                        entries2.borrow_mut()[i].visible = visible;
+                        sc2();
+                        if let Some(ref cb) = on_tgl { cb(id, visible); }
+                        if let Some(ref r) = *rh2.borrow() { r(); }
+                    });
+                }
+                row_box.append(&cb);
+
+                let lbl = Label::builder()
+                    .label(entry.header.as_str())
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .build();
+                if !entry.visible { lbl.add_css_class("status-label"); }
+                row_box.append(&lbl);
+
+                let row = ListBoxRow::new();
+                row.set_child(Some(&row_box));
+                lb_ref.append(&row);
+            }
+        })
+    };
+
+    *rebuild_holder.borrow_mut() = Some(rebuild.clone());
+    rebuild();
+
+    // ── Buttons ──────────────────────────────────────────────────────────────
     let btn_row = GtkBox::new(Orientation::Horizontal, 8);
 
     let btn_reset = Button::with_label("Reset Defaults");
-    let state_reset = state.clone();
-    let cbs_reset = checkboxes.clone();
-    let dds_reset = dropdowns.clone();
-    let defaults_vis_clone = defaults_vis.clone();
-    let defaults_pos_clone = defaults_pos.clone();
-    let mode_for_reset = mode.clone();
-    let on_toggle_reset = on_toggle.clone();
-    let skip_cb_flag = skipping_callback.clone();
-
-    btn_reset.connect_clicked(move |_| {
-        let default_set: std::collections::HashSet<String> =
-            defaults_vis_clone.iter().cloned().collect();
-
-        if let Some(ref cb) = on_toggle_reset {
-            *skip_cb_flag.borrow_mut() = true;
-            for (id, _) in cbs_reset.borrow().iter() {
-                cb(id.clone(), default_set.contains(id));
+    {
+        let entries2 = entries.clone();
+        let sc2 = save_cfg.clone();
+        let rb2 = rebuild.clone();
+        let on_tgl = on_toggle.clone();
+        let st2 = state.clone();
+        btn_reset.connect_clicked(move |_| {
+            let defaults = crate::config::MediaLibraryConfig::default_visible_columns();
+            let default_set: std::collections::HashSet<String> = defaults.iter().cloned().collect();
+            {
+                let mut es = entries2.borrow_mut();
+                for e in es.iter_mut() { e.visible = default_set.contains(&e.id); }
+                es.sort_by_key(|e| {
+                    if e.visible {
+                        defaults.iter().position(|d| d == &e.id).unwrap_or(usize::MAX)
+                    } else {
+                        usize::MAX
+                    }
+                });
             }
-            *skip_cb_flag.borrow_mut() = false;
-        }
-
-        {
-            let mut s = state_reset.borrow_mut();
-            match mode_for_reset {
-                ColumnCustomizerMode::Id3Editor => {
-                    s.config.media_library.id3_visible_columns = defaults_vis_clone.clone();
-                    s.config.media_library.id3_column_position = defaults_pos_clone.clone();
-                }
-                ColumnCustomizerMode::MediaLibrary => {
-                    s.config.media_library.visible_columns = defaults_vis_clone.clone();
-                }
+            if let Some(ref cb) = on_tgl {
+                for e in entries2.borrow().iter() { cb(e.id.clone(), e.visible); }
             }
-            let _ = s.config.save();
-        }
-
-        *skip_cb_flag.borrow_mut() = true;
-        for (id, cb) in cbs_reset.borrow().iter() {
-            cb.set_active(default_set.contains(id));
-        }
-        *skip_cb_flag.borrow_mut() = false;
-        for (id, dd) in dds_reset.borrow().iter() {
-            let pos = defaults_pos_clone
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| "left".to_string());
-            dd.set_selected(if pos == "right" { 1 } else { 0 });
-        }
-    });
-
+            {
+                let mut s = st2.borrow_mut();
+                s.config.media_library.visible_columns = defaults.clone();
+                s.config.media_library.ml_file_col_order = defaults;
+                let _ = s.config.save();
+            }
+            sc2();
+            rb2();
+        });
+    }
     btn_row.append(&btn_reset);
 
     let spring = GtkBox::new(Orientation::Horizontal, 0);
@@ -5153,32 +5130,21 @@ fn open_customize_columns_dialog(
     btn_row.append(&spring);
 
     let btn_close = Button::with_label("Close");
-    let dlg_wk = dlg.downgrade();
-    let on_close_cb = on_close.clone();
-    let mode_for_close = mode.clone();
-    btn_close.connect_clicked(move |_| {
-        if let ColumnCustomizerMode::Id3Editor = mode_for_close {
-            if let Some(ref cb) = on_close_cb {
-                cb();
-            }
-        }
-        if let Some(w) = dlg_wk.upgrade() {
-            w.close();
-        }
-    });
+    {
+        let dlg_wk = dlg.downgrade();
+        let oc = on_close.clone();
+        btn_close.connect_clicked(move |_| {
+            if let Some(ref cb) = oc { cb(); }
+            if let Some(w) = dlg_wk.upgrade() { w.close(); }
+        });
+    }
     btn_row.append(&btn_close);
 
     main_vbox.append(&btn_row);
     dlg.set_child(Some(&main_vbox));
 
-    let on_close_req = on_close.clone();
-    let mode_for_req = mode.clone();
     dlg.connect_close_request(move |_| {
-        if let ColumnCustomizerMode::Id3Editor = mode_for_req {
-            if let Some(ref cb) = on_close_req {
-                cb();
-            }
-        }
+        if let Some(ref cb) = on_close { cb(); }
         glib::Propagation::Proceed
     });
 
