@@ -39,7 +39,7 @@ use super::{
     SettingsState,
 };
 use crate::{
-    config::{AccentColorChoice, PlaylistAddBehavior, ThemeChoice, VisualizerMode},
+    config::{PlaylistAddBehavior, VisualizerMode},
     engine::PlayerState,
     model::fmt_duration,
     shuffle::RepeatMode,
@@ -61,22 +61,6 @@ const C_TEXT: Color = Color::White;
 const C_WARN: Color = Color::Yellow;
 /// Error colour: status messages and the remove-track overlay.
 const C_ERR: Color = Color::Red;
-
-/// Return a display string for the accent color setting.
-fn accent_color_display(choice: &AccentColorChoice) -> String {
-    match choice {
-        AccentColorChoice::System => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  System".to_string(),
-        AccentColorChoice::Blue => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Blue".to_string(),
-        AccentColorChoice::Green => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Green".to_string(),
-        AccentColorChoice::Purple => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Purple".to_string(),
-        AccentColorChoice::Red => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Red".to_string(),
-        AccentColorChoice::Orange => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Orange".to_string(),
-        AccentColorChoice::Yellow => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Yellow".to_string(),
-        AccentColorChoice::White => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  White".to_string(),
-        AccentColorChoice::Grey => "[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Grey".to_string(),
-        AccentColorChoice::Custom(hex) => format!("[ System / Blue / Green / Purple / Red / Orange / Yellow / White / Grey / Custom ]  ●  Custom ({hex})"),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Top-level draw — assembles all sections into the terminal frame
@@ -1089,8 +1073,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 /// Names for the four settings tabs, shown in the tab bar.
-const SETTINGS_TABS: [&str; 5] = [
-    "Appearance",
+const SETTINGS_TABS: [&str; 4] = [
     "Behavior",
     "Visualizer",
     "Filetypes",
@@ -1238,45 +1221,8 @@ fn settings_rows_for_tab<'a>(
     state: &'a SettingsState,
 ) -> Vec<(&'static str, String)> {
     match state.tab {
-        // ── Appearance ────────────────────────────────────────────────────
-        0 => vec![
-            (
-                "Theme",
-                match app.config.appearance.theme {
-                    ThemeChoice::Dark => "[ Dark  / Light ]  ●  Dark".to_string(),
-                    ThemeChoice::Light => "[ Dark  / Light ]  ●  Light".to_string(),
-                },
-            ),
-            (
-                "Highlight color",
-                accent_color_display(&app.config.appearance.accent_color),
-            ),
-            (
-                "Custom skin name",
-                if state.tab == 0 && state.cursor == 2 {
-                    if let Some(buf) = &state.edit_buf {
-                        format!("{buf}▌")
-                    } else {
-                        let v = &app.config.appearance.custom_skin;
-                        if v.is_empty() {
-                            "(none — uses Theme above)".to_string()
-                        } else {
-                            v.clone()
-                        }
-                    }
-                } else {
-                    let v = &app.config.appearance.custom_skin;
-                    if v.is_empty() {
-                        "(none — uses Theme above)".to_string()
-                    } else {
-                        v.clone()
-                    }
-                },
-            ),
-        ],
-
         // ── Behavior ─────────────────────────────────────────────────────
-        1 => vec![
+        0 => vec![
             (
                 "Autoplay on add",
                 if app.config.behavior.autoplay_on_add {
@@ -1295,7 +1241,7 @@ fn settings_rows_for_tab<'a>(
         ],
 
         // ── Visualizer ────────────────────────────────────────────────────
-        2 => vec![(
+        1 => vec![(
             "Visualizer mode",
             match app.config.visualizer.mode {
                 VisualizerMode::Bars => "[ Bars / Waveform ]  ●  Bars".to_string(),
@@ -1306,7 +1252,7 @@ fn settings_rows_for_tab<'a>(
         )],
 
         // ── Filetypes ─────────────────────────────────────────────────────
-        3 => {
+        2 => {
             let viz_val = if state.cursor == 0 {
                 if let Some(buf) = &state.edit_buf {
                     format!("{buf}▌") // show cursor block in edit mode
@@ -1352,7 +1298,7 @@ fn settings_rows_for_tab<'a>(
         }
 
         // ── Media Library ─────────────────────────────────────────────────
-        4 => {
+        3 => {
             let startup_val = if app.config.media_library.rescan_on_startup {
                 "[ On  / Off ]  ●  On".to_string()
             } else {

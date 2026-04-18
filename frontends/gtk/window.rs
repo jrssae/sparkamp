@@ -744,7 +744,7 @@ impl AppState {
 /// behave as a logical unit: they share the taskbar and are typically
 /// raised/lowered together.
 /// Re-export built-in skin CSS from the skin module for use in this file.
-use crate::skin::{prepare_css, DARK_CSS_RAW, LIGHT_CSS_RAW};
+use crate::skin::{self, render_gtk_css, SkinVars};
 
 /// Read the user's GNOME accent-colour choice from gsettings and return
 /// the matching hex string.  Falls back to GNOME's default blue when
@@ -836,56 +836,28 @@ fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
     (dd, entry)
 }
 
-/// Get the system accent color from GNOME settings.
-fn system_accent_hex() -> &'static str {
-    let output = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "accent-color"])
-        .output();
-    let name = output
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().trim_matches('\'').to_string())
-        .unwrap_or_default();
-    match name.as_str() {
-        "blue" => "#3584e4",
-        "teal" => "#2190a4",
-        "green" => "#3a944a",
-        "yellow" => "#c88800",
-        "orange" => "#ed5b00",
-        "red" => "#e62d42",
-        "pink" => "#d56199",
-        "purple" => "#9141ac",
-        "slate" => "#6f8396",
-        _ => "#3584e4", // GNOME default blue
+/// Find a ListBoxRow by its widget name.
+fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
+    let mut child = listbox.first_child();
+    while let Some(c) = child {
+        if let Ok(row) = c.clone().downcast::<gtk4::ListBoxRow>() {
+            if row.widget_name().as_str() == name {
+                return Some(row);
+            }
+        }
+        child = c.next_sibling();
     }
+    None
 }
 
-/// Resolve the accent color hex from config. Returns the hex string.
-fn resolve_accent_hex(accent_choice: &crate::config::AccentColorChoice) -> String {
-    match accent_choice {
-        crate::config::AccentColorChoice::System => system_accent_hex().to_string(),
-        crate::config::AccentColorChoice::Custom(hex) => hex.clone(),
-        _ => accent_choice.hex().unwrap_or("#3584e4").to_string(),
-    }
-}
-
-/// Reload the CSS with a new accent color. Called when the accent color setting changes.
-fn reload_css_accent(
-    provider: &gtk4::CssProvider,
-    _dark_css: &str,
-    _light_css: &str,
-    is_dark: bool,
-    accent_hex: &str,
-) {
-    use crate::skin::prepare_css;
-    let css = prepare_css(
-        if is_dark { DARK_CSS_RAW } else { LIGHT_CSS_RAW },
-        accent_hex,
-    );
-    provider.load_from_data(&css);
-    if let Some(gtk_settings) = gtk4::Settings::default() {
-        gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
-    }
+/// Show a simple modal alert dialog.
+fn show_error_alert(msg: &str) {
+    let alert = gtk4::AlertDialog::builder()
+        .message("Sparkamp")
+        .detail(msg)
+        .modal(true)
+        .build();
+    alert.show(gtk4::Window::NONE);
 }
 
 /// Embedded app logo PNG bytes (compiled into the binary).
@@ -901,28 +873,6 @@ fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
     loader.close().ok()?;
     let pb = loader.pixbuf()?;
     pb.scale_simple(size, size, gdk_pixbuf::InterpType::Bilinear)
-}
-
-/// Invert the RGB channels of a pixbuf (leave alpha unchanged).
-/// Used to turn the black logo into a white logo for dark mode.
-fn invert_pixbuf(src: &gdk_pixbuf::Pixbuf) -> gdk_pixbuf::Pixbuf {
-    let pb = src.copy().expect("pixbuf copy");
-    let n_channels = pb.n_channels() as usize;
-    let rowstride = pb.rowstride() as usize;
-    let width = pb.width() as usize;
-    let height = pb.height() as usize;
-    // SAFETY: we own the only reference to this freshly-copied pixbuf.
-    let pixels = unsafe { pb.pixels() };
-    for row in 0..height {
-        for col in 0..width {
-            let off = row * rowstride + col * n_channels;
-            pixels[off] = 255 - pixels[off]; // R
-            pixels[off + 1] = 255 - pixels[off + 1]; // G
-            pixels[off + 2] = 255 - pixels[off + 2]; // B
-                                                     // pixels[off + 3] is alpha — left unchanged
-        }
-    }
-    pb
 }
 
 /// Set up a 100ms polling timer that drains the three scan channels and updates
@@ -1149,34 +1099,12 @@ pub fn build(
     open_rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
 ) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
-    // Inject the accent colour at startup so @accent_bg_color always resolves.
-    // If the user has configured a custom skin name, try to load it; fall back
-    // to the built-in dark or light skin based on AppearanceConfig.theme.
-    let accent_hex_initial = resolve_accent_hex(&config.appearance.accent_color);
-    let accent_hex_current = Rc::new(RefCell::new(accent_hex_initial.clone()));
-    let dark_css_rc = Rc::new(prepare_css(DARK_CSS_RAW, &accent_hex_initial));
-    let light_css_rc = Rc::new(prepare_css(LIGHT_CSS_RAW, &accent_hex_initial));
-
-    // Determine the initial CSS to load.
-    let initial_css = {
-        use crate::config::ThemeChoice;
-        use crate::skin;
-        let custom = &config.appearance.custom_skin;
-        if !custom.is_empty() {
-            // Try to load the user-specified skin; fall back to dark on failure.
-            skin::load_prepared(custom, &accent_hex_initial)
-                .unwrap_or_else(|| dark_css_rc.as_ref().clone())
-        } else {
-            match config.appearance.theme {
-                ThemeChoice::Dark => dark_css_rc.as_ref().clone(),
-                ThemeChoice::Light => light_css_rc.as_ref().clone(),
-            }
-        }
-    };
-
-    // Determine initial dark/light state from config (custom skins are treated as dark).
-    let initial_dark = config.appearance.custom_skin.is_empty()
-        && !matches!(config.appearance.theme, crate::config::ThemeChoice::Light);
+    // Load the active skin from config. Fall back to Dark if the named
+    // skin cannot be resolved.
+    let initial_vars = skin::load_skin(&config.appearance.active_skin)
+        .map(|s| s.vars)
+        .unwrap_or_else(SkinVars::dark_defaults);
+    let initial_css = render_gtk_css(&initial_vars);
 
     let provider = Rc::new(gtk4::CssProvider::new());
     provider.load_from_data(&initial_css);
@@ -1185,18 +1113,15 @@ pub fn build(
         &*provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    // Tell GTK to use the dark/light Adwaita variant for built-in widgets
-    // (title bars, entries, notebooks, etc.).  Without this, Flatpak apps
-    // default to light regardless of the system setting.
+    // Use the dark Adwaita variant for built-in widgets whenever the
+    // skin's window background is dark.
+    let initial_dark = initial_vars.background.luminance() < 0.5;
     if let Some(gtk_settings) = gtk4::Settings::default() {
         gtk_settings.set_gtk_application_prefer_dark_theme(initial_dark);
     }
-    let dark_mode = Rc::new(Cell::new(initial_dark));
 
-    // Clone provider and CSS for use by handlers that need them.
+    // Cloned Rc references used by the Appearance tab handlers.
     let provider_for_settings = provider.clone();
-    let dark_css_for_settings = dark_css_rc.clone();
-    let light_css_for_settings = light_css_rc.clone();
 
     // ── AppState ──────────────────────────────────────────────────────────────
     let state = match AppState::new(playlist, config) {
@@ -1327,13 +1252,12 @@ pub fn build(
     let left_col = GtkBox::new(Orientation::Vertical, 2);
     left_col.set_valign(Align::Center);
 
-    // Small play/pause/stop indicator to the left of the time display.
-    // Subtle: uses the same dim style as the secondary track-index line.
+    // Small play/pause/stop indicator — sits inside the same dark box as
+    // the time display. Class-less label inherits styling from the parent.
     let state_label = Label::builder()
         .label("⏹")
         .halign(Align::Center)
         .valign(Align::Center)
-        .css_classes(["np-artist"])
         .build();
 
     // Time display label — single-line, monospace, centered.
@@ -1342,30 +1266,30 @@ pub fn build(
     let time_disp_label = Label::builder()
         .label("0:00")
         .halign(Align::Center)
-        .css_classes(["time-disp"])
         .build();
+
+    // Row containing [state_icon | time_display] — carries the `.time-disp`
+    // dark background so both labels sit in a single box.
+    let time_row = GtkBox::new(Orientation::Horizontal, 4);
+    time_row.set_halign(Align::Fill);
+    time_row.add_css_class("time-disp");
+    time_row.append(&state_label);
+    time_row.append(&time_disp_label);
     {
         let show_rem = show_remaining.clone();
         let click = GestureClick::new();
-        // connect_released fires after a complete click (pressed + released),
-        // giving the user a clear tap-to-toggle interaction.
         click.connect_released(move |_, _, _, _| {
             show_rem.set(!show_rem.get());
         });
-        time_disp_label.add_controller(click);
+        time_row.add_controller(click);
     }
 
-    // Row containing [state_icon | time_display].
-    let time_row = GtkBox::new(Orientation::Horizontal, 4);
-    time_row.set_halign(Align::Center);
-    time_row.append(&state_label);
-    time_row.append(&time_disp_label);
-
     // Mini visualizer DrawingArea — clicking cycles the visualizer mode.
+    // Width is matched to the time_row via a SizeGroup below.
     let viz = DrawingArea::new();
-    viz.set_content_width(100);
     viz.set_content_height(68);
     viz.set_valign(Align::Center);
+    viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
     {
         let state_vc = state.clone();
@@ -1396,6 +1320,10 @@ pub fn build(
 
     left_col.append(&time_row);
     left_col.append(&viz);
+    // Keep the mini visualizer visually the same width as the time-display box.
+    let left_col_sizer = gtk4::SizeGroup::new(gtk4::SizeGroupMode::Horizontal);
+    left_col_sizer.add_widget(&time_row);
+    left_col_sizer.add_widget(&viz);
 
     // ── Right column: marquee frame (title only) + index + vol row ───────────
     // `np_info` fills the full height of `np_row` so the vol row at the bottom
@@ -1565,8 +1493,7 @@ pub fn build(
     // Load logo at ~42 px (50 % larger than the transport buttons).
     // If the PNG fails to load (e.g. asset missing), the image slot stays blank.
     const LOGO_PX: i32 = 42;
-    let logo_light = load_logo_pixbuf(LOGO_PX);
-    let logo_dark = logo_light.as_ref().map(|pb| invert_pixbuf(pb));
+    let logo_pixbuf = load_logo_pixbuf(LOGO_PX);
     let logo_img = Image::new();
     logo_img.set_valign(Align::Center);
     logo_img.set_pixel_size(LOGO_PX);
@@ -1574,19 +1501,9 @@ pub fn build(
     // button and progress bar end (both sit at 8px from the window edge; the
     // transport box itself already has margin_end(8)).
     logo_img.set_margin_end(8);
-    // Initial theme: if dark_mode is set apply the inverted version.
-    if dark_mode.get() {
-        if let Some(ref pb) = logo_dark {
-            logo_img.set_from_pixbuf(Some(pb));
-        }
-    } else {
-        if let Some(ref pb) = logo_light {
-            logo_img.set_from_pixbuf(Some(pb));
-        }
+    if let Some(ref pb) = logo_pixbuf {
+        logo_img.set_from_pixbuf(Some(pb));
     }
-    // Wrap logo pixbufs in Rc so the theme-toggle closure can reach them.
-    let logo_light_rc = Rc::new(logo_light);
-    let logo_dark_rc = Rc::new(logo_dark);
 
     // Two equal springs place repeat/shuffle equidistant between Next and logo.
     let transport_spring_l = GtkBox::new(Orientation::Horizontal, 0);
@@ -1633,42 +1550,6 @@ pub fn build(
 
     window.set_child(Some(&root));
 
-    // ── Right-click on the player body → toggle dark / light theme ───────────
-    {
-        let provider_rc = provider.clone();
-        let dark_ref = dark_mode.clone();
-        let accent_cell = accent_hex_current.clone();
-        let logo_img_rc = logo_img.clone();
-        let logo_light_t = logo_light_rc.clone();
-        let logo_dark_t = logo_dark_rc.clone();
-        let rclick = GestureClick::new();
-        rclick.set_button(3);
-        rclick.connect_released(move |_, _, _, _| {
-            let now_dark = !dark_ref.get();
-            dark_ref.set(now_dark);
-            let accent_hex = accent_cell.borrow().clone();
-            let css = if now_dark {
-                prepare_css(DARK_CSS_RAW, &accent_hex)
-            } else {
-                prepare_css(LIGHT_CSS_RAW, &accent_hex)
-            };
-            provider_rc.load_from_data(&css);
-            if let Some(gtk_settings) = gtk4::Settings::default() {
-                gtk_settings.set_gtk_application_prefer_dark_theme(now_dark);
-            }
-            // Swap logo to match the new theme.
-            if now_dark {
-                if let Some(ref pb) = *logo_dark_t {
-                    logo_img_rc.set_from_pixbuf(Some(pb));
-                }
-            } else {
-                if let Some(ref pb) = *logo_light_t {
-                    logo_img_rc.set_from_pixbuf(Some(pb));
-                }
-            }
-        });
-        root.add_controller(rclick);
-    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // Playlist window (separate, transient to main window)
@@ -1756,14 +1637,22 @@ pub fn build(
     // computed color of the hidden .np-title probe label.
     let accent_rgba: Rc<RefCell<Option<gdk::RGBA>>> = Rc::new(RefCell::new(None));
 
+    // Playlist TreeView overrides cell foreground per-row via col 4; CSS alone
+    // won't reach deprecated cell renderers. Keep an Rc-shared RGBA derived
+    // from the active skin's text_color, updated whenever the skin changes.
+    let text_rgba: Rc<RefCell<gdk::RGBA>> = Rc::new(RefCell::new(gdk::RGBA::new(
+        initial_vars.text_color.r as f32 / 255.0,
+        initial_vars.text_color.g as f32 / 255.0,
+        initial_vars.text_color.b as f32 / 255.0,
+        1.0,
+    )));
+
     // ── Left-click on the logo → open settings window ────────────────────────
     {
         let state_rc = state.clone();
         let win_wk = window.downgrade();
-        let dark_mode_clone = dark_mode.clone();
-        let accent_hex_for_settings = accent_hex_current.clone();
-        let accent_rgba_for_settings = accent_rgba.clone();
-        let pl_store_ref = pl_store.clone();
+        let provider_for_lclick = provider_for_settings.clone();
+        let text_rgba_for_lclick = text_rgba.clone();
         let lclick = GestureClick::new();
         lclick.set_button(1); // primary button only
         lclick.connect_released(move |_, _, _, _| {
@@ -1772,13 +1661,8 @@ pub fn build(
                 parent_win.as_ref().map(|w| w.upcast_ref()),
                 state_rc.clone(),
                 None,
-                dark_mode_clone.clone(),
-                accent_hex_for_settings.clone(),
-                accent_rgba_for_settings.clone(),
-                provider_for_settings.clone(),
-                dark_css_for_settings.clone(),
-                light_css_for_settings.clone(),
-                pl_store_ref.clone(),
+                provider_for_lclick.clone(),
+                text_rgba_for_lclick.clone(),
             );
         });
         logo_img.add_controller(lclick);
@@ -1916,9 +1800,9 @@ pub fn build(
         let pl_store = pl_store.clone();
         let pl_view = pl_view.clone();
         let pl_count_label = pl_count_label.clone();
-        let pl_selected_idx = pl_selected_idx.clone();
         let pl_active_idx = pl_active_idx.clone();
         let accent_rgba = accent_rgba.clone();
+        let text_rgba = text_rgba.clone();
         Rc::new(move || {
             let s = state.borrow();
             let current = s.playlist.current_index;
@@ -1927,7 +1811,6 @@ pub fn build(
                 PlayerState::Playing | PlayerState::Paused
             );
             let n = s.playlist.tracks.len();
-            let saved_selected = pl_selected_idx.get();
             // Update pl_active_idx to match current playing track.
             if is_playing {
                 pl_active_idx.set(current);
@@ -1944,7 +1827,6 @@ pub fn build(
                 let pos = format!("{}.{}", i + 1, lock_suffix);
                 let name = t.display_name();
                 let is_active = is_playing && i == current;
-                let is_row_selected = saved_selected != usize::MAX && saved_selected == i;
                 let display = if t.broken {
                     format!("⚠ {}", name)
                 } else if is_active {
@@ -1953,16 +1835,16 @@ pub fn build(
                     name
                 };
                 let weight: i32 = if is_active { 700 } else { 400 };
-                // Compute foreground color: active > selected > default.
+                // Compute foreground color.  Active (playing) rows get the
+                // skin's highlight/accent; everything else (including the
+                // GTK-selected row) uses the skin's text color.
                 let fg_rgba = if is_active {
                     accent_rgba
                         .borrow()
                         .clone()
-                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
-                } else if is_row_selected {
-                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                        .unwrap_or_else(|| text_rgba.borrow().clone())
                 } else {
-                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                    text_rgba.borrow().clone()
                 };
                 #[allow(deprecated)]
                 pl_store.insert_with_values(
@@ -2029,9 +1911,9 @@ pub fn build(
     let patch_pl_row = {
         let state = state.clone();
         let pl_store = pl_store.clone();
-        let pl_selected_idx = pl_selected_idx.clone();
         let pl_active_idx = pl_active_idx.clone();
         let accent_rgba = accent_rgba.clone();
+        let text_rgba = text_rgba.clone();
         Rc::new(move |idx: usize| {
             let (display, duration_str, weight, is_active) = {
                 let s = state.borrow();
@@ -2065,21 +1947,17 @@ pub fn build(
             } else if !is_active && current_active == idx {
                 pl_active_idx.set(usize::MAX);
             }
-            // Compute foreground color: active > selected > default.
+            // Compute foreground color: active row → accent, all others → skin text.
             let fg_rgba = {
                 let active_idx = pl_active_idx.get();
-                let selected_idx = pl_selected_idx.get();
                 let is_row_active = active_idx != usize::MAX && active_idx == idx;
-                let is_row_selected = selected_idx != usize::MAX && selected_idx == idx;
                 if is_row_active {
                     accent_rgba
                         .borrow()
                         .clone()
-                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
-                } else if is_row_selected {
-                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                        .unwrap_or_else(|| text_rgba.borrow().clone())
                 } else {
-                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                    text_rgba.borrow().clone()
                 }
             };
             // Update name, duration, weight, and foreground color columns.
@@ -5700,22 +5578,15 @@ fn open_id3_editor_window(
 /// when a control's value changes.  Pressing "Close" (or closing the
 /// window) persists the config to disk.  `initial_tab` selects the starting
 /// tab page (0-indexed), or opens at the default page if `None`.
-/// `dark_mode` tracks the current theme for CSS reloads.
-/// `accent_hex_current` stores the current accent hex for theme toggles.
-/// `accent_rgba` is updated when accent changes to refresh playlist playing row color.
-/// `pl_store` is used to repaint the playing row when accent changes.
+/// `css_provider` is updated live when the user switches skins in the
+/// Appearance tab.
 #[allow(deprecated)]
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     initial_tab: Option<u32>,
-    dark_mode: Rc<Cell<bool>>,
-    accent_hex_current: Rc<RefCell<String>>,
-    accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
     css_provider: Rc<gtk4::CssProvider>,
-    dark_css: Rc<String>,
-    light_css: Rc<String>,
-    pl_store: gtk4::ListStore,
+    text_rgba: Rc<RefCell<gdk::RGBA>>,
 ) {
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — SparkAmp"));
@@ -5733,277 +5604,265 @@ fn open_settings_window(
 
     // ── Tab 0: Appearance ─────────────────────────────────────────────────
     {
-        use crate::config::{AccentColorChoice, ThemeChoice};
+        use gtk4::{Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation,
+                   PolicyType, ScrolledWindow, SelectionMode, FileDialog, FileFilter};
 
-        let grid = Grid::new();
-        grid.set_row_spacing(12);
-        grid.set_column_spacing(16);
-        grid.set_margin_top(16);
-        grid.set_margin_bottom(16);
-        grid.set_margin_start(16);
-        grid.set_margin_end(16);
+        let root = GtkBox::new(Orientation::Vertical, 10);
+        root.set_margin_top(16);
+        root.set_margin_bottom(16);
+        root.set_margin_start(16);
+        root.set_margin_end(16);
 
-        let lbl = Label::new(Some("Theme"));
-        lbl.set_halign(Align::Start);
-        grid.attach(&lbl, 0, 0, 1, 1);
+        // Header
+        let header = Label::new(Some("Skin"));
+        header.set_halign(Align::Start);
+        header.add_css_class("heading");
+        root.append(&header);
 
-        // DropDown: index 0 = Dark, index 1 = Light.
-        let dd = DropDown::from_strings(&["Dark", "Light"]);
-        {
-            let theme = state.borrow().config.appearance.theme.clone();
-            dd.set_selected(match theme {
-                ThemeChoice::Dark => 0,
-                ThemeChoice::Light => 1,
-            });
-        }
+        // Scrollable list of skins
+        let listbox = ListBox::new();
+        listbox.set_selection_mode(SelectionMode::Single);
+        listbox.add_css_class("rich-list");
+
+        let scrolled = ScrolledWindow::new();
+        scrolled.set_policy(PolicyType::Never, PolicyType::Automatic);
+        scrolled.set_min_content_height(200);
+        scrolled.set_child(Some(&listbox));
+        root.append(&scrolled);
+
+        // Populate rows
+        let rebuild_list = {
+            let listbox = listbox.clone();
+            let state_rc = state.clone();
+            Rc::new(move || {
+                while let Some(row) = listbox.first_child() {
+                    listbox.remove(&row);
+                }
+                let hidden = state_rc.borrow().config.appearance.hidden_skins.clone();
+                let entries = crate::skin::list_skins(&hidden);
+                let active = state_rc.borrow().config.appearance.active_skin.clone();
+                let mut active_row: Option<ListBoxRow> = None;
+
+                for entry in entries {
+                    let row = ListBoxRow::new();
+                    let hbox = GtkBox::new(Orientation::Horizontal, 8);
+                    hbox.set_margin_top(4);
+                    hbox.set_margin_bottom(4);
+                    hbox.set_margin_start(8);
+                    hbox.set_margin_end(8);
+
+                    let name_lbl = Label::new(Some(&entry.display_name));
+                    name_lbl.set_halign(Align::Start);
+                    name_lbl.set_hexpand(true);
+                    hbox.append(&name_lbl);
+
+                    if entry.is_builtin {
+                        let tag = Label::new(Some("(built-in)"));
+                        tag.add_css_class("dim-label");
+                        hbox.append(&tag);
+                    }
+
+                    if entry.name == active {
+                        let mark = Label::new(Some("● Active"));
+                        mark.add_css_class("dim-label");
+                        hbox.append(&mark);
+                    }
+
+                    row.set_child(Some(&hbox));
+                    row.set_widget_name(&entry.name);
+                    listbox.append(&row);
+                    if entry.name == active {
+                        active_row = Some(row);
+                    }
+                }
+                if let Some(r) = active_row {
+                    listbox.select_row(Some(&r));
+                }
+            })
+        };
+        rebuild_list();
+
+        // Selecting a row applies the skin live.
         {
             let state_rc = state.clone();
-            let dark_mode_rc = dark_mode.clone();
-            let provider_rc = css_provider.clone();
-            let dark_css_rc = dark_css.clone();
-            let light_css_rc = light_css.clone();
-            dd.connect_selected_notify(move |d| {
-                let theme = match d.selected() {
-                    0 => ThemeChoice::Dark,
-                    _ => ThemeChoice::Light,
-                };
-                {
-                    let mut s = state_rc.borrow_mut();
-                    s.config.appearance.theme = theme.clone();
+            let provider = css_provider.clone();
+            let text_rgba = text_rgba.clone();
+            let rebuild = rebuild_list.clone();
+            listbox.connect_row_selected(move |_, row| {
+                let Some(row) = row else { return };
+                let name = row.widget_name().to_string();
+                if name.is_empty() { return; }
+                // Guard against re-entry: rebuild_list re-selects the active
+                // row, which would re-fire this handler and loop forever.
+                if state_rc.borrow().config.appearance.active_skin == name {
+                    return;
                 }
-                dark_mode_rc.set(matches!(theme, ThemeChoice::Dark));
-                // Reload CSS with new theme and current accent color.
-                let is_dark = matches!(theme, ThemeChoice::Dark);
-                let accent_hex =
-                    resolve_accent_hex(&state_rc.borrow().config.appearance.accent_color);
-                reload_css_accent(
-                    &provider_rc,
-                    &dark_css_rc,
-                    &light_css_rc,
-                    is_dark,
-                    &accent_hex,
+                let Some(skin) = crate::skin::load_skin(&name) else { return };
+                let css = crate::skin::render_gtk_css(&skin.vars);
+                provider.load_from_data(&css);
+                if let Some(gtk_settings) = gtk4::Settings::default() {
+                    gtk_settings.set_gtk_application_prefer_dark_theme(
+                        skin.vars.background.luminance() < 0.5);
+                }
+                *text_rgba.borrow_mut() = gdk::RGBA::new(
+                    skin.vars.text_color.r as f32 / 255.0,
+                    skin.vars.text_color.g as f32 / 255.0,
+                    skin.vars.text_color.b as f32 / 255.0,
+                    1.0,
                 );
+                state_rc.borrow_mut().config.appearance.active_skin = name;
+                rebuild();
             });
         }
-        grid.attach(&dd, 1, 0, 1, 1);
 
-        // Row 1: Highlight color dropdown.
-        let accent_color_labels = [
-            "System Default",
-            "Blue",
-            "Green",
-            "Purple",
-            "Red",
-            "Orange",
-            "Yellow",
-            "White",
-            "Grey",
-            "Custom…",
-        ];
-        let lbl_accent = Label::new(Some("Highlight color"));
-        lbl_accent.set_halign(Align::Start);
-        grid.attach(&lbl_accent, 0, 1, 1, 1);
+        // Row of action buttons
+        let btn_row = GtkBox::new(Orientation::Horizontal, 8);
+        let btn_add = Button::with_label("Add skin…");
+        let btn_remove = Button::with_label("Remove");
+        let btn_download = Button::with_label("Download skin…");
+        btn_row.append(&btn_add);
+        btn_row.append(&btn_remove);
+        btn_row.append(&btn_download);
+        root.append(&btn_row);
 
-        let dd_accent = DropDown::from_strings(&accent_color_labels);
-        let accent_container = GtkBox::new(Orientation::Horizontal, 4);
-        #[allow(deprecated)]
-        let custom_color_btn = gtk4::ColorButton::new();
-        custom_color_btn.set_visible(false);
-        accent_container.append(&dd_accent);
-        accent_container.append(&custom_color_btn);
-
-        // Initialize dropdown selection from config.
-        {
-            let accent_choice = state.borrow().config.appearance.accent_color.clone();
-            let custom_hex = match &accent_choice {
-                AccentColorChoice::Custom(hex) => Some(hex.clone()),
-                _ => None,
-            };
-            let selection = match &accent_choice {
-                AccentColorChoice::System => 0,
-                AccentColorChoice::Blue => 1,
-                AccentColorChoice::Green => 2,
-                AccentColorChoice::Purple => 3,
-                AccentColorChoice::Red => 4,
-                AccentColorChoice::Orange => 5,
-                AccentColorChoice::Yellow => 6,
-                AccentColorChoice::White => 7,
-                AccentColorChoice::Grey => 8,
-                AccentColorChoice::Custom(_) => {
-                    custom_color_btn.set_visible(true);
-                    9
-                }
-            };
-            dd_accent.set_selected(selection as u32);
-            if let Some(hex) = custom_hex {
-                if let Ok(color) = gdk::RGBA::parse(&hex) {
-                    custom_color_btn.set_rgba(&color);
-                }
-            }
-        }
-
-        // Handle accent color changes.
+        // Wire Add
         {
             let state_rc = state.clone();
-            let provider_rc = css_provider.clone();
-            let dark_css_rc = dark_css.clone();
-            let light_css_rc = light_css.clone();
-            let dark_mode_rc = dark_mode.clone();
-            let accent_cell = accent_hex_current.clone();
-            let accent_rgba_rc = accent_rgba.clone();
-            let custom_btn = custom_color_btn.clone();
-            let pl_store_rc = pl_store.clone();
+            let rebuild = rebuild_list.clone();
+            let listbox = listbox.clone();
+            let win_ref = win.clone();
+            btn_add.connect_clicked(move |_| {
+                let dialog = FileDialog::new();
+                dialog.set_title("Add Sparkamp skin");
+                let filter = FileFilter::new();
+                filter.add_suffix("css");
+                filter.set_name(Some("Sparkamp skin (*.css)"));
+                let filters = gio::ListStore::new::<FileFilter>();
+                filters.append(&filter);
+                dialog.set_filters(Some(&filters));
 
-            dd_accent.connect_selected_notify(move |d| {
-                let selection = d.selected();
-                let (accent_choice, _custom_hex) = match selection {
-                    0 => (AccentColorChoice::System, None),
-                    1 => (AccentColorChoice::Blue, None),
-                    2 => (AccentColorChoice::Green, None),
-                    3 => (AccentColorChoice::Purple, None),
-                    4 => (AccentColorChoice::Red, None),
-                    5 => (AccentColorChoice::Orange, None),
-                    6 => (AccentColorChoice::Yellow, None),
-                    7 => (AccentColorChoice::White, None),
-                    8 => (AccentColorChoice::Grey, None),
-                    _ => {
-                        // Custom: read from color button
-                        let rgba = custom_btn.rgba();
-                        let hex = format!(
-                            "#{:02x}{:02x}{:02x}",
-                            (rgba.red() * 255.0) as u8,
-                            (rgba.green() * 255.0) as u8,
-                            (rgba.blue() * 255.0) as u8
-                        );
-                        (AccentColorChoice::Custom(hex.clone()), Some(hex))
-                    }
-                };
-
-                // Show/hide custom color button.
-                custom_btn.set_visible(selection == 9);
-
-                // Update config.
-                {
-                    let mut s = state_rc.borrow_mut();
-                    s.config.appearance.accent_color = accent_choice.clone();
-                }
-
-                // Reload CSS with new accent color.
-                let is_dark = dark_mode_rc.get();
-                let accent_hex = resolve_accent_hex(&accent_choice);
-                *accent_cell.borrow_mut() = accent_hex.clone();
-                reload_css_accent(
-                    &provider_rc,
-                    &dark_css_rc,
-                    &light_css_rc,
-                    is_dark,
-                    &accent_hex,
-                );
-                // Update accent_rgba for playlist playing row color
-                if let Ok(rgba) = gdk::RGBA::parse(&accent_hex) {
-                    *accent_rgba_rc.borrow_mut() = Some(rgba);
-                }
-                // Repaint the currently playing row with new accent color
-                let playing_idx = state_rc.borrow().playlist.current_index;
-                let is_playing = matches!(
-                    *state_rc.borrow().player.state(),
-                    PlayerState::Playing | PlayerState::Paused
-                );
-                if is_playing && !state_rc.borrow().playlist.is_empty() {
-                    #[allow(deprecated)]
-                    if let Some(iter) = pl_store_rc.iter_nth_child(None, playing_idx as i32) {
-                        let rgba = accent_rgba_rc
-                            .borrow()
-                            .clone()
-                            .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
-                        #[allow(deprecated)]
-                        pl_store_rc.set_value(&iter, 4, &rgba.to_value());
-                    }
-                }
-            });
-
-            // Handle custom color button changes.
-            {
-                let state_rc2 = state.clone();
-                let provider_rc2 = css_provider.clone();
-                let dark_css_rc2 = dark_css.clone();
-                let light_css_rc2 = light_css.clone();
-                let dark_mode_rc2 = dark_mode.clone();
-                let accent_cell2 = accent_hex_current.clone();
-                let accent_rgba_rc2 = accent_rgba.clone();
-                let pl_store_rc2 = pl_store.clone();
-                #[allow(deprecated)]
-                custom_color_btn.connect_color_set(move |btn| {
-                    let rgba = btn.rgba();
-                    let hex = format!(
-                        "#{:02x}{:02x}{:02x}",
-                        (rgba.red() * 255.0) as u8,
-                        (rgba.green() * 255.0) as u8,
-                        (rgba.blue() * 255.0) as u8
-                    );
-                    let accent_choice = AccentColorChoice::Custom(hex.clone());
-
-                    // Update config.
-                    {
-                        let mut s = state_rc2.borrow_mut();
-                        s.config.appearance.accent_color = accent_choice.clone();
-                    }
-
-                    // Reload CSS with new accent color.
-                    let is_dark = dark_mode_rc2.get();
-                    let accent_hex = resolve_accent_hex(&accent_choice);
-                    *accent_cell2.borrow_mut() = accent_hex.clone();
-                    reload_css_accent(
-                        &provider_rc2,
-                        &dark_css_rc2,
-                        &light_css_rc2,
-                        is_dark,
-                        &accent_hex,
-                    );
-                    // Update accent_rgba for playlist playing row color
-                    *accent_rgba_rc2.borrow_mut() = Some(rgba.clone());
-                    // Repaint the currently playing row with new accent color
-                    let playing_idx = state_rc2.borrow().playlist.current_index;
-                    let is_playing = matches!(
-                        *state_rc2.borrow().player.state(),
-                        PlayerState::Playing | PlayerState::Paused
-                    );
-                    if is_playing && !state_rc2.borrow().playlist.is_empty() {
-                        #[allow(deprecated)]
-                        if let Some(iter) = pl_store_rc2.iter_nth_child(None, playing_idx as i32) {
-                            #[allow(deprecated)]
-                            let rgba = accent_rgba_rc2
-                                .borrow()
-                                .clone()
-                                .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
-                            #[allow(deprecated)]
-                            pl_store_rc2.set_value(&iter, 4, &rgba.to_value());
+                let state_rc = state_rc.clone();
+                let rebuild = rebuild.clone();
+                let listbox = listbox.clone();
+                dialog.open(Some(&win_ref), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    match crate::skin::add_user_skin(&path) {
+                        Ok(entry) => {
+                            state_rc.borrow_mut().config.appearance.active_skin =
+                                entry.name.clone();
+                            state_rc.borrow_mut().config.appearance.hidden_skins
+                                .retain(|n| !n.eq_ignore_ascii_case(&entry.name));
+                            rebuild();
+                            if let Some(row) = find_row_by_name(&listbox, &entry.name) {
+                                listbox.select_row(Some(&row));
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("Could not add skin: {e}");
+                            show_error_alert(&msg);
                         }
                     }
                 });
-            }
-        }
-        grid.attach(&accent_container, 1, 1, 1, 1);
-
-        // Row 2: Custom skin name (overrides Theme when non-empty).
-        let lbl_skin = Label::new(Some("Custom skin name"));
-        lbl_skin.set_halign(Align::Start);
-        grid.attach(&lbl_skin, 0, 2, 1, 1);
-
-        let entry_skin = Entry::new();
-        entry_skin.set_text(&state.borrow().config.appearance.custom_skin);
-        entry_skin.set_width_chars(24);
-        entry_skin.set_placeholder_text(Some("(empty = use Theme above)"));
-        {
-            let state_rc = state.clone();
-            entry_skin.connect_changed(move |e| {
-                state_rc.borrow_mut().config.appearance.custom_skin = e.text().to_string();
             });
         }
-        grid.attach(&entry_skin, 1, 2, 1, 1);
+
+        // Wire Remove (disabled for built-ins)
+        {
+            let state_rc = state.clone();
+            let rebuild = rebuild_list.clone();
+            let listbox = listbox.clone();
+            btn_remove.connect_clicked(move |_| {
+                let Some(row) = listbox.selected_row() else { return };
+                let name = row.widget_name().to_string();
+                if name == "dark" || name == "light" || name.is_empty() {
+                    return;
+                }
+                {
+                    let mut s = state_rc.borrow_mut();
+                    if !s.config.appearance.hidden_skins.iter().any(|h| h.eq_ignore_ascii_case(&name)) {
+                        s.config.appearance.hidden_skins.push(name.clone());
+                    }
+                    if s.config.appearance.active_skin == name {
+                        s.config.appearance.active_skin = "dark".to_string();
+                    }
+                }
+                rebuild();
+            });
+        }
+
+        // Update Remove-disabled state reactively on selection changes.
+        {
+            let btn_remove = btn_remove.clone();
+            listbox.connect_row_selected(move |_, row| {
+                let name = row.map(|r| r.widget_name().to_string()).unwrap_or_default();
+                let is_builtin = name == "dark" || name == "light" || name.is_empty();
+                btn_remove.set_sensitive(!is_builtin);
+            });
+        }
+
+        // Wire Download (Export template CSS…)
+        {
+            let listbox = listbox.clone();
+            let win_ref = win.clone();
+            btn_download.connect_clicked(move |_| {
+                let Some(row) = listbox.selected_row() else { return };
+                let name = row.widget_name().to_string();
+                let Some(skin) = crate::skin::load_skin(&name) else { return };
+
+                let dialog = FileDialog::new();
+                dialog.set_title("Save Sparkamp skin");
+                dialog.set_initial_name(Some(&format!("{name}.css")));
+
+                let skin_copy = skin.clone();
+                dialog.save(Some(&win_ref), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    let css = match &skin_copy.source {
+                        crate::skin::SkinSource::BuiltIn => match skin_copy.name.as_str() {
+                            "dark" => crate::skin::DARK_TEMPLATE_CSS.to_string(),
+                            "light" => crate::skin::LIGHT_TEMPLATE_CSS.to_string(),
+                            _ => crate::skin::DARK_TEMPLATE_CSS.to_string(),
+                        },
+                        crate::skin::SkinSource::UserFile(p) => {
+                            std::fs::read_to_string(p).unwrap_or_default()
+                        }
+                    };
+                    let _ = std::fs::write(&path, css);
+                });
+            });
+        }
+
+        // Separator
+        let sep = gtk4::Separator::new(Orientation::Horizontal);
+        sep.set_margin_top(8);
+        sep.set_margin_bottom(8);
+        root.append(&sep);
+
+        // Documentation header + button
+        let doc_header = Label::new(Some("Documentation"));
+        doc_header.set_halign(Align::Start);
+        doc_header.add_css_class("heading");
+        root.append(&doc_header);
+
+        let btn_guide = Button::with_label("Export how-to guide…");
+        root.append(&btn_guide);
+        {
+            let win_ref = win.clone();
+            btn_guide.connect_clicked(move |_| {
+                let dialog = FileDialog::new();
+                dialog.set_title("Save Sparkamp skin guide");
+                dialog.set_initial_name(Some("sparkamp-skin-guide.md"));
+                dialog.save(Some(&win_ref), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    let _ = std::fs::write(&path, crate::skin::SKIN_GUIDE_MD);
+                });
+            });
+        }
 
         let tab_lbl = Label::new(Some("Appearance"));
-        notebook.append_page(&grid, Some(&tab_lbl));
+        notebook.append_page(&root, Some(&tab_lbl));
     }
 
     // ── Tab 1: Behavior ───────────────────────────────────────────────────
