@@ -6561,7 +6561,9 @@ fn open_settings_window(
                         }
                         let _ = fast_tx.send(Ok(0usize));
 
-                        // Phase 2: metadata scan
+                        // Phase 2: metadata scan. Reset tracks with no metadata first
+                        // so scan_folder picks up any that a previous scan missed.
+                        let _ = lib.reset_unscanned_metadata();
                         let count = lib
                             .scan_folder(folder_id, &cancel_flag, |c, t| {
                                 let _ = progress_tx.send((c, t));
@@ -6799,6 +6801,9 @@ fn open_settings_window(
                             return;
                         }
                     };
+                    // Clear last_scanned for tracks with no metadata so scan_folder
+                    // re-processes them (handles recovery from a prior broken scan).
+                    let _ = lib.reset_unscanned_metadata();
                     let result = lib
                         .scan_all_folders(&cancel_flag, |current, total| {
                             let _ = progress_tx.send((current, total));
@@ -6822,7 +6827,14 @@ fn open_settings_window(
 
                     // Check for completion
                     if let Ok(result) = result_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                        }
                         complete_ml_scan(&state_rc2);
+                        if let Some(ref cb) = state_rc2.borrow().rebuild_ml_callback {
+                            cb();
+                        }
                         match result {
                             Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
                             Ok(_) => status_ref2.set_text("Scan complete"),
@@ -8804,7 +8816,6 @@ fn open_media_library_window(
         // Rescan Metadata action
         let ml_action_rescan_state = state.clone();
         let ml_action_rescan_tracks = ml_selected_tracks.clone();
-        let ml_action_rescan_store = track_store.clone();
         let action_rescan = gio::SimpleAction::new("rescan", None); // Note: action name without "ml." prefix
         action_rescan.connect_activate(move |_, _| {
             let tracks: Vec<_> = ml_action_rescan_tracks.borrow().clone();
@@ -8843,22 +8854,19 @@ fn open_media_library_window(
             let progress_rx = std::cell::RefCell::new(progress_rx);
             let result_rx = std::cell::RefCell::new(result_rx);
             let state_for_timer = ml_action_rescan_state.clone();
-            let store_for_timer = ml_action_rescan_store.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 while let Ok(current) = progress_rx.borrow().try_recv() {
                     update_ml_scan_progress(&state_for_timer, current, total);
                 }
                 if result_rx.borrow().try_recv().is_ok() {
+                    {
+                        let mut s = state_for_timer.borrow_mut();
+                        s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                    }
                     complete_ml_scan(&state_for_timer);
-                    let tracks: Vec<crate::media_library::LibTrack> = state_for_timer
-                        .borrow()
-                        .media_lib
-                        .as_ref()
-                        .and_then(|lib| lib.all_tracks().ok())
-                        .unwrap_or_default();
-                    let boxed: Vec<glib::BoxedAnyObject> =
-                        tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
-                    store_for_timer.splice(0, store_for_timer.n_items(), &boxed);
+                    if let Some(ref cb) = state_for_timer.borrow().rebuild_ml_callback {
+                        cb();
+                    }
                     return glib::ControlFlow::Break;
                 }
                 glib::ControlFlow::Continue
@@ -9660,7 +9668,9 @@ fn open_media_library_window(
                                 return;
                             }
                             let _ = fast_tx.send(Ok(folder_id as usize));
-                            // Phase 2: read metadata for tracks that need it.
+                            // Phase 2: read metadata. Reset tracks with no metadata
+                            // first so any missed by a prior scan are re-processed.
+                            let _ = lib.reset_unscanned_metadata();
                             let count = lib
                                 .scan_folder(folder_id, &cancel_thread, |c, t| {
                                     let _ = progress_tx.send((c, t));
@@ -9765,6 +9775,7 @@ fn open_media_library_window(
                             return;
                         }
                     };
+                    let _ = lib.reset_unscanned_metadata();
                     let result = lib
                         .scan_all_folders(&cancel_flag, |current, total| {
                             let _ = progress_tx.send((current, total));

@@ -1880,6 +1880,21 @@ impl MediaLibrary {
         Ok((scanned, skipped, to_scan_count - scanned))
     }
 
+    /// Reset `last_scanned` to NULL for tracks that have no metadata at all
+    /// (both `artist` and `length_secs` are NULL).
+    ///
+    /// Call this before a full rescan to recover tracks whose previous scan
+    /// completed but wrote no metadata (e.g. due to an earlier bug).  After
+    /// the reset, `scan_folder` will treat those tracks as never-scanned and
+    /// re-read their tags.
+    pub fn reset_unscanned_metadata(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET last_scanned = NULL WHERE artist IS NULL AND length_secs IS NULL",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Scan all watched folders, updating metadata for files that have changed.
     ///
     /// Uses smart skip logic per-folder. Reports progress via
@@ -3349,4 +3364,5 @@ mod tests {
         let ro = read_only_track_fields(path, Some(&track));
         assert_eq!(ro.channels, "6ch");
     }
+
 }
