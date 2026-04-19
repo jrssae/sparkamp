@@ -1647,22 +1647,38 @@ pub fn build(
         1.0,
     )));
 
+    // Deferred rebuild_playlist handle — populated later when the closure is
+    // defined. Lets the logo-click and other early-bound callbacks dispatch
+    // to it even though construction happens further down.
+    let rebuild_pl_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(RefCell::new(None));
+
     // ── Left-click on the logo → open settings window ────────────────────────
     {
         let state_rc = state.clone();
         let win_wk = window.downgrade();
         let provider_for_lclick = provider_for_settings.clone();
         let text_rgba_for_lclick = text_rgba.clone();
+        let accent_rgba_for_lclick = accent_rgba.clone();
+        let rebuild_pl_holder_lclick = rebuild_pl_holder.clone();
         let lclick = GestureClick::new();
         lclick.set_button(1); // primary button only
         lclick.connect_released(move |_, _, _, _| {
             let parent_win = win_wk.upgrade();
+            // Fall back to a no-op if rebuild_playlist hasn't been assigned
+            // yet (should never happen post-init).
+            let rebuild_pl: Rc<dyn Fn()> = rebuild_pl_holder_lclick
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Rc::new(|| {}));
             open_settings_window(
                 parent_win.as_ref().map(|w| w.upcast_ref()),
                 state_rc.clone(),
                 None,
                 provider_for_lclick.clone(),
                 text_rgba_for_lclick.clone(),
+                accent_rgba_for_lclick.clone(),
+                rebuild_pl,
             );
         });
         logo_img.add_controller(lclick);
@@ -1869,6 +1885,7 @@ pub fn build(
             ));
         })
     };
+    *rebuild_pl_holder.borrow_mut() = Some(rebuild_playlist.clone());
 
     // scroll_to_row_if_needed — scroll the playlist to make a row visible.
     //
@@ -4872,7 +4889,12 @@ fn open_customize_columns_dialog(
         let sc = save_cfg.clone();
         let rh = rebuild_holder.clone();
         let on_toggle_rb = on_toggle.clone();
+        let scrolled_rb = scrolled.clone();
         Rc::new(move || {
+            // Preserve scroll position: clearing and re-adding rows resets
+            // the ScrolledWindow's vadjustment to 0, which yanks the user
+            // back to the top on every toggle. Snapshot → rebuild → restore.
+            let prev_scroll = scrolled_rb.vadjustment().value();
             while let Some(c) = lb_ref.first_child() { lb_ref.remove(&c); }
 
             let es = entries.borrow().clone();
@@ -4958,6 +4980,16 @@ fn open_customize_columns_dialog(
                 row.set_child(Some(&row_box));
                 lb_ref.append(&row);
             }
+            // Restore scroll position after the new rows lay out. idle_add
+            // defers until GTK finishes sizing the listbox so the adjustment
+            // upper bound reflects the post-rebuild content height.
+            let adj = scrolled_rb.vadjustment();
+            glib::idle_add_local_once(move || {
+                let upper = adj.upper();
+                let page  = adj.page_size();
+                let max   = (upper - page).max(0.0);
+                adj.set_value(prev_scroll.min(max));
+            });
         })
     };
 
@@ -5587,6 +5619,8 @@ fn open_settings_window(
     initial_tab: Option<u32>,
     css_provider: Rc<gtk4::CssProvider>,
     text_rgba: Rc<RefCell<gdk::RGBA>>,
+    accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
+    rebuild_playlist: Rc<dyn Fn()>,
 ) {
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — SparkAmp"));
@@ -5630,11 +5664,19 @@ fn open_settings_window(
         scrolled.set_child(Some(&listbox));
         root.append(&scrolled);
 
+        // Suppress the row_selected handler while we programmatically
+        // re-select the active row after rebuild. GtkNotebook tab switches
+        // can also fire spurious row_selected events on re-show; we only
+        // want user clicks to apply a skin.
+        let suppress_sel: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
         // Populate rows
         let rebuild_list = {
             let listbox = listbox.clone();
             let state_rc = state.clone();
+            let suppress = suppress_sel.clone();
             Rc::new(move || {
+                suppress.set(true);
                 while let Some(row) = listbox.first_child() {
                     listbox.remove(&row);
                 }
@@ -5678,6 +5720,7 @@ fn open_settings_window(
                 if let Some(r) = active_row {
                     listbox.select_row(Some(&r));
                 }
+                suppress.set(false);
             })
         };
         rebuild_list();
@@ -5687,13 +5730,17 @@ fn open_settings_window(
             let state_rc = state.clone();
             let provider = css_provider.clone();
             let text_rgba = text_rgba.clone();
+            let accent_rgba = accent_rgba.clone();
+            let rebuild_pl = rebuild_playlist.clone();
             let rebuild = rebuild_list.clone();
+            let suppress = suppress_sel.clone();
             listbox.connect_row_selected(move |_, row| {
+                if suppress.get() { return; }
                 let Some(row) = row else { return };
                 let name = row.widget_name().to_string();
                 if name.is_empty() { return; }
-                // Guard against re-entry: rebuild_list re-selects the active
-                // row, which would re-fire this handler and loop forever.
+                // User-clicked a row while the skin was already active
+                // (e.g., re-click to re-apply) — nothing to do.
                 if state_rc.borrow().config.appearance.active_skin == name {
                     return;
                 }
@@ -5710,7 +5757,21 @@ fn open_settings_window(
                     skin.vars.text_color.b as f32 / 255.0,
                     1.0,
                 );
+                // Playlist TreeView stores fg color per-row via RGBA column;
+                // update the shared accent from the new skin's highlight so
+                // the playing row re-renders in the new skin's accent rather
+                // than the color captured at startup.
+                *accent_rgba.borrow_mut() = Some(gdk::RGBA::new(
+                    skin.vars.highlight.r as f32 / 255.0,
+                    skin.vars.highlight.g as f32 / 255.0,
+                    skin.vars.highlight.b as f32 / 255.0,
+                    1.0,
+                ));
                 state_rc.borrow_mut().config.appearance.active_skin = name;
+                // Refresh all playlist rows so the new text / accent colors
+                // propagate — CSS alone doesn't reach the deprecated cell
+                // renderer's foreground-rgba column.
+                rebuild_pl();
                 rebuild();
             });
         }
@@ -6811,7 +6872,7 @@ fn open_settings_window(
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
 fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
-    use crate::config::{EQ_BAND_FREQS, EQ_PRESETS};
+    use crate::config::EQ_PRESETS;
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 
     let win = gtk4::Window::new();
@@ -6920,13 +6981,9 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -
         let col = GtkBox::new(Orientation::Vertical, 2);
         col.set_hexpand(true);
 
-        // Frequency label.
-        let freq_label = Label::new(Some(EQ_BAND_FREQS[i]));
-        freq_label.set_halign(gtk4::Align::Center);
-        col.append(&freq_label);
-
-        // Vertical scale: range −24..+12, step 1, page 3.
-        let adj = Adjustment::new(bands_snapshot[i], -24.0, 12.0, 1.0, 3.0, 0.0);
+        // Vertical scale: user-facing range ±12 dB (engine clamps internally).
+        let adj = Adjustment::new(bands_snapshot[i].clamp(-12.0, 12.0),
+                                  -12.0, 12.0, 1.0, 3.0, 0.0);
         let scale = Scale::new(Orientation::Vertical, Some(&adj));
         scale.add_css_class("eq-scale");
         scale.set_inverted(true); // top = positive, bottom = negative
@@ -6935,7 +6992,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -
         scale.set_height_request(100);
         scale.add_mark(0.0, gtk4::PositionType::Right, Some("0"));
         scale.add_mark(12.0, gtk4::PositionType::Right, Some("+12"));
-        scale.add_mark(-24.0, gtk4::PositionType::Right, Some("-24"));
+        scale.add_mark(-12.0, gtk4::PositionType::Right, Some("-12"));
         col.append(&scale);
 
         // Gain value label (updated live as the slider moves).

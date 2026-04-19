@@ -1,0 +1,30 @@
+/* Sparkamp Dark — Basic Skin Template
+ *
+ * Edit these 14 values and save this file to
+ * ~/.config/sparkamp/skins/<name>.css, then load it from
+ * Settings → Appearance → Add skin…
+ *
+ * See the bundled skin-guide.md (Export how-to guide…) for a full
+ * reference of which UI elements each variable controls.
+ */
+:root {
+    /* Colors */
+    --sp-background:         #1a1a1a;
+    --sp-text-background:    #0c0c0c;
+    --sp-text-color:         #cccccc;
+    --sp-highlight:          #00ccff;
+    --sp-broken-color:       #ff7700;
+
+    /* Buttons */
+    --sp-button-color:       #212121;
+    --sp-button-hover:       #2e2e2e;
+    --sp-button-active:      #003e52;
+    --sp-button-pressed:     #3a3a3a;
+    --sp-button-text-color:  #aaaaaa;
+
+    /* Fonts */
+    --sp-font-family:        "Inter, system-ui, sans-serif";
+    --sp-font-size:          12px;
+    --sp-font-size-large:    32px;
+    --sp-font-size-marquee:  14px;
+}

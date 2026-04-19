@@ -380,6 +380,10 @@ impl Default for PluginsConfig {
 
 /// Standard 10-band EQ center frequencies in Hz (display only; the
 /// GStreamer element's actual centre frequencies are fixed and match these).
+/// Consumed by the Swift frontend via `sparkamp_eq_band_label`; the GTK
+/// UI no longer surfaces these labels, so the binary build sees it as
+/// unreferenced.
+#[allow(dead_code)]
 pub const EQ_BAND_FREQS: [&str; 10] = [
     "29", "59", "119", "237", "474", "947", "1.9k", "3.8k", "7.5k", "15k",
 ];

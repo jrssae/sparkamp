@@ -665,10 +665,11 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {tbg}; border: 1px solid {border}; \
     }}").unwrap();
 
-    // Equalizer window scales (horizontal pre-amp + vertical band columns)
+    // Equalizer window scales (horizontal pre-amp + vertical band columns).
+    // Pattern matches seek-scale so the slider handle renders as a small
+    // highlight-colored circle rather than the system theme's default.
     writeln!(css, "scale.eq-scale trough {{ \
         background-color: {tbg}; background-image: none; \
-        border: 1px solid {border}; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale highlight {{ \
         background-color: {hl}; background-image: none; \
@@ -677,22 +678,38 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {hl}; background-image: none; \
         border-radius: 50%; min-width: 10px; min-height: 10px; \
     }}").unwrap();
-    writeln!(css, "scale.eq-scale mark, scale.eq-scale indicator, \
-                   scale.eq-scale value, scale.eq-scale label {{ \
-        color: {text_dim}; \
+    writeln!(css, "scale.eq-scale label {{ \
+        color: {text_dim}; font-size: {fs}px; \
     }}").unwrap();
 
-    // Playlist + Media Library list/columnview
-    writeln!(css, ".playlist, columnview, listview {{ \
+    // Playlist + Media Library list/columnview.
+    // `.ml-sidebar` is the left-nav ListBox in the Media Library window;
+    // `.rich-list` is the skin selector in Settings → Appearance. Both
+    // wrap their own ScrolledWindow, which would otherwise render with
+    // the system default (often dark) background.
+    writeln!(css, ".playlist, .ml-sidebar, .rich-list, \
+                   columnview, listview, list {{ \
         background-color: {tbg}; color: {text}; font-size: {fs}px; \
+    }}").unwrap();
+    writeln!(css, ".ml-sidebar row, .rich-list row {{ \
+        color: {text}; padding: 2px 4px; \
+    }}").unwrap();
+    // ScrolledWindow wrapping these lists — match so the corners and
+    // scrollbar gutter don't bleed the system theme through.
+    writeln!(css, "scrolledwindow > viewport > .ml-sidebar, \
+                   scrolledwindow > viewport > .rich-list, \
+                   scrolledwindow > viewport > .playlist {{ \
+        background-color: {tbg}; \
     }}").unwrap();
     writeln!(css, ".playlist row, columnview row, listview row {{ \
         color: {text}; \
     }}").unwrap();
-    writeln!(css, ".playlist row:hover, columnview row:hover, listview row:hover {{ \
+    writeln!(css, ".playlist row:hover, .ml-sidebar row:hover, \
+                   columnview row:hover, listview row:hover {{ \
         background: {hl_hov}; \
     }}").unwrap();
-    writeln!(css, ".playlist row:selected, columnview row:selected, listview row:selected {{ \
+    writeln!(css, ".playlist row:selected, .ml-sidebar row:selected, \
+                   columnview row:selected, listview row:selected {{ \
         background: {hl_sel}; color: {text}; \
     }}").unwrap();
     writeln!(css, ".playlist row.playing {{ \

@@ -1,0 +1,27 @@
+/* Sparkamp Light — Basic Skin Template
+ *
+ * Edit these 14 values and save this file to
+ * ~/.config/sparkamp/skins/<name>.css, then load it from
+ * Settings → Appearance → Add skin…
+ */
+:root {
+    /* Colors */
+    --sp-background:         #ededed;
+    --sp-text-background:    #f6f6f6;
+    --sp-text-color:         #222222;
+    --sp-highlight:          #1a6fc2;
+    --sp-broken-color:       #cc5500;
+
+    /* Buttons */
+    --sp-button-color:       #dcdcdc;
+    --sp-button-hover:       #cccccc;
+    --sp-button-active:      #cce5f7;
+    --sp-button-pressed:     #bbbbbb;
+    --sp-button-text-color:  #333333;
+
+    /* Fonts */
+    --sp-font-family:        "Inter, system-ui, sans-serif";
+    --sp-font-size:          12px;
+    --sp-font-size-large:    32px;
+    --sp-font-size-marquee:  14px;
+}
