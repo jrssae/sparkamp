@@ -16,12 +16,13 @@ struct MarqueeView: View {
 
     var body: some View {
         let t = themeManager.currentTheme
+        let vars = themeManager.currentVars
         TimelineView(.animation) { _ in
             GeometryReader { geo in
                 let overflows = textWidth > geo.size.width
                 ZStack(alignment: .leading) {
                     Text(text)
-                        .font(.system(size: 12, weight: .bold))
+                        .font(vars.marqueeFont)
                         .foregroundStyle(t.titleText)
                         .lineLimit(1)
                         .fixedSize()

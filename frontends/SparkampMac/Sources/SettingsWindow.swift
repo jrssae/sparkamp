@@ -124,96 +124,135 @@ private struct AboutPane: View {
 
 private struct AppearancePane: View {
     @EnvironmentObject var themeManager: ThemeManager
-    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var themeChoice: Int = 0   // 0=System, 1=Dark, 2=Light
-    @State private var accentColor: Color = Color(hex: "#00ccff")!
-    @State private var hasAccentOverride: Bool = false
+    @State private var entries: [ThemeManager.SkinEntry] = []
+    @State private var selection: String? = nil
+    @State private var errorMessage: String? = nil
 
     var body: some View {
         Form {
-            Section("Theme") {
-                Picker("Color scheme", selection: $themeChoice) {
-                    Text("System").tag(0)
-                    Text("Dark").tag(1)
-                    Text("Light").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: themeChoice) { _, newValue in
-                    switch newValue {
-                    case 1: themeManager.useDark()
-                    case 2: themeManager.useLight()
-                    default: themeManager.useSystem(colorScheme: colorScheme)
-                    }
-                }
-
-                Button("Load Custom Skin…") {
-                    themeManager.openSkinPicker(colorScheme: colorScheme)
-                }
-
-                if case .custom(let url) = themeManager.themeSource {
+            Section("Skin") {
+                List(entries, selection: $selection) { entry in
                     HStack {
-                        Text(url.lastPathComponent)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Remove", role: .destructive) {
-                            themeManager.removeCustomSkin(colorScheme: colorScheme)
+                        Text(entry.displayName)
+                        if entry.isBuiltin {
+                            Text("(built-in)")
+                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.borderless)
+                        Spacer()
+                        if entry.name == themeManager.activeSkin {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.tint)
+                        }
                     }
+                    .tag(entry.name)
+                }
+                .frame(minHeight: 180)
+                .onChange(of: selection) { _, new in
+                    if let new, new != themeManager.activeSkin {
+                        themeManager.setActiveSkin(new)
+                    }
+                }
+
+                HStack {
+                    Button("Add skin…")     { addSkin() }
+                    Button("Remove")        { removeSelected() }
+                        .disabled(isBuiltinSelected)
+                    Button("Download skin…") { downloadSelected() }
+                        .disabled(selection == nil)
                 }
             }
 
-            Section("Accent Color") {
-                HStack {
-                    Toggle("Override theme accent", isOn: $hasAccentOverride)
-                        .onChange(of: hasAccentOverride) { _, on in
-                            if on {
-                                let hex = colorToHex(accentColor)
-                                themeManager.setAccentColor(hex)
-                            } else {
-                                themeManager.setAccentColor(nil)
-                            }
-                        }
-                }
-
-                if hasAccentOverride {
-                    HStack {
-                        Text("Accent color")
-                        Spacer()
-                        ColorPicker("", selection: $accentColor, supportsOpacity: false)
-                            .labelsHidden()
-                            .onChange(of: accentColor) { _, newColor in
-                                let hex = colorToHex(newColor)
-                                themeManager.setAccentColor(hex)
-                            }
-                    }
-                    Text("Applies to buttons, progress bars, time display, and highlighted text.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            Section("Documentation") {
+                Button("Export how-to guide…") { exportGuide() }
+                Text("A markdown reference describing every variable in the skin format and which UI elements it controls.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .alert("Could not add skin",
+               isPresented: Binding(
+                   get: { errorMessage != nil },
+                   set: { if !$0 { errorMessage = nil } })) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
         .onAppear {
-            switch themeManager.themeSource {
-            case .dark:   themeChoice = 1
-            case .light:  themeChoice = 2
-            default:      themeChoice = 0
-            }
-            if let hex = themeManager.accentHex, let color = Color(hex: hex) {
-                accentColor = color
-                hasAccentOverride = true
+            entries = themeManager.listSkins()
+            selection = themeManager.activeSkin
+        }
+    }
+
+    // MARK: Actions
+
+    private var isBuiltinSelected: Bool {
+        guard let s = selection else { return true }
+        return s == "dark" || s == "light"
+    }
+
+    private func addSkin() {
+        let panel = NSOpenPanel()
+        panel.title = "Add Sparkamp skin"
+        panel.allowedContentTypes = [.init(filenameExtension: "css")!]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                switch themeManager.addUserSkin(from: url) {
+                case .success(let entry):
+                    entries = themeManager.listSkins()
+                    themeManager.setActiveSkin(entry.name)
+                    selection = entry.name
+                case .failure(let err):
+                    switch err {
+                    case .unreadable:
+                        errorMessage = "The selected file could not be read."
+                    case .noRootBlock:
+                        errorMessage = "The file is not a valid Sparkamp skin — missing a :root { } block."
+                    case .copyFailed:
+                        errorMessage = "Could not copy the skin into the user skins directory."
+                    }
+                }
             }
         }
     }
 
-    private func colorToHex(_ color: Color) -> String {
-        let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        ns.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return String(format: "#%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
+    private func removeSelected() {
+        guard let s = selection, !isBuiltinSelected else { return }
+        themeManager.hideSkin(s)
+        entries = themeManager.listSkins()
+        selection = themeManager.activeSkin
+    }
+
+    private func downloadSelected() {
+        guard let s = selection else { return }
+        let panel = NSSavePanel()
+        panel.title = "Save Sparkamp skin"
+        panel.nameFieldStringValue = "\(s).css"
+        panel.allowedContentTypes = [.init(filenameExtension: "css")!]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                themeManager.exportSkin(s, to: url)
+            }
+        }
+    }
+
+    private func exportGuide() {
+        let panel = NSSavePanel()
+        panel.title = "Save Sparkamp skin guide"
+        panel.nameFieldStringValue = "sparkamp-skin-guide.md"
+        panel.allowedContentTypes = [.init(filenameExtension: "md")!]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                themeManager.exportGuide(to: url)
+            }
+        }
     }
 }
 
@@ -392,9 +431,11 @@ private struct VisualizerPane: View {
 
 private struct MediaLibraryPane: View {
     @EnvironmentObject var model: SparkampModel
+    @EnvironmentObject var themeManager: ThemeManager
 
     var body: some View {
-        Form {
+        let vars = themeManager.currentVars
+        return Form {
             // ── Open / rescan ──────────────────────────────────────────────
             Section("Library") {
                 HStack {
@@ -417,14 +458,14 @@ private struct MediaLibraryPane: View {
                 if model.mlFolders.isEmpty {
                     Text("No folders added yet.")
                         .foregroundStyle(.secondary)
-                        .font(.system(size: 12))
+                        .font(vars.bodyFont)
                 } else {
                     ForEach(model.mlFolders, id: \.self) { folder in
                         HStack {
                             Image(systemName: "folder")
                                 .foregroundStyle(.secondary)
                             Text(folder)
-                                .font(.system(size: 12))
+                                .font(vars.bodyFont)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
@@ -447,7 +488,7 @@ private struct MediaLibraryPane: View {
                         model.mlOpenAddFolderPicker()
                     } label: {
                         Label("Add Folder…", systemImage: "plus")
-                            .font(.system(size: 11))
+                            .font(vars.bodyFont)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -458,9 +499,9 @@ private struct MediaLibraryPane: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Find Duplicates")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(vars.bodyFont.weight(.medium))
                         Text("Scan your media library for duplicate tracks using title, artist, and duration matching.")
-                            .font(.system(size: 11))
+                            .font(vars.bodyFont)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()

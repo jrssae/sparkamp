@@ -83,18 +83,19 @@ struct Id3EditorView: View {
     private var rightFields: [ID3FieldConfig] { fieldConfigs.filter { $0.visible && $0.column == 1 }.sorted { $0.order < $1.order } }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(spacing: 0) {
             // ── Header ────────────────────────────────────────────────────────
             HStack(spacing: 8) {
                 Text(filePath.isEmpty ? "No file" : URL(fileURLWithPath: filePath).lastPathComponent)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.titleText)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
                 if fileMissing {
                     Text("File not found")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(vars.bodyFont.weight(.medium))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
@@ -104,7 +105,7 @@ struct Id3EditorView: View {
                         )
                 } else if isReadOnly {
                     Text("Read-only")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(vars.bodyFont.weight(.medium))
                         .foregroundStyle(theme.background)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
@@ -118,7 +119,7 @@ struct Id3EditorView: View {
 
                 Button("Customize…") { showCustomize = true }
                     .buttonStyle(.borderless)
-                    .font(.system(size: 11))
+                    .font(vars.bodyFont)
                     .foregroundStyle(theme.titleText.opacity(0.75))
             }
             .padding(.horizontal, 12)
@@ -134,7 +135,7 @@ struct Id3EditorView: View {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.red)
                         Text("The file could not be found. It may have been moved, renamed, or deleted.")
-                            .font(.system(size: 12))
+                            .font(vars.bodyFont)
                             .foregroundStyle(.red)
                         Spacer()
                     }
@@ -200,7 +201,7 @@ struct Id3EditorView: View {
 
                 if !saveStatus.isEmpty {
                     Text(saveStatus)
-                        .font(.system(size: 11))
+                        .font(vars.bodyFont)
                         .foregroundStyle(saveStatus.contains("✓") ? Color.green : Color.red)
                 }
 
@@ -341,12 +342,12 @@ private struct FieldRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 9, weight: .semibold))
+                .font(theme.vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistDurationText)
                 .padding(.leading, 2)
             TextField("", text: $value)
                 .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
+                .font(theme.vars.bodyFont)
                 .disabled(readOnly)
         }
         .padding(.horizontal, 6)
@@ -415,10 +416,13 @@ private struct ColumnCustomizeList: View {
     let configs: [ID3FieldConfig]   // sorted items for this column
     @Binding var allConfigs: [ID3FieldConfig]
 
+    @EnvironmentObject var themeManager: ThemeManager
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(alignment: .leading, spacing: 0) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(vars.bodyFont.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -433,9 +437,9 @@ private struct ColumnCustomizeList: View {
 
                         VStack(alignment: .leading, spacing: 1) {
                             Text(cfg.label)
-                                .font(.system(size: 12))
+                                .font(vars.bodyFont)
                             Text(cfg.id)
-                                .font(.system(size: 9, design: .monospaced))
+                                .font(vars.smallMonospaceFont)
                                 .foregroundStyle(.secondary)
                         }
 
@@ -446,7 +450,7 @@ private struct ColumnCustomizeList: View {
                             moveToOtherColumn(id: cfg.id)
                         }
                         .buttonStyle(.borderless)
-                        .font(.system(size: 11))
+                        .font(vars.bodyFont)
                         .foregroundStyle(.secondary)
                         .help(cfg.column == 0 ? "Move to right column" : "Move to left column")
                     }
@@ -512,7 +516,7 @@ private struct Id3ControlButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11))
+            .font(theme.vars.bodyFont)
             .foregroundStyle(theme.modeBtnText)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)

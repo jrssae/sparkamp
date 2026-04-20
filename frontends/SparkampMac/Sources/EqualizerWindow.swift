@@ -16,11 +16,12 @@ struct EqualizerView: View {
     private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(spacing: 0) {
             // ── Header ────────────────────────────────────────────────────────
             HStack {
                 Text("Equalizer")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.titleText)
                 Spacer()
                 Toggle("Enabled", isOn: $eqEnabled)
@@ -33,7 +34,7 @@ struct EqualizerView: View {
                         sparkamp_save_config(ctx)
                     }
                 Text("Enable")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
                     .foregroundStyle(theme.transportText)
             }
             .padding(.horizontal, 12)
@@ -49,7 +50,7 @@ struct EqualizerView: View {
                         .font(.system(size: 24))
                         .foregroundStyle(theme.playlistDurationText)
                     Text("EQ not available (GStreamer equalizer-10bands not found)")
-                        .font(.system(size: 11))
+                        .font(vars.bodyFont)
                         .foregroundStyle(theme.playlistDurationText)
                         .multilineTextAlignment(.center)
                 }
@@ -60,7 +61,7 @@ struct EqualizerView: View {
                 // ── Pre-amp row ───────────────────────────────────────────────
                 HStack(spacing: 8) {
                     Text("Pre-amp:")
-                        .font(.system(size: 10))
+                        .font(vars.bodyFont)
                         .foregroundStyle(theme.transportText)
                         .frame(width: 52, alignment: .leading)
 
@@ -72,7 +73,7 @@ struct EqualizerView: View {
                         }
 
                     Text("\(Int(preamp * 100))%")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(vars.smallMonospaceFont)
                         .foregroundStyle(theme.transportText)
                         .frame(width: 36, alignment: .trailing)
                 }
@@ -85,7 +86,7 @@ struct EqualizerView: View {
                 // ── Preset row ────────────────────────────────────────────────
                 HStack(spacing: 8) {
                     Text("Preset:")
-                        .font(.system(size: 10))
+                        .font(vars.bodyFont)
                         .foregroundStyle(theme.transportText)
 
                     Picker("", selection: $selectedPreset) {
@@ -213,7 +214,7 @@ private struct BandSliderColumn: View {
 
             // Frequency label
             Text(labelText)
-                .font(.system(size: 8))
+                .font(theme.vars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
                 .frame(width: 36)
                 .lineLimit(1)
@@ -234,7 +235,7 @@ private struct EQControlButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 10))
+            .font(theme.vars.bodyFont)
             .foregroundStyle(theme.modeBtnText)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)

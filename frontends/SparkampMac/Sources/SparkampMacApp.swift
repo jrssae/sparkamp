@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ObjectiveC.runtime
 
 // MARK: - App delegate
 // Handles macOS-specific lifecycle events that SwiftUI's App protocol
@@ -29,6 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // SwiftUI's List/Table on macOS are backed by NSTableView, which
+        // paints NSColor.selectedContentBackgroundColor (system accent) on
+        // top of .listRowBackground regardless of SwiftUI .tint().  Suppress
+        // the AppKit selection paint so each row's .listRowBackground / cell
+        // .background (which we set from the active skin's highlight) becomes
+        // the visible selection colour.
+        NSTableRowView.sparkampSuppressSelectionPaint()
+
         // When any Sparkamp window is clicked, raise all other Sparkamp windows
         // so the complete set stays together in the window stack.
         NotificationCenter.default.addObserver(
@@ -70,6 +79,7 @@ struct SparkampMacApp: App {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
                 // Re-open this window when the dock icon is clicked while it
                 // is hidden / closed.
                 .onReceive(NotificationCenter.default.publisher(
@@ -92,6 +102,7 @@ struct SparkampMacApp: App {
             PlaylistView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
                 .frame(minWidth: 360, idealWidth: 480, minHeight: 200, idealHeight: 400)
         }
         .windowResizability(.contentMinSize)
@@ -102,6 +113,7 @@ struct SparkampMacApp: App {
             KeyboardShortcutsView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 340, height: 420)
@@ -113,6 +125,7 @@ struct SparkampMacApp: App {
             FullscreenVisualizerView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
@@ -123,6 +136,7 @@ struct SparkampMacApp: App {
             JumpToTrackView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 480, height: 360)
@@ -132,6 +146,7 @@ struct SparkampMacApp: App {
             EqualizerView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 480, height: 320)
@@ -141,6 +156,7 @@ struct SparkampMacApp: App {
             SettingsView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 480, height: 500)
@@ -150,6 +166,7 @@ struct SparkampMacApp: App {
             Id3EditorView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 560, height: 500)
@@ -158,6 +175,8 @@ struct SparkampMacApp: App {
         WindowGroup("Artwork", id: "artwork") {
             ArtworkView()
                 .environmentObject(model)
+                .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 512, height: 512)
@@ -167,6 +186,7 @@ struct SparkampMacApp: App {
             MediaLibraryView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 800, height: 520)
@@ -176,6 +196,7 @@ struct SparkampMacApp: App {
             DeduplicatorView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
+                .themedRoot(themeManager)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 600, height: 480)
@@ -223,10 +244,10 @@ struct SparkampCommands: Commands {
         }
 
         CommandMenu("Appearance") {
-            Button("Dark Theme")   { themeManager.useDark() }
-            Button("Light Theme")  { themeManager.useLight() }
-            Button("Load Skin…")   { themeManager.openSkinPicker(colorScheme: .dark) }
-            Button("Export Default Skin…") { themeManager.exportDefaultCSS() }
+            Button("Dark Theme")  { themeManager.setActiveSkin("dark") }
+            Button("Light Theme") { themeManager.setActiveSkin("light") }
+            Divider()
+            Button("Skin Settings…") { model.settingsVisible = true }
         }
 
         // Replace the default Window menu so "Show Player" appears alongside
@@ -261,4 +282,63 @@ struct SparkampCommands: Commands {
 
 extension Notification.Name {
     static let openFilePicker = Notification.Name("SparkampOpenFilePicker")
+}
+
+// MARK: - NSTableRowView selection-paint suppression
+//
+// AppKit lacks UIKit-style `appearance()` proxies, so the only way to stop
+// every NSTableView (which backs every SwiftUI List and Table on macOS) from
+// painting its system-accent selection highlight is to swizzle
+// `NSTableRowView.drawSelection(in:)` to a no-op.  Selection state itself is
+// untouched — keyboard navigation, multi-select, and the selection binding
+// continue to work; only the AppKit-drawn blue/grey overlay disappears so
+// our skin-coloured `.listRowBackground` / cell `.background` become the
+// visible selection indicator.
+
+extension NSTableRowView {
+    private static let suppressOnce: Void = {
+        let cls = NSTableRowView.self
+        guard
+            let original = class_getInstanceMethod(
+                cls, #selector(NSTableRowView.drawSelection(in:))),
+            let replacement = class_getInstanceMethod(
+                cls, #selector(NSTableRowView.sparkamp_noopDrawSelection(in:)))
+        else { return }
+        method_exchangeImplementations(original, replacement)
+    }()
+
+    static func sparkampSuppressSelectionPaint() { _ = suppressOnce }
+
+    @objc func sparkamp_noopDrawSelection(in dirtyRect: NSRect) {
+        // Intentionally empty: skin-coloured backgrounds are painted by SwiftUI.
+    }
+}
+
+// MARK: - Themed root modifier
+
+/// Applies the four root-level theming defaults (font, foreground, tint,
+/// preferred color scheme) so every SwiftUI view inside a WindowGroup
+/// inherits the active skin without repeating the modifiers per-view.
+///
+/// Observes `ThemeManager` so re-evaluation happens when the user switches
+/// skins.
+private struct ThemedRootModifier: ViewModifier {
+    @ObservedObject var themeManager: ThemeManager
+
+    func body(content: Content) -> some View {
+        let v = themeManager.currentVars
+        content
+            .font(v.bodyFont)
+            .foregroundStyle(v.textColor)
+            .tint(v.highlight)
+            .preferredColorScheme(v.prefersDark ? .dark : .light)
+    }
+}
+
+private extension View {
+    /// Apply the active skin's body font, text color, accent tint, and
+    /// preferred color scheme to a WindowGroup root view.
+    func themedRoot(_ themeManager: ThemeManager) -> some View {
+        modifier(ThemedRootModifier(themeManager: themeManager))
+    }
 }

@@ -123,6 +123,7 @@ struct MediaLibraryView: View {
     @ViewBuilder
     private var playlistsHeader: some View {
         let isSelected = (nav == .playlists)
+        let vars = themeManager.currentVars
         HStack(spacing: 0) {
             Button {
                 nav = .playlists
@@ -131,7 +132,7 @@ struct MediaLibraryView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "music.note").font(.system(size: 11))
                     Text("Playlists")
-                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                        .font(vars.bodyFont.weight(isSelected ? .semibold : .regular))
                     Spacer()
                 }
                 .foregroundStyle(isSelected ? theme.playlistCurrentText : theme.playlistText)
@@ -162,11 +163,12 @@ struct MediaLibraryView: View {
     @ViewBuilder
     private func sidebarRow(label: String, icon: String, target: MLNavigation) -> some View {
         let isSelected = (nav == target)
+        let vars = themeManager.currentVars
         Button { nav = target } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 11))
                 Text(label)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .font(vars.bodyFont.weight(isSelected ? .semibold : .regular))
                 Spacer()
             }
             .foregroundStyle(isSelected ? theme.playlistCurrentText : theme.playlistText)
@@ -184,6 +186,7 @@ struct MediaLibraryView: View {
     @ViewBuilder
     private func sidebarSubRow(pl: MLPlaylistItem) -> some View {
         let isSelected = (nav == .playlist(id: pl.id))
+        let vars = themeManager.currentVars
         Button { nav = .playlist(id: pl.id) } label: {
             HStack(spacing: 4) {
                 Spacer().frame(width: 18)
@@ -191,7 +194,7 @@ struct MediaLibraryView: View {
                     .font(.system(size: 9))
                     .opacity(0.65)
                 Text(pl.name)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .font(vars.bodyFont.weight(isSelected ? .semibold : .regular))
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer()
@@ -217,7 +220,7 @@ struct MediaLibraryView: View {
             Spacer()
 
             Button { model.mlRescanAll() } label: {
-                Label("Rescan", systemImage: "arrow.clockwise").font(.system(size: 11))
+                Label("Rescan", systemImage: "arrow.clockwise").font(themeManager.currentVars.bodyFont)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -247,12 +250,12 @@ struct MediaLibraryView: View {
                 Text(model.mlScanTotal > 0
                      ? "Scanning \(model.mlScanDone)/\(model.mlScanTotal)…"
                      : "Scanning…")
-                    .font(.system(size: 10))
+                    .font(themeManager.currentVars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
 
                 Button("Cancel") { model.mlCancelScan() }
                     .buttonStyle(.borderless)
-                    .font(.system(size: 10))
+                    .font(themeManager.currentVars.bodyFont)
                     .foregroundStyle(.red)
             }
             .padding(.horizontal, 12)
@@ -296,12 +299,12 @@ struct MediaLibraryView: View {
     private var filesBottomBar: some View {
         HStack {
             Text("\(model.mlTracks.count) tracks")
-                .font(.system(size: 10))
+                .font(themeManager.currentVars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
             Spacer()
             if !selection.isEmpty {
                 Text("\(selection.count) selected")
-                    .font(.system(size: 10))
+                    .font(themeManager.currentVars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Button("Add to Playlist") { model.mlAddToPlaylist(ids: Array(selection)) }
                     .buttonStyle(.borderedProminent)
@@ -323,7 +326,7 @@ struct MediaLibraryView: View {
                 .font(.system(size: 11))
             TextField("Search…", text: $searchQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(themeManager.currentVars.bodyFont)
                 .foregroundStyle(theme.playlistText)
                 .frame(width: 180)
                 .onChange(of: searchQuery) { _, _ in debounceSearch() }
@@ -434,7 +437,7 @@ private struct MLPlaylistManagement: View {
             // Header
             HStack {
                 Text("Saved Playlists")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(theme.vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
                 Button { newName = "New Playlist"; showingNew = true } label: {
@@ -454,7 +457,7 @@ private struct MLPlaylistManagement: View {
                 Spacer()
                 Text("No saved playlists yet.\nClick + to create one.")
                     .multilineTextAlignment(.center)
-                    .font(.system(size: 12))
+                    .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
             } else {
@@ -464,7 +467,7 @@ private struct MLPlaylistManagement: View {
                             .font(.system(size: 10))
                             .foregroundStyle(theme.playlistDurationText)
                         Text(pl.name)
-                            .font(.system(size: 12))
+                            .font(theme.vars.bodyFont)
                             .foregroundStyle(theme.playlistText)
                         Spacer()
                         Button {
@@ -495,6 +498,7 @@ private struct MLPlaylistManagement: View {
                 .listStyle(.plain)
                 .background(theme.playlistBg)
                 .scrollContentBackground(.hidden)
+                .tint(theme.vars.highlight)
             }
         }
         .background(theme.playlistBg)
@@ -574,7 +578,7 @@ private struct MLPlaylistEditor: View {
                     Button { nav = .playlists } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left").font(.system(size: 10))
-                            Text("Playlists").font(.system(size: 11))
+                            Text("Playlists").font(theme.vars.bodyFont)
                         }
                     }
                     .buttonStyle(.borderless)
@@ -583,14 +587,14 @@ private struct MLPlaylistEditor: View {
                     Divider().frame(height: 14).background(theme.windowBorder)
 
                     Text(playlistName)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(theme.vars.bodyFont.weight(.semibold))
                         .foregroundStyle(theme.playlistText)
                         .lineLimit(1)
 
                     Spacer()
 
                     Button { renameText = playlistName; showingRename = true } label: {
-                        Label("Rename", systemImage: "pencil").font(.system(size: 11))
+                        Label("Rename", systemImage: "pencil").font(theme.vars.bodyFont)
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(theme.playlistText)
@@ -611,7 +615,7 @@ private struct MLPlaylistEditor: View {
                 if !playlistPath.isEmpty {
                     HStack {
                         Text(playlistPath)
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(theme.vars.smallMonospaceFont)
                             .foregroundStyle(isManaged
                                 ? theme.playlistDurationText
                                 : Color.orange.opacity(0.8))
@@ -620,7 +624,7 @@ private struct MLPlaylistEditor: View {
                         Spacer()
                         if !isManaged {
                             Text("external")
-                                .font(.system(size: 9))
+                                .font(theme.vars.bodyFont)
                                 .foregroundStyle(Color.orange.opacity(0.8))
                         }
                     }
@@ -649,13 +653,13 @@ private struct MLPlaylistEditor: View {
                     .frame(width: 12)
 
                     Text(track.title.isEmpty ? track.filename : track.title)
-                        .font(.system(size: 12))
+                        .font(theme.vars.bodyFont)
                         .foregroundStyle(track.fileMissing ? Color.red : theme.playlistText)
                         .lineLimit(1)
 
                     if !track.artist.isEmpty {
                         Text("— \(track.artist)")
-                            .font(.system(size: 12))
+                            .font(theme.vars.bodyFont)
                             .foregroundStyle(theme.playlistDurationText)
                             .lineLimit(1)
                     }
@@ -663,27 +667,32 @@ private struct MLPlaylistEditor: View {
                     let total = Int(track.lengthSecs)
                     if total > 0 {
                         Text(String(format: "%d:%02d", total / 60, total % 60))
-                            .font(.system(size: 10))
+                            .font(theme.vars.smallMonospaceFont)
                             .foregroundStyle(theme.playlistDurationText)
                     }
                 }
-                .listRowBackground(theme.playlistBg)
+                .listRowBackground(
+                    trackSelection.contains(track.id)
+                    ? theme.playlistSelectedBg
+                    : theme.playlistBg
+                )
             }
             .listStyle(.plain)
             .background(theme.playlistBg)
             .scrollContentBackground(.hidden)
+            .tint(theme.vars.highlight)
 
             Divider().background(theme.windowBorder)
 
             // ── Controls ───────────────────────────────────────────────────────
             HStack(spacing: 8) {
                 Button { openFilePicker() } label: {
-                    Label("Add Files…", systemImage: "doc.badge.plus").font(.system(size: 11))
+                    Label("Add Files…", systemImage: "doc.badge.plus").font(theme.vars.bodyFont)
                 }
                 .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
                 Button { openFolderPicker() } label: {
-                    Label("Add Folder…", systemImage: "folder.badge.plus").font(.system(size: 11))
+                    Label("Add Folder…", systemImage: "folder.badge.plus").font(theme.vars.bodyFont)
                 }
                 .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
@@ -692,7 +701,7 @@ private struct MLPlaylistEditor: View {
                         editingTracks.removeAll { trackSelection.contains($0.id) }
                         trackSelection.removeAll()
                     } label: {
-                        Label("Remove", systemImage: "minus").font(.system(size: 11))
+                        Label("Remove", systemImage: "minus").font(theme.vars.bodyFont)
                     }
                     .buttonStyle(.borderless).foregroundStyle(.red)
                 }
@@ -702,7 +711,7 @@ private struct MLPlaylistEditor: View {
                         editingTracks.removeAll()
                         trackSelection.removeAll()
                     } label: {
-                        Label("Remove All", systemImage: "trash").font(.system(size: 11))
+                        Label("Remove All", systemImage: "trash").font(theme.vars.bodyFont)
                     }
                     .buttonStyle(.borderless).foregroundStyle(.red)
                 }
@@ -850,10 +859,21 @@ struct MLFilesTable: View {
 
     private func isVisible(_ bit: Int) -> Bool { (columnMask >> bit) & 1 == 1 }
 
+    /// Per-cell selection background.  AppKit's NSTableView selection paint
+    /// is disabled globally (see AppDelegate) so each cell paints its own
+    /// background using the active skin's highlight when the row is selected.
+    private func cellBg(_ row: MLTrack) -> Color {
+        selection.contains(row.id) ? theme.playlistSelectedBg : Color.clear
+    }
+
     var body: some View {
         Table(tracks, selection: $selection, sortOrder: $sortOrder,
               columnCustomization: $columnCustomization) {
-            TableColumn("") { row in statusCell(row) }.width(20)
+            TableColumn("") { row in
+                statusCell(row)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(cellBg(row))
+            }.width(20)
             columnsA()
             columnsB()
         }
@@ -881,6 +901,9 @@ struct MLFilesTable: View {
         .background(theme.playlistBg)
         .scrollContentBackground(.hidden)
         .foregroundStyle(theme.playlistText)
+        // Force the macOS Table selection highlight to use the skin highlight
+        // colour rather than the system accent.
+        .tint(theme.vars.highlight)
     }
 
     @ViewBuilder
@@ -907,54 +930,68 @@ struct MLFilesTable: View {
         if isVisible(0) {
             TableColumn("Title", value: \.title) { row in
                 Text(row.title.isEmpty ? row.filename : row.title)
-                    .font(.system(size: 12))
+                    .font(theme.vars.bodyFont)
                     .foregroundStyle(
                         row.fileMissing  ? Color.red
                         : row.scanned    ? theme.playlistText
                         : theme.playlistDurationText
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-title")
         }
         if isVisible(1) {
             TableColumn("Artist", value: \.artist) { row in
-                Text(row.artist).font(.system(size: 12))
+                Text(row.artist).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-artist")
         }
         if isVisible(2) {
             TableColumn("Album", value: \.album) { row in
-                Text(row.album).font(.system(size: 12))
+                Text(row.album).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-album")
         }
         if isVisible(3) {
             TableColumn("Album Artist", value: \.albumArtist) { row in
-                Text(row.albumArtist).font(.system(size: 12))
+                Text(row.albumArtist).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-albumartist")
         }
         if isVisible(4) {
             TableColumn("Genre", value: \.genre) { row in
-                Text(row.genre).font(.system(size: 12))
+                Text(row.genre).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-genre")
         }
         if isVisible(5) {
             TableColumn("Composer", value: \.composer) { row in
-                Text(row.composer).font(.system(size: 12))
+                Text(row.composer).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-composer")
         }
         if isVisible(6) {
             TableColumn("Year", value: \.year) { row in
-                Text(row.year > 0 ? "\(row.year)" : "").font(.system(size: 12))
+                Text(row.year > 0 ? "\(row.year)" : "").font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-year")
         }
@@ -965,26 +1002,34 @@ struct MLFilesTable: View {
         if isVisible(7) {
             TableColumn("Track #", value: \.trackNum) { row in
                 Text(row.trackNum > 0 ? "\(row.trackNum)" : "")
-                    .font(.system(size: 12)).foregroundStyle(theme.playlistText)
+                    .font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-tracknum")
         }
         if isVisible(8) {
             TableColumn("Disc #", value: \.discNum) { row in
                 Text(row.discNum > 0 ? "\(row.discNum)" : "")
-                    .font(.system(size: 12)).foregroundStyle(theme.playlistText)
+                    .font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-discnum")
         }
         if isVisible(9) {
             TableColumn("BPM", value: \.bpm) { row in
-                Text(row.bpm).font(.system(size: 12)).foregroundStyle(theme.playlistText)
+                Text(row.bpm).font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-bpm")
         }
         if isVisible(10) {
             TableColumn("Comment", value: \.comment) { row in
-                Text(row.comment).font(.system(size: 12)).foregroundStyle(theme.playlistText)
+                Text(row.comment).font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-comment")
         }
@@ -992,39 +1037,53 @@ struct MLFilesTable: View {
             TableColumn("Duration", value: \.lengthSecs) { row in
                 let total = Int(row.lengthSecs)
                 Text(total > 0 ? String(format: "%d:%02d", total / 60, total % 60) : "")
-                    .font(.system(size: 10)).foregroundStyle(theme.playlistDurationText)
+                    .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-duration")
         }
         if isVisible(12) {
             TableColumn("Bitrate", value: \.bitrate) { row in
                 Text(row.bitrate > 0 ? "\(row.bitrate) kbps" : "")
-                    .font(.system(size: 10)).foregroundStyle(theme.playlistDurationText)
+                    .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-bitrate")
         }
         if isVisible(13) {
             TableColumn("Filename", value: \.filename) { row in
                 Text(row.filename)
-                    .font(.system(size: 10)).foregroundStyle(theme.playlistDurationText)
+                    .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-filename")
         }
         if isVisible(14) {
             TableColumn("Play Count", value: \.playCount) { row in
                 Text(row.playCount > 0 ? "\(row.playCount)" : "")
-                    .font(.system(size: 10)).foregroundStyle(theme.playlistDurationText)
+                    .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
             }
             .customizationID("col-playcount")
         }
         if isVisible(15) {
             TableColumn("Art") { row in
-                if row.hasArt {
-                    Button("View") { onEvent(.viewArt(row.id)) }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 10))
-                        .foregroundStyle(theme.playlistCurrentText)
+                Group {
+                    if row.hasArt {
+                        Button("View") { onEvent(.viewArt(row.id)) }
+                            .buttonStyle(.borderless)
+                            .font(theme.vars.bodyFont)
+                            .foregroundStyle(theme.playlistCurrentText)
+                    } else {
+                        Color.clear
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .background(cellBg(row))
             }
             .customizationID("col-art")
         }

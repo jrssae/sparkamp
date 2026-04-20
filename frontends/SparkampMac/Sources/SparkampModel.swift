@@ -933,9 +933,13 @@ final class SparkampModel: ObservableObject {
         let cPaths:    [UnsafePointer<CChar>?]      = nsStrings.map { $0.utf8String }
         return cPaths.withUnsafeBufferPointer { buf in
             name.withCString { nameCStr in
-                sparkamp_ml_save_playlist_as(ctx, nameCStr,
-                                             UnsafeMutablePointer(mutating: buf.baseAddress),
-                                             Int32(trackPaths.count))
+                // Bridge `const char **` — the C function does not mutate the
+                // array, so re-cast our immutable buffer to a mutable pointer.
+                let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                    mutating: buf.baseAddress)
+                return sparkamp_ml_save_playlist_as(ctx, nameCStr,
+                                                    mutablePtr,
+                                                    Int32(trackPaths.count))
             }
         }
     }

@@ -6,7 +6,7 @@ import AppKit
 extension Color {
     /// Parse a CSS hex colour string: #rgb, #rrggbb, or #rrggbbaa.
     init?(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        let hex = hex.trimmingCharacters(in: CharacterSet(charactersIn: "# \t\n\r"))
         var rgb: UInt64 = 0
         guard Scanner(string: hex).scanHexInt64(&rgb) else { return nil }
         let r, g, b, a: Double
@@ -32,645 +32,699 @@ extension Color {
     }
 }
 
-// MARK: - ButtonImageSet
-
-/// Per-state images for a skinnable transport button.
-/// Any state can be nil — nil means fall back to the SF Symbol.
+// MARK: - ButtonImageSet (advanced template — currently unused)
+//
+// Retained as an empty type so that SkinButton's `t.buttonImages[id]` lookup
+// keeps compiling; the basic skin template never populates it. The advanced
+// CSS layer will revive these to support per-button PNG packs.
 struct ButtonImageSet {
     var normal:  NSImage?
     var hover:   NSImage?
     var pressed: NSImage?
 }
 
-// MARK: - SkinTheme
+// MARK: - SkinVars (mirrors Rust `SkinVars` 1:1)
+//
+// The 14 user-editable variables that drive all of Sparkamp's appearance.
+// Same layout and defaults as `src/skin.rs` so behavior is identical
+// across Linux (GTK4) and macOS for any given .css skin file.
 
-/// All visual values that drive the Sparkamp player UI.
-/// Values come from either a built-in theme or a user-provided CSS skin file.
+struct SkinVars {
+    var background:       Color
+    var textBackground:   Color
+    var textColor:        Color
+    var highlight:        Color
+    var brokenColor:      Color
+
+    var buttonColor:      Color
+    var buttonHover:      Color
+    var buttonActive:     Color
+    var buttonPressed:    Color
+    var buttonTextColor:  Color
+
+    var fontFamily:       String
+    var fontSize:         CGFloat
+    var fontSizeLarge:    CGFloat
+    var fontSizeMarquee:  CGFloat
+}
+
+extension SkinVars {
+    /// Built-in Dark defaults — mirrors `SkinVars::dark_defaults` in src/skin.rs.
+    static let dark = SkinVars(
+        background:       Color(hex: "#1a1a1a")!,
+        textBackground:   Color(hex: "#0c0c0c")!,
+        textColor:        Color(hex: "#cccccc")!,
+        highlight:        Color(hex: "#00ccff")!,
+        brokenColor:      Color(hex: "#ff7700")!,
+
+        buttonColor:      Color(hex: "#212121")!,
+        buttonHover:      Color(hex: "#2e2e2e")!,
+        buttonActive:     Color(hex: "#003e52")!,
+        buttonPressed:    Color(hex: "#3a3a3a")!,
+        buttonTextColor:  Color(hex: "#aaaaaa")!,
+
+        fontFamily:       "Inter, system-ui, sans-serif",
+        fontSize:         12,
+        fontSizeLarge:    32,
+        fontSizeMarquee:  14
+    )
+
+    /// Built-in Light defaults — mirrors `SkinVars::light_defaults` in src/skin.rs.
+    static let light = SkinVars(
+        background:       Color(hex: "#ededed")!,
+        textBackground:   Color(hex: "#f6f6f6")!,
+        textColor:        Color(hex: "#222222")!,
+        highlight:        Color(hex: "#1a6fc2")!,
+        brokenColor:      Color(hex: "#cc5500")!,
+
+        buttonColor:      Color(hex: "#dcdcdc")!,
+        buttonHover:      Color(hex: "#cccccc")!,
+        buttonActive:     Color(hex: "#cce5f7")!,
+        buttonPressed:    Color(hex: "#bbbbbb")!,
+        buttonTextColor:  Color(hex: "#333333")!,
+
+        fontFamily:       "Inter, system-ui, sans-serif",
+        fontSize:         12,
+        fontSizeLarge:    32,
+        fontSizeMarquee:  14
+    )
+}
+
+// MARK: - Derived values
+//
+// These mirror the derivations in `render_gtk_css` so a single SkinVars
+// produces visually identical output on both platforms.
+
+extension SkinVars {
+    /// 18%-opacity highlight for selected list/table rows.
+    var selectedRowBg: Color { highlight.opacity(0.18) }
+    /// 10%-opacity highlight for the currently-playing row.
+    var playingRowBg:  Color { highlight.opacity(0.10) }
+    /// 8%-opacity highlight for row hover states.
+    var hoverRowBg:    Color { highlight.opacity(0.08) }
+    /// 60%-opacity text for muted captions (duration column, volume %).
+    var dimTextColor:  Color { textColor.opacity(0.60) }
+
+    /// Auto-derived window/panel border — ±8% luminance vs background.
+    var borderColor: Color {
+        let (r, g, b) = SkinVars.rgb(of: background)
+        let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        let delta: CGFloat = lum < 0.5 ? 0.08 : -0.08
+        return Color(red:   max(0, min(1, r + delta)),
+                     green: max(0, min(1, g + delta)),
+                     blue:  max(0, min(1, b + delta)))
+    }
+
+    /// True when the background is dark enough to use Apple's dark scheme.
+    var prefersDark: Bool {
+        let (r, g, b) = SkinVars.rgb(of: background)
+        return (0.2126 * r + 0.7152 * g + 0.0722 * b) < 0.5
+    }
+
+    private static func rgb(of color: Color) -> (CGFloat, CGFloat, CGFloat) {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? .gray
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+        ns.getRed(&r, green: &g, blue: &b, alpha: nil)
+        return (r, g, b)
+    }
+}
+
+// MARK: - Font helpers
+
+extension SkinVars {
+    /// Body font (family + standard size). Inherited as the SwiftUI default.
+    var bodyFont: Font {
+        .custom(fontFamily, size: fontSize)
+    }
+    /// Marquee title font (family + marquee size, bold).
+    var marqueeFont: Font {
+        .custom(fontFamily, size: fontSizeMarquee).weight(.bold)
+    }
+    /// Large display font for the time index — always monospaced regardless of family.
+    var largeMonospaceFont: Font {
+        .system(size: fontSizeLarge, weight: .regular, design: .monospaced)
+    }
+    /// Standard monospaced font for duration columns and volume %.
+    var smallMonospaceFont: Font {
+        .system(size: fontSize, design: .monospaced)
+    }
+}
+
+// MARK: - AdvancedOverrides
+//
+// Reserved for the planned advanced-CSS layer. Each field corresponds 1:1
+// with a façade property on `SkinTheme`. In the basic-template release every
+// override is `nil`, so the façade falls through to derivations from
+// `SkinVars`. When the advanced parser lands, populating any field here
+// becomes the single change required to override the corresponding UI element
+// — view code does not change, derivations stay intact.
+
+struct AdvancedOverrides {
+    var background:           Color? = nil
+    var windowBorder:         Color? = nil
+
+    var lcdBackground:        Color? = nil
+    var lcdBorder:            Color? = nil
+    var titleText:            Color? = nil
+    var artistText:           Color? = nil
+    var timeText:             Color? = nil
+
+    var transportBg:          Color? = nil
+    var transportBorder:      Color? = nil
+    var transportText:        Color? = nil
+    var transportHoverBg:     Color? = nil
+    var transportActiveBg:    Color? = nil
+    var playButtonBg:         Color? = nil
+    var playButtonText:       Color? = nil
+    var playButtonBorder:     Color? = nil
+
+    var seekTrack:            Color? = nil
+    var seekFill:             Color? = nil
+    var seekThumb:            Color? = nil
+
+    var volumeTrack:          Color? = nil
+    var volumeFill:           Color? = nil
+    var volumeThumb:          Color? = nil
+
+    var playlistBg:           Color? = nil
+    var playlistRowBg:        Color? = nil
+    var playlistText:         Color? = nil
+    var playlistCurrentText:  Color? = nil
+    var playlistCurrentBg:    Color? = nil
+    var playlistSelectedBg:   Color? = nil
+    var playlistBrokenText:   Color? = nil
+    var playlistDurationText: Color? = nil
+
+    var modeBtnBg:            Color? = nil
+    var modeBtnBorder:        Color? = nil
+    var modeBtnText:          Color? = nil
+    var modeBtnActiveBg:      Color? = nil
+    var modeBtnActiveText:    Color? = nil
+
+    var logoText:             Color? = nil
+    var logoSubtext:          Color? = nil
+}
+
+// MARK: - SkinTheme façade
+//
+// Thin wrapper over `SkinVars` that exposes the legacy property names used
+// throughout the macOS frontend. Each computed property returns the matching
+// `AdvancedOverrides` slot if set, otherwise the derivation from `vars`.
+//
+// The façade exists for two reasons:
+//  1. Property granularity — view code keeps using `theme.titleText` instead
+//     of being rewritten to derive every site from raw `vars.highlight` etc.
+//  2. Forward compatibility — the advanced CSS layer will populate
+//     `overrides`; view code requires zero further changes.
+
 struct SkinTheme {
     var name: String
+    var vars: SkinVars
+    var overrides: AdvancedOverrides
 
-    // ── Player window chrome ───────────────────────────────────────────────
-    var background:   Color
-    var windowBorder: Color
-
-    // ── LCD / now-playing panel ────────────────────────────────────────────
-    var lcdBackground: Color
-    var lcdBorder:     Color
-    var titleText:     Color
-    var artistText:    Color
-    var timeText:      Color
-
-    // ── Transport buttons ──────────────────────────────────────────────────
-    var transportBg:       Color
-    var transportBorder:   Color
-    var transportText:     Color
-    var transportHoverBg:  Color
-    var transportActiveBg: Color
-    var playButtonBg:      Color
-    var playButtonText:    Color
-    var playButtonBorder:  Color
-
-    // ── Seek bar ───────────────────────────────────────────────────────────
-    var seekTrack: Color
-    var seekFill:  Color
-    var seekThumb: Color
-
-    // ── Volume slider ──────────────────────────────────────────────────────
-    var volumeTrack: Color
-    var volumeFill:  Color
-    var volumeThumb: Color
-
-    // ── Playlist window ────────────────────────────────────────────────────
-    var playlistBg:           Color
-    var playlistRowBg:        Color
-    var playlistText:         Color
-    var playlistCurrentText:  Color
-    var playlistCurrentBg:    Color
-    var playlistSelectedBg:   Color
-    var playlistBrokenText:   Color
-    var playlistDurationText: Color
-
-    // ── Mode buttons (repeat / shuffle / playlist toggle) ──────────────────
-    var modeBtnBg:         Color
-    var modeBtnBorder:     Color
-    var modeBtnText:       Color
-    var modeBtnActiveBg:   Color
-    var modeBtnActiveText: Color
-
-    // ── Logo ───────────────────────────────────────────────────────────────
-    var logoText:    Color
-    var logoSubtext: Color
-
-    // ── Button image overrides (nil entries → use SF Symbol) ───────────────
-    // Keys: "prev", "rewind", "play", "pause", "stop", "ffwd", "next"
+    /// Per-button image overrides. Empty in the basic template; populated by
+    /// the advanced layer. SkinButton consults this map and falls back to
+    /// SF Symbols when an entry is missing.
     var buttonImages: [String: ButtonImageSet] = [:]
 
-    // Whether the theme counts as "dark" for preferredColorScheme.
-    var prefersDark: Bool = true
+    init(name: String,
+         vars: SkinVars,
+         overrides: AdvancedOverrides = AdvancedOverrides(),
+         buttonImages: [String: ButtonImageSet] = [:]) {
+        self.name = name
+        self.vars = vars
+        self.overrides = overrides
+        self.buttonImages = buttonImages
+    }
+
+    // ── Window chrome ──────────────────────────────────────────────────────
+    var background:   Color { overrides.background   ?? vars.background }
+    var windowBorder: Color { overrides.windowBorder ?? vars.borderColor }
+
+    // ── LCD / now-playing panel ────────────────────────────────────────────
+    var lcdBackground: Color { overrides.lcdBackground ?? vars.textBackground }
+    var lcdBorder:     Color { overrides.lcdBorder     ?? vars.borderColor }
+    var titleText:     Color { overrides.titleText     ?? vars.highlight }
+    var artistText:    Color { overrides.artistText    ?? vars.dimTextColor }
+    var timeText:      Color { overrides.timeText      ?? vars.textColor }
+
+    // ── Transport buttons ──────────────────────────────────────────────────
+    var transportBg:       Color { overrides.transportBg       ?? vars.buttonColor }
+    var transportBorder:   Color { overrides.transportBorder   ?? vars.borderColor }
+    var transportText:     Color { overrides.transportText     ?? vars.buttonTextColor }
+    var transportHoverBg:  Color { overrides.transportHoverBg  ?? vars.buttonHover }
+    var transportActiveBg: Color { overrides.transportActiveBg ?? vars.buttonPressed }
+    var playButtonBg:      Color { overrides.playButtonBg      ?? vars.buttonActive }
+    var playButtonText:    Color { overrides.playButtonText    ?? vars.buttonTextColor }
+    var playButtonBorder:  Color { overrides.playButtonBorder  ?? vars.highlight }
+
+    // ── Seek bar ───────────────────────────────────────────────────────────
+    var seekTrack: Color { overrides.seekTrack ?? vars.textBackground }
+    var seekFill:  Color { overrides.seekFill  ?? vars.highlight }
+    var seekThumb: Color { overrides.seekThumb ?? vars.highlight }
+
+    // ── Volume slider ──────────────────────────────────────────────────────
+    var volumeTrack: Color { overrides.volumeTrack ?? vars.textBackground }
+    var volumeFill:  Color { overrides.volumeFill  ?? vars.highlight }
+    var volumeThumb: Color { overrides.volumeThumb ?? vars.highlight }
+
+    // ── Playlist window ────────────────────────────────────────────────────
+    var playlistBg:           Color { overrides.playlistBg           ?? vars.textBackground }
+    var playlistRowBg:        Color { overrides.playlistRowBg        ?? .clear }
+    var playlistText:         Color { overrides.playlistText         ?? vars.textColor }
+    var playlistCurrentText:  Color { overrides.playlistCurrentText  ?? vars.highlight }
+    var playlistCurrentBg:    Color { overrides.playlistCurrentBg    ?? vars.playingRowBg }
+    var playlistSelectedBg:   Color { overrides.playlistSelectedBg   ?? vars.selectedRowBg }
+    var playlistBrokenText:   Color { overrides.playlistBrokenText   ?? vars.brokenColor }
+    var playlistDurationText: Color { overrides.playlistDurationText ?? vars.dimTextColor }
+
+    // ── Mode buttons ───────────────────────────────────────────────────────
+    var modeBtnBg:         Color { overrides.modeBtnBg         ?? vars.buttonColor }
+    var modeBtnBorder:     Color { overrides.modeBtnBorder     ?? vars.borderColor }
+    var modeBtnText:       Color { overrides.modeBtnText       ?? vars.buttonTextColor }
+    var modeBtnActiveBg:   Color { overrides.modeBtnActiveBg   ?? vars.buttonActive }
+    var modeBtnActiveText: Color { overrides.modeBtnActiveText ?? vars.highlight }
+
+    // ── Logo ───────────────────────────────────────────────────────────────
+    var logoText:    Color { overrides.logoText    ?? vars.highlight }
+    var logoSubtext: Color { overrides.logoSubtext ?? vars.dimTextColor }
+
+    // ── Whether this skin counts as "dark" for preferredColorScheme ─────────
+    var prefersDark: Bool { vars.prefersDark }
 }
 
-// MARK: - Built-in themes
+// MARK: - CSSParser
+//
+// Parses a Sparkamp skin CSS file (`:root { --sp-*: ...; }`) into a SkinVars.
+// Missing or malformed variables fall back to Dark defaults per-field.
+// Parsing never throws — a completely empty input yields `.dark`.
 
-extension SkinTheme {
-
-    // ── Dark (Winamp-inspired cyan-on-black) ───────────────────────────────
-    static let defaultDark = SkinTheme(
-        name: "Sparkamp Dark",
-        background:        Color(hex: "#1a1a1a")!,
-        windowBorder:      Color(hex: "#2a2a2a")!,
-        lcdBackground:     Color(hex: "#080c0e")!,
-        lcdBorder:         Color(hex: "#1e3040")!,
-        titleText:         Color(hex: "#00ccff")!,
-        artistText:        Color(hex: "#6a8fa0")!,
-        timeText:          Color(hex: "#00ccff")!,
-        transportBg:       Color(hex: "#212121")!,
-        transportBorder:   Color(hex: "#363636")!,
-        transportText:     Color(hex: "#aaaaaa")!,
-        transportHoverBg:  Color(hex: "#2e2e2e")!,
-        transportActiveBg: Color(hex: "#3a3a3a")!,
-        playButtonBg:      Color(hex: "#002e3e")!,
-        playButtonText:    Color(hex: "#00ccff")!,
-        playButtonBorder:  Color(hex: "#005577")!,
-        seekTrack:         Color(hex: "#0d1a1f")!,
-        seekFill:          Color(hex: "#007799")!,
-        seekThumb:         Color(hex: "#00ccff")!,
-        volumeTrack:       Color(hex: "#111111")!,
-        volumeFill:        Color(hex: "#004455")!,
-        volumeThumb:       Color(hex: "#00aacc")!,
-        playlistBg:        Color(hex: "#101010")!,
-        playlistRowBg:     .clear,
-        playlistText:      Color(hex: "#bbbbbb")!,
-        playlistCurrentText: Color(hex: "#00ccff")!,
-        playlistCurrentBg:   Color(hex: "#001a10")!,
-        playlistSelectedBg:  Color(hex: "#002233")!,
-        playlistBrokenText:  Color(hex: "#ff7700")!,
-        playlistDurationText: Color(hex: "#3d5566")!,
-        modeBtnBg:         Color(hex: "#1c1c1c")!,
-        modeBtnBorder:     Color(hex: "#303030")!,
-        modeBtnText:       Color(hex: "#666666")!,
-        modeBtnActiveBg:   Color(hex: "#002e3e")!,
-        modeBtnActiveText: Color(hex: "#00ccff")!,
-        logoText:          Color(hex: "#00ccff")!,
-        logoSubtext:       Color(hex: "#005566")!,
-        buttonImages: [:],
-        prefersDark: true
-    )
-
-    // ── Light (clean macOS-native, blue accent) ────────────────────────────
-    static let defaultLight = SkinTheme(
-        name: "Sparkamp Light",
-        background:        Color(hex: "#ededed")!,
-        windowBorder:      Color(hex: "#c8c8c8")!,
-        lcdBackground:     Color(hex: "#f5f5f5")!,
-        lcdBorder:         Color(hex: "#cccccc")!,
-        titleText:         Color(hex: "#004e8a")!,
-        artistText:        Color(hex: "#5577aa")!,
-        timeText:          Color(hex: "#004e8a")!,
-        transportBg:       Color(hex: "#dcdcdc")!,
-        transportBorder:   Color(hex: "#b8b8b8")!,
-        transportText:     Color(hex: "#444444")!,
-        transportHoverBg:  Color(hex: "#cccccc")!,
-        transportActiveBg: Color(hex: "#bbbbbb")!,
-        playButtonBg:      Color(hex: "#cce5f7")!,
-        playButtonText:    Color(hex: "#004e8a")!,
-        playButtonBorder:  Color(hex: "#88bbdd")!,
-        seekTrack:         Color(hex: "#cccccc")!,
-        seekFill:          Color(hex: "#3388bb")!,
-        seekThumb:         Color(hex: "#004e8a")!,
-        volumeTrack:       Color(hex: "#d4d4d4")!,
-        volumeFill:        Color(hex: "#88bbdd")!,
-        volumeThumb:       Color(hex: "#3388bb")!,
-        playlistBg:        Color(hex: "#f0f0f0")!,
-        playlistRowBg:     .clear,
-        playlistText:      Color(hex: "#333333")!,
-        playlistCurrentText: Color(hex: "#004e8a")!,
-        playlistCurrentBg:   Color(hex: "#ddf4e8")!,
-        playlistSelectedBg:  Color(hex: "#cce0f4")!,
-        playlistBrokenText:  Color(hex: "#cc5500")!,
-        playlistDurationText: Color(hex: "#999999")!,
-        modeBtnBg:         Color(hex: "#e0e0e0")!,
-        modeBtnBorder:     Color(hex: "#bbbbbb")!,
-        modeBtnText:       Color(hex: "#888888")!,
-        modeBtnActiveBg:   Color(hex: "#bbdaf0")!,
-        modeBtnActiveText: Color(hex: "#004e8a")!,
-        logoText:          Color(hex: "#004e8a")!,
-        logoSubtext:       Color(hex: "#88bbdd")!,
-        buttonImages: [:],
-        prefersDark: false
-    )
-
-    // ── Built-in CSS source — also the reference skin template ───────────
-    /// The canonical Sparkamp dark skin in the shared portable format.
-    /// This is the same content as `frontends/gtk/style_dark.css` up to the
-    /// `/* GTK4 structural rules */` separator.  Skins built from this template
-    /// work on Linux (GTK4) and macOS without modification.
-    static let darkCSS = """
-/* Sparkamp Dark Skin — portable Sparkamp Skin Format
- *
- * This file works on ALL Sparkamp frontends:
- *   • Linux  (GTK4) — :root variables are parsed by Sparkamp and translated
- *                      into GTK CSS overrides automatically.
- *   • macOS         — :root variables are parsed directly by the Swift frontend.
- *
- * To install: copy to ~/.config/sparkamp/skins/myskin.css
- *             (or load via the right-click menu on the player window)
- *
- * Button images (optional) — place PNGs next to the CSS file:
- *   .sparkamp-button-prev   { background-image: url("buttons/prev.png"); }
- *   .sparkamp-button-prev:hover   { background-image: url("buttons/prev_hover.png"); }
- *   .sparkamp-button-prev:active  { background-image: url("buttons/prev_pressed.png"); }
- *   .sparkamp-button-rewind { background-image: url("buttons/rewind.png"); }
- *   .sparkamp-button-play   { background-image: url("buttons/play.png"); }
- *   .sparkamp-button-play:hover   { background-image: url("buttons/play_hover.png"); }
- *   .sparkamp-button-play:active  { background-image: url("buttons/play_pressed.png"); }
- *   .sparkamp-button-pause  { background-image: url("buttons/pause.png"); }
- *   .sparkamp-button-stop   { background-image: url("buttons/stop.png"); }
- *   .sparkamp-button-ffwd   { background-image: url("buttons/ffwd.png"); }
- *   .sparkamp-button-next   { background-image: url("buttons/next.png"); }
- *
- * Missing button images fall back to built-in SF Symbols (macOS) or
- * the text label (Linux) — partial sets are fully supported.
- */
-
-:root {
-    /* ── Window chrome ────────────────────────────────────────────────── */
-    --sparkamp-background:              #1a1a1a;
-    --sparkamp-window-border:           #2a2a2a;
-
-    /* ── LCD / Now-Playing panel ──────────────────────────────────────── */
-    --sparkamp-lcd-background:          #080c0e;
-    --sparkamp-lcd-border:              #1e3040;
-    --sparkamp-title-text:              #00ccff;
-    --sparkamp-artist-text:             #6a8fa0;
-    --sparkamp-time-text:               #00ccff;
-
-    /* ── Transport buttons ────────────────────────────────────────────── */
-    --sparkamp-transport-bg:            #212121;
-    --sparkamp-transport-border:        #363636;
-    --sparkamp-transport-text:          #aaaaaa;
-    --sparkamp-transport-hover-bg:      #2e2e2e;
-    --sparkamp-transport-active-bg:     #3a3a3a;
-    --sparkamp-play-button-bg:          #002e3e;
-    --sparkamp-play-button-text:        #00ccff;
-    --sparkamp-play-button-border:      #005577;
-
-    /* ── Seek bar ─────────────────────────────────────────────────────── */
-    --sparkamp-seek-track:              #0d1a1f;
-    --sparkamp-seek-fill:               #007799;
-    --sparkamp-seek-thumb:              #00ccff;
-
-    /* ── Volume slider ────────────────────────────────────────────────── */
-    --sparkamp-volume-track:            #111111;
-    --sparkamp-volume-fill:             #004455;
-    --sparkamp-volume-thumb:            #00aacc;
-
-    /* ── Playlist ─────────────────────────────────────────────────────── */
-    --sparkamp-playlist-bg:             #101010;
-    --sparkamp-playlist-text:           #bbbbbb;
-    --sparkamp-playlist-current-text:   #00ccff;
-    --sparkamp-playlist-current-bg:     #001a10;
-    --sparkamp-playlist-selected-bg:    #002233;
-    --sparkamp-playlist-broken-text:    #ff7700;
-    --sparkamp-playlist-duration-text:  #3d5566;
-
-    /* ── Mode buttons (repeat / shuffle / playlist toggle) ────────────── */
-    --sparkamp-mode-btn-bg:             #1c1c1c;
-    --sparkamp-mode-btn-border:         #303030;
-    --sparkamp-mode-btn-text:           #666666;
-    --sparkamp-mode-btn-active-bg:      #002e3e;
-    --sparkamp-mode-btn-active-text:    #00ccff;
-
-    /* ── Logo (macOS only — Linux uses a raster logo image) ───────────── */
-    --sparkamp-logo-text:               #00ccff;
-    --sparkamp-logo-subtext:            #005566;
-}
-"""
-}
-
-// MARK: - CSS Parser
-
-/// Parses a simplified CSS skin file into a SkinTheme.
-///
-/// Supported syntax:
-/// - `:root { --variable: value; }` blocks for colour overrides.
-/// - `.button-id { background-image: url("path.png"); }` with optional
-///   `:hover` / `:active` pseudo-class suffixes for button image overrides.
-///
-/// All other CSS constructs are silently ignored.
 enum CSSParser {
 
-    /// Parse `css` string into a SkinTheme, applying discovered overrides
-    /// on top of `base`. `skinDir` is the directory that contains the CSS
-    /// file, used to resolve relative image paths.
-    static func parse(css: String, skinDir: URL?, base: SkinTheme) -> SkinTheme {
-        var theme = base
+    static func parse(css: String) -> SkinVars {
+        var vars = SkinVars.dark
         let stripped = stripComments(css)
-        let rules = extractRules(stripped)
-
-        for (rawSelector, declarations) in rules {
-            let selector = rawSelector.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if selector == ":root" {
-                let vars = parseDeclarations(declarations)
-                applyVariables(vars, to: &theme)
-
-            } else if selector.hasPrefix(".sparkamp-button-") {
-                // e.g. ".sparkamp-button-play", ".sparkamp-button-play:hover"
-                let inner = String(selector.dropFirst(17))
-                let colonIdx = inner.firstIndex(of: ":")
-                let buttonId = colonIdx.map { String(inner[..<$0]) } ?? inner
-                let state    = colonIdx.map { String(inner[inner.index(after: $0)...]) } ?? "normal"
-
-                guard !buttonId.isEmpty, let urlStr = parseImageURL(declarations),
-                      let skinDir else { continue }
-                let imgURL = skinDir.appendingPathComponent(urlStr)
-                guard let img = NSImage(contentsOf: imgURL) else { continue }
-
-                var set = theme.buttonImages[buttonId] ?? ButtonImageSet()
-                switch state {
-                case "hover":  set.hover   = img
-                case "active": set.pressed = img
-                default:       set.normal  = img
-                }
-                theme.buttonImages[buttonId] = set
-            }
+        guard let block = extractRootBlock(stripped) else { return vars }
+        for statement in block.components(separatedBy: ";") {
+            let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("--sp-") else { continue }
+            let parts = trimmed.split(separator: ":", maxSplits: 1)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard parts.count == 2 else { continue }
+            apply(key: parts[0], raw: parts[1], to: &vars)
         }
-        return theme
+        return vars
     }
 
     /// Convenience: load CSS from `url` and parse it.
-    static func parse(url: URL, base: SkinTheme) -> SkinTheme? {
+    static func load(url: URL) -> SkinVars? {
         guard let css = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return parse(css: css, skinDir: url.deletingLastPathComponent(), base: base)
+        return parse(css: css)
     }
 
-    // MARK: Private helpers
+    /// Lightweight check: does the file contain a `:root { }` block?
+    /// Used by `addUserSkin` to reject obviously-wrong CSS files.
+    static func hasRootBlock(_ css: String) -> Bool {
+        extractRootBlock(stripComments(css)) != nil
+    }
+
+    // MARK: Private
 
     private static func stripComments(_ css: String) -> String {
         var out = ""
-        var idx = css.startIndex
-        while idx < css.endIndex {
-            let next = css.index(after: idx)
-            if css[idx] == "/" && next < css.endIndex && css[next] == "*" {
-                if let range = css.range(of: "*/", range: css.index(idx, offsetBy: 2)..<css.endIndex) {
-                    idx = range.upperBound
-                } else { break }
-            } else {
-                out.append(css[idx])
-                idx = next
+        var i = css.startIndex
+        while i < css.endIndex {
+            let next = css.index(after: i)
+            if css[i] == "/", next < css.endIndex, css[next] == "*" {
+                if let r = css.range(of: "*/", range: css.index(i, offsetBy: 2)..<css.endIndex) {
+                    i = r.upperBound
+                    continue
+                } else {
+                    break
+                }
+            }
+            out.append(css[i])
+            i = next
+        }
+        return out
+    }
+
+    private static func extractRootBlock(_ css: String) -> String? {
+        guard let rootRange = css.range(of: ":root") else { return nil }
+        let afterRoot = css[rootRange.upperBound...]
+        guard let openRel = afterRoot.firstIndex(of: "{") else { return nil }
+        let afterOpen = afterRoot[afterRoot.index(after: openRel)...]
+        guard let closeRel = afterOpen.firstIndex(of: "}") else { return nil }
+        return String(afterOpen[..<closeRel])
+    }
+
+    private static func apply(key: String, raw: String, to vars: inout SkinVars) {
+        switch key {
+        case "--sp-background":        if let c = Color(hex: raw) { vars.background       = c }
+        case "--sp-text-background":   if let c = Color(hex: raw) { vars.textBackground   = c }
+        case "--sp-text-color":        if let c = Color(hex: raw) { vars.textColor        = c }
+        case "--sp-highlight":         if let c = Color(hex: raw) { vars.highlight        = c }
+        case "--sp-broken-color":      if let c = Color(hex: raw) { vars.brokenColor      = c }
+        case "--sp-button-color":      if let c = Color(hex: raw) { vars.buttonColor      = c }
+        case "--sp-button-hover":      if let c = Color(hex: raw) { vars.buttonHover      = c }
+        case "--sp-button-active":     if let c = Color(hex: raw) { vars.buttonActive     = c }
+        case "--sp-button-pressed":    if let c = Color(hex: raw) { vars.buttonPressed    = c }
+        case "--sp-button-text-color": if let c = Color(hex: raw) { vars.buttonTextColor  = c }
+        case "--sp-font-family":       vars.fontFamily = stripQuotes(raw)
+        case "--sp-font-size":         if let n = parsePx(raw) { vars.fontSize        = n }
+        case "--sp-font-size-large":   if let n = parsePx(raw) { vars.fontSizeLarge   = n }
+        case "--sp-font-size-marquee": if let n = parsePx(raw) { vars.fontSizeMarquee = n }
+        default: break
+        }
+    }
+
+    private static func stripQuotes(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.count >= 2,
+           (t.first == "\"" && t.last == "\"") || (t.first == "'" && t.last == "'") {
+            return String(t.dropFirst().dropLast())
+        }
+        return t
+    }
+
+    private static func parsePx(_ s: String) -> CGFloat? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        let num = t.hasSuffix("px") ? String(t.dropLast(2)) : t
+        return Double(num.trimmingCharacters(in: .whitespacesAndNewlines)).map { CGFloat($0) }
+    }
+}
+
+// MARK: - ThemeManager
+//
+// Owns the active skin, persists the user's choice, and exposes a registry
+// of available skins (built-ins + user-dir CSS files, minus hidden entries).
+// API mirrors the Rust `skin.rs` surface so cross-platform reasoning stays
+// straightforward.
+
+@MainActor
+final class ThemeManager: ObservableObject {
+
+    // MARK: Published state
+    @Published private(set) var currentVars: SkinVars
+    @Published private(set) var activeSkin:  String   // "dark" | "light" | user stem
+
+    // MARK: Storage keys
+    private static let activeSkinKey  = "sparkamp.activeSkin"
+    private static let hiddenSkinsKey = "sparkamp.hiddenSkins"
+
+    // MARK: Init
+    init() {
+        let saved = UserDefaults.standard.string(forKey: Self.activeSkinKey) ?? "dark"
+        self.activeSkin  = saved
+        self.currentVars = Self.load(skinName: saved) ?? .dark
+    }
+
+    // MARK: Façade access
+    /// Wrap currentVars in a SkinTheme façade for legacy view code.
+    /// Computed on each read — `vars` is the source of truth.
+    var currentTheme: SkinTheme {
+        SkinTheme(name: activeSkin, vars: currentVars)
+    }
+
+    /// Colour scheme hint for SwiftUI's `.preferredColorScheme` modifier.
+    var preferredColorScheme: ColorScheme {
+        currentVars.prefersDark ? .dark : .light
+    }
+
+    // MARK: Skin registry
+
+    struct SkinEntry: Identifiable, Equatable {
+        var name: String             // "dark", "light", or user stem
+        var displayName: String
+        var isBuiltin: Bool
+        var path: URL?
+        var id: String { name }
+    }
+
+    /// Built-ins + user-dir `.css` files, minus hidden entries.
+    /// Built-ins are never hidden.
+    func listSkins() -> [SkinEntry] {
+        var out: [SkinEntry] = [
+            SkinEntry(name: "dark",  displayName: "Dark",  isBuiltin: true, path: nil),
+            SkinEntry(name: "light", displayName: "Light", isBuiltin: true, path: nil),
+        ]
+        let dir = Self.userSkinsDir()
+        let hidden = Set((UserDefaults.standard.stringArray(forKey: Self.hiddenSkinsKey) ?? [])
+            .map { $0.lowercased() })
+        if let urls = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) {
+            let sorted = urls
+                .filter { $0.pathExtension.lowercased() == "css" }
+                .sorted { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }
+            for url in sorted {
+                let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+                if hidden.contains(stem) { continue }
+                out.append(SkinEntry(
+                    name: stem,
+                    displayName: titlecaseSkinStem(stem),
+                    isBuiltin: false,
+                    path: url))
             }
         }
         return out
     }
 
-    private static func extractRules(_ css: String) -> [(String, String)] {
-        var rules: [(String, String)] = []
-        var rest = css[...]
-        while let open = rest.firstIndex(of: "{") {
-            let selector = String(rest[..<open])
-            rest = rest[rest.index(after: open)...]
-            guard let close = rest.firstIndex(of: "}") else { break }
-            let decls = String(rest[..<close])
-            rest = rest[rest.index(after: close)...]
-            rules.append((selector, decls))
+    // MARK: Active skin
+
+    func setActiveSkin(_ name: String) {
+        let lowered = name.lowercased()
+        let vars = Self.load(skinName: lowered) ?? .dark
+        self.activeSkin  = lowered
+        self.currentVars = vars
+        UserDefaults.standard.set(lowered, forKey: Self.activeSkinKey)
+    }
+
+    // MARK: Add / Hide
+
+    enum AddSkinError: Error {
+        case unreadable
+        case noRootBlock
+        case copyFailed
+    }
+
+    @discardableResult
+    func addUserSkin(from source: URL) -> Result<SkinEntry, AddSkinError> {
+        let dir = Self.userSkinsDir()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        guard let css = try? String(contentsOf: source, encoding: .utf8) else {
+            return .failure(.unreadable)
         }
-        return rules
-    }
-
-    private static func parseDeclarations(_ block: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for statement in block.components(separatedBy: ";") {
-            let parts = statement.split(separator: ":", maxSplits: 1)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { continue }
-            result[parts[0]] = parts[1]
+        guard CSSParser.hasRootBlock(css) else {
+            return .failure(.noRootBlock)
         }
-        return result
+
+        let stem = source.deletingPathExtension().lastPathComponent.lowercased()
+        let (finalStem, dest) = uniquify(dir: dir, stem: stem)
+        do {
+            try FileManager.default.copyItem(at: source, to: dest)
+        } catch {
+            return .failure(.copyFailed)
+        }
+
+        // Un-hide if it was previously hidden.
+        var hidden = UserDefaults.standard.stringArray(forKey: Self.hiddenSkinsKey) ?? []
+        hidden.removeAll { $0.caseInsensitiveCompare(finalStem) == .orderedSame }
+        UserDefaults.standard.set(hidden, forKey: Self.hiddenSkinsKey)
+
+        return .success(SkinEntry(
+            name: finalStem,
+            displayName: titlecaseSkinStem(finalStem),
+            isBuiltin: false,
+            path: dest))
     }
 
-    private static func parseImageURL(_ declarations: String) -> String? {
-        // Matches: background-image: url("some/path.png") or url('...')
-        let pattern = #"background-image\s*:\s*url\s*\(\s*['"](.+?)['"]\s*\)"#
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let nsStr = declarations as NSString
-        guard let m = re.firstMatch(in: declarations, range: NSRange(location: 0, length: nsStr.length)) else { return nil }
-        let range = m.range(at: 1)
-        guard range.location != NSNotFound else { return nil }
-        return nsStr.substring(with: range)
+    /// Remove a skin.  For user-installed skins this DELETES the `.css` file
+    /// from disk so the next add of the same source file is treated as brand
+    /// new (no "-2"/"-3" suffix).  Built-in skins (dark/light) have no file
+    /// — their CSS is embedded — so they are hidden via UserDefaults instead.
+    ///
+    /// This intentionally diverges from Sparkamp's general "removing from UI
+    /// must not delete from disk" policy: a user skin file lives entirely in
+    /// our managed `~/Library/Application Support/Sparkamp/skins/` directory
+    /// and is functionally equivalent to a registry entry — keeping the file
+    /// after Remove just creates name-collision noise on re-add.
+    func hideSkin(_ name: String) {
+        let lowered = name.lowercased()
+
+        // Drop active-skin pointer first so we don't keep a deleted file selected.
+        if activeSkin == lowered {
+            setActiveSkin("dark")
+        }
+
+        // User skin → delete the file outright; clear any stale hidden entry.
+        let userFile = Self.userSkinsDir().appendingPathComponent("\(lowered).css")
+        if FileManager.default.fileExists(atPath: userFile.path) {
+            try? FileManager.default.removeItem(at: userFile)
+            var hidden = UserDefaults.standard.stringArray(forKey: Self.hiddenSkinsKey) ?? []
+            hidden.removeAll { $0.caseInsensitiveCompare(lowered) == .orderedSame }
+            UserDefaults.standard.set(hidden, forKey: Self.hiddenSkinsKey)
+            return
+        }
+
+        // Built-in (no file on disk) → hide via UserDefaults.  Dark stays
+        // un-hideable so the app always has a fallback skin.
+        guard lowered != "dark" else { return }
+        var hidden = UserDefaults.standard.stringArray(forKey: Self.hiddenSkinsKey) ?? []
+        if !hidden.contains(where: { $0.caseInsensitiveCompare(lowered) == .orderedSame }) {
+            hidden.append(lowered)
+            UserDefaults.standard.set(hidden, forKey: Self.hiddenSkinsKey)
+        }
     }
 
-    private static func applyVariables(_ vars: [String: String], to theme: inout SkinTheme) {
-        func c(_ key: String) -> Color? { vars[key].flatMap { Color(hex: $0) } }
-        if let v = c("--sparkamp-background")             { theme.background        = v }
-        if let v = c("--sparkamp-window-border")           { theme.windowBorder      = v }
-        if let v = c("--sparkamp-lcd-background")          { theme.lcdBackground     = v }
-        if let v = c("--sparkamp-lcd-border")              { theme.lcdBorder         = v }
-        if let v = c("--sparkamp-title-text")              { theme.titleText         = v }
-        if let v = c("--sparkamp-artist-text")             { theme.artistText        = v }
-        if let v = c("--sparkamp-time-text")               { theme.timeText          = v }
-        if let v = c("--sparkamp-transport-bg")            { theme.transportBg       = v }
-        if let v = c("--sparkamp-transport-border")        { theme.transportBorder   = v }
-        if let v = c("--sparkamp-transport-text")          { theme.transportText     = v }
-        if let v = c("--sparkamp-transport-hover-bg")      { theme.transportHoverBg  = v }
-        if let v = c("--sparkamp-transport-active-bg")     { theme.transportActiveBg = v }
-        if let v = c("--sparkamp-play-button-bg")          { theme.playButtonBg      = v }
-        if let v = c("--sparkamp-play-button-text")        { theme.playButtonText    = v }
-        if let v = c("--sparkamp-play-button-border")      { theme.playButtonBorder  = v }
-        if let v = c("--sparkamp-seek-track")              { theme.seekTrack         = v }
-        if let v = c("--sparkamp-seek-fill")               { theme.seekFill          = v }
-        if let v = c("--sparkamp-seek-thumb")              { theme.seekThumb         = v }
-        if let v = c("--sparkamp-volume-track")            { theme.volumeTrack       = v }
-        if let v = c("--sparkamp-volume-fill")             { theme.volumeFill        = v }
-        if let v = c("--sparkamp-volume-thumb")            { theme.volumeThumb       = v }
-        if let v = c("--sparkamp-playlist-bg")             { theme.playlistBg        = v }
-        if let v = c("--sparkamp-playlist-text")           { theme.playlistText      = v }
-        if let v = c("--sparkamp-playlist-current-text")   { theme.playlistCurrentText  = v }
-        if let v = c("--sparkamp-playlist-current-bg")     { theme.playlistCurrentBg    = v }
-        if let v = c("--sparkamp-playlist-selected-bg")    { theme.playlistSelectedBg   = v }
-        if let v = c("--sparkamp-playlist-broken-text")    { theme.playlistBrokenText   = v }
-        if let v = c("--sparkamp-playlist-duration-text")  { theme.playlistDurationText = v }
-        if let v = c("--sparkamp-mode-btn-bg")             { theme.modeBtnBg         = v }
-        if let v = c("--sparkamp-mode-btn-border")         { theme.modeBtnBorder     = v }
-        if let v = c("--sparkamp-mode-btn-text")           { theme.modeBtnText       = v }
-        if let v = c("--sparkamp-mode-btn-active-bg")      { theme.modeBtnActiveBg   = v }
-        if let v = c("--sparkamp-mode-btn-active-text")    { theme.modeBtnActiveText = v }
-        if let v = c("--sparkamp-logo-text")               { theme.logoText          = v }
-        if let v = c("--sparkamp-logo-subtext")            { theme.logoSubtext       = v }
+    // MARK: Export
+
+    /// Write a copy of the named skin to `destination`. For built-ins this
+    /// emits the embedded template literal; for user skins it copies the
+    /// installed `.css` file verbatim.
+    func exportSkin(_ name: String, to destination: URL) {
+        let css: String
+        switch name.lowercased() {
+        case "dark":  css = Self.darkTemplateCSS
+        case "light": css = Self.lightTemplateCSS
+        default:
+            let src = Self.userSkinsDir().appendingPathComponent("\(name).css")
+            css = (try? String(contentsOf: src, encoding: .utf8)) ?? ""
+        }
+        try? css.write(to: destination, atomically: true, encoding: .utf8)
     }
+
+    /// Write the skin guide markdown to `destination`. Content is the same
+    /// as `src/skin_templates/skin-guide.md` (auto-embedded at build time).
+    func exportGuide(to destination: URL) {
+        try? Self.skinGuideMD.write(to: destination, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: Internals
+
+    private static func userSkinsDir() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/sparkamp/skins")
+    }
+
+    private static func load(skinName: String) -> SkinVars? {
+        switch skinName.lowercased() {
+        case "dark":  return CSSParser.parse(css: darkTemplateCSS)
+        case "light": return CSSParser.parse(css: lightTemplateCSS)
+        default:
+            let path = userSkinsDir().appendingPathComponent("\(skinName).css")
+            guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+            return CSSParser.load(url: path)
+        }
+    }
+
+    private func uniquify(dir: URL, stem: String) -> (String, URL) {
+        let candidate = dir.appendingPathComponent("\(stem).css")
+        if !FileManager.default.fileExists(atPath: candidate.path) {
+            return (stem, candidate)
+        }
+        for n in 2..<10_000 {
+            let s = "\(stem)-\(n)"
+            let p = dir.appendingPathComponent("\(s).css")
+            if !FileManager.default.fileExists(atPath: p.path) {
+                return (s, p)
+            }
+        }
+        let s = "\(stem)-\(Int(Date().timeIntervalSince1970))"
+        return (s, dir.appendingPathComponent("\(s).css"))
+    }
+
+    // MARK: Embedded template literals
+    //
+    // Source-of-truth lives in `src/skin_templates/dark.css` / `light.css`.
+    // These literals are kept in sync by hand for now; the advanced template
+    // phase will replace them with bundle-loaded copies.
+
+    static let darkTemplateCSS: String = """
+    /* Sparkamp Dark — Basic Skin Template
+     *
+     * Edit these 14 values and save this file to
+     * ~/.config/sparkamp/skins/<name>.css, then load it from
+     * Settings → Appearance → Add skin…
+     */
+    :root {
+        /* Colors */
+        --sp-background:         #1a1a1a;
+        --sp-text-background:    #0c0c0c;
+        --sp-text-color:         #cccccc;
+        --sp-highlight:          #00ccff;
+        --sp-broken-color:       #ff7700;
+
+        /* Buttons */
+        --sp-button-color:       #212121;
+        --sp-button-hover:       #2e2e2e;
+        --sp-button-active:      #003e52;
+        --sp-button-pressed:     #3a3a3a;
+        --sp-button-text-color:  #aaaaaa;
+
+        /* Fonts */
+        --sp-font-family:        "Inter, system-ui, sans-serif";
+        --sp-font-size:          12px;
+        --sp-font-size-large:    32px;
+        --sp-font-size-marquee:  14px;
+    }
+    """
+
+    static let lightTemplateCSS: String = """
+    /* Sparkamp Light — Basic Skin Template
+     *
+     * Edit these 14 values and save this file to
+     * ~/.config/sparkamp/skins/<name>.css, then load it from
+     * Settings → Appearance → Add skin…
+     */
+    :root {
+        /* Colors */
+        --sp-background:         #ededed;
+        --sp-text-background:    #f6f6f6;
+        --sp-text-color:         #222222;
+        --sp-highlight:          #1a6fc2;
+        --sp-broken-color:       #cc5500;
+
+        /* Buttons */
+        --sp-button-color:       #dcdcdc;
+        --sp-button-hover:       #cccccc;
+        --sp-button-active:      #cce5f7;
+        --sp-button-pressed:     #bbbbbb;
+        --sp-button-text-color:  #333333;
+
+        /* Fonts */
+        --sp-font-family:        "Inter, system-ui, sans-serif";
+        --sp-font-size:          12px;
+        --sp-font-size-large:    32px;
+        --sp-font-size-marquee:  14px;
+    }
+    """
+
+    // `skinGuideMD` is generated by tools/embed-skin-guide.swift into
+    // `Sources/Theme+Guide.swift` (Xcode build phase). The generator keeps
+    // it in sync with `src/skin_templates/skin-guide.md` — the canonical copy.
 }
 
-// MARK: - ThemeManager
+// MARK: - Helpers
 
-/// Manages which SkinTheme is active, reacts to system appearance changes,
-/// and loads user-provided CSS skin files.
-@MainActor
-final class ThemeManager: ObservableObject {
-
-    // MARK: Published state
-    @Published private(set) var currentTheme: SkinTheme
-    @Published private(set) var themeSource: ThemeSource
-    /// User-chosen accent color hex (nil = use theme default).
-    @Published private(set) var accentHex: String?
-
-    enum ThemeSource: Equatable {
-        case system, dark, light, custom(URL)
-    }
-
-    // MARK: Init
-    init() {
-        // Check for a persisted override first.
-        let saved = UserDefaults.standard.string(forKey: "sparkamp.themeSource") ?? "system"
-        let customPathStr = UserDefaults.standard.string(forKey: "sparkamp.customSkinPath")
-
-        // Determine system appearance.
-        let systemDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-
-        switch saved {
-        case "dark":
-            themeSource  = .dark
-            currentTheme = .defaultDark
-        case "light":
-            themeSource  = .light
-            currentTheme = .defaultLight
-        default:
-            themeSource  = .system
-            currentTheme = systemDark ? .defaultDark : .defaultLight
-        }
-
-        accentHex = UserDefaults.standard.string(forKey: "sparkamp.accentHex")
-
-        // Load custom skin if one was set (takes priority over dark/light/system).
-        if let pathStr = customPathStr {
-            let url = URL(fileURLWithPath: pathStr)
-            if let custom = CSSParser.parse(url: url, base: .defaultDark) {
-                currentTheme = custom
-                themeSource  = .custom(url)
-            }
-        }
-
-        // Apply accent override if set.
-        if let hex = accentHex, let color = Color(hex: hex) {
-            Self.applyAccent(color, to: &currentTheme)
-        }
-
-        // If no override was saved, check for a skin file in the standard locations.
-        // Priority: ~/.config/sparkamp/skin.css, then skins/default.css
-        if case .system = themeSource {
-            let configBase = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/sparkamp")
-            let candidates = [
-                configBase.appendingPathComponent("skin.css"),
-                configBase.appendingPathComponent("skins/default.css"),
-            ]
-            for skinURL in candidates {
-                guard FileManager.default.fileExists(atPath: skinURL.path) else { continue }
-                let base: SkinTheme = systemDark ? .defaultDark : .defaultLight
-                if let custom = CSSParser.parse(url: skinURL, base: base) {
-                    currentTheme = custom
-                    themeSource  = .custom(skinURL)
-                    break
-                }
-            }
-        }
-    }
-
-    // MARK: Theme switching
-
-    func useDark() {
-        currentTheme = .defaultDark
-        themeSource  = .dark
-        UserDefaults.standard.set("dark", forKey: "sparkamp.themeSource")
-        UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
-        applyStoredAccent()
-    }
-
-    func useLight() {
-        currentTheme = .defaultLight
-        themeSource  = .light
-        UserDefaults.standard.set("light", forKey: "sparkamp.themeSource")
-        UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
-        applyStoredAccent()
-    }
-
-    func useSystem(colorScheme: ColorScheme) {
-        currentTheme = colorScheme == .dark ? .defaultDark : .defaultLight
-        themeSource  = .system
-        UserDefaults.standard.set("system", forKey: "sparkamp.themeSource")
-        UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
-        applyStoredAccent()
-    }
-
-    /// Called by the root view when the system appearance changes and the
-    /// user hasn't pinned a specific theme.
-    func systemAppearanceChanged(to colorScheme: ColorScheme) {
-        guard case .system = themeSource else { return }
-        currentTheme = colorScheme == .dark ? .defaultDark : .defaultLight
-        applyStoredAccent()
-    }
-
-    // MARK: Accent color
-
-    /// Set a user accent color (nil = revert to theme default).
-    func setAccentColor(_ hex: String?) {
-        accentHex = hex
-        if let hex { UserDefaults.standard.set(hex, forKey: "sparkamp.accentHex") }
-        else        { UserDefaults.standard.removeObject(forKey: "sparkamp.accentHex") }
-        applyStoredAccent()
-    }
-
-    private func applyStoredAccent() {
-        guard let hex = accentHex, let color = Color(hex: hex) else { return }
-        Self.applyAccent(color, to: &currentTheme)
-    }
-
-    /// Override all accent-derived colors in a theme.
-    private static func applyAccent(_ accent: Color, to theme: inout SkinTheme) {
-        theme.titleText           = accent
-        theme.timeText            = accent
-        theme.seekThumb           = accent
-        theme.seekFill            = accent.opacity(0.6)
-        theme.modeBtnActiveText   = accent
-        theme.modeBtnActiveBg     = accent.opacity(0.18)
-        theme.playlistCurrentText = accent
-        theme.playlistCurrentBg   = accent.opacity(0.10)
-        theme.playlistSelectedBg  = accent.opacity(0.14)
-        theme.playButtonText      = accent
-        theme.playButtonBorder    = accent.opacity(0.50)
-        theme.playButtonBg        = accent.opacity(0.08)
-        theme.volumeThumb         = accent.opacity(0.85)
-        theme.logoText            = accent
-    }
-
-    func loadCustomSkin(from url: URL) {
-        // Detect dark/light from the skin's --sparkamp-background luminance.
-        let rawCSS = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        let skinIsDark = isSkinDark(rawCSS)
-        let base: SkinTheme = skinIsDark ? .defaultDark : .defaultLight
-        guard let custom = CSSParser.parse(url: url, base: base) else { return }
-        currentTheme = custom
-        themeSource  = .custom(url)
-        UserDefaults.standard.set("custom", forKey: "sparkamp.themeSource")
-        UserDefaults.standard.set(url.path, forKey: "sparkamp.customSkinPath")
-        applyStoredAccent()
-    }
-
-    /// Determine whether a skin CSS string represents a dark theme by
-    /// computing the relative luminance of `--sparkamp-background`.
-    private func isSkinDark(_ css: String) -> Bool {
-        // Quick parse: find --sparkamp-background in :root block.
-        guard let rootRange = css.range(of: ":root"),
-              let openBrace = css[rootRange.upperBound...].firstIndex(of: "{"),
-              let closeBrace = css[openBrace...].firstIndex(of: "}") else {
-            return true // default to dark
-        }
-        let block = css[openBrace...closeBrace]
-        for line in block.components(separatedBy: ";") {
-            let parts = line.split(separator: ":", maxSplits: 1)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard parts.count == 2, parts[0] == "--sparkamp-background" else { continue }
-            let hex = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            if let color = Color(hex: hex) {
-                // Use UIColor to get luminance
-                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
-                NSColor(color).usingColorSpace(.sRGB)?.getRed(&r, green: &g, blue: &b, alpha: nil)
-                let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                return lum < 0.5
-            }
-        }
-        return true
-    }
-
-    func removeCustomSkin(colorScheme: ColorScheme) {
-        UserDefaults.standard.removeObject(forKey: "sparkamp.customSkinPath")
-        useSystem(colorScheme: colorScheme)
-    }
-
-    func openSkinPicker(colorScheme: ColorScheme) {
-        let panel = NSOpenPanel()
-        panel.title = "Choose a Sparkamp Skin"
-        panel.message = "Select a CSS skin file. The file must use the --sparkamp-* variable format."
-        panel.allowedContentTypes = [.init(filenameExtension: "css")!]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        // Default to ~/.config/sparkamp/skins/ if it exists.
-        let skinsDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/sparkamp/skins")
-        if FileManager.default.fileExists(atPath: skinsDir.path) {
-            panel.directoryURL = skinsDir
-        }
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in self?.loadCustomSkin(from: url) }
-        }
-    }
-
-    func exportDefaultCSS() {
-        let panel = NSSavePanel()
-        panel.title = "Export Default Skin CSS"
-        panel.nameFieldStringValue = "sparkamp_dark.css"
-        panel.allowedContentTypes = [.init(filenameExtension: "css")!]
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            try? SkinTheme.darkCSS.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-
-    // MARK: Preferred color scheme (for SwiftUI)
-    var preferredColorScheme: ColorScheme {
-        currentTheme.prefersDark ? .dark : .light
-    }
+/// "midnight-teal" → "Midnight Teal".  Mirrors Rust `titlecase` in skin.rs.
+private func titlecaseSkinStem(_ stem: String) -> String {
+    stem.split(whereSeparator: { $0 == "-" || $0 == "_" })
+        .filter { !$0.isEmpty }
+        .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        .joined(separator: " ")
 }
 
 // MARK: - SkinButton
 
-/// A transport button that supports theme colours and optional PNG image overrides.
-/// Falls back to an SF Symbol when no image is provided for the button ID.
+/// A transport button that supports theme colours and (in the advanced
+/// template) optional PNG image overrides. Falls back to an SF Symbol when
+/// no image is provided for the button ID.
 struct SkinButton: View {
-    let id: String        // "prev", "rewind", "play", "pause", "stop", "ffwd", "next"
-    let icon: String      // SF Symbol fallback
+    let id: String
+    let icon: String
     let iconSize: CGFloat
-    var isHighlighted: Bool = false   // true while the track is playing (play/pause btn)
+    var isHighlighted: Bool = false
     let action: () -> Void
 
     @EnvironmentObject var themeManager: ThemeManager

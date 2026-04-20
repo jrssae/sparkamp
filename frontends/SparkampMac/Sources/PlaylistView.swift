@@ -11,16 +11,17 @@ struct PlaylistView: View {
     private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(spacing: 0) {
             // Track count header
             HStack {
                 Text("\(model.playlistItems.count) track\(model.playlistItems.count == 1 ? "" : "s")")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
                 if let total = totalDuration {
                     Text(total)
-                        .font(.system(size: 10))
+                        .font(vars.smallMonospaceFont)
                         .foregroundStyle(theme.playlistDurationText)
                 }
             }
@@ -35,9 +36,11 @@ struct PlaylistView: View {
                 ForEach(model.playlistItems) { item in
                     PlaylistRow(item: item, isCurrent: item.id == model.currentIndex)
                         .listRowBackground(
-                            item.id == model.currentIndex
-                            ? theme.playlistCurrentBg
-                            : Color.clear
+                            selection == item.id
+                            ? theme.playlistSelectedBg
+                            : (item.id == model.currentIndex
+                               ? theme.playlistCurrentBg
+                               : Color.clear)
                         )
                         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                         .tag(item.id)
@@ -50,6 +53,9 @@ struct PlaylistView: View {
             .listStyle(.plain)
             .background(theme.playlistBg)
             .scrollContentBackground(.hidden)
+            // Force the macOS List selection bar to use the skin highlight,
+            // overriding the default system accent.
+            .tint(vars.highlight)
             .onKeyPress(.deleteForward) { deleteSelected(); return .handled }
             .onKeyPress(.delete)        { deleteSelected(); return .handled }
             .onKeyPress(.return)        { playSelected();   return .handled }
@@ -86,13 +92,14 @@ struct PlaylistView: View {
     // MARK: Bottom control bar
 
     private var bottomBar: some View {
-        HStack(spacing: 6) {
+        let vars = themeManager.currentVars
+        return HStack(spacing: 6) {
             // Left side: Add Files, Add Folder
             Button {
                 model.openFilePicker()
             } label: {
                 Label("Add Files", systemImage: "plus")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
             }
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .help("Add audio files to playlist")
@@ -101,7 +108,7 @@ struct PlaylistView: View {
                 model.openFolderPicker()
             } label: {
                 Label("Add Folder", systemImage: "folder.badge.plus")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
             }
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .help("Add all audio files in a folder")
@@ -113,7 +120,7 @@ struct PlaylistView: View {
                 if let idx = selection { model.removeTrack(at: idx); selection = nil }
             } label: {
                 Label("Remove", systemImage: "minus")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
             }
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .disabled(selection == nil)
@@ -124,7 +131,7 @@ struct PlaylistView: View {
                 selection = nil
             } label: {
                 Label("Remove All", systemImage: "trash")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
             }
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .disabled(model.playlistItems.isEmpty)
@@ -178,7 +185,8 @@ struct PlaylistRow: View {
     private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
-        HStack(spacing: 6) {
+        let vars = themeManager.currentVars
+        return HStack(spacing: 6) {
             // State / broken / read-only indicator
             Group {
                 if isCurrent {
@@ -205,7 +213,7 @@ struct PlaylistRow: View {
 
             // Single-line display: "Artist — Title"
             Text(item.displayName)
-                .font(.system(size: 12))
+                .font(vars.bodyFont)
                 .foregroundStyle(
                     isCurrent ? theme.playlistCurrentText
                     : item.broken ? theme.playlistBrokenText
@@ -218,7 +226,7 @@ struct PlaylistRow: View {
 
             // Duration
             Text(item.durationString)
-                .font(.system(size: 10))
+                .font(vars.smallMonospaceFont)
                 .foregroundStyle(theme.playlistDurationText)
         }
         .contentShape(Rectangle())

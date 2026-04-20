@@ -18,7 +18,8 @@ struct DeduplicatorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(spacing: 0) {
             // ── Header ────────────────────────────────────────────────────────
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -98,7 +99,7 @@ struct DeduplicatorView: View {
                                 Label("Probable (\(probableGroups.count) groups)",
                                       systemImage: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.orange)
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(vars.bodyFont.weight(.semibold))
                             }
                         }
                     }
@@ -115,7 +116,7 @@ struct DeduplicatorView: View {
                                 Label("Less Likely (\(lessLikelyGroups.count) groups)",
                                       systemImage: "questionmark.circle")
                                     .foregroundStyle(.secondary)
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(vars.bodyFont.weight(.semibold))
                             }
                         }
                     }
@@ -152,9 +153,11 @@ private struct GroupRow: View {
     let onToggle: () -> Void
 
     @EnvironmentObject var model: SparkampModel
+    @EnvironmentObject var themeManager: ThemeManager
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(alignment: .leading, spacing: 0) {
             // Group header
             HStack(spacing: 6) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -163,18 +166,18 @@ private struct GroupRow: View {
                     .frame(width: 12)
 
                 Text(group.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(vars.bodyFont.weight(.medium))
                     .lineLimit(1)
 
                 Text("(\(group.tracks.count) tracks)")
-                    .font(.system(size: 11))
+                    .font(vars.bodyFont)
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
                 // Confidence badge
                 Text(group.confidenceLabel)
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(vars.bodyFont.weight(.semibold))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(group.confidence == 0
@@ -207,9 +210,11 @@ private struct GroupRow: View {
 private struct TrackRow: View {
     let track: DedupTrackItem
     @EnvironmentObject var model: SparkampModel
+    @EnvironmentObject var themeManager: ThemeManager
 
     var body: some View {
-        HStack(spacing: 6) {
+        let vars = themeManager.currentVars
+        return HStack(spacing: 6) {
             Image(systemName: "music.note")
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
@@ -217,10 +222,10 @@ private struct TrackRow: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(track.title.isEmpty ? track.filename : track.title)
-                    .font(.system(size: 11))
+                    .font(vars.bodyFont)
                     .lineLimit(1)
                 Text(track.path)
-                    .font(.system(size: 9))
+                    .font(vars.bodyFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -229,7 +234,7 @@ private struct TrackRow: View {
             Spacer()
 
             Text(track.durationString)
-                .font(.system(size: 10))
+                .font(vars.smallMonospaceFont)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
         }

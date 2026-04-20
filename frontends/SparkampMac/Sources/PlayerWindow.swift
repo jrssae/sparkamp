@@ -75,7 +75,8 @@ struct PlayerWindow: View {
     //   Row 3: 🔊 [thin vol slider] 🔊🔊  [ℹ] [PL]
 
     private var infoPanel: some View {
-        ZStack {
+        let vars = themeManager.currentVars
+        return ZStack {
             theme.lcdBackground
 
             HStack(spacing: 0) {
@@ -89,7 +90,7 @@ struct PlayerWindow: View {
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundStyle(stateColor)
                             Text(timeDisplay)
-                                .font(.system(size: 28, weight: .bold, design: .monospaced))
+                                .font(vars.largeMonospaceFont)
                                 .foregroundStyle(theme.timeText)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.5)
@@ -153,7 +154,7 @@ struct PlayerWindow: View {
 
                         // Fade-out volume percentage label
                         Text("\(Int(model.volume * 100))%")
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(vars.smallMonospaceFont)
                             .foregroundStyle(theme.transportText)
                             .opacity(volumeLabelOpacity)
                             .animation(.easeOut(duration: 0.3), value: volumeLabelOpacity)
@@ -372,7 +373,8 @@ struct ModeButton: View {
     private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
-        Button(action: action) {
+        let vars = themeManager.currentVars
+        return Button(action: action) {
             HStack(spacing: 3) {
                 if let icon {
                     Image(systemName: icon)
@@ -380,7 +382,7 @@ struct ModeButton: View {
                 }
                 if let label {
                     Text(label)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(vars.bodyFont)
                 }
             }
             .foregroundStyle(isActive ? theme.modeBtnActiveText : theme.modeBtnText)
