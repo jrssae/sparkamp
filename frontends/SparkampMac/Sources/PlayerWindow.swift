@@ -128,22 +128,22 @@ struct PlayerWindow: View {
             // ── Right column: song info + vol/mode controls ───────────────
             VStack(alignment: .leading, spacing: 0) {
 
-                // Row 1 — scrolling "Artist — Title" on a tight LCD strip.
+                // Row 1 — scrolling "Artist — Title" on a 42 px LCD strip.
                 //
-                // Two paddings, two purposes:
-                //   • .padding(.top, 6) BEFORE .frame(height: 32) reserves
-                //     6 px at the top of the strip so MarqueeView's
-                //     center-aligned text shifts DOWN by 3 px inside the
-                //     strip (centering happens in remaining 26 px).
-                //   • .padding(.top, 1) AFTER .background shifts the entire
-                //     LCD-bg strip down to y=1 of the right column, keeping
-                //     the bg out of the translucent native title-bar zone.
-                // Net: bg top at y=1, text top ~4 px higher than the prior
-                // configuration — visually aligned with the time digits.
+                // Strip is sized so the marquee text's natural vertical
+                // centering produces equal breathing room above and below
+                // the text — bg above ≈ bg below ≈ 13 px (text glyphs are
+                // ~16 px tall in the marquee font).
+                //
+                // .padding(.top, 1) AFTER .background shifts the entire
+                // LCD-bg strip down to y=1 of the right column, keeping
+                // the bg out of the translucent native title-bar zone and
+                // visually aligning the text with the time digits in the
+                // left column.
+                //
                 // Double-click opens the ID3 tag editor for the current track.
                 MarqueeView(text: marqueeText)
-                    .padding(.top, 6)
-                    .frame(height: 32)
+                    .frame(height: 42)
                     .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(theme.lcdBackground)

@@ -114,6 +114,22 @@ private struct AboutPane: View {
                 .font(.subheadline)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Get the latest")
+                    .font(.headline)
+                Text("Source code, releases, and issue tracking are hosted on GitHub. Clone the repository or grab the latest build there.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("github.com/jrssae/sparkamp") {
+                    NSWorkspace.shared.open(
+                        URL(string: "https://github.com/jrssae/sparkamp")!
+                    )
+                }
+                .buttonStyle(.link)
+                .font(.subheadline)
+            }
+
             Spacer()
         }
         .padding(24)
