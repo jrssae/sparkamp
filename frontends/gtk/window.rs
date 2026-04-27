@@ -783,11 +783,24 @@ use crate::skin::{self, render_gtk_css, SkinVars};
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.
 /// Returns the label for the repeat button based on the current mode.
-fn repeat_btn_label(mode: crate::shuffle::RepeatMode) -> &'static str {
+fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
     match mode {
-        crate::shuffle::RepeatMode::Off      => "🔁 Repeat",
-        crate::shuffle::RepeatMode::Song     => "🔁 Repeat 1",
-        crate::shuffle::RepeatMode::Playlist => "🔁 Repeat all",
+        // Song mode shows the dedicated "repeat single" icon. Off and All
+        // share the generic "repeat" icon — the .mode-btn-active class on
+        // the button distinguishes Off (inactive) from All (active).
+        crate::shuffle::RepeatMode::Song => "media-playlist-repeat-song-symbolic",
+        crate::shuffle::RepeatMode::Off | crate::shuffle::RepeatMode::Playlist =>
+            "media-playlist-repeat-symbolic",
+    }
+}
+
+/// Returns the visible text for the repeat button — mirrors the macOS
+/// PlayerWindow repeatLabel ("Repeat", "Repeat 1", "Repeat All").
+fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
+    match mode {
+        crate::shuffle::RepeatMode::Off => "Repeat",
+        crate::shuffle::RepeatMode::Song => "Repeat 1",
+        crate::shuffle::RepeatMode::Playlist => "Repeat All",
     }
 }
 
@@ -1235,11 +1248,16 @@ pub fn build(
     // Main window
     // ══════════════════════════════════════════════════════════════════════════
 
+    // Player window — fixed 480 px wide to match the macOS layout, which is
+    // tuned for that exact width. Non-resizable so the seek bar / transport
+    // row / now-playing column proportions can never drift.
+    let _ = init_player_width;
     let window = ApplicationWindow::builder()
         .application(app)
         .title("SparkAmp")
-        .default_width(init_player_width)
+        .default_width(480)
         .default_height(init_player_height)
+        .resizable(false)
         .build();
 
     let root = GtkBox::new(Orientation::Vertical, 0);
@@ -1287,18 +1305,31 @@ pub fn build(
 
     // Small play/pause/stop indicator — sits inside the same dark box as
     // the time display. Class-less label inherits styling from the parent.
+    // Reserve 2 character widths so the emoji glyphs (⏹/▶/⏸), which can have
+    // slightly different widths depending on font fallback, can swap without
+    // changing the row's natural size.
     let state_label = Label::builder()
         .label("⏹")
         .halign(Align::Center)
         .valign(Align::Center)
+        .width_chars(2)
+        .max_width_chars(2)
+        .xalign(0.5)
         .build();
 
     // Time display label — single-line, monospace, centered.
     // Clicking toggles between elapsed and remaining time.
+    // Reserve 7 character widths so "0:00", "12:34", and "-123:45" all
+    // allocate the same horizontal slot — without this the time text grows
+    // during playback and drags the whole left column wider, causing the
+    // visualizer below to widen on play and shrink on stop.
     let show_remaining = Rc::new(Cell::new(false));
     let time_disp_label = Label::builder()
         .label("0:00")
         .halign(Align::Center)
+        .width_chars(7)
+        .max_width_chars(7)
+        .xalign(0.5)
         .build();
 
     // Row containing [state_icon | time_display] — carries the `.time-disp`
@@ -1320,7 +1351,7 @@ pub fn build(
     // Mini visualizer DrawingArea — clicking cycles the visualizer mode.
     // Width is matched to the time_row via a SizeGroup below.
     let viz = DrawingArea::new();
-    viz.set_content_height(68);
+    viz.set_content_height(52);
     viz.set_valign(Align::Center);
     viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
@@ -1353,10 +1384,13 @@ pub fn build(
 
     left_col.append(&time_row);
     left_col.append(&viz);
-    // Keep the mini visualizer visually the same width as the time-display box.
-    let left_col_sizer = gtk4::SizeGroup::new(gtk4::SizeGroupMode::Horizontal);
-    left_col_sizer.add_widget(&time_row);
-    left_col_sizer.add_widget(&viz);
+    // Pin the left column to a fixed width matching the macOS layout (118 px).
+    // Without this, the time-display string ("0:00" vs "12:34 / 45:67") would
+    // drag the column wider when it grows and snap it narrower when it
+    // shrinks, jiggling the visualizer below it. A fixed-width column also
+    // means the marquee on the right always has the same horizontal budget.
+    left_col.set_size_request(118, -1);
+    time_row.set_hexpand(true);
 
     // ── Right column: marquee frame (title only) + index + vol row ───────────
     // `np_info` fills the full height of `np_row` so the vol row at the bottom
@@ -1388,18 +1422,6 @@ pub fn build(
     marquee_frame.append(&title_label);
     np_info.append(&marquee_frame);
 
-    // Dim secondary line: shows current track index within the playlist.
-    // Updated by the tick loop so it stays current without extra callbacks.
-    let artist_label = Label::builder()
-        .label("")
-        .halign(Align::Start)
-        .margin_start(12) // indent to visually separate from frame edge
-        .margin_top(2)
-        .css_classes(["np-artist"])
-        .build();
-
-    np_info.append(&artist_label);
-
     // Expanding spring pushes the vol row to the bottom of the column so it
     // sits on the same horizontal line as the bottom of the visualizer.
     let info_spring = GtkBox::new(Orientation::Vertical, 0);
@@ -1411,35 +1433,56 @@ pub fn build(
     root.append(&np_row);
 
     // ── Buttons created early so they can all live in the vol row ───────────
-    // Repeat button: label and active state reflect saved config.
+    // Mode buttons are icon-only to mirror the macOS layout's compact look.
+    // The `.mode-btn-active` class is toggled by the corresponding window's
+    // visible-notify handler so the icon lights up while the window is open.
     let init_repeat = state.borrow().config.playback.repeat_mode;
-    let btn_repeat = Button::with_label(repeat_btn_label(init_repeat));
+    // Repeat / shuffle are icon+text to match the macOS ModeButton layout.
+    // Inner Image / Label refs are kept so the cycle handlers can swap both
+    // when the repeat mode rotates.
+    let repeat_icon = Image::from_icon_name(repeat_btn_icon(init_repeat));
+    let repeat_label = Label::new(Some(repeat_btn_text(init_repeat)));
+    // Reserve width for the widest mode text ("Repeat All") so the button
+    // doesn't reflow when cycling between modes. xalign default 0.5 keeps
+    // the icon+label visually centered inside the reserved width.
+    repeat_label.set_width_chars(10);
+    repeat_label.set_max_width_chars(10);
+    repeat_label.set_xalign(0.5);
+    let repeat_box = GtkBox::new(Orientation::Horizontal, 3);
+    repeat_box.append(&repeat_icon);
+    repeat_box.append(&repeat_label);
+    let btn_repeat = Button::new();
+    btn_repeat.set_child(Some(&repeat_box));
     btn_repeat.add_css_class("mode-btn");
     btn_repeat.set_tooltip_text(Some("Repeat: off / 1 (song) / all"));
     if init_repeat != crate::shuffle::RepeatMode::Off {
         btn_repeat.add_css_class("mode-btn-active");
     }
-    // Shuffle button: active state reflects saved shuffle state.
     let init_shuffle = state.borrow().shuffle_state.enabled;
-    let btn_shuffle = Button::with_label("🔀 Shuffle");
+    let shuffle_box = GtkBox::new(Orientation::Horizontal, 3);
+    shuffle_box.append(&Image::from_icon_name("media-playlist-shuffle-symbolic"));
+    shuffle_box.append(&Label::new(Some("Shuffle")));
+    let btn_shuffle = Button::new();
+    btn_shuffle.set_child(Some(&shuffle_box));
     btn_shuffle.add_css_class("mode-btn");
     btn_shuffle.set_tooltip_text(Some("Shuffle on/off"));
     if init_shuffle {
         btn_shuffle.add_css_class("mode-btn-active");
     }
 
-    let btn_pl = Button::with_label("PL");
+    let btn_pl = Button::from_icon_name("view-list-symbolic");
     btn_pl.add_css_class("mode-btn");
-    let btn_eq = Button::with_label("EQ");
+    btn_pl.set_tooltip_text(Some("Playlist (p)"));
+    let btn_eq = Button::from_icon_name("applications-multimedia-symbolic");
     btn_eq.add_css_class("mode-btn");
-    btn_eq.set_tooltip_text(Some("10-band equalizer"));
-    let btn_info = Button::with_label("ℹ");
+    btn_eq.set_tooltip_text(Some("10-band equalizer (u)"));
+    let btn_info = Button::from_icon_name("dialog-information-symbolic");
     btn_info.add_css_class("mode-btn");
-    btn_info.set_tooltip_text(Some("Keyboard shortcuts"));
-    let btn_jump_vol = Button::with_label("J");
+    btn_info.set_tooltip_text(Some("Keyboard shortcuts (i)"));
+    let btn_jump_vol = Button::from_icon_name("edit-find-symbolic");
     btn_jump_vol.add_css_class("mode-btn");
     btn_jump_vol.set_tooltip_text(Some("Jump to track (j)"));
-    let btn_ml = Button::with_label("ML");
+    let btn_ml = Button::from_icon_name("folder-music-symbolic");
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
 
@@ -1461,7 +1504,7 @@ pub fn build(
     let vol_bar = Scale::new(Orientation::Horizontal, Some(&vol_adj));
     vol_bar.set_draw_value(false);
     vol_bar.set_hexpand(false);
-    vol_bar.set_width_request(150);
+    vol_bar.set_width_request(140);
     vol_bar.add_css_class("vol-scale");
 
     // Expanding spacer pushes PL to the right edge of np_info.
@@ -1498,23 +1541,25 @@ pub fn build(
 
     // ── Transport buttons + GNOME logo ───────────────────────────────────────
     // Row spans the full width: buttons left-aligned, logo pinned to the right.
-    let transport = GtkBox::new(Orientation::Horizontal, 4);
+    let transport = GtkBox::new(Orientation::Horizontal, 8);
     transport.set_hexpand(true);
     transport.set_margin_start(8);
     transport.set_margin_end(8);
     transport.set_margin_top(8);
     transport.set_margin_bottom(8);
 
-    let btn_prev = Button::with_label("⏮");
-    let btn_play = Button::with_label("▶");
-    let btn_pause = Button::with_label("⏸");
-    let btn_stop = Button::with_label("⏹");
-    let btn_next = Button::with_label("⏭");
+    let btn_prev = Button::from_icon_name("media-skip-backward-symbolic");
+    let btn_play = Button::from_icon_name("media-playback-start-symbolic");
+    let btn_pause = Button::from_icon_name("media-playback-pause-symbolic");
+    let btn_stop = Button::from_icon_name("media-playback-stop-symbolic");
+    let btn_next = Button::from_icon_name("media-skip-forward-symbolic");
 
     for btn in [&btn_prev, &btn_play, &btn_pause, &btn_stop, &btn_next] {
         btn.add_css_class("transport");
     }
-    btn_play.add_css_class("transport-play");
+    // `transport-play` accent is toggled dynamically by the tick loop based on
+    // the engine's playback state — applied while Playing/Paused, removed when
+    // Stopped — so initial Stopped state matches the visual.
     // Sparkamp skin-format CSS classes — used by skins to target individual
     // buttons with background-image overrides (.sparkamp-button-play { ... }).
     btn_prev.add_css_class("sparkamp-button-prev");
@@ -1601,6 +1646,19 @@ pub fn build(
         .default_height(init_pl_height)
         .transient_for(&window)
         .build();
+
+    // Mirror playlist-window visibility onto the PL toggle button so it lights
+    // up while the playlist is open and dims when it closes.
+    playlist_win.connect_visible_notify({
+        let btn = btn_pl.clone();
+        move |w| {
+            if w.is_visible() {
+                btn.add_css_class("mode-btn-active");
+            } else {
+                btn.remove_css_class("mode-btn-active");
+            }
+        }
+    });
 
     let pl_root = GtkBox::new(Orientation::Vertical, 0);
 
@@ -2388,6 +2446,8 @@ pub fn build(
     btn_repeat.connect_clicked({
         let state = state.clone();
         let btn_repeat = btn_repeat.clone();
+        let repeat_icon = repeat_icon.clone();
+        let repeat_label = repeat_label.clone();
         move |_| {
             let new_mode = {
                 let mut s = state.borrow_mut();
@@ -2395,8 +2455,9 @@ pub fn build(
                 s.config.playback.repeat_mode = m;
                 m
             };
-            // Update button label to show the active mode.
-            btn_repeat.set_label(repeat_btn_label(new_mode));
+            // Update both icon and text so the button matches macOS visuals.
+            repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
+            repeat_label.set_text(repeat_btn_text(new_mode));
             // Highlight with accent class when not off.
             if new_mode == crate::shuffle::RepeatMode::Off {
                 btn_repeat.remove_css_class("mode-btn-active");
@@ -2971,7 +3032,6 @@ pub fn build(
         let state = state.clone();
         let time_disp_label = time_disp_label.clone();
         let title_label = title_label.clone();
-        let artist_label = artist_label.clone();
         let seek_bar = seek_bar.clone();
         let play_update = play_and_update.clone();
         let viz = viz.clone();
@@ -2980,6 +3040,7 @@ pub fn build(
         let marquee_tick = marquee_tick.clone();
         let show_remaining = show_remaining.clone();
         let state_label = state_label.clone();
+        let btn_play = btn_play.clone();
         let patch_pl_row = patch_pl_row.clone();
         let current_track_meta_rx = std::cell::RefCell::new(current_track_meta_rx);
         let set_track = set_track.clone();
@@ -3365,7 +3426,9 @@ pub fn build(
                 }
             }
 
-            // 4. State icon (left of time display) + track-index line.
+            // 4. State icon (left of time display) + dynamic play-button accent.
+            //    The play button gains the `.transport-play` skin accent while
+            //    the engine is Playing or Paused, and loses it when Stopped.
             {
                 let s = state.borrow();
                 let icon = match s.player.state() {
@@ -3374,12 +3437,16 @@ pub fn build(
                     PlayerState::Stopped => "⏹",
                 };
                 state_label.set_text(icon);
-                let idx_text = if s.playlist.is_empty() {
-                    String::new()
-                } else {
-                    format!("[{}/{}]", s.playlist.current_index + 1, s.playlist.len())
-                };
-                artist_label.set_text(&idx_text);
+                match s.player.state() {
+                    PlayerState::Playing | PlayerState::Paused => {
+                        if !btn_play.has_css_class("transport-play") {
+                            btn_play.add_css_class("transport-play");
+                        }
+                    }
+                    PlayerState::Stopped => {
+                        btn_play.remove_css_class("transport-play");
+                    }
+                }
             }
 
             // 5. Trigger a Cairo repaint of the visualizer.
@@ -3591,6 +3658,16 @@ pub fn build(
     // reopened later.  Without this, the underlying GObject may be freed after
     // the first close, making subsequent `present()` calls a no-op.
     jump_win.set_hide_on_close(true);
+    jump_win.connect_visible_notify({
+        let btn = btn_jump_vol.clone();
+        move |w| {
+            if w.is_visible() {
+                btn.add_css_class("mode-btn-active");
+            } else {
+                btn.remove_css_class("mode-btn-active");
+            }
+        }
+    });
 
     // Maps each visible row in jump_box → the original track index in the playlist.
     let jump_indices: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
@@ -3708,6 +3785,8 @@ pub fn build(
         let kbd_btn_info = btn_info.clone();
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
+        let kbd_repeat_icon = repeat_icon.clone();
+        let kbd_repeat_label = repeat_label.clone();
         let kbd_btn_shuffle = btn_shuffle.clone();
         // Clones for z/b (prev/next) handlers — use patch instead of rebuild
         // so the scroll position is preserved rather than reset to the top.
@@ -3919,7 +3998,8 @@ pub fn build(
                         s.config.playback.repeat_mode = m;
                         m
                     };
-                    kbd_btn_repeat.set_label(repeat_btn_label(new_mode));
+                    kbd_repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
+                    kbd_repeat_label.set_text(repeat_btn_text(new_mode));
                     if new_mode == crate::shuffle::RepeatMode::Off {
                         kbd_btn_repeat.remove_css_class("mode-btn-active");
                     } else {
@@ -4054,40 +4134,40 @@ pub fn build(
                     .label("SparkAmp — Keyboard Shortcuts
 
 ── Playback ────────────────────────────────────────
-  z          Previous track / restart
-  x          Play
-  c          Pause / resume
-  v          Stop
-  b          Next track
-  ←  →       Seek −5 s / +5 s
-  r          Cycle repeat (off / song / playlist)
+  z            Previous track / restart
+  x            Play
+  c            Pause / resume
+  v            Stop
+  b            Next track
+  ←  →         Seek −5 s / +5 s
+  r            Cycle repeat (off / song / playlist)
 
 ── Volume ──────────────────────────────────────────
-  -          Volume down 5 %
-  =          Volume up 5 %
+  -            Volume down 5 %
+  =            Volume up 5 %
 
 ── Playlist ────────────────────────────────────────
-  n          Add file(s) or folder(s)
-  j          Jump / search
-  ↑ k / ↓ l  Browse up / down
-  Enter      Play selected track
-  Del        Remove highlighted track
-  p          Toggle playlist window
+  n            Add file(s) or folder(s)
+  j            Jump / search
+  ↑ k / ↓ l    Browse up / down
+  Enter        Play selected track
+  Del          Remove highlighted track
+  p            Toggle playlist window
 
 ── View & Tags ─────────────────────────────────────
-  a          Cycle visualizer mode (bars / waveform)
-  f          Waveform fullscreen (in Waveform mode; Esc to exit)
-  d          View/Edit ID3 tags for current track
-  u          Open EQ (TUI only — use EQ button in GUI)
-  Click logo Open settings
-  Right-click Toggle dark / light theme
+  a            Cycle visualizer mode (bars / waveform)
+  f            Waveform fullscreen (in Waveform mode; Esc to exit)
+  d            View/Edit ID3 tags for current track
+  u            Open EQ (TUI only — use EQ button in GUI)
+  Click logo   Open settings
+  Right-click  Toggle dark / light theme
 
 ── Hidden shortcuts ────────────────────────────────
-  s          Toggle shuffle on/off
+  s            Toggle shuffle on/off
 
 ── Other ───────────────────────────────────────────
-  i          Toggle this help
-  q / Esc    Quit")
+  i            Toggle this help
+  q / Esc      Quit")
                     .halign(gtk4::Align::Start)
                     .valign(gtk4::Align::Start)
                     .use_markup(false)
@@ -4109,6 +4189,16 @@ pub fn build(
         win.add_controller(key_ctrl);
         win.set_child(Some(&scroll));
         win.set_hide_on_close(true);
+        win.connect_visible_notify({
+            let btn = btn_info.clone();
+            move |w| {
+                if w.is_visible() {
+                    btn.add_css_class("mode-btn-active");
+                } else {
+                    btn.remove_css_class("mode-btn-active");
+                }
+            }
+        });
         win
     };
 
@@ -4145,6 +4235,7 @@ pub fn build(
         let state_rc = state.clone();
         let rebuild_pl = rebuild_playlist.clone();
         let set_track_ml = set_track.clone();
+        let btn_ml_for_notify = btn_ml.clone();
         move |_| {
             // If already open (visible or hidden), toggle visibility.
             {
@@ -4169,6 +4260,20 @@ pub fn build(
                 h,
             );
             ml_win.set_hide_on_close(true);
+            ml_win.connect_visible_notify({
+                let btn = btn_ml_for_notify.clone();
+                move |w| {
+                    if w.is_visible() {
+                        btn.add_css_class("mode-btn-active");
+                    } else {
+                        btn.remove_css_class("mode-btn-active");
+                    }
+                }
+            });
+            // open_media_library_window already calls present() before
+            // returning, so the visible-notify above has already fired and
+            // skipped attaching — sync the button state to match.
+            btn_ml_for_notify.add_css_class("mode-btn-active");
             state_rc.borrow_mut().ml_window = Some(ml_win);
         }
     });
@@ -4179,6 +4284,7 @@ pub fn build(
         let window_wk = window.downgrade();
         let state_rc = state.clone();
         let eq_ref = eq_win_ref.clone();
+        let btn_eq_for_notify = btn_eq.clone();
         move |_| {
             // Toggle if already created.
             {
@@ -4191,6 +4297,20 @@ pub fn build(
             // First open: create the window.
             let parent = window_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
             let win = open_eq_window(parent.as_ref(), state_rc.clone());
+            win.connect_visible_notify({
+                let btn = btn_eq_for_notify.clone();
+                move |w| {
+                    if w.is_visible() {
+                        btn.add_css_class("mode-btn-active");
+                    } else {
+                        btn.remove_css_class("mode-btn-active");
+                    }
+                }
+            });
+            // open_eq_window calls present() before returning; sync the
+            // button state since the notify handler attached above fires only
+            // on subsequent visibility changes.
+            btn_eq_for_notify.add_css_class("mode-btn-active");
             *eq_ref.borrow_mut() = Some(win);
         }
     });
@@ -4378,6 +4498,7 @@ pub fn build(
     }
     if init_ml_visible {
         let set_track_init_ml = set_track.clone();
+        let btn_ml_for_restore = btn_ml.clone();
         glib::timeout_add_local_once(Duration::from_millis(50), move || {
             let state_rc = state.clone();
             let rebuild_pl = rebuild_playlist.clone();
@@ -4389,6 +4510,23 @@ pub fn build(
                 init_ml_width,
                 init_ml_height,
             );
+            // Mirror the click-handler path: hide-on-close keeps the window
+            // alive across toggles, and visible-notify keeps the toolbar
+            // button's active class in sync with whether the window is shown.
+            ml_win.set_hide_on_close(true);
+            ml_win.connect_visible_notify({
+                let btn = btn_ml_for_restore.clone();
+                move |w| {
+                    if w.is_visible() {
+                        btn.add_css_class("mode-btn-active");
+                    } else {
+                        btn.remove_css_class("mode-btn-active");
+                    }
+                }
+            });
+            // open_media_library_window calls present() before returning, so
+            // the notify above missed the initial show — sync the class now.
+            btn_ml_for_restore.add_css_class("mode-btn-active");
             state_rc.borrow_mut().ml_window = Some(ml_win);
         });
     }
@@ -8664,8 +8802,8 @@ fn open_media_library_window(
         let multi_sel = MultiSelection::new(Some(sort_model.clone()));
         let col_view = ColumnView::new(Some(multi_sel.clone()));
         col_view.add_css_class("ml-col-view");
-        col_view.set_show_row_separators(true);
-        col_view.set_show_column_separators(true);
+        col_view.set_show_row_separators(false);
+        col_view.set_show_column_separators(false);
         col_view.set_hexpand(true);
         col_view.set_vexpand(true);
         col_view.set_reorderable(true);
@@ -8958,8 +9096,8 @@ fn open_media_library_window(
                             .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
-                            .margin_top(1)
-                            .margin_bottom(1)
+                            .margin_top(3)
+                            .margin_bottom(3)
                             .hexpand(true)
                             .vexpand(true)
                             .halign(Align::Fill)
@@ -8969,15 +9107,15 @@ fn open_media_library_window(
                         child = btn.upcast::<gtk4::Widget>();
                     } else {
                         let lbl = Label::builder()
-                            .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
-                            .margin_top(1)
-                            .margin_bottom(1)
+                            .margin_top(3)
+                            .margin_bottom(3)
                             .hexpand(true)
                             .vexpand(true)
                             .halign(Align::Fill)
                             .valign(Align::Fill)
+                            .xalign(0.0)
                             .ellipsize(gtk4::pango::EllipsizeMode::End)
                             .css_classes(["ml-col-label"])
                             .build();

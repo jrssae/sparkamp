@@ -603,7 +603,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, "button.transport {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
         border: 1px solid {border}; border-radius: 3px; \
-        padding: 4px 8px; box-shadow: none; \
+        padding: 2px 4px; min-width: 24px; min-height: 24px; box-shadow: none; \
     }}").unwrap();
     writeln!(css, "button.transport:hover {{ \
         background-color: {bhov}; background-image: none; \
@@ -621,7 +621,8 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Mode toggle buttons (shuffle / repeat / PL / Info)
     writeln!(css, "button.mode-btn {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
-        border: 1px solid {border}; border-radius: 3px; padding: 2px 6px; \
+        border: 1px solid {border}; border-radius: 3px; \
+        padding: 2px 4px; min-width: 28px; \
     }}").unwrap();
     writeln!(css, "button.mode-btn:hover {{ \
         background-color: {bhov}; background-image: none; \
@@ -636,7 +637,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Seek bar
     writeln!(css, "scale.seek-scale trough {{ \
         background-color: {tbg}; background-image: none; \
-        min-height: 4px; \
+        min-height: 7px; \
     }}").unwrap();
     writeln!(css, "scale.seek-scale highlight {{ \
         background-color: {hl}; background-image: none; \
@@ -660,9 +661,11 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {text_dim}; font-size: {fs}px; font-family: monospace; min-width: 28px; \
     }}").unwrap();
 
-    // Mini visualizer
+    // Mini visualizer — no inner border so the time-display row above it and
+    // the visualizer below it read as one continuous LCD column (matches the
+    // macOS layout, where the left column is a single dark box).
     writeln!(css, ".mini-viz {{ \
-        background-color: {tbg}; border: 1px solid {border}; \
+        background-color: {tbg}; border: none; \
     }}").unwrap();
 
     // Equalizer window scales (horizontal pre-amp + vertical band columns).
@@ -752,7 +755,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Status bar + info text
     writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}px; }}").unwrap();
     writeln!(css, ".info-text {{ \
-        color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
+        color: {text}; background-color: {tbg}; font-family: monospace; font-size: {fs}px; \
         padding: 6px; border-radius: 3px; \
     }}").unwrap();
 
