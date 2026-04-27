@@ -28,7 +28,8 @@ struct JumpToTrackView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(spacing: 0) {
 
             // ── Header — matches playlist header exactly ───────────────────────
             HStack {
@@ -37,7 +38,7 @@ struct JumpToTrackView: View {
                 Text(query.isEmpty
                      ? "\(total) track\(total == 1 ? "" : "s")"
                      : "\(n) of \(total) tracks")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
             }
@@ -56,7 +57,7 @@ struct JumpToTrackView: View {
 
                 TextField("Search tracks…", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistText)
                     .focused($fieldFocused)
                     .onChange(of: query) { _, _ in

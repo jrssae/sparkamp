@@ -281,104 +281,29 @@ impl WindowConfig {
 // AppearanceConfig
 // ---------------------------------------------------------------------------
 
-/// Which colour theme the UI should use.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ThemeChoice {
-    /// Dark theme (default — matches the classic Winamp look).
-    #[default]
-    Dark,
-    /// Light theme for bright-environment use.
-    Light,
-}
-
-/// Accent/highlight color choices.
-/// GNOME provides these built-in accent colors that match the desktop theme.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", tag = "type", content = "value")]
-pub enum AccentColorChoice {
-    /// Use the system accent color from GNOME settings.
-    System,
-    /// GNOME blue (default).
-    Blue,
-    /// GNOME green.
-    Green,
-    /// GNOME purple.
-    Purple,
-    /// GNOME red/pink.
-    Red,
-    /// GNOME orange.
-    Orange,
-    /// GNOME yellow.
-    Yellow,
-    /// GNOME white.
-    White,
-    /// GNOME grey.
-    Grey,
-    /// Custom hex color (e.g., "#ff5500").
-    Custom(String),
-}
-
-impl Default for AccentColorChoice {
-    fn default() -> Self {
-        AccentColorChoice::System
-    }
-}
-
-impl AccentColorChoice {
-    /// Return the hex color string for this accent choice.
-    /// Returns None for System (to be resolved from gsettings).
-    /// Returns Some(hex) for built-in and custom colors.
-    pub fn hex(&self) -> Option<&str> {
-        match self {
-            AccentColorChoice::System => None,
-            AccentColorChoice::Blue => Some("#3584e4"),
-            AccentColorChoice::Green => Some("#3a944a"),
-            AccentColorChoice::Purple => Some("#9141ac"),
-            AccentColorChoice::Red => Some("#e01b24"),
-            AccentColorChoice::Orange => Some("#ff7800"),
-            AccentColorChoice::Yellow => Some("#f6d32d"),
-            AccentColorChoice::White => Some("#ffffff"),
-            AccentColorChoice::Grey => Some("#77767b"),
-            AccentColorChoice::Custom(hex) => Some(hex),
-        }
-    }
-}
-
 /// Visual-appearance preferences that live under `[appearance]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearanceConfig {
-    /// Which built-in colour theme to apply when `custom_skin` is empty.
-    /// Defaults to [`ThemeChoice::Dark`].
-    #[serde(default)]
-    pub theme: ThemeChoice,
+    /// Name of the active skin — either a built-in (`"dark"` or
+    /// `"light"`) or the filename stem of a `.css` file in
+    /// `~/.config/sparkamp/skins/`.
+    #[serde(default = "default_active_skin")]
+    pub active_skin: String,
 
-    /// Accent/highlight color for the UI.
-    /// Defaults to [`AccentColorChoice::System`] (reads from GNOME settings).
-    #[serde(default)]
-    pub accent_color: AccentColorChoice,
-
-    /// Name of a user-provided skin to load from
-    /// `~/.config/sparkamp/skins/<name>.css`.  When non-empty this overrides
-    /// the `theme` field.  Empty string means "use the built-in theme".
-    #[serde(default)]
-    pub custom_skin: String,
-
-    /// Skin names that have been removed from the Skins picker.
-    ///
-    /// These skins are hidden in the UI but their `.css` files are not
-    /// deleted — they can be re-added via "Add Skin…" at any time.
-    /// Built-in skins (`"dark"`, `"light"`) are never added here.
+    /// Skin names the user has removed from the Appearance picker.
+    /// Built-ins (`"dark"`, `"light"`) cannot appear here.
     #[serde(default)]
     pub hidden_skins: Vec<String>,
+}
+
+fn default_active_skin() -> String {
+    "dark".to_string()
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         AppearanceConfig {
-            theme: ThemeChoice::Dark,
-            accent_color: AccentColorChoice::default(),
-            custom_skin: String::new(),
+            active_skin: default_active_skin(),
             hidden_skins: Vec::new(),
         }
     }
@@ -455,6 +380,10 @@ impl Default for PluginsConfig {
 
 /// Standard 10-band EQ center frequencies in Hz (display only; the
 /// GStreamer element's actual centre frequencies are fixed and match these).
+/// Consumed by the Swift frontend via `sparkamp_eq_band_label`; the GTK
+/// UI no longer surfaces these labels, so the binary build sees it as
+/// unreferenced.
+#[allow(dead_code)]
 pub const EQ_BAND_FREQS: [&str; 10] = [
     "29", "59", "119", "237", "474", "947", "1.9k", "3.8k", "7.5k", "15k",
 ];
@@ -954,11 +883,27 @@ mod tests {
     // ── AppearanceConfig ──────────────────────────────────────────────────────
 
     #[test]
-    fn appearance_config_default_has_empty_hidden_skins() {
+    fn appearance_config_default_uses_active_skin_dark() {
         let cfg = AppearanceConfig::default();
+        assert_eq!(cfg.active_skin, "dark");
         assert!(cfg.hidden_skins.is_empty());
-        assert_eq!(cfg.custom_skin, "");
-        assert_eq!(cfg.theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn appearance_config_deserialize_from_new_format() {
+        let toml_str = r#"
+active_skin = "mytheme"
+hidden_skins = ["ugly-skin"]
+"#;
+        let cfg: AppearanceConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.active_skin, "mytheme");
+        assert_eq!(cfg.hidden_skins, vec!["ugly-skin"]);
+    }
+
+    #[test]
+    fn appearance_config_deserialize_from_empty_defaults_active_skin() {
+        let cfg: AppearanceConfig = toml::from_str("").expect("parse");
+        assert_eq!(cfg.active_skin, "dark");
     }
 
     #[test]
@@ -967,19 +912,9 @@ mod tests {
         cfg.hidden_skins.push("my-skin".to_string());
         cfg.hidden_skins.push("old-theme".to_string());
 
-        // Serialize to a mini TOML table and deserialize back.
         let toml_str = toml::to_string(&cfg).expect("serialize");
         let back: AppearanceConfig = toml::from_str(&toml_str).expect("deserialize");
         assert_eq!(back.hidden_skins, vec!["my-skin", "old-theme"]);
-    }
-
-    #[test]
-    fn appearance_config_without_hidden_skins_key_deserializes_with_empty_vec() {
-        // A config written before hidden_skins was added should deserialize cleanly.
-        let toml_str = r#"custom_skin = "dark""#;
-        let cfg: AppearanceConfig = toml::from_str(toml_str).expect("deserialize");
-        assert!(cfg.hidden_skins.is_empty());
-        assert_eq!(cfg.custom_skin, "dark");
     }
 
     #[test]

@@ -25,6 +25,7 @@
 		AA5000000000000000000016 /* ArtworkWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000019 /* ArtworkWindow.swift */; };
 		AA5000000000000000000017 /* MediaLibraryWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000020 /* MediaLibraryWindow.swift */; };
 		AA5000000000000000000018 /* DeduplicatorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000021 /* DeduplicatorWindow.swift */; };
+		AA5000000000000000000019 /* Theme+Guide.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000022 /* Theme+Guide.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		AA4000000000000000000007 /* MarqueeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarqueeView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000009 /* PlaylistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000010 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		AA4000000000000000000022 /* Theme+Guide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+Guide.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
@@ -91,6 +93,7 @@
 				AA4000000000000000000007 /* MarqueeView.swift */,
 				AA4000000000000000000009 /* PlaylistView.swift */,
 				AA4000000000000000000010 /* Theme.swift */,
+				AA4000000000000000000022 /* Theme+Guide.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
 				AA4000000000000000000013 /* VisualizerView.swift */,
 				AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */,
@@ -121,6 +124,7 @@
 			buildConfigurationList = AA6000000000000000000001 /* Build configuration list for PBXNativeTarget "SparkampMac" */;
 			buildPhases = (
 				AA2000000000000000000003 /* Cargo Build */,
+				AA2000000000000000000004 /* Embed Skin Guide */,
 				AA2000000000000000000000 /* Sources */,
 				AA2000000000000000000001 /* Frameworks */,
 				AA2000000000000000000002 /* Resources */,
@@ -194,6 +198,29 @@
 			shellScript = "# Build the Rust static library.\n# SRCROOT = frontends/SparkampMac/\ncd \"$SRCROOT/../..\"\n\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nexport PKG_CONFIG_PATH=\"/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:$PKG_CONFIG_PATH\"\n\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    cargo build --release -p sparkamp-macos\n    cp target/release/libsparkamp_macos.a \"$SRCROOT\"\nelse\n    cargo build -p sparkamp-macos\n    cp target/debug/libsparkamp_macos.a \"$SRCROOT\"\nfi\n";
 			showEnvVarsInLog = 0;
 		};
+		AA2000000000000000000004 /* Embed Skin Guide */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 0;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../src/skin_templates/skin-guide.md",
+				"$(SRCROOT)/../../tools/embed-skin-guide.sh",
+			);
+			name = "Embed Skin Guide";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Sources/Theme+Guide.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Regenerate Theme+Guide.swift from src/skin_templates/skin-guide.md.\n# Idempotent: only writes when the markdown source changes.\ncd \"$SRCROOT/../..\"\nbash tools/embed-skin-guide.sh\n";
+			showEnvVarsInLog = 0;
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -208,6 +235,7 @@
 				AA5000000000000000000004 /* MarqueeView.swift in Sources */,
 				AA5000000000000000000006 /* PlaylistView.swift in Sources */,
 				AA5000000000000000000007 /* Theme.swift in Sources */,
+				AA5000000000000000000019 /* Theme+Guide.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,
 				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
 				AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */,

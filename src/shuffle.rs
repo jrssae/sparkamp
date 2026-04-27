@@ -278,6 +278,36 @@ impl ShuffleState {
     pub fn has_history(&self) -> bool {
         self.history_cursor > 0
     }
+
+    /// Walk the history cursor forward without appending.
+    ///
+    /// Mirrors [`prev_from_history`][Self::prev_from_history] in reverse:
+    /// returns `Some(index)` when the user has previously stepped back and
+    /// there is a "future" entry to replay, or `None` when the cursor is
+    /// already at the head of history (and a fresh shuffle pick is needed).
+    ///
+    /// Used by manual "next" navigation so that pressing Forward after Back
+    /// replays the same track instead of generating a fresh random pick.
+    pub fn next_from_history(&mut self) -> Option<usize> {
+        if self.history_cursor + 1 < self.history.len() {
+            self.history_cursor += 1;
+            self.history.get(self.history_cursor).copied()
+        } else {
+            None
+        }
+    }
+
+    /// Seed history with the current track if it is empty.
+    ///
+    /// No-op when shuffle is disabled or history already has entries.  Used
+    /// at the top of manual nav so that the first Next while stopped (which
+    /// only pre-loads, never recording) leaves something for a subsequent
+    /// Back to step into.
+    pub fn ensure_seeded(&mut self, idx: usize) {
+        if self.enabled && self.history.is_empty() {
+            self.record_played(idx);
+        }
+    }
 }
 
 impl Default for ShuffleState {
@@ -475,5 +505,90 @@ mod tests {
     fn next_index_single_track_off_returns_none() {
         let mut s = fresh();
         assert_eq!(s.next_index(0, 1, RepeatMode::Off), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // next_from_history / ensure_seeded
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn next_from_history_walks_forward_after_prev() {
+        let mut s = fresh();
+        s.toggle(); // enable shuffle so record_played populates history
+        s.record_played(10);
+        s.record_played(20);
+        s.record_played(30);
+        // history = [10, 20, 30], cursor = 2
+        assert_eq!(s.prev_from_history(), Some(20));
+        assert_eq!(s.prev_from_history(), Some(10));
+        // cursor = 0 — now walk forward
+        assert_eq!(s.next_from_history(), Some(20));
+        assert_eq!(s.next_from_history(), Some(30));
+        // cursor = 2 (head) — no future left
+        assert_eq!(s.next_from_history(), None);
+    }
+
+    #[test]
+    fn next_from_history_returns_none_at_head() {
+        let mut s = fresh();
+        s.toggle();
+        s.record_played(5);
+        // cursor at last entry — nothing forward
+        assert_eq!(s.next_from_history(), None);
+    }
+
+    #[test]
+    fn next_from_history_returns_none_when_empty() {
+        let mut s = fresh();
+        s.toggle();
+        assert_eq!(s.next_from_history(), None);
+    }
+
+    #[test]
+    fn record_after_back_truncates_future() {
+        // Documented intentional semantic: making a fresh pick after walking
+        // back-then-not-all-the-way-forward truncates remaining future.
+        let mut s = fresh();
+        s.toggle();
+        s.record_played(1);
+        s.record_played(2);
+        s.record_played(3);
+        // step back twice: cursor = 0
+        s.prev_from_history();
+        s.prev_from_history();
+        // now record a fresh pick
+        s.record_played(99);
+        // history should be [1, 99] — old future (2, 3) discarded
+        assert_eq!(s.prev_from_history(), Some(1));
+        assert_eq!(s.next_from_history(), Some(99));
+        assert_eq!(s.next_from_history(), None);
+    }
+
+    #[test]
+    fn ensure_seeded_no_op_when_disabled() {
+        let mut s = fresh();
+        // shuffle disabled
+        s.ensure_seeded(7);
+        assert_eq!(s.next_from_history(), None);
+        assert_eq!(s.prev_from_history(), None);
+    }
+
+    #[test]
+    fn ensure_seeded_no_op_when_already_populated() {
+        let mut s = fresh();
+        s.toggle();
+        s.record_played(1);
+        s.ensure_seeded(99); // should NOT add 99
+        assert_eq!(s.prev_from_history(), None); // only 1 in history, cursor at 0
+    }
+
+    #[test]
+    fn ensure_seeded_seeds_when_empty_and_enabled() {
+        let mut s = fresh();
+        s.toggle();
+        s.ensure_seeded(42);
+        // history now contains 42 at cursor 0; record another so we can step back
+        s.record_played(43);
+        assert_eq!(s.prev_from_history(), Some(42));
     }
 }

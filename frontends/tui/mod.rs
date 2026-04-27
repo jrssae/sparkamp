@@ -207,11 +207,14 @@ pub struct Id3EditorState {
 
 /// All state required by the settings overlay.
 ///
-/// Four tabs: Appearance, Behavior, Visualizer, Filetypes.  Each tab has
-/// between one and two settings.  String-valued settings (Filetypes paths)
+/// Four tabs: Behavior, Visualizer, Filetypes, Media Library.  Each tab has
+/// between one and three settings.  String-valued settings (Filetypes paths)
 /// enter an inline text-edit mode when the user presses Enter.
+///
+/// Skin / theme selection lives in the GTK frontend's Settings window; the
+/// TUI has no visual skinning of its own.
 pub struct SettingsState {
-    /// Active tab: 0 = Appearance, 1 = Behavior, 2 = Visualizer, 3 = Filetypes.
+    /// Active tab: 0 = Behavior, 1 = Visualizer, 2 = Filetypes, 3 = Media Library.
     pub tab: usize,
     /// Which item inside the active tab is highlighted (0-based).
     pub cursor: usize,
@@ -234,19 +237,17 @@ pub struct EqState {
 
 /// Returns the number of configurable items for the given settings tab index.
 ///
-/// Tabs: 0=Appearance, 1=Behavior, 2=Visualizer, 3=Filetypes, 4=Media Library.
+/// Tabs: 0=Behavior, 1=Visualizer, 2=Filetypes, 3=Media Library.
 pub(super) fn settings_tab_len(tab: usize) -> usize {
     match tab {
-        // Appearance: 3 items (theme, accent_color, custom_skin)
-        0 => 3,
         // Behavior: 2 items (autoplay_on_add, playlist_add_behavior)
-        1 => 2,
+        0 => 2,
         // Visualizer: 1 item (mode)
-        2 => 1,
+        1 => 1,
         // Filetypes: 2 items (visualizer_dir, filetype_dir)
-        3 => 2,
+        2 => 2,
         // Media Library: 3 items (rescan_on_startup, periodic_rescan, rescan_interval_mins)
-        4 => 3,
+        3 => 3,
         _ => 0,
     }
 }
@@ -535,10 +536,16 @@ impl App {
     /// this wrapper updates TUI-specific state after the move.
     pub fn play_next(&mut self) {
         match self.ctrl().nav_next() {
-            crate::controller::NavResult::Target { was_playing: true } => {
-                self.play_current(); // records shuffle history, updates UI state
+            crate::controller::NavResult::Target {
+                was_playing: true, ..
+            } => {
+                // Controller already recorded the fresh pick / walked
+                // history — use no_record to avoid double-recording.
+                self.play_current_no_record();
             }
-            crate::controller::NavResult::Target { was_playing: false } => {
+            crate::controller::NavResult::Target {
+                was_playing: false, ..
+            } => {
                 self.playlist_cursor = self.playlist.current_index;
             }
             crate::controller::NavResult::NoTarget => {}
@@ -551,10 +558,14 @@ impl App {
     /// this wrapper updates TUI-specific state after the move.
     pub fn play_prev(&mut self) {
         match self.ctrl().nav_prev() {
-            crate::controller::NavResult::Target { was_playing: true } => {
+            crate::controller::NavResult::Target {
+                was_playing: true, ..
+            } => {
                 self.play_current_no_record(); // no history record for back nav
             }
-            crate::controller::NavResult::Target { was_playing: false } => {
+            crate::controller::NavResult::Target {
+                was_playing: false, ..
+            } => {
                 self.playlist_cursor = self.playlist.current_index;
             }
             crate::controller::NavResult::NoTarget => {}
@@ -2223,7 +2234,7 @@ impl App {
     ///   Enter                  — confirm and write the value back to config
     ///   Esc                    — abandon the edit (revert to previous value)
     fn handle_settings(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        use crate::config::{AccentColorChoice, PlaylistAddBehavior, ThemeChoice, VisualizerMode};
+        use crate::config::{PlaylistAddBehavior, VisualizerMode};
 
         // Alt + transport keys pass through to the player without closing settings.
         if modifiers.contains(KeyModifiers::ALT) {
@@ -2285,10 +2296,9 @@ impl App {
                     };
                     // Dispatch by (tab, cursor).
                     match (tab, cursor) {
-                        (0, 2) => self.config.appearance.custom_skin = val,
-                        (3, 0) => self.config.plugins.visualizer_dir = val,
-                        (3, 1) => self.config.plugins.filetype_dir = val,
-                        (4, 2) => {
+                        (2, 0) => self.config.plugins.visualizer_dir = val,
+                        (2, 1) => self.config.plugins.filetype_dir = val,
+                        (3, 2) => {
                             // Parse interval minutes; silently keep old value on error.
                             if let Ok(mins) = val.trim().parse::<u64>() {
                                 self.config.media_library.set_rescan_interval_mins(mins);
@@ -2333,10 +2343,10 @@ impl App {
                     s.cursor = 0;
                 }
             }
-            // Right / l: go to the next tab (tabs 0–4).
+            // Right / l: go to the next tab (tabs 0–3).
             KeyCode::Right | KeyCode::Char('l') => {
                 if let Mode::Settings(s) = &mut self.mode {
-                    if s.tab < 4 {
+                    if s.tab < 3 {
                         s.tab += 1;
                     }
                     s.cursor = 0;
@@ -2371,45 +2381,8 @@ impl App {
             // Space / Enter: act on the focused setting.
             KeyCode::Enter | KeyCode::Char(' ') => {
                 match tab {
-                    // Appearance: row 0 = cycle theme; row 1 = cycle highlight color; row 2 = edit custom skin name.
-                    0 => {
-                        match cursor {
-                            0 => {
-                                self.config.appearance.theme = match self.config.appearance.theme {
-                                    ThemeChoice::Dark => ThemeChoice::Light,
-                                    ThemeChoice::Light => ThemeChoice::Dark,
-                                };
-                            }
-                            1 => {
-                                // Cycle through accent colors.
-                                self.config.appearance.accent_color =
-                                    match self.config.appearance.accent_color {
-                                        AccentColorChoice::System => AccentColorChoice::Blue,
-                                        AccentColorChoice::Blue => AccentColorChoice::Green,
-                                        AccentColorChoice::Green => AccentColorChoice::Purple,
-                                        AccentColorChoice::Purple => AccentColorChoice::Red,
-                                        AccentColorChoice::Red => AccentColorChoice::Orange,
-                                        AccentColorChoice::Orange => AccentColorChoice::Yellow,
-                                        AccentColorChoice::Yellow => AccentColorChoice::White,
-                                        AccentColorChoice::White => AccentColorChoice::Grey,
-                                        AccentColorChoice::Grey => {
-                                            AccentColorChoice::Custom("#3584e4".to_string())
-                                        }
-                                        AccentColorChoice::Custom(_) => AccentColorChoice::System,
-                                    };
-                            }
-                            2 => {
-                                // Enter text-edit mode for the custom skin name.
-                                let current = self.config.appearance.custom_skin.clone();
-                                if let Mode::Settings(s) = &mut self.mode {
-                                    s.edit_buf = Some(current);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
                     // Behavior: row 0 = toggle autoplay; row 1 = cycle playlist add behavior.
-                    1 => match cursor {
+                    0 => match cursor {
                         0 => {
                             self.config.behavior.autoplay_on_add =
                                 !self.config.behavior.autoplay_on_add;
@@ -2424,14 +2397,14 @@ impl App {
                         _ => {}
                     },
                     // Visualizer: cycle between Bars and Waveform.
-                    2 => {
+                    1 => {
                         self.config.visualizer.mode = match self.config.visualizer.mode {
                             VisualizerMode::Bars => VisualizerMode::Waveform,
                             VisualizerMode::Waveform => VisualizerMode::Bars,
                         };
                     }
                     // Filetypes: enter text-edit mode for the focused path field.
-                    3 => {
+                    2 => {
                         let current = match cursor {
                             0 => self.config.plugins.visualizer_dir.clone(),
                             1 => self.config.plugins.filetype_dir.clone(),
@@ -2442,7 +2415,7 @@ impl App {
                         }
                     }
                     // Media Library: toggle booleans or edit the interval field.
-                    4 => {
+                    3 => {
                         match cursor {
                             0 => {
                                 self.config.media_library.rescan_on_startup =

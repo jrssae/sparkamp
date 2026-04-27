@@ -6,16 +6,12 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
-    @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
+        // Skin colour scheme + body font are applied at the WindowGroup root
+        // via `themedRoot(_:)` in SparkampMacApp.swift, so this view focuses
+        // purely on player content + alert layers.
         PlayerWindow()
-            .preferredColorScheme(themeManager.preferredColorScheme)
-            // Propagate system appearance changes to ThemeManager (only when
-            // the user hasn't pinned dark or light explicitly).
-            .onChange(of: colorScheme) { _, scheme in
-                themeManager.systemAppearanceChanged(to: scheme)
-            }
             // ── Fatal: GStreamer not found ──────────────────────────────────
             .alert("GStreamer not found", isPresented: .constant(model.fatalError != nil)) {
                 Button("OK") { model.fatalError = nil }

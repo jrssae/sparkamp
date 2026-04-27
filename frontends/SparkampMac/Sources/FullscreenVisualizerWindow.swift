@@ -71,11 +71,12 @@ struct FullscreenVisualizerView: View {
             .ignoresSafeArea()
 
             // Toast overlay
+            let vars = themeManager.currentVars
             if toastVisible {
                 VStack {
                     Spacer()
                     Text(toastMessage)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.custom(vars.fontFamily, size: 16).weight(.semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)

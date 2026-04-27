@@ -16,12 +16,13 @@ struct MarqueeView: View {
 
     var body: some View {
         let t = themeManager.currentTheme
+        let vars = themeManager.currentVars
         TimelineView(.animation) { _ in
             GeometryReader { geo in
                 let overflows = textWidth > geo.size.width
                 ZStack(alignment: .leading) {
                     Text(text)
-                        .font(.system(size: 12, weight: .bold))
+                        .font(vars.marqueeFont)
                         .foregroundStyle(t.titleText)
                         .lineLimit(1)
                         .fixedSize()
@@ -37,7 +38,14 @@ struct MarqueeView: View {
                             }
                         )
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // GeometryReader places its child at .topLeading by default —
+                // without maxHeight: .infinity the ZStack only takes its
+                // intrinsic height (text height) and gets pinned to the top.
+                // Filling the GeometryReader and using Alignment.leading
+                // (== leading horizontal + center vertical) centers the text.
+                .frame(maxWidth: .infinity,
+                       maxHeight: .infinity,
+                       alignment: .leading)
                 .clipped()
                 .onAppear { containerWidth = geo.size.width }
                 .onChange(of: geo.size.width) { _, w in containerWidth = w }

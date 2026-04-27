@@ -75,64 +75,87 @@ struct PlayerWindow: View {
     //   Row 3: 🔊 [thin vol slider] 🔊🔊  [ℹ] [PL]
 
     private var infoPanel: some View {
-        ZStack {
-            theme.lcdBackground
+        let vars = themeManager.currentVars
+        // LCD background is applied per-section, NOT to the whole panel:
+        //   - Left column (time + visualizer): LCD bg the full column height.
+        //   - Right column marquee row only:   LCD bg as a tight strip behind
+        //                                      the marquee text only.
+        //   - Right column volume/buttons row: no LCD bg — theme.background
+        //                                      (from the body VStack) shows
+        //                                      through, matching the bottom
+        //                                      transport row.
+        return HStack(spacing: 0) {
 
-            HStack(spacing: 0) {
-
-                // ── Left column: time + mini visualizer ──────────────────────
-                VStack(spacing: 0) {
-                    // Time display (tappable)
-                    Button { model.toggleRemainingTime() } label: {
-                        HStack(alignment: .center, spacing: 4) {
-                            Image(systemName: stateIcon)
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(stateColor)
-                            Text(timeDisplay)
-                                .font(.system(size: 28, weight: .bold, design: .monospaced))
-                                .foregroundStyle(theme.timeText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.5)
-                                .fixedSize()
-                        }
-                        .frame(width: 118, alignment: .leading)
-                        .padding(.top, 8)
-                        .padding(.leading, 10)
-                        .padding(.bottom, 4)
+            // ── Left column: time + mini visualizer ──────────────────────
+            VStack(spacing: 0) {
+                // Time display (tappable)
+                Button { model.toggleRemainingTime() } label: {
+                    HStack(alignment: .center, spacing: 4) {
+                        Image(systemName: stateIcon)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(stateColor)
+                        Text(timeDisplay)
+                            .font(vars.largeMonospaceFont)
+                            .foregroundStyle(theme.timeText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .fixedSize()
                     }
-                    .buttonStyle(.plain)
-                    .help("Click to toggle remaining / elapsed time")
-
-                    // Mini visualizer — same width as left column
-                    VisualizerView()
-                        .frame(width: 118)
-                        .frame(maxHeight: .infinity)
-                        .padding(.leading, 10)
-                        .padding(.bottom, 6)
+                    .frame(width: 118, alignment: .leading)
+                    .padding(.top, 8)
+                    .padding(.leading, 10)
+                    .padding(.bottom, 4)
                 }
-                .frame(width: 118)
+                .buttonStyle(.plain)
+                .help("Click to toggle remaining / elapsed time")
 
-                // ── Divider ──────────────────────────────────────────────────
-                Rectangle()
-                    .fill(theme.lcdBorder)
-                    .frame(width: 1)
-                    .padding(.vertical, 6)
+                // Mini visualizer — fills the column minus leading padding.
+                // .clipped() on the column prevents any overflow into the divider.
+                VisualizerView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.leading, 10)
+                    .padding(.bottom, 6)
+            }
+            .frame(width: 118)
+            .background(theme.lcdBackground)
+            .clipped()
 
-                // ── Right column: song info + vol/mode controls ───────────────
-                VStack(alignment: .leading, spacing: 0) {
+            // ── Divider — full info-panel height ─────────────────────────
+            Rectangle()
+                .fill(theme.lcdBorder)
+                .frame(width: 1)
 
-                    // Row 1 — scrolling "Artist — Title"
-                    // Double-click opens the ID3 tag editor for the current track.
-                    MarqueeView(text: marqueeText)
-                        .padding(.top, 2)
-                        .gesture(TapGesture(count: 2).onEnded {
-                            model.openId3Editor()
-                        })
+            // ── Right column: song info + vol/mode controls ───────────────
+            VStack(alignment: .leading, spacing: 0) {
 
-                    Spacer()
+                // Row 1 — scrolling "Artist — Title" on a 42 px LCD strip.
+                //
+                // Strip is sized so the marquee text's natural vertical
+                // centering produces equal breathing room above and below
+                // the text — bg above ≈ bg below ≈ 13 px (text glyphs are
+                // ~16 px tall in the marquee font).
+                //
+                // .padding(.top, 1) AFTER .background shifts the entire
+                // LCD-bg strip down to y=1 of the right column, keeping
+                // the bg out of the translucent native title-bar zone and
+                // visually aligning the text with the time digits in the
+                // left column.
+                //
+                // Double-click opens the ID3 tag editor for the current track.
+                MarqueeView(text: marqueeText)
+                    .frame(height: 42)
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.lcdBackground)
+                    .padding(.top, 1)
+                    .gesture(TapGesture(count: 2).onEnded {
+                        model.openId3Editor()
+                    })
 
-                    // Row 2 — volume slider + ℹ + playlist
-                    HStack(spacing: 6) {
+                Spacer(minLength: 0)
+
+                // Row 2 — volume slider + ℹ + playlist (theme.background)
+                HStack(spacing: 6) {
                         Image(systemName: "speaker.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(theme.volumeThumb.opacity(0.7))
@@ -153,7 +176,7 @@ struct PlayerWindow: View {
 
                         // Fade-out volume percentage label
                         Text("\(Int(model.volume * 100))%")
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(vars.smallMonospaceFont)
                             .foregroundStyle(theme.transportText)
                             .opacity(volumeLabelOpacity)
                             .animation(.easeOut(duration: 0.3), value: volumeLabelOpacity)
@@ -190,12 +213,11 @@ struct PlayerWindow: View {
                         }
                         .help("Show / hide Playlist (p)")
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
             }
-        }
         .overlay(
             RoundedRectangle(cornerRadius: 0)
                 .stroke(theme.lcdBorder, lineWidth: 1)
@@ -372,7 +394,8 @@ struct ModeButton: View {
     private var theme: SkinTheme { themeManager.currentTheme }
 
     var body: some View {
-        Button(action: action) {
+        let vars = themeManager.currentVars
+        return Button(action: action) {
             HStack(spacing: 3) {
                 if let icon {
                     Image(systemName: icon)
@@ -380,7 +403,7 @@ struct ModeButton: View {
                 }
                 if let label {
                     Text(label)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(vars.bodyFont)
                 }
             }
             .foregroundStyle(isActive ? theme.modeBtnActiveText : theme.modeBtnText)

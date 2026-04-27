@@ -366,15 +366,43 @@ impl AppState {
     ///
     /// Returns `Some(display_name)` if a next track was found, or `None` if
     /// playback should stop (end of playlist with repeat off).
+    ///
+    /// In shuffle mode, the session history is walked forward first (so
+    /// pressing Forward after Back replays the same track) before falling
+    /// back to a fresh random pick.  When stopped, fresh picks are still
+    /// recorded into shuffle history so a subsequent Back can return to the
+    /// original track instead of falling through to linear-prev.
     fn play_next(&mut self) -> Option<String> {
         let total = self.playlist.len();
         let current = self.playlist.current_index;
         let repeat = self.config.playback.repeat_mode;
+
+        // Try walking forward through existing shuffle history first.
+        // Seed history with the current track so even a fresh stopped-state
+        // session leaves something for Back to step into afterwards.
+        if self.shuffle_state.enabled {
+            self.shuffle_state.ensure_seeded(current);
+            if let Some(idx) = self.shuffle_state.next_from_history() {
+                self.playlist.jump_to(idx);
+                return if *self.player.state() != PlayerState::Stopped {
+                    // History walk — don't re-record (would truncate the
+                    // remaining future entries the user might still want).
+                    self.play_current_no_record()
+                } else {
+                    self.playlist.current().map(|t| t.display_name())
+                };
+            }
+        }
+
         let idx = self.shuffle_state.next_index(current, total, repeat)?;
         self.playlist.jump_to(idx);
         if *self.player.state() != PlayerState::Stopped {
             self.play_current()
         } else {
+            // Stopped-state pre-load: record the fresh pick manually so the
+            // shuffle history reflects the navigation even though the
+            // playback layer never gets a chance to call play_current.
+            self.shuffle_state.record_played(idx);
             self.playlist.current().map(|t| t.display_name())
         }
     }
@@ -399,6 +427,11 @@ impl AppState {
         }
 
         if self.shuffle_state.enabled {
+            // Seed history with the current track if shuffle is on but
+            // nothing has been recorded yet — Back after a stopped-state
+            // Next must return to the original current track, not a
+            // linear-prev surprise.
+            self.shuffle_state.ensure_seeded(self.playlist.current_index);
             if let Some(idx) = self.shuffle_state.prev_from_history() {
                 self.playlist.jump_to(idx);
                 return if do_play {
@@ -744,17 +777,30 @@ impl AppState {
 /// behave as a logical unit: they share the taskbar and are typically
 /// raised/lowered together.
 /// Re-export built-in skin CSS from the skin module for use in this file.
-use crate::skin::{prepare_css, DARK_CSS_RAW, LIGHT_CSS_RAW};
+use crate::skin::{self, render_gtk_css, SkinVars};
 
 /// Read the user's GNOME accent-colour choice from gsettings and return
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.
 /// Returns the label for the repeat button based on the current mode.
-fn repeat_btn_label(mode: crate::shuffle::RepeatMode) -> &'static str {
+fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
     match mode {
-        crate::shuffle::RepeatMode::Off      => "🔁 Repeat",
-        crate::shuffle::RepeatMode::Song     => "🔁 Repeat 1",
-        crate::shuffle::RepeatMode::Playlist => "🔁 Repeat all",
+        // Song mode shows the dedicated "repeat single" icon. Off and All
+        // share the generic "repeat" icon — the .mode-btn-active class on
+        // the button distinguishes Off (inactive) from All (active).
+        crate::shuffle::RepeatMode::Song => "media-playlist-repeat-song-symbolic",
+        crate::shuffle::RepeatMode::Off | crate::shuffle::RepeatMode::Playlist =>
+            "media-playlist-repeat-symbolic",
+    }
+}
+
+/// Returns the visible text for the repeat button — mirrors the macOS
+/// PlayerWindow repeatLabel ("Repeat", "Repeat 1", "Repeat All").
+fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
+    match mode {
+        crate::shuffle::RepeatMode::Off => "Repeat",
+        crate::shuffle::RepeatMode::Song => "Repeat 1",
+        crate::shuffle::RepeatMode::Playlist => "Repeat All",
     }
 }
 
@@ -836,56 +882,28 @@ fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
     (dd, entry)
 }
 
-/// Get the system accent color from GNOME settings.
-fn system_accent_hex() -> &'static str {
-    let output = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "accent-color"])
-        .output();
-    let name = output
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().trim_matches('\'').to_string())
-        .unwrap_or_default();
-    match name.as_str() {
-        "blue" => "#3584e4",
-        "teal" => "#2190a4",
-        "green" => "#3a944a",
-        "yellow" => "#c88800",
-        "orange" => "#ed5b00",
-        "red" => "#e62d42",
-        "pink" => "#d56199",
-        "purple" => "#9141ac",
-        "slate" => "#6f8396",
-        _ => "#3584e4", // GNOME default blue
+/// Find a ListBoxRow by its widget name.
+fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
+    let mut child = listbox.first_child();
+    while let Some(c) = child {
+        if let Ok(row) = c.clone().downcast::<gtk4::ListBoxRow>() {
+            if row.widget_name().as_str() == name {
+                return Some(row);
+            }
+        }
+        child = c.next_sibling();
     }
+    None
 }
 
-/// Resolve the accent color hex from config. Returns the hex string.
-fn resolve_accent_hex(accent_choice: &crate::config::AccentColorChoice) -> String {
-    match accent_choice {
-        crate::config::AccentColorChoice::System => system_accent_hex().to_string(),
-        crate::config::AccentColorChoice::Custom(hex) => hex.clone(),
-        _ => accent_choice.hex().unwrap_or("#3584e4").to_string(),
-    }
-}
-
-/// Reload the CSS with a new accent color. Called when the accent color setting changes.
-fn reload_css_accent(
-    provider: &gtk4::CssProvider,
-    _dark_css: &str,
-    _light_css: &str,
-    is_dark: bool,
-    accent_hex: &str,
-) {
-    use crate::skin::prepare_css;
-    let css = prepare_css(
-        if is_dark { DARK_CSS_RAW } else { LIGHT_CSS_RAW },
-        accent_hex,
-    );
-    provider.load_from_data(&css);
-    if let Some(gtk_settings) = gtk4::Settings::default() {
-        gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
-    }
+/// Show a simple modal alert dialog.
+fn show_error_alert(msg: &str) {
+    let alert = gtk4::AlertDialog::builder()
+        .message("Sparkamp")
+        .detail(msg)
+        .modal(true)
+        .build();
+    alert.show(gtk4::Window::NONE);
 }
 
 /// Embedded app logo PNG bytes (compiled into the binary).
@@ -901,28 +919,6 @@ fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
     loader.close().ok()?;
     let pb = loader.pixbuf()?;
     pb.scale_simple(size, size, gdk_pixbuf::InterpType::Bilinear)
-}
-
-/// Invert the RGB channels of a pixbuf (leave alpha unchanged).
-/// Used to turn the black logo into a white logo for dark mode.
-fn invert_pixbuf(src: &gdk_pixbuf::Pixbuf) -> gdk_pixbuf::Pixbuf {
-    let pb = src.copy().expect("pixbuf copy");
-    let n_channels = pb.n_channels() as usize;
-    let rowstride = pb.rowstride() as usize;
-    let width = pb.width() as usize;
-    let height = pb.height() as usize;
-    // SAFETY: we own the only reference to this freshly-copied pixbuf.
-    let pixels = unsafe { pb.pixels() };
-    for row in 0..height {
-        for col in 0..width {
-            let off = row * rowstride + col * n_channels;
-            pixels[off] = 255 - pixels[off]; // R
-            pixels[off + 1] = 255 - pixels[off + 1]; // G
-            pixels[off + 2] = 255 - pixels[off + 2]; // B
-                                                     // pixels[off + 3] is alpha — left unchanged
-        }
-    }
-    pb
 }
 
 /// Set up a 100ms polling timer that drains the three scan channels and updates
@@ -1149,34 +1145,12 @@ pub fn build(
     open_rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
 ) {
     // ── CSS theme ─────────────────────────────────────────────────────────────
-    // Inject the accent colour at startup so @accent_bg_color always resolves.
-    // If the user has configured a custom skin name, try to load it; fall back
-    // to the built-in dark or light skin based on AppearanceConfig.theme.
-    let accent_hex_initial = resolve_accent_hex(&config.appearance.accent_color);
-    let accent_hex_current = Rc::new(RefCell::new(accent_hex_initial.clone()));
-    let dark_css_rc = Rc::new(prepare_css(DARK_CSS_RAW, &accent_hex_initial));
-    let light_css_rc = Rc::new(prepare_css(LIGHT_CSS_RAW, &accent_hex_initial));
-
-    // Determine the initial CSS to load.
-    let initial_css = {
-        use crate::config::ThemeChoice;
-        use crate::skin;
-        let custom = &config.appearance.custom_skin;
-        if !custom.is_empty() {
-            // Try to load the user-specified skin; fall back to dark on failure.
-            skin::load_prepared(custom, &accent_hex_initial)
-                .unwrap_or_else(|| dark_css_rc.as_ref().clone())
-        } else {
-            match config.appearance.theme {
-                ThemeChoice::Dark => dark_css_rc.as_ref().clone(),
-                ThemeChoice::Light => light_css_rc.as_ref().clone(),
-            }
-        }
-    };
-
-    // Determine initial dark/light state from config (custom skins are treated as dark).
-    let initial_dark = config.appearance.custom_skin.is_empty()
-        && !matches!(config.appearance.theme, crate::config::ThemeChoice::Light);
+    // Load the active skin from config. Fall back to Dark if the named
+    // skin cannot be resolved.
+    let initial_vars = skin::load_skin(&config.appearance.active_skin)
+        .map(|s| s.vars)
+        .unwrap_or_else(SkinVars::dark_defaults);
+    let initial_css = render_gtk_css(&initial_vars);
 
     let provider = Rc::new(gtk4::CssProvider::new());
     provider.load_from_data(&initial_css);
@@ -1185,18 +1159,15 @@ pub fn build(
         &*provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    // Tell GTK to use the dark/light Adwaita variant for built-in widgets
-    // (title bars, entries, notebooks, etc.).  Without this, Flatpak apps
-    // default to light regardless of the system setting.
+    // Use the dark Adwaita variant for built-in widgets whenever the
+    // skin's window background is dark.
+    let initial_dark = initial_vars.background.luminance() < 0.5;
     if let Some(gtk_settings) = gtk4::Settings::default() {
         gtk_settings.set_gtk_application_prefer_dark_theme(initial_dark);
     }
-    let dark_mode = Rc::new(Cell::new(initial_dark));
 
-    // Clone provider and CSS for use by handlers that need them.
+    // Cloned Rc references used by the Appearance tab handlers.
     let provider_for_settings = provider.clone();
-    let dark_css_for_settings = dark_css_rc.clone();
-    let light_css_for_settings = light_css_rc.clone();
 
     // ── AppState ──────────────────────────────────────────────────────────────
     let state = match AppState::new(playlist, config) {
@@ -1277,11 +1248,16 @@ pub fn build(
     // Main window
     // ══════════════════════════════════════════════════════════════════════════
 
+    // Player window — fixed 480 px wide to match the macOS layout, which is
+    // tuned for that exact width. Non-resizable so the seek bar / transport
+    // row / now-playing column proportions can never drift.
+    let _ = init_player_width;
     let window = ApplicationWindow::builder()
         .application(app)
         .title("SparkAmp")
-        .default_width(init_player_width)
+        .default_width(480)
         .default_height(init_player_height)
+        .resizable(false)
         .build();
 
     let root = GtkBox::new(Orientation::Vertical, 0);
@@ -1327,45 +1303,57 @@ pub fn build(
     let left_col = GtkBox::new(Orientation::Vertical, 2);
     left_col.set_valign(Align::Center);
 
-    // Small play/pause/stop indicator to the left of the time display.
-    // Subtle: uses the same dim style as the secondary track-index line.
+    // Small play/pause/stop indicator — sits inside the same dark box as
+    // the time display. Class-less label inherits styling from the parent.
+    // Reserve 2 character widths so the emoji glyphs (⏹/▶/⏸), which can have
+    // slightly different widths depending on font fallback, can swap without
+    // changing the row's natural size.
     let state_label = Label::builder()
         .label("⏹")
         .halign(Align::Center)
         .valign(Align::Center)
-        .css_classes(["np-artist"])
+        .width_chars(2)
+        .max_width_chars(2)
+        .xalign(0.5)
         .build();
 
     // Time display label — single-line, monospace, centered.
     // Clicking toggles between elapsed and remaining time.
+    // Reserve 7 character widths so "0:00", "12:34", and "-123:45" all
+    // allocate the same horizontal slot — without this the time text grows
+    // during playback and drags the whole left column wider, causing the
+    // visualizer below to widen on play and shrink on stop.
     let show_remaining = Rc::new(Cell::new(false));
     let time_disp_label = Label::builder()
         .label("0:00")
         .halign(Align::Center)
-        .css_classes(["time-disp"])
+        .width_chars(7)
+        .max_width_chars(7)
+        .xalign(0.5)
         .build();
+
+    // Row containing [state_icon | time_display] — carries the `.time-disp`
+    // dark background so both labels sit in a single box.
+    let time_row = GtkBox::new(Orientation::Horizontal, 4);
+    time_row.set_halign(Align::Fill);
+    time_row.add_css_class("time-disp");
+    time_row.append(&state_label);
+    time_row.append(&time_disp_label);
     {
         let show_rem = show_remaining.clone();
         let click = GestureClick::new();
-        // connect_released fires after a complete click (pressed + released),
-        // giving the user a clear tap-to-toggle interaction.
         click.connect_released(move |_, _, _, _| {
             show_rem.set(!show_rem.get());
         });
-        time_disp_label.add_controller(click);
+        time_row.add_controller(click);
     }
 
-    // Row containing [state_icon | time_display].
-    let time_row = GtkBox::new(Orientation::Horizontal, 4);
-    time_row.set_halign(Align::Center);
-    time_row.append(&state_label);
-    time_row.append(&time_disp_label);
-
     // Mini visualizer DrawingArea — clicking cycles the visualizer mode.
+    // Width is matched to the time_row via a SizeGroup below.
     let viz = DrawingArea::new();
-    viz.set_content_width(100);
-    viz.set_content_height(68);
+    viz.set_content_height(52);
     viz.set_valign(Align::Center);
+    viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
     {
         let state_vc = state.clone();
@@ -1396,6 +1384,13 @@ pub fn build(
 
     left_col.append(&time_row);
     left_col.append(&viz);
+    // Pin the left column to a fixed width matching the macOS layout (118 px).
+    // Without this, the time-display string ("0:00" vs "12:34 / 45:67") would
+    // drag the column wider when it grows and snap it narrower when it
+    // shrinks, jiggling the visualizer below it. A fixed-width column also
+    // means the marquee on the right always has the same horizontal budget.
+    left_col.set_size_request(118, -1);
+    time_row.set_hexpand(true);
 
     // ── Right column: marquee frame (title only) + index + vol row ───────────
     // `np_info` fills the full height of `np_row` so the vol row at the bottom
@@ -1427,18 +1422,6 @@ pub fn build(
     marquee_frame.append(&title_label);
     np_info.append(&marquee_frame);
 
-    // Dim secondary line: shows current track index within the playlist.
-    // Updated by the tick loop so it stays current without extra callbacks.
-    let artist_label = Label::builder()
-        .label("")
-        .halign(Align::Start)
-        .margin_start(12) // indent to visually separate from frame edge
-        .margin_top(2)
-        .css_classes(["np-artist"])
-        .build();
-
-    np_info.append(&artist_label);
-
     // Expanding spring pushes the vol row to the bottom of the column so it
     // sits on the same horizontal line as the bottom of the visualizer.
     let info_spring = GtkBox::new(Orientation::Vertical, 0);
@@ -1450,35 +1433,56 @@ pub fn build(
     root.append(&np_row);
 
     // ── Buttons created early so they can all live in the vol row ───────────
-    // Repeat button: label and active state reflect saved config.
+    // Mode buttons are icon-only to mirror the macOS layout's compact look.
+    // The `.mode-btn-active` class is toggled by the corresponding window's
+    // visible-notify handler so the icon lights up while the window is open.
     let init_repeat = state.borrow().config.playback.repeat_mode;
-    let btn_repeat = Button::with_label(repeat_btn_label(init_repeat));
+    // Repeat / shuffle are icon+text to match the macOS ModeButton layout.
+    // Inner Image / Label refs are kept so the cycle handlers can swap both
+    // when the repeat mode rotates.
+    let repeat_icon = Image::from_icon_name(repeat_btn_icon(init_repeat));
+    let repeat_label = Label::new(Some(repeat_btn_text(init_repeat)));
+    // Reserve width for the widest mode text ("Repeat All") so the button
+    // doesn't reflow when cycling between modes. xalign default 0.5 keeps
+    // the icon+label visually centered inside the reserved width.
+    repeat_label.set_width_chars(10);
+    repeat_label.set_max_width_chars(10);
+    repeat_label.set_xalign(0.5);
+    let repeat_box = GtkBox::new(Orientation::Horizontal, 3);
+    repeat_box.append(&repeat_icon);
+    repeat_box.append(&repeat_label);
+    let btn_repeat = Button::new();
+    btn_repeat.set_child(Some(&repeat_box));
     btn_repeat.add_css_class("mode-btn");
     btn_repeat.set_tooltip_text(Some("Repeat: off / 1 (song) / all"));
     if init_repeat != crate::shuffle::RepeatMode::Off {
         btn_repeat.add_css_class("mode-btn-active");
     }
-    // Shuffle button: active state reflects saved shuffle state.
     let init_shuffle = state.borrow().shuffle_state.enabled;
-    let btn_shuffle = Button::with_label("🔀 Shuffle");
+    let shuffle_box = GtkBox::new(Orientation::Horizontal, 3);
+    shuffle_box.append(&Image::from_icon_name("media-playlist-shuffle-symbolic"));
+    shuffle_box.append(&Label::new(Some("Shuffle")));
+    let btn_shuffle = Button::new();
+    btn_shuffle.set_child(Some(&shuffle_box));
     btn_shuffle.add_css_class("mode-btn");
     btn_shuffle.set_tooltip_text(Some("Shuffle on/off"));
     if init_shuffle {
         btn_shuffle.add_css_class("mode-btn-active");
     }
 
-    let btn_pl = Button::with_label("PL");
+    let btn_pl = Button::from_icon_name("view-list-symbolic");
     btn_pl.add_css_class("mode-btn");
-    let btn_eq = Button::with_label("EQ");
+    btn_pl.set_tooltip_text(Some("Playlist (p)"));
+    let btn_eq = Button::from_icon_name("applications-multimedia-symbolic");
     btn_eq.add_css_class("mode-btn");
-    btn_eq.set_tooltip_text(Some("10-band equalizer"));
-    let btn_info = Button::with_label("ℹ");
+    btn_eq.set_tooltip_text(Some("10-band equalizer (u)"));
+    let btn_info = Button::from_icon_name("dialog-information-symbolic");
     btn_info.add_css_class("mode-btn");
-    btn_info.set_tooltip_text(Some("Keyboard shortcuts"));
-    let btn_jump_vol = Button::with_label("J");
+    btn_info.set_tooltip_text(Some("Keyboard shortcuts (i)"));
+    let btn_jump_vol = Button::from_icon_name("edit-find-symbolic");
     btn_jump_vol.add_css_class("mode-btn");
     btn_jump_vol.set_tooltip_text(Some("Jump to track (j)"));
-    let btn_ml = Button::with_label("ML");
+    let btn_ml = Button::from_icon_name("folder-music-symbolic");
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
 
@@ -1500,7 +1504,7 @@ pub fn build(
     let vol_bar = Scale::new(Orientation::Horizontal, Some(&vol_adj));
     vol_bar.set_draw_value(false);
     vol_bar.set_hexpand(false);
-    vol_bar.set_width_request(150);
+    vol_bar.set_width_request(140);
     vol_bar.add_css_class("vol-scale");
 
     // Expanding spacer pushes PL to the right edge of np_info.
@@ -1537,23 +1541,25 @@ pub fn build(
 
     // ── Transport buttons + GNOME logo ───────────────────────────────────────
     // Row spans the full width: buttons left-aligned, logo pinned to the right.
-    let transport = GtkBox::new(Orientation::Horizontal, 4);
+    let transport = GtkBox::new(Orientation::Horizontal, 8);
     transport.set_hexpand(true);
     transport.set_margin_start(8);
     transport.set_margin_end(8);
     transport.set_margin_top(8);
     transport.set_margin_bottom(8);
 
-    let btn_prev = Button::with_label("⏮");
-    let btn_play = Button::with_label("▶");
-    let btn_pause = Button::with_label("⏸");
-    let btn_stop = Button::with_label("⏹");
-    let btn_next = Button::with_label("⏭");
+    let btn_prev = Button::from_icon_name("media-skip-backward-symbolic");
+    let btn_play = Button::from_icon_name("media-playback-start-symbolic");
+    let btn_pause = Button::from_icon_name("media-playback-pause-symbolic");
+    let btn_stop = Button::from_icon_name("media-playback-stop-symbolic");
+    let btn_next = Button::from_icon_name("media-skip-forward-symbolic");
 
     for btn in [&btn_prev, &btn_play, &btn_pause, &btn_stop, &btn_next] {
         btn.add_css_class("transport");
     }
-    btn_play.add_css_class("transport-play");
+    // `transport-play` accent is toggled dynamically by the tick loop based on
+    // the engine's playback state — applied while Playing/Paused, removed when
+    // Stopped — so initial Stopped state matches the visual.
     // Sparkamp skin-format CSS classes — used by skins to target individual
     // buttons with background-image overrides (.sparkamp-button-play { ... }).
     btn_prev.add_css_class("sparkamp-button-prev");
@@ -1565,8 +1571,7 @@ pub fn build(
     // Load logo at ~42 px (50 % larger than the transport buttons).
     // If the PNG fails to load (e.g. asset missing), the image slot stays blank.
     const LOGO_PX: i32 = 42;
-    let logo_light = load_logo_pixbuf(LOGO_PX);
-    let logo_dark = logo_light.as_ref().map(|pb| invert_pixbuf(pb));
+    let logo_pixbuf = load_logo_pixbuf(LOGO_PX);
     let logo_img = Image::new();
     logo_img.set_valign(Align::Center);
     logo_img.set_pixel_size(LOGO_PX);
@@ -1574,19 +1579,9 @@ pub fn build(
     // button and progress bar end (both sit at 8px from the window edge; the
     // transport box itself already has margin_end(8)).
     logo_img.set_margin_end(8);
-    // Initial theme: if dark_mode is set apply the inverted version.
-    if dark_mode.get() {
-        if let Some(ref pb) = logo_dark {
-            logo_img.set_from_pixbuf(Some(pb));
-        }
-    } else {
-        if let Some(ref pb) = logo_light {
-            logo_img.set_from_pixbuf(Some(pb));
-        }
+    if let Some(ref pb) = logo_pixbuf {
+        logo_img.set_from_pixbuf(Some(pb));
     }
-    // Wrap logo pixbufs in Rc so the theme-toggle closure can reach them.
-    let logo_light_rc = Rc::new(logo_light);
-    let logo_dark_rc = Rc::new(logo_dark);
 
     // Two equal springs place repeat/shuffle equidistant between Next and logo.
     let transport_spring_l = GtkBox::new(Orientation::Horizontal, 0);
@@ -1633,42 +1628,6 @@ pub fn build(
 
     window.set_child(Some(&root));
 
-    // ── Right-click on the player body → toggle dark / light theme ───────────
-    {
-        let provider_rc = provider.clone();
-        let dark_ref = dark_mode.clone();
-        let accent_cell = accent_hex_current.clone();
-        let logo_img_rc = logo_img.clone();
-        let logo_light_t = logo_light_rc.clone();
-        let logo_dark_t = logo_dark_rc.clone();
-        let rclick = GestureClick::new();
-        rclick.set_button(3);
-        rclick.connect_released(move |_, _, _, _| {
-            let now_dark = !dark_ref.get();
-            dark_ref.set(now_dark);
-            let accent_hex = accent_cell.borrow().clone();
-            let css = if now_dark {
-                prepare_css(DARK_CSS_RAW, &accent_hex)
-            } else {
-                prepare_css(LIGHT_CSS_RAW, &accent_hex)
-            };
-            provider_rc.load_from_data(&css);
-            if let Some(gtk_settings) = gtk4::Settings::default() {
-                gtk_settings.set_gtk_application_prefer_dark_theme(now_dark);
-            }
-            // Swap logo to match the new theme.
-            if now_dark {
-                if let Some(ref pb) = *logo_dark_t {
-                    logo_img_rc.set_from_pixbuf(Some(pb));
-                }
-            } else {
-                if let Some(ref pb) = *logo_light_t {
-                    logo_img_rc.set_from_pixbuf(Some(pb));
-                }
-            }
-        });
-        root.add_controller(rclick);
-    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // Playlist window (separate, transient to main window)
@@ -1687,6 +1646,19 @@ pub fn build(
         .default_height(init_pl_height)
         .transient_for(&window)
         .build();
+
+    // Mirror playlist-window visibility onto the PL toggle button so it lights
+    // up while the playlist is open and dims when it closes.
+    playlist_win.connect_visible_notify({
+        let btn = btn_pl.clone();
+        move |w| {
+            if w.is_visible() {
+                btn.add_css_class("mode-btn-active");
+            } else {
+                btn.remove_css_class("mode-btn-active");
+            }
+        }
+    });
 
     let pl_root = GtkBox::new(Orientation::Vertical, 0);
 
@@ -1756,29 +1728,48 @@ pub fn build(
     // computed color of the hidden .np-title probe label.
     let accent_rgba: Rc<RefCell<Option<gdk::RGBA>>> = Rc::new(RefCell::new(None));
 
+    // Playlist TreeView overrides cell foreground per-row via col 4; CSS alone
+    // won't reach deprecated cell renderers. Keep an Rc-shared RGBA derived
+    // from the active skin's text_color, updated whenever the skin changes.
+    let text_rgba: Rc<RefCell<gdk::RGBA>> = Rc::new(RefCell::new(gdk::RGBA::new(
+        initial_vars.text_color.r as f32 / 255.0,
+        initial_vars.text_color.g as f32 / 255.0,
+        initial_vars.text_color.b as f32 / 255.0,
+        1.0,
+    )));
+
+    // Deferred rebuild_playlist handle — populated later when the closure is
+    // defined. Lets the logo-click and other early-bound callbacks dispatch
+    // to it even though construction happens further down.
+    let rebuild_pl_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(RefCell::new(None));
+
     // ── Left-click on the logo → open settings window ────────────────────────
     {
         let state_rc = state.clone();
         let win_wk = window.downgrade();
-        let dark_mode_clone = dark_mode.clone();
-        let accent_hex_for_settings = accent_hex_current.clone();
-        let accent_rgba_for_settings = accent_rgba.clone();
-        let pl_store_ref = pl_store.clone();
+        let provider_for_lclick = provider_for_settings.clone();
+        let text_rgba_for_lclick = text_rgba.clone();
+        let accent_rgba_for_lclick = accent_rgba.clone();
+        let rebuild_pl_holder_lclick = rebuild_pl_holder.clone();
         let lclick = GestureClick::new();
         lclick.set_button(1); // primary button only
         lclick.connect_released(move |_, _, _, _| {
             let parent_win = win_wk.upgrade();
+            // Fall back to a no-op if rebuild_playlist hasn't been assigned
+            // yet (should never happen post-init).
+            let rebuild_pl: Rc<dyn Fn()> = rebuild_pl_holder_lclick
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Rc::new(|| {}));
             open_settings_window(
                 parent_win.as_ref().map(|w| w.upcast_ref()),
                 state_rc.clone(),
                 None,
-                dark_mode_clone.clone(),
-                accent_hex_for_settings.clone(),
-                accent_rgba_for_settings.clone(),
-                provider_for_settings.clone(),
-                dark_css_for_settings.clone(),
-                light_css_for_settings.clone(),
-                pl_store_ref.clone(),
+                provider_for_lclick.clone(),
+                text_rgba_for_lclick.clone(),
+                accent_rgba_for_lclick.clone(),
+                rebuild_pl,
             );
         });
         logo_img.add_controller(lclick);
@@ -1916,9 +1907,9 @@ pub fn build(
         let pl_store = pl_store.clone();
         let pl_view = pl_view.clone();
         let pl_count_label = pl_count_label.clone();
-        let pl_selected_idx = pl_selected_idx.clone();
         let pl_active_idx = pl_active_idx.clone();
         let accent_rgba = accent_rgba.clone();
+        let text_rgba = text_rgba.clone();
         Rc::new(move || {
             let s = state.borrow();
             let current = s.playlist.current_index;
@@ -1927,7 +1918,6 @@ pub fn build(
                 PlayerState::Playing | PlayerState::Paused
             );
             let n = s.playlist.tracks.len();
-            let saved_selected = pl_selected_idx.get();
             // Update pl_active_idx to match current playing track.
             if is_playing {
                 pl_active_idx.set(current);
@@ -1944,7 +1934,6 @@ pub fn build(
                 let pos = format!("{}.{}", i + 1, lock_suffix);
                 let name = t.display_name();
                 let is_active = is_playing && i == current;
-                let is_row_selected = saved_selected != usize::MAX && saved_selected == i;
                 let display = if t.broken {
                     format!("⚠ {}", name)
                 } else if is_active {
@@ -1953,16 +1942,16 @@ pub fn build(
                     name
                 };
                 let weight: i32 = if is_active { 700 } else { 400 };
-                // Compute foreground color: active > selected > default.
+                // Compute foreground color.  Active (playing) rows get the
+                // skin's highlight/accent; everything else (including the
+                // GTK-selected row) uses the skin's text color.
                 let fg_rgba = if is_active {
                     accent_rgba
                         .borrow()
                         .clone()
-                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
-                } else if is_row_selected {
-                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                        .unwrap_or_else(|| text_rgba.borrow().clone())
                 } else {
-                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                    text_rgba.borrow().clone()
                 };
                 #[allow(deprecated)]
                 pl_store.insert_with_values(
@@ -1987,6 +1976,7 @@ pub fn build(
             ));
         })
     };
+    *rebuild_pl_holder.borrow_mut() = Some(rebuild_playlist.clone());
 
     // scroll_to_row_if_needed — scroll the playlist to make a row visible.
     //
@@ -2029,9 +2019,9 @@ pub fn build(
     let patch_pl_row = {
         let state = state.clone();
         let pl_store = pl_store.clone();
-        let pl_selected_idx = pl_selected_idx.clone();
         let pl_active_idx = pl_active_idx.clone();
         let accent_rgba = accent_rgba.clone();
+        let text_rgba = text_rgba.clone();
         Rc::new(move |idx: usize| {
             let (display, duration_str, weight, is_active) = {
                 let s = state.borrow();
@@ -2065,21 +2055,17 @@ pub fn build(
             } else if !is_active && current_active == idx {
                 pl_active_idx.set(usize::MAX);
             }
-            // Compute foreground color: active > selected > default.
+            // Compute foreground color: active row → accent, all others → skin text.
             let fg_rgba = {
                 let active_idx = pl_active_idx.get();
-                let selected_idx = pl_selected_idx.get();
                 let is_row_active = active_idx != usize::MAX && active_idx == idx;
-                let is_row_selected = selected_idx != usize::MAX && selected_idx == idx;
                 if is_row_active {
                     accent_rgba
                         .borrow()
                         .clone()
-                        .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0))
-                } else if is_row_selected {
-                    gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+                        .unwrap_or_else(|| text_rgba.borrow().clone())
                 } else {
-                    gdk::RGBA::new(0.8, 0.8, 0.8, 1.0)
+                    text_rgba.borrow().clone()
                 }
             };
             // Update name, duration, weight, and foreground color columns.
@@ -2460,6 +2446,8 @@ pub fn build(
     btn_repeat.connect_clicked({
         let state = state.clone();
         let btn_repeat = btn_repeat.clone();
+        let repeat_icon = repeat_icon.clone();
+        let repeat_label = repeat_label.clone();
         move |_| {
             let new_mode = {
                 let mut s = state.borrow_mut();
@@ -2467,8 +2455,9 @@ pub fn build(
                 s.config.playback.repeat_mode = m;
                 m
             };
-            // Update button label to show the active mode.
-            btn_repeat.set_label(repeat_btn_label(new_mode));
+            // Update both icon and text so the button matches macOS visuals.
+            repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
+            repeat_label.set_text(repeat_btn_text(new_mode));
             // Highlight with accent class when not off.
             if new_mode == crate::shuffle::RepeatMode::Off {
                 btn_repeat.remove_css_class("mode-btn-active");
@@ -3043,7 +3032,6 @@ pub fn build(
         let state = state.clone();
         let time_disp_label = time_disp_label.clone();
         let title_label = title_label.clone();
-        let artist_label = artist_label.clone();
         let seek_bar = seek_bar.clone();
         let play_update = play_and_update.clone();
         let viz = viz.clone();
@@ -3052,6 +3040,7 @@ pub fn build(
         let marquee_tick = marquee_tick.clone();
         let show_remaining = show_remaining.clone();
         let state_label = state_label.clone();
+        let btn_play = btn_play.clone();
         let patch_pl_row = patch_pl_row.clone();
         let current_track_meta_rx = std::cell::RefCell::new(current_track_meta_rx);
         let set_track = set_track.clone();
@@ -3437,7 +3426,9 @@ pub fn build(
                 }
             }
 
-            // 4. State icon (left of time display) + track-index line.
+            // 4. State icon (left of time display) + dynamic play-button accent.
+            //    The play button gains the `.transport-play` skin accent while
+            //    the engine is Playing or Paused, and loses it when Stopped.
             {
                 let s = state.borrow();
                 let icon = match s.player.state() {
@@ -3446,12 +3437,16 @@ pub fn build(
                     PlayerState::Stopped => "⏹",
                 };
                 state_label.set_text(icon);
-                let idx_text = if s.playlist.is_empty() {
-                    String::new()
-                } else {
-                    format!("[{}/{}]", s.playlist.current_index + 1, s.playlist.len())
-                };
-                artist_label.set_text(&idx_text);
+                match s.player.state() {
+                    PlayerState::Playing | PlayerState::Paused => {
+                        if !btn_play.has_css_class("transport-play") {
+                            btn_play.add_css_class("transport-play");
+                        }
+                    }
+                    PlayerState::Stopped => {
+                        btn_play.remove_css_class("transport-play");
+                    }
+                }
             }
 
             // 5. Trigger a Cairo repaint of the visualizer.
@@ -3663,6 +3658,16 @@ pub fn build(
     // reopened later.  Without this, the underlying GObject may be freed after
     // the first close, making subsequent `present()` calls a no-op.
     jump_win.set_hide_on_close(true);
+    jump_win.connect_visible_notify({
+        let btn = btn_jump_vol.clone();
+        move |w| {
+            if w.is_visible() {
+                btn.add_css_class("mode-btn-active");
+            } else {
+                btn.remove_css_class("mode-btn-active");
+            }
+        }
+    });
 
     // Maps each visible row in jump_box → the original track index in the playlist.
     let jump_indices: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
@@ -3780,6 +3785,8 @@ pub fn build(
         let kbd_btn_info = btn_info.clone();
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
+        let kbd_repeat_icon = repeat_icon.clone();
+        let kbd_repeat_label = repeat_label.clone();
         let kbd_btn_shuffle = btn_shuffle.clone();
         // Clones for z/b (prev/next) handlers — use patch instead of rebuild
         // so the scroll position is preserved rather than reset to the top.
@@ -3991,7 +3998,8 @@ pub fn build(
                         s.config.playback.repeat_mode = m;
                         m
                     };
-                    kbd_btn_repeat.set_label(repeat_btn_label(new_mode));
+                    kbd_repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
+                    kbd_repeat_label.set_text(repeat_btn_text(new_mode));
                     if new_mode == crate::shuffle::RepeatMode::Off {
                         kbd_btn_repeat.remove_css_class("mode-btn-active");
                     } else {
@@ -4126,40 +4134,40 @@ pub fn build(
                     .label("SparkAmp — Keyboard Shortcuts
 
 ── Playback ────────────────────────────────────────
-  z          Previous track / restart
-  x          Play
-  c          Pause / resume
-  v          Stop
-  b          Next track
-  ←  →       Seek −5 s / +5 s
-  r          Cycle repeat (off / song / playlist)
+  z            Previous track / restart
+  x            Play
+  c            Pause / resume
+  v            Stop
+  b            Next track
+  ←  →         Seek −5 s / +5 s
+  r            Cycle repeat (off / song / playlist)
 
 ── Volume ──────────────────────────────────────────
-  -          Volume down 5 %
-  =          Volume up 5 %
+  -            Volume down 5 %
+  =            Volume up 5 %
 
 ── Playlist ────────────────────────────────────────
-  n          Add file(s) or folder(s)
-  j          Jump / search
-  ↑ k / ↓ l  Browse up / down
-  Enter      Play selected track
-  Del        Remove highlighted track
-  p          Toggle playlist window
+  n            Add file(s) or folder(s)
+  j            Jump / search
+  ↑ k / ↓ l    Browse up / down
+  Enter        Play selected track
+  Del          Remove highlighted track
+  p            Toggle playlist window
 
 ── View & Tags ─────────────────────────────────────
-  a          Cycle visualizer mode (bars / waveform)
-  f          Waveform fullscreen (in Waveform mode; Esc to exit)
-  d          View/Edit ID3 tags for current track
-  u          Open EQ (TUI only — use EQ button in GUI)
-  Click logo Open settings
-  Right-click Toggle dark / light theme
+  a            Cycle visualizer mode (bars / waveform)
+  f            Waveform fullscreen (in Waveform mode; Esc to exit)
+  d            View/Edit ID3 tags for current track
+  u            Open EQ (TUI only — use EQ button in GUI)
+  Click logo   Open settings
+  Right-click  Toggle dark / light theme
 
 ── Hidden shortcuts ────────────────────────────────
-  s          Toggle shuffle on/off
+  s            Toggle shuffle on/off
 
 ── Other ───────────────────────────────────────────
-  i          Toggle this help
-  q / Esc    Quit")
+  i            Toggle this help
+  q / Esc      Quit")
                     .halign(gtk4::Align::Start)
                     .valign(gtk4::Align::Start)
                     .use_markup(false)
@@ -4181,6 +4189,16 @@ pub fn build(
         win.add_controller(key_ctrl);
         win.set_child(Some(&scroll));
         win.set_hide_on_close(true);
+        win.connect_visible_notify({
+            let btn = btn_info.clone();
+            move |w| {
+                if w.is_visible() {
+                    btn.add_css_class("mode-btn-active");
+                } else {
+                    btn.remove_css_class("mode-btn-active");
+                }
+            }
+        });
         win
     };
 
@@ -4217,6 +4235,7 @@ pub fn build(
         let state_rc = state.clone();
         let rebuild_pl = rebuild_playlist.clone();
         let set_track_ml = set_track.clone();
+        let btn_ml_for_notify = btn_ml.clone();
         move |_| {
             // If already open (visible or hidden), toggle visibility.
             {
@@ -4241,6 +4260,20 @@ pub fn build(
                 h,
             );
             ml_win.set_hide_on_close(true);
+            ml_win.connect_visible_notify({
+                let btn = btn_ml_for_notify.clone();
+                move |w| {
+                    if w.is_visible() {
+                        btn.add_css_class("mode-btn-active");
+                    } else {
+                        btn.remove_css_class("mode-btn-active");
+                    }
+                }
+            });
+            // open_media_library_window already calls present() before
+            // returning, so the visible-notify above has already fired and
+            // skipped attaching — sync the button state to match.
+            btn_ml_for_notify.add_css_class("mode-btn-active");
             state_rc.borrow_mut().ml_window = Some(ml_win);
         }
     });
@@ -4251,6 +4284,7 @@ pub fn build(
         let window_wk = window.downgrade();
         let state_rc = state.clone();
         let eq_ref = eq_win_ref.clone();
+        let btn_eq_for_notify = btn_eq.clone();
         move |_| {
             // Toggle if already created.
             {
@@ -4263,6 +4297,20 @@ pub fn build(
             // First open: create the window.
             let parent = window_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
             let win = open_eq_window(parent.as_ref(), state_rc.clone());
+            win.connect_visible_notify({
+                let btn = btn_eq_for_notify.clone();
+                move |w| {
+                    if w.is_visible() {
+                        btn.add_css_class("mode-btn-active");
+                    } else {
+                        btn.remove_css_class("mode-btn-active");
+                    }
+                }
+            });
+            // open_eq_window calls present() before returning; sync the
+            // button state since the notify handler attached above fires only
+            // on subsequent visibility changes.
+            btn_eq_for_notify.add_css_class("mode-btn-active");
             *eq_ref.borrow_mut() = Some(win);
         }
     });
@@ -4450,6 +4498,7 @@ pub fn build(
     }
     if init_ml_visible {
         let set_track_init_ml = set_track.clone();
+        let btn_ml_for_restore = btn_ml.clone();
         glib::timeout_add_local_once(Duration::from_millis(50), move || {
             let state_rc = state.clone();
             let rebuild_pl = rebuild_playlist.clone();
@@ -4461,6 +4510,23 @@ pub fn build(
                 init_ml_width,
                 init_ml_height,
             );
+            // Mirror the click-handler path: hide-on-close keeps the window
+            // alive across toggles, and visible-notify keeps the toolbar
+            // button's active class in sync with whether the window is shown.
+            ml_win.set_hide_on_close(true);
+            ml_win.connect_visible_notify({
+                let btn = btn_ml_for_restore.clone();
+                move |w| {
+                    if w.is_visible() {
+                        btn.add_css_class("mode-btn-active");
+                    } else {
+                        btn.remove_css_class("mode-btn-active");
+                    }
+                }
+            });
+            // open_media_library_window calls present() before returning, so
+            // the notify above missed the initial show — sync the class now.
+            btn_ml_for_restore.add_css_class("mode-btn-active");
             state_rc.borrow_mut().ml_window = Some(ml_win);
         });
     }
@@ -4994,7 +5060,12 @@ fn open_customize_columns_dialog(
         let sc = save_cfg.clone();
         let rh = rebuild_holder.clone();
         let on_toggle_rb = on_toggle.clone();
+        let scrolled_rb = scrolled.clone();
         Rc::new(move || {
+            // Preserve scroll position: clearing and re-adding rows resets
+            // the ScrolledWindow's vadjustment to 0, which yanks the user
+            // back to the top on every toggle. Snapshot → rebuild → restore.
+            let prev_scroll = scrolled_rb.vadjustment().value();
             while let Some(c) = lb_ref.first_child() { lb_ref.remove(&c); }
 
             let es = entries.borrow().clone();
@@ -5080,6 +5151,16 @@ fn open_customize_columns_dialog(
                 row.set_child(Some(&row_box));
                 lb_ref.append(&row);
             }
+            // Restore scroll position after the new rows lay out. idle_add
+            // defers until GTK finishes sizing the listbox so the adjustment
+            // upper bound reflects the post-rebuild content height.
+            let adj = scrolled_rb.vadjustment();
+            glib::idle_add_local_once(move || {
+                let upper = adj.upper();
+                let page  = adj.page_size();
+                let max   = (upper - page).max(0.0);
+                adj.set_value(prev_scroll.min(max));
+            });
         })
     };
 
@@ -5700,22 +5781,17 @@ fn open_id3_editor_window(
 /// when a control's value changes.  Pressing "Close" (or closing the
 /// window) persists the config to disk.  `initial_tab` selects the starting
 /// tab page (0-indexed), or opens at the default page if `None`.
-/// `dark_mode` tracks the current theme for CSS reloads.
-/// `accent_hex_current` stores the current accent hex for theme toggles.
-/// `accent_rgba` is updated when accent changes to refresh playlist playing row color.
-/// `pl_store` is used to repaint the playing row when accent changes.
+/// `css_provider` is updated live when the user switches skins in the
+/// Appearance tab.
 #[allow(deprecated)]
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     initial_tab: Option<u32>,
-    dark_mode: Rc<Cell<bool>>,
-    accent_hex_current: Rc<RefCell<String>>,
-    accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
     css_provider: Rc<gtk4::CssProvider>,
-    dark_css: Rc<String>,
-    light_css: Rc<String>,
-    pl_store: gtk4::ListStore,
+    text_rgba: Rc<RefCell<gdk::RGBA>>,
+    accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
+    rebuild_playlist: Rc<dyn Fn()>,
 ) {
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — SparkAmp"));
@@ -5733,277 +5809,292 @@ fn open_settings_window(
 
     // ── Tab 0: Appearance ─────────────────────────────────────────────────
     {
-        use crate::config::{AccentColorChoice, ThemeChoice};
+        use gtk4::{Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation,
+                   PolicyType, ScrolledWindow, SelectionMode, FileDialog, FileFilter};
 
-        let grid = Grid::new();
-        grid.set_row_spacing(12);
-        grid.set_column_spacing(16);
-        grid.set_margin_top(16);
-        grid.set_margin_bottom(16);
-        grid.set_margin_start(16);
-        grid.set_margin_end(16);
+        let root = GtkBox::new(Orientation::Vertical, 10);
+        root.set_margin_top(16);
+        root.set_margin_bottom(16);
+        root.set_margin_start(16);
+        root.set_margin_end(16);
 
-        let lbl = Label::new(Some("Theme"));
-        lbl.set_halign(Align::Start);
-        grid.attach(&lbl, 0, 0, 1, 1);
+        // Header
+        let header = Label::new(Some("Skin"));
+        header.set_halign(Align::Start);
+        header.add_css_class("heading");
+        root.append(&header);
 
-        // DropDown: index 0 = Dark, index 1 = Light.
-        let dd = DropDown::from_strings(&["Dark", "Light"]);
-        {
-            let theme = state.borrow().config.appearance.theme.clone();
-            dd.set_selected(match theme {
-                ThemeChoice::Dark => 0,
-                ThemeChoice::Light => 1,
-            });
-        }
+        // Scrollable list of skins
+        let listbox = ListBox::new();
+        listbox.set_selection_mode(SelectionMode::Single);
+        listbox.add_css_class("rich-list");
+
+        let scrolled = ScrolledWindow::new();
+        scrolled.set_policy(PolicyType::Never, PolicyType::Automatic);
+        scrolled.set_min_content_height(200);
+        scrolled.set_child(Some(&listbox));
+        root.append(&scrolled);
+
+        // Suppress the row_selected handler while we programmatically
+        // re-select the active row after rebuild. GtkNotebook tab switches
+        // can also fire spurious row_selected events on re-show; we only
+        // want user clicks to apply a skin.
+        let suppress_sel: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
+        // Populate rows
+        let rebuild_list = {
+            let listbox = listbox.clone();
+            let state_rc = state.clone();
+            let suppress = suppress_sel.clone();
+            Rc::new(move || {
+                suppress.set(true);
+                while let Some(row) = listbox.first_child() {
+                    listbox.remove(&row);
+                }
+                let hidden = state_rc.borrow().config.appearance.hidden_skins.clone();
+                let entries = crate::skin::list_skins(&hidden);
+                let active = state_rc.borrow().config.appearance.active_skin.clone();
+                let mut active_row: Option<ListBoxRow> = None;
+
+                for entry in entries {
+                    let row = ListBoxRow::new();
+                    let hbox = GtkBox::new(Orientation::Horizontal, 8);
+                    hbox.set_margin_top(4);
+                    hbox.set_margin_bottom(4);
+                    hbox.set_margin_start(8);
+                    hbox.set_margin_end(8);
+
+                    let name_lbl = Label::new(Some(&entry.display_name));
+                    name_lbl.set_halign(Align::Start);
+                    name_lbl.set_hexpand(true);
+                    hbox.append(&name_lbl);
+
+                    if entry.is_builtin {
+                        let tag = Label::new(Some("(built-in)"));
+                        tag.add_css_class("dim-label");
+                        hbox.append(&tag);
+                    }
+
+                    if entry.name == active {
+                        let mark = Label::new(Some("● Active"));
+                        mark.add_css_class("dim-label");
+                        hbox.append(&mark);
+                    }
+
+                    row.set_child(Some(&hbox));
+                    row.set_widget_name(&entry.name);
+                    listbox.append(&row);
+                    if entry.name == active {
+                        active_row = Some(row);
+                    }
+                }
+                if let Some(r) = active_row {
+                    listbox.select_row(Some(&r));
+                }
+                suppress.set(false);
+            })
+        };
+        rebuild_list();
+
+        // Selecting a row applies the skin live.
         {
             let state_rc = state.clone();
-            let dark_mode_rc = dark_mode.clone();
-            let provider_rc = css_provider.clone();
-            let dark_css_rc = dark_css.clone();
-            let light_css_rc = light_css.clone();
-            dd.connect_selected_notify(move |d| {
-                let theme = match d.selected() {
-                    0 => ThemeChoice::Dark,
-                    _ => ThemeChoice::Light,
-                };
-                {
-                    let mut s = state_rc.borrow_mut();
-                    s.config.appearance.theme = theme.clone();
+            let provider = css_provider.clone();
+            let text_rgba = text_rgba.clone();
+            let accent_rgba = accent_rgba.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            let rebuild = rebuild_list.clone();
+            let suppress = suppress_sel.clone();
+            listbox.connect_row_selected(move |_, row| {
+                if suppress.get() { return; }
+                let Some(row) = row else { return };
+                let name = row.widget_name().to_string();
+                if name.is_empty() { return; }
+                // User-clicked a row while the skin was already active
+                // (e.g., re-click to re-apply) — nothing to do.
+                if state_rc.borrow().config.appearance.active_skin == name {
+                    return;
                 }
-                dark_mode_rc.set(matches!(theme, ThemeChoice::Dark));
-                // Reload CSS with new theme and current accent color.
-                let is_dark = matches!(theme, ThemeChoice::Dark);
-                let accent_hex =
-                    resolve_accent_hex(&state_rc.borrow().config.appearance.accent_color);
-                reload_css_accent(
-                    &provider_rc,
-                    &dark_css_rc,
-                    &light_css_rc,
-                    is_dark,
-                    &accent_hex,
+                let Some(skin) = crate::skin::load_skin(&name) else { return };
+                let css = crate::skin::render_gtk_css(&skin.vars);
+                provider.load_from_data(&css);
+                if let Some(gtk_settings) = gtk4::Settings::default() {
+                    gtk_settings.set_gtk_application_prefer_dark_theme(
+                        skin.vars.background.luminance() < 0.5);
+                }
+                *text_rgba.borrow_mut() = gdk::RGBA::new(
+                    skin.vars.text_color.r as f32 / 255.0,
+                    skin.vars.text_color.g as f32 / 255.0,
+                    skin.vars.text_color.b as f32 / 255.0,
+                    1.0,
                 );
+                // Playlist TreeView stores fg color per-row via RGBA column;
+                // update the shared accent from the new skin's highlight so
+                // the playing row re-renders in the new skin's accent rather
+                // than the color captured at startup.
+                *accent_rgba.borrow_mut() = Some(gdk::RGBA::new(
+                    skin.vars.highlight.r as f32 / 255.0,
+                    skin.vars.highlight.g as f32 / 255.0,
+                    skin.vars.highlight.b as f32 / 255.0,
+                    1.0,
+                ));
+                state_rc.borrow_mut().config.appearance.active_skin = name;
+                // Refresh all playlist rows so the new text / accent colors
+                // propagate — CSS alone doesn't reach the deprecated cell
+                // renderer's foreground-rgba column.
+                rebuild_pl();
+                rebuild();
             });
         }
-        grid.attach(&dd, 1, 0, 1, 1);
 
-        // Row 1: Highlight color dropdown.
-        let accent_color_labels = [
-            "System Default",
-            "Blue",
-            "Green",
-            "Purple",
-            "Red",
-            "Orange",
-            "Yellow",
-            "White",
-            "Grey",
-            "Custom…",
-        ];
-        let lbl_accent = Label::new(Some("Highlight color"));
-        lbl_accent.set_halign(Align::Start);
-        grid.attach(&lbl_accent, 0, 1, 1, 1);
+        // Row of action buttons
+        let btn_row = GtkBox::new(Orientation::Horizontal, 8);
+        let btn_add = Button::with_label("Add skin…");
+        let btn_remove = Button::with_label("Remove");
+        let btn_download = Button::with_label("Download skin…");
+        btn_row.append(&btn_add);
+        btn_row.append(&btn_remove);
+        btn_row.append(&btn_download);
+        root.append(&btn_row);
 
-        let dd_accent = DropDown::from_strings(&accent_color_labels);
-        let accent_container = GtkBox::new(Orientation::Horizontal, 4);
-        #[allow(deprecated)]
-        let custom_color_btn = gtk4::ColorButton::new();
-        custom_color_btn.set_visible(false);
-        accent_container.append(&dd_accent);
-        accent_container.append(&custom_color_btn);
-
-        // Initialize dropdown selection from config.
-        {
-            let accent_choice = state.borrow().config.appearance.accent_color.clone();
-            let custom_hex = match &accent_choice {
-                AccentColorChoice::Custom(hex) => Some(hex.clone()),
-                _ => None,
-            };
-            let selection = match &accent_choice {
-                AccentColorChoice::System => 0,
-                AccentColorChoice::Blue => 1,
-                AccentColorChoice::Green => 2,
-                AccentColorChoice::Purple => 3,
-                AccentColorChoice::Red => 4,
-                AccentColorChoice::Orange => 5,
-                AccentColorChoice::Yellow => 6,
-                AccentColorChoice::White => 7,
-                AccentColorChoice::Grey => 8,
-                AccentColorChoice::Custom(_) => {
-                    custom_color_btn.set_visible(true);
-                    9
-                }
-            };
-            dd_accent.set_selected(selection as u32);
-            if let Some(hex) = custom_hex {
-                if let Ok(color) = gdk::RGBA::parse(&hex) {
-                    custom_color_btn.set_rgba(&color);
-                }
-            }
-        }
-
-        // Handle accent color changes.
+        // Wire Add
         {
             let state_rc = state.clone();
-            let provider_rc = css_provider.clone();
-            let dark_css_rc = dark_css.clone();
-            let light_css_rc = light_css.clone();
-            let dark_mode_rc = dark_mode.clone();
-            let accent_cell = accent_hex_current.clone();
-            let accent_rgba_rc = accent_rgba.clone();
-            let custom_btn = custom_color_btn.clone();
-            let pl_store_rc = pl_store.clone();
+            let rebuild = rebuild_list.clone();
+            let listbox = listbox.clone();
+            let win_ref = win.clone();
+            btn_add.connect_clicked(move |_| {
+                let dialog = FileDialog::new();
+                dialog.set_title("Add Sparkamp skin");
+                let filter = FileFilter::new();
+                filter.add_suffix("css");
+                filter.set_name(Some("Sparkamp skin (*.css)"));
+                let filters = gio::ListStore::new::<FileFilter>();
+                filters.append(&filter);
+                dialog.set_filters(Some(&filters));
 
-            dd_accent.connect_selected_notify(move |d| {
-                let selection = d.selected();
-                let (accent_choice, _custom_hex) = match selection {
-                    0 => (AccentColorChoice::System, None),
-                    1 => (AccentColorChoice::Blue, None),
-                    2 => (AccentColorChoice::Green, None),
-                    3 => (AccentColorChoice::Purple, None),
-                    4 => (AccentColorChoice::Red, None),
-                    5 => (AccentColorChoice::Orange, None),
-                    6 => (AccentColorChoice::Yellow, None),
-                    7 => (AccentColorChoice::White, None),
-                    8 => (AccentColorChoice::Grey, None),
-                    _ => {
-                        // Custom: read from color button
-                        let rgba = custom_btn.rgba();
-                        let hex = format!(
-                            "#{:02x}{:02x}{:02x}",
-                            (rgba.red() * 255.0) as u8,
-                            (rgba.green() * 255.0) as u8,
-                            (rgba.blue() * 255.0) as u8
-                        );
-                        (AccentColorChoice::Custom(hex.clone()), Some(hex))
-                    }
-                };
-
-                // Show/hide custom color button.
-                custom_btn.set_visible(selection == 9);
-
-                // Update config.
-                {
-                    let mut s = state_rc.borrow_mut();
-                    s.config.appearance.accent_color = accent_choice.clone();
-                }
-
-                // Reload CSS with new accent color.
-                let is_dark = dark_mode_rc.get();
-                let accent_hex = resolve_accent_hex(&accent_choice);
-                *accent_cell.borrow_mut() = accent_hex.clone();
-                reload_css_accent(
-                    &provider_rc,
-                    &dark_css_rc,
-                    &light_css_rc,
-                    is_dark,
-                    &accent_hex,
-                );
-                // Update accent_rgba for playlist playing row color
-                if let Ok(rgba) = gdk::RGBA::parse(&accent_hex) {
-                    *accent_rgba_rc.borrow_mut() = Some(rgba);
-                }
-                // Repaint the currently playing row with new accent color
-                let playing_idx = state_rc.borrow().playlist.current_index;
-                let is_playing = matches!(
-                    *state_rc.borrow().player.state(),
-                    PlayerState::Playing | PlayerState::Paused
-                );
-                if is_playing && !state_rc.borrow().playlist.is_empty() {
-                    #[allow(deprecated)]
-                    if let Some(iter) = pl_store_rc.iter_nth_child(None, playing_idx as i32) {
-                        let rgba = accent_rgba_rc
-                            .borrow()
-                            .clone()
-                            .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
-                        #[allow(deprecated)]
-                        pl_store_rc.set_value(&iter, 4, &rgba.to_value());
-                    }
-                }
-            });
-
-            // Handle custom color button changes.
-            {
-                let state_rc2 = state.clone();
-                let provider_rc2 = css_provider.clone();
-                let dark_css_rc2 = dark_css.clone();
-                let light_css_rc2 = light_css.clone();
-                let dark_mode_rc2 = dark_mode.clone();
-                let accent_cell2 = accent_hex_current.clone();
-                let accent_rgba_rc2 = accent_rgba.clone();
-                let pl_store_rc2 = pl_store.clone();
-                #[allow(deprecated)]
-                custom_color_btn.connect_color_set(move |btn| {
-                    let rgba = btn.rgba();
-                    let hex = format!(
-                        "#{:02x}{:02x}{:02x}",
-                        (rgba.red() * 255.0) as u8,
-                        (rgba.green() * 255.0) as u8,
-                        (rgba.blue() * 255.0) as u8
-                    );
-                    let accent_choice = AccentColorChoice::Custom(hex.clone());
-
-                    // Update config.
-                    {
-                        let mut s = state_rc2.borrow_mut();
-                        s.config.appearance.accent_color = accent_choice.clone();
-                    }
-
-                    // Reload CSS with new accent color.
-                    let is_dark = dark_mode_rc2.get();
-                    let accent_hex = resolve_accent_hex(&accent_choice);
-                    *accent_cell2.borrow_mut() = accent_hex.clone();
-                    reload_css_accent(
-                        &provider_rc2,
-                        &dark_css_rc2,
-                        &light_css_rc2,
-                        is_dark,
-                        &accent_hex,
-                    );
-                    // Update accent_rgba for playlist playing row color
-                    *accent_rgba_rc2.borrow_mut() = Some(rgba.clone());
-                    // Repaint the currently playing row with new accent color
-                    let playing_idx = state_rc2.borrow().playlist.current_index;
-                    let is_playing = matches!(
-                        *state_rc2.borrow().player.state(),
-                        PlayerState::Playing | PlayerState::Paused
-                    );
-                    if is_playing && !state_rc2.borrow().playlist.is_empty() {
-                        #[allow(deprecated)]
-                        if let Some(iter) = pl_store_rc2.iter_nth_child(None, playing_idx as i32) {
-                            #[allow(deprecated)]
-                            let rgba = accent_rgba_rc2
-                                .borrow()
-                                .clone()
-                                .unwrap_or_else(|| gdk::RGBA::new(0.0, 0.6, 1.0, 1.0));
-                            #[allow(deprecated)]
-                            pl_store_rc2.set_value(&iter, 4, &rgba.to_value());
+                let state_rc = state_rc.clone();
+                let rebuild = rebuild.clone();
+                let listbox = listbox.clone();
+                dialog.open(Some(&win_ref), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    match crate::skin::add_user_skin(&path) {
+                        Ok(entry) => {
+                            state_rc.borrow_mut().config.appearance.active_skin =
+                                entry.name.clone();
+                            state_rc.borrow_mut().config.appearance.hidden_skins
+                                .retain(|n| !n.eq_ignore_ascii_case(&entry.name));
+                            rebuild();
+                            if let Some(row) = find_row_by_name(&listbox, &entry.name) {
+                                listbox.select_row(Some(&row));
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("Could not add skin: {e}");
+                            show_error_alert(&msg);
                         }
                     }
                 });
-            }
-        }
-        grid.attach(&accent_container, 1, 1, 1, 1);
-
-        // Row 2: Custom skin name (overrides Theme when non-empty).
-        let lbl_skin = Label::new(Some("Custom skin name"));
-        lbl_skin.set_halign(Align::Start);
-        grid.attach(&lbl_skin, 0, 2, 1, 1);
-
-        let entry_skin = Entry::new();
-        entry_skin.set_text(&state.borrow().config.appearance.custom_skin);
-        entry_skin.set_width_chars(24);
-        entry_skin.set_placeholder_text(Some("(empty = use Theme above)"));
-        {
-            let state_rc = state.clone();
-            entry_skin.connect_changed(move |e| {
-                state_rc.borrow_mut().config.appearance.custom_skin = e.text().to_string();
             });
         }
-        grid.attach(&entry_skin, 1, 2, 1, 1);
+
+        // Wire Remove (disabled for built-ins)
+        {
+            let state_rc = state.clone();
+            let rebuild = rebuild_list.clone();
+            let listbox = listbox.clone();
+            btn_remove.connect_clicked(move |_| {
+                let Some(row) = listbox.selected_row() else { return };
+                let name = row.widget_name().to_string();
+                if name == "dark" || name == "light" || name.is_empty() {
+                    return;
+                }
+                {
+                    let mut s = state_rc.borrow_mut();
+                    if !s.config.appearance.hidden_skins.iter().any(|h| h.eq_ignore_ascii_case(&name)) {
+                        s.config.appearance.hidden_skins.push(name.clone());
+                    }
+                    if s.config.appearance.active_skin == name {
+                        s.config.appearance.active_skin = "dark".to_string();
+                    }
+                }
+                rebuild();
+            });
+        }
+
+        // Update Remove-disabled state reactively on selection changes.
+        {
+            let btn_remove = btn_remove.clone();
+            listbox.connect_row_selected(move |_, row| {
+                let name = row.map(|r| r.widget_name().to_string()).unwrap_or_default();
+                let is_builtin = name == "dark" || name == "light" || name.is_empty();
+                btn_remove.set_sensitive(!is_builtin);
+            });
+        }
+
+        // Wire Download (Export template CSS…)
+        {
+            let listbox = listbox.clone();
+            let win_ref = win.clone();
+            btn_download.connect_clicked(move |_| {
+                let Some(row) = listbox.selected_row() else { return };
+                let name = row.widget_name().to_string();
+                let Some(skin) = crate::skin::load_skin(&name) else { return };
+
+                let dialog = FileDialog::new();
+                dialog.set_title("Save Sparkamp skin");
+                dialog.set_initial_name(Some(&format!("{name}.css")));
+
+                let skin_copy = skin.clone();
+                dialog.save(Some(&win_ref), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    let css = match &skin_copy.source {
+                        crate::skin::SkinSource::BuiltIn => match skin_copy.name.as_str() {
+                            "dark" => crate::skin::DARK_TEMPLATE_CSS.to_string(),
+                            "light" => crate::skin::LIGHT_TEMPLATE_CSS.to_string(),
+                            _ => crate::skin::DARK_TEMPLATE_CSS.to_string(),
+                        },
+                        crate::skin::SkinSource::UserFile(p) => {
+                            std::fs::read_to_string(p).unwrap_or_default()
+                        }
+                    };
+                    let _ = std::fs::write(&path, css);
+                });
+            });
+        }
+
+        // Separator
+        let sep = gtk4::Separator::new(Orientation::Horizontal);
+        sep.set_margin_top(8);
+        sep.set_margin_bottom(8);
+        root.append(&sep);
+
+        // Documentation header + button
+        let doc_header = Label::new(Some("Documentation"));
+        doc_header.set_halign(Align::Start);
+        doc_header.add_css_class("heading");
+        root.append(&doc_header);
+
+        let btn_guide = Button::with_label("Export how-to guide…");
+        root.append(&btn_guide);
+        {
+            let win_ref = win.clone();
+            btn_guide.connect_clicked(move |_| {
+                let dialog = FileDialog::new();
+                dialog.set_title("Save Sparkamp skin guide");
+                dialog.set_initial_name(Some("sparkamp-skin-guide.md"));
+                dialog.save(Some(&win_ref), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    let _ = std::fs::write(&path, crate::skin::SKIN_GUIDE_MD);
+                });
+            });
+        }
 
         let tab_lbl = Label::new(Some("Appearance"));
-        notebook.append_page(&grid, Some(&tab_lbl));
+        notebook.append_page(&root, Some(&tab_lbl));
     }
 
     // ── Tab 1: Behavior ───────────────────────────────────────────────────
@@ -6561,7 +6652,9 @@ fn open_settings_window(
                         }
                         let _ = fast_tx.send(Ok(0usize));
 
-                        // Phase 2: metadata scan
+                        // Phase 2: metadata scan. Reset tracks with no metadata first
+                        // so scan_folder picks up any that a previous scan missed.
+                        let _ = lib.reset_unscanned_metadata();
                         let count = lib
                             .scan_folder(folder_id, &cancel_flag, |c, t| {
                                 let _ = progress_tx.send((c, t));
@@ -6799,6 +6892,9 @@ fn open_settings_window(
                             return;
                         }
                     };
+                    // Clear last_scanned for tracks with no metadata so scan_folder
+                    // re-processes them (handles recovery from a prior broken scan).
+                    let _ = lib.reset_unscanned_metadata();
                     let result = lib
                         .scan_all_folders(&cancel_flag, |current, total| {
                             let _ = progress_tx.send((current, total));
@@ -6822,7 +6918,14 @@ fn open_settings_window(
 
                     // Check for completion
                     if let Ok(result) = result_rx.borrow().try_recv() {
+                        {
+                            let mut s = state_rc2.borrow_mut();
+                            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                        }
                         complete_ml_scan(&state_rc2);
+                        if let Some(ref cb) = state_rc2.borrow().rebuild_ml_callback {
+                            cb();
+                        }
                         match result {
                             Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
                             Ok(_) => status_ref2.set_text("Scan complete"),
@@ -6940,7 +7043,7 @@ fn open_settings_window(
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
 fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
-    use crate::config::{EQ_BAND_FREQS, EQ_PRESETS};
+    use crate::config::EQ_PRESETS;
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 
     let win = gtk4::Window::new();
@@ -7049,13 +7152,9 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -
         let col = GtkBox::new(Orientation::Vertical, 2);
         col.set_hexpand(true);
 
-        // Frequency label.
-        let freq_label = Label::new(Some(EQ_BAND_FREQS[i]));
-        freq_label.set_halign(gtk4::Align::Center);
-        col.append(&freq_label);
-
-        // Vertical scale: range −24..+12, step 1, page 3.
-        let adj = Adjustment::new(bands_snapshot[i], -24.0, 12.0, 1.0, 3.0, 0.0);
+        // Vertical scale: user-facing range ±12 dB (engine clamps internally).
+        let adj = Adjustment::new(bands_snapshot[i].clamp(-12.0, 12.0),
+                                  -12.0, 12.0, 1.0, 3.0, 0.0);
         let scale = Scale::new(Orientation::Vertical, Some(&adj));
         scale.add_css_class("eq-scale");
         scale.set_inverted(true); // top = positive, bottom = negative
@@ -7064,7 +7163,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -
         scale.set_height_request(100);
         scale.add_mark(0.0, gtk4::PositionType::Right, Some("0"));
         scale.add_mark(12.0, gtk4::PositionType::Right, Some("+12"));
-        scale.add_mark(-24.0, gtk4::PositionType::Right, Some("-24"));
+        scale.add_mark(-12.0, gtk4::PositionType::Right, Some("-12"));
         col.append(&scale);
 
         // Gain value label (updated live as the slider moves).
@@ -8703,8 +8802,8 @@ fn open_media_library_window(
         let multi_sel = MultiSelection::new(Some(sort_model.clone()));
         let col_view = ColumnView::new(Some(multi_sel.clone()));
         col_view.add_css_class("ml-col-view");
-        col_view.set_show_row_separators(true);
-        col_view.set_show_column_separators(true);
+        col_view.set_show_row_separators(false);
+        col_view.set_show_column_separators(false);
         col_view.set_hexpand(true);
         col_view.set_vexpand(true);
         col_view.set_reorderable(true);
@@ -8804,7 +8903,6 @@ fn open_media_library_window(
         // Rescan Metadata action
         let ml_action_rescan_state = state.clone();
         let ml_action_rescan_tracks = ml_selected_tracks.clone();
-        let ml_action_rescan_store = track_store.clone();
         let action_rescan = gio::SimpleAction::new("rescan", None); // Note: action name without "ml." prefix
         action_rescan.connect_activate(move |_, _| {
             let tracks: Vec<_> = ml_action_rescan_tracks.borrow().clone();
@@ -8843,22 +8941,19 @@ fn open_media_library_window(
             let progress_rx = std::cell::RefCell::new(progress_rx);
             let result_rx = std::cell::RefCell::new(result_rx);
             let state_for_timer = ml_action_rescan_state.clone();
-            let store_for_timer = ml_action_rescan_store.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 while let Ok(current) = progress_rx.borrow().try_recv() {
                     update_ml_scan_progress(&state_for_timer, current, total);
                 }
                 if result_rx.borrow().try_recv().is_ok() {
+                    {
+                        let mut s = state_for_timer.borrow_mut();
+                        s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                    }
                     complete_ml_scan(&state_for_timer);
-                    let tracks: Vec<crate::media_library::LibTrack> = state_for_timer
-                        .borrow()
-                        .media_lib
-                        .as_ref()
-                        .and_then(|lib| lib.all_tracks().ok())
-                        .unwrap_or_default();
-                    let boxed: Vec<glib::BoxedAnyObject> =
-                        tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
-                    store_for_timer.splice(0, store_for_timer.n_items(), &boxed);
+                    if let Some(ref cb) = state_for_timer.borrow().rebuild_ml_callback {
+                        cb();
+                    }
                     return glib::ControlFlow::Break;
                 }
                 glib::ControlFlow::Continue
@@ -9001,8 +9096,8 @@ fn open_media_library_window(
                             .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
-                            .margin_top(1)
-                            .margin_bottom(1)
+                            .margin_top(3)
+                            .margin_bottom(3)
                             .hexpand(true)
                             .vexpand(true)
                             .halign(Align::Fill)
@@ -9012,15 +9107,15 @@ fn open_media_library_window(
                         child = btn.upcast::<gtk4::Widget>();
                     } else {
                         let lbl = Label::builder()
-                            .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
-                            .margin_top(1)
-                            .margin_bottom(1)
+                            .margin_top(3)
+                            .margin_bottom(3)
                             .hexpand(true)
                             .vexpand(true)
                             .halign(Align::Fill)
                             .valign(Align::Fill)
+                            .xalign(0.0)
                             .ellipsize(gtk4::pango::EllipsizeMode::End)
                             .css_classes(["ml-col-label"])
                             .build();
@@ -9660,7 +9755,9 @@ fn open_media_library_window(
                                 return;
                             }
                             let _ = fast_tx.send(Ok(folder_id as usize));
-                            // Phase 2: read metadata for tracks that need it.
+                            // Phase 2: read metadata. Reset tracks with no metadata
+                            // first so any missed by a prior scan are re-processed.
+                            let _ = lib.reset_unscanned_metadata();
                             let count = lib
                                 .scan_folder(folder_id, &cancel_thread, |c, t| {
                                     let _ = progress_tx.send((c, t));
@@ -9765,6 +9862,7 @@ fn open_media_library_window(
                             return;
                         }
                     };
+                    let _ = lib.reset_unscanned_metadata();
                     let result = lib
                         .scan_all_folders(&cancel_flag, |current, total| {
                             let _ = progress_tx.send((current, total));

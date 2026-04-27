@@ -73,11 +73,12 @@ struct KeyboardShortcutsView: View {
     // MARK: – Body
 
     var body: some View {
-        VStack(spacing: 0) {
+        let vars = themeManager.currentVars
+        return VStack(spacing: 0) {
             // Header — matches playlist header style
             HStack {
                 Text("Keyboard Shortcuts")
-                    .font(.system(size: 10))
+                    .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
             }
@@ -93,7 +94,7 @@ struct KeyboardShortcutsView: View {
                     ForEach(sections, id: \.title) { section in
                         // Section header
                         Text(section.title.uppercased())
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(vars.bodyFont.weight(.semibold))
                             .foregroundStyle(theme.playlistDurationText)
                             .padding(.horizontal, 10)
                             .padding(.top, 10)
@@ -104,14 +105,14 @@ struct KeyboardShortcutsView: View {
                             HStack(spacing: 0) {
                                 // Key badge
                                 Text(entry.key)
-                                    .font(.system(size: 12, design: .monospaced))
+                                    .font(vars.smallMonospaceFont)
                                     .foregroundStyle(theme.playlistCurrentText)
                                     .frame(width: 100, alignment: .leading)
                                     .padding(.leading, 10)
 
                                 // Action description — same font as playlist rows
                                 Text(entry.action)
-                                    .font(.system(size: 12))
+                                    .font(vars.bodyFont)
                                     .foregroundStyle(theme.playlistText)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.trailing, 10)

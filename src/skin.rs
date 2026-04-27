@@ -61,35 +61,156 @@
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Built-in skin CSS (embedded at compile time)
+// Built-in skin templates (embedded at compile time)
 // ---------------------------------------------------------------------------
 
-/// Raw CSS for the built-in dark skin.  Accent colours are resolved at
-/// runtime by [`prepare_css`] before the CSS is loaded into GTK.
-pub const DARK_CSS_RAW: &str = include_str!("../frontends/gtk/style_dark.css");
+/// The built-in Dark skin template (also what Download skin… exports for Dark).
+pub const DARK_TEMPLATE_CSS: &str = include_str!("skin_templates/dark.css");
 
-/// Raw CSS for the built-in light skin.
-pub const LIGHT_CSS_RAW: &str = include_str!("../frontends/gtk/style_light.css");
+/// The built-in Light skin template.
+pub const LIGHT_TEMPLATE_CSS: &str = include_str!("skin_templates/light.css");
 
-/// All built-in skins as `(name, raw_css)` pairs.
-pub const BUILTIN_SKINS: &[(&str, &str)] = &[
-    ("dark",  DARK_CSS_RAW),
-    ("light", LIGHT_CSS_RAW),
-];
+/// The bundled skin how-to guide (Markdown).
+pub const SKIN_GUIDE_MD: &str = include_str!("skin_templates/skin-guide.md");
+
+// ---------------------------------------------------------------------------
+// Rgb color type
+// ---------------------------------------------------------------------------
+
+/// An opaque 24-bit sRGB color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Rgb {
+    /// Parse `#rgb` or `#rrggbb`. Leading/trailing whitespace is tolerated.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        let hex = s.strip_prefix('#')?;
+        match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
+                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
+                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
+                Some(Rgb { r, g, b })
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                Some(Rgb { r, g, b })
+            }
+            _ => None,
+        }
+    }
+
+    /// Render as `#rrggbb`.
+    pub fn to_hex(&self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+
+    /// Render as `rgba(r, g, b, alpha)` for GTK CSS.
+    pub fn with_opacity(&self, alpha: f32) -> String {
+        format!("rgba({}, {}, {}, {})", self.r, self.g, self.b, alpha)
+    }
+
+    /// Relative luminance per ITU-R BT.709 in linear-sRGB space.
+    pub fn luminance(&self) -> f32 {
+        fn lin(c: u8) -> f32 {
+            let s = c as f32 / 255.0;
+            if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        }
+        0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SkinVars struct
+// ---------------------------------------------------------------------------
+
+/// The 14 skin variables, fully resolved.
+#[derive(Debug, Clone)]
+pub struct SkinVars {
+    pub background:        Rgb,
+    pub text_background:   Rgb,
+    pub text_color:        Rgb,
+    pub highlight:         Rgb,
+    pub broken_color:      Rgb,
+
+    pub button_color:      Rgb,
+    pub button_hover:      Rgb,
+    pub button_active:     Rgb,
+    pub button_pressed:    Rgb,
+    pub button_text_color: Rgb,
+
+    pub font_family:       String,
+    pub font_size:         f32,
+    pub font_size_large:   f32,
+    pub font_size_marquee: f32,
+}
+
+impl SkinVars {
+    /// Built-in Dark defaults. These also serve as fallback values when a
+    /// user skin omits or malforms a variable.
+    pub fn dark_defaults() -> Self {
+        Self {
+            background:        Rgb { r: 0x1a, g: 0x1a, b: 0x1a },
+            text_background:   Rgb { r: 0x0c, g: 0x0c, b: 0x0c },
+            text_color:        Rgb { r: 0xcc, g: 0xcc, b: 0xcc },
+            highlight:         Rgb { r: 0x00, g: 0xcc, b: 0xff },
+            broken_color:      Rgb { r: 0xff, g: 0x77, b: 0x00 },
+
+            button_color:      Rgb { r: 0x21, g: 0x21, b: 0x21 },
+            button_hover:      Rgb { r: 0x2e, g: 0x2e, b: 0x2e },
+            button_active:     Rgb { r: 0x00, g: 0x3e, b: 0x52 },
+            button_pressed:    Rgb { r: 0x3a, g: 0x3a, b: 0x3a },
+            button_text_color: Rgb { r: 0xaa, g: 0xaa, b: 0xaa },
+
+            font_family:       "Inter, system-ui, sans-serif".to_string(),
+            font_size:         12.0,
+            font_size_large:   32.0,
+            font_size_marquee: 14.0,
+        }
+    }
+
+    /// Built-in Light defaults.
+    pub fn light_defaults() -> Self {
+        Self {
+            background:        Rgb { r: 0xed, g: 0xed, b: 0xed },
+            text_background:   Rgb { r: 0xf6, g: 0xf6, b: 0xf6 },
+            text_color:        Rgb { r: 0x22, g: 0x22, b: 0x22 },
+            highlight:         Rgb { r: 0x1a, g: 0x6f, b: 0xc2 },
+            broken_color:      Rgb { r: 0xcc, g: 0x55, b: 0x00 },
+
+            button_color:      Rgb { r: 0xdc, g: 0xdc, b: 0xdc },
+            button_hover:      Rgb { r: 0xcc, g: 0xcc, b: 0xcc },
+            button_active:     Rgb { r: 0xcc, g: 0xe5, b: 0xf7 },
+            button_pressed:    Rgb { r: 0xbb, g: 0xbb, b: 0xbb },
+            button_text_color: Rgb { r: 0x33, g: 0x33, b: 0x33 },
+
+            font_family:       "Inter, system-ui, sans-serif".to_string(),
+            font_size:         12.0,
+            font_size_large:   32.0,
+            font_size_marquee: 14.0,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Skin struct
 // ---------------------------------------------------------------------------
 
-/// A resolved skin: name, raw CSS, and origin.
+/// A resolved skin: name, parsed vars, and origin.
 #[derive(Debug, Clone)]
 pub struct Skin {
     /// Lower-case stem name (e.g. `"dark"`, `"light"`, `"my-theme"`).
     pub name: String,
 
-    /// Raw CSS text, including any `@define-color` or `@import` declarations.
-    /// Accent-colour variables are **not** yet injected — call [`prepare_css`].
-    pub css_raw: String,
+    /// Parsed 14-variable theme data.
+    pub vars: SkinVars,
 
     /// Where this skin was loaded from.
     pub source: SkinSource,
@@ -105,109 +226,123 @@ pub enum SkinSource {
 }
 
 // ---------------------------------------------------------------------------
-// Accent-colour injection
+// SkinEntry — lightweight listing entry for the Appearance pane
 // ---------------------------------------------------------------------------
 
+/// A listed skin in the Appearance pane. Lightweight — does not carry vars.
+#[derive(Debug, Clone)]
+pub struct SkinEntry {
+    pub name: String,
+    pub display_name: String,
+    pub is_builtin: bool,
+    pub path: Option<PathBuf>,
+}
+
+impl SkinEntry {
+    pub fn builtin(name: &str, display_name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            is_builtin: true,
+            path: None,
+        }
+    }
+
+    pub fn user(stem: &str, path: PathBuf) -> Self {
+        let display_name = titlecase(stem);
+        Self {
+            name: stem.to_string(),
+            display_name,
+            is_builtin: false,
+            path: Some(path),
+        }
+    }
+}
+
+fn titlecase(stem: &str) -> String {
+    // "midnight-teal" → "Midnight Teal"
+    stem.split(|c: char| c == '-' || c == '_')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // ---------------------------------------------------------------------------
-// Accent-colour injection + --sparkamp-* variable support
+// --sp-* skin variable parser
 // ---------------------------------------------------------------------------
 
-/// Prepare a CSS string for use with GTK4.
+/// Parse `css` for a `:root { --sp-*: ...; }` block and produce a `SkinVars`.
 ///
-/// This does two things:
-///
-/// 1. **Accent injection** — prepends `@define-color` declarations for
-///    `accent_bg_color` / `accent_fg_color` so that skins using those tokens
-///    work regardless of the active GTK theme.
-///
-/// 2. **`--sparkamp-*` translation** — if the skin defines any
-///    `--sparkamp-*` custom properties in a `:root` block, those are parsed
-///    and converted into concrete GTK CSS selector rules appended at the end.
-///    This lets the same skin file work on GTK4 (which does not render
-///    `var(--sparkamp-*)` on its widget tree) *and* on macOS (which parses
-///    the variables directly).
-///
-/// `accent_hex` should be a `"#rrggbb"` hex colour string such as `"#3584e4"`.
-pub fn prepare_css(raw: &str, accent_hex: &str) -> String {
-    let mut out = format!(
-        "@define-color accent_bg_color {accent_hex};\n\
-         @define-color accent_fg_color #ffffff;\n\
-         {raw}\n"
-    );
-    // If the skin uses --sparkamp-* variables, translate them into GTK rules.
-    let vars = parse_sparkamp_vars(raw);
-    if !vars.is_empty() {
-        out.push_str("/* --sparkamp-* overrides generated by Sparkamp skin loader */\n");
-        out.push_str(&generate_gtk_overrides(&vars));
+/// Missing, unknown, or malformed variables fall back to Dark defaults
+/// per-field. The parser is deliberately permissive: it never returns an
+/// error; a completely empty or malformed input yields `SkinVars::dark_defaults()`.
+pub fn parse_skin_vars(css: &str) -> SkinVars {
+    let mut out = SkinVars::dark_defaults();
+    let stripped = strip_css_comments(css);
+    let Some(block) = extract_root_block(&stripped) else {
+        return out;
+    };
+
+    for stmt in block.split(';') {
+        let stmt = stmt.trim();
+        if !stmt.starts_with("--sp-") { continue; }
+        let Some(colon) = stmt.find(':') else { continue };
+        let key = stmt[..colon].trim();
+        let val = stmt[colon + 1..].trim();
+        if key.is_empty() || val.is_empty() { continue; }
+        apply_var(&mut out, key, val);
     }
     out
 }
 
-/// Detect whether a skin CSS string represents a dark or light theme by
-/// reading the luminance of `--sparkamp-background`.
-///
-/// Returns `true` for dark (luminance < 0.5) and `false` for light.
-/// Falls back to `true` (dark) when the variable is absent or unparseable.
-pub fn is_dark_skin(raw: &str) -> bool {
-    let vars = parse_sparkamp_vars(raw);
-    vars.get("--sparkamp-background")
-        .and_then(|hex| hex_luminance(hex.trim()))
-        .map(|l| l < 0.5)
-        .unwrap_or(true)
+fn extract_root_block(css: &str) -> Option<String> {
+    let idx = css.find(":root")?;
+    let after = &css[idx + 5..];
+    let open_rel = after.find('{')?;
+    let close_rel = after[open_rel + 1..].find('}')?;
+    Some(after[open_rel + 1..open_rel + 1 + close_rel].to_string())
 }
 
-// ---------------------------------------------------------------------------
-// --sparkamp-* variable parser
-// ---------------------------------------------------------------------------
-
-/// Extract all `--sparkamp-*` custom properties defined inside a `:root { … }`
-/// block in the given CSS text.  Returns a map of variable name → value.
-///
-/// Only the *first* `:root` block is scanned.  Comments are stripped before
-/// parsing.  Values are trimmed of whitespace and trailing semicolons.
-pub fn parse_sparkamp_vars(css: &str) -> std::collections::HashMap<String, String> {
-    let stripped = strip_css_comments(css);
-    let mut map = std::collections::HashMap::new();
-
-    // Find :root { … }
-    let Some(open_pos) = find_root_open(&stripped) else {
-        return map;
-    };
-    let block_start = open_pos + 1;
-    let Some(close_pos) = stripped[block_start..].find('}') else {
-        return map;
-    };
-    let block = &stripped[block_start..block_start + close_pos];
-
-    for stmt in block.split(';') {
-        let stmt = stmt.trim();
-        if !stmt.starts_with("--sparkamp-") {
-            continue;
-        }
-        let Some(colon) = stmt.find(':') else { continue };
-        let key = stmt[..colon].trim().to_string();
-        let val = stmt[colon + 1..].trim().to_string();
-        if !key.is_empty() && !val.is_empty() {
-            map.insert(key, val);
-        }
+fn apply_var(v: &mut SkinVars, key: &str, raw: &str) {
+    match key {
+        "--sp-background"        => if let Some(c) = Rgb::parse(raw) { v.background = c },
+        "--sp-text-background"   => if let Some(c) = Rgb::parse(raw) { v.text_background = c },
+        "--sp-text-color"        => if let Some(c) = Rgb::parse(raw) { v.text_color = c },
+        "--sp-highlight"         => if let Some(c) = Rgb::parse(raw) { v.highlight = c },
+        "--sp-broken-color"      => if let Some(c) = Rgb::parse(raw) { v.broken_color = c },
+        "--sp-button-color"      => if let Some(c) = Rgb::parse(raw) { v.button_color = c },
+        "--sp-button-hover"      => if let Some(c) = Rgb::parse(raw) { v.button_hover = c },
+        "--sp-button-active"     => if let Some(c) = Rgb::parse(raw) { v.button_active = c },
+        "--sp-button-pressed"    => if let Some(c) = Rgb::parse(raw) { v.button_pressed = c },
+        "--sp-button-text-color" => if let Some(c) = Rgb::parse(raw) { v.button_text_color = c },
+        "--sp-font-family"       => v.font_family = parse_font_family(raw),
+        "--sp-font-size"         => if let Some(n) = parse_px(raw) { v.font_size = n },
+        "--sp-font-size-large"   => if let Some(n) = parse_px(raw) { v.font_size_large = n },
+        "--sp-font-size-marquee" => if let Some(n) = parse_px(raw) { v.font_size_marquee = n },
+        _ => {} // unknown --sp-* variable — ignore
     }
-    map
 }
 
-fn find_root_open(css: &str) -> Option<usize> {
-    // Simple scan: find ":root" followed by optional whitespace then "{"
-    let mut search = css;
-    let mut offset = 0;
-    while let Some(pos) = search.find(":root") {
-        let after = search[pos + 5..].trim_start();
-        if after.starts_with('{') {
-            let brace_off = search[pos + 5..].find('{').unwrap();
-            return Some(offset + pos + 5 + brace_off);
-        }
-        offset += pos + 5;
-        search = &search[pos + 5..];
+fn parse_font_family(raw: &str) -> String {
+    let t = raw.trim();
+    if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        t[1..t.len()-1].to_string()
+    } else {
+        t.to_string()
     }
-    None
+}
+
+fn parse_px(raw: &str) -> Option<f32> {
+    let t = raw.trim();
+    let num_part = t.strip_suffix("px").unwrap_or(t).trim();
+    num_part.parse::<f32>().ok()
 }
 
 fn strip_css_comments(css: &str) -> String {
@@ -237,148 +372,6 @@ fn strip_css_comments(css: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// --sparkamp-* → GTK CSS override generator
-// ---------------------------------------------------------------------------
-
-/// Maps each `--sparkamp-*` variable to one or more GTK CSS rules.
-/// Each entry is `(variable_name, gtk_css_template)` where `{v}` is replaced
-/// by the variable's value.  Entries with an empty template are skipped
-/// (e.g. logo variables that have no GTK equivalent).
-static SPARKAMP_TO_GTK: &[(&str, &str)] = &[
-    // Window background
-    ("--sparkamp-background",
-     "window { background-color: {v}; }"),
-    // LCD / Now-Playing area
-    ("--sparkamp-lcd-background",
-     ".np-frame { background-color: {v}; } \
-      .mini-viz { background-color: {v}; }"),
-    // Title — drives np-title label and the large time display
-    ("--sparkamp-title-text",
-     ".np-title { color: {v}; } \
-      .time-disp { color: {v}; }"),
-    // Artist subtitle
-    ("--sparkamp-artist-text",
-     ".np-artist { color: {v}; }"),
-    // Time override (separate from title if the skin wants them different)
-    ("--sparkamp-time-text",
-     ".time-disp { color: {v}; }"),
-    // Transport buttons
-    ("--sparkamp-transport-bg",
-     "button.transport { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-transport-border",
-     "button.transport { border-color: {v}; }"),
-    ("--sparkamp-transport-text",
-     "button.transport { color: {v}; }"),
-    ("--sparkamp-transport-hover-bg",
-     "button.transport:hover { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-transport-active-bg",
-     "button.transport:active { background-color: {v}; background-image: none; }"),
-    // Play button accent
-    ("--sparkamp-play-button-bg",
-     "button.transport-play { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-play-button-text",
-     "button.transport-play { color: {v}; }"),
-    ("--sparkamp-play-button-border",
-     "button.transport-play { border-color: {v}; }"),
-    // Seek bar
-    ("--sparkamp-seek-track",
-     "scale.seek-scale trough { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-seek-fill",
-     "scale.seek-scale highlight { background-color: {v}; background-image: none; } \
-      scale.seek-scale slider { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-seek-thumb",
-     "scale.seek-scale slider { background-color: {v}; background-image: none; }"),
-    // Volume slider
-    ("--sparkamp-volume-track",
-     "scale.vol-scale trough { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-volume-fill",
-     "scale.vol-scale highlight { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-volume-thumb",
-     "scale.vol-scale slider { background-color: {v}; background-image: none; }"),
-    // Playlist
-    ("--sparkamp-playlist-bg",
-     ".playlist { background-color: {v}; } \
-      columnview, listview { background-color: {v}; }"),
-    ("--sparkamp-playlist-text",
-     ".playlist cell { color: {v}; } \
-      .playlist row label { color: {v}; }"),
-    ("--sparkamp-playlist-current-text",
-     ".playlist row.playing label { color: {v}; } \
-      .playlist row.playing cell { color: {v}; }"),
-    ("--sparkamp-playlist-current-bg",
-     ".playlist row.playing { background-color: {v}; }"),
-    ("--sparkamp-playlist-selected-bg",
-     ".playlist row:selected { background: {v}; }"),
-    ("--sparkamp-playlist-broken-text",
-     ".playlist row.broken label { color: {v}; }"),
-    ("--sparkamp-playlist-duration-text",
-     ".pl-dur-label { color: {v}; }"),
-    // Mode buttons (repeat, shuffle, PL toggle)
-    ("--sparkamp-mode-btn-bg",
-     "button.mode-btn { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-mode-btn-border",
-     "button.mode-btn { border-color: {v}; }"),
-    ("--sparkamp-mode-btn-text",
-     "button.mode-btn { color: {v}; }"),
-    ("--sparkamp-mode-btn-active-bg",
-     "button.mode-btn.mode-btn-active { background-color: {v}; background-image: none; }"),
-    ("--sparkamp-mode-btn-active-text",
-     "button.mode-btn.mode-btn-active { color: {v}; }"),
-    // Logo — GTK uses a raster logo image, not CSS text; these vars are
-    // macOS-only and are intentionally left unmapped on GTK.
-    ("--sparkamp-logo-text",    ""),
-    ("--sparkamp-logo-subtext", ""),
-];
-
-/// Generate GTK CSS override rules from a `--sparkamp-*` variable map.
-fn generate_gtk_overrides(vars: &std::collections::HashMap<String, String>) -> String {
-    let mut out = String::new();
-    for (var, template) in SPARKAMP_TO_GTK {
-        if template.is_empty() {
-            continue;
-        }
-        if let Some(val) = vars.get(*var) {
-            // Each template may contain multiple rules separated by spaces —
-            // they're already valid CSS and we just replace {v} with the value.
-            out.push_str(&template.replace("{v}", val));
-            out.push('\n');
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Luminance helper (for dark/light detection)
-// ---------------------------------------------------------------------------
-
-/// Compute the relative luminance of an `#rrggbb` / `#rgb` hex colour.
-/// Returns `None` if the string cannot be parsed.
-fn hex_luminance(hex: &str) -> Option<f64> {
-    let hex = hex.trim_start_matches('#');
-    let (r, g, b) = match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
-            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
-            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
-            (r, g, b)
-        }
-        6 | 8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            (r, g, b)
-        }
-        _ => return None,
-    };
-    // sRGB → linear → luminance (ITU-R BT.709)
-    let lin = |c: u8| {
-        let s = c as f64 / 255.0;
-        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055f64).powf(2.4) }
-    };
-    Some(0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b))
-}
-
-// ---------------------------------------------------------------------------
 // Skin directory helpers
 // ---------------------------------------------------------------------------
 
@@ -399,31 +392,10 @@ pub fn user_skins_dir() -> PathBuf {
 /// the user's skins directory, sorted alphabetically.  Duplicate names are
 /// deduplicated (user files shadow built-ins).
 pub fn available_skins() -> Vec<String> {
-    let mut names: Vec<String> = BUILTIN_SKINS
-        .iter()
-        .map(|(n, _)| n.to_string())
-        .collect();
-
-    if let Ok(entries) = std::fs::read_dir(user_skins_dir()) {
-        let mut user_names: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "css"))
-            .filter_map(|p| {
-                p.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_lowercase())
-            })
-            .collect();
-        user_names.sort();
-        for n in user_names {
-            if !names.contains(&n) {
-                names.push(n);
-            }
-        }
-    }
-
-    names
+    list_skins_in(&user_skins_dir(), &[])
+        .into_iter()
+        .map(|e| e.name)
+        .collect()
 }
 
 /// Load a skin by stem name, searching user files first then built-ins.
@@ -432,56 +404,426 @@ pub fn available_skins() -> Vec<String> {
 pub fn load_skin(name: &str) -> Option<Skin> {
     let lower = name.to_lowercase();
 
-    // Check user skins directory first.
+    // User file wins.
     let user_path = user_skins_dir().join(format!("{lower}.css"));
     if user_path.exists() {
         if let Ok(css) = std::fs::read_to_string(&user_path) {
+            let vars = parse_skin_vars(&css);
             return Some(Skin {
-                name:    lower,
-                css_raw: css,
-                source:  SkinSource::UserFile(user_path),
+                name:   lower,
+                vars,
+                source: SkinSource::UserFile(user_path),
             });
         }
     }
 
-    // Fall back to built-ins.
-    for (builtin_name, builtin_css) in BUILTIN_SKINS {
-        if *builtin_name == lower {
-            return Some(Skin {
-                name:    lower,
-                css_raw: builtin_css.to_string(),
-                source:  SkinSource::BuiltIn,
-            });
+    // Built-ins.
+    match lower.as_str() {
+        "dark" => Some(Skin {
+            name:   lower,
+            vars:   SkinVars::dark_defaults(),
+            source: SkinSource::BuiltIn,
+        }),
+        "light" => Some(Skin {
+            name:   lower,
+            vars:   SkinVars::light_defaults(),
+            source: SkinSource::BuiltIn,
+        }),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Add user skin (Appearance → Add skin…)
+// ---------------------------------------------------------------------------
+
+/// Error from [`add_user_skin`] / [`add_user_skin_to`].
+#[derive(Debug)]
+pub enum SkinError {
+    ReadFailed(std::io::Error),
+    WriteFailed(std::io::Error),
+    NoRootBlock,
+}
+
+impl std::fmt::Display for SkinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkinError::ReadFailed(e)  => write!(f, "could not read skin file: {e}"),
+            SkinError::WriteFailed(e) => write!(f, "could not write skin file: {e}"),
+            SkinError::NoRootBlock    => write!(f,
+                "skin file has no :root block — this is not a valid Sparkamp skin"),
         }
     }
-
-    None
 }
 
-/// Load a skin and prepare its CSS for use with GTK4.
-///
-/// Equivalent to `load_skin(name).map(|s| prepare_css(&s.css_raw, accent))`.
-/// Returns `None` if the skin cannot be found.
-pub fn load_prepared(name: &str, accent: &str) -> Option<String> {
-    load_skin(name).map(|s| prepare_css(&s.css_raw, accent))
+impl std::error::Error for SkinError {}
+
+/// Public API: add a skin from `src` into the user skins dir.
+pub fn add_user_skin(src: &Path) -> Result<SkinEntry, SkinError> {
+    let dir = user_skins_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    add_user_skin_to(src, &dir)
 }
 
-/// Load a skin from a filesystem path, bypassing the name-resolution logic.
-///
-/// Useful when the user has configured an absolute path to a skin file rather
-/// than a skin name.  Returns `None` if the file cannot be read.
-pub fn load_from_path(path: &Path) -> Option<Skin> {
-    let css = std::fs::read_to_string(path).ok()?;
-    let name = path
-        .file_stem()
+/// Test-friendly: add a skin into an arbitrary directory.
+pub fn add_user_skin_to(src: &Path, dir: &Path) -> Result<SkinEntry, SkinError> {
+    let css = std::fs::read_to_string(src).map_err(SkinError::ReadFailed)?;
+    if extract_root_block(&strip_css_comments(&css)).is_none() {
+        return Err(SkinError::NoRootBlock);
+    }
+
+    let stem = src.file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("custom")
+        .unwrap_or("skin")
         .to_lowercase();
-    Some(Skin {
-        name,
-        css_raw: css,
-        source: SkinSource::UserFile(path.to_owned()),
-    })
+
+    let (final_stem, dest) = uniquify(dir, &stem);
+    std::fs::copy(src, &dest).map_err(SkinError::WriteFailed)?;
+    Ok(SkinEntry::user(&final_stem, dest))
+}
+
+fn uniquify(dir: &Path, stem: &str) -> (String, PathBuf) {
+    let candidate = dir.join(format!("{stem}.css"));
+    if !candidate.exists() {
+        return (stem.to_string(), candidate);
+    }
+    for n in 2..10_000 {
+        let s = format!("{stem}-{n}");
+        let p = dir.join(format!("{s}.css"));
+        if !p.exists() {
+            return (s, p);
+        }
+    }
+    // Fallback — extremely unlikely; use a timestamp suffix.
+    let s = format!("{stem}-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0));
+    let p = dir.join(format!("{s}.css"));
+    (s, p)
+}
+
+// ---------------------------------------------------------------------------
+// Skin listing (Appearance pane)
+// ---------------------------------------------------------------------------
+
+/// Public API: list skins, scanning the real user skins dir.
+pub fn list_skins(hidden: &[String]) -> Vec<SkinEntry> {
+    list_skins_in(&user_skins_dir(), hidden)
+}
+
+/// Test-friendly: list skins, scanning `dir` for `.css` files.
+pub fn list_skins_in(dir: &Path, hidden: &[String]) -> Vec<SkinEntry> {
+    let mut out = vec![
+        SkinEntry::builtin("dark", "Dark"),
+        SkinEntry::builtin("light", "Light"),
+    ];
+
+    let mut user: Vec<SkinEntry> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "css"))
+            .filter_map(|p| {
+                let stem = p.file_stem()?.to_str()?.to_lowercase();
+                Some(SkinEntry::user(&stem, p))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    user.sort_by(|a, b| a.name.cmp(&b.name));
+    user.retain(|e| !hidden.iter().any(|h| h.eq_ignore_ascii_case(&e.name)));
+    out.extend(user);
+    out
+}
+
+/// Render a complete GTK4 stylesheet from the given skin vars.
+///
+/// The output includes every widget class used by Sparkamp's GTK frontend.
+/// Derivations (row backgrounds, dim text, borders) are inlined from
+/// the vars at emit time.
+pub fn render_gtk_css(v: &SkinVars) -> String {
+    use std::fmt::Write;
+    let mut css = String::with_capacity(8192);
+
+    // Derivations
+    let bg     = v.background.to_hex();
+    let tbg    = v.text_background.to_hex();
+    let text   = v.text_color.to_hex();
+    let hl     = v.highlight.to_hex();
+    let broken = v.broken_color.to_hex();
+    let btn    = v.button_color.to_hex();
+    let bhov   = v.button_hover.to_hex();
+    let bact   = v.button_active.to_hex();
+    let bprs   = v.button_pressed.to_hex();
+    let btext  = v.button_text_color.to_hex();
+    let ff     = &v.font_family;
+    let fs     = v.font_size;
+    let fsl    = v.font_size_large;
+    let fsm    = v.font_size_marquee;
+    let hl_sel = v.highlight.with_opacity(0.18);
+    let hl_pla = v.highlight.with_opacity(0.10);
+    let hl_hov = v.highlight.with_opacity(0.08);
+    let text_dim = v.text_color.with_opacity(0.60);
+    // Borders: lighten-on-dark / darken-on-light by 8% luminance.
+    let border = derive_border(&v.background).to_hex();
+
+    // Window + default typography
+    writeln!(css, "window {{ \
+        background-color: {bg}; color: {text}; \
+        font-family: {ff}; font-size: {fs}px; \
+    }}").unwrap();
+
+    // Secondary / dialog window chrome
+    writeln!(css, "dialog, .sparkamp-dialog {{ \
+        background-color: {bg}; color: {text}; \
+    }}").unwrap();
+
+    // Marquee / Now-Playing frame
+    writeln!(css, ".np-frame {{ \
+        background-color: {tbg}; border: 1px solid {border}; \
+        border-radius: 4px; padding: 4px; \
+    }}").unwrap();
+    writeln!(css, ".np-title {{ \
+        color: {hl}; font-size: {fsm}px; font-weight: bold; padding: 2px 0px; \
+    }}").unwrap();
+    writeln!(css, ".np-artist {{ \
+        color: {text_dim}; font-size: {fs}px; padding: 0px 0px 2px 0px; \
+    }}").unwrap();
+
+    // Time display (hardcoded monospace)
+    writeln!(css, ".time-disp {{ \
+        color: {text}; background-color: {tbg}; \
+        font-family: monospace; font-size: {fsl}px; \
+        padding: 2px 6px; border-radius: 3px; \
+    }}").unwrap();
+
+    // Transport buttons
+    writeln!(css, "button.transport {{ \
+        background-color: {btn}; background-image: none; color: {btext}; \
+        border: 1px solid {border}; border-radius: 3px; \
+        padding: 2px 4px; min-width: 24px; min-height: 24px; box-shadow: none; \
+    }}").unwrap();
+    writeln!(css, "button.transport:hover {{ \
+        background-color: {bhov}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "button.transport:active {{ \
+        background-color: {bprs}; background-image: none; \
+    }}").unwrap();
+
+    // Play button accent (same as transport with an active tint)
+    writeln!(css, "button.transport-play {{ \
+        background-color: {bact}; background-image: none; \
+        color: {btext}; border: 1px solid {hl}; \
+    }}").unwrap();
+
+    // Mode toggle buttons (shuffle / repeat / PL / Info)
+    writeln!(css, "button.mode-btn {{ \
+        background-color: {btn}; background-image: none; color: {btext}; \
+        border: 1px solid {border}; border-radius: 3px; \
+        padding: 2px 4px; min-width: 28px; \
+    }}").unwrap();
+    writeln!(css, "button.mode-btn:hover {{ \
+        background-color: {bhov}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "button.mode-btn:active {{ \
+        background-color: {bprs}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "button.mode-btn.mode-btn-active {{ \
+        background-color: {bact}; background-image: none; color: {btext}; \
+    }}").unwrap();
+
+    // Seek bar
+    writeln!(css, "scale.seek-scale trough {{ \
+        background-color: {tbg}; background-image: none; \
+        min-height: 7px; \
+    }}").unwrap();
+    writeln!(css, "scale.seek-scale highlight {{ \
+        background-color: {hl}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "scale.seek-scale slider {{ \
+        background-color: {hl}; background-image: none; \
+        border-radius: 50%; min-width: 10px; min-height: 10px; \
+    }}").unwrap();
+
+    // Volume slider
+    writeln!(css, "scale.vol-scale trough {{ \
+        background-color: {tbg}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "scale.vol-scale highlight {{ \
+        background-color: {hl}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "scale.vol-scale slider {{ \
+        background-color: {hl}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, ".vol-label {{ \
+        color: {text_dim}; font-size: {fs}px; font-family: monospace; min-width: 28px; \
+    }}").unwrap();
+
+    // Mini visualizer — no inner border so the time-display row above it and
+    // the visualizer below it read as one continuous LCD column (matches the
+    // macOS layout, where the left column is a single dark box).
+    writeln!(css, ".mini-viz {{ \
+        background-color: {tbg}; border: none; \
+    }}").unwrap();
+
+    // Equalizer window scales (horizontal pre-amp + vertical band columns).
+    // Pattern matches seek-scale so the slider handle renders as a small
+    // highlight-colored circle rather than the system theme's default.
+    writeln!(css, "scale.eq-scale trough {{ \
+        background-color: {tbg}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "scale.eq-scale highlight {{ \
+        background-color: {hl}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "scale.eq-scale slider {{ \
+        background-color: {hl}; background-image: none; \
+        border-radius: 50%; min-width: 10px; min-height: 10px; \
+    }}").unwrap();
+    writeln!(css, "scale.eq-scale label {{ \
+        color: {text_dim}; font-size: {fs}px; \
+    }}").unwrap();
+
+    // Playlist + Media Library list/columnview.
+    // `.ml-sidebar` is the left-nav ListBox in the Media Library window;
+    // `.rich-list` is the skin selector in Settings → Appearance. Both
+    // wrap their own ScrolledWindow, which would otherwise render with
+    // the system default (often dark) background.
+    writeln!(css, ".playlist, .ml-sidebar, .rich-list, \
+                   columnview, listview, list {{ \
+        background-color: {tbg}; color: {text}; font-size: {fs}px; \
+    }}").unwrap();
+    writeln!(css, ".ml-sidebar row, .rich-list row {{ \
+        color: {text}; padding: 2px 4px; \
+    }}").unwrap();
+    // ScrolledWindow wrapping these lists — match so the corners and
+    // scrollbar gutter don't bleed the system theme through.
+    writeln!(css, "scrolledwindow > viewport > .ml-sidebar, \
+                   scrolledwindow > viewport > .rich-list, \
+                   scrolledwindow > viewport > .playlist {{ \
+        background-color: {tbg}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row, columnview row, listview row {{ \
+        color: {text}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row:hover, .ml-sidebar row:hover, \
+                   columnview row:hover, listview row:hover {{ \
+        background: {hl_hov}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row:selected, .ml-sidebar row:selected, \
+                   columnview row:selected, listview row:selected {{ \
+        background: {hl_sel}; color: {text}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row.playing {{ \
+        background-color: {hl_pla}; color: {hl}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row.playing label, .playlist row.playing cell {{ \
+        color: {hl}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row.broken, columnview row.broken {{ \
+        color: {broken}; \
+    }}").unwrap();
+    writeln!(css, ".playlist row.broken label, .playlist row.broken cell, \
+                   columnview row.broken label, columnview row.broken cell {{ \
+        color: {broken}; \
+    }}").unwrap();
+    writeln!(css, ".pl-dur-label {{ color: {text_dim}; font-family: monospace; }}").unwrap();
+    writeln!(css, ".pl-count-label {{ color: {text}; font-size: {fs}px; }}").unwrap();
+
+    // Playlist buttons
+    writeln!(css, "button.pl-btn {{ \
+        background-color: {btn}; background-image: none; color: {btext}; \
+        border: 1px solid {border}; border-radius: 3px; padding: 2px 8px; \
+    }}").unwrap();
+    writeln!(css, "button.pl-btn:hover {{ \
+        background-color: {bhov}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "button.pl-btn:active {{ \
+        background-color: {bprs}; background-image: none; \
+    }}").unwrap();
+    writeln!(css, "button.pl-btn.destructive {{ color: {broken}; }}").unwrap();
+
+    // Generic buttons (settings, dialogs, ID3, etc.)
+    writeln!(css, "button {{ \
+        background-color: {btn}; background-image: none; color: {btext}; \
+        border: 1px solid {border}; border-radius: 3px; padding: 4px 10px; \
+    }}").unwrap();
+    writeln!(css, "button:hover {{ background-color: {bhov}; background-image: none; }}").unwrap();
+    writeln!(css, "button:active {{ background-color: {bprs}; background-image: none; }}").unwrap();
+
+    // Status bar + info text
+    writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}px; }}").unwrap();
+    writeln!(css, ".info-text {{ \
+        color: {text}; background-color: {tbg}; font-family: monospace; font-size: {fs}px; \
+        padding: 6px; border-radius: 3px; \
+    }}").unwrap();
+
+    // Form inputs sitting on text-background
+    writeln!(css, "entry, textview {{ \
+        background-color: {tbg}; color: {text}; caret-color: {hl}; \
+        border: 1px solid {border}; \
+    }}").unwrap();
+    writeln!(css, "entry:focus, entry:focus-within, textview:focus, textview:focus-within {{ \
+        border-color: {hl}; outline: 1px solid {hl}; outline-offset: -1px; \
+    }}").unwrap();
+
+    // Notebook (settings window tabs)
+    writeln!(css, "notebook {{ \
+        background-color: {bg}; color: {text}; \
+    }}").unwrap();
+    writeln!(css, "notebook > header {{ \
+        background-color: {bg}; border-color: {border}; \
+    }}").unwrap();
+    writeln!(css, "notebook > header > tabs > tab {{ \
+        background-color: {btn}; color: {btext}; \
+        border: 1px solid {border}; padding: 4px 10px; \
+    }}").unwrap();
+    writeln!(css, "notebook > header > tabs > tab:hover {{ \
+        background-color: {bhov}; \
+    }}").unwrap();
+    writeln!(css, "notebook > header > tabs > tab:checked {{ \
+        background-color: {bact}; color: {btext}; \
+        border-color: {hl}; \
+        box-shadow: inset 0 -2px 0 {hl}; \
+    }}").unwrap();
+    writeln!(css, "notebook > stack {{ \
+        background-color: {bg}; color: {text}; \
+    }}").unwrap();
+
+    // Checkboxes + radios: active color when checked
+    writeln!(css, "checkbutton check, checkbutton radio {{ \
+        background-color: {tbg}; background-image: none; \
+        border: 1px solid {border}; \
+    }}").unwrap();
+    writeln!(css, "checkbutton check:checked, checkbutton radio:checked {{ \
+        background-color: {bact}; background-image: none; \
+        border-color: {hl}; color: {btext}; \
+        -gtk-icon-filter: none; \
+    }}").unwrap();
+
+    // Title bar buttons: reset our generic button styling so the window
+    // controls fall back to the system default size/shape.
+    writeln!(css, "windowcontrols button, headerbar button.titlebutton {{ \
+        padding: 0; min-width: 0; min-height: 0; \
+        background-color: transparent; background-image: none; \
+        border: none; box-shadow: none; \
+    }}").unwrap();
+    writeln!(css, "windowcontrols button:hover, headerbar button.titlebutton:hover {{ \
+        background-color: {bhov}; \
+    }}").unwrap();
+
+    css
+}
+
+/// Derive a subtle border color from a background: ±8% luminance.
+fn derive_border(bg: &Rgb) -> Rgb {
+    let delta: i16 = if bg.luminance() < 0.5 { 20 } else { -20 };
+    let clamp = |c: u8| -> u8 {
+        let x = c as i16 + delta;
+        x.clamp(0, 255) as u8
+    };
+    Rgb { r: clamp(bg.r), g: clamp(bg.g), b: clamp(bg.b) }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,25 +834,12 @@ pub fn load_from_path(path: &Path) -> Option<Skin> {
 mod tests {
     use super::*;
 
-    /// The built-in dark skin must be non-empty.
-    #[test]
-    fn dark_skin_is_non_empty() {
-        assert!(!DARK_CSS_RAW.is_empty());
-    }
-
-    /// The built-in light skin must be non-empty.
-    #[test]
-    fn light_skin_is_non_empty() {
-        assert!(!LIGHT_CSS_RAW.is_empty());
-    }
-
     /// Loading the "dark" skin by name must succeed and return built-in source.
     #[test]
     fn load_skin_dark_returns_builtin() {
         let skin = load_skin("dark").expect("dark skin must be available");
         assert_eq!(skin.name, "dark");
         assert!(matches!(skin.source, SkinSource::BuiltIn));
-        assert!(!skin.css_raw.is_empty());
     }
 
     /// Loading the "light" skin by name must succeed and return built-in source.
@@ -535,15 +864,6 @@ mod tests {
         assert!(load_skin("nonexistent_skin_xyz_123").is_none());
     }
 
-    /// `prepare_css` injects both @define-color declarations.
-    #[test]
-    fn prepare_css_injects_accent_color() {
-        let out = prepare_css("body {}", "#3584e4");
-        assert!(out.contains("@define-color accent_bg_color #3584e4;"));
-        assert!(out.contains("@define-color accent_fg_color #ffffff;"));
-        assert!(out.contains("body {}"));
-    }
-
     /// `available_skins` always includes the two built-in skins.
     #[test]
     fn available_skins_always_includes_builtins() {
@@ -552,36 +872,462 @@ mod tests {
         assert!(skins.contains(&"light".to_string()));
     }
 
-    /// `load_prepared` returns `None` for an unknown name.
     #[test]
-    fn load_prepared_unknown_returns_none() {
-        assert!(load_prepared("does_not_exist", "#3584e4").is_none());
+    fn rgb_parse_six_digit_hex() {
+        let c = Rgb::parse("#1a2b3c").unwrap();
+        assert_eq!((c.r, c.g, c.b), (0x1a, 0x2b, 0x3c));
     }
 
-    /// `load_prepared` returns Some with accent injected for a known skin.
     #[test]
-    fn load_prepared_dark_contains_accent() {
-        let css = load_prepared("dark", "#ed5b00").unwrap();
-        assert!(css.contains("@define-color accent_bg_color #ed5b00;"));
+    fn rgb_parse_three_digit_hex() {
+        let c = Rgb::parse("#abc").unwrap();
+        assert_eq!((c.r, c.g, c.b), (0xaa, 0xbb, 0xcc));
     }
 
-    /// Loading from an explicit path works for an existing file.
     #[test]
-    fn load_from_path_works_for_existing_file() {
-        // Use the skin module source file itself as a stand-in — it exists
-        // and is readable; the content just won't be valid CSS.
-        let path = std::path::Path::new("src/skin.rs");
-        // Only run this test when the file exists (i.e. in the project root).
-        if path.exists() {
-            let skin = load_from_path(path).expect("should load readable file");
-            assert_eq!(skin.name, "skin");
-            assert!(!skin.css_raw.is_empty());
-        }
+    fn rgb_parse_accepts_whitespace() {
+        assert!(Rgb::parse("  #ff0000  ").is_some());
     }
 
-    /// `load_from_path` returns None for a non-existent path.
     #[test]
-    fn load_from_path_missing_file_returns_none() {
-        assert!(load_from_path(std::path::Path::new("/no/such/skin.css")).is_none());
+    fn rgb_parse_rejects_invalid() {
+        assert!(Rgb::parse("#zzz").is_none());
+        assert!(Rgb::parse("#12345").is_none()); // 5 digits
+        assert!(Rgb::parse("").is_none());
+        assert!(Rgb::parse("red").is_none());
+    }
+
+    #[test]
+    fn rgb_to_hex() {
+        let c = Rgb { r: 0x1a, g: 0x2b, b: 0x3c };
+        assert_eq!(c.to_hex(), "#1a2b3c");
+    }
+
+    #[test]
+    fn rgb_with_opacity_formats_rgba() {
+        let c = Rgb { r: 255, g: 128, b: 0 };
+        assert_eq!(c.with_opacity(0.5), "rgba(255, 128, 0, 0.5)");
+    }
+
+    #[test]
+    fn skin_vars_default_is_dark() {
+        let v = SkinVars::dark_defaults();
+        assert_eq!(v.background.to_hex(), "#1a1a1a");
+        assert_eq!(v.text_background.to_hex(), "#0c0c0c");
+        assert_eq!(v.text_color.to_hex(), "#cccccc");
+        assert_eq!(v.highlight.to_hex(), "#00ccff");
+        assert_eq!(v.broken_color.to_hex(), "#ff7700");
+        assert_eq!(v.button_color.to_hex(), "#212121");
+        assert_eq!(v.button_hover.to_hex(), "#2e2e2e");
+        assert_eq!(v.button_active.to_hex(), "#003e52");
+        assert_eq!(v.button_pressed.to_hex(), "#3a3a3a");
+        assert_eq!(v.button_text_color.to_hex(), "#aaaaaa");
+        assert_eq!(v.font_family, "Inter, system-ui, sans-serif");
+        assert_eq!(v.font_size, 12.0);
+        assert_eq!(v.font_size_large, 32.0);
+        assert_eq!(v.font_size_marquee, 14.0);
+    }
+
+    #[test]
+    fn skin_vars_light_defaults() {
+        let v = SkinVars::light_defaults();
+        assert_eq!(v.background.to_hex(), "#ededed");
+        assert_eq!(v.text_color.to_hex(), "#222222");
+        assert_eq!(v.highlight.to_hex(), "#1a6fc2");
+    }
+
+    #[test]
+    fn parse_skin_vars_all_fields() {
+        let css = r#"
+    :root {
+        --sp-background:         #111111;
+        --sp-text-background:    #222222;
+        --sp-text-color:         #333333;
+        --sp-highlight:          #444444;
+        --sp-broken-color:       #555555;
+        --sp-button-color:       #666666;
+        --sp-button-hover:       #777777;
+        --sp-button-active:      #888888;
+        --sp-button-pressed:     #999999;
+        --sp-button-text-color:  #aaaaaa;
+        --sp-font-family:        "Helvetica, sans-serif";
+        --sp-font-size:          13px;
+        --sp-font-size-large:    40px;
+        --sp-font-size-marquee:  18px;
+    }
+    "#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.background.to_hex(), "#111111");
+        assert_eq!(v.text_background.to_hex(), "#222222");
+        assert_eq!(v.text_color.to_hex(), "#333333");
+        assert_eq!(v.highlight.to_hex(), "#444444");
+        assert_eq!(v.broken_color.to_hex(), "#555555");
+        assert_eq!(v.button_color.to_hex(), "#666666");
+        assert_eq!(v.button_hover.to_hex(), "#777777");
+        assert_eq!(v.button_active.to_hex(), "#888888");
+        assert_eq!(v.button_pressed.to_hex(), "#999999");
+        assert_eq!(v.button_text_color.to_hex(), "#aaaaaa");
+        assert_eq!(v.font_family, "Helvetica, sans-serif");
+        assert_eq!(v.font_size, 13.0);
+        assert_eq!(v.font_size_large, 40.0);
+        assert_eq!(v.font_size_marquee, 18.0);
+    }
+
+    #[test]
+    fn parse_skin_vars_strips_quotes_from_font_family() {
+        let css = r#":root { --sp-font-family: "Inter"; }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.font_family, "Inter");
+    }
+
+    #[test]
+    fn parse_skin_vars_accepts_font_family_without_quotes() {
+        let css = r#":root { --sp-font-family: monospace; }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.font_family, "monospace");
+    }
+
+    #[test]
+    fn parse_skin_vars_missing_vars_fall_back_to_dark() {
+        let css = r#":root { --sp-background: #111111; }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.background.to_hex(), "#111111");
+        // Others come from Dark defaults
+        assert_eq!(v.text_color.to_hex(), "#cccccc");
+        assert_eq!(v.font_size, 12.0);
+    }
+
+    #[test]
+    fn parse_skin_vars_unknown_var_is_ignored() {
+        let css = r#":root {
+            --sp-background: #111111;
+            --sp-not-a-real-var: #ff0000;
+        }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.background.to_hex(), "#111111");
+    }
+
+    #[test]
+    fn parse_skin_vars_malformed_color_falls_back() {
+        let css = r#":root {
+            --sp-background: not-a-color;
+            --sp-text-color: #ffffff;
+        }"#;
+        let v = parse_skin_vars(css);
+        // background kept its Dark default
+        assert_eq!(v.background.to_hex(), "#1a1a1a");
+        // text-color applied
+        assert_eq!(v.text_color.to_hex(), "#ffffff");
+    }
+
+    #[test]
+    fn parse_skin_vars_malformed_size_falls_back() {
+        let css = r#":root { --sp-font-size: abc; }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.font_size, 12.0);
+    }
+
+    #[test]
+    fn parse_skin_vars_size_without_px_still_parses() {
+        let css = r#":root { --sp-font-size: 15; }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.font_size, 15.0);
+    }
+
+    #[test]
+    fn parse_skin_vars_no_root_block_returns_defaults() {
+        let css = "body { color: red; }";
+        let v = parse_skin_vars(css);
+        assert_eq!(v.background.to_hex(), "#1a1a1a");
+    }
+
+    #[test]
+    fn parse_skin_vars_strips_comments() {
+        let css = r#":root {
+            /* comment with : inside */
+            --sp-background: #aaaaaa;
+            /* trailing */
+        }"#;
+        let v = parse_skin_vars(css);
+        assert_eq!(v.background.to_hex(), "#aaaaaa");
+    }
+
+    #[test]
+    fn parse_skin_vars_empty_string_returns_defaults() {
+        let v = parse_skin_vars("");
+        assert_eq!(v.background.to_hex(), "#1a1a1a");
+    }
+
+    #[test]
+    fn skin_entry_builtin_has_no_path() {
+        let e = SkinEntry::builtin("dark", "Dark");
+        assert_eq!(e.name, "dark");
+        assert_eq!(e.display_name, "Dark");
+        assert!(e.is_builtin);
+        assert!(e.path.is_none());
+    }
+
+    #[test]
+    fn skin_entry_user_carries_path() {
+        let p = std::path::PathBuf::from("/tmp/mine.css");
+        let e = SkinEntry::user("mine", p.clone());
+        assert_eq!(e.name, "mine");
+        assert_eq!(e.display_name, "Mine");
+        assert!(!e.is_builtin);
+        assert_eq!(e.path, Some(p));
+    }
+
+    #[test]
+    fn dark_template_parses_cleanly() {
+        let v = parse_skin_vars(DARK_TEMPLATE_CSS);
+        assert_eq!(v.background.to_hex(), "#1a1a1a");
+        assert_eq!(v.highlight.to_hex(), "#00ccff");
+    }
+
+    #[test]
+    fn light_template_parses_cleanly() {
+        let v = parse_skin_vars(LIGHT_TEMPLATE_CSS);
+        assert_eq!(v.background.to_hex(), "#ededed");
+        assert_eq!(v.highlight.to_hex(), "#1a6fc2");
+    }
+
+    #[test]
+    fn skin_guide_is_non_empty() {
+        assert!(!SKIN_GUIDE_MD.is_empty());
+        assert!(SKIN_GUIDE_MD.contains("14 variables"));
+    }
+
+    #[test]
+    fn load_skin_dark_is_builtin() {
+        let s = load_skin("dark").expect("dark exists");
+        assert_eq!(s.name, "dark");
+        assert!(matches!(s.source, SkinSource::BuiltIn));
+        assert_eq!(s.vars.background.to_hex(), "#1a1a1a");
+    }
+
+    #[test]
+    fn load_skin_light_is_builtin() {
+        let s = load_skin("light").expect("light exists");
+        assert_eq!(s.name, "light");
+        assert!(matches!(s.source, SkinSource::BuiltIn));
+    }
+
+    #[test]
+    fn load_skin_is_case_insensitive_new() {
+        assert!(load_skin("Dark").is_some());
+        assert!(load_skin("LIGHT").is_some());
+    }
+
+    #[test]
+    fn load_skin_unknown_returns_none_new() {
+        assert!(load_skin("nonexistent_skin_xyz_abc").is_none());
+    }
+
+    #[test]
+    fn list_skins_no_user_returns_only_builtins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = list_skins_in(tmp.path(), &[]);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "dark");
+        assert_eq!(entries[1].name, "light");
+    }
+
+    #[test]
+    fn list_skins_hidden_filters_user_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("mine.css"),
+            ":root { --sp-background: #000000; }").unwrap();
+        std::fs::write(tmp.path().join("other.css"),
+            ":root { --sp-background: #111111; }").unwrap();
+
+        let all = list_skins_in(tmp.path(), &[]);
+        assert_eq!(all.len(), 4); // dark, light, mine, other
+
+        let filtered = list_skins_in(tmp.path(), &["mine".to_string()]);
+        let names: Vec<_> = filtered.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["dark", "light", "other"]);
+    }
+
+    #[test]
+    fn list_skins_hidden_ignores_builtin_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = list_skins_in(tmp.path(),
+            &["dark".to_string(), "light".to_string()]);
+        // Built-ins are never filtered.
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn list_skins_ignores_non_css_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("readme.txt"), "not a skin").unwrap();
+        let entries = list_skins_in(tmp.path(), &[]);
+        assert_eq!(entries.len(), 2); // just the built-ins
+    }
+
+    #[test]
+    fn add_user_skin_copies_to_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skins");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let src = tmp.path().join("external.css");
+        std::fs::write(&src, ":root { --sp-background: #123456; }").unwrap();
+
+        let entry = add_user_skin_to(&src, &dir).unwrap();
+        assert_eq!(entry.name, "external");
+        assert!(entry.path.as_ref().unwrap().starts_with(&dir));
+        assert!(entry.path.as_ref().unwrap().exists());
+    }
+
+    #[test]
+    fn add_user_skin_uniquifies_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skins");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Pre-existing file with the same name.
+        std::fs::write(dir.join("mine.css"), ":root { }").unwrap();
+
+        let src = tmp.path().join("mine.css");
+        std::fs::write(&src, ":root { --sp-background: #aabbcc; }").unwrap();
+
+        let entry = add_user_skin_to(&src, &dir).unwrap();
+        assert_ne!(entry.name, "mine"); // got uniquified
+        assert!(entry.name.starts_with("mine-"));
+        assert!(entry.path.as_ref().unwrap().exists());
+        // Original was not overwritten.
+        let original = std::fs::read_to_string(dir.join("mine.css")).unwrap();
+        assert_eq!(original, ":root { }");
+    }
+
+    #[test]
+    fn add_user_skin_rejects_missing_root_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skins");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let src = tmp.path().join("bad.css");
+        std::fs::write(&src, "body { color: red; }").unwrap();
+
+        let err = add_user_skin_to(&src, &dir).unwrap_err();
+        assert!(matches!(err, SkinError::NoRootBlock));
+        // Nothing was copied.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn add_user_skin_rejects_missing_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skins");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let err = add_user_skin_to(
+            &tmp.path().join("does-not-exist.css"), &dir).unwrap_err();
+        assert!(matches!(err, SkinError::ReadFailed(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // render_gtk_css
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_gtk_css_contains_window_background() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains("window"));
+        assert!(css.contains("background-color: #1a1a1a"));
+    }
+
+    #[test]
+    fn render_gtk_css_substitutes_text_color() {
+        let mut v = SkinVars::dark_defaults();
+        v.text_color = Rgb { r: 0xff, g: 0x00, b: 0x00 };
+        let css = render_gtk_css(&v);
+        assert!(css.contains("color: #ff0000"));
+    }
+
+    #[test]
+    fn render_gtk_css_substitutes_font_family() {
+        let mut v = SkinVars::dark_defaults();
+        v.font_family = "Verdana, sans-serif".to_string();
+        let css = render_gtk_css(&v);
+        assert!(css.contains("font-family: Verdana, sans-serif"));
+    }
+
+    #[test]
+    fn render_gtk_css_covers_marquee_panel() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".np-frame"));
+        assert!(css.contains(".np-title"));
+        assert!(css.contains(".np-artist"));
+        assert!(css.contains("font-size: 14px")); // marquee size
+    }
+
+    #[test]
+    fn render_gtk_css_covers_time_display() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".time-disp"));
+        assert!(css.contains("font-size: 32px")); // large size
+        assert!(css.contains("font-family: monospace")); // hardcoded
+    }
+
+    #[test]
+    fn render_gtk_css_covers_transport_buttons_all_states() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains("button.transport"));
+        assert!(css.contains("button.transport:hover"));
+        assert!(css.contains("button.transport:active"));
+        assert!(css.contains("background-color: #212121")); // button-color
+        assert!(css.contains("background-color: #2e2e2e")); // button-hover
+        assert!(css.contains("background-color: #3a3a3a")); // button-pressed
+    }
+
+    #[test]
+    fn render_gtk_css_covers_mode_button_toggle_on() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains("button.mode-btn"));
+        assert!(css.contains("button.mode-btn.mode-btn-active"));
+        assert!(css.contains("background-color: #003e52")); // button-active
+    }
+
+    #[test]
+    fn render_gtk_css_covers_playlist() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".playlist"));
+        assert!(css.contains(".playlist row.playing"));
+        assert!(css.contains(".playlist row.broken"));
+        assert!(css.contains("color: #ff7700")); // broken-color
+        assert!(css.contains("rgba(0, 204, 255, 0.1)")); // playing-row bg
+        assert!(css.contains("rgba(0, 204, 255, 0.18)")); // selected-row bg
+    }
+
+    #[test]
+    fn render_gtk_css_covers_seek_and_volume() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains("scale.seek-scale"));
+        assert!(css.contains("scale.vol-scale"));
+    }
+
+    #[test]
+    fn render_gtk_css_covers_scrolled_window_and_columnview() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains("columnview") || css.contains("listview"));
+        assert!(css.contains(".pl-dur-label"));
+    }
+
+    #[test]
+    fn render_gtk_css_emits_button_text_color() {
+        let mut v = SkinVars::dark_defaults();
+        v.button_text_color = Rgb { r: 0x11, g: 0x22, b: 0x33 };
+        let css = render_gtk_css(&v);
+        assert!(css.contains("color: #112233"));
     }
 }

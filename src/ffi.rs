@@ -290,22 +290,34 @@ pub unsafe extern "C" fn sparkamp_load_and_play(ctx: *mut SparkampCtx, uri: *con
 
 /// Resume playback (no-op if already playing; resumes if paused).
 /// If stopped and the playlist has a current track, loads its URI first.
+///
+/// On a Stopped→Playing transition the current track is also recorded into
+/// shuffle history — matching the GTK frontend's Play button, which calls
+/// `play_current()` (which records).  Without this, the very first track of
+/// a session never enters the shuffle history, so the back button has
+/// nothing to step through and the previous track from the shuffled
+/// playthrough is effectively unreachable.  Pause→Resume deliberately does
+/// NOT record — it is the same listening event continuing, not a new play.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_play(ctx: *mut SparkampCtx) {
     if ctx.is_null() {
         return;
     }
     let ctx = &mut *ctx;
-    // If stopped, make sure the current track is loaded before playing.
-    // This handles the case where sparkamp_create pre-loading was skipped
-    // (empty playlist at startup) and a track was added afterward.
-    if *ctx.player.state() == PlayerState::Stopped {
+    let was_stopped = *ctx.player.state() == PlayerState::Stopped;
+    if was_stopped {
         if let Some(track) = ctx.playlist.current() {
             let uri = track.uri();
             ctx.player.load(&uri).ok();
         }
     }
     ctx.player.play().ok();
+    if was_stopped {
+        let idx = ctx.playlist.current_index;
+        if idx < ctx.playlist.len() {
+            ctx.shuffle_state.record_played(idx);
+        }
+    }
 }
 
 /// Pause playback (no-op if already paused or stopped).
@@ -687,11 +699,16 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
         plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_next() {
-        NavResult::Target { was_playing: true } => {
-            // Record in shuffle history and play.
-            ctrl.play_current();
+        NavResult::Target {
+            was_playing: true, ..
+        } => {
+            // Controller already recorded the fresh pick (or walked existing
+            // history) — use the no_record variant to avoid double-recording.
+            ctrl.play_current_no_record();
         }
-        NavResult::Target { was_playing: false } => {
+        NavResult::Target {
+            was_playing: false, ..
+        } => {
             // Just pre-load so position/duration queries work without playing.
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
@@ -726,18 +743,19 @@ pub unsafe extern "C" fn sparkamp_advance_after_eos(ctx: *mut SparkampCtx) {
 /// Jump to the previous track (or restart the current one) and play.
 ///
 /// Matches GTK behaviour:
-/// - pos ≥ 5 s → restart (play_current, which re-records in shuffle history).
-/// - pos < 5 s → step back (play_current_no_record, so history is NOT
-///   corrupted — recording again would truncate the history and prevent
-///   stepping back further).
+/// - pos ≥ 5 s → restart current track from the beginning.
+/// - pos < 5 s, shuffle on → walk shuffle-history cursor backward.
+/// - pos < 5 s, shuffle off → linear previous (wraps under RepeatMode::Playlist).
 /// - Was stopped → move cursor / pre-load but do NOT start playing.
+///
+/// Recording into shuffle history is owned by the controller — this handler
+/// always uses `play_current_no_record` to avoid double-recording.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
     if ctx.is_null() {
         return;
     }
     let ctx = &mut *ctx;
-    let before_index = ctx.playlist.current_index;
     // Reset cached duration so UI refreshes for the new track.
     ctx.last_known_duration = None;
     let mut ctrl = Controller {
@@ -748,18 +766,14 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_prev() {
-        NavResult::Target { was_playing: true } => {
-            let is_restart = ctrl.playlist.current_index == before_index;
-            if is_restart {
-                // Restart: counts as a fresh listen, re-record in history.
-                ctrl.play_current();
-            } else {
-                // Stepping back: do NOT append to history — that would truncate
-                // it and prevent further back navigation in shuffle mode.
-                ctrl.play_current_no_record();
-            }
+        NavResult::Target {
+            was_playing: true, ..
+        } => {
+            ctrl.play_current_no_record();
         }
-        NavResult::Target { was_playing: false } => {
+        NavResult::Target {
+            was_playing: false, ..
+        } => {
             // Stopped: just pre-load the target track without playing.
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
@@ -1749,6 +1763,9 @@ pub struct SparkampLibTrack {
     pub has_art: c_int,
     /// 1 if the file no longer exists at its recorded path; 0 otherwise.
     pub file_missing: c_int,
+    /// ISO-8601 UTC timestamp of the last time this track was played
+    /// ("YYYY-MM-DDTHH:MM:SSZ"), or empty string if never played.
+    pub last_played: [u8; 32],
 }
 
 impl SparkampLibTrack {
@@ -1774,6 +1791,7 @@ impl SparkampLibTrack {
             read_only: 0,
             has_art: if t.artwork_path.is_some() { 1 } else { 0 },
             file_missing: 0,
+            last_played: [0u8; 32],
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -1793,6 +1811,7 @@ impl SparkampLibTrack {
         copy_str(&mut out.bpm, t.bpm.as_deref().unwrap_or(""));
         copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
         copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
+        copy_str(&mut out.last_played, t.last_played.as_deref().unwrap_or(""));
         let p = std::path::Path::new(&t.path);
         out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
         out.file_missing = if p.exists() { 0 } else { 1 };

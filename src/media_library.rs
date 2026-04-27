@@ -1005,6 +1005,13 @@ impl MediaLibrary {
             "genre" => format!("LOWER(COALESCE(genre,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "bitrate" => format!("COALESCE(bitrate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "num" => format!("COALESCE(track_num, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "play_count" => format!("COALESCE(play_count, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            // last_played sorts NULLs (never played) to the end regardless of direction
+            // so users browsing recent activity see real timestamps first.
+            "last_played" => format!(
+                "CASE WHEN last_played IS NULL OR last_played = '' THEN 1 ELSE 0 END ASC, \
+                 last_played {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
             // Default: artist → album → track number
             _ => format!(
                 "LOWER(COALESCE(artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"
@@ -1878,6 +1885,21 @@ impl MediaLibrary {
         let skipped = total - scanned;
 
         Ok((scanned, skipped, to_scan_count - scanned))
+    }
+
+    /// Reset `last_scanned` to NULL for tracks that have no metadata at all
+    /// (both `artist` and `length_secs` are NULL).
+    ///
+    /// Call this before a full rescan to recover tracks whose previous scan
+    /// completed but wrote no metadata (e.g. due to an earlier bug).  After
+    /// the reset, `scan_folder` will treat those tracks as never-scanned and
+    /// re-read their tags.
+    pub fn reset_unscanned_metadata(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET last_scanned = NULL WHERE artist IS NULL AND length_secs IS NULL",
+            [],
+        )?;
+        Ok(())
     }
 
     /// Scan all watched folders, updating metadata for files that have changed.
@@ -3349,4 +3371,5 @@ mod tests {
         let ro = read_only_track_fields(path, Some(&track));
         assert_eq!(ro.channels, "6ch");
     }
+
 }

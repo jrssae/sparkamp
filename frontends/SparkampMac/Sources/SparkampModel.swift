@@ -37,9 +37,21 @@ struct MLTrack: Identifiable {
     let readOnly: Bool
     let hasArt: Bool
     let fileMissing: Bool
+    /// ISO-8601 UTC timestamp from the DB ("YYYY-MM-DDTHH:MM:SSZ"); empty if never played.
+    let lastPlayed: String
 
     var durationString: String { formatDuration(lengthSecs) }
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
+
+    /// Human-friendly local "YYYY-MM-DD HH:MM" rendering of lastPlayed, or "" if never played.
+    var lastPlayedDisplay: String {
+        guard !lastPlayed.isEmpty else { return "" }
+        let inFmt = ISO8601DateFormatter()
+        guard let date = inFmt.date(from: lastPlayed) else { return lastPlayed }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        return outFmt.string(from: date)
+    }
 
     init(from c: SparkampLibTrack) {
         var c = c
@@ -63,6 +75,7 @@ struct MLTrack: Identifiable {
         readOnly    = c.read_only != 0
         hasArt      = c.has_art != 0
         fileMissing = c.file_missing != 0
+        lastPlayed  = cBytesToString(&c.last_played)
     }
 }
 
@@ -198,6 +211,11 @@ final class SparkampModel: ObservableObject {
     @Published var mlScanRunning: Bool = false
     @Published var mlScanDone: Int = 0
     @Published var mlScanTotal: Int = 0
+    /// Bumps every time the model writes back to the library DB (e.g. a
+    /// play_count increment from `record_play`).  The Media Library window
+    /// observes this and re-runs its own filtered/sorted fetch so the
+    /// table reflects the new value without resetting search or sort.
+    @Published var mlReloadTrigger: Int = 0
     /// True once `sparkamp_ml_open` has been called.
     var mlIsOpen: Bool = false
     /// Counts ticks while a scan is running; used to throttle intermediate reloads.
@@ -217,6 +235,19 @@ final class SparkampModel: ObservableObject {
     /// the last add, regardless of whether dirty_count fired.
     private var lastAddTime: Date? = nil
     private let scanWindowSeconds: TimeInterval = 15.0
+
+    // MARK: Private — play-count gating
+    //
+    // Mirrors the GTK frontend rule: a track only counts as "played" once
+    // its position passes the threshold below.  Tracking the path (not just
+    // the playlist index) prevents re-counting if the same file appears
+    // twice in the queue or if the playlist is rebuilt mid-track.
+    private var countedPlayPath: String? = nil
+    private let playCountThresholdSecs: Double = 20.0
+    /// Last raw playback state observed by tick() — used to detect
+    /// stopped→playing transitions so a replay re-arms the play-count gate.
+    /// 0 = stopped, 1 = playing, 2 = paused (matches sparkamp_get_state).
+    private var lastPlaybackState: Int32 = 0
 
     /// Raw pointer to the Rust SparkampCtx.
     /// Internal (not private) so Canvas-based visualizer views can call FFI
@@ -292,6 +323,38 @@ final class SparkampModel: ObservableObject {
         if idx != currentIndex {
             currentIndex = idx
             refreshCurrentTrackInfo()
+            // New track started — reset the play-count gate so the next
+            // record_play fires once playback crosses the threshold.
+            countedPlayPath = nil
+        }
+
+        // Detect a stopped→playing transition for the same track (a replay).
+        // sparkamp_get_state returns 0 = stopped, 1 = playing, 2 = paused.
+        // Pause→play deliberately does NOT reset the gate (we don't want a
+        // mid-track pause to double-count); only a hard stop and re-press
+        // of Play should arm a fresh count.
+        if lastPlaybackState == 0 && state == 1 {
+            countedPlayPath = nil
+        }
+        lastPlaybackState = state
+
+        // Record a play in the media library after the user has listened
+        // for `playCountThresholdSecs` seconds of the current track.  The
+        // path-based gate (countedPlayPath) ensures we only count each
+        // playthrough once even if tick() runs many times per second.
+        if isPlaying, idx >= 0, position >= playCountThresholdSecs {
+            if let pathPtr = sparkamp_playlist_get_path(ctx, Int32(idx)) {
+                let path = String(cString: pathPtr)
+                sparkamp_free_string(pathPtr)
+                if !path.isEmpty, countedPlayPath != path {
+                    path.withCString { sparkamp_ml_record_play(ctx, $0) }
+                    countedPlayPath = path
+                    // Nudge the Media Library window to re-run its own
+                    // filtered/sorted fetch so the row's play count and
+                    // last-played timestamp update live.
+                    if mediaLibraryVisible { mlReloadTrigger &+= 1 }
+                }
+            }
         }
 
         // Poll for background scan results in two cases:
@@ -933,9 +996,13 @@ final class SparkampModel: ObservableObject {
         let cPaths:    [UnsafePointer<CChar>?]      = nsStrings.map { $0.utf8String }
         return cPaths.withUnsafeBufferPointer { buf in
             name.withCString { nameCStr in
-                sparkamp_ml_save_playlist_as(ctx, nameCStr,
-                                             UnsafeMutablePointer(mutating: buf.baseAddress),
-                                             Int32(trackPaths.count))
+                // Bridge `const char **` — the C function does not mutate the
+                // array, so re-cast our immutable buffer to a mutable pointer.
+                let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                    mutating: buf.baseAddress)
+                return sparkamp_ml_save_playlist_as(ctx, nameCStr,
+                                                    mutablePtr,
+                                                    Int32(trackPaths.count))
             }
         }
     }
