@@ -1749,6 +1749,9 @@ pub struct SparkampLibTrack {
     pub has_art: c_int,
     /// 1 if the file no longer exists at its recorded path; 0 otherwise.
     pub file_missing: c_int,
+    /// ISO-8601 UTC timestamp of the last time this track was played
+    /// ("YYYY-MM-DDTHH:MM:SSZ"), or empty string if never played.
+    pub last_played: [u8; 32],
 }
 
 impl SparkampLibTrack {
@@ -1774,6 +1777,7 @@ impl SparkampLibTrack {
             read_only: 0,
             has_art: if t.artwork_path.is_some() { 1 } else { 0 },
             file_missing: 0,
+            last_played: [0u8; 32],
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -1793,6 +1797,7 @@ impl SparkampLibTrack {
         copy_str(&mut out.bpm, t.bpm.as_deref().unwrap_or(""));
         copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
         copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
+        copy_str(&mut out.last_played, t.last_played.as_deref().unwrap_or(""));
         let p = std::path::Path::new(&t.path);
         out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
         out.file_missing = if p.exists() { 0 } else { 1 };

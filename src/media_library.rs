@@ -1005,6 +1005,13 @@ impl MediaLibrary {
             "genre" => format!("LOWER(COALESCE(genre,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "bitrate" => format!("COALESCE(bitrate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "num" => format!("COALESCE(track_num, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "play_count" => format!("COALESCE(play_count, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            // last_played sorts NULLs (never played) to the end regardless of direction
+            // so users browsing recent activity see real timestamps first.
+            "last_played" => format!(
+                "CASE WHEN last_played IS NULL OR last_played = '' THEN 1 ELSE 0 END ASC, \
+                 last_played {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
             // Default: artist → album → track number
             _ => format!(
                 "LOWER(COALESCE(artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"

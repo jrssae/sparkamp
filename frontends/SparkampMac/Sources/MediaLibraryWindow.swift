@@ -34,10 +34,18 @@ struct MediaLibraryView: View {
     @State private var selection: Set<Int64> = []
 
     // Column visibility bitmask
-    @AppStorage("sparkamp.ml.columns") private var columnMask: Int = 0b0000000000111
+    // Default visible columns: Title (0), Artist (1), Album (2), Last Played (16).
+    @AppStorage("sparkamp.ml.columns") private var columnMask: Int = 0b10000000000000111
 
-    // Column ordering
-    @AppStorage("sparkamp.ml.columnOrder") private var columnCustomizationData: Data = Data()
+    // Column ordering.
+    //
+    // Key suffix is bumped (`…v2`) deliberately: the original schema persisted
+    // a customization that did not include the (then-anonymous) status column.
+    // After we gave that column a customizationID, SwiftUI treated it as a
+    // brand-new column and tacked it onto the right end of the saved layout.
+    // Bumping the key once invalidates that stale data so the natural in-code
+    // ordering — status column first — is restored on first launch.
+    @AppStorage("sparkamp.ml.columnOrder.v2") private var columnCustomizationData: Data = Data()
     @State private var columnCustomization = TableColumnCustomization<MLTrack>()
 
     private var theme: SkinTheme { themeManager.currentTheme }
@@ -111,6 +119,11 @@ struct MediaLibraryView: View {
             }
         }
         .onChange(of: model.mlScanRunning) { _, running in if !running { reload() } }
+        // Re-run the current filtered/sorted fetch whenever the model
+        // writes back to the DB (e.g. an in-flight track crosses the
+        // play-count threshold).  Using a trigger counter rather than
+        // calling mlFetchTracks() directly preserves search & sort state.
+        .onChange(of: model.mlReloadTrigger) { _, _ in reload() }
         .onChange(of: nav) { _, _ in selection.removeAll() }
         .onChange(of: columnCustomization) { _, v in
             if let d = try? JSONEncoder().encode(v) { columnCustomizationData = d }
@@ -365,6 +378,7 @@ struct MediaLibraryView: View {
             columnToggle("Filename",     bit: 13)
             columnToggle("Play Count",   bit: 14)
             columnToggle("Album Art",    bit: 15)
+            columnToggle("Last Played",  bit: 16)
         } label: {
             Image(systemName: "tablecells")
                 .font(.system(size: 11))
@@ -410,6 +424,7 @@ struct MediaLibraryView: View {
             case \MLTrack.lengthSecs:  return "duration"
             case \MLTrack.bitrate:     return "bitrate"
             case \MLTrack.playCount:   return "play_count"
+            case \MLTrack.lastPlayed:  return "last_played"
             default:                   return nil
             }
         }
@@ -869,11 +884,19 @@ struct MLFilesTable: View {
     var body: some View {
         Table(tracks, selection: $selection, sortOrder: $sortOrder,
               columnCustomization: $columnCustomization) {
+            // Status indicator (read-only / missing-file / unscanned).  The
+            // .customizationID + .disabledCustomizationBehavior pin keeps this
+            // column at the far-left position even after the user reorders
+            // others — without a customizationID, persisted reorder data
+            // restores the column elsewhere.
             TableColumn("") { row in
                 statusCell(row)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(cellBg(row))
-            }.width(20)
+            }
+            .width(20)
+            .customizationID("col-status")
+            .disabledCustomizationBehavior([.reorder, .resize, .visibility])
             columnsA()
             columnsB()
         }
@@ -1069,6 +1092,15 @@ struct MLFilesTable: View {
                     .background(cellBg(row))
             }
             .customizationID("col-playcount")
+        }
+        if isVisible(16) {
+            TableColumn("Last Played", value: \.lastPlayed) { row in
+                Text(row.lastPlayedDisplay)
+                    .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(cellBg(row))
+            }
+            .customizationID("col-lastplayed")
         }
         if isVisible(15) {
             TableColumn("Art") { row in

@@ -241,6 +241,7 @@ typedef struct {
     int32_t  read_only;       /* 1 = file is read-only on disk */
     int32_t  has_art;         /* 1 = cached album art exists */
     int32_t  file_missing;    /* 1 = file does not exist at recorded path */
+    uint8_t  last_played[32]; /* ISO-8601 UTC ("YYYY-MM-DDTHH:MM:SSZ") or empty */
 } SparkampLibTrack;
 
 /** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */
