@@ -1,0 +1,125 @@
+# Build Sparkamp.dmg on macOS for every push to main.
+#
+# Mirrors the trigger of build.yml (the Flatpak workflow) so a Linux
+# Flatpak and a macOS DMG are produced from the same commit. The
+# resulting unsigned .dmg is uploaded as a workflow artifact.
+#
+# Notes
+# -----
+#  * Runs on macos-latest (Apple Silicon). The bundled .dmg is therefore
+#    arm64-only — Intel Macs will need a separate runner job.
+#  * The build is ad-hoc signed (no Apple Developer account / cert
+#    required). On first launch users must right-click → Open or run
+#    `xattr -cr /Applications/SparkampMac.app` to bypass Gatekeeper.
+#  * The heavy lifting (Rust static lib, xcodebuild archive, GStreamer
+#    bundling, install_name rewrites, DMG packaging) lives in
+#    packaging/macos/build-dmg.sh — this workflow only sets up the
+#    environment and invokes that script.
+
+name: Build DMG
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-dmg:
+    name: Build and upload macOS DMG
+    runs-on: macos-latest
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Rust toolchain ────────────────────────────────────────────────────
+      # macos-latest already ships rustup; this just ensures a stable
+      # toolchain is selected and on PATH for the Cargo Build phase.
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      # ── Cache cargo registry + target dir ────────────────────────────────
+      # Reuses crate downloads + the macos workspace member's build outputs
+      # across runs. Keyed on Cargo.lock so a dep change invalidates the
+      # cache cleanly.
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # ── Homebrew GStreamer ───────────────────────────────────────────────
+      # build-dmg.sh expects the GStreamer dylibs and plug-ins under
+      # /opt/homebrew/lib/gstreamer-1.0 (the Apple Silicon Homebrew prefix).
+      # The plug-in list mirrors the one in build-dmg.sh: core, playback,
+      # audio conversion + EQ + spectrum + format demuxers.
+      - name: Install GStreamer via Homebrew
+        run: |
+          brew update
+          brew install \
+            pkg-config \
+            gstreamer \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-plugins-bad \
+            gst-plugins-ugly \
+            gst-libav \
+            mpg123
+
+      # ── Show environment (for build log diagnostics) ─────────────────────
+      - name: Print build environment
+        run: |
+          echo "Xcode:         $(xcodebuild -version | head -1)"
+          echo "Rust:          $(rustc --version)"
+          echo "Cargo:         $(cargo --version)"
+          echo "GStreamer:     $(pkg-config --modversion gstreamer-1.0 || echo 'not found')"
+          echo "Arch:          $(uname -m)"
+
+      # ── Build the DMG ─────────────────────────────────────────────────────
+      - name: Build DMG
+        run: bash packaging/macos/build-dmg.sh
+
+      # ── Find the produced DMG (filename includes MARKETING_VERSION) ──────
+      - name: Locate DMG artifact
+        id: locate-dmg
+        run: |
+          dmg="$(ls dist/Sparkamp-*.dmg | head -1)"
+          if [ -z "$dmg" ]; then
+            echo "ERROR: no DMG found in dist/" >&2
+            exit 1
+          fi
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg_basename=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+
+      # ── Upload artifact ───────────────────────────────────────────────────
+      - name: Upload DMG as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sparkamp-dmg-${{ github.sha }}
+          path: ${{ steps.locate-dmg.outputs.dmg }}
+          retention-days: 30
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Write job summary
+        run: |
+          echo "## Sparkamp macOS DMG Build" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifact:** \`${{ steps.locate-dmg.outputs.dmg_basename }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download from the **Artifacts** section of this run, then:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "open ${{ steps.locate-dmg.outputs.dmg_basename }}" >> $GITHUB_STEP_SUMMARY
+          echo "# drag SparkampMac.app to /Applications" >> $GITHUB_STEP_SUMMARY
+          echo "# first launch:  right-click → Open  (or  xattr -cr /Applications/SparkampMac.app)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Build is ad-hoc signed (no Apple Developer cert) and arm64-only._" >> $GITHUB_STEP_SUMMARY
