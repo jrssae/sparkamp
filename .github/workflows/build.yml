@@ -1,4 +1,4 @@
-# Build SparkAmp as a Flatpak bundle on every push to main.
+# Build Sparkamp as a Flatpak bundle on every push to main.
 #
 # The resulting .flatpak file is uploaded as a build artifact so that anyone
 # can download and test the latest build without waiting for a release.
@@ -7,7 +7,7 @@
 #   1. packaging/cargo-sources.json must exist (generated once via
 #      flatpak-cargo-generator.py Cargo.lock -o packaging/cargo-sources.json
 #      and committed to the repository).
-#   2. The dev.sparkamp.SparkAmp.yml manifest must be at the repo root.
+#   2. The dev.sparkamp.Sparkamp.yml manifest must be at the repo root.
 #
 # The job runs on ubuntu-latest and uses the
 # flatpak/flatpak-github-actions action to handle installing Flatpak,
@@ -66,29 +66,29 @@ jobs:
             --install-deps-from=flathub \
             --repo=repo \
             build-dir \
-            dev.sparkamp.SparkAmp.yml
+            dev.sparkamp.Sparkamp.yml
 
       # ── Bundle into a single .flatpak file ────────────────────────────────
       - name: Create .flatpak bundle
         run: |
           flatpak build-bundle repo \
-            SparkAmp-${{ github.sha }}.flatpak \
-            dev.sparkamp.SparkAmp \
+            Sparkamp-${{ github.sha }}.flatpak \
+            dev.sparkamp.Sparkamp \
             --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
       # ── Upload artifact ───────────────────────────────────────────────────
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SparkAmp-flatpak-${{ github.sha }}
-          path: SparkAmp-${{ github.sha }}.flatpak
+          name: Sparkamp-flatpak-${{ github.sha }}
+          path: Sparkamp-${{ github.sha }}.flatpak
           # Keep build artifacts for 30 days.
           retention-days: 30
 
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Write job summary
         run: |
-          echo "## SparkAmp Flatpak Build" >> $GITHUB_STEP_SUMMARY
+          echo "## Sparkamp Flatpak Build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -97,6 +97,6 @@ jobs:
           echo "then install with:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "flatpak install --user SparkAmp-${{ github.sha }}.flatpak" >> $GITHUB_STEP_SUMMARY
-          echo "flatpak run dev.sparkamp.SparkAmp --ui" >> $GITHUB_STEP_SUMMARY
+          echo "flatpak install --user Sparkamp-${{ github.sha }}.flatpak" >> $GITHUB_STEP_SUMMARY
+          echo "flatpak run dev.sparkamp.Sparkamp --ui" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
