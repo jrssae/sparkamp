@@ -62,6 +62,15 @@ jobs:
             org.gnome.Sdk//47 \
             org.freedesktop.Sdk.Extension.rust-stable//24.08
 
+      # ── Vendor Rust dependencies ──────────────────────────────────────────
+      # The repo's .cargo/config.toml redirects crates-io to a local `vendor/`
+      # directory, but `vendor/` is gitignored. The local dev workflow keeps
+      # vendor/ checked out via `cargo vendor` after a fresh clone; CI must do
+      # the same so the `type: dir` source in the manifest copies the vendored
+      # crates into the sandbox where it has no network access.
+      - name: Vendor Rust dependencies
+        run: cargo vendor
+
       # ── Build the Flatpak ─────────────────────────────────────────────────
       - name: Build Flatpak
         run: |
