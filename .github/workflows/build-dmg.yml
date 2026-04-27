@@ -82,6 +82,13 @@ jobs:
           echo "GStreamer:     $(pkg-config --modversion gstreamer-1.0 || echo 'not found')"
           echo "Arch:          $(uname -m)"
 
+      # ── Vendor Rust dependencies ──────────────────────────────────────────
+      # The repo's .cargo/config.toml redirects crates-io to a local `vendor/`
+      # directory that is gitignored, so the runner needs to populate it
+      # before any cargo build can succeed.
+      - name: Vendor Rust dependencies
+        run: cargo vendor
+
       # ── Pre-build the Rust static lib with full output ────────────────────
       # build-dmg.sh runs the same cargo command but pipes it through a grep
       # filter that hides errors. Doing it here first surfaces real compile
