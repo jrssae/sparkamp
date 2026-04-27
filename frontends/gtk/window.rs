@@ -366,15 +366,43 @@ impl AppState {
     ///
     /// Returns `Some(display_name)` if a next track was found, or `None` if
     /// playback should stop (end of playlist with repeat off).
+    ///
+    /// In shuffle mode, the session history is walked forward first (so
+    /// pressing Forward after Back replays the same track) before falling
+    /// back to a fresh random pick.  When stopped, fresh picks are still
+    /// recorded into shuffle history so a subsequent Back can return to the
+    /// original track instead of falling through to linear-prev.
     fn play_next(&mut self) -> Option<String> {
         let total = self.playlist.len();
         let current = self.playlist.current_index;
         let repeat = self.config.playback.repeat_mode;
+
+        // Try walking forward through existing shuffle history first.
+        // Seed history with the current track so even a fresh stopped-state
+        // session leaves something for Back to step into afterwards.
+        if self.shuffle_state.enabled {
+            self.shuffle_state.ensure_seeded(current);
+            if let Some(idx) = self.shuffle_state.next_from_history() {
+                self.playlist.jump_to(idx);
+                return if *self.player.state() != PlayerState::Stopped {
+                    // History walk — don't re-record (would truncate the
+                    // remaining future entries the user might still want).
+                    self.play_current_no_record()
+                } else {
+                    self.playlist.current().map(|t| t.display_name())
+                };
+            }
+        }
+
         let idx = self.shuffle_state.next_index(current, total, repeat)?;
         self.playlist.jump_to(idx);
         if *self.player.state() != PlayerState::Stopped {
             self.play_current()
         } else {
+            // Stopped-state pre-load: record the fresh pick manually so the
+            // shuffle history reflects the navigation even though the
+            // playback layer never gets a chance to call play_current.
+            self.shuffle_state.record_played(idx);
             self.playlist.current().map(|t| t.display_name())
         }
     }
@@ -399,6 +427,11 @@ impl AppState {
         }
 
         if self.shuffle_state.enabled {
+            // Seed history with the current track if shuffle is on but
+            // nothing has been recorded yet — Back after a stopped-state
+            // Next must return to the original current track, not a
+            // linear-prev surprise.
+            self.shuffle_state.ensure_seeded(self.playlist.current_index);
             if let Some(idx) = self.shuffle_state.prev_from_history() {
                 self.playlist.jump_to(idx);
                 return if do_play {
