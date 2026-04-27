@@ -82,6 +82,16 @@ jobs:
           echo "GStreamer:     $(pkg-config --modversion gstreamer-1.0 || echo 'not found')"
           echo "Arch:          $(uname -m)"
 
+      # ── Pre-build the Rust static lib with full output ────────────────────
+      # build-dmg.sh runs the same cargo command but pipes it through a grep
+      # filter that hides errors. Doing it here first surfaces real compile
+      # errors in the workflow log; the script's later invocation will be a
+      # no-op cache hit.
+      - name: Cargo build (Rust static lib)
+        run: |
+          cargo build --release \
+            --manifest-path frontends/macos/Cargo.toml
+
       # ── Build the DMG ─────────────────────────────────────────────────────
       - name: Build DMG
         run: bash packaging/macos/build-dmg.sh
