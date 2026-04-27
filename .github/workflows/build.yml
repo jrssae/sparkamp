@@ -42,17 +42,22 @@ jobs:
             flatpak flatpak-builder elfutils
 
       # ── Add Flathub remote ────────────────────────────────────────────────
+      # Use --user so the remote and the runtimes installed below live in
+      # the same scope as `flatpak-builder --user` later in the workflow.
+      # Mixing system-scope remotes/installs with a --user build causes
+      # `error: No remote refs found for 'flathub'` when flatpak-builder
+      # tries to resolve --install-deps-from=flathub.
       - name: Add Flathub remote
         run: |
-          sudo flatpak remote-add --if-not-exists flathub \
+          flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak remote-add --if-not-exists flathub-beta \
+          flatpak remote-add --user --if-not-exists flathub-beta \
             https://dl.flathub.org/beta-repo/flathub-beta.flatpakrepo
 
       # ── Install runtime and SDK ───────────────────────────────────────────
       - name: Install Flatpak runtime and SDK
         run: |
-          sudo flatpak install -y --noninteractive flathub \
+          flatpak install --user -y --noninteractive flathub \
             org.gnome.Platform//47 \
             org.gnome.Sdk//47 \
             org.freedesktop.Sdk.Extension.rust-stable//24.08
