@@ -23,10 +23,6 @@
 //!     NavResult::NoTarget => {}
 //! }
 //! ```
-//!
-//! Note: `nav_next` and `nav_prev` now own shuffle-history recording
-//! internally — callers must use `play_current_no_record` (not
-//! `play_current`) to avoid double-recording.
 
 use std::time::Duration;
 

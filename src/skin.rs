@@ -406,15 +406,13 @@ pub fn load_skin(name: &str) -> Option<Skin> {
 
     // User file wins.
     let user_path = user_skins_dir().join(format!("{lower}.css"));
-    if user_path.exists() {
-        if let Ok(css) = std::fs::read_to_string(&user_path) {
-            let vars = parse_skin_vars(&css);
-            return Some(Skin {
-                name:   lower,
-                vars,
-                source: SkinSource::UserFile(user_path),
-            });
-        }
+    if let Ok(css) = std::fs::read_to_string(&user_path) {
+        let vars = parse_skin_vars(&css);
+        return Some(Skin {
+            name:   lower,
+            vars,
+            source: SkinSource::UserFile(user_path),
+        });
     }
 
     // Built-ins.

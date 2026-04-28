@@ -813,17 +813,11 @@ fn gtk_safe(s: &str) -> String {
 }
 
 fn sanitize_id3_text(s: &str) -> String {
-    let trimmed = s.trim();
-    let without_nulls = if trimmed.contains('\0') {
-        trimmed.replace('\0', "")
-    } else {
-        trimmed.to_owned()
-    };
-    let without_control: String = without_nulls
+    gtk_safe(s.trim())
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-        .collect();
-    without_control.chars().take(256).collect()
+        .take(256)
+        .collect()
 }
 
 fn sanitize_id3_numeric(s: &str) -> String {

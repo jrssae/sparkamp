@@ -18,6 +18,8 @@ use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::model::AUDIO_EXTENSIONS;
+
 // ---------------------------------------------------------------------------
 // String sanitization
 // ---------------------------------------------------------------------------
@@ -609,15 +611,11 @@ impl MediaLibrary {
     /// Tracks that were previously in the DB but whose file no longer exists
     /// on disk are removed.  Returns `(added, removed)` counts.
     pub fn rescan_folder(&self, folder_id: i64, folder_path: &str) -> Result<(usize, usize)> {
-        // Audio extensions recognised by Sparkamp.
-        const AUDIO_EXTS: &[&str] = &["mp3", "ogg", "flac", "wav", "aac", "m4a", "opus", "wma"];
-
-        // Collect all relevant files under the folder.
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
         Self::walk_dir(
             Path::new(folder_path),
-            AUDIO_EXTS,
+            AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
         );
@@ -698,13 +696,11 @@ impl MediaLibrary {
     /// This returns immediately after collecting paths and inserting them into DB.
     /// Call `rescan_folder_metadata` after this to update metadata asynchronously.
     pub fn rescan_folder_fast(&self, folder_id: i64, folder_path: &str) -> Result<(usize, usize)> {
-        const AUDIO_EXTS: &[&str] = &["mp3", "ogg", "flac", "wav", "aac", "m4a", "opus", "wma"];
-
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
         Self::walk_dir(
             Path::new(folder_path),
-            AUDIO_EXTS,
+            AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
         );
@@ -831,15 +827,26 @@ impl MediaLibrary {
 
         let total = tracks.len();
         let mut updated = 0usize;
+        // Wrap the per-track upserts in one transaction so SQLite syncs once
+        // at commit instead of fsyncing per track. On a 30k-track library
+        // this is the dominant scan cost; partial work is committed even on
+        // user cancel so progress isn't lost.
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        let mut cancelled = false;
         for path in tracks {
             if cancel.load(Ordering::Relaxed) {
-                return Ok(updated);
+                cancelled = true;
+                break;
             }
             if self.upsert_track(folder_id, &path).is_ok() {
                 let _ = self.update_last_scanned(&path);
                 updated += 1;
             }
             progress(updated, total);
+        }
+        let _ = self.conn.execute("COMMIT", []);
+        if cancelled {
+            return Ok(updated);
         }
         Ok(updated)
     }

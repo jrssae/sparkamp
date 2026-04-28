@@ -11,6 +11,14 @@ use std::path::PathBuf;
 
 use crate::shuffle::RepeatMode;
 
+/// Symmetric per-band EQ gain limit (decibels). Keeps the cumulative boost
+/// well below the point where playbin's volume element would clip.
+pub const EQ_BAND_DB_LIMIT: f64 = 12.0;
+
+/// Pre-amp multiplier range, applied as a linear scale before the EQ.
+pub const PREAMP_MIN: f64 = 0.5;
+pub const PREAMP_MAX: f64 = 1.5;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -478,7 +486,7 @@ impl EqConfig {
     /// the EQ is disabled so the pre-amp does not colour the signal.
     pub fn effective_preamp(&self) -> f64 {
         if self.enabled {
-            self.preamp.clamp(0.5, 1.5)
+            self.preamp.clamp(PREAMP_MIN, PREAMP_MAX)
         } else {
             1.0
         }
@@ -626,7 +634,7 @@ impl EqConfig {
         if self.bands.len() < 10 {
             self.bands.resize(10, 0.0);
         }
-        let clamped = new_gain.clamp(-12.0, 12.0);
+        let clamped = new_gain.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
         self.bands[index] = clamped;
         self.preset.clear();
         clamped
@@ -719,11 +727,10 @@ impl Config {
                 &path,
             );
         }
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
-            Ok(toml::from_str(&content)?)
-        } else {
-            Ok(Config::default())
+        match std::fs::read_to_string(&path) {
+            Ok(content) => Ok(toml::from_str(&content)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) => Err(e.into()),
         }
     }
 

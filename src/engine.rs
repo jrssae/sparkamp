@@ -24,6 +24,7 @@ use gstreamer_sys;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
 use crate::model::{SpectrumData, WaveformBuffer};
 
 // ---------------------------------------------------------------------------
@@ -523,7 +524,7 @@ impl Player {
     /// The change takes effect immediately, even during playback.
     pub fn set_eq_band(&mut self, band: usize, gain_db: f64) {
         if band < 10 {
-            let clamped = gain_db.clamp(-12.0, 12.0);
+            let clamped = gain_db.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
             if let Some(eq) = &self.eq {
                 let prop = format!("band{band}");
                 eq.set_property(&prop, clamped);
@@ -553,7 +554,7 @@ impl Player {
     /// recalculated once after all bands are applied.
     pub fn apply_eq_bands(&mut self, bands: &[f64]) {
         for (i, &gain) in bands.iter().take(10).enumerate() {
-            let clamped = gain.clamp(-12.0, 12.0);
+            let clamped = gain.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
             if let Some(eq) = &self.eq {
                 let prop = format!("band{i}");
                 eq.set_property(&prop, clamped);
@@ -571,7 +572,7 @@ impl Player {
     /// combined output never clips.  This is a no-op when the EQ plugin is
     /// unavailable.
     pub fn set_preamp(&mut self, multiplier: f64) {
-        self.user_preamp = multiplier.clamp(0.5, 1.5);
+        self.user_preamp = multiplier.clamp(PREAMP_MIN, PREAMP_MAX);
         self.apply_preamp_compensation();
     }
 
