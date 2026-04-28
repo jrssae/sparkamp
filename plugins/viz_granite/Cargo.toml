@@ -1,6 +1,6 @@
 [package]
 name = "viz_granite"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Granite — Geiss-inspired OpenGL visualizer plugin for Sparkamp"
 license = "AGPL-3.0-only"

@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v0.4.0** — see [What's New](#whats-new-v040) for everything added in this release.
+> **v1.0.0** — see [What's New](#whats-new-v100) for everything added in this release.
 
 ---
 
@@ -11,6 +11,14 @@ There are a number of various Winamp clones and other audio players available fo
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
 
 ---
+
+## What's New (v1.0.0)
+
+First stable release.
+
+- **macOS DMG produced by CI** alongside the Linux Flatpak — every push to `main` builds both. Ad-hoc signed, arm64-only.
+- **GTK player polish**: mode buttons (EQ / Playlist / Media Library) reflect window visibility correctly on startup, repeat/shuffle buttons show text labels matching the macOS style, repeat-button width is locked across all four modes, and the visualizer column reserves a stable width across play/pause/stop transitions.
+- **CI hardening**: Flatpak workflow now vendors Rust deps before build and uses `--user`-scope Flathub remotes; DMG workflow surfaces real cargo errors and caches `~/.cargo` + `target/` across runs.
 
 ## What's New (v0.4.0)
 

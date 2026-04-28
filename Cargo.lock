@@ -1754,7 +1754,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "sparkamp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "sparkamp-macos"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "sparkamp",
 ]
@@ -2200,7 +2200,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viz_granite"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "glow",
  "libc",

@@ -28,6 +28,15 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.0.0" date="2026-04-28">
+      <description>
+        <p>First stable release. Adds macOS DMG build, GTK skin system with 14-variable
+        CSS theming, media library polish (mode-button toggle states, locked column
+        widths, repeat/shuffle text labels), visualizer width stability across player
+        states, and CI pipelines that produce both a Linux Flatpak and a macOS DMG
+        from every commit to main.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-04-06">
       <description>
         <p>GTK4 is now the default interface (launch with sparkamp); TUI is
