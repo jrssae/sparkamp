@@ -931,15 +931,6 @@ impl SpectrumData {
         }
     }
 
-    /// Create an empty SpectrumData with no bands.
-    pub fn empty() -> Self {
-        Self {
-            bands: vec![],
-            smoothed_bands: vec![],
-            has_received_data: false,
-        }
-    }
-
     /// Update the spectrum bands with new values from GStreamer.
     /// Applies attack/release smoothing for smooth bar animation.
     /// Sets has_received_data to true.
@@ -972,29 +963,10 @@ impl SpectrumData {
         &self.smoothed_bands
     }
 
-    /// Return the number of frequency bands.
-    pub fn len(&self) -> usize {
-        self.bands.len()
-    }
-
-    /// Return true if there are no bands (empty or all zeros).
-    pub fn is_empty(&self) -> bool {
-        self.bands.is_empty()
-    }
-
     /// Return true if real spectrum data has been received from GStreamer.
     /// Distinguishes between "no data yet" and "data received but all zeros".
     pub fn has_received_data(&self) -> bool {
         self.has_received_data
-    }
-
-    /// Reset the spectrum data, clearing received flag.
-    /// Call this when reinitializing the pipeline.
-    pub fn reset(&mut self) {
-        let len = self.bands.len().max(64);
-        self.bands = vec![0.0; len];
-        self.smoothed_bands = vec![0.0; len];
-        self.has_received_data = false;
     }
 }
 

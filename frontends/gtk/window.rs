@@ -1242,14 +1242,13 @@ pub fn build(
     // Main window
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Player window — fixed 480 px wide to match the macOS layout, which is
-    // tuned for that exact width. Non-resizable so the seek bar / transport
-    // row / now-playing column proportions can never drift.
+    // Player window — fixed 384 px wide. Non-resizable so the seek bar /
+    // transport row / now-playing column proportions can never drift.
     let _ = init_player_width;
     let window = ApplicationWindow::builder()
         .application(app)
         .title("SparkAmp")
-        .default_width(480)
+        .default_width(384)
         .default_height(init_player_height)
         .resizable(false)
         .build();
@@ -1321,8 +1320,8 @@ pub fn build(
     let time_disp_label = Label::builder()
         .label("0:00")
         .halign(Align::Center)
-        .width_chars(7)
-        .max_width_chars(7)
+        .width_chars(6)
+        .max_width_chars(6)
         .xalign(0.5)
         .build();
 
@@ -1378,12 +1377,12 @@ pub fn build(
 
     left_col.append(&time_row);
     left_col.append(&viz);
-    // Pin the left column to a fixed width matching the macOS layout (118 px).
-    // Without this, the time-display string ("0:00" vs "12:34 / 45:67") would
-    // drag the column wider when it grows and snap it narrower when it
-    // shrinks, jiggling the visualizer below it. A fixed-width column also
-    // means the marquee on the right always has the same horizontal budget.
-    left_col.set_size_request(118, -1);
+    // Pin the left column to a fixed width (70 px). Without this, the
+    // time-display string ("0:00" vs "12:34 / 45:67") would drag the column
+    // wider when it grows and snap it narrower when it shrinks, jiggling
+    // the visualizer below it. A fixed-width column also means the marquee
+    // on the right always has the same horizontal budget.
+    left_col.set_size_request(70, -1);
     time_row.set_hexpand(true);
 
     // ── Right column: marquee frame (title only) + index + vol row ───────────
@@ -1498,7 +1497,7 @@ pub fn build(
     let vol_bar = Scale::new(Orientation::Horizontal, Some(&vol_adj));
     vol_bar.set_draw_value(false);
     vol_bar.set_hexpand(false);
-    vol_bar.set_width_request(140);
+    vol_bar.set_width_request(90);
     vol_bar.add_css_class("vol-scale");
 
     // Expanding spacer pushes PL to the right edge of np_info.
@@ -9004,6 +9003,8 @@ fn open_media_library_window(
             .leak();
 
         let visible_ids: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
+        let saved_widths: std::collections::HashMap<String, i32> =
+            state.borrow().config.media_library.ml_file_col_widths.clone();
 
         // Track which artwork buttons have been connected to avoid duplicate click handlers
         // (connect_bind fires each time an item is shown after a scroll).
@@ -9244,6 +9245,7 @@ fn open_media_library_window(
                         if let Some(btn) = btn {
                             let btn_obj = btn.clone().upcast::<glib::Object>();
                             if let Some(ref art_path) = t.artwork_path {
+                                btn.set_visible(true);
                                 btn.set_sensitive(true);
                                 btn.set_label("View");
                                 // Only connect once per button instance.
@@ -9255,8 +9257,7 @@ fn open_media_library_window(
                                     });
                                 }
                             } else {
-                                btn.set_sensitive(false);
-                                btn.set_label("");
+                                btn.set_visible(false);
                             }
                         }
                         return;
@@ -9338,13 +9339,15 @@ fn open_media_library_window(
 
                 let col = ColumnViewColumn::new(Some(header), Some(factory));
                 col.set_resizable(true);
-                // Note: do NOT use set_fixed_width here — it prevents the column from
-                // shrinking smaller than min_w. Let the Label's ellipsize attribute truncate
-                // content when the user resizes the column narrower.
                 if *expand {
                     col.set_expand(true);
                 }
                 col.set_visible(visible_ids.contains(&id.to_string()));
+                if let Some(&w) = saved_widths.get(&id.to_string()) {
+                    if w > 0 {
+                        col.set_fixed_width(w);
+                    }
+                }
 
                 let sort_id = id.to_string();
                 let sorter = CustomSorter::new(move |a, b| {
@@ -10906,6 +10909,16 @@ fn open_media_library_window(
                         .collect()
                 })
                 .unwrap_or_default();
+            // Capture current per-column widths.
+            let col_widths: std::collections::HashMap<String, i32> = {
+                let ac = all_cols_holder.borrow();
+                ac.iter()
+                    .filter_map(|(id, col)| {
+                        let w = col.fixed_width();
+                        if w > 0 { Some((id.clone(), w)) } else { None }
+                    })
+                    .collect()
+            };
             {
                 let mut s = state.borrow_mut();
                 s.config.window.ml_width = w_size;
@@ -10913,6 +10926,7 @@ fn open_media_library_window(
                 s.config.window.ml_playlists_expanded = playlists_expanded.get();
                 s.config.window.ml_sidebar_width = paned_ref.position();
                 s.config.media_library.ml_file_col_order = col_order;
+                s.config.media_library.ml_file_col_widths = col_widths;
                 s.rebuild_ml_callback = None;
             }
             let _ = state.borrow().config.save();

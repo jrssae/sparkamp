@@ -546,6 +546,11 @@ pub struct MediaLibraryConfig {
     /// Empty means use the default order defined by ALL_COLUMNS.
     #[serde(default)]
     pub ml_file_col_order: Vec<String>,
+
+    /// Per-column saved widths for the Files view, keyed by column ID.
+    /// Missing entries fall back to the column's natural width.
+    #[serde(default)]
+    pub ml_file_col_widths: std::collections::HashMap<String, i32>,
 }
 
 impl MediaLibraryConfig {
@@ -607,6 +612,7 @@ impl Default for MediaLibraryConfig {
             id3_visible_columns: Self::default_id3_visible_columns(),
             id3_column_position: Self::default_id3_column_position(),
             ml_file_col_order: Vec::new(),
+            ml_file_col_widths: std::collections::HashMap::new(),
         }
     }
 }

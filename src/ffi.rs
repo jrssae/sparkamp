@@ -230,7 +230,6 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
                     cb(ctx.error_userdata, msg.as_ptr());
                 }
             }
-            crate::engine::BusEvent::RetrySpectrum => {}
         }
     }
 

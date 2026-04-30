@@ -632,28 +632,30 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {bact}; background-image: none; color: {btext}; \
     }}").unwrap();
 
-    // Seek bar
+    // Seek bar — slim trough, chunky rectangular handle that overflows ±5px.
     writeln!(css, "scale.seek-scale trough {{ \
         background-color: {tbg}; background-image: none; \
-        min-height: 7px; \
+        min-height: 4px; \
     }}").unwrap();
     writeln!(css, "scale.seek-scale highlight {{ \
         background-color: {hl}; background-image: none; \
     }}").unwrap();
     writeln!(css, "scale.seek-scale slider {{ \
         background-color: {hl}; background-image: none; \
-        border-radius: 50%; min-width: 10px; min-height: 10px; \
+        border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
 
-    // Volume slider
+    // Volume slider — same chunky overflow style as seek.
     writeln!(css, "scale.vol-scale trough {{ \
         background-color: {tbg}; background-image: none; \
+        min-height: 4px; \
     }}").unwrap();
     writeln!(css, "scale.vol-scale highlight {{ \
         background-color: {hl}; background-image: none; \
     }}").unwrap();
     writeln!(css, "scale.vol-scale slider {{ \
         background-color: {hl}; background-image: none; \
+        border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
     writeln!(css, ".vol-label {{ \
         color: {text_dim}; font-size: {fs}px; font-family: monospace; min-width: 28px; \
@@ -667,17 +669,19 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     }}").unwrap();
 
     // Equalizer window scales (horizontal pre-amp + vertical band columns).
-    // Pattern matches seek-scale so the slider handle renders as a small
-    // highlight-colored circle rather than the system theme's default.
+    // Same chunky overflow handle as seek/vol; trough slimmed on both axes
+    // so vertical band sliders read as thin columns and the horizontal
+    // preamp matches the main-window seek bar.
     writeln!(css, "scale.eq-scale trough {{ \
         background-color: {tbg}; background-image: none; \
+        min-width: 4px; min-height: 4px; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale highlight {{ \
         background-color: {hl}; background-image: none; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale slider {{ \
         background-color: {hl}; background-image: none; \
-        border-radius: 50%; min-width: 10px; min-height: 10px; \
+        border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale label {{ \
         color: {text_dim}; font-size: {fs}px; \

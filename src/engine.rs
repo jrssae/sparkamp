@@ -42,8 +42,6 @@ pub enum BusEvent {
     Eos,
     /// GStreamer reported a fatal error (e.g. file not found, codec missing).
     Error,
-    /// Spectrum initialization is needed (e.g., after a retry request).
-    RetrySpectrum,
 }
 
 // ---------------------------------------------------------------------------
@@ -756,17 +754,6 @@ impl Player {
             .read()
             .map(|wb| wb.get_samples(count))
             .unwrap_or_else(|_| vec![0.0; count])
-    }
-
-    /// Return the current spectrum data for the visualizer.
-    ///
-    /// Returns a clone of the spectrum data. The visualizer can use this to
-    /// display real frequency bars instead of synthetic animation.
-    pub fn get_spectrum_data(&self) -> SpectrumData {
-        self.spectrum_data
-            .read()
-            .map(|data| data.clone())
-            .unwrap_or_else(|_| SpectrumData::empty())
     }
 
     /// Check if spectrum data has been received from GStreamer.
