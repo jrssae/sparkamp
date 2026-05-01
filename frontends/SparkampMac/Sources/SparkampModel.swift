@@ -898,20 +898,39 @@ final class SparkampModel: ObservableObject {
     }
 
     /// Called when a track is double-clicked in the ML table.
-    /// Respects the "append vs. replace" playback setting and always plays.
+    ///
+    /// Respects both Settings preferences:
+    /// - **Playlist add behavior** (Append / Replace) decides whether to clear
+    ///   the playlist first or just append.
+    /// - **Autoplay when files are added** decides whether the new track
+    ///   starts playing.  When autoplay is off, double-click only adds
+    ///   (matches GTK's behaviour and the explicit Add-to-Playlist button).
+    ///
+    /// Autoplay-on, append-mode: only auto-plays when the playlist was
+    /// empty before the add.  This avoids interrupting the currently
+    /// playing track when the user is queueing more music.
     func mlDoubleClickTracks(ids: [Int64]) {
         guard let ctx = ctx else { return }
         let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
-        let indexBefore = Int(sparkamp_playlist_len(ctx))
+        let autoplay     = sparkamp_get_autoplay_on_add(ctx)
+        let wasEmpty     = Int(sparkamp_playlist_len(ctx)) == 0
+        let indexBefore  = Int(sparkamp_playlist_len(ctx))
         if shouldReplace {
             clearPlaylist()
             mlAddToPlaylist(ids: ids)
-            sparkamp_playlist_jump(ctx, 0)
+            if autoplay {
+                sparkamp_playlist_jump(ctx, 0)
+                sparkamp_play(ctx)
+            }
         } else {
             mlAddToPlaylist(ids: ids)
-            sparkamp_playlist_jump(ctx, Int32(indexBefore))
+            // Append-mode: only autoplay when the playlist was empty so we
+            // don't interrupt a track the user is already listening to.
+            if autoplay && wasEmpty {
+                sparkamp_playlist_jump(ctx, Int32(indexBefore))
+                sparkamp_play(ctx)
+            }
         }
-        sparkamp_play(ctx)
         refreshCurrentTrackInfo()
     }
 
