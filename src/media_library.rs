@@ -422,13 +422,30 @@ impl MediaLibrary {
     // Folder management
     // -----------------------------------------------------------------------
 
+    /// Canonicalize a folder path the same way `add_folder` stores it, so
+    /// that lookup and insert agree on the comparison key.  Resolves
+    /// symlinks (e.g. macOS `/var → /private/var`, Flatpak document-portal
+    /// FUSE mounts) and falls back to the raw input if the path does not
+    /// exist on disk (matches the previous `add_folder` behaviour).
+    fn canonicalize_folder_path(path: &str) -> String {
+        Path::new(path)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned())
+    }
+
     /// Check if a folder path is already in the watch list.
     /// Returns `Ok(Some(id))` if found, `Ok(None)` if not found.
+    ///
+    /// The input is canonicalized before lookup so callers can pass any
+    /// equivalent path (with or without symlink resolution) and still get
+    /// a hit on a previously-added folder.
     fn folder_exists(&self, path: &str) -> Result<Option<i64>> {
+        let canonical = Self::canonicalize_folder_path(path);
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM folders WHERE path = ?1")?;
-        let result = stmt.query_row(params![path], |row| row.get(0));
+        let result = stmt.query_row(params![canonical.as_str()], |row| row.get(0));
         match result {
             Ok(id) => Ok(Some(id)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -445,15 +462,11 @@ impl MediaLibrary {
     /// so callers can show appropriate feedback (e.g. "Added" vs "Rescanning…").
     ///
     /// The path is canonicalized before storing so that document-portal FUSE
-    /// mounts (e.g. `/run/user/<uid>/doc/<hash>/Music` on Flatpak) resolve to
-    /// the same real path as a directly-added `~/Music`, preventing duplicates.
+    /// mounts (e.g. `/run/user/<uid>/doc/<hash>/Music` on Flatpak) and macOS
+    /// `/var → /private/var` symlinks resolve to the same real path as a
+    /// directly-added `~/Music`, preventing duplicates.
     pub fn add_folder(&self, path: &str) -> Result<AddFolderResult> {
-        // Canonicalize to resolve symlinks and portal FUSE mounts.
-        // Fall back to the original string if the path does not exist yet.
-        let canonical = Path::new(path)
-            .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_owned());
+        let canonical = Self::canonicalize_folder_path(path);
         let path = canonical.as_str();
 
         if let Some(id) = self.folder_exists(path)? {
