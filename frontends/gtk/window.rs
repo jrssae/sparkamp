@@ -10077,6 +10077,13 @@ fn open_media_library_window(
     });
 
     // ── Helper: rebuild track editor list from editing_tracks ─────────────
+    //
+    // Each row mirrors the macOS playlist editor layout: a small leading
+    // status glyph (⚠ for missing files, 🔒 for read-only) using the same
+    // emoji convention as the active playlist + ML files view, the
+    // canonical "Artist — Title" display string from `lib_track_display`
+    // (with album-artist + filename fallbacks), and a right-aligned
+    // duration column when the length is known.
     let rebuild_track_list = {
         let tl = track_list.clone();
         let et = editing_tracks.clone();
@@ -10089,21 +10096,61 @@ fn open_media_library_window(
                 // (e.g. Windows-path entries, moved files).  Also check
                 // actual disk existence for library tracks whose file was
                 // deleted after the last scan.
-                let missing = t.id == 0 || !std::path::Path::new(&t.path).exists();
-                let artist = t.artist.as_deref().unwrap_or("-");
-                let title  = t.title.as_deref().unwrap_or(&t.filename);
-                let text   = format!("{} — {}", artist, title);
-                let lbl = Label::builder()
-                    .label(&text)
+                let path = std::path::Path::new(&t.path);
+                let missing  = t.id == 0 || !path.exists();
+                let readonly = !missing && crate::media_library::is_read_only(path);
+
+                let row_box = GtkBox::new(Orientation::Horizontal, 6);
+                row_box.set_margin_start(8); row_box.set_margin_end(8);
+                row_box.set_margin_top(2);   row_box.set_margin_bottom(2);
+
+                let status_glyph = if missing {
+                    "⚠"
+                } else if readonly {
+                    "🔒"
+                } else {
+                    " "
+                };
+                let status_lbl = Label::builder()
+                    .label(status_glyph)
+                    .width_chars(2)
                     .halign(Align::Start)
-                    .margin_start(8).margin_end(8)
-                    .margin_top(2).margin_bottom(2)
+                    .build();
+                row_box.append(&status_lbl);
+
+                let title_lbl = Label::builder()
+                    .label(&crate::media_library::lib_track_display(t))
+                    .halign(Align::Start)
+                    .hexpand(true)
+                    .ellipsize(gtk4::pango::EllipsizeMode::End)
+                    .xalign(0.0)
                     .build();
                 if missing {
-                    lbl.add_css_class("pl-missing");
+                    title_lbl.add_css_class("pl-missing");
                 }
+                row_box.append(&title_lbl);
+
+                if let Some(secs) = t.length_secs {
+                    if secs > 0.0 {
+                        let total = secs as i64;
+                        let dur_str = format!("{}:{:02}", total / 60, total % 60);
+                        let dur_lbl = Label::builder()
+                            .label(&dur_str)
+                            .halign(Align::End)
+                            .xalign(1.0)
+                            .build();
+                        dur_lbl.add_css_class("pl-duration");
+                        row_box.append(&dur_lbl);
+                    }
+                }
+
                 let row = ListBoxRow::new();
-                row.set_child(Some(&lbl));
+                // Stash the LibTrack id in the row's widget_name so the
+                // right-click handler can look the track up without
+                // hit-testing children.  Synthetic stubs (id == 0) get
+                // a "stub:<idx>" name so they can still be removed.
+                row.set_widget_name(&format!("track:{}", t.id));
+                row.set_child(Some(&row_box));
                 tl.append(&row);
             }
         })
@@ -10471,12 +10518,27 @@ fn open_media_library_window(
     }
 
     // ── Hoisted header widgets (shared with sidebar selection handler) ────
+    //
+    // Header layout mirrors the macOS playlist editor: playlist title on
+    // the left, Rename button on the right, file path on its own row
+    // below.  The title label text is updated by the sidebar handler when
+    // the user picks a different playlist.
     let edit_header: Label = Label::builder()
         .label("Playlist Editor")
         .halign(Align::Start)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
         .margin_start(8).margin_top(4).margin_bottom(0)
         .build();
     edit_header.add_css_class("ml-section-header");
+
+    let btn_rename_pl_inline: Button = {
+        let b = Button::with_label("Rename");
+        b.add_css_class("pl-btn");
+        b.set_margin_end(8);
+        b.set_margin_top(2);
+        b
+    };
 
     // File path bar — shows the .m3u path so the user can see if it is an
     // external playlist (not managed by Sparkamp).
@@ -10499,7 +10561,10 @@ fn open_media_library_window(
     {
         let edit_vbox = GtkBox::new(Orientation::Vertical, 0);
 
-        edit_vbox.append(&edit_header);
+        let header_row = GtkBox::new(Orientation::Horizontal, 4);
+        header_row.append(&edit_header);
+        header_row.append(&btn_rename_pl_inline);
+        edit_vbox.append(&header_row);
         edit_vbox.append(&edit_path_label);
 
         let track_scroll = ScrolledWindow::builder()
@@ -10519,23 +10584,32 @@ fn open_media_library_window(
         let btn_add_files_pl  = Button::with_label("+ Files");    btn_add_files_pl.add_css_class("pl-btn");
         let btn_add_folder_pl = Button::with_label("+ Folder");   btn_add_folder_pl.add_css_class("pl-btn");
         let btn_remove_tracks = Button::with_label("− Remove");   btn_remove_tracks.add_css_class("pl-btn");
-        let btn_remove_all    = Button::with_label("Clear");      btn_remove_all.add_css_class("pl-btn");
+        // "Delete Playlist" replaces the old "Clear" button — clearing every
+        // track from a saved playlist is the same as deleting the playlist
+        // itself, so collapse the two and put the destructive action where
+        // the other destructive controls live (matches the macOS layout).
+        let btn_delete_pl     = Button::with_label("🗑 Delete Playlist"); btn_delete_pl.add_css_class("pl-btn");
         let spring_pl         = GtkBox::new(Orientation::Horizontal, 0); spring_pl.set_hexpand(true);
-        let btn_set_pl        = Button::with_label("▶ Set as Playlist"); btn_set_pl.add_css_class("pl-btn");
         let btn_revert_pl     = Button::with_label("↺ Revert");  btn_revert_pl.add_css_class("pl-btn");
         let btn_save_as_pl    = Button::with_label("Save As…");  btn_save_as_pl.add_css_class("pl-btn");
         // btn_save_pl_outer was hoisted so the sidebar handler can toggle sensitivity.
         let btn_save_pl = btn_save_pl_outer.clone();
+        // Whole-playlist actions (parity with macOS): Enqueue appends every
+        // track to the active playlist; Play replaces it and starts playback
+        // when the autoplay-on-add preference is on.
+        let btn_enqueue_pl    = Button::with_label("Enqueue"); btn_enqueue_pl.add_css_class("pl-btn");
+        let btn_play_pl       = Button::with_label("▶ Play");  btn_play_pl.add_css_class("pl-btn");
 
         edit_btn_row.append(&btn_add_files_pl);
         edit_btn_row.append(&btn_add_folder_pl);
         edit_btn_row.append(&btn_remove_tracks);
-        edit_btn_row.append(&btn_remove_all);
+        edit_btn_row.append(&btn_delete_pl);
         edit_btn_row.append(&spring_pl);
-        edit_btn_row.append(&btn_set_pl);
         edit_btn_row.append(&btn_revert_pl);
         edit_btn_row.append(&btn_save_as_pl);
         edit_btn_row.append(&btn_save_pl);
+        edit_btn_row.append(&btn_enqueue_pl);
+        edit_btn_row.append(&btn_play_pl);
         edit_vbox.append(&edit_btn_row);
 
         // ── Add Files ─────────────────────────────────────────────────────
@@ -10548,9 +10622,13 @@ fn open_media_library_window(
                 let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
                 let filter = gtk4::FileFilter::new();
                 filter.set_name(Some("Audio files"));
-                for mime in &["audio/mpeg","audio/flac","audio/ogg","audio/opus",
-                               "audio/wav","audio/x-wav","audio/aac","audio/mp4","audio/x-m4a"] {
-                    filter.add_mime_type(mime);
+                // Pull from the canonical list so this picker stays in sync
+                // with the scanner's whitelist; the previous hardcoded MIME
+                // list was missing wma/ape/mpc/tta/wv/aiff/aif.  Add a
+                // glob suffix per extension so files appear regardless of
+                // whether the desktop has a registered MIME type for them.
+                for ext in crate::model::AUDIO_EXTENSIONS {
+                    filter.add_suffix(ext);
                 }
                 let fs = gio::ListStore::new::<gtk4::FileFilter>();
                 fs.append(&filter);
@@ -10638,16 +10716,6 @@ fn open_media_library_window(
                     if idx < tracks.len() { tracks.remove(idx); }
                 }
                 drop(tracks);
-                rebuild();
-            });
-        }
-
-        // ── Remove All ────────────────────────────────────────────────────
-        {
-            let et      = editing_tracks.clone();
-            let rebuild = rebuild_track_list.clone();
-            btn_remove_all.connect_clicked(move |_| {
-                et.borrow_mut().clear();
                 rebuild();
             });
         }
@@ -10804,22 +10872,399 @@ fn open_media_library_window(
             });
         }
 
-        // ── Set as active Playlist ────────────────────────────────────────
+        // ── Play (replace active playlist; honour autoplay) ──────────────
         {
             let state_rc   = state.clone();
             let et         = editing_tracks.clone();
             let rebuild_pl = rebuild_playlist.clone();
-            btn_set_pl.connect_clicked(move |_| {
+            let set_track2 = set_track.clone();
+            btn_play_pl.connect_clicked(move |_| {
                 let tracks: Vec<crate::media_library::LibTrack> = et.borrow().clone();
-                let mut s = state_rc.borrow_mut();
-                s.playlist = crate::model::Playlist::new();
-                for lt in &tracks {
-                    let track = libtrack_to_track(lt);
-                    s.playlist.add(track);
+                if tracks.is_empty() { return; }
+                let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
+                {
+                    let mut s = state_rc.borrow_mut();
+                    let _ = s.player.stop();
+                    s.playlist = crate::model::Playlist::new();
+                    for lt in &tracks {
+                        s.playlist.add(libtrack_to_track(lt));
+                    }
                 }
-                drop(s);
+                if autoplay {
+                    if let Some(display) = state_rc.borrow_mut().play_current() {
+                        set_track2(&display);
+                    }
+                }
                 rebuild_pl();
             });
+        }
+
+        // ── Enqueue (append to active playlist) ──────────────────────────
+        {
+            let state_rc   = state.clone();
+            let et         = editing_tracks.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            let set_track2 = set_track.clone();
+            btn_enqueue_pl.connect_clicked(move |_| {
+                let tracks: Vec<crate::media_library::LibTrack> = et.borrow().clone();
+                if tracks.is_empty() { return; }
+                let was_empty = state_rc.borrow().playlist.is_empty();
+                let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
+                {
+                    let mut s = state_rc.borrow_mut();
+                    for lt in &tracks {
+                        s.playlist.add(libtrack_to_track(lt));
+                    }
+                }
+                // Match the Add-to-Playlist button: only autoplay when the
+                // active playlist was empty before the append, so we never
+                // interrupt a track the user is already listening to.
+                if autoplay && was_empty {
+                    if let Some(display) = state_rc.borrow_mut().play_current() {
+                        set_track2(&display);
+                    }
+                }
+                rebuild_pl();
+            });
+        }
+
+        // ── Delete this playlist ─────────────────────────────────────────
+        {
+            let state_rc      = state.clone();
+            let ep_id         = editing_pl_id.clone();
+            let pl_list_ref   = pl_manage_list.clone();
+            let sidebar_ref   = sidebar.clone();
+            let sub_rows_ref  = pl_sub_rows.clone();
+            let pl_sub_ref    = pl_sub_stack.clone();
+            let et            = editing_tracks.clone();
+            let saved         = saved_track_ids.clone();
+            let rebuild       = rebuild_track_list.clone();
+            let win_wk        = win.downgrade();
+            btn_delete_pl.connect_clicked(move |_| {
+                let id = ep_id.get();
+                if id < 0 { return; }
+                let pl_name = state_rc.borrow().media_lib.as_ref()
+                    .and_then(|lib| lib.playlist_by_id(id).ok())
+                    .map(|pl| pl.name.clone())
+                    .unwrap_or_default();
+
+                let dialog = gtk4::AlertDialog::builder()
+                    .message(format!("Delete \"{}\"?", pl_name))
+                    .detail("The playlist file on disk is not deleted.")
+                    .buttons(vec!["Cancel".to_string(), "Delete".to_string()])
+                    .cancel_button(0).default_button(1).modal(true).build();
+
+                let state2   = state_rc.clone();
+                let ep_id2   = ep_id.clone();
+                let pl_ref2  = pl_list_ref.clone();
+                let sid2     = sidebar_ref.clone();
+                let sub2     = sub_rows_ref.clone();
+                let pls2     = pl_sub_ref.clone();
+                let et2      = et.clone();
+                let saved2   = saved.clone();
+                let rebuild2 = rebuild.clone();
+                dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |result| {
+                    if result != Ok(1) { return; }
+                    if let Some(ref lib) = state2.borrow().media_lib {
+                        let _ = lib.remove_playlist(id);
+                    }
+                    // Drop the manage-list row whose widget_name == id.
+                    let target = id.to_string();
+                    let mut i = 0i32;
+                    loop {
+                        match pl_ref2.row_at_index(i) {
+                            Some(r) if r.widget_name() == target => {
+                                pl_ref2.remove(&r);
+                                break;
+                            }
+                            Some(_) => i += 1,
+                            None => break,
+                        }
+                    }
+                    // Drop the matching sidebar sub-row.
+                    let target_s = format!("pl:{}", id);
+                    sub2.borrow_mut().retain(|r| {
+                        if r.widget_name() == target_s {
+                            sid2.remove(r);
+                            false
+                        } else { true }
+                    });
+                    // Clear editing state and bounce back to the manage page.
+                    ep_id2.set(-1);
+                    et2.borrow_mut().clear();
+                    saved2.borrow_mut().clear();
+                    rebuild2();
+                    pls2.set_visible_child_name("pl-manage");
+                });
+            });
+        }
+
+        // ── Rename this playlist (header-row button) ─────────────────────
+        {
+            let state_rc      = state.clone();
+            let ep_id         = editing_pl_id.clone();
+            let header_ref    = edit_header.clone();
+            let pl_list_ref   = pl_manage_list.clone();
+            let sidebar_ref   = sidebar.clone();
+            let win_wk        = win.downgrade();
+            btn_rename_pl_inline.connect_clicked(move |_| {
+                let id = ep_id.get();
+                if id < 0 { return; }
+                let current = state_rc.borrow().media_lib.as_ref()
+                    .and_then(|lib| lib.playlist_by_id(id).ok())
+                    .map(|pl| pl.name.clone())
+                    .unwrap_or_default();
+
+                let dialog = gtk4::Window::builder()
+                    .title("Rename Playlist").modal(true).resizable(false).default_width(300)
+                    .build();
+                if let Some(w) = win_wk.upgrade() { dialog.set_transient_for(Some(&w)); }
+                let vbox = GtkBox::new(Orientation::Vertical, 8);
+                vbox.set_margin_top(12); vbox.set_margin_bottom(12);
+                vbox.set_margin_start(12); vbox.set_margin_end(12);
+                let lbl = Label::builder().label("New name:").halign(Align::Start).build();
+                let name_entry = Entry::new();
+                name_entry.set_text(&gtk_safe(&current));
+                name_entry.set_hexpand(true);
+                let btns_box = GtkBox::new(Orientation::Horizontal, 6);
+                btns_box.set_halign(Align::End);
+                let cancel_btn = Button::with_label("Cancel");
+                let ok_btn     = Button::with_label("Rename");
+                ok_btn.add_css_class("suggested-action");
+                btns_box.append(&cancel_btn); btns_box.append(&ok_btn);
+                vbox.append(&lbl); vbox.append(&name_entry); vbox.append(&btns_box);
+                dialog.set_child(Some(&vbox));
+
+                let d = dialog.clone();
+                cancel_btn.connect_clicked(move |_| { d.close(); });
+
+                let d        = dialog.clone();
+                let e        = name_entry.clone();
+                let state2   = state_rc.clone();
+                let header2  = header_ref.clone();
+                let pl_ref2  = pl_list_ref.clone();
+                let sid2     = sidebar_ref.clone();
+                ok_btn.connect_clicked(move |_| {
+                    let name = e.text().to_string();
+                    let name = name.trim();
+                    if name.is_empty() { return; }
+                    if let Some(ref lib) = state2.borrow().media_lib {
+                        let _ = lib.rename_playlist(id, name);
+                    }
+                    header2.set_text(&gtk_safe(name));
+                    // Update manage-list row label.
+                    let target = id.to_string();
+                    let mut i = 0i32;
+                    loop {
+                        match pl_ref2.row_at_index(i) {
+                            Some(r) if r.widget_name() == target => {
+                                if let Some(c) = r.child() {
+                                    if let Ok(l) = c.downcast::<Label>() {
+                                        l.set_text(&gtk_safe(name));
+                                    }
+                                }
+                                break;
+                            }
+                            Some(_) => i += 1,
+                            None => break,
+                        }
+                    }
+                    // Update sidebar sub-row label.
+                    let target_s = format!("pl:{}", id);
+                    let mut j = 0i32;
+                    loop {
+                        match sid2.row_at_index(j) {
+                            Some(r) if r.widget_name() == target_s => {
+                                if let Some(c) = r.child() {
+                                    if let Ok(l) = c.downcast::<Label>() {
+                                        l.set_text(&gtk_safe(name));
+                                    }
+                                }
+                                break;
+                            }
+                            Some(_) => j += 1,
+                            None => break,
+                        }
+                    }
+                    d.close();
+                });
+                let ok2 = ok_btn.clone();
+                name_entry.connect_activate(move |_| { ok2.activate(); });
+                dialog.present();
+            });
+        }
+
+        // ── Right-click context menu on track rows ───────────────────────
+        //
+        // Mirrors the macOS playlist-editor menu (parity with the Files
+        // view): Add to / Replace active playlist, Edit ID3 (single only),
+        // and Remove from Library.  GTK has no standalone album-art viewer
+        // window so the "View Album Art" entry is omitted here.
+        {
+            let ctx_track_id: Rc<Cell<i64>> = Rc::new(Cell::new(-1));
+
+            // Action group registered on the track_list so menu items can
+            // resolve via `ple.append` etc. without polluting the global
+            // action namespace.
+            let action_group = gio::SimpleActionGroup::new();
+
+            // ─── Append (add to active playlist) ─────────────────────────
+            {
+                let state_rc   = state.clone();
+                let id_ref     = ctx_track_id.clone();
+                let et         = editing_tracks.clone();
+                let rebuild_pl = rebuild_playlist.clone();
+                let set_track2 = set_track.clone();
+                let action     = gio::SimpleAction::new("append", None);
+                action.connect_activate(move |_, _| {
+                    let id = id_ref.get();
+                    let lt = et.borrow().iter().find(|t| t.id == id).cloned();
+                    let Some(lt) = lt else { return };
+                    let was_empty = state_rc.borrow().playlist.is_empty();
+                    let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
+                    {
+                        let mut s = state_rc.borrow_mut();
+                        s.playlist.add(libtrack_to_track(&lt));
+                    }
+                    if autoplay && was_empty {
+                        if let Some(display) = state_rc.borrow_mut().play_current() {
+                            set_track2(&display);
+                        }
+                    }
+                    rebuild_pl();
+                });
+                action_group.add_action(&action);
+            }
+
+            // ─── Replace (active playlist becomes just this track) ───────
+            {
+                let state_rc   = state.clone();
+                let id_ref     = ctx_track_id.clone();
+                let et         = editing_tracks.clone();
+                let rebuild_pl = rebuild_playlist.clone();
+                let set_track2 = set_track.clone();
+                let action     = gio::SimpleAction::new("replace", None);
+                action.connect_activate(move |_, _| {
+                    let id = id_ref.get();
+                    let lt = et.borrow().iter().find(|t| t.id == id).cloned();
+                    let Some(lt) = lt else { return };
+                    let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
+                    {
+                        let mut s = state_rc.borrow_mut();
+                        let _ = s.player.stop();
+                        s.playlist = crate::model::Playlist::new();
+                        s.playlist.add(libtrack_to_track(&lt));
+                    }
+                    if autoplay {
+                        if let Some(display) = state_rc.borrow_mut().play_current() {
+                            set_track2(&display);
+                        }
+                    }
+                    rebuild_pl();
+                });
+                action_group.add_action(&action);
+            }
+
+            // ─── Edit ID3 (single only) ──────────────────────────────────
+            {
+                let state_rc      = state.clone();
+                let id_ref        = ctx_track_id.clone();
+                let et            = editing_tracks.clone();
+                let rebuild_pl    = rebuild_playlist.clone();
+                let action        = gio::SimpleAction::new("edit-id3", None);
+                action.connect_activate(move |_, _| {
+                    let id = id_ref.get();
+                    let path = et.borrow().iter().find(|t| t.id == id)
+                        .map(|t| t.path.clone());
+                    let Some(path) = path else { return };
+                    open_id3_editor_window(
+                        None::<&gtk4::Window>,
+                        path,
+                        state_rc.clone(),
+                        rebuild_pl.clone(),
+                        None,
+                    );
+                });
+                action_group.add_action(&action);
+            }
+
+            // ─── Remove from Library (DB delete + drop from edit set) ────
+            {
+                let state_rc = state.clone();
+                let id_ref   = ctx_track_id.clone();
+                let et       = editing_tracks.clone();
+                let rebuild  = rebuild_track_list.clone();
+                let action   = gio::SimpleAction::new("remove", None);
+                action.connect_activate(move |_, _| {
+                    let id = id_ref.get();
+                    if id <= 0 { return; }
+                    if let Some(ref lib) = state_rc.borrow().media_lib {
+                        let _ = lib.remove_track(id);
+                    }
+                    et.borrow_mut().retain(|t| t.id != id);
+                    rebuild();
+                });
+                action_group.add_action(&action);
+            }
+
+            track_list.insert_action_group("ple", Some(&action_group));
+
+            // Secondary-button gesture: select the row under the pointer,
+            // capture its track id, and pop the context menu.
+            let tl_ref     = track_list.clone();
+            let id_ref     = ctx_track_id.clone();
+            let gesture    = gtk4::GestureClick::new();
+            gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+            gesture.connect_pressed(move |g, _n, x, y| {
+                // Find the row under (x, y) by walking children.
+                let mut hit: Option<ListBoxRow> = None;
+                let mut i = 0i32;
+                loop {
+                    match tl_ref.row_at_index(i) {
+                        Some(r) => {
+                            let bounds = r.compute_bounds(&tl_ref);
+                            if let Some(b) = bounds {
+                                if y as f32 >= b.y() && y as f32 <= b.y() + b.height() {
+                                    hit = Some(r);
+                                    break;
+                                }
+                            }
+                            i += 1;
+                        }
+                        None => break,
+                    }
+                }
+                let Some(row) = hit else { return };
+                tl_ref.select_row(Some(&row));
+                let name = row.widget_name().to_string();
+                let id: i64 = name.strip_prefix("track:")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(-1);
+                id_ref.set(id);
+
+                // Build the menu.  Edit ID3 is omitted for synthetic stubs
+                // (id == 0) — the editor needs a library row to bind to.
+                let menu = gio::Menu::new();
+                menu.append_item(&gio::MenuItem::new(
+                    Some("Add to Playlist"), Some("ple.append")));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("Replace Current Playlist"), Some("ple.replace")));
+                if id > 0 {
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("Edit / View ID3 Tags"), Some("ple.edit-id3")));
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("Remove from Library"), Some("ple.remove")));
+                }
+
+                let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+                popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+                    x as i32, y as i32, 1, 1,
+                )));
+                popover.set_parent(&tl_ref);
+                popover.popup();
+                g.set_state(gtk4::EventSequenceState::Claimed);
+            });
+            track_list.add_controller(gesture);
         }
 
         pl_sub_stack.add_named(&edit_vbox, Some("pl-edit"));

@@ -820,6 +820,22 @@ final class SparkampModel: ObservableObject {
         }
     }
 
+    /// One-shot fetch of every track in the library, ignoring the current
+    /// search filter / sort / pagination state of `mlTracks`.  Returns a
+    /// fresh array without mutating `mlTracks` so the Files-view filter
+    /// state survives.  Used by callers that need to scan the whole library
+    /// (e.g. the playlist editor's "Add Folder" picker).
+    func mlAllTracks() -> [MLTrack] {
+        guard let ctx = ctx else { return [] }
+        let limit = 100_000
+        let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
+        defer { buf.deallocate() }
+        let count = "".withCString { qPtr in
+            sparkamp_ml_get_tracks(ctx, qPtr, nil, 0, 0, Int32(limit), buf)
+        }
+        return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+    }
+
     /// Fetch tracks from the library, applying optional search query and sort.
     /// Loads up to `limit` rows starting at `offset`.
     func mlFetchTracks(

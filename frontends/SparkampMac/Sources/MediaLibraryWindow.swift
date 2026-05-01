@@ -647,11 +647,6 @@ private struct MLPlaylistEditor: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    if !isManaged {
-                        Text("external")
-                            .font(theme.vars.bodyFont)
-                            .foregroundStyle(Color.orange.opacity(0.8))
-                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
@@ -751,15 +746,17 @@ private struct MLPlaylistEditor: View {
                 }
                 .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
-                if !trackSelection.isEmpty {
-                    Button {
-                        editingTracks.removeAll { trackSelection.contains($0.id) }
-                        trackSelection.removeAll()
-                    } label: {
-                        Label("Remove", systemImage: "minus").font(theme.vars.bodyFont)
-                    }
-                    .buttonStyle(.borderless).foregroundStyle(.red)
+                // Always rendered; disabled when nothing is selected — typical
+                // macOS pattern (button visible but greyed-out so the user
+                // can see the action exists).
+                Button {
+                    editingTracks.removeAll { trackSelection.contains($0.id) }
+                    trackSelection.removeAll()
+                } label: {
+                    Label("Remove", systemImage: "minus").font(theme.vars.bodyFont)
                 }
+                .buttonStyle(.borderless).foregroundStyle(.red)
+                .disabled(trackSelection.isEmpty)
 
                 // "Remove All" doesn't make sense inside a saved playlist —
                 // that's just deleting the playlist.  Use this slot for the
@@ -776,25 +773,26 @@ private struct MLPlaylistEditor: View {
 
                 Spacer()
 
-                // Save As is always available; Save is only for managed playlists.
+                // Save As is always available; Save is enabled only for
+                // managed playlists with unsaved changes.  Revert is always
+                // visible (parity with the GTK editor) and disabled when
+                // there is nothing to revert.
                 Button("Save As…") {
                     saveAsText = playlistName
                     showingSaveAs = true
                 }
                 .buttonStyle(.bordered).controlSize(.small)
 
-                if hasChanges {
-                    Button("Cancel") { loadPlaylist() }
-                        .buttonStyle(.bordered).controlSize(.small)
+                Button("Revert") { loadPlaylist() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(!hasChanges)
 
-                    if isManaged {
-                        Button("Save") {
-                            model.mlSavePlaylist(id: playlistId, trackIds: editingTracks.map(\.id))
-                            savedTrackIds = editingTracks.map(\.id)
-                        }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                    }
+                Button("Save") {
+                    model.mlSavePlaylist(id: playlistId, trackIds: editingTracks.map(\.id))
+                    savedTrackIds = editingTracks.map(\.id)
                 }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .disabled(!(hasChanges && isManaged))
 
                 // Whole-playlist actions: Enqueue appends every track to the
                 // active playlist; Play replaces it (and starts playback if
@@ -887,7 +885,10 @@ private struct MLPlaylistEditor: View {
         panel.allowsMultipleSelection = false
         panel.begin { resp in
             guard resp == .OK, let url = panel.url else { return }
-            let matching = model.mlTracks.filter { $0.path.hasPrefix(url.path) }
+            // Pull from the unfiltered library set rather than `model.mlTracks`
+            // (which honours the Files-view search query and would otherwise
+            // limit folder-import to the visible search results).
+            let matching = model.mlAllTracks().filter { $0.path.hasPrefix(url.path) }
             Task { @MainActor in
                 let existing = Set(editingTracks.map(\.id))
                 for t in matching where !existing.contains(t.id) { editingTracks.append(t) }
