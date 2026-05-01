@@ -418,9 +418,20 @@ impl Player {
     ///
     /// Sets the pipeline state to `Null`.  A subsequent `play()` call will
     /// restart from the beginning of the last loaded URI.
+    ///
+    /// Also clears the spectrum and waveform buffers so the visualizer
+    /// collapses to its starting state (no bars / flat line) instead of
+    /// freezing on the last received frame.  Pause deliberately leaves
+    /// the buffers intact — the user expects pause to hold the picture.
     pub fn stop(&mut self) -> Result<()> {
         self.pipeline.set_state(gst::State::Null)?;
         self.state = PlayerState::Stopped;
+        if let Ok(mut spec) = self.spectrum_data.write() {
+            spec.clear();
+        }
+        if let Ok(mut wb) = self.waveform_data.write() {
+            wb.clear();
+        }
         Ok(())
     }
 
