@@ -815,12 +815,15 @@ private struct MLPlaylistEditor: View {
         panel.allowsMultipleSelection  = true
         panel.canChooseFiles           = true
         panel.canChooseDirectories     = false
-        panel.allowedContentTypes = [
-            .init(filenameExtension: "mp3")!, .init(filenameExtension: "flac")!,
-            .init(filenameExtension: "ogg")!, .init(filenameExtension: "m4a")!,
-            .init(filenameExtension: "wav")!, .init(filenameExtension: "aac")!,
-            .init(filenameExtension: "opus")!,
-        ]
+        // Pull the canonical list from the Rust core so this picker stays
+        // in sync with the scanner's whitelist (no drift between what the
+        // user can add via the picker vs. what folder scans pick up).
+        let count = Int(sparkamp_audio_extension_count())
+        panel.allowedContentTypes = (0..<count).compactMap { i in
+            guard let cstr = sparkamp_audio_extension(Int32(i)) else { return nil }
+            let ext = String(cString: cstr)
+            return .init(filenameExtension: ext)
+        }
         panel.begin { resp in
             guard resp == .OK else { return }
             let newTracks = panel.urls.compactMap { url -> MLTrack? in

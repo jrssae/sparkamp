@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+// Slider ranges sourced from the Rust core so the UI never lets the user
+// pick a value the engine will silently clamp.  These are evaluated once at
+// process start; the core's clamp constants are immutable per build.
+private let preampMin: Double  = sparkamp_preamp_min()
+private let preampMax: Double  = sparkamp_preamp_max()
+private let eqBandLimit: Double = sparkamp_eq_band_db_limit()
+
 // MARK: - Equalizer window
 
 struct EqualizerView: View {
@@ -65,7 +72,7 @@ struct EqualizerView: View {
                         .foregroundStyle(theme.transportText)
                         .frame(width: 52, alignment: .leading)
 
-                    Slider(value: $preamp, in: 0.5...1.5, step: 0.01)
+                    Slider(value: $preamp, in: preampMin...preampMax, step: 0.01)
                         .onChange(of: preamp) { _, newVal in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_preamp(ctx, Float(newVal))
@@ -203,7 +210,7 @@ private struct BandSliderColumn: View {
             // The first .frame sets the track length (160 pt); rotationEffect
             // turns it 90°; the second .frame gives it a bounding box that
             // fits the column width while preserving the 160-pt travel.
-            Slider(value: $value, in: -12...12, step: 0.1)
+            Slider(value: $value, in: -eqBandLimit...eqBandLimit, step: 0.1)
                 .frame(width: 160)
                 .rotationEffect(.degrees(-90))
                 .frame(width: 36, height: 160)
