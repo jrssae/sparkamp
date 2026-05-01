@@ -141,6 +141,17 @@ func trackDisplayName(title: String, artist: String, albumArtist: String) -> Str
     return t
 }
 
+/// Like `trackDisplayName` but for media-library tracks where a `filename`
+/// stem is always available.  When both artist and album-artist are blank
+/// the row is rendered as just the filename — matching the user-facing
+/// expectation for the saved-playlist editor.
+func mlTrackDisplay(_ t: MLTrack) -> String {
+    let name = t.title.isEmpty ? t.filename : t.title
+    if !t.artist.isEmpty      { return "\(t.artist) — \(name)" }
+    if !t.albumArtist.isEmpty { return "\(t.albumArtist) — \(name)" }
+    return t.filename
+}
+
 func formatDuration(_ secs: Double) -> String {
     guard secs >= 0 else { return "--:--" }
     let total = Int(secs)

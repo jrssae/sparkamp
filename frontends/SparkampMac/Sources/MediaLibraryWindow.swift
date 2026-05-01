@@ -33,6 +33,11 @@ struct MediaLibraryView: View {
     @State private var sortOrder: [KeyPathComparator<MLTrack>] = [KeyPathComparator(\.title)]
     @State private var selection: Set<Int64> = []
 
+    // Rename-playlist sheet (driven from the toolbar when viewing a playlist).
+    @State private var showingRenamePlaylist = false
+    @State private var renamePlaylistText    = ""
+    @State private var renamePlaylistId: Int64 = 0
+
     // Column visibility bitmask
     // Default visible columns: Title (0), Artist (1), Album (2), Last Played (16).
     @AppStorage("sparkamp.ml.columns") private var columnMask: Int = 0b10000000000000111
@@ -129,6 +134,26 @@ struct MediaLibraryView: View {
             if let d = try? JSONEncoder().encode(v) { columnCustomizationData = d }
         }
         .onDisappear { model.mediaLibraryVisible = false }
+        .sheet(isPresented: $showingRenamePlaylist) {
+            VStack(spacing: 16) {
+                Text("Rename Playlist").font(.headline)
+                TextField("Name", text: $renamePlaylistText)
+                    .textFieldStyle(.roundedBorder).frame(width: 260)
+                HStack {
+                    Button("Cancel") { showingRenamePlaylist = false }
+                    Spacer()
+                    Button("Rename") {
+                        showingRenamePlaylist = false
+                        model.mlRenamePlaylist(id: renamePlaylistId,
+                                               name: renamePlaylistText)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(renamePlaylistText
+                                .trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(24).frame(width: 320)
+        }
     }
 
     // MARK: - Sidebar
@@ -228,12 +253,35 @@ struct MediaLibraryView: View {
 
     @ViewBuilder
     private var toolbar: some View {
+        let vars = themeManager.currentVars
         HStack(spacing: 8) {
             if nav == .files { searchField }
+
+            // When viewing a saved playlist, surface its title + rename
+            // button here so the user has a single header bar instead of
+            // two stacked rows.
+            if case let .playlist(id) = nav,
+               let pl = model.mlSavedPlaylists.first(where: { $0.id == id }) {
+                Text(pl.name)
+                    .font(vars.bodyFont.weight(.semibold))
+                    .foregroundStyle(theme.playlistText)
+                    .lineLimit(1)
+                Button {
+                    renamePlaylistId   = id
+                    renamePlaylistText = pl.name
+                    showingRenamePlaylist = true
+                } label: {
+                    Label("Rename", systemImage: "pencil").font(vars.bodyFont)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(theme.playlistText)
+                .help("Rename Playlist")
+            }
+
             Spacer()
 
             Button { model.mlRescanAll() } label: {
-                Label("Rescan", systemImage: "arrow.clockwise").font(themeManager.currentVars.bodyFont)
+                Label("Rescan", systemImage: "arrow.clockwise").font(vars.bodyFont)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -569,9 +617,7 @@ private struct MLPlaylistEditor: View {
     @State private var editingTracks: [MLTrack] = []
     @State private var savedTrackIds: [Int64]   = []
     @State private var trackSelection: Set<Int64> = []
-    @State private var showingRename  = false
     @State private var showingSaveAs  = false
-    @State private var renameText     = ""
     @State private var saveAsText     = ""
 
     private var hasChanges: Bool { editingTracks.map(\.id) != savedTrackIds }
@@ -587,69 +633,32 @@ private struct MLPlaylistEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Header ─────────────────────────────────────────────────────────
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Button { nav = .playlists } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left").font(.system(size: 10))
-                            Text("Playlists").font(theme.vars.bodyFont)
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(theme.playlistDurationText)
-
-                    Divider().frame(height: 14).background(theme.windowBorder)
-
-                    Text(playlistName)
-                        .font(theme.vars.bodyFont.weight(.semibold))
-                        .foregroundStyle(theme.playlistText)
+            // ── File path bar ──────────────────────────────────────────────────
+            // Title + rename live in MediaLibraryView's toolbar; here we only
+            // surface the on-disk path so the user can tell managed vs
+            // external playlists apart.  Font + colour come from the active
+            // skin's CSS vars (bodyFont + playlistDurationText) so external
+            // skins control the appearance.
+            if !playlistPath.isEmpty {
+                HStack {
+                    Text(playlistPath)
+                        .font(theme.vars.bodyFont)
+                        .foregroundStyle(theme.playlistDurationText)
                         .lineLimit(1)
-
+                        .truncationMode(.middle)
                     Spacer()
-
-                    Button { renameText = playlistName; showingRename = true } label: {
-                        Label("Rename", systemImage: "pencil").font(theme.vars.bodyFont)
+                    if !isManaged {
+                        Text("external")
+                            .font(theme.vars.bodyFont)
+                            .foregroundStyle(Color.orange.opacity(0.8))
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(theme.playlistText)
-                    .help("Rename Playlist")
-
-                    Button { model.mlDeletePlaylist(id: playlistId); nav = .playlists } label: {
-                        Image(systemName: "trash").font(.system(size: 11))
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.red)
-                    .help("Delete Playlist")
                 }
                 .padding(.horizontal, 12)
-                .padding(.top, 7)
-                .padding(.bottom, 2)
+                .padding(.vertical, 5)
+                .background(theme.background)
 
-                // File path bar — helps identify external vs managed playlists.
-                if !playlistPath.isEmpty {
-                    HStack {
-                        Text(playlistPath)
-                            .font(theme.vars.smallMonospaceFont)
-                            .foregroundStyle(isManaged
-                                ? theme.playlistDurationText
-                                : Color.orange.opacity(0.8))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        if !isManaged {
-                            Text("external")
-                                .font(theme.vars.bodyFont)
-                                .foregroundStyle(Color.orange.opacity(0.8))
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 5)
-                }
+                Divider().background(theme.windowBorder)
             }
-            .background(theme.background)
-
-            Divider().background(theme.windowBorder)
 
             // ── Track list ─────────────────────────────────────────────────────
             List(editingTracks, id: \.id, selection: $trackSelection) { track in
@@ -667,17 +676,15 @@ private struct MLPlaylistEditor: View {
                     }
                     .frame(width: 12)
 
-                    Text(track.title.isEmpty ? track.filename : track.title)
+                    // "Artist — Title" (or AlbumArtist fallback, or filename
+                    // if both are blank) — same convention as the active
+                    // playlist window.
+                    Text(mlTrackDisplay(track))
                         .font(theme.vars.bodyFont)
                         .foregroundStyle(track.fileMissing ? Color.red : theme.playlistText)
                         .lineLimit(1)
+                        .truncationMode(.tail)
 
-                    if !track.artist.isEmpty {
-                        Text("— \(track.artist)")
-                            .font(theme.vars.bodyFont)
-                            .foregroundStyle(theme.playlistDurationText)
-                            .lineLimit(1)
-                    }
                     Spacer()
                     let total = Int(track.lengthSecs)
                     if total > 0 {
@@ -696,6 +703,39 @@ private struct MLPlaylistEditor: View {
             .background(theme.playlistBg)
             .scrollContentBackground(.hidden)
             .tint(theme.vars.highlight)
+            // Right-click menu mirrors the Files-view menu so users have
+            // consistent track actions in both views.
+            .contextMenu(forSelectionType: Int64.self) { ids in
+                Button("Add to Playlist") {
+                    model.mlAddToPlaylist(ids: Array(ids))
+                }
+                Button("Replace Current Playlist") {
+                    model.mlReplacePlaylistWith(ids: Array(ids))
+                }
+                Divider()
+                Button("Edit / View ID3 Tags") {
+                    if let first = ids.first,
+                       let t = editingTracks.first(where: { $0.id == first }) {
+                        model.mlOpenTagEditorForPath(t.path)
+                    }
+                }
+                .disabled(ids.count != 1)
+                Button("View Album Art") {
+                    if let first = ids.first,
+                       let t = editingTracks.first(where: { $0.id == first }) {
+                        model.mlViewArtForPath(t.path)
+                    }
+                }
+                .disabled(ids.count != 1)
+                Divider()
+                Button("Remove from Library", role: .destructive) {
+                    model.mlRemoveTracks(ids: Array(ids))
+                    // Also drop them from the current edit set so the row
+                    // disappears immediately without waiting for a reload.
+                    editingTracks.removeAll { ids.contains($0.id) }
+                    trackSelection.subtract(ids)
+                }
+            }
 
             Divider().background(theme.windowBorder)
 
@@ -721,15 +761,18 @@ private struct MLPlaylistEditor: View {
                     .buttonStyle(.borderless).foregroundStyle(.red)
                 }
 
-                if !editingTracks.isEmpty {
-                    Button {
-                        editingTracks.removeAll()
-                        trackSelection.removeAll()
-                    } label: {
-                        Label("Remove All", systemImage: "trash").font(theme.vars.bodyFont)
-                    }
-                    .buttonStyle(.borderless).foregroundStyle(.red)
+                // "Remove All" doesn't make sense inside a saved playlist —
+                // that's just deleting the playlist.  Use this slot for the
+                // delete-playlist action instead so it lives near the other
+                // destructive controls instead of in the top header.
+                Button {
+                    model.mlDeletePlaylist(id: playlistId)
+                    nav = .playlists
+                } label: {
+                    Label("Delete Playlist", systemImage: "trash").font(theme.vars.bodyFont)
                 }
+                .buttonStyle(.borderless).foregroundStyle(.red)
+                .help("Delete this playlist")
 
                 Spacer()
 
@@ -752,6 +795,25 @@ private struct MLPlaylistEditor: View {
                         .buttonStyle(.borderedProminent).controlSize(.small)
                     }
                 }
+
+                // Whole-playlist actions: Enqueue appends every track to the
+                // active playlist; Play replaces it (and starts playback if
+                // the autoplay-on-add preference allows).
+                Button("Enqueue") {
+                    let ids = editingTracks.map(\.id)
+                    if !ids.isEmpty { model.mlAddToPlaylist(ids: ids) }
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(editingTracks.isEmpty)
+                .help("Append all tracks to the active playlist")
+
+                Button("Play") {
+                    let ids = editingTracks.map(\.id)
+                    if !ids.isEmpty { model.mlReplacePlaylistWith(ids: ids) }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .disabled(editingTracks.isEmpty)
+                .help("Replace the active playlist with this one")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -760,24 +822,6 @@ private struct MLPlaylistEditor: View {
         .background(theme.playlistBg)
         .onAppear { loadPlaylist() }
         .onChange(of: playlistId) { _, _ in loadPlaylist() }
-        .sheet(isPresented: $showingRename) {
-            VStack(spacing: 16) {
-                Text("Rename Playlist").font(.headline)
-                TextField("Name", text: $renameText)
-                    .textFieldStyle(.roundedBorder).frame(width: 260)
-                HStack {
-                    Button("Cancel") { showingRename = false }
-                    Spacer()
-                    Button("Rename") {
-                        showingRename = false
-                        model.mlRenamePlaylist(id: playlistId, name: renameText)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            .padding(24).frame(width: 320)
-        }
         .sheet(isPresented: $showingSaveAs) {
             VStack(spacing: 16) {
                 Text("Save As New Playlist").font(.headline)
