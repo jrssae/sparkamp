@@ -88,6 +88,12 @@ pub struct LibTrack {
 /// Pre-computed sort keys for a [`LibTrack`].
 /// All strings are lowercase; all numeric fields are zero-padded so string
 /// comparison gives correct numeric ordering.
+///
+/// Fields are read by the GTK frontend's column-sort logic; macOS uses
+/// SwiftUI's KeyPathComparator on the live `LibTrack` fields and does not
+/// touch these.  Allow dead-code so the bin build stays warning-free on
+/// platforms where GTK is gated out.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SortKeys {
     pub num: String,
@@ -169,6 +175,10 @@ pub struct ReadOnlyTrackFields {
 ///
 /// `track` may be `None` if the file is not indexed in the media library;
 /// in that case all library-derived fields fall back to empty strings.
+///
+/// Used by the GTK ID3 editor; macOS reads these fields directly off the
+/// `MLTrack` struct in Swift.
+#[allow(dead_code)]
 pub fn read_only_track_fields(
     path: &std::path::Path,
     track: Option<&LibTrack>,

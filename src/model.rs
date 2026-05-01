@@ -423,6 +423,10 @@ impl Playlist {
     }
 
     /// Clear all tracks from the playlist, resetting current_index to 0.
+    ///
+    /// Used by GTK and the macOS FFI bridge; not reached from the macOS
+    /// `bin "sparkamp"` build.
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tracks.clear();
         self.current_index = 0;
@@ -460,6 +464,10 @@ impl Playlist {
 
     /// Step `current_index` back by one (floor at 0) and return the new
     /// current track.  Always succeeds even when already at track 0.
+    ///
+    /// Used by the GTK frontend's linear-back logic; macOS uses the shared
+    /// `Controller::nav_prev` instead and does not call this directly.
+    #[allow(dead_code)]
     pub fn previous(&mut self) -> Option<&Track> {
         self.current_index = self.current_index.saturating_sub(1);
         self.tracks.get(self.current_index)
@@ -764,6 +772,10 @@ impl Playlist {
     /// never block the GTK main thread waiting on them.
     ///
     /// See [`scan_paths_in_thread`] for channel semantics.
+    ///
+    /// GTK-only entry point — macOS uses `sparkamp_playlist_add` from the
+    /// FFI layer instead.
+    #[allow(dead_code)]
     pub fn scan_folder_for_ui(
         folder: PathBuf,
         extra_extensions: Vec<String>,

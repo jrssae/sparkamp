@@ -1,3 +1,10 @@
+#![allow(dead_code)]
+// Consumers live outside this crate's `bin "sparkamp"` reachability graph on
+// macOS (GTK frontend is gated behind `cfg(target_os = "linux")`, and the
+// macOS Swift bridge in `frontends/macos` calls into this module via the
+// library, not the binary).  Allow dead-code on a module level so the bin
+// build stays warning-free without per-item annotations.
+
 //! Music deduplication — core matching algorithm (no GTK).
 //!
 //! [`find_duplicates`] takes a flat list of already-scanned [`LibTrack`]s and
