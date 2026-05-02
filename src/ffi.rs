@@ -698,17 +698,11 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
         plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_next() {
-        NavResult::Target {
-            was_playing: true, ..
-        } => {
-            // Controller already recorded the fresh pick (or walked existing
-            // history) — use the no_record variant to avoid double-recording.
+        NavResult::Target { was_playing: true } => {
             ctrl.play_current_no_record();
         }
-        NavResult::Target {
-            was_playing: false, ..
-        } => {
-            // Just pre-load so position/duration queries work without playing.
+        NavResult::Target { was_playing: false } => {
+            // Pre-load so position/duration queries work without playing.
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
                 let _ = ctrl.player.load(&uri);
@@ -765,15 +759,10 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_prev() {
-        NavResult::Target {
-            was_playing: true, ..
-        } => {
+        NavResult::Target { was_playing: true } => {
             ctrl.play_current_no_record();
         }
-        NavResult::Target {
-            was_playing: false, ..
-        } => {
-            // Stopped: just pre-load the target track without playing.
+        NavResult::Target { was_playing: false } => {
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
                 let _ = ctrl.player.load(&uri);
@@ -1489,9 +1478,8 @@ pub extern "C" fn sparkamp_audio_extension_count() -> c_int {
 #[unsafe(no_mangle)]
 pub extern "C" fn sparkamp_audio_extension(idx: c_int) -> *const c_char {
     use std::sync::OnceLock;
-    // Build a Vec<CString> once on first call so we can hand out stable
-    // C-string pointers.  Stored in a OnceLock to keep the leak bounded
-    // to a single allocation per extension regardless of call count.
+    // OnceLock so each extension gets one stable CString pointer for the
+    // process lifetime (callers may cache them).
     static CACHE: OnceLock<Vec<CString>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| {
         crate::model::AUDIO_EXTENSIONS

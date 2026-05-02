@@ -1,9 +1,8 @@
 import SwiftUI
 import AppKit
 
-// Slider ranges sourced from the Rust core so the UI never lets the user
-// pick a value the engine will silently clamp.  These are evaluated once at
-// process start; the core's clamp constants are immutable per build.
+// Source slider ranges from the Rust core so the UI never lets the user
+// pick a value the engine would silently clamp.
 private let preampMin: Double  = sparkamp_preamp_min()
 private let preampMax: Double  = sparkamp_preamp_max()
 private let eqBandLimit: Double = sparkamp_eq_band_db_limit()

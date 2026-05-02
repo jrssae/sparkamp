@@ -85,19 +85,14 @@ pub struct LibTrack {
     pub sort_keys: SortKeys,
 }
 
-/// Single-line display string for a [`LibTrack`] using the same convention
-/// as the macOS frontend's `mlTrackDisplay` and the active-playlist row:
+/// Single-line display string for a [`LibTrack`] — em-dash separator,
+/// matching the macOS `mlTrackDisplay` and the active-playlist row.
 ///
-/// - `"Artist — Title"` when `artist` is non-empty.
-/// - `"AlbumArtist — Title"` when `artist` is empty but `album_artist` is set.
+/// - `"Artist — Title"` when artist is non-empty.
+/// - `"AlbumArtist — Title"` when artist is empty but album_artist is set.
 /// - Plain `filename` when both are blank.
-///
-/// Title falls back to the filename when blank.  Em-dash (` — `) is used
-/// as the separator to match the GTK active-playlist and macOS displays.
-///
-/// Used by the GTK media-library playlist editor; not reached from the
-/// macOS bin build (GTK is gated behind `cfg(target_os = "linux")`).
-#[allow(dead_code)]
+/// - Title falls back to filename when blank.
+#[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
 pub fn lib_track_display(t: &LibTrack) -> String {
     let title = t.title.as_deref().unwrap_or(&t.filename);
     if let Some(a) = t.artist.as_deref().filter(|s| !s.is_empty()) {
@@ -456,11 +451,10 @@ impl MediaLibrary {
     // Folder management
     // -----------------------------------------------------------------------
 
-    /// Canonicalize a folder path the same way `add_folder` stores it, so
-    /// that lookup and insert agree on the comparison key.  Resolves
-    /// symlinks (e.g. macOS `/var → /private/var`, Flatpak document-portal
-    /// FUSE mounts) and falls back to the raw input if the path does not
-    /// exist on disk (matches the previous `add_folder` behaviour).
+    /// Canonicalize a folder path so `add_folder` and `folder_exists`
+    /// agree on the comparison key under symlink indirection (macOS
+    /// `/var → /private/var`, Flatpak document-portal FUSE mounts).
+    /// Falls back to the raw input when the path does not exist on disk.
     fn canonicalize_folder_path(path: &str) -> String {
         Path::new(path)
             .canonicalize()

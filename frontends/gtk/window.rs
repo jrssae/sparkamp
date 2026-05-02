@@ -10076,14 +10076,8 @@ fn open_media_library_window(
         lb
     });
 
-    // ── Helper: rebuild track editor list from editing_tracks ─────────────
-    //
-    // Each row mirrors the macOS playlist editor layout: a small leading
-    // status glyph (⚠ for missing files, 🔒 for read-only) using the same
-    // emoji convention as the active playlist + ML files view, the
-    // canonical "Artist — Title" display string from `lib_track_display`
-    // (with album-artist + filename fallbacks), and a right-aligned
-    // duration column when the length is known.
+    // Rebuild track editor list: leading ⚠/🔒 glyph, lib_track_display
+    // text, right-aligned mm:ss when length is known.
     let rebuild_track_list = {
         let tl = track_list.clone();
         let et = editing_tracks.clone();
@@ -10145,10 +10139,10 @@ fn open_media_library_window(
                 }
 
                 let row = ListBoxRow::new();
-                // Stash the LibTrack id in the row's widget_name so the
-                // right-click handler can look the track up without
-                // hit-testing children.  Synthetic stubs (id == 0) get
-                // a "stub:<idx>" name so they can still be removed.
+                // Stash the LibTrack id in widget_name so the right-click
+                // handler can look the track up without walking children.
+                // Synthetic stubs share id == 0; the menu hides library-only
+                // entries (Edit ID3, Remove from Library) for those rows.
                 row.set_widget_name(&format!("track:{}", t.id));
                 row.set_child(Some(&row_box));
                 tl.append(&row);
@@ -10517,12 +10511,8 @@ fn open_media_library_window(
         pl_sub_stack.add_named(&manage_vbox, Some("pl-manage"));
     }
 
-    // ── Hoisted header widgets (shared with sidebar selection handler) ────
-    //
-    // Header layout mirrors the macOS playlist editor: playlist title on
-    // the left, Rename button on the right, file path on its own row
-    // below.  The title label text is updated by the sidebar handler when
-    // the user picks a different playlist.
+    // Hoisted: title + rename button + path label (sidebar handler updates
+    // the title text on selection change).
     let edit_header: Label = Label::builder()
         .label("Playlist Editor")
         .halign(Align::Start)
@@ -10584,19 +10574,11 @@ fn open_media_library_window(
         let btn_add_files_pl  = Button::with_label("+ Files");    btn_add_files_pl.add_css_class("pl-btn");
         let btn_add_folder_pl = Button::with_label("+ Folder");   btn_add_folder_pl.add_css_class("pl-btn");
         let btn_remove_tracks = Button::with_label("− Remove");   btn_remove_tracks.add_css_class("pl-btn");
-        // "Delete Playlist" replaces the old "Clear" button — clearing every
-        // track from a saved playlist is the same as deleting the playlist
-        // itself, so collapse the two and put the destructive action where
-        // the other destructive controls live (matches the macOS layout).
         let btn_delete_pl     = Button::with_label("🗑 Delete Playlist"); btn_delete_pl.add_css_class("pl-btn");
         let spring_pl         = GtkBox::new(Orientation::Horizontal, 0); spring_pl.set_hexpand(true);
         let btn_revert_pl     = Button::with_label("↺ Revert");  btn_revert_pl.add_css_class("pl-btn");
         let btn_save_as_pl    = Button::with_label("Save As…");  btn_save_as_pl.add_css_class("pl-btn");
-        // btn_save_pl_outer was hoisted so the sidebar handler can toggle sensitivity.
-        let btn_save_pl = btn_save_pl_outer.clone();
-        // Whole-playlist actions (parity with macOS): Enqueue appends every
-        // track to the active playlist; Play replaces it and starts playback
-        // when the autoplay-on-add preference is on.
+        let btn_save_pl       = btn_save_pl_outer.clone();
         let btn_enqueue_pl    = Button::with_label("Enqueue"); btn_enqueue_pl.add_css_class("pl-btn");
         let btn_play_pl       = Button::with_label("▶ Play");  btn_play_pl.add_css_class("pl-btn");
 
@@ -10622,11 +10604,8 @@ fn open_media_library_window(
                 let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
                 let filter = gtk4::FileFilter::new();
                 filter.set_name(Some("Audio files"));
-                // Pull from the canonical list so this picker stays in sync
-                // with the scanner's whitelist; the previous hardcoded MIME
-                // list was missing wma/ape/mpc/tta/wv/aiff/aif.  Add a
-                // glob suffix per extension so files appear regardless of
-                // whether the desktop has a registered MIME type for them.
+                // add_suffix (not add_mime_type) so files appear even when
+                // the desktop has no MIME registration (.ape, .tta, …).
                 for ext in crate::model::AUDIO_EXTENSIONS {
                     filter.add_suffix(ext);
                 }
@@ -10916,9 +10895,7 @@ fn open_media_library_window(
                         s.playlist.add(libtrack_to_track(lt));
                     }
                 }
-                // Match the Add-to-Playlist button: only autoplay when the
-                // active playlist was empty before the append, so we never
-                // interrupt a track the user is already listening to.
+                // Don't interrupt a track the user is already listening to.
                 if autoplay && was_empty {
                     if let Some(display) = state_rc.borrow_mut().play_current() {
                         set_track2(&display);
@@ -11095,17 +11072,11 @@ fn open_media_library_window(
         }
 
         // ── Right-click context menu on track rows ───────────────────────
-        //
-        // Mirrors the macOS playlist-editor menu (parity with the Files
-        // view): Add to / Replace active playlist, Edit ID3 (single only),
-        // and Remove from Library.  GTK has no standalone album-art viewer
-        // window so the "View Album Art" entry is omitted here.
+        // Add to / Replace active playlist, Edit ID3 (single only), Remove
+        // from Library.  No album-art viewer in GTK so that entry is
+        // omitted here.
         {
             let ctx_track_id: Rc<Cell<i64>> = Rc::new(Cell::new(-1));
-
-            // Action group registered on the track_list so menu items can
-            // resolve via `ple.append` etc. without polluting the global
-            // action namespace.
             let action_group = gio::SimpleActionGroup::new();
 
             // ─── Append (add to active playlist) ─────────────────────────
@@ -11261,6 +11232,10 @@ fn open_media_library_window(
                     x as i32, y as i32, 1, 1,
                 )));
                 popover.set_parent(&tl_ref);
+                // Drop the popover from track_list's child list once it
+                // closes — without this each right-click leaks one popover
+                // and bloats the parent's hit-testing tree.
+                popover.connect_closed(|p| p.unparent());
                 popover.popup();
                 g.set_state(gtk4::EventSequenceState::Claimed);
             });

@@ -981,13 +981,9 @@ impl SpectrumData {
         self.has_received_data
     }
 
-    /// Reset to the "no data yet" state.
-    ///
-    /// Zeros both the raw and smoothed band buffers and clears the
-    /// `has_received_data` flag so subsequent reads through
-    /// `get_spectrum_display_bands` return all zeros (flat / no bars).
-    /// Called by `Player::stop()` so the visualizer collapses back to its
-    /// starting state instead of freezing on the last received frame.
+    /// Zero buffers + clear `has_received_data` so the visualizer
+    /// collapses to flat/no-bars after Stop instead of freezing on the
+    /// last received frame.
     pub fn clear(&mut self) {
         for v in self.bands.iter_mut() {
             *v = 0.0;
@@ -1033,9 +1029,8 @@ impl WaveformBuffer {
         }
     }
 
-    /// Drop all buffered samples so subsequent `get_samples` calls return
-    /// silence until new audio arrives.  Called by `Player::stop()` so the
-    /// waveform visualizer collapses to a flat line on stop.
+    /// Drop buffered samples so `get_samples` returns silence until new
+    /// audio arrives — the waveform collapses to a flat line on Stop.
     pub fn clear(&mut self) {
         self.samples.clear();
     }

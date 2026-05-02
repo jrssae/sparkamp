@@ -940,8 +940,8 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
         let autoplay     = sparkamp_get_autoplay_on_add(ctx)
-        let wasEmpty     = Int(sparkamp_playlist_len(ctx)) == 0
         let indexBefore  = Int(sparkamp_playlist_len(ctx))
+        let wasEmpty     = indexBefore == 0
         if shouldReplace {
             clearPlaylist()
             mlAddToPlaylist(ids: ids)
@@ -951,8 +951,7 @@ final class SparkampModel: ObservableObject {
             }
         } else {
             mlAddToPlaylist(ids: ids)
-            // Append-mode: only autoplay when the playlist was empty so we
-            // don't interrupt a track the user is already listening to.
+            // Don't interrupt a track the user is already listening to.
             if autoplay && wasEmpty {
                 sparkamp_playlist_jump(ctx, Int32(indexBefore))
                 sparkamp_play(ctx)

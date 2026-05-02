@@ -771,10 +771,7 @@ impl Player {
     ///
     /// Returns true if the spectrum element is available and has sent at least
     /// one message with valid data.
-    ///
-    /// Used by the GTK frontend to decide whether to fall back to a static
-    /// bars visualisation; not reached from the macOS bin build.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
     pub fn has_spectrum_data(&self) -> bool {
         self.has_spectrum
             && self

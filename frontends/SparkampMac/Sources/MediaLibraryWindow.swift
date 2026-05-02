@@ -257,9 +257,6 @@ struct MediaLibraryView: View {
         HStack(spacing: 8) {
             if nav == .files { searchField }
 
-            // When viewing a saved playlist, surface its title + rename
-            // button here so the user has a single header bar instead of
-            // two stacked rows.
             if case let .playlist(id) = nav,
                let pl = model.mlSavedPlaylists.first(where: { $0.id == id }) {
                 Text(pl.name)
@@ -633,12 +630,7 @@ private struct MLPlaylistEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── File path bar ──────────────────────────────────────────────────
-            // Title + rename live in MediaLibraryView's toolbar; here we only
-            // surface the on-disk path so the user can tell managed vs
-            // external playlists apart.  Font + colour come from the active
-            // skin's CSS vars (bodyFont + playlistDurationText) so external
-            // skins control the appearance.
+            // Title + rename live in MediaLibraryView's toolbar.
             if !playlistPath.isEmpty {
                 HStack {
                     Text(playlistPath)
@@ -746,9 +738,6 @@ private struct MLPlaylistEditor: View {
                 }
                 .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
-                // Always rendered; disabled when nothing is selected — typical
-                // macOS pattern (button visible but greyed-out so the user
-                // can see the action exists).
                 Button {
                     editingTracks.removeAll { trackSelection.contains($0.id) }
                     trackSelection.removeAll()
@@ -758,10 +747,6 @@ private struct MLPlaylistEditor: View {
                 .buttonStyle(.borderless).foregroundStyle(.red)
                 .disabled(trackSelection.isEmpty)
 
-                // "Remove All" doesn't make sense inside a saved playlist —
-                // that's just deleting the playlist.  Use this slot for the
-                // delete-playlist action instead so it lives near the other
-                // destructive controls instead of in the top header.
                 Button {
                     model.mlDeletePlaylist(id: playlistId)
                     nav = .playlists
@@ -773,10 +758,6 @@ private struct MLPlaylistEditor: View {
 
                 Spacer()
 
-                // Save As is always available; Save is enabled only for
-                // managed playlists with unsaved changes.  Revert is always
-                // visible (parity with the GTK editor) and disabled when
-                // there is nothing to revert.
                 Button("Save As…") {
                     saveAsText = playlistName
                     showingSaveAs = true
@@ -885,9 +866,8 @@ private struct MLPlaylistEditor: View {
         panel.allowsMultipleSelection = false
         panel.begin { resp in
             guard resp == .OK, let url = panel.url else { return }
-            // Pull from the unfiltered library set rather than `model.mlTracks`
-            // (which honours the Files-view search query and would otherwise
-            // limit folder-import to the visible search results).
+            // mlAllTracks bypasses the Files-view search filter so we don't
+            // import only the visible search results.
             let matching = model.mlAllTracks().filter { $0.path.hasPrefix(url.path) }
             Task { @MainActor in
                 let existing = Set(editingTracks.map(\.id))
