@@ -31,6 +31,9 @@ dev.txt
 # Built distribution artifacts (DMGs, installers) — too large for git
 /dist/
 
+# Per-developer macOS xcodebuild export config (generated/edited locally)
+packaging/macos/export-options.plist
+
 # Other large binaries not needed in the repo
 *.wsz
 *.mp3
