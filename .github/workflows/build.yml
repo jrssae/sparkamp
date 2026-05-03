@@ -19,6 +19,9 @@ on:
   push:
     branches:
       - main
+    # Tag-triggered runs (vX.Y.Z) also publish the bundle as a Release asset.
+    tags:
+      - 'v*'
   # Allow manual triggering from the Actions tab.
   workflow_dispatch:
 
@@ -26,6 +29,8 @@ jobs:
   build-flatpak:
     name: Build and upload Flatpak bundle
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────
@@ -98,6 +103,25 @@ jobs:
           path: Sparkamp-${{ github.sha }}.flatpak
           # Keep build artifacts for 30 days.
           retention-days: 30
+
+      # ── Tag-only: stage versioned filename + attach to GitHub Release ─────
+      # build artifact above keeps the SHA-based name for traceability; the
+      # release asset uses Sparkamp-<version>.flatpak so the download link
+      # in release notes stays clean across rebuilds.
+      - name: Stage release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: stage
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          cp "Sparkamp-${{ github.sha }}.flatpak" "Sparkamp-${version}.flatpak"
+          echo "asset=Sparkamp-${version}.flatpak" >> "$GITHUB_OUTPUT"
+
+      - name: Attach Flatpak to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.stage.outputs.asset }}
+          fail_on_unmatched_files: true
 
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Write job summary
