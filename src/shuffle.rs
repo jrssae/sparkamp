@@ -70,19 +70,6 @@ impl RepeatMode {
         }
     }
 
-    /// Compact symbol suitable for inline indicators (buttons, status bars).
-    ///
-    /// The distinguishing suffix (`—` / `1` / `A`) is intentionally ASCII so
-    /// that the character can eventually be replaced via CSS content rules when
-    /// the skin system gains button-label theming support.
-    #[allow(dead_code)]
-    pub fn symbol(self) -> &'static str {
-        match self {
-            Self::Off => "🔁—",      // repeat off
-            Self::Song => "🔁1",     // repeat this track
-            Self::Playlist => "🔁A", // repeat all tracks
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -18,15 +18,11 @@
 //! ```ignore
 //! // Inside a frontend method:
 //! match self.ctrl().nav_next() {
-//!     NavResult::Target { was_playing: true, .. } => self.play_current_no_record(),
-//!     NavResult::Target { was_playing: false, .. } => { /* update UI cursor */ }
+//!     NavResult::Target { was_playing: true } => self.play_current_no_record(),
+//!     NavResult::Target { was_playing: false } => { /* update UI cursor */ }
 //!     NavResult::NoTarget => {}
 //! }
 //! ```
-//!
-//! Note: `nav_next` and `nav_prev` now own shuffle-history recording
-//! internally — callers must use `play_current_no_record` (not
-//! `play_current`) to avoid double-recording.
 
 use std::time::Duration;
 
@@ -57,26 +53,16 @@ pub enum PlayResult {
 
 /// Outcome of a manual navigation call ([`Controller::nav_next`] /
 /// [`Controller::nav_prev`]).
+///
+/// Recording into shuffle history is owned by `nav_next`/`nav_prev` —
+/// callers must trigger playback with
+/// [`play_current_no_record`][Controller::play_current_no_record] to avoid
+/// double-recording fresh picks.
 #[derive(Debug)]
 pub enum NavResult {
-    /// Navigation succeeded.
-    ///
-    /// - `was_playing` tells the caller whether to start playback on the
-    ///   (already-updated) current track.
-    /// - `from_history` is `true` when the navigation walked the existing
-    ///   shuffle-history cursor (no new entry appended).  Informational only:
-    ///   the controller has already done all required `ShuffleState`
-    ///   bookkeeping in either case.  Callers should always use
-    ///   [`play_current_no_record`][Controller::play_current_no_record] to
-    ///   trigger playback to avoid double-recording fresh picks.
-    Target {
-        was_playing: bool,
-        // Informational only — current callers don't branch on it, but it
-        // is part of the public NavResult contract for future UI tweaks
-        // (e.g. visually distinguishing a history walk from a fresh pick).
-        #[allow(dead_code)]
-        from_history: bool,
-    },
+    /// Navigation succeeded.  `was_playing` tells the caller whether to
+    /// start playback on the (already-updated) current track.
+    Target { was_playing: bool },
     /// No navigation target exists (e.g. at the first track with repeat off,
     /// or at the last track with no wrap).
     NoTarget,
@@ -197,10 +183,7 @@ impl Controller<'_> {
             self.shuffle_state.ensure_seeded(current);
             if let Some(idx) = self.shuffle_state.next_from_history() {
                 self.playlist.jump_to(idx);
-                return NavResult::Target {
-                    was_playing,
-                    from_history: true,
-                };
+                return NavResult::Target { was_playing };
             }
         }
 
@@ -226,14 +209,10 @@ impl Controller<'_> {
         };
 
         self.playlist.jump_to(idx);
-        // Record the fresh pick so Back can step into it later, regardless
-        // of whether the FFI/UI layer actually triggers playback (stopped
-        // state pre-loads must still extend history).
+        // Record fresh picks here (not in the FFI layer) so back-navigation
+        // works even when the UI only pre-loaded the track without playing.
         self.shuffle_state.record_played(idx);
-        NavResult::Target {
-            was_playing,
-            from_history: false,
-        }
+        NavResult::Target { was_playing }
     }
 
     /// Compute the previous target index (or restart position) for manual
@@ -258,54 +237,39 @@ impl Controller<'_> {
 
         if pos.as_secs() >= 5 {
             // Restart current track — index unchanged.
-            return NavResult::Target {
-                was_playing,
-                from_history: false,
-            };
+            return NavResult::Target { was_playing };
         }
 
-        // Seed history with the current track if shuffle is on but nothing
-        // has been recorded yet — without this, Back after a stopped-state
-        // Next could not return to where the user came from.
         let current = self.playlist.current_index;
         if self.shuffle_state.enabled {
             self.shuffle_state.ensure_seeded(current);
         }
 
-        let (idx, from_history) = if self.shuffle_state.enabled {
+        let idx = if self.shuffle_state.enabled {
             match self.shuffle_state.prev_from_history() {
-                Some(i) => (i, true),
+                Some(i) => i,
                 None => {
-                    // Shuffle on but cursor already at history head — fall
-                    // back to a linear step-back (current - 1) without wrap.
-                    // Mirrors the GTK frontend's `play_prev`: empty history
-                    // is "no shuffle past to walk", not license to roll a
-                    // new random pick.  Picking random here would surprise
-                    // the user — pressing Back after a shuffled Next must
-                    // not throw them to yet another track.
+                    // Empty history — fall back to a linear step-back without
+                    // wrap.  Picking random here would surprise the user
+                    // (Back after a shuffled Next must not roll a new track).
                     if current == 0 {
                         return NavResult::NoTarget;
                     }
-                    (current - 1, false)
+                    current - 1
                 }
+            }
+        } else if current == 0 {
+            if self.config.playback.repeat_mode == RepeatMode::Playlist {
+                self.playlist.len().saturating_sub(1)
+            } else {
+                return NavResult::NoTarget;
             }
         } else {
-            if current == 0 {
-                if self.config.playback.repeat_mode == RepeatMode::Playlist {
-                    (self.playlist.len().saturating_sub(1), false)
-                } else {
-                    return NavResult::NoTarget;
-                }
-            } else {
-                (current - 1, false)
-            }
+            current - 1
         };
 
         self.playlist.jump_to(idx);
-        NavResult::Target {
-            was_playing,
-            from_history,
-        }
+        NavResult::Target { was_playing }
     }
 
     // -----------------------------------------------------------------------

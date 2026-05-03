@@ -536,16 +536,10 @@ impl App {
     /// this wrapper updates TUI-specific state after the move.
     pub fn play_next(&mut self) {
         match self.ctrl().nav_next() {
-            crate::controller::NavResult::Target {
-                was_playing: true, ..
-            } => {
-                // Controller already recorded the fresh pick / walked
-                // history — use no_record to avoid double-recording.
+            crate::controller::NavResult::Target { was_playing: true } => {
                 self.play_current_no_record();
             }
-            crate::controller::NavResult::Target {
-                was_playing: false, ..
-            } => {
+            crate::controller::NavResult::Target { was_playing: false } => {
                 self.playlist_cursor = self.playlist.current_index;
             }
             crate::controller::NavResult::NoTarget => {}
@@ -558,14 +552,10 @@ impl App {
     /// this wrapper updates TUI-specific state after the move.
     pub fn play_prev(&mut self) {
         match self.ctrl().nav_prev() {
-            crate::controller::NavResult::Target {
-                was_playing: true, ..
-            } => {
-                self.play_current_no_record(); // no history record for back nav
+            crate::controller::NavResult::Target { was_playing: true } => {
+                self.play_current_no_record();
             }
-            crate::controller::NavResult::Target {
-                was_playing: false, ..
-            } => {
+            crate::controller::NavResult::Target { was_playing: false } => {
                 self.playlist_cursor = self.playlist.current_index;
             }
             crate::controller::NavResult::NoTarget => {}

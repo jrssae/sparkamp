@@ -406,15 +406,13 @@ pub fn load_skin(name: &str) -> Option<Skin> {
 
     // User file wins.
     let user_path = user_skins_dir().join(format!("{lower}.css"));
-    if user_path.exists() {
-        if let Ok(css) = std::fs::read_to_string(&user_path) {
-            let vars = parse_skin_vars(&css);
-            return Some(Skin {
-                name:   lower,
-                vars,
-                source: SkinSource::UserFile(user_path),
-            });
-        }
+    if let Ok(css) = std::fs::read_to_string(&user_path) {
+        let vars = parse_skin_vars(&css);
+        return Some(Skin {
+            name:   lower,
+            vars,
+            source: SkinSource::UserFile(user_path),
+        });
     }
 
     // Built-ins.
@@ -634,28 +632,30 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {bact}; background-image: none; color: {btext}; \
     }}").unwrap();
 
-    // Seek bar
+    // Seek bar — slim trough, chunky rectangular handle that overflows ±5px.
     writeln!(css, "scale.seek-scale trough {{ \
         background-color: {tbg}; background-image: none; \
-        min-height: 7px; \
+        min-height: 4px; \
     }}").unwrap();
     writeln!(css, "scale.seek-scale highlight {{ \
         background-color: {hl}; background-image: none; \
     }}").unwrap();
     writeln!(css, "scale.seek-scale slider {{ \
         background-color: {hl}; background-image: none; \
-        border-radius: 50%; min-width: 10px; min-height: 10px; \
+        border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
 
-    // Volume slider
+    // Volume slider — same chunky overflow style as seek.
     writeln!(css, "scale.vol-scale trough {{ \
         background-color: {tbg}; background-image: none; \
+        min-height: 4px; \
     }}").unwrap();
     writeln!(css, "scale.vol-scale highlight {{ \
         background-color: {hl}; background-image: none; \
     }}").unwrap();
     writeln!(css, "scale.vol-scale slider {{ \
         background-color: {hl}; background-image: none; \
+        border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
     writeln!(css, ".vol-label {{ \
         color: {text_dim}; font-size: {fs}px; font-family: monospace; min-width: 28px; \
@@ -669,17 +669,19 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     }}").unwrap();
 
     // Equalizer window scales (horizontal pre-amp + vertical band columns).
-    // Pattern matches seek-scale so the slider handle renders as a small
-    // highlight-colored circle rather than the system theme's default.
+    // Same chunky overflow handle as seek/vol; trough slimmed on both axes
+    // so vertical band sliders read as thin columns and the horizontal
+    // preamp matches the main-window seek bar.
     writeln!(css, "scale.eq-scale trough {{ \
         background-color: {tbg}; background-image: none; \
+        min-width: 4px; min-height: 4px; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale highlight {{ \
         background-color: {hl}; background-image: none; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale slider {{ \
         background-color: {hl}; background-image: none; \
-        border-radius: 50%; min-width: 10px; min-height: 10px; \
+        border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale label {{ \
         color: {text_dim}; font-size: {fs}px; \
@@ -755,8 +757,33 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Status bar + info text
     writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}px; }}").unwrap();
     writeln!(css, ".info-text {{ \
-        color: {text}; background-color: {tbg}; font-family: monospace; font-size: {fs}px; \
+        color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
         padding: 6px; border-radius: 3px; \
+    }}").unwrap();
+    writeln!(css, ".info-title {{ \
+        color: {text}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        margin-bottom: 4px; \
+    }}").unwrap();
+    writeln!(css, ".info-section {{ \
+        color: {hl}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        margin-top: 6px; \
+    }}").unwrap();
+    writeln!(css, ".info-key {{ \
+        color: {text}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        padding-left: 8px; \
+    }}").unwrap();
+    writeln!(css, ".info-desc {{ \
+        color: {text}; font-family: {ff}; font-size: {fs}px; \
+    }}").unwrap();
+    // About pane
+    writeln!(css, ".about-title {{ \
+        color: {text}; font-family: {ff}; font-size: {fsl}px; font-weight: bold; \
+    }}", fsl = v.font_size_large).unwrap();
+    writeln!(css, ".about-section {{ \
+        color: {hl}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+    }}").unwrap();
+    writeln!(css, ".about-subtle {{ \
+        color: {text_dim}; font-family: {ff}; font-size: {fs}px; \
     }}").unwrap();
 
     // Form inputs sitting on text-background

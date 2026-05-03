@@ -423,6 +423,10 @@ impl Playlist {
     }
 
     /// Clear all tracks from the playlist, resetting current_index to 0.
+    ///
+    /// Used by GTK and the macOS FFI bridge; not reached from the macOS
+    /// `bin "sparkamp"` build.
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tracks.clear();
         self.current_index = 0;
@@ -460,6 +464,10 @@ impl Playlist {
 
     /// Step `current_index` back by one (floor at 0) and return the new
     /// current track.  Always succeeds even when already at track 0.
+    ///
+    /// Used by the GTK frontend's linear-back logic; macOS uses the shared
+    /// `Controller::nav_prev` instead and does not call this directly.
+    #[allow(dead_code)]
     pub fn previous(&mut self) -> Option<&Track> {
         self.current_index = self.current_index.saturating_sub(1);
         self.tracks.get(self.current_index)
@@ -764,6 +772,10 @@ impl Playlist {
     /// never block the GTK main thread waiting on them.
     ///
     /// See [`scan_paths_in_thread`] for channel semantics.
+    ///
+    /// GTK-only entry point — macOS uses `sparkamp_playlist_add` from the
+    /// FFI layer instead.
+    #[allow(dead_code)]
     pub fn scan_folder_for_ui(
         folder: PathBuf,
         extra_extensions: Vec<String>,
@@ -931,15 +943,6 @@ impl SpectrumData {
         }
     }
 
-    /// Create an empty SpectrumData with no bands.
-    pub fn empty() -> Self {
-        Self {
-            bands: vec![],
-            smoothed_bands: vec![],
-            has_received_data: false,
-        }
-    }
-
     /// Update the spectrum bands with new values from GStreamer.
     /// Applies attack/release smoothing for smooth bar animation.
     /// Sets has_received_data to true.
@@ -972,28 +975,22 @@ impl SpectrumData {
         &self.smoothed_bands
     }
 
-    /// Return the number of frequency bands.
-    pub fn len(&self) -> usize {
-        self.bands.len()
-    }
-
-    /// Return true if there are no bands (empty or all zeros).
-    pub fn is_empty(&self) -> bool {
-        self.bands.is_empty()
-    }
-
     /// Return true if real spectrum data has been received from GStreamer.
     /// Distinguishes between "no data yet" and "data received but all zeros".
     pub fn has_received_data(&self) -> bool {
         self.has_received_data
     }
 
-    /// Reset the spectrum data, clearing received flag.
-    /// Call this when reinitializing the pipeline.
-    pub fn reset(&mut self) {
-        let len = self.bands.len().max(64);
-        self.bands = vec![0.0; len];
-        self.smoothed_bands = vec![0.0; len];
+    /// Zero buffers + clear `has_received_data` so the visualizer
+    /// collapses to flat/no-bars after Stop instead of freezing on the
+    /// last received frame.
+    pub fn clear(&mut self) {
+        for v in self.bands.iter_mut() {
+            *v = 0.0;
+        }
+        for v in self.smoothed_bands.iter_mut() {
+            *v = 0.0;
+        }
         self.has_received_data = false;
     }
 }
@@ -1030,6 +1027,12 @@ impl WaveformBuffer {
             }
             self.samples.push_back(s);
         }
+    }
+
+    /// Drop buffered samples so `get_samples` returns silence until new
+    /// audio arrives — the waveform collapses to a flat line on Stop.
+    pub fn clear(&mut self) {
+        self.samples.clear();
     }
 
     /// Return `count` evenly-spaced samples with light smoothing applied.

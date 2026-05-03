@@ -230,7 +230,6 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
                     cb(ctx.error_userdata, msg.as_ptr());
                 }
             }
-            crate::engine::BusEvent::RetrySpectrum => {}
         }
     }
 
@@ -699,17 +698,11 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
         plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_next() {
-        NavResult::Target {
-            was_playing: true, ..
-        } => {
-            // Controller already recorded the fresh pick (or walked existing
-            // history) — use the no_record variant to avoid double-recording.
+        NavResult::Target { was_playing: true } => {
             ctrl.play_current_no_record();
         }
-        NavResult::Target {
-            was_playing: false, ..
-        } => {
-            // Just pre-load so position/duration queries work without playing.
+        NavResult::Target { was_playing: false } => {
+            // Pre-load so position/duration queries work without playing.
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
                 let _ = ctrl.player.load(&uri);
@@ -766,15 +759,10 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_prev() {
-        NavResult::Target {
-            was_playing: true, ..
-        } => {
+        NavResult::Target { was_playing: true } => {
             ctrl.play_current_no_record();
         }
-        NavResult::Target {
-            was_playing: false, ..
-        } => {
-            // Stopped: just pre-load the target track without playing.
+        NavResult::Target { was_playing: false } => {
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
                 let _ = ctrl.player.load(&uri);
@@ -1442,6 +1430,70 @@ pub unsafe extern "C" fn sparkamp_eq_band_label(band: c_int) -> *mut c_char {
     }
     let label = crate::config::EQ_BAND_FREQS[band as usize];
     CString::new(label).unwrap_or_default().into_raw()
+}
+
+// ---------------------------------------------------------------------------
+// EQ / pre-amp limit constants (read-only, mirror core's clamp ranges)
+// ---------------------------------------------------------------------------
+//
+// Exposed so frontends don't have to re-hardcode the same numeric ranges
+// in their slider UIs and risk drifting from the core's clamp logic.
+
+/// Maximum absolute dB value any EQ band can be set to (symmetric: ±limit).
+#[unsafe(no_mangle)]
+pub extern "C" fn sparkamp_eq_band_db_limit() -> f64 {
+    crate::config::EQ_BAND_DB_LIMIT
+}
+
+/// Minimum allowed pre-amp multiplier.
+#[unsafe(no_mangle)]
+pub extern "C" fn sparkamp_preamp_min() -> f64 {
+    crate::config::PREAMP_MIN
+}
+
+/// Maximum allowed pre-amp multiplier.
+#[unsafe(no_mangle)]
+pub extern "C" fn sparkamp_preamp_max() -> f64 {
+    crate::config::PREAMP_MAX
+}
+
+// ---------------------------------------------------------------------------
+// Audio extensions (read-only, mirrors model::AUDIO_EXTENSIONS)
+// ---------------------------------------------------------------------------
+//
+// Exposed so frontends building file pickers can use the canonical list
+// instead of maintaining their own (drift-prone) copy.  Strings are static
+// and null-terminated; the returned pointer is valid for the lifetime of
+// the process and must not be freed.
+
+/// Number of supported audio file extensions.
+#[unsafe(no_mangle)]
+pub extern "C" fn sparkamp_audio_extension_count() -> c_int {
+    crate::model::AUDIO_EXTENSIONS.len() as c_int
+}
+
+/// Get the audio extension at `idx` as a null-terminated lowercase ASCII
+/// string (no leading dot — e.g. "mp3", "flac").  Returns NULL if `idx` is
+/// out of range.  The returned pointer is static and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn sparkamp_audio_extension(idx: c_int) -> *const c_char {
+    use std::sync::OnceLock;
+    // OnceLock so each extension gets one stable CString pointer for the
+    // process lifetime (callers may cache them).
+    static CACHE: OnceLock<Vec<CString>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| {
+        crate::model::AUDIO_EXTENSIONS
+            .iter()
+            .map(|s| CString::new(*s).expect("audio extensions are static ASCII"))
+            .collect()
+    });
+    if idx < 0 {
+        return std::ptr::null();
+    }
+    cache
+        .get(idx as usize)
+        .map(|cs| cs.as_ptr())
+        .unwrap_or(std::ptr::null())
 }
 
 // ---------------------------------------------------------------------------

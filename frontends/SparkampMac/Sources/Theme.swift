@@ -612,8 +612,9 @@ final class ThemeManager: ObservableObject {
         case "dark":  return CSSParser.parse(css: darkTemplateCSS)
         case "light": return CSSParser.parse(css: lightTemplateCSS)
         default:
+            // CSSParser.load already returns nil on read failure (missing
+            // file, permission error, etc.) — no need to pre-check existence.
             let path = userSkinsDir().appendingPathComponent("\(skinName).css")
-            guard FileManager.default.fileExists(atPath: path.path) else { return nil }
             return CSSParser.load(url: path)
         }
     }

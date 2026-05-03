@@ -24,6 +24,7 @@ use gstreamer_sys;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
 use crate::model::{SpectrumData, WaveformBuffer};
 
 // ---------------------------------------------------------------------------
@@ -41,8 +42,6 @@ pub enum BusEvent {
     Eos,
     /// GStreamer reported a fatal error (e.g. file not found, codec missing).
     Error,
-    /// Spectrum initialization is needed (e.g., after a retry request).
-    RetrySpectrum,
 }
 
 // ---------------------------------------------------------------------------
@@ -419,9 +418,20 @@ impl Player {
     ///
     /// Sets the pipeline state to `Null`.  A subsequent `play()` call will
     /// restart from the beginning of the last loaded URI.
+    ///
+    /// Also clears the spectrum and waveform buffers so the visualizer
+    /// collapses to its starting state (no bars / flat line) instead of
+    /// freezing on the last received frame.  Pause deliberately leaves
+    /// the buffers intact — the user expects pause to hold the picture.
     pub fn stop(&mut self) -> Result<()> {
         self.pipeline.set_state(gst::State::Null)?;
         self.state = PlayerState::Stopped;
+        if let Ok(mut spec) = self.spectrum_data.write() {
+            spec.clear();
+        }
+        if let Ok(mut wb) = self.waveform_data.write() {
+            wb.clear();
+        }
         Ok(())
     }
 
@@ -523,7 +533,7 @@ impl Player {
     /// The change takes effect immediately, even during playback.
     pub fn set_eq_band(&mut self, band: usize, gain_db: f64) {
         if band < 10 {
-            let clamped = gain_db.clamp(-12.0, 12.0);
+            let clamped = gain_db.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
             if let Some(eq) = &self.eq {
                 let prop = format!("band{band}");
                 eq.set_property(&prop, clamped);
@@ -553,7 +563,7 @@ impl Player {
     /// recalculated once after all bands are applied.
     pub fn apply_eq_bands(&mut self, bands: &[f64]) {
         for (i, &gain) in bands.iter().take(10).enumerate() {
-            let clamped = gain.clamp(-12.0, 12.0);
+            let clamped = gain.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
             if let Some(eq) = &self.eq {
                 let prop = format!("band{i}");
                 eq.set_property(&prop, clamped);
@@ -571,7 +581,7 @@ impl Player {
     /// combined output never clips.  This is a no-op when the EQ plugin is
     /// unavailable.
     pub fn set_preamp(&mut self, multiplier: f64) {
-        self.user_preamp = multiplier.clamp(0.5, 1.5);
+        self.user_preamp = multiplier.clamp(PREAMP_MIN, PREAMP_MAX);
         self.apply_preamp_compensation();
     }
 
@@ -757,21 +767,11 @@ impl Player {
             .unwrap_or_else(|_| vec![0.0; count])
     }
 
-    /// Return the current spectrum data for the visualizer.
-    ///
-    /// Returns a clone of the spectrum data. The visualizer can use this to
-    /// display real frequency bars instead of synthetic animation.
-    pub fn get_spectrum_data(&self) -> SpectrumData {
-        self.spectrum_data
-            .read()
-            .map(|data| data.clone())
-            .unwrap_or_else(|_| SpectrumData::empty())
-    }
-
     /// Check if spectrum data has been received from GStreamer.
     ///
     /// Returns true if the spectrum element is available and has sent at least
     /// one message with valid data.
+    #[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
     pub fn has_spectrum_data(&self) -> bool {
         self.has_spectrum
             && self

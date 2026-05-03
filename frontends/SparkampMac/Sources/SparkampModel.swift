@@ -141,6 +141,17 @@ func trackDisplayName(title: String, artist: String, albumArtist: String) -> Str
     return t
 }
 
+/// Like `trackDisplayName` but for media-library tracks where a `filename`
+/// stem is always available.  When both artist and album-artist are blank
+/// the row is rendered as just the filename — matching the user-facing
+/// expectation for the saved-playlist editor.
+func mlTrackDisplay(_ t: MLTrack) -> String {
+    let name = t.title.isEmpty ? t.filename : t.title
+    if !t.artist.isEmpty      { return "\(t.artist) — \(name)" }
+    if !t.albumArtist.isEmpty { return "\(t.albumArtist) — \(name)" }
+    return t.filename
+}
+
 func formatDuration(_ secs: Double) -> String {
     guard secs >= 0 else { return "--:--" }
     let total = Int(secs)
@@ -809,6 +820,22 @@ final class SparkampModel: ObservableObject {
         }
     }
 
+    /// One-shot fetch of every track in the library, ignoring the current
+    /// search filter / sort / pagination state of `mlTracks`.  Returns a
+    /// fresh array without mutating `mlTracks` so the Files-view filter
+    /// state survives.  Used by callers that need to scan the whole library
+    /// (e.g. the playlist editor's "Add Folder" picker).
+    func mlAllTracks() -> [MLTrack] {
+        guard let ctx = ctx else { return [] }
+        let limit = 100_000
+        let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
+        defer { buf.deallocate() }
+        let count = "".withCString { qPtr in
+            sparkamp_ml_get_tracks(ctx, qPtr, nil, 0, 0, Int32(limit), buf)
+        }
+        return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+    }
+
     /// Fetch tracks from the library, applying optional search query and sort.
     /// Loads up to `limit` rows starting at `offset`.
     func mlFetchTracks(
@@ -898,20 +925,38 @@ final class SparkampModel: ObservableObject {
     }
 
     /// Called when a track is double-clicked in the ML table.
-    /// Respects the "append vs. replace" playback setting and always plays.
+    ///
+    /// Respects both Settings preferences:
+    /// - **Playlist add behavior** (Append / Replace) decides whether to clear
+    ///   the playlist first or just append.
+    /// - **Autoplay when files are added** decides whether the new track
+    ///   starts playing.  When autoplay is off, double-click only adds
+    ///   (matches GTK's behaviour and the explicit Add-to-Playlist button).
+    ///
+    /// Autoplay-on, append-mode: only auto-plays when the playlist was
+    /// empty before the add.  This avoids interrupting the currently
+    /// playing track when the user is queueing more music.
     func mlDoubleClickTracks(ids: [Int64]) {
         guard let ctx = ctx else { return }
         let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
-        let indexBefore = Int(sparkamp_playlist_len(ctx))
+        let autoplay     = sparkamp_get_autoplay_on_add(ctx)
+        let indexBefore  = Int(sparkamp_playlist_len(ctx))
+        let wasEmpty     = indexBefore == 0
         if shouldReplace {
             clearPlaylist()
             mlAddToPlaylist(ids: ids)
-            sparkamp_playlist_jump(ctx, 0)
+            if autoplay {
+                sparkamp_playlist_jump(ctx, 0)
+                sparkamp_play(ctx)
+            }
         } else {
             mlAddToPlaylist(ids: ids)
-            sparkamp_playlist_jump(ctx, Int32(indexBefore))
+            // Don't interrupt a track the user is already listening to.
+            if autoplay && wasEmpty {
+                sparkamp_playlist_jump(ctx, Int32(indexBefore))
+                sparkamp_play(ctx)
+            }
         }
-        sparkamp_play(ctx)
         refreshCurrentTrackInfo()
     }
 

@@ -18,6 +18,8 @@ use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::model::AUDIO_EXTENSIONS;
+
 // ---------------------------------------------------------------------------
 // String sanitization
 // ---------------------------------------------------------------------------
@@ -83,9 +85,34 @@ pub struct LibTrack {
     pub sort_keys: SortKeys,
 }
 
+/// Single-line display string for a [`LibTrack`] — em-dash separator,
+/// matching the macOS `mlTrackDisplay` and the active-playlist row.
+///
+/// - `"Artist — Title"` when artist is non-empty.
+/// - `"AlbumArtist — Title"` when artist is empty but album_artist is set.
+/// - Plain `filename` when both are blank.
+/// - Title falls back to filename when blank.
+#[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
+pub fn lib_track_display(t: &LibTrack) -> String {
+    let title = t.title.as_deref().unwrap_or(&t.filename);
+    if let Some(a) = t.artist.as_deref().filter(|s| !s.is_empty()) {
+        format!("{a} — {title}")
+    } else if let Some(aa) = t.album_artist.as_deref().filter(|s| !s.is_empty()) {
+        format!("{aa} — {title}")
+    } else {
+        t.filename.clone()
+    }
+}
+
 /// Pre-computed sort keys for a [`LibTrack`].
 /// All strings are lowercase; all numeric fields are zero-padded so string
 /// comparison gives correct numeric ordering.
+///
+/// Fields are read by the GTK frontend's column-sort logic; macOS uses
+/// SwiftUI's KeyPathComparator on the live `LibTrack` fields and does not
+/// touch these.  Allow dead-code so the bin build stays warning-free on
+/// platforms where GTK is gated out.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SortKeys {
     pub num: String,
@@ -167,6 +194,10 @@ pub struct ReadOnlyTrackFields {
 ///
 /// `track` may be `None` if the file is not indexed in the media library;
 /// in that case all library-derived fields fall back to empty strings.
+///
+/// Used by the GTK ID3 editor; macOS reads these fields directly off the
+/// `MLTrack` struct in Swift.
+#[allow(dead_code)]
 pub fn read_only_track_fields(
     path: &std::path::Path,
     track: Option<&LibTrack>,
@@ -420,13 +451,29 @@ impl MediaLibrary {
     // Folder management
     // -----------------------------------------------------------------------
 
+    /// Canonicalize a folder path so `add_folder` and `folder_exists`
+    /// agree on the comparison key under symlink indirection (macOS
+    /// `/var → /private/var`, Flatpak document-portal FUSE mounts).
+    /// Falls back to the raw input when the path does not exist on disk.
+    fn canonicalize_folder_path(path: &str) -> String {
+        Path::new(path)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned())
+    }
+
     /// Check if a folder path is already in the watch list.
     /// Returns `Ok(Some(id))` if found, `Ok(None)` if not found.
+    ///
+    /// The input is canonicalized before lookup so callers can pass any
+    /// equivalent path (with or without symlink resolution) and still get
+    /// a hit on a previously-added folder.
     fn folder_exists(&self, path: &str) -> Result<Option<i64>> {
+        let canonical = Self::canonicalize_folder_path(path);
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM folders WHERE path = ?1")?;
-        let result = stmt.query_row(params![path], |row| row.get(0));
+        let result = stmt.query_row(params![canonical.as_str()], |row| row.get(0));
         match result {
             Ok(id) => Ok(Some(id)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -443,15 +490,11 @@ impl MediaLibrary {
     /// so callers can show appropriate feedback (e.g. "Added" vs "Rescanning…").
     ///
     /// The path is canonicalized before storing so that document-portal FUSE
-    /// mounts (e.g. `/run/user/<uid>/doc/<hash>/Music` on Flatpak) resolve to
-    /// the same real path as a directly-added `~/Music`, preventing duplicates.
+    /// mounts (e.g. `/run/user/<uid>/doc/<hash>/Music` on Flatpak) and macOS
+    /// `/var → /private/var` symlinks resolve to the same real path as a
+    /// directly-added `~/Music`, preventing duplicates.
     pub fn add_folder(&self, path: &str) -> Result<AddFolderResult> {
-        // Canonicalize to resolve symlinks and portal FUSE mounts.
-        // Fall back to the original string if the path does not exist yet.
-        let canonical = Path::new(path)
-            .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_owned());
+        let canonical = Self::canonicalize_folder_path(path);
         let path = canonical.as_str();
 
         if let Some(id) = self.folder_exists(path)? {
@@ -609,15 +652,11 @@ impl MediaLibrary {
     /// Tracks that were previously in the DB but whose file no longer exists
     /// on disk are removed.  Returns `(added, removed)` counts.
     pub fn rescan_folder(&self, folder_id: i64, folder_path: &str) -> Result<(usize, usize)> {
-        // Audio extensions recognised by Sparkamp.
-        const AUDIO_EXTS: &[&str] = &["mp3", "ogg", "flac", "wav", "aac", "m4a", "opus", "wma"];
-
-        // Collect all relevant files under the folder.
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
         Self::walk_dir(
             Path::new(folder_path),
-            AUDIO_EXTS,
+            AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
         );
@@ -698,13 +737,11 @@ impl MediaLibrary {
     /// This returns immediately after collecting paths and inserting them into DB.
     /// Call `rescan_folder_metadata` after this to update metadata asynchronously.
     pub fn rescan_folder_fast(&self, folder_id: i64, folder_path: &str) -> Result<(usize, usize)> {
-        const AUDIO_EXTS: &[&str] = &["mp3", "ogg", "flac", "wav", "aac", "m4a", "opus", "wma"];
-
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
         Self::walk_dir(
             Path::new(folder_path),
-            AUDIO_EXTS,
+            AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
         );
@@ -831,15 +868,26 @@ impl MediaLibrary {
 
         let total = tracks.len();
         let mut updated = 0usize;
+        // Wrap the per-track upserts in one transaction so SQLite syncs once
+        // at commit instead of fsyncing per track. On a 30k-track library
+        // this is the dominant scan cost; partial work is committed even on
+        // user cancel so progress isn't lost.
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        let mut cancelled = false;
         for path in tracks {
             if cancel.load(Ordering::Relaxed) {
-                return Ok(updated);
+                cancelled = true;
+                break;
             }
             if self.upsert_track(folder_id, &path).is_ok() {
                 let _ = self.update_last_scanned(&path);
                 updated += 1;
             }
             progress(updated, total);
+        }
+        let _ = self.conn.execute("COMMIT", []);
+        if cancelled {
+            return Ok(updated);
         }
         Ok(updated)
     }

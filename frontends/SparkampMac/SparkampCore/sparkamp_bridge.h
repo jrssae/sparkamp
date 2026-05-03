@@ -185,6 +185,19 @@ void    sparkamp_set_preamp(SparkampCtx *ctx, float multiplier);
 void    sparkamp_reset_eq(SparkampCtx *ctx);
 char   *sparkamp_eq_band_label(int band);
 
+/* EQ / pre-amp limit constants — mirror core's clamp ranges so frontends
+ * don't have to hardcode the same numeric ranges and risk drift. */
+double  sparkamp_eq_band_db_limit(void);
+double  sparkamp_preamp_min(void);
+double  sparkamp_preamp_max(void);
+
+/* Audio extension whitelist — canonical list from core; use for file pickers
+ * to avoid drift.  Strings are static lowercase ASCII without leading dot
+ * (e.g. "mp3"), valid for process lifetime, must not be freed.  Returns
+ * NULL when idx is out of range. */
+int          sparkamp_audio_extension_count(void);
+const char  *sparkamp_audio_extension(int idx);
+
 // ---------------------------------------------------------------------------
 // Settings / Behavior
 // ---------------------------------------------------------------------------
