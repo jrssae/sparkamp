@@ -4117,57 +4117,108 @@ pub fn build(
             .default_height(480)
             .build();
         win.set_transient_for(Some(window.upcast_ref::<gtk4::Window>()));
+
+        let sections: &[(&str, &[(&str, &str)])] = &[
+            ("Playback", &[
+                ("z",          "Previous track / restart"),
+                ("x",          "Play"),
+                ("c",          "Pause / resume"),
+                ("v",          "Stop"),
+                ("b",          "Next track"),
+                ("← →",        "Seek −5 s / +5 s"),
+                ("r",          "Cycle repeat (off / song / playlist)"),
+            ]),
+            ("Volume", &[
+                ("-",          "Volume down 5 %"),
+                ("=",          "Volume up 5 %"),
+            ]),
+            ("Playlist", &[
+                ("n",          "Add file(s) or folder(s)"),
+                ("j",          "Jump / search"),
+                ("↑ k / ↓ l",  "Browse up / down"),
+                ("Enter",      "Play selected track"),
+                ("Del",        "Remove highlighted track"),
+                ("p",          "Toggle playlist window"),
+            ]),
+            ("View & Tags", &[
+                ("a",           "Cycle visualizer mode (bars / waveform)"),
+                ("f",           "Waveform fullscreen (in Waveform mode; Esc to exit)"),
+                ("d",           "View/Edit ID3 tags for current track"),
+                ("u",           "Open EQ (TUI only — use EQ button in GUI)"),
+                ("Click logo",  "Open settings"),
+                ("Right-click", "Toggle dark / light theme"),
+            ]),
+            ("Hidden shortcuts", &[
+                ("s",          "Toggle shuffle on/off"),
+            ]),
+            ("Other", &[
+                ("i",          "Toggle this help"),
+                ("q / Esc",    "Quit"),
+            ]),
+        ];
+
+        let grid = gtk4::Grid::builder()
+            .column_spacing(16)
+            .row_spacing(4)
+            .halign(gtk4::Align::Fill)
+            .valign(gtk4::Align::Start)
+            .build();
+
+        // Title row.
+        let title = gtk4::Label::builder()
+            .label("Sparkamp — Keyboard Shortcuts")
+            .halign(gtk4::Align::Start)
+            .css_classes(["info-title"])
+            .build();
+        grid.attach(&title, 0, 0, 2, 1);
+
+        let mut row: i32 = 1;
+        // Spacer below title.
+        let spacer = gtk4::Label::new(Some(""));
+        grid.attach(&spacer, 0, row, 2, 1);
+        row += 1;
+
+        for (section, entries) in sections.iter() {
+            let header = gtk4::Label::builder()
+                .label(*section)
+                .halign(gtk4::Align::Start)
+                .css_classes(["info-section"])
+                .build();
+            grid.attach(&header, 0, row, 2, 1);
+            row += 1;
+
+            for (key, desc) in entries.iter() {
+                let key_lbl = gtk4::Label::builder()
+                    .label(*key)
+                    .halign(gtk4::Align::Start)
+                    .css_classes(["info-key"])
+                    .build();
+                let desc_lbl = gtk4::Label::builder()
+                    .label(*desc)
+                    .halign(gtk4::Align::Start)
+                    .css_classes(["info-desc"])
+                    .build();
+                grid.attach(&key_lbl,  0, row, 1, 1);
+                grid.attach(&desc_lbl, 1, row, 1, 1);
+                row += 1;
+            }
+
+            // Section spacer.
+            let spc = gtk4::Label::new(Some(""));
+            grid.attach(&spc, 0, row, 2, 1);
+            row += 1;
+        }
+
+        let body = GtkBox::new(Orientation::Vertical, 0);
+        body.set_css_classes(&["info-text"]);
+        body.append(&grid);
+
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .margin_top(12).margin_bottom(12)
             .margin_start(12).margin_end(12)
-            .child(
-                &gtk4::Label::builder()
-                    .label("SparkAmp — Keyboard Shortcuts
-
-── Playback ────────────────────────────────────────
-  z            Previous track / restart
-  x            Play
-  c            Pause / resume
-  v            Stop
-  b            Next track
-  ←  →         Seek −5 s / +5 s
-  r            Cycle repeat (off / song / playlist)
-
-── Volume ──────────────────────────────────────────
-  -            Volume down 5 %
-  =            Volume up 5 %
-
-── Playlist ────────────────────────────────────────
-  n            Add file(s) or folder(s)
-  j            Jump / search
-  ↑ k / ↓ l    Browse up / down
-  Enter        Play selected track
-  Del          Remove highlighted track
-  p            Toggle playlist window
-
-── View & Tags ─────────────────────────────────────
-  a            Cycle visualizer mode (bars / waveform)
-  f            Waveform fullscreen (in Waveform mode; Esc to exit)
-  d            View/Edit ID3 tags for current track
-  u            Open EQ (TUI only — use EQ button in GUI)
-  Click logo   Open settings
-  Right-click  Toggle dark / light theme
-
-── Hidden shortcuts ────────────────────────────────
-  s            Toggle shuffle on/off
-
-── Other ───────────────────────────────────────────
-  i            Toggle this help
-  q / Esc      Quit")
-                    .halign(gtk4::Align::Start)
-                    .valign(gtk4::Align::Start)
-                    .use_markup(false)
-                    .selectable(false)
-                    .css_classes(["info-text"])
-                    .build(),
-            )
+            .child(&body)
             .build();
         let key_ctrl = gtk4::EventControllerKey::new();
         let handler = handle_key.clone();
@@ -6985,10 +7036,108 @@ fn open_settings_window(
         notebook.append_page(&grid, Some(&tab_lbl));
     }
 
-    // Select the requested tab, or default to tab 0.
-    if let Some(tab) = initial_tab {
-        notebook.set_current_page(Some(tab));
+    // ── Tab: About ─────────────────────────────────────────────────────────
+    {
+        let outer = GtkBox::new(Orientation::Vertical, 16);
+        outer.set_margin_top(24);
+        outer.set_margin_bottom(24);
+        outer.set_margin_start(24);
+        outer.set_margin_end(24);
+
+        // Header: title + version + description.
+        let header = GtkBox::new(Orientation::Vertical, 4);
+
+        let title = Label::new(Some("Sparkamp"));
+        title.set_halign(Align::Start);
+        title.add_css_class("about-title");
+        header.append(&title);
+
+        let version = Label::new(Some(&format!("Version {}", env!("CARGO_PKG_VERSION"))));
+        version.set_halign(Align::Start);
+        version.add_css_class("about-subtle");
+        header.append(&version);
+
+        let desc = Label::new(Some(
+            "A compact, fast, open-source Winamp-style music player with the \
+             backend built in Rust and support for UI in GNOME desktop with \
+             GTK4 & macOS with Swift.",
+        ));
+        desc.set_halign(Align::Start);
+        desc.set_xalign(0.0);
+        desc.set_wrap(true);
+        desc.set_max_width_chars(60);
+        desc.add_css_class("about-subtle");
+        header.append(&desc);
+
+        outer.append(&header);
+        outer.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+        // Engine.
+        let engine_box = GtkBox::new(Orientation::Vertical, 4);
+        let engine_h = Label::new(Some("Engine"));
+        engine_h.set_halign(Align::Start);
+        engine_h.add_css_class("about-section");
+        let engine_b = Label::new(Some("GStreamer — playbin, equalizer-10bands, volume"));
+        engine_b.set_halign(Align::Start);
+        engine_b.add_css_class("about-subtle");
+        engine_box.append(&engine_h);
+        engine_box.append(&engine_b);
+        outer.append(&engine_box);
+
+        // License.
+        let license_box = GtkBox::new(Orientation::Vertical, 4);
+        let license_h = Label::new(Some("License"));
+        license_h.set_halign(Align::Start);
+        license_h.add_css_class("about-section");
+        let license_link = gtk4::LinkButton::with_label(
+            "https://www.gnu.org/licenses/agpl-3.0.html",
+            "GNU Affero General Public License v3 (AGPL-3.0)",
+        );
+        license_link.set_halign(Align::Start);
+        license_box.append(&license_h);
+        license_box.append(&license_link);
+        outer.append(&license_box);
+
+        // GitHub.
+        let gh_box = GtkBox::new(Orientation::Vertical, 4);
+        let gh_h = Label::new(Some("Get the latest"));
+        gh_h.set_halign(Align::Start);
+        gh_h.add_css_class("about-section");
+        let gh_b = Label::new(Some(
+            "Source code, releases, and issue tracking are hosted on GitHub. \
+             Clone the repository or grab the latest build there.",
+        ));
+        gh_b.set_halign(Align::Start);
+        gh_b.set_xalign(0.0);
+        gh_b.set_wrap(true);
+        gh_b.set_max_width_chars(60);
+        gh_b.add_css_class("about-subtle");
+        let gh_link = gtk4::LinkButton::with_label(
+            "https://github.com/jrssae/sparkamp",
+            "github.com/jrssae/sparkamp",
+        );
+        gh_link.set_halign(Align::Start);
+        gh_box.append(&gh_h);
+        gh_box.append(&gh_b);
+        gh_box.append(&gh_link);
+        outer.append(&gh_box);
+
+        let scroll = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .child(&outer)
+            .build();
+
+        let tab_lbl = Label::new(Some("About"));
+        notebook.append_page(&scroll, Some(&tab_lbl));
+        // Move About to leftmost position.
+        notebook.reorder_child(&scroll, Some(0));
     }
+
+    // About tab is index 0 — the default landing tab when no specific tab
+    // was requested by the caller. Other tabs shifted right by one:
+    // Appearance(1), Behavior(2), Visualizer(3), Filetypes(4), Media Library(5).
+    notebook.set_current_page(Some(initial_tab.unwrap_or(0)));
 
     // ── Close button ───────────────────────────────────────────────────────
     // Changes are applied immediately; this button just closes the window.
@@ -11150,7 +11299,7 @@ fn open_media_library_window(
                     let Some(path) = path else { return };
                     open_id3_editor_window(
                         None::<&gtk4::Window>,
-                        path,
+                        path.into(),
                         state_rc.clone(),
                         rebuild_pl.clone(),
                         None,
@@ -11193,7 +11342,7 @@ fn open_media_library_window(
                 loop {
                     match tl_ref.row_at_index(i) {
                         Some(r) => {
-                            let bounds = r.compute_bounds(&tl_ref);
+                            let bounds = r.compute_bounds(&*tl_ref);
                             if let Some(b) = bounds {
                                 if y as f32 >= b.y() && y as f32 <= b.y() + b.height() {
                                     hit = Some(r);
@@ -11231,7 +11380,7 @@ fn open_media_library_window(
                 popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
                     x as i32, y as i32, 1, 1,
                 )));
-                popover.set_parent(&tl_ref);
+                popover.set_parent(&*tl_ref);
                 // Drop the popover from track_list's child list once it
                 // closes — without this each right-click leaks one popover
                 // and bloats the parent's hit-testing tree.

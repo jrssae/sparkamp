@@ -757,8 +757,33 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Status bar + info text
     writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}px; }}").unwrap();
     writeln!(css, ".info-text {{ \
-        color: {text}; background-color: {tbg}; font-family: monospace; font-size: {fs}px; \
+        color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
         padding: 6px; border-radius: 3px; \
+    }}").unwrap();
+    writeln!(css, ".info-title {{ \
+        color: {text}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        margin-bottom: 4px; \
+    }}").unwrap();
+    writeln!(css, ".info-section {{ \
+        color: {hl}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        margin-top: 6px; \
+    }}").unwrap();
+    writeln!(css, ".info-key {{ \
+        color: {text}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        padding-left: 8px; \
+    }}").unwrap();
+    writeln!(css, ".info-desc {{ \
+        color: {text}; font-family: {ff}; font-size: {fs}px; \
+    }}").unwrap();
+    // About pane
+    writeln!(css, ".about-title {{ \
+        color: {text}; font-family: {ff}; font-size: {fsl}px; font-weight: bold; \
+    }}", fsl = v.font_size_large).unwrap();
+    writeln!(css, ".about-section {{ \
+        color: {hl}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+    }}").unwrap();
+    writeln!(css, ".about-subtle {{ \
+        color: {text_dim}; font-family: {ff}; font-size: {fs}px; \
     }}").unwrap();
 
     // Form inputs sitting on text-background
