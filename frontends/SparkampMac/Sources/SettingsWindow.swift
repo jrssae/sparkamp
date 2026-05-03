@@ -82,7 +82,7 @@ private struct AboutPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Sparkamp")
                         .font(.title2.bold())
-                    Text("Version 0.3.0")
+                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Text("A compact, fast, open-source Winamp-style music player with the backend built in Rust and support for UI in GNOME desktop with GTK4 & macOS with Swift.")
