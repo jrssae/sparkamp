@@ -1,8 +1,10 @@
-# Workspace root — includes the main Sparkamp binary and all plugin crates.
+# Workspace root — main Sparkamp binary plus the macOS bridge crate. The
+# Granite plasma visualizer was promoted to a built-in `VisualizerMode` and
+# lives in `src/granite.rs`; the legacy `plugins/viz_granite` directory is
+# kept as a historical reference but is no longer compiled.
 [workspace]
 members = [
     ".",                     # sparkamp main binary + library
-    "plugins/viz_granite",   # Granite OpenGL visualizer plugin
     "frontends/macos",       # macOS static library bridge (Rust → Swift FFI)
 ]
 resolver = "2"

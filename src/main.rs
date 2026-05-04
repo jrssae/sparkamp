@@ -22,6 +22,7 @@ mod duration_cache;
 mod duration_probe;
 mod engine;
 mod filetype_plugin;
+mod granite;
 mod id3_editor;
 mod loaded_plugin;
 mod media_library;

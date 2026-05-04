@@ -630,7 +630,11 @@ final class SparkampModel: ObservableObject {
 
     func openFullscreenViz() {
         if fullscreenVizVisible { closeFullscreenViz(); return }
-        guard let ctx = ctx, sparkamp_get_viz_mode(ctx) == 1 else { return }
+        guard let ctx = ctx else { return }
+        let mode = sparkamp_get_viz_mode(ctx)
+        // Fullscreen for Waveform (1) and Granite (2). Bars (0) stays excluded
+        // for parity with GTK.
+        guard mode == 1 || mode == 2 else { return }
         fullscreenVizVisible = true
     }
 

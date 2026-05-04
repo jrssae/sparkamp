@@ -123,13 +123,44 @@ int32_t sparkamp_get_spectrum_bands(const SparkampCtx *ctx);
 /** Fill `out` with `len` waveform PCM samples in [-1, 1]. */
 void    sparkamp_get_waveform(const SparkampCtx *ctx, float *out, int32_t len);
 
+/** Render one frame of the Granite plasma visualizer into `out` (RGBA8,
+ *  exactly w*h*4 bytes). The renderer keeps a previous-frame buffer between
+ *  calls so the Geiss-style feedback trail builds up. Pass consistent (w, h);
+ *  changing them resets the trail. Safe to call while paused — buffer fades. */
+void    sparkamp_render_granite(SparkampCtx *ctx, uint8_t *out,
+                                uint32_t w, uint32_t h);
+
+/* ── Granite plasma settings (speed / palette / feedback) ───────────────── */
+
+/** Granite animation speed multiplier (0.1–5.0). */
+float   sparkamp_get_granite_speed(const SparkampCtx *ctx);
+void    sparkamp_set_granite_speed(SparkampCtx *ctx, float speed);
+
+/** Granite palette: 0 = Granite, 1 = Fire, 2 = Neon. */
+int32_t sparkamp_get_granite_palette(const SparkampCtx *ctx);
+void    sparkamp_set_granite_palette(SparkampCtx *ctx, int32_t palette);
+
+/** Granite feedback strength (0.0–0.9). Higher = stronger trail. */
+float   sparkamp_get_granite_feedback(const SparkampCtx *ctx);
+void    sparkamp_set_granite_feedback(SparkampCtx *ctx, float fb);
+
+/** Granite effect: 0=Plasma, 1=Tunnel, 2=Swirl, 3=RadialSweep, 4=Cells.
+ *  When auto-switch is on, the get returns the live scheduler state. */
+int32_t sparkamp_get_granite_effect(const SparkampCtx *ctx);
+void    sparkamp_set_granite_effect(SparkampCtx *ctx, int32_t effect);
+
+/** Granite auto-switch toggle. When on, the scheduler rotates effects
+ *  every 12–24 s with a one-second crossfade. */
+bool    sparkamp_get_granite_auto_switch(const SparkampCtx *ctx);
+void    sparkamp_set_granite_auto_switch(SparkampCtx *ctx, bool on);
+
 /* ── Visualizer mode ─────────────────────────────────────────────────────── */
 
-/** Return current viz mode: 0 = Bars, 1 = Waveform. */
+/** Return current viz mode: 0 = Bars, 1 = Waveform, 2 = Granite. */
 int32_t sparkamp_get_viz_mode(const SparkampCtx *ctx);
-/** Set viz mode: 0 = Bars, 1 = Waveform. */
+/** Set viz mode: 0 = Bars, 1 = Waveform, 2 = Granite. */
 void    sparkamp_set_viz_mode(SparkampCtx *ctx, int32_t mode);
-/** Cycle Bars → Waveform → Bars → … */
+/** Cycle Bars → Waveform → Granite → Bars → … */
 void    sparkamp_cycle_viz_mode(SparkampCtx *ctx);
 /** Return whether bars mirror mode is on (bar extends above+below center). */
 bool    sparkamp_get_viz_mirror(const SparkampCtx *ctx);

@@ -36,11 +36,12 @@ use gtk4::prelude::*;
 #[allow(deprecated)]
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
-    Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn, CustomSorter,
-    DragSource, DrawingArea, DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid,
-    Image, Label, ListBox, ListBoxRow, ListStore, MultiSelection, Notebook, Orientation, Paned,
-    PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SortListModel, SpinButton,
-    Stack, StackTransitionType, TreeView, TreeViewColumn,
+    Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn,
+    ContentFit, CustomSorter, DragSource, DrawingArea, DropDown, DropTarget, Entry,
+    EventControllerKey, GestureClick, Grid, Image, Label, ListBox, ListBoxRow, ListStore,
+    MultiSelection, Notebook, Orientation, Paned, Picture, PolicyType, Scale, ScrolledWindow,
+    Separator, SignalListItemFactory, SortListModel, SpinButton, Stack, StackTransitionType,
+    TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -468,8 +469,8 @@ impl AppState {
 
     /// Cycle the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is simply Bars ↔ Waveform.
+    /// Cycle order: Bars → Waveform → Granite → plugin 0 → plugin 1 → … → Bars.
+    /// When no plugins are loaded the cycle is Bars → Waveform → Granite → Bars.
     fn toggle_visualizer_mode(&mut self) {
         match self.active_plugin_idx {
             None => match self.config.visualizer.mode {
@@ -477,6 +478,9 @@ impl AppState {
                     self.config.visualizer.mode = VisualizerMode::Waveform;
                 }
                 VisualizerMode::Waveform => {
+                    self.config.visualizer.mode = VisualizerMode::Granite;
+                }
+                VisualizerMode::Granite => {
                     if !self.viz_plugins.is_empty() {
                         self.active_plugin_idx = Some(0);
                     } else {
@@ -1341,22 +1345,48 @@ pub fn build(
         time_row.add_controller(click);
     }
 
-    // Mini visualizer DrawingArea — clicking cycles the visualizer mode.
-    // Width is matched to the time_row via a SizeGroup below.
+    // Mini visualizer — a Stack holding the Cairo DrawingArea (Bars / Waveform
+    // / plugin scanline) and a Picture (Granite plasma RGBA buffer). The
+    // visible child is swapped to match the active visualizer mode.
     let viz = DrawingArea::new();
     viz.set_content_height(52);
     viz.set_valign(Align::Center);
     viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
+
+    let granite_pic = Picture::new();
+    granite_pic.set_height_request(52);
+    granite_pic.set_valign(Align::Center);
+    granite_pic.set_hexpand(true);
+    granite_pic.set_content_fit(ContentFit::Fill);
+    granite_pic.add_css_class("mini-viz");
+
+    let viz_stack = Stack::new();
+    viz_stack.set_hexpand(true);
+    viz_stack.set_valign(Align::Center);
+    viz_stack.set_height_request(52);
+    viz_stack.add_named(&viz, Some("cairo"));
+    viz_stack.add_named(&granite_pic, Some("granite"));
+    viz_stack.set_visible_child_name(
+        match state.borrow().config.visualizer.mode {
+            VisualizerMode::Granite => "granite",
+            _ => "cairo",
+        },
+    );
+
     {
         let state_vc = state.clone();
         let open_fs_vc = open_fullscreen_fn.clone();
         let click = GestureClick::new();
         // Single click: cycle mode (or retry spectrum).
-        // Double click: open waveform fullscreen when in Waveform mode.
+        // Double click: open fullscreen when in Waveform or Granite mode.
         click.connect_released(move |_, n_press, _, _| {
-            let is_waveform = state_vc.borrow().config.visualizer.mode == VisualizerMode::Waveform;
-            if n_press == 2 && is_waveform {
+            let mode = state_vc.borrow().config.visualizer.mode.clone();
+            let supports_fs = matches!(
+                mode,
+                VisualizerMode::Waveform | VisualizerMode::Granite,
+            );
+            if n_press == 2 && supports_fs {
                 if let Some(ref opener) = *open_fs_vc.borrow() {
                     opener();
                 }
@@ -1372,11 +1402,14 @@ pub fn build(
                 state_vc.borrow_mut().toggle_visualizer_mode();
             }
         });
-        viz.add_controller(click);
+        // Attach the click controller to the Stack rather than each child so
+        // events fire whether the Cairo DrawingArea or the Granite Picture
+        // is the visible child.
+        viz_stack.add_controller(click);
     }
 
     left_col.append(&time_row);
-    left_col.append(&viz);
+    left_col.append(&viz_stack);
     // Pin the left column to a fixed width (70 px). Without this, the
     // time-display string ("0:00" vs "12:34 / 45:67") would drag the column
     // wider when it grows and snap it narrower when it shrinks, jiggling
@@ -3021,9 +3054,14 @@ pub fn build(
     // ══════════════════════════════════════════════════════════════════════════
     // Tick loop — fires every 100 ms
     // ══════════════════════════════════════════════════════════════════════════
+    // Shutdown flag set by window.connect_close_request below; the
+    // visualizer timer breaks on it before gsk paints a freed surface.
+    let viz_shutting_down: std::rc::Rc<std::cell::Cell<bool>> =
+        std::rc::Rc::new(std::cell::Cell::new(false));
     {
         let state = state.clone();
         let time_disp_label = time_disp_label.clone();
+        let viz_shutting_down = viz_shutting_down.clone();
         let title_label = title_label.clone();
         let seek_bar = seek_bar.clone();
         let play_update = play_and_update.clone();
@@ -3040,10 +3078,27 @@ pub fn build(
         let rebuild_playlist_tick = rebuild_playlist.clone();
         let play_update_tick = play_and_update.clone();
         let scroll_tick = scroll_to_row_if_needed.clone();
+        // Granite-mode renderer state captured by the tick closure. Weak
+        // refs so the timer doesn't keep widgets alive after the main window
+        // closes — calling `set_paintable` on a destroyed widget triggers a
+        // Gdk-CRITICAL and (on Wayland) a segfault during gsk paint.
+        let viz_stack_tick = viz_stack.downgrade();
+        let granite_pic_tick = granite_pic.downgrade();
+        let granite_buf_tick: std::rc::Rc<std::cell::RefCell<Vec<u8>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        // Tick-side handle on the shutdown flag declared above.
+        let viz_shut_for_tick = viz_shutting_down.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
-        glib::timeout_add_local(Duration::from_millis(100), move || {
+        // 33 ms (~30 fps) so the visualizer (Bars / Waveform / Granite) animates
+        // smoothly. Bars/Waveform queue_draw is cheap; Granite renders into a
+        // ~640×360 buffer that gets GPU-upscaled by gsk.
+        glib::timeout_add_local(Duration::from_millis(33), move || {
+            // Shutdown short-circuit. Set in connect_close_request below.
+            if viz_shut_for_tick.get() {
+                return ControlFlow::Break;
+            }
             // 0. Drain probe results from background threads.
             // patch_pl_row is O(1) per call (updates a single TreeView store row).
             // Cap to 50 per tick so we never block the main thread for long when
@@ -3442,8 +3497,67 @@ pub fn build(
                 }
             }
 
-            // 5. Trigger a Cairo repaint of the visualizer.
+            // 5. Trigger a Cairo repaint of the visualizer (Bars / Waveform /
+            // plugin scanline). Granite renders into a Picture instead — see
+            // step 5b below.
             viz.queue_draw();
+
+            // 5b. Granite plasma path. Cheap when not the active mode (the
+            // match is the only cost). When active, render into the persistent
+            // RGBA buffer and hand it to the GTK renderer as a MemoryTexture
+            // — gsk uploads to the GPU once per frame and bilinear-upscales
+            // for free in the compositor.
+            {
+                // Upgrade weak refs first; if the main window has closed,
+                // both widgets are gone — break the timer instead of touching
+                // freed Gdk surfaces.
+                let (Some(stack), Some(pic)) = (
+                    viz_stack_tick.upgrade(),
+                    granite_pic_tick.upgrade(),
+                ) else {
+                    return ControlFlow::Break;
+                };
+
+                // If the widget has no root (no GtkWindow ancestor), the
+                // surface is being torn down. Skip set_paintable to avoid a
+                // gsk paint on a freed Gdk surface.
+                if pic.root().is_none() {
+                    return ControlFlow::Break;
+                }
+
+                let mode = state.borrow().config.visualizer.mode.clone();
+                if mode == VisualizerMode::Granite {
+                    if stack.visible_child_name().as_deref() != Some("granite") {
+                        stack.set_visible_child_name("granite");
+                    }
+                    // Aspect-matched internal width: viewport-aspect × fixed
+                    // 360 short axis. Fall back to 16:9 when the widget hasn't
+                    // been allocated yet.
+                    let viewport_w = pic.width().max(1) as f64;
+                    let viewport_h = pic.height().max(1) as f64;
+                    let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
+                    let h: u32 = crate::granite::GRANITE_INTERNAL_HEIGHT;
+                    let w: u32 = (h as f64 * aspect).round() as u32;
+                    let mut buf = granite_buf_tick.borrow_mut();
+                    let need = (w as usize) * (h as usize) * 4;
+                    if buf.len() != need {
+                        buf.resize(need, 0);
+                    }
+                    let cfg = state.borrow().config.visualizer.granite;
+                    state.borrow_mut().player.render_granite(&mut buf, w, h, &cfg);
+                    let bytes = glib::Bytes::from(&buf[..]);
+                    let texture = gdk::MemoryTexture::new(
+                        w as i32,
+                        h as i32,
+                        gdk::MemoryFormat::R8g8b8a8,
+                        &bytes,
+                        (w * 4) as usize,
+                    );
+                    pic.set_paintable(Some(&texture));
+                } else if stack.visible_child_name().as_deref() != Some("cairo") {
+                    stack.set_visible_child_name("cairo");
+                }
+            }
 
             // 6. Periodically flush the duration cache and config to disk (every 30 s).
             // Saving config here ensures settings survive force-kills.
@@ -3584,6 +3698,11 @@ pub fn build(
                         &wf_style,
                     );
                 }
+                // Granite is rendered by a separate Picture widget swapped in
+                // via a Stack (see step 4); the Cairo DrawingArea sits behind
+                // the Picture and isn't visible while Granite is active. Draw
+                // nothing here so we don't waste cycles on a hidden surface.
+                VisualizerMode::Granite => {}
             }
         });
     }
@@ -3884,11 +4003,13 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
-                // ── Waveform fullscreen (f — only in Waveform mode) ────────
+                // ── Visualizer fullscreen (f — Waveform or Granite mode) ──
                 gdk::Key::f | gdk::Key::F => {
-                    let is_waveform = state.borrow().config.visualizer.mode
-                        == VisualizerMode::Waveform;
-                    if is_waveform {
+                    let supports_fs = matches!(
+                        state.borrow().config.visualizer.mode,
+                        VisualizerMode::Waveform | VisualizerMode::Granite,
+                    );
+                    if supports_fs {
                         if let Some(ref opener) = *kbd_open_fs.borrow() {
                             opener();
                         }
@@ -4142,7 +4263,8 @@ pub fn build(
             ]),
             ("View & Tags", &[
                 ("a",           "Cycle visualizer mode (bars / waveform)"),
-                ("f",           "Waveform fullscreen (in Waveform mode; Esc to exit)"),
+                ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
+                ("g",           "Toggle FPS overlay (fullscreen only)"),
                 ("d",           "View/Edit ID3 tags for current track"),
                 ("u",           "Open EQ (TUI only — use EQ button in GUI)"),
                 ("Click logo",  "Open settings"),
@@ -4475,7 +4597,11 @@ pub fn build(
     window.connect_close_request({
         let state = state.clone();
         let playlist_win = playlist_win.clone();
+        let viz_shut = viz_shutting_down.clone();
         move |w| {
+            // Stop the 33 ms visualizer timer before any gsk paint can run
+            // against a freed surface.
+            viz_shut.set(true);
             let _ = state.borrow().playlist.save_last();
 
             let mut cfg = state.borrow().config.clone();
@@ -6211,13 +6337,14 @@ fn open_settings_window(
         lbl.set_halign(Align::Start);
         grid.attach(&lbl, 0, 0, 1, 1);
 
-        // DropDown: index 0 = Bars, index 1 = Waveform.
-        let dd_mode = DropDown::from_strings(&["Bars", "Waveform"]);
+        // DropDown: index 0 = Bars, 1 = Waveform, 2 = Granite.
+        let dd_mode = DropDown::from_strings(&["Bars", "Waveform", "Granite"]);
         {
             let mode = state.borrow().config.visualizer.mode.clone();
             dd_mode.set_selected(match mode {
-                VisualizerMode::Bars => 0,
+                VisualizerMode::Bars     => 0,
                 VisualizerMode::Waveform => 1,
+                VisualizerMode::Granite  => 2,
             });
         }
         {
@@ -6226,7 +6353,8 @@ fn open_settings_window(
                 let mut s = state_rc.borrow_mut();
                 s.config.visualizer.mode = match d.selected() {
                     0 => VisualizerMode::Bars,
-                    _ => VisualizerMode::Waveform,
+                    1 => VisualizerMode::Waveform,
+                    _ => VisualizerMode::Granite,
                 };
             });
         }
@@ -6496,6 +6624,150 @@ fn open_settings_window(
         }
 
         grid.attach(&wf_settings_box, 0, 2, 2, 1);
+
+        // ── Granite Settings (visible only when Granite mode is selected) ─
+        let gr_settings_box = Grid::new();
+        gr_settings_box.set_row_spacing(12);
+        gr_settings_box.set_column_spacing(16);
+        gr_settings_box.set_margin_top(16);
+        gr_settings_box.set_margin_start(16);
+        gr_settings_box.attach(&Label::new(Some("Granite Settings")), 0, 0, 2, 1);
+
+        // Speed slider (0.1–5.0).
+        let lbl_gr_speed = Label::new(Some("Speed"));
+        lbl_gr_speed.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_speed, 0, 1, 1, 1);
+        let speed_adj = Adjustment::new(
+            state.borrow().config.visualizer.granite.speed as f64,
+            0.1, 5.0, 0.1, 0.5, 0.0,
+        );
+        let scale_gr_speed = Scale::new(Orientation::Horizontal, Some(&speed_adj));
+        scale_gr_speed.set_hexpand(true);
+        scale_gr_speed.set_digits(2);
+        scale_gr_speed.set_draw_value(true);
+        {
+            let state_rc = state.clone();
+            speed_adj.connect_value_changed(move |a| {
+                state_rc.borrow_mut().config.visualizer.granite.speed =
+                    a.value().clamp(0.1, 5.0) as f32;
+            });
+        }
+        gr_settings_box.attach(&scale_gr_speed, 1, 1, 1, 1);
+
+        // Palette dropdown (Granite / Fire / Neon).
+        let lbl_gr_palette = Label::new(Some("Palette"));
+        lbl_gr_palette.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_palette, 0, 2, 1, 1);
+        let dd_gr_palette = DropDown::from_strings(&["Granite", "Fire", "Neon"]);
+        {
+            use crate::granite::GranitePalette;
+            let cur = state.borrow().config.visualizer.granite.palette;
+            dd_gr_palette.set_selected(match cur {
+                GranitePalette::Granite => 0,
+                GranitePalette::Fire    => 1,
+                GranitePalette::Neon    => 2,
+            });
+        }
+        {
+            use crate::granite::GranitePalette;
+            let state_rc = state.clone();
+            dd_gr_palette.connect_selected_notify(move |d| {
+                let p = match d.selected() {
+                    1 => GranitePalette::Fire,
+                    2 => GranitePalette::Neon,
+                    _ => GranitePalette::Granite,
+                };
+                state_rc.borrow_mut().config.visualizer.granite.palette = p;
+            });
+        }
+        gr_settings_box.attach(&dd_gr_palette, 1, 2, 1, 1);
+
+        // Feedback slider (0.0–0.9). Higher = stronger trail.
+        let lbl_gr_fb = Label::new(Some("Feedback"));
+        lbl_gr_fb.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_fb, 0, 3, 1, 1);
+        let fb_adj = Adjustment::new(
+            state.borrow().config.visualizer.granite.feedback as f64,
+            0.0, 0.9, 0.05, 0.1, 0.0,
+        );
+        let scale_gr_fb = Scale::new(Orientation::Horizontal, Some(&fb_adj));
+        scale_gr_fb.set_hexpand(true);
+        scale_gr_fb.set_digits(2);
+        scale_gr_fb.set_draw_value(true);
+        {
+            let state_rc = state.clone();
+            fb_adj.connect_value_changed(move |a| {
+                state_rc.borrow_mut().config.visualizer.granite.feedback =
+                    a.value().clamp(0.0, 0.9) as f32;
+            });
+        }
+        gr_settings_box.attach(&scale_gr_fb, 1, 3, 1, 1);
+
+        // Effect dropdown (Plasma / Tunnel / Swirl / Radial Sweep / Cells).
+        let lbl_gr_effect = Label::new(Some("Effect"));
+        lbl_gr_effect.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_effect, 0, 4, 1, 1);
+        let dd_gr_effect = DropDown::from_strings(
+            &["Plasma", "Tunnel", "Swirl", "Radial Sweep", "Cells"],
+        );
+        {
+            use crate::granite::GraniteEffect;
+            let cur = state.borrow().config.visualizer.granite.effect;
+            dd_gr_effect.set_selected(match cur {
+                GraniteEffect::Plasma      => 0,
+                GraniteEffect::Tunnel      => 1,
+                GraniteEffect::Swirl       => 2,
+                GraniteEffect::RadialSweep => 3,
+                GraniteEffect::Cells       => 4,
+            });
+        }
+        {
+            use crate::granite::GraniteEffect;
+            let state_rc = state.clone();
+            dd_gr_effect.connect_selected_notify(move |d| {
+                let e = match d.selected() {
+                    1 => GraniteEffect::Tunnel,
+                    2 => GraniteEffect::Swirl,
+                    3 => GraniteEffect::RadialSweep,
+                    4 => GraniteEffect::Cells,
+                    _ => GraniteEffect::Plasma,
+                };
+                let mut s = state_rc.borrow_mut();
+                s.config.visualizer.granite.effect = e;
+                s.player.granite_set_effect(e);
+            });
+        }
+        gr_settings_box.attach(&dd_gr_effect, 1, 4, 1, 1);
+
+        // Auto-switch toggle (rotates effects every ~15s).
+        let lbl_gr_auto = Label::new(Some("Auto-switch effect"));
+        lbl_gr_auto.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_auto, 0, 5, 1, 1);
+        let chk_gr_auto = CheckButton::new();
+        chk_gr_auto.set_active(state.borrow().config.visualizer.granite.auto_switch);
+        {
+            let state_rc = state.clone();
+            chk_gr_auto.connect_toggled(move |c| {
+                state_rc.borrow_mut().config.visualizer.granite.auto_switch = c.is_active();
+            });
+        }
+        gr_settings_box.attach(&chk_gr_auto, 1, 5, 1, 1);
+
+        // Show/hide based on mode (mirrors Bars/Waveform pattern).
+        gr_settings_box.set_visible(false);
+        {
+            let gr_settings = gr_settings_box.clone();
+            dd_mode.connect_selected_notify(move |d| {
+                gr_settings.set_visible(d.selected() == 2);
+            });
+        }
+        {
+            let gr_settings = gr_settings_box.clone();
+            gr_settings.set_visible(
+                state.borrow().config.visualizer.mode == VisualizerMode::Granite,
+            );
+        }
+        grid.attach(&gr_settings_box, 0, 3, 2, 1);
 
         let tab_lbl = Label::new(Some("Visualizer"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -8553,10 +8825,10 @@ fn draw_waveform(
     }
 }
 
-// Waveform fullscreen
+// Visualizer fullscreen (Waveform or Granite)
 // ---------------------------------------------------------------------------
 
-/// Open the waveform visualizer in fullscreen mode.
+/// Open the active visualizer (Waveform or Granite) in fullscreen mode.
 ///
 /// The window covers all other windows on the desktop.  While open:
 /// - `z x c v b r s` are passed to the shared `handle_key` handler.
@@ -8565,8 +8837,8 @@ fn draw_waveform(
 /// - Status changes appear as a 3-second translucent toast at the bottom.
 /// - `Esc` closes the fullscreen window.
 ///
-/// Double-clicking the mini visualiser or pressing `f` when Waveform mode is
-/// active triggers this function.
+/// Double-clicking the mini visualiser or pressing `f` when the active mode is
+/// Waveform or Granite triggers this function. Bars is excluded.
 fn open_waveform_fullscreen(
     state: Rc<RefCell<AppState>>,
     handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation>,
@@ -8578,13 +8850,30 @@ fn open_waveform_fullscreen(
     let fs_win = gtk4::Window::new();
     fs_win.set_decorated(false);
 
-    // ── Canvas + toast overlay ─────────────────────────────────────────────
+    // ── Canvas (Stack: cairo + granite) + toast overlay ───────────────────
     let overlay = gtk4::Overlay::new();
 
     let canvas = DrawingArea::new();
     canvas.set_hexpand(true);
     canvas.set_vexpand(true);
-    overlay.set_child(Some(&canvas));
+
+    let granite_canvas = Picture::new();
+    granite_canvas.set_hexpand(true);
+    granite_canvas.set_vexpand(true);
+    granite_canvas.set_content_fit(ContentFit::Fill);
+
+    let canvas_stack = Stack::new();
+    canvas_stack.set_hexpand(true);
+    canvas_stack.set_vexpand(true);
+    canvas_stack.add_named(&canvas, Some("cairo"));
+    canvas_stack.add_named(&granite_canvas, Some("granite"));
+    canvas_stack.set_visible_child_name(
+        match state.borrow().config.visualizer.mode {
+            VisualizerMode::Granite => "granite",
+            _ => "cairo",
+        },
+    );
+    overlay.set_child(Some(&canvas_stack));
 
     // Translucent status toast label at the bottom of the screen.
     let toast = gtk4::Label::new(None);
@@ -8594,6 +8883,16 @@ fn open_waveform_fullscreen(
     toast.set_margin_bottom(48);
     toast.set_visible(false);
     overlay.add_overlay(&toast);
+
+    // FPS counter, top-right; toggled with the `g` key.
+    let fps_label = gtk4::Label::new(Some("FPS: --"));
+    fps_label.add_css_class("wf-fs-toast"); // share the toast pill style
+    fps_label.set_halign(Align::End);
+    fps_label.set_valign(Align::Start);
+    fps_label.set_margin_top(16);
+    fps_label.set_margin_end(20);
+    fps_label.set_visible(false);
+    overlay.add_overlay(&fps_label);
 
     fs_win.set_child(Some(&overlay));
 
@@ -8635,15 +8934,90 @@ fn open_waveform_fullscreen(
     });
 
     // ── Redraw timer (~30 fps) ─────────────────────────────────────────────
+    // Cairo canvas redraws via queue_draw; Granite renders into the Picture
+    // via the same MemoryTexture path the mini-viz uses.
     let canvas_weak = canvas.downgrade();
+    let granite_canvas_weak = granite_canvas.downgrade();
+    let stack_weak = canvas_stack.downgrade();
+    let fps_label_weak = fps_label.downgrade();
+    let state_tick = state.clone();
+    let granite_buf: std::rc::Rc<std::cell::RefCell<Vec<u8>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    // Shut-down flag flipped from the fullscreen window's close_request so
+    // the timer breaks before gsk gets a chance to paint a dead surface.
+    let fs_shutting_down: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let fs_shut_for_tick = fs_shutting_down.clone();
+    // FPS smoothing state. EMA of inter-frame interval; updated every tick,
+    // displayed every ~10 frames so the number doesn't flicker.
+    let last_instant: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
+    let ema_dt_ms: Rc<Cell<f32>> = Rc::new(Cell::new(33.3));
+    let fps_update_countdown: Rc<Cell<u32>> = Rc::new(Cell::new(0));
     glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
-        match canvas_weak.upgrade() {
-            Some(c) => {
-                c.queue_draw();
-                glib::ControlFlow::Continue
-            }
-            None => glib::ControlFlow::Break,
+        if fs_shut_for_tick.get() {
+            return glib::ControlFlow::Break;
         }
+        let Some(c) = canvas_weak.upgrade() else { return glib::ControlFlow::Break; };
+        let Some(pic) = granite_canvas_weak.upgrade() else { return glib::ControlFlow::Break; };
+        let Some(stack) = stack_weak.upgrade() else { return glib::ControlFlow::Break; };
+        if pic.root().is_none() {
+            return glib::ControlFlow::Break;
+        }
+        let mode = state_tick.borrow().config.visualizer.mode.clone();
+        if mode == VisualizerMode::Granite {
+            if stack.visible_child_name().as_deref() != Some("granite") {
+                stack.set_visible_child_name("granite");
+            }
+            let viewport_w = pic.width().max(1) as f64;
+            let viewport_h = pic.height().max(1) as f64;
+            let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
+            let h: u32 = crate::granite::GRANITE_INTERNAL_HEIGHT;
+            let w: u32 = (h as f64 * aspect).round() as u32;
+            let mut buf = granite_buf.borrow_mut();
+            let need = (w as usize) * (h as usize) * 4;
+            if buf.len() != need {
+                buf.resize(need, 0);
+            }
+            let cfg = state_tick.borrow().config.visualizer.granite;
+            state_tick.borrow_mut().player.render_granite(&mut buf, w, h, &cfg);
+            let bytes = glib::Bytes::from(&buf[..]);
+            let texture = gdk::MemoryTexture::new(
+                w as i32,
+                h as i32,
+                gdk::MemoryFormat::R8g8b8a8,
+                &bytes,
+                (w * 4) as usize,
+            );
+            pic.set_paintable(Some(&texture));
+        } else {
+            if stack.visible_child_name().as_deref() != Some("cairo") {
+                stack.set_visible_child_name("cairo");
+            }
+            c.queue_draw();
+        }
+
+        // FPS tracking. EMA on inter-frame ms; display rounded each ~10 ticks.
+        if let Some(label) = fps_label_weak.upgrade() {
+            let now = std::time::Instant::now();
+            if let Some(prev) = last_instant.get() {
+                let dt_ms = now.duration_since(prev).as_secs_f32() * 1000.0;
+                let cur = ema_dt_ms.get();
+                ema_dt_ms.set(cur * 0.9 + dt_ms * 0.1);
+            }
+            last_instant.set(Some(now));
+
+            if label.is_visible() {
+                let n = fps_update_countdown.get();
+                if n == 0 {
+                    let fps = if ema_dt_ms.get() > 0.0 { 1000.0 / ema_dt_ms.get() } else { 0.0 };
+                    label.set_text(&format!("FPS: {:.0}", fps));
+                    fps_update_countdown.set(10);
+                } else {
+                    fps_update_countdown.set(n - 1);
+                }
+            }
+        }
+
+        glib::ControlFlow::Continue
     });
 
     // ── Toast helpers ──────────────────────────────────────────────────────
@@ -8677,6 +9051,7 @@ fn open_waveform_fullscreen(
     let fs_win_weak = fs_win.downgrade();
     let state_keys = state.clone();
     let show_toast_key = show_toast.clone();
+    let fps_label_keys = fps_label.clone();
 
     key_ctrl.connect_key_pressed(move |_, key, _, _| {
         match key {
@@ -8684,6 +9059,11 @@ fn open_waveform_fullscreen(
                 if let Some(w) = fs_win_weak.upgrade() {
                     w.close();
                 }
+                glib::Propagation::Stop
+            }
+            // FPS overlay toggle
+            gdk::Key::g | gdk::Key::G => {
+                fps_label_keys.set_visible(!fps_label_keys.is_visible());
                 glib::Propagation::Stop
             }
             // Jump window
@@ -8733,6 +9113,12 @@ fn open_waveform_fullscreen(
         }
     });
     fs_win.add_controller(key_ctrl);
+
+    // Stop the 33 ms tick before the fullscreen window's surface is freed.
+    fs_win.connect_close_request(move |_| {
+        fs_shutting_down.set(true);
+        glib::Propagation::Proceed
+    });
 
     // ── Show fullscreen ────────────────────────────────────────────────────
     fs_win.present();
@@ -11742,18 +12128,28 @@ mod tests {
     }
 
     #[test]
-    fn toggle_visualizer_mode_waveform_becomes_bars() {
+    fn toggle_visualizer_mode_waveform_becomes_granite() {
         let mut s = make_state();
         s.config.visualizer.mode = VisualizerMode::Waveform;
+        s.toggle_visualizer_mode();
+        assert_eq!(s.config.visualizer.mode, VisualizerMode::Granite);
+    }
+
+    #[test]
+    fn toggle_visualizer_mode_granite_becomes_bars_when_no_plugins() {
+        let mut s = make_state();
+        s.config.visualizer.mode = VisualizerMode::Granite;
         s.toggle_visualizer_mode();
         assert_eq!(s.config.visualizer.mode, VisualizerMode::Bars);
     }
 
     #[test]
-    fn toggle_visualizer_mode_100_times_ends_back_at_bars() {
-        // After an even number of toggles the mode must return to its start.
+    fn toggle_visualizer_mode_99_times_ends_back_at_bars() {
+        // Cycle is Bars → Waveform → Granite → Bars (when no plugins are
+        // loaded), period 3. 99 toggles is divisible by 3, so the mode must
+        // return to its starting value.
         let mut s = make_state();
-        for _ in 0..100 {
+        for _ in 0..99 {
             s.toggle_visualizer_mode();
         }
         assert_eq!(s.config.visualizer.mode, VisualizerMode::Bars);

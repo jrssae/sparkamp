@@ -151,8 +151,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 /// full-size standalone visualizer so the rendering logic stays in one place.
 fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let mode_label = match app.config.visualizer.mode {
-        VisualizerMode::Bars => "▲",
+        VisualizerMode::Bars     => "▲",
         VisualizerMode::Waveform => "~",
+        VisualizerMode::Granite  => "▲", // TUI falls back to bars rendering
     };
 
     let block = Block::default()
@@ -187,7 +188,9 @@ fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let n_rows = inner.height as usize;
 
     let lines: Vec<Line> = match app.config.visualizer.mode {
-        VisualizerMode::Bars => {
+        // Granite has no terminal renderer; fall back to bars in the TUI so
+        // a user who toggled to Granite from the GUI still sees something.
+        VisualizerMode::Bars | VisualizerMode::Granite => {
             let mirror = app.config.visualizer.bars_mirror;
             let zones = app.config.visualizer.color_zones as usize;
             let zone_colors = &app.config.visualizer.zone_colors;
@@ -1244,10 +1247,9 @@ fn settings_rows_for_tab<'a>(
         1 => vec![(
             "Visualizer mode",
             match app.config.visualizer.mode {
-                VisualizerMode::Bars => "[ Bars / Waveform ]  ●  Bars".to_string(),
-                VisualizerMode::Waveform => {
-                    "[ Bars / Waveform ]  ●  Waveform".to_string()
-                }
+                VisualizerMode::Bars     => "[ Bars / Waveform ]  ●  Bars".to_string(),
+                VisualizerMode::Waveform => "[ Bars / Waveform ]  ●  Waveform".to_string(),
+                VisualizerMode::Granite  => "[ Bars / Waveform ]  ●  Granite (GUI only)".to_string(),
             },
         )],
 

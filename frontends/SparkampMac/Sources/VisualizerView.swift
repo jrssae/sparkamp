@@ -14,24 +14,34 @@ struct VisualizerView: View {
     @EnvironmentObject var themeManager: ThemeManager
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
-            Canvas { gctx, size in
-                guard let ctx = model.ctx else { return }
-                let mode = sparkamp_get_viz_mode(ctx)
-                if mode == 0 {
-                    drawBars(gctx: gctx, size: size, ctx: ctx)
-                } else {
-                    drawWaveform(gctx: gctx, size: size, ctx: ctx)
+        Group {
+            if let ctx = model.ctx, sparkamp_get_viz_mode(ctx) == 2 {
+                // Granite plasma: dedicated NSImageView fed by the Rust core.
+                GraniteView()
+                    .background(Color.black)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+                    Canvas { gctx, size in
+                        guard let ctx = model.ctx else { return }
+                        let mode = sparkamp_get_viz_mode(ctx)
+                        if mode == 0 {
+                            drawBars(gctx: gctx, size: size, ctx: ctx)
+                        } else {
+                            drawWaveform(gctx: gctx, size: size, ctx: ctx)
+                        }
+                    }
                 }
+                .background(themeManager.currentTheme.lcdBackground)
             }
         }
-        .background(themeManager.currentTheme.lcdBackground)
         .gesture(
             TapGesture(count: 2).onEnded {
-                // Fullscreen only in waveform mode, matching GTK behavior.
-                guard let ctx = model.ctx,
-                      sparkamp_get_viz_mode(ctx) == 1 else { return }
-                model.fullscreenVizVisible = true
+                // Fullscreen for Waveform (mode 1) or Granite (mode 2).
+                guard let ctx = model.ctx else { return }
+                let mode = sparkamp_get_viz_mode(ctx)
+                if mode == 1 || mode == 2 {
+                    model.fullscreenVizVisible = true
+                }
             }
         )
     }

@@ -122,6 +122,8 @@ pub struct Player {
     waveform_data: Arc<RwLock<WaveformBuffer>>,
     /// Flag indicating if spectrum element is available.
     has_spectrum: bool,
+    /// Granite plasma renderer state (lazy-allocated on first use).
+    granite: Option<crate::granite::Granite>,
     /// Fake position for testing (overrides real position when set).
     #[cfg(test)]
     fake_position: Option<Duration>,
@@ -353,9 +355,56 @@ impl Player {
             spectrum_data,
             waveform_data,
             has_spectrum,
+            granite: None,
             #[cfg(test)]
             fake_position: None,
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Granite plasma renderer
+    // -----------------------------------------------------------------------
+
+    /// Render one frame of the Granite plasma into a caller-owned RGBA8 buffer.
+    ///
+    /// `dst.len()` must equal `(w * h * 4) as usize`. The renderer's previous-
+    /// frame buffer is allocated lazily and persists across calls, so the
+    /// feedback effect builds up the same way the plugin's did.
+    pub fn render_granite(
+        &mut self,
+        dst: &mut [u8],
+        w: u32,
+        h: u32,
+        cfg: &crate::granite::GraniteConfig,
+    ) {
+        let t_seconds = self
+            .position()
+            .map(|d| d.as_secs_f64() as f32)
+            .unwrap_or(0.0);
+        let is_active = self.state == PlayerState::Playing;
+        // PCM samples drive the scope shape that's drawn on top of each
+        // frame and dissolved by the next frame's warp (Geiss flow).
+        let pcm_f64 = self.get_waveform_samples(1024);
+        let pcm: Vec<f32> = pcm_f64.iter().map(|&v| v as f32).collect();
+        let g = self
+            .granite
+            .get_or_insert_with(|| crate::granite::Granite::new(w, h));
+        g.render(dst, w, h, t_seconds, is_active, &pcm, cfg);
+    }
+
+    /// Live effect the scheduler is showing this frame. `None` if the
+    /// renderer hasn't been initialised yet (no Granite frame rendered).
+    #[allow(dead_code)] // used by macOS FFI only; GTK reads config.effect instead.
+    pub fn granite_active_effect(&self) -> Option<crate::granite::GraniteEffect> {
+        self.granite.as_ref().map(|g| g.active_effect())
+    }
+
+    /// Pin a specific Granite effect (used when the user picks one from
+    /// Settings). Skips the scheduler for ~20 s so the choice sticks.
+    pub fn granite_set_effect(&mut self, effect: crate::granite::GraniteEffect) {
+        if let Some(g) = self.granite.as_mut() {
+            g.set_effect(effect);
+        }
     }
 
     /// Load a URI (e.g. `"file:///path/to/track.mp3"`) and reset to the

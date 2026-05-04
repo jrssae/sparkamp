@@ -7,6 +7,7 @@ pub mod duration_cache;
 pub mod duration_probe;
 pub mod engine;
 pub mod filetype_plugin;
+pub mod granite;
 pub mod id3_editor;
 pub mod loaded_plugin;
 pub mod media_library;

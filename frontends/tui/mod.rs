@@ -596,7 +596,8 @@ impl App {
         }
 
         match self.config.visualizer.mode {
-            VisualizerMode::Bars => {
+            // Granite has no terminal renderer; fall back to bars in the TUI.
+            VisualizerMode::Bars | VisualizerMode::Granite => {
                 // Use display_bands from config
                 let display_count = self.config.visualizer.display_bands as usize;
                 // Get display-ready spectrum bands (logarithmically mapped)
@@ -627,11 +628,19 @@ impl App {
 
     /// Advance the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
-    /// Delegates the mode-cycling logic to the shared controller and then
-    /// enables the visualizer and clears any status message.
+    /// Cycle order in the TUI: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
+    ///
+    /// The shared core cycle goes Bars → Waveform → Granite → plugins → Bars,
+    /// but Granite is a GUI-only built-in (CPU-rendered RGBA buffer). When the
+    /// core cycle lands on Granite with no active plugin, advance once more so
+    /// the TUI never displays a mode it can't render.
     fn cycle_visualizer_mode(&mut self) {
         self.ctrl().toggle_visualizer_mode();
+        if self.config.visualizer.mode == VisualizerMode::Granite
+            && self.plugin_manager.active_viz_index().is_none()
+        {
+            self.ctrl().toggle_visualizer_mode();
+        }
         self.visualizer_active = true;
         self.status_message = None;
     }
@@ -2386,11 +2395,14 @@ impl App {
                         }
                         _ => {}
                     },
-                    // Visualizer: cycle between Bars and Waveform.
+                    // Visualizer: cycle Bars ↔ Waveform in the TUI. Granite
+                    // (GUI-only) is skipped — if it's the active mode, the
+                    // toggle moves to Bars.
                     1 => {
                         self.config.visualizer.mode = match self.config.visualizer.mode {
-                            VisualizerMode::Bars => VisualizerMode::Waveform,
+                            VisualizerMode::Bars     => VisualizerMode::Waveform,
                             VisualizerMode::Waveform => VisualizerMode::Bars,
+                            VisualizerMode::Granite  => VisualizerMode::Bars,
                         };
                     }
                     // Filetypes: enter text-edit mode for the focused path field.

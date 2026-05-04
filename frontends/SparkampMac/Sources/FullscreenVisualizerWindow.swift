@@ -51,24 +51,70 @@ struct FullscreenVisualizerView: View {
     @State private var hostWindow: NSWindow? = nil
     @State private var toastMessage: String  = ""
     @State private var toastVisible: Bool    = false
+    @State private var fpsVisible: Bool      = false
+    @State private var fpsValue: Double      = 0
+    @State private var fpsLastTick: Date?    = nil
+    @State private var fpsEmaMs: Double      = 33.3
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Full-size visualizer canvas
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
-                Canvas { gctx, size in
-                    guard let ctx = model.ctx else { return }
-                    let mode = sparkamp_get_viz_mode(ctx)
-                    if mode == 0 {
-                        drawBars(gctx: gctx, size: size, ctx: ctx)
-                    } else {
-                        drawWaveform(gctx: gctx, size: size, ctx: ctx)
+            // Full-size visualizer. Granite uses the dedicated NSImageView path
+            // so the GPU compositor handles upscaling at 4K; Bars / Waveform
+            // stay on SwiftUI Canvas.
+            if let ctx = model.ctx, sparkamp_get_viz_mode(ctx) == 2 {
+                GraniteView()
+                    .ignoresSafeArea()
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+                    Canvas { gctx, size in
+                        guard let ctx = model.ctx else { return }
+                        let mode = sparkamp_get_viz_mode(ctx)
+                        if mode == 0 {
+                            drawBars(gctx: gctx, size: size, ctx: ctx)
+                        } else {
+                            drawWaveform(gctx: gctx, size: size, ctx: ctx)
+                        }
                     }
                 }
+                .ignoresSafeArea()
             }
-            .ignoresSafeArea()
+
+            // FPS overlay (top-right; toggled with `g`).
+            if fpsVisible {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text(String(format: "FPS: %.0f", fpsValue))
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.55))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .padding(.top, 16)
+                            .padding(.trailing, 20)
+                    }
+                    Spacer()
+                }
+                .transition(.opacity)
+            }
+
+            // FPS sampler — fires at 30 fps via TimelineView and updates the
+            // smoothed FPS reading via @State without re-rendering the viz.
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+                Color.clear
+                    .onChange(of: ctx.date) { _, now in
+                        if let prev = fpsLastTick {
+                            let dt = now.timeIntervalSince(prev) * 1000.0
+                            fpsEmaMs = fpsEmaMs * 0.9 + dt * 0.1
+                            if fpsEmaMs > 0 { fpsValue = 1000.0 / fpsEmaMs }
+                        }
+                        fpsLastTick = now
+                    }
+            }
+            .allowsHitTesting(false)
 
             // Toast overlay
             let vars = themeManager.currentVars
@@ -123,6 +169,10 @@ struct FullscreenVisualizerView: View {
         .onKeyPress("i") { model.keyboardShortcutsVisible.toggle(); return .handled }
         .onKeyPress("j") { model.jumpToTrackVisible.toggle();       return .handled }
         .onKeyPress("a") { model.cycleVizMode();  return .handled }
+        .onKeyPress("g") {
+            fpsVisible.toggle()
+            return .handled
+        }
         .focusable()
         // Show a toast whenever the track changes (auto-advance, etc.)
         .onChange(of: model.currentTitle) { _, title in
