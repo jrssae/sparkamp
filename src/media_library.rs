@@ -1482,6 +1482,35 @@ impl MediaLibrary {
 
     /// Create a new playlist named `new_name` and write `track_paths` to it.
     ///
+    /// Append `track_paths` to an existing playlist's `.m3u` file on disk.
+    ///
+    /// Used by the "Add to Playlist" right-click menu so the user can grow
+    /// a saved playlist with raw paths (including stubs from the active
+    /// playlist).  Duplicates are not filtered — callers that care should
+    /// pre-filter.  The DB row is unchanged because playlist contents live
+    /// in the `.m3u` file, not the database.
+    pub fn append_paths_to_playlist(
+        &self,
+        playlist_id: i64,
+        track_paths: &[String],
+    ) -> Result<()> {
+        if track_paths.is_empty() { return Ok(()); }
+        let pl = self.playlist_by_id(playlist_id)?;
+        let existing = std::fs::read_to_string(&pl.path)
+            .with_context(|| format!("read playlist {}", pl.path))?;
+        // Preserve the existing trailing newline (or add one) before appending
+        // so each new path is on its own line.
+        let mut body = existing;
+        if !body.ends_with('\n') { body.push('\n'); }
+        for p in track_paths {
+            body.push_str(p);
+            body.push('\n');
+        }
+        std::fs::write(&pl.path, body)
+            .with_context(|| format!("write playlist {}", pl.path))?;
+        Ok(())
+    }
+
     /// Unlike [`save_playlist_tracks`] (which takes DB row IDs), this method
     /// accepts raw path strings so that missing-file stubs originating from
     /// Windows or moved-file playlists are preserved verbatim in the new file.

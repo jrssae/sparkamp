@@ -1031,18 +1031,61 @@ final class SparkampModel: ObservableObject {
         }
     }
 
-    /// Create a new Sparkamp-managed playlist with `name`, writing the given
-    /// raw track paths verbatim (so missing/stub entries are preserved).
-    /// Returns the new playlist row id, or -1 on failure.
-    func mlSavePlaylistAs(name: String, trackPaths: [String]) -> Int64 {
+    /// Active-playlist track path at `index`, or nil if out of range.
+    /// Used by the active-playlist Add-to-Playlist menu to feed raw paths
+    /// into `mlAppendPathsToPlaylist`.
+    func playlistTrackPath(index: Int) -> String? {
+        guard let ctx = ctx else { return nil }
+        guard let cstr = sparkamp_playlist_get_path(ctx, Int32(index)) else { return nil }
+        defer { sparkamp_free_string(cstr) }
+        return String(cString: cstr)
+    }
+
+    /// Append raw track paths to a saved playlist's .m3u file on disk.
+    func mlAppendPathsToPlaylist(playlistId: Int64, paths: [String]) {
+        guard let ctx = ctx, !paths.isEmpty else { return }
+        let nsStrings: [NSString]              = paths.map { $0 as NSString }
+        let cPaths:    [UnsafePointer<CChar>?] = nsStrings.map { $0.utf8String }
+        cPaths.withUnsafeBufferPointer { buf in
+            let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                mutating: buf.baseAddress)
+            sparkamp_ml_append_paths_to_playlist(ctx, playlistId,
+                                                 mutablePtr, Int32(paths.count))
+        }
+    }
+
+    /// Create a new playlist with `name` containing `trackPaths`.
+    ///
+    /// When `directory` is nil the file is written to Sparkamp's managed
+    /// playlists folder via the existing FFI helper.  When `directory` is
+    /// provided (typical Save-As flow with NSSavePanel) the file is written
+    /// from Swift directly to `<directory>/<name>.m3u` and then registered
+    /// in the library via `sparkamp_ml_add_playlist_file` so it appears in
+    /// the sidebar without a rescan.  Returns the new playlist row id, or
+    /// -1 on failure.
+    func mlSavePlaylistAs(name: String,
+                          trackPaths: [String],
+                          directory: URL? = nil) -> Int64 {
         guard let ctx = ctx else { return -1 }
+        if let dir = directory {
+            // Custom location — write the .m3u ourselves, then register it.
+            let dest = dir.appendingPathComponent("\(name).m3u")
+            var body = "#EXTM3U\n"
+            for p in trackPaths { body += "\(p)\n" }
+            do {
+                try body.write(to: dest, atomically: true, encoding: .utf8)
+            } catch {
+                NSLog("mlSavePlaylistAs: write \(dest.path) failed: \(error)")
+                return -1
+            }
+            return dest.path.withCString { sparkamp_ml_add_playlist_file(ctx, $0) }
+        }
+        // Default: managed-directory create-and-write via existing FFI.
         // Keep NSString objects alive so their utf8String pointers remain valid.
         let nsStrings: [NSString]                   = trackPaths.map { $0 as NSString }
         let cPaths:    [UnsafePointer<CChar>?]      = nsStrings.map { $0.utf8String }
         return cPaths.withUnsafeBufferPointer { buf in
             name.withCString { nameCStr in
-                // Bridge `const char **` — the C function does not mutate the
-                // array, so re-cast our immutable buffer to a mutable pointer.
                 let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
                     mutating: buf.baseAddress)
                 return sparkamp_ml_save_playlist_as(ctx, nameCStr,

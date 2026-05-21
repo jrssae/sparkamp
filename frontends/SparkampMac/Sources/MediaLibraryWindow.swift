@@ -263,16 +263,6 @@ struct MediaLibraryView: View {
                     .font(vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.playlistText)
                     .lineLimit(1)
-                Button {
-                    renamePlaylistId   = id
-                    renamePlaylistText = pl.name
-                    showingRenamePlaylist = true
-                } label: {
-                    Label("Rename", systemImage: "pencil").font(vars.bodyFont)
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(theme.playlistText)
-                .help("Rename Playlist")
             }
 
             Spacer()
@@ -500,12 +490,18 @@ private struct MLPlaylistManagement: View {
                     .font(theme.vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
-                Button { newName = "New Playlist"; showingNew = true } label: {
-                    Image(systemName: "plus").font(.system(size: 11))
+                // Prominent New Playlist control — borderless icon-only was
+                // easy to miss; match the GTK frontend's labelled button.
+                Button {
+                    newName = "New Playlist"
+                    showingNew = true
+                } label: {
+                    Label("New Playlist", systemImage: "plus")
+                        .font(theme.vars.bodyFont)
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(theme.playlistText)
-                .help("New Playlist")
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Create a new playlist")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -614,8 +610,8 @@ private struct MLPlaylistEditor: View {
     @State private var editingTracks: [MLTrack] = []
     @State private var savedTrackIds: [Int64]   = []
     @State private var trackSelection: Set<Int64> = []
-    @State private var showingSaveAs  = false
-    @State private var saveAsText     = ""
+    @State private var showingRename  = false
+    @State private var renameText     = ""
 
     private var hasChanges: Bool { editingTracks.map(\.id) != savedTrackIds }
 
@@ -633,11 +629,13 @@ private struct MLPlaylistEditor: View {
             // Title + rename live in MediaLibraryView's toolbar.
             if !playlistPath.isEmpty {
                 HStack {
+                    // Selectable so users can copy/paste the on-disk path.
                     Text(playlistPath)
                         .font(theme.vars.bodyFont)
                         .foregroundStyle(theme.playlistDurationText)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .textSelection(.enabled)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -758,11 +756,16 @@ private struct MLPlaylistEditor: View {
 
                 Spacer()
 
-                Button("Save As…") {
-                    saveAsText = playlistName
-                    showingSaveAs = true
+                Button("Rename") {
+                    renameText = playlistName
+                    showingRename = true
                 }
                 .buttonStyle(.bordered).controlSize(.small)
+                .help("Rename Playlist")
+
+                Button("Save As…") { openSaveAsPanel() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Save a copy to a new file")
 
                 Button("Revert") { loadPlaylist() }
                     .buttonStyle(.bordered).controlSize(.small)
@@ -801,30 +804,67 @@ private struct MLPlaylistEditor: View {
         .background(theme.playlistBg)
         .onAppear { loadPlaylist() }
         .onChange(of: playlistId) { _, _ in loadPlaylist() }
-        .sheet(isPresented: $showingSaveAs) {
+        .sheet(isPresented: $showingRename) {
             VStack(spacing: 16) {
-                Text("Save As New Playlist").font(.headline)
-                TextField("Playlist name", text: $saveAsText)
+                Text("Rename Playlist").font(.headline)
+                TextField("Name", text: $renameText)
                     .textFieldStyle(.roundedBorder).frame(width: 260)
                 HStack {
-                    Button("Cancel") { showingSaveAs = false }
+                    Button("Cancel") { showingRename = false }
                     Spacer()
-                    Button("Save") {
-                        let name = saveAsText.trimmingCharacters(in: .whitespaces)
-                        let paths = editingTracks.map(\.path)
-                        let newId = model.mlSavePlaylistAs(name: name, trackPaths: paths)
-                        showingSaveAs = false
-                        if newId >= 0 {
-                            model.mlRefreshSavedPlaylists()
-                            nav = .playlist(id: newId)
-                        }
+                    Button("Rename") {
+                        showingRename = false
+                        model.mlRenamePlaylist(id: playlistId, name: renameText)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(saveAsText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .padding(24).frame(width: 320)
         }
+    }
+
+    /// Native macOS NSSavePanel so the user can pick a destination folder
+    /// AND filename (instead of being limited to a name-only text field
+    /// inside Sparkamp's managed playlists directory).
+    private func openSaveAsPanel() {
+        let panel = NSSavePanel()
+        panel.title                  = "Save Playlist As…"
+        panel.allowedContentTypes    = [.init(filenameExtension: "m3u")!]
+        panel.canCreateDirectories   = true
+        panel.isExtensionHidden      = false
+        // Suggest the current playlist name + .m3u in the user's playlists
+        // directory; user can navigate anywhere from there.
+        panel.nameFieldStringValue   = "\(playlistName).m3u"
+        if let dir = MLPlaylistEditor.defaultPlaylistsDir() {
+            panel.directoryURL = dir
+        }
+        panel.begin { resp in
+            guard resp == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                let paths = editingTracks.map(\.path)
+                // Strip the trailing ".m3u" — mlSavePlaylistAs adds it back.
+                let stem = url.deletingPathExtension().lastPathComponent
+                let dest = url.deletingLastPathComponent()
+                let newId = model.mlSavePlaylistAs(name: stem,
+                                                   trackPaths: paths,
+                                                   directory: dest)
+                if newId >= 0 {
+                    model.mlRefreshSavedPlaylists()
+                    nav = .playlist(id: newId)
+                }
+            }
+        }
+    }
+
+    /// Sparkamp's managed-playlists directory, used as the initial location
+    /// for the Save-As panel.  Returns nil if it can't be resolved.
+    private static func defaultPlaylistsDir() -> URL? {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/sparkamp/playlists")
+        try? FileManager.default.createDirectory(at: dir,
+                                                 withIntermediateDirectories: true)
+        return dir
     }
 
     private func loadPlaylist() {

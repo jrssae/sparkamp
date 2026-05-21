@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 struct PlaylistView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
-    @State private var selection: Int? = nil
+    /// Multi-select: SwiftUI's `List` reads this `Set` and enables ⌘-click
+    /// / shift-click selection automatically when the binding is a Set.
+    @State private var selection: Set<Int> = []
 
     private var theme: SkinTheme { themeManager.currentTheme }
 
@@ -36,7 +38,7 @@ struct PlaylistView: View {
                 ForEach(model.playlistItems) { item in
                     PlaylistRow(item: item, isCurrent: item.id == model.currentIndex)
                         .listRowBackground(
-                            selection == item.id
+                            selection.contains(item.id)
                             ? theme.playlistSelectedBg
                             : (item.id == model.currentIndex
                                ? theme.playlistCurrentBg
@@ -64,12 +66,41 @@ struct PlaylistView: View {
                 handleDrop(providers: providers)
             }
             .contextMenu(forSelectionType: Int.self, menu: { items in
-                if let idx = items.first {
-                    Button("Play") { model.jumpTo(index: idx) }
-                    Button("Edit Tags…") { model.openId3Editor(trackIndex: idx) }
-                    Divider()
-                    Button("Remove", role: .destructive) { model.removeTrack(at: idx) }
+                let ids = Array(items).sorted()
+                Button("Play") {
+                    if let idx = ids.first { model.jumpTo(index: idx) }
                 }
+                .disabled(ids.isEmpty)
+
+                // "Add to Playlist" submenu: one entry per saved ML playlist
+                // plus a quick path to make a new one out of the selection.
+                // Mirrors the GTK active-playlist right-click menu.
+                Menu("Add to Playlist") {
+                    Button("New Playlist…") {
+                        addToNewPlaylist(activeIndices: ids)
+                    }
+                    if !model.mlSavedPlaylists.isEmpty {
+                        Divider()
+                        ForEach(model.mlSavedPlaylists) { pl in
+                            Button(pl.name) {
+                                appendActiveTracks(activeIndices: ids,
+                                                   toPlaylistId: pl.id)
+                            }
+                        }
+                    }
+                }
+                .disabled(ids.isEmpty)
+
+                Button("Edit Tags…") {
+                    if let idx = ids.first { model.openId3Editor(trackIndex: idx) }
+                }
+                .disabled(ids.count != 1)
+
+                Divider()
+                Button("Remove", role: .destructive) {
+                    removeIndices(ids)
+                }
+                .disabled(ids.isEmpty)
             }, primaryAction: { items in
                 if let idx = items.first { model.jumpTo(index: idx) }
             })
@@ -117,18 +148,18 @@ struct PlaylistView: View {
 
             // Right side: Remove Selected, Remove All
             Button {
-                if let idx = selection { model.removeTrack(at: idx); selection = nil }
+                removeIndices(Array(selection).sorted())
             } label: {
                 Label("Remove", systemImage: "minus")
                     .font(vars.bodyFont)
             }
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
-            .disabled(selection == nil)
-            .help("Remove selected track")
+            .disabled(selection.isEmpty)
+            .help("Remove selected track(s)")
 
             Button {
                 model.clearPlaylist()
-                selection = nil
+                selection.removeAll()
             } label: {
                 Label("Remove All", systemImage: "trash")
                     .font(vars.bodyFont)
@@ -151,11 +182,40 @@ struct PlaylistView: View {
     }
 
     private func deleteSelected() {
-        if let idx = selection { model.removeTrack(at: idx); selection = nil }
+        removeIndices(Array(selection).sorted())
     }
 
     private func playSelected() {
-        if let idx = selection { model.jumpTo(index: idx) }
+        // Multi-select Play = jump to the lowest-indexed selected row.
+        if let idx = selection.min() { model.jumpTo(index: idx) }
+    }
+
+    private func removeIndices(_ indices: [Int]) {
+        // Reverse-sorted so each removal doesn't shift later indices.
+        for i in indices.sorted(by: >) { model.removeTrack(at: i) }
+        selection.removeAll()
+    }
+
+    /// Append the selected active-playlist rows to the saved ML playlist
+    /// `toPlaylistId` by looking up each track id in the library by path.
+    /// Rows whose path isn't in the library are silently skipped (consistent
+    /// with the GTK active-playlist Add-to-Playlist behaviour).
+    private func appendActiveTracks(activeIndices: [Int], toPlaylistId pid: Int64) {
+        let paths = activeIndices.compactMap { model.playlistTrackPath(index: $0) }
+        guard !paths.isEmpty else { return }
+        model.mlAppendPathsToPlaylist(playlistId: pid, paths: paths)
+    }
+
+    /// Create a brand new saved playlist seeded with the selected active rows.
+    private func addToNewPlaylist(activeIndices: [Int]) {
+        let paths = activeIndices.compactMap { model.playlistTrackPath(index: $0) }
+        guard !paths.isEmpty else { return }
+        // Default to a timestamped name; user can rename from the editor.
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH-mm"
+        let name = "Playlist \(f.string(from: Date()))"
+        _ = model.mlSavePlaylistAs(name: name, trackPaths: paths)
+        model.mlRefreshSavedPlaylists()
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {

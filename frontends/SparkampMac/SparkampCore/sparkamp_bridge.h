@@ -342,6 +342,13 @@ void    sparkamp_ml_save_playlist(SparkampCtx *ctx, int64_t playlist_id,
     Preserves missing/stub entries verbatim.  Returns new row id or -1 on failure. */
 int64_t sparkamp_ml_save_playlist_as(SparkampCtx *ctx, const char *new_name,
                                      const char **paths, int32_t count);
+/** Register an existing .m3u file on disk as a playlist in the library.
+    Use after the frontend has written the file itself (e.g. NSSavePanel).
+    Returns the new playlist row id, or -1 on failure. */
+int64_t sparkamp_ml_add_playlist_file(SparkampCtx *ctx, const char *path);
+/** Append raw track paths to a saved playlist's .m3u file (no DB change). */
+void    sparkamp_ml_append_paths_to_playlist(SparkampCtx *ctx, int64_t playlist_id,
+                                             const char **paths, int32_t count);
 /** Returns 1 if the playlist lives in Sparkamp's managed playlists directory, 0 otherwise. */
 int32_t sparkamp_ml_playlist_is_managed(const SparkampCtx *ctx, int64_t playlist_id);
 /** Return the .m3u file path of the playlist as a heap string; free with sparkamp_free_string. */

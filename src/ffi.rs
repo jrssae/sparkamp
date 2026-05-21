@@ -2420,6 +2420,56 @@ pub unsafe extern "C" fn sparkamp_ml_create_playlist(
     }
 }
 
+/// Append raw track paths to an existing saved playlist's `.m3u` file.
+///
+/// Used by the active-playlist right-click "Add to Playlist" menu so the
+/// user can grow a saved playlist with the currently-selected rows.  The
+/// `paths` array must contain `count` valid null-terminated UTF-8 C
+/// strings.  No-op if any pointer is null or `count <= 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_append_paths_to_playlist(
+    ctx: *mut SparkampCtx,
+    playlist_id: i64,
+    paths: *const *const c_char,
+    count: c_int,
+) {
+    if ctx.is_null() || paths.is_null() || count <= 0 { return; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let mut owned: Vec<String> = Vec::with_capacity(count as usize);
+    for i in 0..count as isize {
+        let p = *paths.offset(i);
+        if p.is_null() { return; }
+        if let Ok(s) = CStr::from_ptr(p).to_str() {
+            owned.push(s.to_string());
+        }
+    }
+    if let Err(e) = ml.append_paths_to_playlist(playlist_id, &owned) {
+        eprintln!("[sparkamp] append_paths_to_playlist {playlist_id}: {e}");
+    }
+}
+
+/// Register an existing `.m3u` file on disk as a playlist in the library.
+///
+/// Use after the frontend has written the file itself (e.g. NSSavePanel
+/// destination), so the new playlist appears in the sidebar without a
+/// full library rescan.  Returns the new playlist row id, or -1 on error
+/// (including malformed UTF-8 in `path`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_add_playlist_file(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) -> i64 {
+    if ctx.is_null() || path.is_null() { return -1; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return -1 };
+    let Ok(p) = CStr::from_ptr(path).to_str() else { return -1 };
+    match ml.add_playlist_file(p) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("[sparkamp] add_playlist_file: {e}"); -1 }
+    }
+}
+
 /// Delete the playlist with `id` from the DB.  The `.m3u` file is not removed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_delete_playlist(
