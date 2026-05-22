@@ -123,7 +123,15 @@ struct MediaLibraryView: View {
                 columnCustomization = decoded
             }
         }
-        .onChange(of: model.mlScanRunning) { _, running in if !running { reload() } }
+        .onChange(of: model.mlScanRunning) { _, running in
+            if !running {
+                reload()
+                // A rescan may discover new playlists or remove vanished
+                // ones; refresh the sidebar list so the user sees the
+                // current set without needing to reopen the window.
+                model.mlRefreshSavedPlaylists()
+            }
+        }
         // Re-run the current filtered/sorted fetch whenever the model
         // writes back to the DB (e.g. an in-flight track crosses the
         // play-count threshold).  Using a trigger counter rather than
@@ -607,12 +615,25 @@ private struct MLPlaylistEditor: View {
 
     @EnvironmentObject var model: SparkampModel
 
-    @State private var editingTracks: [MLTrack] = []
+    /// Row wrapper with a *unique* identifier.  `MLTrack.id` is the DB row id,
+    /// which is `0` for every entry not in the library (missing-file stubs,
+    /// external-playlist paths not yet scanned).  Using it directly as the
+    /// `List`/selection key collapses every stub into one row.  Wrapping in
+    /// `EditingRow` with an offset-based id guarantees uniqueness regardless
+    /// of how many stub entries the playlist file contains.
+    private struct EditingRow: Identifiable {
+        let id: Int       // monotonic, assigned at load/append time
+        var track: MLTrack
+    }
+
+    @State private var editingRows: [EditingRow] = []
     @State private var savedTrackIds: [Int64]   = []
-    @State private var trackSelection: Set<Int64> = []
+    @State private var trackSelection: Set<Int> = []
+    @State private var nextRowId: Int = 0
     @State private var showingRename  = false
     @State private var renameText     = ""
 
+    private var editingTracks: [MLTrack] { editingRows.map(\.track) }
     private var hasChanges: Bool { editingTracks.map(\.id) != savedTrackIds }
 
     private var playlistInfo: MLPlaylistItem? {
@@ -646,7 +667,8 @@ private struct MLPlaylistEditor: View {
             }
 
             // ── Track list ─────────────────────────────────────────────────────
-            List(editingTracks, id: \.id, selection: $trackSelection) { track in
+            List(editingRows, selection: $trackSelection) { row in
+                let track = row.track
                 HStack(spacing: 6) {
                     Group {
                         if track.fileMissing {
@@ -678,11 +700,11 @@ private struct MLPlaylistEditor: View {
                             .foregroundStyle(theme.playlistDurationText)
                     }
                 }
-                .listRowBackground(
-                    trackSelection.contains(track.id)
-                    ? theme.playlistSelectedBg
-                    : theme.playlistBg
-                )
+                // Selection paints natively (skin-tinted full row via the
+                // NSTableRowView swizzle).  Keep un-selected rows at the
+                // playlist's base colour so the list doesn't blink against
+                // the surrounding chrome.
+                .listRowBackground(theme.playlistBg)
             }
             .listStyle(.plain)
             .background(theme.playlistBg)
@@ -690,37 +712,49 @@ private struct MLPlaylistEditor: View {
             .tint(theme.vars.highlight)
             // Right-click menu mirrors the Files-view menu so users have
             // consistent track actions in both views.
-            .contextMenu(forSelectionType: Int64.self) { ids in
+            .contextMenu(forSelectionType: Int.self) { rowIds in
+                // Map row ids back to MLTrack.id for the library-level
+                // operations; stubs (id == 0) are skipped for ML actions
+                // that require a DB row.
+                let dbIds = rowIds
+                    .compactMap { rid in editingRows.first(where: { $0.id == rid })?.track.id }
+                    .filter { $0 != 0 }
                 Button("Add to Playlist") {
-                    model.mlAddToPlaylist(ids: Array(ids))
+                    model.mlAddToPlaylist(ids: dbIds)
                 }
+                .disabled(dbIds.isEmpty)
                 Button("Replace Current Playlist") {
-                    model.mlReplacePlaylistWith(ids: Array(ids))
+                    model.mlReplacePlaylistWith(ids: dbIds)
                 }
+                .disabled(dbIds.isEmpty)
                 Divider()
                 Button("Edit / View ID3 Tags") {
-                    if let first = ids.first,
-                       let t = editingTracks.first(where: { $0.id == first }) {
+                    if let first = rowIds.first,
+                       let t = editingRows.first(where: { $0.id == first })?.track {
                         model.mlOpenTagEditorForPath(t.path)
                     }
                 }
-                .disabled(ids.count != 1)
+                .disabled(rowIds.count != 1)
                 Button("View Album Art") {
-                    if let first = ids.first,
-                       let t = editingTracks.first(where: { $0.id == first }) {
+                    if let first = rowIds.first,
+                       let t = editingRows.first(where: { $0.id == first })?.track {
                         model.mlViewArtForPath(t.path)
                     }
                 }
-                .disabled(ids.count != 1)
+                .disabled(rowIds.count != 1)
                 Divider()
                 Button("Remove from Library", role: .destructive) {
-                    model.mlRemoveTracks(ids: Array(ids))
-                    // Also drop them from the current edit set so the row
-                    // disappears immediately without waiting for a reload.
-                    editingTracks.removeAll { ids.contains($0.id) }
-                    trackSelection.subtract(ids)
+                    if !dbIds.isEmpty { model.mlRemoveTracks(ids: dbIds) }
+                    // Drop the rows locally so the UI updates without waiting
+                    // for a reload — handles stubs (no DB row to remove) too.
+                    editingRows.removeAll { rowIds.contains($0.id) }
+                    trackSelection.subtract(rowIds)
                 }
             }
+            // Bind Delete + forward-Delete to "remove from this playlist"
+            // (mirrors the Remove button below).  Hidden Buttons so the
+            // shortcut works whether or not the List has explicit focus.
+            .background(deletePlaylistShortcutButtons)
 
             Divider().background(theme.windowBorder)
 
@@ -737,7 +771,7 @@ private struct MLPlaylistEditor: View {
                 .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
                 Button {
-                    editingTracks.removeAll { trackSelection.contains($0.id) }
+                    editingRows.removeAll { trackSelection.contains($0.id) }
                     trackSelection.removeAll()
                 } label: {
                     Label("Remove", systemImage: "minus").font(theme.vars.bodyFont)
@@ -772,8 +806,9 @@ private struct MLPlaylistEditor: View {
                     .disabled(!hasChanges)
 
                 Button("Save") {
-                    model.mlSavePlaylist(id: playlistId, trackIds: editingTracks.map(\.id))
-                    savedTrackIds = editingTracks.map(\.id)
+                    let ids = editingTracks.map(\.id)
+                    model.mlSavePlaylist(id: playlistId, trackIds: ids)
+                    savedTrackIds = ids
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
                 .disabled(!(hasChanges && isManaged))
@@ -782,19 +817,19 @@ private struct MLPlaylistEditor: View {
                 // active playlist; Play replaces it (and starts playback if
                 // the autoplay-on-add preference allows).
                 Button("Enqueue") {
-                    let ids = editingTracks.map(\.id)
+                    let ids = editingTracks.map(\.id).filter { $0 != 0 }
                     if !ids.isEmpty { model.mlAddToPlaylist(ids: ids) }
                 }
                 .buttonStyle(.bordered).controlSize(.small)
-                .disabled(editingTracks.isEmpty)
+                .disabled(editingRows.isEmpty)
                 .help("Append all tracks to the active playlist")
 
                 Button("Play") {
-                    let ids = editingTracks.map(\.id)
+                    let ids = editingTracks.map(\.id).filter { $0 != 0 }
                     if !ids.isEmpty { model.mlReplacePlaylistWith(ids: ids) }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
-                .disabled(editingTracks.isEmpty)
+                .disabled(editingRows.isEmpty)
                 .help("Replace the active playlist with this one")
             }
             .padding(.horizontal, 10)
@@ -804,6 +839,13 @@ private struct MLPlaylistEditor: View {
         .background(theme.playlistBg)
         .onAppear { loadPlaylist() }
         .onChange(of: playlistId) { _, _ in loadPlaylist() }
+        // Re-read the playlist file whenever its contents change out from under us
+        // (right-click "Add to Playlist" from the active playlist, Save,
+        // Save-As, etc.).  Skip while the user has unsaved edits so we don't
+        // discard them mid-edit.
+        .onChange(of: model.mlPlaylistContentTrigger) { _, _ in
+            if !hasChanges { loadPlaylist() }
+        }
         .sheet(isPresented: $showingRename) {
             VStack(spacing: 16) {
                 Text("Rename Playlist").font(.headline)
@@ -830,20 +872,25 @@ private struct MLPlaylistEditor: View {
     private func openSaveAsPanel() {
         let panel = NSSavePanel()
         panel.title                  = "Save Playlist As…"
-        panel.allowedContentTypes    = [.init(filenameExtension: "m3u")!]
+        // Accept both extensions — legacy .m3u readers still work, but the
+        // default we suggest is .m3u8 (UTF-8 explicit) per project policy.
+        panel.allowedContentTypes    = [
+            .init(filenameExtension: "m3u8")!,
+            .init(filenameExtension: "m3u")!,
+        ]
         panel.canCreateDirectories   = true
         panel.isExtensionHidden      = false
-        // Suggest the current playlist name + .m3u in the user's playlists
-        // directory; user can navigate anywhere from there.
-        panel.nameFieldStringValue   = "\(playlistName).m3u"
-        if let dir = MLPlaylistEditor.defaultPlaylistsDir() {
-            panel.directoryURL = dir
-        }
+        // Default name + .m3u8; user can rename in the panel.
+        panel.nameFieldStringValue   = "\(playlistName).m3u8"
+        // Default location: first watched ML folder, else the user's ~/Music
+        // folder.  Falls back to Sparkamp's managed playlists dir only if
+        // both are unavailable.
+        panel.directoryURL = MLPlaylistEditor.defaultSaveAsDir(model: model)
         panel.begin { resp in
             guard resp == .OK, let url = panel.url else { return }
             Task { @MainActor in
-                let paths = editingTracks.map(\.path)
-                // Strip the trailing ".m3u" — mlSavePlaylistAs adds it back.
+                let paths = editingRows.map(\.track.path)
+                // Strip the trailing extension — mlSavePlaylistAs adds ".m3u8".
                 let stem = url.deletingPathExtension().lastPathComponent
                 let dest = url.deletingLastPathComponent()
                 let newId = model.mlSavePlaylistAs(name: stem,
@@ -867,10 +914,73 @@ private struct MLPlaylistEditor: View {
         return dir
     }
 
-    private func loadPlaylist() {
-        editingTracks = model.mlGetPlaylistTracks(id: playlistId)
-        savedTrackIds = editingTracks.map(\.id)
+    /// Preferred default location for Save Playlist As…
+    ///
+    /// 1. First watched folder in the media library, if any.
+    /// 2. The current user's `~/Music` folder.
+    /// 3. The Sparkamp-managed playlists directory as a last resort.
+    private static func defaultSaveAsDir(model: SparkampModel) -> URL {
+        if let first = model.mlFolders.first {
+            let url = URL(fileURLWithPath: first, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        let music = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Music", isDirectory: true)
+        if FileManager.default.fileExists(atPath: music.path) { return music }
+        return MLPlaylistEditor.defaultPlaylistsDir()
+            ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// Remove every row in `trackSelection` from the local editing list.
+    /// The user can still Revert if they want the change undone; Save
+    /// writes the new list to the .m3u8 file on disk.
+    private func deleteSelectedRows() {
+        guard !trackSelection.isEmpty else { return }
+        editingRows.removeAll { trackSelection.contains($0.id) }
         trackSelection.removeAll()
+    }
+
+    /// Zero-size hidden buttons that bind the Delete / forward-Delete keys
+    /// to `deleteSelectedRows()`.  Gated by selection state so the
+    /// shortcuts stay inert when nothing is selected (avoids stealing
+    /// keystrokes from other text inputs in the same window).
+    private var deletePlaylistShortcutButtons: some View {
+        ZStack {
+            Button("", action: deleteSelectedRows)
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(trackSelection.isEmpty)
+            Button("", action: deleteSelectedRows)
+                .keyboardShortcut(.deleteForward, modifiers: [])
+                .disabled(trackSelection.isEmpty)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    private func loadPlaylist() {
+        let tracks = model.mlGetPlaylistTracks(id: playlistId)
+        // Reset the row-id counter on every full reload so the ids are
+        // bounded by playlist length (avoids unbounded growth across reloads).
+        nextRowId = 0
+        editingRows = tracks.map { t in
+            let r = EditingRow(id: nextRowId, track: t)
+            nextRowId += 1
+            return r
+        }
+        savedTrackIds = tracks.map(\.id)
+        trackSelection.removeAll()
+    }
+
+    /// Append `tracks` to the editor, skipping any whose DB id is already
+    /// present (existing-row dedup only applies to real DB rows; stubs with
+    /// id == 0 are never dedupped because they can legitimately repeat).
+    private func appendTracks(_ tracks: [MLTrack]) {
+        let existingIds = Set(editingRows.map(\.track.id).filter { $0 != 0 })
+        for t in tracks where t.id == 0 || !existingIds.contains(t.id) {
+            editingRows.append(EditingRow(id: nextRowId, track: t))
+            nextRowId += 1
+        }
     }
 
     private func openFilePicker() {
@@ -893,8 +1003,7 @@ private struct MLPlaylistEditor: View {
                 model.mlTracks.first { $0.path == url.path }
             }
             Task { @MainActor in
-                let existing = Set(editingTracks.map(\.id))
-                for t in newTracks where !existing.contains(t.id) { editingTracks.append(t) }
+                appendTracks(newTracks)
             }
         }
     }
@@ -910,8 +1019,7 @@ private struct MLPlaylistEditor: View {
             // import only the visible search results.
             let matching = model.mlAllTracks().filter { $0.path.hasPrefix(url.path) }
             Task { @MainActor in
-                let existing = Set(editingTracks.map(\.id))
-                for t in matching where !existing.contains(t.id) { editingTracks.append(t) }
+                appendTracks(matching)
             }
         }
     }
@@ -942,13 +1050,6 @@ struct MLFilesTable: View {
 
     private func isVisible(_ bit: Int) -> Bool { (columnMask >> bit) & 1 == 1 }
 
-    /// Per-cell selection background.  AppKit's NSTableView selection paint
-    /// is disabled globally (see AppDelegate) so each cell paints its own
-    /// background using the active skin's highlight when the row is selected.
-    private func cellBg(_ row: MLTrack) -> Color {
-        selection.contains(row.id) ? theme.playlistSelectedBg : Color.clear
-    }
-
     var body: some View {
         Table(tracks, selection: $selection, sortOrder: $sortOrder,
               columnCustomization: $columnCustomization) {
@@ -960,7 +1061,6 @@ struct MLFilesTable: View {
             TableColumn("") { row in
                 statusCell(row)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(cellBg(row))
             }
             .width(20)
             .customizationID("col-status")
@@ -995,6 +1095,31 @@ struct MLFilesTable: View {
         // Force the macOS Table selection highlight to use the skin highlight
         // colour rather than the system accent.
         .tint(theme.vars.highlight)
+        // Bind Delete + forward-Delete to "Remove from Library" (matches the
+        // destructive context-menu entry).  Gated by selection so the
+        // shortcut is inert when no rows are selected.
+        .background(deleteShortcutButtons)
+    }
+
+    /// Zero-size hidden buttons binding the Delete / forward-Delete keys to
+    /// the same destructive remove-from-library action as the context menu.
+    /// macOS file-list convention.
+    private var deleteShortcutButtons: some View {
+        let fire: () -> Void = {
+            let ids = Array(selection)
+            if !ids.isEmpty { onEvent(.removeTracks(ids)) }
+        }
+        return ZStack {
+            Button("", action: fire)
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(selection.isEmpty)
+            Button("", action: fire)
+                .keyboardShortcut(.deleteForward, modifiers: [])
+                .disabled(selection.isEmpty)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -1028,7 +1153,6 @@ struct MLFilesTable: View {
                         : theme.playlistDurationText
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-title")
         }
@@ -1037,7 +1161,6 @@ struct MLFilesTable: View {
                 Text(row.artist).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-artist")
         }
@@ -1046,7 +1169,6 @@ struct MLFilesTable: View {
                 Text(row.album).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-album")
         }
@@ -1055,7 +1177,6 @@ struct MLFilesTable: View {
                 Text(row.albumArtist).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-albumartist")
         }
@@ -1064,7 +1185,6 @@ struct MLFilesTable: View {
                 Text(row.genre).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-genre")
         }
@@ -1073,7 +1193,6 @@ struct MLFilesTable: View {
                 Text(row.composer).font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-composer")
         }
@@ -1082,7 +1201,6 @@ struct MLFilesTable: View {
                 Text(row.year > 0 ? "\(row.year)" : "").font(theme.vars.bodyFont)
                     .foregroundStyle(row.fileMissing ? Color.red : theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-year")
         }
@@ -1095,7 +1213,6 @@ struct MLFilesTable: View {
                 Text(row.trackNum > 0 ? "\(row.trackNum)" : "")
                     .font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-tracknum")
         }
@@ -1104,7 +1221,6 @@ struct MLFilesTable: View {
                 Text(row.discNum > 0 ? "\(row.discNum)" : "")
                     .font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-discnum")
         }
@@ -1112,7 +1228,6 @@ struct MLFilesTable: View {
             TableColumn("BPM", value: \.bpm) { row in
                 Text(row.bpm).font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-bpm")
         }
@@ -1120,7 +1235,6 @@ struct MLFilesTable: View {
             TableColumn("Comment", value: \.comment) { row in
                 Text(row.comment).font(theme.vars.bodyFont).foregroundStyle(theme.playlistText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-comment")
         }
@@ -1130,7 +1244,6 @@ struct MLFilesTable: View {
                 Text(total > 0 ? String(format: "%d:%02d", total / 60, total % 60) : "")
                     .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-duration")
         }
@@ -1139,7 +1252,6 @@ struct MLFilesTable: View {
                 Text(row.bitrate > 0 ? "\(row.bitrate) kbps" : "")
                     .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-bitrate")
         }
@@ -1148,7 +1260,6 @@ struct MLFilesTable: View {
                 Text(row.filename)
                     .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-filename")
         }
@@ -1157,7 +1268,6 @@ struct MLFilesTable: View {
                 Text(row.playCount > 0 ? "\(row.playCount)" : "")
                     .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-playcount")
         }
@@ -1166,7 +1276,6 @@ struct MLFilesTable: View {
                 Text(row.lastPlayedDisplay)
                     .font(theme.vars.smallMonospaceFont).foregroundStyle(theme.playlistDurationText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(cellBg(row))
             }
             .customizationID("col-lastplayed")
         }
@@ -1183,7 +1292,6 @@ struct MLFilesTable: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .background(cellBg(row))
             }
             .customizationID("col-art")
         }

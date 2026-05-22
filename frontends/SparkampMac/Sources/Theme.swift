@@ -437,6 +437,16 @@ final class ThemeManager: ObservableObject {
         let saved = UserDefaults.standard.string(forKey: Self.activeSkinKey) ?? "dark"
         self.activeSkin  = saved
         self.currentVars = Self.load(skinName: saved) ?? .dark
+        Self.publishSelectionColor(SkinTheme(name: saved, vars: self.currentVars))
+    }
+
+    /// Push the active skin's selection background into the AppKit selection
+    /// palette so NSTableRowView's swizzled `drawSelection(in:)` paints rows
+    /// with the skin's selection colour (soft 18%-alpha tint of `highlight`
+    /// by default, or whatever the skin overrides `playlistSelectedBg` to).
+    /// Call from init and any setter that mutates currentVars.
+    private static func publishSelectionColor(_ theme: SkinTheme) {
+        SparkampSelectionPalette.rowHighlight = NSColor(theme.playlistSelectedBg)
     }
 
     // MARK: Façade access
@@ -496,6 +506,7 @@ final class ThemeManager: ObservableObject {
         let vars = Self.load(skinName: lowered) ?? .dark
         self.activeSkin  = lowered
         self.currentVars = vars
+        Self.publishSelectionColor(SkinTheme(name: lowered, vars: vars))
         UserDefaults.standard.set(lowered, forKey: Self.activeSkinKey)
     }
 

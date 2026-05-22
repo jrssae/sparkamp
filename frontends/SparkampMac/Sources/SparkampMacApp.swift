@@ -30,13 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // SwiftUI's List/Table on macOS are backed by NSTableView, which
-        // paints NSColor.selectedContentBackgroundColor (system accent) on
-        // top of .listRowBackground regardless of SwiftUI .tint().  Suppress
-        // the AppKit selection paint so each row's .listRowBackground / cell
-        // .background (which we set from the active skin's highlight) becomes
-        // the visible selection colour.
-        NSTableRowView.sparkampSuppressSelectionPaint()
+        // Swizzle NSTableRowView.drawSelection so every SwiftUI List / Table
+        // paints its selection bar with the active skin's highlight colour
+        // across the full row width (no per-cell gutter gaps).  The colour
+        // is published to SparkampSelectionPalette by the ThemeManager.
+        NSTableRowView.sparkampInstallSelectionPaint()
 
         // When any Sparkamp window is clicked, raise all other Sparkamp windows
         // so the complete set stays together in the window stack.
@@ -284,33 +282,58 @@ extension Notification.Name {
     static let openFilePicker = Notification.Name("SparkampOpenFilePicker")
 }
 
-// MARK: - NSTableRowView selection-paint suppression
+// MARK: - NSTableRowView skin-tinted selection paint
 //
-// AppKit lacks UIKit-style `appearance()` proxies, so the only way to stop
-// every NSTableView (which backs every SwiftUI List and Table on macOS) from
-// painting its system-accent selection highlight is to swizzle
-// `NSTableRowView.drawSelection(in:)` to a no-op.  Selection state itself is
-// untouched — keyboard navigation, multi-select, and the selection binding
-// continue to work; only the AppKit-drawn blue/grey overlay disappears so
-// our skin-coloured `.listRowBackground` / cell `.background` become the
-// visible selection indicator.
+// AppKit lacks UIKit-style `appearance()` proxies, so we swizzle
+// `NSTableRowView.drawSelection(in:)` to paint the active skin's highlight
+// across the full row.  This solves two problems:
+//
+// 1. The default AppKit selection uses `NSColor.selectedContentBackgroundColor`
+//    (system accent) which ignores SwiftUI `.tint()` — selection would not
+//    match the skin.
+// 2. Per-cell `.background()` painting in SwiftUI `Table` leaves visible
+//    gaps between columns where SwiftUI doesn't extend the cell view into
+//    the inter-column gutter.  Painting at the row level via NSTableRowView
+//    fills the whole row continuously, matching the look of List's
+//    `.listRowBackground`.
+//
+// The colour comes from `SparkampSelectionPalette.rowHighlight`, which the
+// ThemeManager keeps in sync with the active skin on launch + every switch.
+
+/// Static colour bridge between the SwiftUI ThemeManager and the AppKit
+/// swizzle.  AppKit calls `drawSelection(in:)` on its own thread cycle and
+/// has no access to SwiftUI environment values, so we publish the active
+/// skin's row-highlight colour through this main-thread-only holder.
+enum SparkampSelectionPalette {
+    /// Skin highlight used to paint full-row selection in every NSTableView.
+    /// Default to the system accent until the ThemeManager init runs.
+    static var rowHighlight: NSColor = .controlAccentColor
+}
 
 extension NSTableRowView {
-    private static let suppressOnce: Void = {
+    private static let installOnce: Void = {
         let cls = NSTableRowView.self
         guard
             let original = class_getInstanceMethod(
                 cls, #selector(NSTableRowView.drawSelection(in:))),
             let replacement = class_getInstanceMethod(
-                cls, #selector(NSTableRowView.sparkamp_noopDrawSelection(in:)))
+                cls, #selector(NSTableRowView.sparkamp_drawSkinSelection(in:)))
         else { return }
         method_exchangeImplementations(original, replacement)
     }()
 
-    static func sparkampSuppressSelectionPaint() { _ = suppressOnce }
+    /// Install the skin-tinted selection paint hook.  Safe to call multiple
+    /// times; the swizzle runs once.
+    static func sparkampInstallSelectionPaint() { _ = installOnce }
 
-    @objc func sparkamp_noopDrawSelection(in dirtyRect: NSRect) {
-        // Intentionally empty: skin-coloured backgrounds are painted by SwiftUI.
+    /// Skin-tinted full-row selection paint.  Runs in place of the original
+    /// `drawSelection(in:)` after the swizzle is installed.  Only paints
+    /// when the row is actually selected so non-selected rows stay
+    /// transparent and let `.listRowBackground` show through.
+    @objc func sparkamp_drawSkinSelection(in dirtyRect: NSRect) {
+        guard self.isSelected else { return }
+        SparkampSelectionPalette.rowHighlight.setFill()
+        self.bounds.fill()
     }
 }
 

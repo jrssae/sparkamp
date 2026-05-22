@@ -7782,7 +7782,7 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
                                 if let Some(info) = tm_borrow.get(&tid) {
                                     st.borrow_mut()
                                         .playlist
-                                        .add(libtrack_to_track(&info.track));
+                                        .add(crate::model::Track::from(&info.track));
                                 }
                                 #[allow(deprecated)]
                                 if !ts.iter_next(&ci) {
@@ -8353,24 +8353,6 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
         "lyric" => t.lyric.as_deref().unwrap_or("").to_lowercase(),
         "artwork_path" => t.artwork_path.as_deref().unwrap_or("").to_lowercase(),
         _ => String::new(),
-    }
-}
-
-fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track {
-    use std::time::Duration;
-    let path = std::path::PathBuf::from(&t.path);
-    let read_only = crate::media_library::is_read_only(&path);
-    crate::model::Track {
-        path,
-        title: t.title.clone().unwrap_or_else(|| t.filename.clone()),
-        artist: t.artist.clone().unwrap_or_default(),
-        album_artist: String::new(),
-        album: t.album.clone().unwrap_or_default(),
-        duration: t
-            .length_secs
-            .map(|s| Duration::try_from_secs_f64(s).unwrap_or_default()),
-        broken: false,
-        read_only,
     }
 }
 
@@ -9700,7 +9682,7 @@ fn open_media_library_window(
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
                             let t = obj.borrow::<crate::media_library::LibTrack>();
-                            let track = libtrack_to_track(&t);
+                            let track = crate::model::Track::from(&*t);
                             state_rc.borrow_mut().playlist.add(track);
                             added += 1;
                         }
@@ -9742,7 +9724,7 @@ fn open_media_library_window(
                     let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
                         == crate::config::PlaylistAddBehavior::Replace;
                     let t = obj.borrow::<crate::media_library::LibTrack>();
-                    let track = libtrack_to_track(&t);
+                    let track = crate::model::Track::from(&*t);
                     drop(t);
                     if should_replace {
                         // Stop before clearing so the current track doesn't
@@ -11015,7 +10997,7 @@ fn open_media_library_window(
                     let _ = s.player.stop();
                     s.playlist = crate::model::Playlist::new();
                     for lt in &tracks {
-                        s.playlist.add(libtrack_to_track(lt));
+                        s.playlist.add(crate::model::Track::from(lt));
                     }
                 }
                 if autoplay {
@@ -11041,7 +11023,7 @@ fn open_media_library_window(
                 {
                     let mut s = state_rc.borrow_mut();
                     for lt in &tracks {
-                        s.playlist.add(libtrack_to_track(lt));
+                        s.playlist.add(crate::model::Track::from(lt));
                     }
                 }
                 // Don't interrupt a track the user is already listening to.
@@ -11244,7 +11226,7 @@ fn open_media_library_window(
                     let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
                     {
                         let mut s = state_rc.borrow_mut();
-                        s.playlist.add(libtrack_to_track(&lt));
+                        s.playlist.add(crate::model::Track::from(&lt));
                     }
                     if autoplay && was_empty {
                         if let Some(display) = state_rc.borrow_mut().play_current() {
@@ -11273,7 +11255,7 @@ fn open_media_library_window(
                         let mut s = state_rc.borrow_mut();
                         let _ = s.player.stop();
                         s.playlist = crate::model::Playlist::new();
-                        s.playlist.add(libtrack_to_track(&lt));
+                        s.playlist.add(crate::model::Track::from(&lt));
                     }
                     if autoplay {
                         if let Some(display) = state_rc.borrow_mut().play_current() {

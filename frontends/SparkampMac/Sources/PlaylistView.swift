@@ -37,12 +37,16 @@ struct PlaylistView: View {
             List(selection: $selection) {
                 ForEach(model.playlistItems) { item in
                     PlaylistRow(item: item, isCurrent: item.id == model.currentIndex)
+                        // Selection paints natively at the row level via
+                        // the NSTableRowView swizzle (skin-tinted full row).
+                        // listRowBackground here only marks the
+                        // currently-playing track — and only when it's
+                        // NOT selected, so the selection colour wins for
+                        // the combined case.
                         .listRowBackground(
-                            selection.contains(item.id)
-                            ? theme.playlistSelectedBg
-                            : (item.id == model.currentIndex
-                               ? theme.playlistCurrentBg
-                               : Color.clear)
+                            item.id == model.currentIndex && !selection.contains(item.id)
+                            ? theme.playlistCurrentBg
+                            : Color.clear
                         )
                         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                         .tag(item.id)
@@ -61,6 +65,13 @@ struct PlaylistView: View {
             .onKeyPress(.deleteForward) { deleteSelected(); return .handled }
             .onKeyPress(.delete)        { deleteSelected(); return .handled }
             .onKeyPress(.return)        { playSelected();   return .handled }
+            // SwiftUI's `.onKeyPress` on macOS often misses keystrokes when
+            // List rows hold focus (the NSTableView consumes the event).
+            // Hidden buttons with explicit keyboard shortcuts catch both
+            // the backspace ("Delete") and the forward-delete (fn+Delete /
+            // ⌦) keys at the responder chain level, so the delete-to-remove
+            // gesture works whether or not the List is the focused view.
+            .background(deleteShortcutButtons)
             .onChange(of: selection)    { }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
@@ -183,6 +194,25 @@ struct PlaylistView: View {
 
     private func deleteSelected() {
         removeIndices(Array(selection).sorted())
+    }
+
+    /// Zero-size hidden buttons that bind the Delete and forward-Delete keys
+    /// to `deleteSelected()` at the SwiftUI scene level.  Gated by selection
+    /// state so the buttons stay disabled (and the shortcuts inert) when no
+    /// rows are selected — keeps keystrokes from being swallowed when the
+    /// user is typing into the search field of another window.
+    private var deleteShortcutButtons: some View {
+        ZStack {
+            Button("", action: deleteSelected)
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(selection.isEmpty)
+            Button("", action: deleteSelected)
+                .keyboardShortcut(.deleteForward, modifiers: [])
+                .disabled(selection.isEmpty)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     private func playSelected() {
