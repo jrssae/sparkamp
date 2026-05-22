@@ -53,6 +53,34 @@ struct MLTrack: Identifiable {
         return outFmt.string(from: date)
     }
 
+    /// Stub init for a path that's not in the library DB.  All metadata
+    /// fields default to empty / zero.  Used by drop handlers that
+    /// receive raw file URLs and need a placeholder row until the next
+    /// library scan picks up the file.
+    init(stubPath: String) {
+        id = 0
+        path = stubPath
+        title = ""
+        artist = ""
+        album = ""
+        genre = ""
+        year = 0
+        trackNum = 0
+        lengthSecs = 0
+        bitrate = 0
+        playCount = 0
+        scanned = false
+        albumArtist = ""
+        discNum = 0
+        bpm = ""
+        comment = ""
+        composer = ""
+        readOnly = false
+        hasArt = false
+        fileMissing = !FileManager.default.fileExists(atPath: stubPath)
+        lastPlayed = ""
+    }
+
     init(from c: SparkampLibTrack) {
         var c = c
         id          = c.id
@@ -847,6 +875,14 @@ final class SparkampModel: ObservableObject {
         return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
     }
 
+    /// Look up a single library track by absolute path, or nil if the
+    /// path isn't in the library.  Implemented as an `mlAllTracks` scan
+    /// for simplicity — fine for typical library sizes; if libraries grow
+    /// large enough to make this a bottleneck, add a dedicated FFI lookup.
+    func mlGetTrackByPath(_ path: String) -> MLTrack? {
+        mlAllTracks().first(where: { $0.path == path })
+    }
+
     /// Fetch tracks from the library, applying optional search query and sort.
     /// Loads up to `limit` rows starting at `offset`.
     func mlFetchTracks(
@@ -1004,6 +1040,25 @@ final class SparkampModel: ObservableObject {
         mlReloadTrigger &+= 1
     }
 
+    /// Upsert a batch of file paths into the library DB without registering
+    /// new watched folders.  Paths whose parent dir lives outside every
+    /// watched folder are silently skipped.  Returns the count actually
+    /// added.  Bumps `mlReloadTrigger` so the Files view picks up the new
+    /// rows on its next render.
+    @discardableResult
+    func mlAddFilesToLibrary(paths: [String]) -> Int {
+        guard let ctx = ctx, !paths.isEmpty else { return 0 }
+        let nsStrings: [NSString]              = paths.map { $0 as NSString }
+        let cPaths:    [UnsafePointer<CChar>?] = nsStrings.map { $0.utf8String }
+        let added: Int32 = cPaths.withUnsafeBufferPointer { buf in
+            let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                mutating: buf.baseAddress)
+            return sparkamp_ml_add_files(ctx, mutablePtr, Int32(paths.count))
+        }
+        if added > 0 { mlReloadTrigger &+= 1 }
+        return Int(added)
+    }
+
     func mlOpenTagEditorForPath(_ path: String) {
         id3DirectPath = path
         id3EditorVisible = true
@@ -1080,6 +1135,26 @@ final class SparkampModel: ObservableObject {
         }
         // Notify any open editor of that playlist so it re-reads the file.
         mlPlaylistContentTrigger &+= 1
+    }
+
+    /// Default destination directory for newly-created saved playlists
+    /// (Save As… and the active-playlist "New Playlist" context-menu action).
+    ///
+    /// 1. First watched folder in the media library, if one exists on disk.
+    /// 2. The current user's `~/Music` folder (created implicitly by macOS).
+    /// 3. The Sparkamp-managed playlists directory as a last-resort fallback.
+    ///
+    /// Routing through this avoids the legacy create-in-managed-dir path,
+    /// which had the side effect of registering Sparkamp's internal
+    /// playlists folder as a "watched folder" via `add_playlist_file`.
+    func mlDefaultSaveAsDir() -> URL {
+        if let first = mlFolders.first {
+            let url = URL(fileURLWithPath: first, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        let music = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Music", isDirectory: true)
+        return music
     }
 
     /// Create a new playlist with `name` containing `trackPaths`.
@@ -1249,6 +1324,14 @@ final class SparkampModel: ObservableObject {
             // TextField is backed by NSTextView on macOS, so this one check
             // covers all text inputs (jump-to-track search, etc.).
             if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+            // Bail out entirely when the Jump-to-Track window is visible
+            // so its List can consume arrow keys for selection movement
+            // (and Return / Escape for play / dismiss) instead of the
+            // monitor swallowing arrows as volume adjust.  The check is
+            // an instance property read on the main actor — safe here
+            // because NSEvent local monitors fire on the main thread.
+            let jumpVisible = MainActor.assumeIsolated { self.jumpToTrackVisible }
+            if jumpVisible { return event }
             let chars   = event.charactersIgnoringModifiers
             let keyCode = event.keyCode
             let hasMods = !event.modifierFlags

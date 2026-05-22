@@ -293,6 +293,16 @@ void    sparkamp_ml_remove_track(SparkampCtx *ctx, int64_t track_id);
 void    sparkamp_ml_rescan_track(SparkampCtx *ctx, const char *path);
 
 /**
+ * Add a batch of file paths to the library DB.  Each path is upserted under
+ * the deepest watched folder whose path is its prefix; paths that don't fall
+ * inside any watched folder are silently skipped.  Returns the number of
+ * paths actually inserted/updated.  Used by drop-onto-Files handlers when
+ * the user wants files added to the library WITHOUT registering a new
+ * watched folder.
+ */
+int32_t sparkamp_ml_add_files(SparkampCtx *ctx, const char *const *paths, int32_t count);
+
+/**
  * Rescan all watched folders.  Same two-phase approach as sparkamp_ml_add_folder.
  * Discovers new files first (fast), then reads tags in background.
  */

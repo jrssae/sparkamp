@@ -2711,6 +2711,42 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_track(
     }
 }
 
+/// Add a batch of file paths to the library DB.  Each path is upserted
+/// under the deepest watched folder whose path is its prefix; paths that
+/// don't fall inside any watched folder are silently skipped.  Returns
+/// the number of paths actually inserted/updated.
+///
+/// Used by the macOS frontend when the user drags tracks onto the Files
+/// view (scenarios 5 & 8): we add the files to the library DB but do
+/// NOT register a new watched folder.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_add_files(
+    ctx: *mut SparkampCtx,
+    paths: *const *const c_char,
+    count: i32,
+) -> i32 {
+    if ctx.is_null() || paths.is_null() || count <= 0 {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let slice = std::slice::from_raw_parts(paths, count as usize);
+    let mut owned: Vec<String> = Vec::with_capacity(slice.len());
+    for &p in slice {
+        if p.is_null() { continue }
+        if let Ok(s) = CStr::from_ptr(p).to_str() {
+            owned.push(s.to_owned());
+        }
+    }
+    match ml.add_files_to_library(&owned) {
+        Ok(n) => n as i32,
+        Err(e) => {
+            eprintln!("[sparkamp] add_files_to_library: {e}");
+            0
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Deduplication — C-compatible structs and opaque context
 // ---------------------------------------------------------------------------

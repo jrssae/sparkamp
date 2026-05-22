@@ -440,13 +440,16 @@ final class ThemeManager: ObservableObject {
         Self.publishSelectionColor(SkinTheme(name: saved, vars: self.currentVars))
     }
 
-    /// Push the active skin's selection background into the AppKit selection
-    /// palette so NSTableRowView's swizzled `drawSelection(in:)` paints rows
-    /// with the skin's selection colour (soft 18%-alpha tint of `highlight`
-    /// by default, or whatever the skin overrides `playlistSelectedBg` to).
-    /// Call from init and any setter that mutates currentVars.
+    /// Push the active skin's full-opacity highlight colour into the AppKit
+    /// selection palette so NSTableRowView's swizzled `drawSelection(in:)`
+    /// paints rows with the skin's highlight colour.  The 18% alpha is
+    /// applied at draw time (see `SparkampSelectionPalette.rowHighlightAlpha`)
+    /// — publishing the full-opacity colour avoids the
+    /// SwiftUI Color → NSColor bridge silently dropping alpha for
+    /// non-system colours, which produced an over-saturated selection bar
+    /// when alpha was baked into the published colour.
     private static func publishSelectionColor(_ theme: SkinTheme) {
-        SparkampSelectionPalette.rowHighlight = NSColor(theme.playlistSelectedBg)
+        SparkampSelectionPalette.rowHighlight = NSColor(theme.vars.highlight)
     }
 
     // MARK: Façade access

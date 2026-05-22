@@ -1,5 +1,473 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
+
+// MARK: - Track-list drag payload
+//
+// SwiftUI's `.onDrag` returns a single NSItemProvider per row, which cannot
+// natively represent "the whole multi-row selection".  To support multi-row
+// drag without dropping into NSViewRepresentable for every list, every drag
+// source registers TWO representations on the provider:
+//
+//   - `kSparkampTracklistUTI` — newline-joined absolute paths of every row
+//     in the active selection (or just the dragged row if it isn't part of
+//     the selection).  Sparkamp-internal drop targets consume this first.
+//   - `public.file-url` — the first path only, as a regular file URL.  This
+//     preserves Finder / generic-target compatibility for single-file drops.
+//
+// All Sparkamp drop targets prefer the tracklist UTI when present so the
+// full selection lands at the destination; they fall back to file URL for
+// drags originating outside Sparkamp.
+
+let kSparkampTracklistUTI = "dev.sparkamp.tracklist"
+
+enum TrackDragPayload {
+    /// Build an NSItemProvider that carries `paths` as a Sparkamp tracklist
+    /// and the first path as a `file-url` for external compatibility.
+    /// Empty `paths` returns an inert provider so the drag still starts
+    /// (avoids the system aborting the gesture) but nothing transfers.
+    static func provider(forPaths paths: [String]) -> NSItemProvider {
+        let p = NSItemProvider()
+        guard !paths.isEmpty else { return p }
+        let payload = paths.joined(separator: "\n").data(using: .utf8) ?? Data()
+        p.registerDataRepresentation(forTypeIdentifier: kSparkampTracklistUTI,
+                                     visibility: .all) { completion in
+            completion(payload, nil)
+            return nil
+        }
+        if let first = paths.first {
+            let urlData = URL(fileURLWithPath: first).dataRepresentation
+            p.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier,
+                                         visibility: .all) { completion in
+                completion(urlData, nil)
+                return nil
+            }
+        }
+        return p
+    }
+
+    /// Resolve a set of NSItemProviders into absolute paths, preferring the
+    /// Sparkamp tracklist representation (multi-row) and falling back to
+    /// file URLs.  Calls `completion` on the main queue once every provider
+    /// has been resolved.
+    static func resolvePaths(from providers: [NSItemProvider],
+                             completion: @escaping ([String]) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var paths: [String] = []
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(kSparkampTracklistUTI) {
+                group.enter()
+                p.loadDataRepresentation(forTypeIdentifier: kSparkampTracklistUTI) { data, _ in
+                    if let data = data, let str = String(data: data, encoding: .utf8) {
+                        let parts = str.split(separator: "\n").map(String.init)
+                        lock.lock(); paths.append(contentsOf: parts); lock.unlock()
+                    }
+                    group.leave()
+                }
+            } else {
+                group.enter()
+                p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    if let data = item as? Data,
+                       let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        lock.lock(); paths.append(url.path); lock.unlock()
+                    }
+                    group.leave()
+                }
+            }
+        }
+        group.notify(queue: .main) { completion(paths) }
+    }
+}
+
+// MARK: - Shared Save-As panel for playlist files
+//
+// Single helper used by every "create / save playlist as a new file"
+// flow: active-playlist Save button, active-playlist right-click "New
+// Playlist…", and the ML window's sidebar "New Playlist" button.
+// Centralising means there's exactly one place that decides the default
+// directory + filename, and the user gets the native Save panel in all
+// three cases (instead of a text-only inline prompt that defaulted to
+// Sparkamp's managed playlists directory).
+
+/// Run a Save-As NSSavePanel for an M3U/M3U8 playlist file.  Default
+/// directory comes from `model.mlDefaultSaveAsDir()` (first watched ML
+/// folder, falling back to `~/Music`).  On OK, calls `onAccept` on the
+/// main actor with the chosen filename stem and parent directory.
+///
+/// `defaultName` is pre-filled in the panel's filename field with a
+/// `.m3u8` extension appended.  The user can edit it freely.
+@MainActor
+func runPlaylistSavePanel(model: SparkampModel,
+                          defaultName: String,
+                          onAccept: @escaping (_ stem: String, _ directory: URL) -> Void) {
+    let panel = NSSavePanel()
+    panel.title = "Save Playlist As…"
+    panel.allowedContentTypes = [
+        UTType(filenameExtension: "m3u8")!,
+        UTType(filenameExtension: "m3u")!,
+    ]
+    panel.canCreateDirectories = true
+    panel.isExtensionHidden    = false
+    panel.nameFieldStringValue = "\(defaultName).m3u8"
+    panel.directoryURL         = model.mlDefaultSaveAsDir()
+    panel.begin { resp in
+        guard resp == .OK, let url = panel.url else { return }
+        Task { @MainActor in
+            let stem = url.deletingPathExtension().lastPathComponent
+            let dir  = url.deletingLastPathComponent()
+            onAccept(stem, dir)
+        }
+    }
+}
+
+/// Default suggested name for a "save current state" playlist:
+/// `Playlist YYYY-MM-DD HH-mm` — readable, sortable, no colons (safe
+/// across all filesystems).
+func defaultTimestampedPlaylistName() -> String {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH-mm"
+    return "Playlist \(f.string(from: Date()))"
+}
+
+// MARK: - AppKit NSTableView helpers (shared by ActivePlaylistTable + MLEditorTable)
+
+/// NSTableView subclass that forwards Delete / fn+Delete / Return / Enter
+/// to SwiftUI-supplied callbacks, and lets the SwiftUI wrapper build a
+/// context menu lazily on right-click.  Used by Sparkamp's NSViewRepresentable
+/// wrappers so we get AppKit-native drag/drop click-vs-drag arbitration
+/// (no SwiftUI .onDrag click-lag) while still routing actions through the
+/// model layer in SwiftUI-style closures.
+final class SparkampTableView: NSTableView {
+    var onDeleteKey:   (() -> Void)?
+    var onReturnKey:   (() -> Void)?
+    var onContextMenu: ((NSEvent) -> NSMenu?)?
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 51, 117:          // Delete (backspace) / fn+Delete (forward delete)
+            onDeleteKey?()
+        case 36, 76:           // Return / numpad Enter
+            onReturnKey?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        onContextMenu?(event) ?? super.menu(for: event)
+    }
+}
+
+/// `NSMenuItem` subclass that fires an arbitrary closure on activation.
+/// Avoids the @objc selector dance for every context-menu entry — the
+/// closure captures whatever model/state the action needs.
+final class BlockMenuItem: NSMenuItem {
+    private var actionBlock: (() -> Void)?
+
+    init(title: String, enabled: Bool = true, action: @escaping () -> Void) {
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        self.actionBlock = action
+        self.target = self
+        self.isEnabled = enabled
+    }
+
+    required init(coder: NSCoder) { fatalError("not implemented") }
+
+    @objc private func fire() { actionBlock?() }
+}
+
+/// Reusable NSTableCellView that hosts a SwiftUI view via `NSHostingView`.
+/// Cell reuse swaps the `rootView`, so AppKit's table-view recycling still
+/// works.  Wrapping the SwiftUI content in `AnyView` lets one cell class
+/// host different row types (PlaylistRow / ML editor row).
+final class SparkampHostingCellView: NSTableCellView {
+    private var hosting: NSHostingView<AnyView>?
+
+    func setContent(_ view: AnyView) {
+        if let h = hosting {
+            h.rootView = view
+        } else {
+            let h = NSHostingView(rootView: view)
+            h.translatesAutoresizingMaskIntoConstraints = false
+            self.addSubview(h)
+            NSLayoutConstraint.activate([
+                h.leadingAnchor.constraint(equalTo: leadingAnchor),
+                h.trailingAnchor.constraint(equalTo: trailingAnchor),
+                h.topAnchor.constraint(equalTo: topAnchor),
+                h.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
+            hosting = h
+        }
+    }
+}
+
+// MARK: - Active-playlist NSTableView wrapper
+
+/// AppKit-backed replacement for the SwiftUI `List` previously used to
+/// render the active playlist.  Switching to NSTableView is the only way
+/// to get Finder-style click-vs-drag arbitration: SwiftUI's `.onDrag`
+/// adds a press-and-hold delay before single-click selection registers
+/// — intolerable for a track list.  NSTableView uses a mouse-movement
+/// threshold instead, so clicks fire instantly and drags only begin
+/// after the user moves the cursor a few pixels.
+///
+/// Multi-row drag is free: NSTableView emits one `NSPasteboardWriter`
+/// per selected row and the drop side reads all of them via
+/// `pasteboardItems`.  No custom UTI needed.
+///
+/// Skin-tinted full-row selection is provided by the global swizzle in
+/// `SparkampMacApp.swift::SparkampSelectionPalette` — every NSTableView
+/// in the app picks it up automatically.
+struct ActivePlaylistTable: NSViewRepresentable {
+    @ObservedObject var model: SparkampModel
+    @ObservedObject var themeManager: ThemeManager
+    @Binding var selection: Set<Int>
+    /// Builds an NSMenu for the current selection (right-click handler).
+    /// Returning nil suppresses the menu.
+    let contextMenuBuilder: (Set<Int>) -> NSMenu?
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = SparkampTableView()
+        table.headerView = nil
+        table.allowsMultipleSelection = true
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
+        table.style = .plain
+        table.gridStyleMask = []
+        table.intercellSpacing = NSSize(width: 0, height: 2)
+        table.rowHeight = 20
+        table.selectionHighlightStyle = .regular   // lets the swizzled drawSelection fire
+        table.focusRingType = .none
+
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("row"))
+        col.resizingMask = .autoresizingMask
+        table.addTableColumn(col)
+
+        table.dataSource = context.coordinator
+        table.delegate   = context.coordinator
+
+        // Drag/drop registration: accept any file URL (Sparkamp inter-list
+        // drags as well as external Finder drops use this UTI).
+        table.registerForDraggedTypes([.fileURL])
+        table.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+        table.setDraggingSourceOperationMask([.copy],        forLocal: false)
+
+        table.onDeleteKey   = { [weak c = context.coordinator] in c?.handleDelete()   }
+        table.onReturnKey   = { [weak c = context.coordinator] in c?.handleReturn()   }
+        table.onContextMenu = { [weak c = context.coordinator] _ in c?.buildContextMenu() }
+
+        table.target       = context.coordinator
+        table.doubleAction = #selector(Coordinator.handleDoubleClick)
+
+        context.coordinator.table = table
+
+        let scroll = NSScrollView()
+        scroll.documentView      = table
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground   = false
+        scroll.borderType        = .noBorder
+        scroll.autohidesScrollers = true
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let table = scroll.documentView as? SparkampTableView else { return }
+        context.coordinator.parent = self
+        let newItems = model.playlistItems
+        let itemsChanged = newItems.map(\.id) != context.coordinator.items.map(\.id)
+        context.coordinator.items = newItems
+        if itemsChanged {
+            table.reloadData()
+        } else {
+            // Same items, but content (current-index marker, etc.) may have
+            // changed — refresh visible cells without rebuilding the table.
+            let visible = table.rows(in: table.visibleRect)
+            for r in visible.location..<(visible.location + visible.length) {
+                if let cell = table.view(atColumn: 0, row: r, makeIfNecessary: false) as? SparkampHostingCellView,
+                   r < newItems.count {
+                    cell.setContent(Self.makeRowView(item: newItems[r],
+                                                    isCurrent: newItems[r].id == model.currentIndex,
+                                                    themeManager: themeManager))
+                }
+            }
+        }
+
+        // Sync selection from binding → table without echoing back through
+        // tableViewSelectionDidChange (avoids feedback loops).
+        let desired = IndexSet(
+            newItems.enumerated()
+                .filter { selection.contains($0.element.id) }
+                .map(\.offset)
+        )
+        if table.selectedRowIndexes != desired {
+            context.coordinator.applyingExternalSelection = true
+            table.selectRowIndexes(desired, byExtendingSelection: false)
+            context.coordinator.applyingExternalSelection = false
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    /// Build the SwiftUI row view used inside each cell.  Pulled out so
+    /// `updateNSView`'s refresh path and the data-source's `viewFor`
+    /// stay in sync.
+    fileprivate static func makeRowView(item: PlaylistItem,
+                                        isCurrent: Bool,
+                                        themeManager: ThemeManager) -> AnyView {
+        AnyView(
+            PlaylistRow(item: item, isCurrent: isCurrent)
+                .environmentObject(themeManager)
+                .padding(.horizontal, 8)
+        )
+    }
+
+    @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        var parent: ActivePlaylistTable
+        var items: [PlaylistItem] = []
+        weak var table: SparkampTableView?
+        var applyingExternalSelection = false
+        private let cellId = NSUserInterfaceItemIdentifier("playlistRow")
+
+        init(_ parent: ActivePlaylistTable) {
+            self.parent = parent
+            self.items  = parent.model.playlistItems
+        }
+
+        // ── Data source ─────────────────────────────────────────────────
+        func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+
+        func tableView(_ tableView: NSTableView,
+                       viewFor tableColumn: NSTableColumn?,
+                       row: Int) -> NSView? {
+            guard row < items.count else { return nil }
+            let item = items[row]
+            let cell = (tableView.makeView(withIdentifier: cellId, owner: nil)
+                        as? SparkampHostingCellView) ?? SparkampHostingCellView()
+            cell.identifier = cellId
+            cell.setContent(ActivePlaylistTable.makeRowView(
+                item: item,
+                isCurrent: item.id == parent.model.currentIndex,
+                themeManager: parent.themeManager
+            ))
+            return cell
+        }
+
+        // ── Selection ───────────────────────────────────────────────────
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !applyingExternalSelection, let table = self.table else { return }
+            let ids = table.selectedRowIndexes.compactMap { idx -> Int? in
+                guard idx < items.count else { return nil }
+                return items[idx].id
+            }
+            let newSelection = Set(ids)
+            if parent.selection != newSelection {
+                // Defer to avoid mutating a SwiftUI @Binding during a view update.
+                DispatchQueue.main.async { [weak self] in
+                    self?.parent.selection = newSelection
+                }
+            }
+        }
+
+        // ── Drag source ─────────────────────────────────────────────────
+        func tableView(_ tableView: NSTableView,
+                       pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+            guard row < items.count,
+                  let path = parent.model.playlistTrackPath(index: items[row].id)
+            else { return nil }
+            let pbItem = NSPasteboardItem()
+            pbItem.setData(URL(fileURLWithPath: path).dataRepresentation,
+                           forType: .fileURL)
+            return pbItem
+        }
+
+        // ── Drop destination ────────────────────────────────────────────
+        func tableView(_ tableView: NSTableView,
+                       validateDrop info: NSDraggingInfo,
+                       proposedRow row: Int,
+                       proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+            // Force "above row" semantics so the drop is always an
+            // insertion between rows, never replace-on-row.
+            if dropOperation == .on {
+                tableView.setDropRow(row, dropOperation: .above)
+            }
+            // Intra-table drag = reorder (move); cross-table / external = append (copy).
+            if let src = info.draggingSource as? NSTableView, src === tableView {
+                return .move
+            }
+            return .copy
+        }
+
+        func tableView(_ tableView: NSTableView,
+                       acceptDrop info: NSDraggingInfo,
+                       row: Int,
+                       dropOperation: NSTableView.DropOperation) -> Bool {
+            // Intra-list reorder: move every selected row to the drop slot.
+            if let src = info.draggingSource as? NSTableView, src === tableView {
+                let from = tableView.selectedRowIndexes
+                guard !from.isEmpty else { return false }
+                parent.model.moveTrack(from: from, to: row)
+                return true
+            }
+            // Cross-list / external: read file URLs from pasteboard items and
+            // hand them to the model (which already inherits ML metadata).
+            let urls = info.draggingPasteboard
+                .readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+            guard !urls.isEmpty else { return false }
+            parent.model.addFiles(urls)
+            return true
+        }
+
+        // ── Double-click → play ─────────────────────────────────────────
+        @objc func handleDoubleClick() {
+            guard let table = self.table else { return }
+            let r = table.clickedRow
+            guard r >= 0, r < items.count else { return }
+            parent.model.jumpTo(index: items[r].id)
+        }
+
+        // ── Delete key ──────────────────────────────────────────────────
+        func handleDelete() {
+            guard let table = self.table else { return }
+            let ids = table.selectedRowIndexes
+                .compactMap { idx -> Int? in
+                    guard idx < items.count else { return nil }
+                    return items[idx].id
+                }
+                .sorted(by: >)            // reverse so each remove doesn't shift later ids
+            for id in ids { parent.model.removeTrack(at: id) }
+            // Clear binding selection — the table will sync on next update.
+            DispatchQueue.main.async { [weak self] in self?.parent.selection.removeAll() }
+        }
+
+        // ── Return key → play first selected ────────────────────────────
+        func handleReturn() {
+            guard let table = self.table,
+                  let firstRow = table.selectedRowIndexes.first,
+                  firstRow < items.count
+            else { return }
+            parent.model.jumpTo(index: items[firstRow].id)
+        }
+
+        // ── Context menu ────────────────────────────────────────────────
+        func buildContextMenu() -> NSMenu? {
+            guard let table = self.table else { return nil }
+            let clicked = table.clickedRow
+            // If user right-clicked a row that isn't in the current
+            // selection, replace selection with just that row (matches
+            // Finder semantics).
+            if clicked >= 0 && !table.selectedRowIndexes.contains(clicked) {
+                table.selectRowIndexes(IndexSet(integer: clicked),
+                                       byExtendingSelection: false)
+            }
+            let ids: Set<Int> = Set(table.selectedRowIndexes.compactMap { idx -> Int? in
+                guard idx < items.count else { return nil }
+                return items[idx].id
+            })
+            return parent.contextMenuBuilder(ids)
+        }
+    }
+}
 
 // MARK: - Playlist view
 
@@ -34,87 +502,13 @@ struct PlaylistView: View {
             Divider()
                 .background(theme.windowBorder)
 
-            List(selection: $selection) {
-                ForEach(model.playlistItems) { item in
-                    PlaylistRow(item: item, isCurrent: item.id == model.currentIndex)
-                        // Selection paints natively at the row level via
-                        // the NSTableRowView swizzle (skin-tinted full row).
-                        // listRowBackground here only marks the
-                        // currently-playing track — and only when it's
-                        // NOT selected, so the selection colour wins for
-                        // the combined case.
-                        .listRowBackground(
-                            item.id == model.currentIndex && !selection.contains(item.id)
-                            ? theme.playlistCurrentBg
-                            : Color.clear
-                        )
-                        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                        .tag(item.id)
-                }
-                .onMove  { from, to in model.moveTrack(from: from, to: to) }
-                .onDelete { indexSet in
-                    for i in indexSet.sorted().reversed() { model.removeTrack(at: i) }
-                }
-            }
-            .listStyle(.plain)
+            ActivePlaylistTable(
+                model: model,
+                themeManager: themeManager,
+                selection: $selection,
+                contextMenuBuilder: { ids in buildContextMenu(ids: ids) }
+            )
             .background(theme.playlistBg)
-            .scrollContentBackground(.hidden)
-            // Force the macOS List selection bar to use the skin highlight,
-            // overriding the default system accent.
-            .tint(vars.highlight)
-            .onKeyPress(.deleteForward) { deleteSelected(); return .handled }
-            .onKeyPress(.delete)        { deleteSelected(); return .handled }
-            .onKeyPress(.return)        { playSelected();   return .handled }
-            // SwiftUI's `.onKeyPress` on macOS often misses keystrokes when
-            // List rows hold focus (the NSTableView consumes the event).
-            // Hidden buttons with explicit keyboard shortcuts catch both
-            // the backspace ("Delete") and the forward-delete (fn+Delete /
-            // ⌦) keys at the responder chain level, so the delete-to-remove
-            // gesture works whether or not the List is the focused view.
-            .background(deleteShortcutButtons)
-            .onChange(of: selection)    { }
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                handleDrop(providers: providers)
-            }
-            .contextMenu(forSelectionType: Int.self, menu: { items in
-                let ids = Array(items).sorted()
-                Button("Play") {
-                    if let idx = ids.first { model.jumpTo(index: idx) }
-                }
-                .disabled(ids.isEmpty)
-
-                // "Add to Playlist" submenu: one entry per saved ML playlist
-                // plus a quick path to make a new one out of the selection.
-                // Mirrors the GTK active-playlist right-click menu.
-                Menu("Add to Playlist") {
-                    Button("New Playlist…") {
-                        addToNewPlaylist(activeIndices: ids)
-                    }
-                    if !model.mlSavedPlaylists.isEmpty {
-                        Divider()
-                        ForEach(model.mlSavedPlaylists) { pl in
-                            Button(pl.name) {
-                                appendActiveTracks(activeIndices: ids,
-                                                   toPlaylistId: pl.id)
-                            }
-                        }
-                    }
-                }
-                .disabled(ids.isEmpty)
-
-                Button("Edit Tags…") {
-                    if let idx = ids.first { model.openId3Editor(trackIndex: idx) }
-                }
-                .disabled(ids.count != 1)
-
-                Divider()
-                Button("Remove", role: .destructive) {
-                    removeIndices(ids)
-                }
-                .disabled(ids.isEmpty)
-            }, primaryAction: { items in
-                if let idx = items.first { model.jumpTo(index: idx) }
-            })
 
             Divider()
                 .background(theme.windowBorder)
@@ -155,6 +549,16 @@ struct PlaylistView: View {
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .help("Add all audio files in a folder")
 
+            Button {
+                saveActivePlaylistAs()
+            } label: {
+                Label("Save", systemImage: "square.and.arrow.down")
+                    .font(vars.bodyFont)
+            }
+            .buttonStyle(PlaylistControlButtonStyle(theme: theme))
+            .disabled(model.playlistItems.isEmpty)
+            .help("Save active playlist to an M3U8 file")
+
             Spacer()
 
             // Right side: Remove Selected, Remove All
@@ -192,32 +596,53 @@ struct PlaylistView: View {
         return formatDuration(total)
     }
 
-    private func deleteSelected() {
-        removeIndices(Array(selection).sorted())
-    }
+    /// Builds the right-click context menu shown when the user opens it
+    /// over `ids` in the active-playlist NSTableView.  Mirrors the previous
+    /// SwiftUI `contextMenu(forSelectionType:)` content but in AppKit form
+    /// because `ActivePlaylistTable` returns an `NSMenu` to the table.
+    private func buildContextMenu(ids: Set<Int>) -> NSMenu {
+        let sorted = ids.sorted()
+        let menu = NSMenu()
+        menu.autoenablesItems = false
 
-    /// Zero-size hidden buttons that bind the Delete and forward-Delete keys
-    /// to `deleteSelected()` at the SwiftUI scene level.  Gated by selection
-    /// state so the buttons stay disabled (and the shortcuts inert) when no
-    /// rows are selected — keeps keystrokes from being swallowed when the
-    /// user is typing into the search field of another window.
-    private var deleteShortcutButtons: some View {
-        ZStack {
-            Button("", action: deleteSelected)
-                .keyboardShortcut(.delete, modifiers: [])
-                .disabled(selection.isEmpty)
-            Button("", action: deleteSelected)
-                .keyboardShortcut(.deleteForward, modifiers: [])
-                .disabled(selection.isEmpty)
+        menu.addItem(BlockMenuItem(title: "Play", enabled: !sorted.isEmpty) {
+            if let first = sorted.first { model.jumpTo(index: first) }
+        })
+
+        // "Add to Playlist" submenu — one entry per saved ML playlist plus
+        // a quick path to seed a brand new playlist from the selection.
+        let addSubmenu = NSMenu()
+        addSubmenu.autoenablesItems = false
+        addSubmenu.addItem(BlockMenuItem(title: "New Playlist…",
+                                         enabled: !sorted.isEmpty) {
+            addToNewPlaylist(activeIndices: sorted)
+        })
+        if !model.mlSavedPlaylists.isEmpty {
+            addSubmenu.addItem(.separator())
+            for pl in model.mlSavedPlaylists {
+                let pid = pl.id
+                addSubmenu.addItem(BlockMenuItem(title: pl.name,
+                                                 enabled: !sorted.isEmpty) {
+                    appendActiveTracks(activeIndices: sorted, toPlaylistId: pid)
+                })
+            }
         }
-        .frame(width: 0, height: 0)
-        .opacity(0)
-        .accessibilityHidden(true)
-    }
+        let addParent = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
+        addParent.submenu = addSubmenu
+        addParent.isEnabled = !sorted.isEmpty
+        menu.addItem(addParent)
 
-    private func playSelected() {
-        // Multi-select Play = jump to the lowest-indexed selected row.
-        if let idx = selection.min() { model.jumpTo(index: idx) }
+        menu.addItem(BlockMenuItem(title: "Edit Tags…", enabled: sorted.count == 1) {
+            if let first = sorted.first { model.openId3Editor(trackIndex: first) }
+        })
+
+        menu.addItem(.separator())
+
+        menu.addItem(BlockMenuItem(title: "Remove", enabled: !sorted.isEmpty) {
+            removeIndices(sorted)
+        })
+
+        return menu
     }
 
     private func removeIndices(_ indices: [Int]) {
@@ -237,31 +662,33 @@ struct PlaylistView: View {
     }
 
     /// Create a brand new saved playlist seeded with the selected active rows.
+    /// Opens the native Save panel so the user picks the filename + folder.
+    /// Default location is `mlDefaultSaveAsDir()` (first watched folder, else
+    /// `~/Music`) — avoids the previous behaviour of dumping new playlists
+    /// in Sparkamp's managed dir, which `add_playlist_file` then registered
+    /// as a watched folder, polluting the library.
     private func addToNewPlaylist(activeIndices: [Int]) {
         let paths = activeIndices.compactMap { model.playlistTrackPath(index: $0) }
         guard !paths.isEmpty else { return }
-        // Default to a timestamped name; user can rename from the editor.
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH-mm"
-        let name = "Playlist \(f.string(from: Date()))"
-        _ = model.mlSavePlaylistAs(name: name, trackPaths: paths)
-        model.mlRefreshSavedPlaylists()
+        runPlaylistSavePanel(model: model,
+                              defaultName: defaultTimestampedPlaylistName()) { stem, dir in
+            _ = model.mlSavePlaylistAs(name: stem, trackPaths: paths, directory: dir)
+            model.mlRefreshSavedPlaylists()
+        }
     }
 
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        let group = DispatchGroup()
-        var urls: [URL] = []
-        for p in providers {
-            group.enter()
-            p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                    urls.append(url)
-                }
-                group.leave()
-            }
+    /// Save the entire active playlist to an M3U8 via the native Save panel.
+    /// Bound to the bottom-bar "Save" button.  No-op if the playlist is
+    /// empty.
+    private func saveActivePlaylistAs() {
+        let paths = (0..<model.playlistItems.count)
+            .compactMap { model.playlistTrackPath(index: $0) }
+        guard !paths.isEmpty else { return }
+        runPlaylistSavePanel(model: model,
+                              defaultName: defaultTimestampedPlaylistName()) { stem, dir in
+            _ = model.mlSavePlaylistAs(name: stem, trackPaths: paths, directory: dir)
+            model.mlRefreshSavedPlaylists()
         }
-        group.notify(queue: .main) { model.addFiles(urls) }
-        return true
     }
 }
 
@@ -277,7 +704,7 @@ struct PlaylistRow: View {
     var body: some View {
         let vars = themeManager.currentVars
         return HStack(spacing: 6) {
-            // State / broken / read-only indicator
+            // State / broken / read-only indicator.
             Group {
                 if isCurrent {
                     Image(systemName: "waveform")

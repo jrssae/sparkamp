@@ -306,8 +306,17 @@ extension Notification.Name {
 /// skin's row-highlight colour through this main-thread-only holder.
 enum SparkampSelectionPalette {
     /// Skin highlight used to paint full-row selection in every NSTableView.
-    /// Default to the system accent until the ThemeManager init runs.
+    /// Default to the system accent until the ThemeManager init runs.  This
+    /// is the FULL-opacity skin highlight; the swizzled `drawSelection`
+    /// applies the row-selection alpha at draw time so the published value
+    /// matches the skin's CSS `highlight` exactly (NSColor↔SwiftUI Color
+    /// bridging can drop alpha for non-system colours, so opacity is
+    /// applied with `withAlphaComponent` at the draw site instead).
     static var rowHighlight: NSColor = .controlAccentColor
+
+    /// Alpha used to tint the full-row selection paint.  Matches the
+    /// `playlistSelectedBg` formula in `SkinTheme` (highlight × 0.18).
+    static let rowHighlightAlpha: CGFloat = 0.18
 }
 
 extension NSTableRowView {
@@ -332,7 +341,9 @@ extension NSTableRowView {
     /// transparent and let `.listRowBackground` show through.
     @objc func sparkamp_drawSkinSelection(in dirtyRect: NSRect) {
         guard self.isSelected else { return }
-        SparkampSelectionPalette.rowHighlight.setFill()
+        SparkampSelectionPalette.rowHighlight
+            .withAlphaComponent(SparkampSelectionPalette.rowHighlightAlpha)
+            .setFill()
         self.bounds.fill()
     }
 }

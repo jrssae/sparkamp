@@ -612,6 +612,40 @@ impl MediaLibrary {
             .context("list_folders query")
     }
 
+    /// Add a list of audio file paths to the library DB.  For each path,
+    /// finds the deepest watched folder whose path is a prefix of the
+    /// file's path and upserts the track under that folder.  Paths that
+    /// live outside every watched folder are silently skipped — adding
+    /// them would require registering a new watched folder, which the
+    /// drop-onto-Files-table flow explicitly forbids (user-facing rule:
+    /// "add to library DB only, no new watch folders").
+    ///
+    /// Returns the count of paths that were actually upserted.
+    pub fn add_files_to_library(&self, paths: &[String]) -> Result<usize> {
+        let folders = self.list_folders()?;
+        let mut added = 0;
+        for path in paths {
+            // Deepest matching folder wins (handles nested watched folders).
+            let mut best: Option<(i64, &str)> = None;
+            for (fid, fpath) in &folders {
+                if path.starts_with(fpath.as_str())
+                    && (best.is_none() || fpath.len() > best.unwrap().1.len())
+                {
+                    best = Some((*fid, fpath.as_str()));
+                }
+            }
+            let Some((folder_id, _)) = best else { continue };
+            // upsert_track is fallible per-file (probe failure, IO, etc.);
+            // log and continue so one bad file doesn't abort the batch.
+            if let Err(e) = self.upsert_track(folder_id, path) {
+                eprintln!("add_files_to_library: skip {path}: {e}");
+                continue;
+            }
+            added += 1;
+        }
+        Ok(added)
+    }
+
     /// Return all track IDs in a folder, for soft-delete UI updates.
     pub fn track_ids_for_folder(&self, folder_id: i64) -> Result<Vec<i64>> {
         let mut stmt = self
