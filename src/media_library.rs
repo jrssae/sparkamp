@@ -1092,8 +1092,26 @@ impl MediaLibrary {
         let dir = if desc { "DESC" } else { "ASC" };
         match col {
             "title" => format!("LOWER(COALESCE(title,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "artist" => format!(
+                "LOWER(COALESCE(artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"
+            ),
             "album" => format!(
                 "LOWER(COALESCE(album,'')) {dir}, LOWER(COALESCE(artist,'')) ASC, track_num ASC"
+            ),
+            "album_artist" => format!(
+                "LOWER(COALESCE(album_artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"
+            ),
+            "composer" => format!(
+                "LOWER(COALESCE(composer,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "comment" => format!(
+                "LOWER(COALESCE(comment,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "bpm" => format!(
+                "LOWER(COALESCE(bpm,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "disc_num" => format!(
+                "COALESCE(disc_num, 0) {dir}, COALESCE(track_num, 0) ASC, LOWER(COALESCE(artist,'')) ASC"
             ),
             "duration" => format!("COALESCE(length_secs, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "filename" => format!("LOWER(COALESCE(filename,'')) {dir}"),

@@ -132,6 +132,42 @@ func defaultTimestampedPlaylistName() -> String {
 
 // MARK: - AppKit NSTableView helpers (shared by ActivePlaylistTable + MLEditorTable)
 
+/// NSTableRowView subclass that paints selection with the active skin's
+/// highlight colour at 18% alpha.  Returned by each Sparkamp NSTableView
+/// wrapper from `tableView(_:rowViewForRow:)`.  Subclassing the row view
+/// is more robust than the global `method_exchangeImplementations` swap
+/// (which doesn't fire on every NSTableView style — `.inset` in
+/// particular uses a CALayer-based selection path that bypasses
+/// `drawSelection(in:)`).  Using a subclass guarantees AppKit calls our
+/// override regardless of internal rendering changes.
+///
+/// The colour comes from `SparkampSelectionPalette.rowHighlight`, which
+/// the ThemeManager keeps in sync with the active skin on launch and on
+/// every skin switch.  Alpha is applied at draw time so non-system
+/// colours (which can lose alpha through the SwiftUI Color → NSColor
+/// bridge) still render at the correct opacity.
+final class SparkampSkinRowView: NSTableRowView {
+    /// AppKit invokes EITHER `drawBackground` + `drawSelection` (classic
+    /// styles) OR a layered selection path (`.inset` etc.).  Overriding
+    /// both covers every code path: drawSelection is no-op'd so AppKit's
+    /// default bright-blue paint never runs; drawBackground does the
+    /// actual skin-tinted fill on top of the row's normal background.
+    override func drawSelection(in dirtyRect: NSRect) {
+        // No-op on purpose — selection is drawn in `drawBackground`
+        // below so the appearance is consistent across NSTableView
+        // styles, including `.inset` which bypasses `drawSelection`.
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard self.isSelected else { return }
+        SparkampSelectionPalette.rowHighlight
+            .withAlphaComponent(SparkampSelectionPalette.rowHighlightAlpha)
+            .setFill()
+        dirtyRect.fill()
+    }
+}
+
 /// NSTableView subclass that forwards Delete / fn+Delete / Return / Enter
 /// to SwiftUI-supplied callbacks, and lets the SwiftUI wrapper build a
 /// context menu lazily on right-click.  Used by Sparkamp's NSViewRepresentable
@@ -351,6 +387,12 @@ struct ActivePlaylistTable: NSViewRepresentable {
                 themeManager: parent.themeManager
             ))
             return cell
+        }
+
+        // Provide a skin-tinted row view so selection paints with the
+        // active skin's highlight colour (see SparkampSkinRowView).
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            SparkampSkinRowView()
         }
 
         // ── Selection ───────────────────────────────────────────────────

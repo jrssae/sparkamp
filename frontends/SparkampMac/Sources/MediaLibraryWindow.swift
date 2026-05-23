@@ -741,10 +741,13 @@ struct MLEditorTable: NSViewRepresentable {
         table.autosaveTableColumns = true
 
         // Build the SAME columns as MLFilesTable, plus editor-only
-        // entries (the # play-position column).  Sort is enabled ONLY
-        // on the # column — clicking other headers must not reorder
-        // the playlist (a misclick would otherwise destroy the user's
-        // playback sequence).
+        // entries (the # play-position column).  Sort prototypes are
+        // set on every sortable column (matching Files view).  The
+        // editor preserves canonical play order in `editingRows`; any
+        // sort other than "position" is a transient DISPLAY sort that
+        // doesn't mutate the underlying order.  Drag-reorder is gated
+        // separately to position+ASC so a misclick on another header
+        // can never destroy the user's playback sequence.
         for spec in MLFilesTable.specs {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
             col.title = spec.title
@@ -758,8 +761,8 @@ struct MLEditorTable: NSViewRepresentable {
                 col.maxWidth = spec.width
                 col.resizingMask = []
             }
-            if spec.id == "col-position" {
-                col.sortDescriptorPrototype = NSSortDescriptor(key: "position", ascending: true)
+            if let key = spec.sortKey {
+                col.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             }
             table.addTableColumn(col)
         }
@@ -856,16 +859,12 @@ struct MLEditorTable: NSViewRepresentable {
             table.moveColumn(posIdx, toColumn: 1)
         }
 
-        // Sort sync: push the parent's current sort state into NSTableView
-        // headers if it differs.  Guard with the coordinator flag so the
-        // `sortDescriptorsDidChange` delegate fires only on user clicks,
-        // not on this programmatic sync.
-        let current = table.sortDescriptors.first
-        if current?.key != sortKey || current?.ascending != sortAscending {
-            context.coordinator.applyingExternalSort = true
-            table.sortDescriptors = [NSSortDescriptor(key: sortKey, ascending: sortAscending)]
-            context.coordinator.applyingExternalSort = false
-        }
+        // Sort descriptors are owned by NSTableView, same as Files view —
+        // pushing the parent's `sortKey` / `sortAscending` back into the
+        // table on every update would race with the user-click → async
+        // dispatch flow and briefly revert the user's chosen sort.  The
+        // sortedRows the parent passes already reflects the current sort,
+        // so no programmatic resync is needed at steady state.
 
         let desired = IndexSet(
             rows.enumerated()
@@ -958,6 +957,13 @@ struct MLEditorTable: NSViewRepresentable {
                 onViewArt: { _ in }
             ))
             return cell
+        }
+
+        // Skin-tinted row view for selection paint — same wiring as the
+        // active-playlist and Files tables.  See SparkampSkinRowView in
+        // PlaylistView.swift.
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            SparkampSkinRowView()
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -1582,7 +1588,7 @@ struct MLFilesTable: NSViewRepresentable {
         .init(id: "col-tracknum",    title: "Track #",     bit:  7, width:  60, sortKey: "num",          isSmallMono: false),
         .init(id: "col-discnum",     title: "Disc #",      bit:  8, width:  60, sortKey: "disc_num",     isSmallMono: false),
         .init(id: "col-bpm",         title: "BPM",         bit:  9, width:  60, sortKey: "bpm",          isSmallMono: false),
-        .init(id: "col-comment",     title: "Comment",     bit: 10, width: 160, sortKey: nil,            isSmallMono: false),
+        .init(id: "col-comment",     title: "Comment",     bit: 10, width: 160, sortKey: "comment",       isSmallMono: false),
         .init(id: "col-duration",    title: "Duration",    bit: 11, width:  80, sortKey: "duration",     isSmallMono: true),
         .init(id: "col-bitrate",     title: "Bitrate",     bit: 12, width:  80, sortKey: "bitrate",      isSmallMono: true),
         .init(id: "col-filename",    title: "Filename",    bit: 13, width: 180, sortKey: nil,            isSmallMono: true),
@@ -1707,17 +1713,15 @@ struct MLFilesTable: NSViewRepresentable {
             table.moveColumn(statusIdx, toColumn: 0)
         }
 
-        // Sync sort descriptors from binding → table (rare: typically the
-        // table is the source of truth, but external state restore may
-        // push a sort order).
-        if let first = sortOrder.first,
-           let key = Self.sortKey(forKeyPath: first.keyPath as AnyKeyPath) {
-            let desc = NSSortDescriptor(key: key, ascending: first.order == .forward)
-            if table.sortDescriptors.first?.key != desc.key
-                || table.sortDescriptors.first?.ascending != desc.ascending {
-                table.sortDescriptors = [desc]
-            }
-        }
+        // Sort descriptors are owned by NSTableView (set by user header
+        // clicks).  We deliberately do NOT push the SwiftUI `sortOrder`
+        // binding back into the table here: that binding starts with a
+        // default value (`title` ASC) and is only updated AFTER the user
+        // clicks a header, on a deferred async tick.  Syncing it here
+        // would overwrite the user's just-chosen sort back to the stale
+        // initial value during the render that fires from
+        // `mlTracks` updating in response to the click — sort would
+        // appear to do nothing.
 
         // Selection: binding → table.
         let desired = IndexSet(
@@ -1869,6 +1873,7 @@ struct MLFilesTable: NSViewRepresentable {
         case "num":          return KeyPathComparator(\MLTrack.trackNum, order: order)
         case "disc_num":     return KeyPathComparator(\MLTrack.discNum, order: order)
         case "bpm":          return KeyPathComparator(\MLTrack.bpm, order: order)
+        case "comment":      return KeyPathComparator(\MLTrack.comment, order: order)
         case "duration":     return KeyPathComparator(\MLTrack.lengthSecs, order: order)
         case "bitrate":      return KeyPathComparator(\MLTrack.bitrate, order: order)
         case "play_count":   return KeyPathComparator(\MLTrack.playCount, order: order)
@@ -1940,6 +1945,12 @@ struct MLFilesTable: NSViewRepresentable {
                 onViewArt: { [weak self] id in self?.parent.onEvent(.viewArt(id)) }
             ))
             return cell
+        }
+
+        // Skin-tinted row view for selection paint.  See SparkampSkinRowView
+        // in PlaylistView.swift.
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            SparkampSkinRowView()
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
