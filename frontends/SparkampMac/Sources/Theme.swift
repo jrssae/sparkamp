@@ -437,6 +437,19 @@ final class ThemeManager: ObservableObject {
         let saved = UserDefaults.standard.string(forKey: Self.activeSkinKey) ?? "dark"
         self.activeSkin  = saved
         self.currentVars = Self.load(skinName: saved) ?? .dark
+        Self.publishSelectionColor(SkinTheme(name: saved, vars: self.currentVars))
+    }
+
+    /// Push the active skin's full-opacity highlight colour into the AppKit
+    /// selection palette so NSTableRowView's swizzled `drawSelection(in:)`
+    /// paints rows with the skin's highlight colour.  The 18% alpha is
+    /// applied at draw time (see `SparkampSelectionPalette.rowHighlightAlpha`)
+    /// — publishing the full-opacity colour avoids the
+    /// SwiftUI Color → NSColor bridge silently dropping alpha for
+    /// non-system colours, which produced an over-saturated selection bar
+    /// when alpha was baked into the published colour.
+    private static func publishSelectionColor(_ theme: SkinTheme) {
+        SparkampSelectionPalette.rowHighlight = NSColor(theme.vars.highlight)
     }
 
     // MARK: Façade access
@@ -496,6 +509,7 @@ final class ThemeManager: ObservableObject {
         let vars = Self.load(skinName: lowered) ?? .dark
         self.activeSkin  = lowered
         self.currentVars = vars
+        Self.publishSelectionColor(SkinTheme(name: lowered, vars: vars))
         UserDefaults.standard.set(lowered, forKey: Self.activeSkinKey)
     }
 

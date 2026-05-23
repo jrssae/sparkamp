@@ -283,6 +283,26 @@ void    sparkamp_ml_remove_folder(SparkampCtx *ctx, const char *path);
 void    sparkamp_ml_remove_track(SparkampCtx *ctx, int64_t track_id);
 
 /**
+ * Force-rescan a single track by its on-disk path.
+ *
+ * Re-reads tags + duration and upserts the row in the library DB.  Used by
+ * the ID3 editor immediately after a successful save so the Files view
+ * reflects the new metadata without waiting for a full rescan.  No-op when
+ * the file no longer exists or the path is not in a watched folder.
+ */
+void    sparkamp_ml_rescan_track(SparkampCtx *ctx, const char *path);
+
+/**
+ * Add a batch of file paths to the library DB.  Each path is upserted under
+ * the deepest watched folder whose path is its prefix; paths that don't fall
+ * inside any watched folder are silently skipped.  Returns the number of
+ * paths actually inserted/updated.  Used by drop-onto-Files handlers when
+ * the user wants files added to the library WITHOUT registering a new
+ * watched folder.
+ */
+int32_t sparkamp_ml_add_files(SparkampCtx *ctx, const char *const *paths, int32_t count);
+
+/**
  * Rescan all watched folders.  Same two-phase approach as sparkamp_ml_add_folder.
  * Discovers new files first (fast), then reads tags in background.
  */
@@ -333,18 +353,32 @@ void    sparkamp_ml_set_current_playlist(SparkampCtx *ctx, int32_t index);
 int64_t sparkamp_ml_create_playlist(SparkampCtx *ctx, const char *name);
 /** Delete playlist by row id from the DB (file on disk is kept). */
 void    sparkamp_ml_delete_playlist(SparkampCtx *ctx, int64_t playlist_id);
-/** Rename playlist by row id; also renames the .m3u file on disk. */
+/** Rename playlist by row id; also renames the playlist file on disk. */
 void    sparkamp_ml_rename_playlist(SparkampCtx *ctx, int64_t playlist_id, const char *new_name);
-/** Overwrite playlist .m3u with the given track IDs (in order). */
+/** Overwrite playlist file with the given track IDs (in order). */
 void    sparkamp_ml_save_playlist(SparkampCtx *ctx, int64_t playlist_id,
                                   const int64_t *track_ids, int32_t count);
 /** Create a new playlist named new_name and write the given raw path strings to it.
     Preserves missing/stub entries verbatim.  Returns new row id or -1 on failure. */
 int64_t sparkamp_ml_save_playlist_as(SparkampCtx *ctx, const char *new_name,
                                      const char **paths, int32_t count);
+/** Write a playlist .m3u8 at exactly target_path (any directory) with the
+    given raw paths, then register it in the library.  Used by the macOS
+    Save-As panel when the user picks a destination outside Sparkamp's
+    managed playlists folder.  Emits #EXTINF for tracks already in the
+    library.  Returns new row id or -1 on failure. */
+int64_t sparkamp_ml_save_playlist_to_path(SparkampCtx *ctx, const char *target_path,
+                                          const char **paths, int32_t count);
+/** Register an existing .m3u8 / .m3u file on disk as a playlist in the library.
+    Use after the frontend has written the file itself (e.g. NSSavePanel).
+    Returns the new playlist row id, or -1 on failure. */
+int64_t sparkamp_ml_add_playlist_file(SparkampCtx *ctx, const char *path);
+/** Append raw track paths to a saved playlist's file (no DB change). */
+void    sparkamp_ml_append_paths_to_playlist(SparkampCtx *ctx, int64_t playlist_id,
+                                             const char **paths, int32_t count);
 /** Returns 1 if the playlist lives in Sparkamp's managed playlists directory, 0 otherwise. */
 int32_t sparkamp_ml_playlist_is_managed(const SparkampCtx *ctx, int64_t playlist_id);
-/** Return the .m3u file path of the playlist as a heap string; free with sparkamp_free_string. */
+/** Return the playlist file path as a heap string; free with sparkamp_free_string. */
 char   *sparkamp_ml_playlist_path(const SparkampCtx *ctx, int64_t playlist_id);
 /** Fill buf with up to limit tracks from playlist_id.  Returns count written. */
 int32_t sparkamp_ml_get_playlist_tracks(const SparkampCtx *ctx, int64_t playlist_id,

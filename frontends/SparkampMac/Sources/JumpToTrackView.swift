@@ -103,6 +103,26 @@ struct JumpToTrackView: View {
             .background(theme.playlistBg)
             .scrollContentBackground(.hidden)
             .onKeyPress(.return) { playSelected(); return .handled }
+            // Arrow keys move the highlighted result up / down.  Routed
+            // through hidden buttons with explicit keyboard shortcuts
+            // because the TextField keeps focus during typing and would
+            // otherwise consume arrow keys as text-cursor movement.  The
+            // keyboardShortcut path catches them at the responder chain
+            // level regardless of which inner view has focus.
+            .background(arrowShortcutButtons)
+            // Double-click on a row plays it immediately.  SwiftUI's
+            // `contextMenu(forSelectionType:menu:primaryAction:)` is the
+            // canonical way to attach a double-click handler to a List
+            // with selection — the `menu` returns nothing so no actual
+            // context menu appears on right-click.
+            .contextMenu(forSelectionType: Int.self, menu: { _ in
+                EmptyView()
+            }, primaryAction: { ids in
+                if let idx = ids.first {
+                    selectedPlaylistIndex = idx
+                    playSelected()
+                }
+            })
 
             Divider()
                 .background(theme.windowBorder)
@@ -134,5 +154,37 @@ struct JumpToTrackView: View {
         model.jumpTo(index: idx)
         model.play()
         model.jumpToTrackVisible = false
+    }
+
+    /// Zero-size hidden buttons that bind ↑/↓ to selection movement.
+    /// Same trick used in PlaylistView / ML editor for Delete: hidden
+    /// keyboardShortcut buttons catch the keys at the responder chain
+    /// regardless of which inner control has focus.
+    private var arrowShortcutButtons: some View {
+        ZStack {
+            Button("", action: { moveSelection(by:  1) })
+                .keyboardShortcut(.downArrow, modifiers: [])
+            Button("", action: { moveSelection(by: -1) })
+                .keyboardShortcut(.upArrow,   modifiers: [])
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    /// Shift `selectedPlaylistIndex` by `delta` positions through
+    /// `filteredItems`, clamping at both ends.  Seeds with the first item
+    /// when no row is selected yet (so the very first arrow press picks
+    /// something visible).
+    private func moveSelection(by delta: Int) {
+        guard !filteredItems.isEmpty else { return }
+        let currentRow = filteredItems.firstIndex(where: { $0.id == selectedPlaylistIndex })
+        let next: Int
+        if let cur = currentRow {
+            next = min(max(cur + delta, 0), filteredItems.count - 1)
+        } else {
+            next = delta > 0 ? 0 : filteredItems.count - 1
+        }
+        selectedPlaylistIndex = filteredItems[next].id
     }
 }
