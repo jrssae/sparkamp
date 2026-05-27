@@ -1167,6 +1167,12 @@ impl MediaLibrary {
             Ok(s) => s,
             Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
         };
+        // Strip a leading UTF-8 BOM (\u{feff}) so the first line still
+        // matches `starts_with('#')` checks below — without this the
+        // `#EXTM3U` header on BOM-prefixed files (Windows tooling, FUSE
+        // re-encoded mounts) falls through and shows up as a synthetic
+        // missing-file track.
+        let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
 
         // Base directory for resolving relative paths in the M3U.
         let base = Path::new(&playlist.path)

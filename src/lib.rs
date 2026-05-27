@@ -2,6 +2,8 @@
 // macOS Swift bridge. No UI framework knowledge lives here.
 pub mod config;
 pub mod controller;
+#[cfg(target_os = "linux")]
+pub mod crash_log;
 pub mod dedupe;
 pub mod duration_cache;
 pub mod duration_probe;

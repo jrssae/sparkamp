@@ -717,6 +717,22 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
                    columnview row:selected, listview row:selected {{ \
         background: {hl_sel}; color: {text}; \
     }}").unwrap();
+    // GtkTreeView paints rows as a single widget with :selected state
+    // rather than per-row sub-widgets like ListBox/ColumnView.  The
+    // `.playlist row:selected` rule above misses it, so add treeview-
+    // specific selectors covering the GTK4 node hierarchy
+    // (`treeview.view.playlist`).  Without these the active playlist's
+    // selected row is invisible against the skin background.
+    writeln!(css, ".playlist:selected, \
+                   .playlist:selected:focus, \
+                   .playlist:selected:hover, \
+                   treeview.view.playlist:selected, \
+                   treeview.view.playlist:selected:focus, \
+                   treeview.view.playlist:selected:hover, \
+                   treeview.playlist:selected, \
+                   treeview.playlist:selected:focus {{ \
+        background-color: {hl_sel}; color: {text}; \
+    }}").unwrap();
     writeln!(css, ".playlist row.playing {{ \
         background-color: {hl_pla}; color: {hl}; \
     }}").unwrap();

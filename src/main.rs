@@ -17,6 +17,8 @@ use clap::Parser;
 
 mod config;
 mod controller;
+#[cfg(target_os = "linux")]
+mod crash_log;
 mod dedupe;
 mod duration_cache;
 mod duration_probe;
@@ -94,6 +96,12 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Install panic + GLib log capture before anything else so a crash
+    // during init or in a GTK/GStreamer callback still leaves a record
+    // at ~/.config/sparkamp/crash.log instead of vanishing silently.
+    #[cfg(target_os = "linux")]
+    crash_log::install();
 
     // GStreamer must be initialised before any Player is created, regardless
     // of which UI frontend is used.
