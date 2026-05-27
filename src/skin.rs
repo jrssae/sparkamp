@@ -856,6 +856,33 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {bhov}; \
     }}").unwrap();
 
+    // ── Popover-menu styling for the plain-Popover playlist-editor
+    //    right-click menu — make Buttons inside `.menu` look like the
+    //    GtkModelButton entries that PopoverMenu renders natively.
+    writeln!(css, "popover.menu contents {{ \
+        background-color: {bg}; padding: 4px 0; \
+    }}").unwrap();
+    writeln!(css, "popover.menu box.menu button.modelbutton {{ \
+        background-color: transparent; background-image: none; \
+        border: none; border-radius: 0; box-shadow: none; \
+        padding: 6px 14px; min-height: 0; \
+        color: {text}; \
+    }}").unwrap();
+    writeln!(css, "popover.menu box.menu button.modelbutton:hover {{ \
+        background-color: {bhov}; \
+    }}").unwrap();
+    writeln!(css, "popover.menu box.menu button.modelbutton label {{ \
+        font-weight: normal; \
+    }}").unwrap();
+    writeln!(css, "popover.menu box.menu separator {{ \
+        background-color: {border}; min-height: 1px; \
+        margin: 4px 8px; \
+    }}").unwrap();
+    writeln!(css, "popover.menu box.menu label.dim-label {{ \
+        color: {btext}; padding: 4px 14px 2px 14px; \
+        font-size: 0.85em; \
+    }}").unwrap();
+
     css
 }
 

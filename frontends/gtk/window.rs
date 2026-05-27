@@ -2473,14 +2473,10 @@ pub fn build(
                     .filter_map(|p| p.indices().first().copied())
                     .map(|i| i as usize)
                     .collect();
-                eprintln!("[pl_drag_selection] snapshot updated: {v:?}");
                 *snap_obs.borrow_mut() = v;
             } else if count == 0 && !active_obs.get() {
-                eprintln!("[pl_drag_selection] cleared (count=0, not in drag)");
                 snap_obs.borrow_mut().clear();
             } else {
-                eprintln!("[pl_drag_selection] count={count}, drag_active={}, keeping snapshot={:?}",
-                    active_obs.get(), *snap_obs.borrow());
             }
         });
     }
@@ -2541,21 +2537,18 @@ pub fn build(
         {
             let active = pl_drag_active.clone();
             drag_src.connect_drag_begin(move |_, _| {
-                eprintln!("[pl drag] begin");
                 active.set(true);
             });
         }
         {
             let active = pl_drag_active.clone();
             drag_src.connect_drag_end(move |_, _, _| {
-                eprintln!("[pl drag] end");
                 active.set(false);
             });
         }
         {
             let active = pl_drag_active.clone();
             drag_src.connect_drag_cancel(move |_, _, _| {
-                eprintln!("[pl drag] cancel");
                 active.set(false);
                 false
             });
@@ -2574,7 +2567,6 @@ pub fn build(
             // Prefer the connect_changed snapshot (multi-select); fall back
             // to the live selection; final fallback is the row under cursor.
             let snapshot = drag_sel_ds.borrow().clone();
-            eprintln!("[pl drag prepare] snapshot={snapshot:?}, row_under={row_under:?}");
             let sel_indices: Vec<usize> = if snapshot.len() > 1
                 && row_under.map_or(false, |r| snapshot.contains(&r))
             {
@@ -2590,7 +2582,6 @@ pub fn build(
                 if !live.is_empty() { live }
                 else { row_under.into_iter().collect() }
             };
-            eprintln!("[pl drag prepare] sel_indices={sel_indices:?}");
             // Stash final source indices so the drop target can do a
             // precise reorder without round-tripping through paths.
             *drag_sel_ds.borrow_mut() = sel_indices.clone();
@@ -2621,18 +2612,15 @@ pub fn build(
         let drag_sel_drop = pl_drag_selection.clone();
 
         drop_tgt.connect_drop(move |_, value, x, y| {
-            eprintln!("[pl_view drop] fired at ({x}, {y})");
             let file_list = match value.get::<gdk::FileList>() {
                 Ok(fl) => fl,
                 Err(_) => {
-                    eprintln!("[pl_view drop] FileList parse failed");
                     return false;
                 }
             };
             let dropped: Vec<std::path::PathBuf> = file_list.files().iter()
                 .filter_map(|f| f.path())
                 .collect();
-            eprintln!("[pl_view drop] dropped paths: {} items", dropped.len());
             if dropped.is_empty() { return false }
 
             let n = state_dnd.borrow().playlist.len();
@@ -2655,7 +2643,6 @@ pub fn build(
                 }
                 _ => n,
             };
-            eprintln!("[pl_view drop] computed dst_pos={dst_pos}");
 
             // Prefer the press-time drag selection snapshot — it's the
             // authoritative source-row list and avoids the path-comparison
@@ -2663,7 +2650,6 @@ pub fn build(
             // means the drop came from another window, so fall back to
             // path matching to decide reorder-vs-add.
             let snapshot: Vec<usize> = drag_sel_drop.borrow().clone();
-            eprintln!("[pl_view drop] snapshot at drop time: {snapshot:?}");
             let mut existing_src_indices: Vec<usize>;
             let mut new_paths: Vec<std::path::PathBuf>;
             if !snapshot.is_empty() {
@@ -2681,8 +2667,6 @@ pub fn build(
                     }
                 }
             }
-            eprintln!("[pl_view drop] existing_src_indices={existing_src_indices:?}, new_paths_count={}, dst_pos={dst_pos}",
-                new_paths.len());
 
             let did_move = !existing_src_indices.is_empty();
             // Capture the post-move range so the idle rebuild below can
@@ -2691,7 +2675,6 @@ pub fn build(
             let mut moved_range: Option<(usize, usize)> = None;
             if did_move {
                 let mut s = state_dnd.borrow_mut();
-                let before_len = s.playlist.tracks.len();
                 // Remove highest-first so earlier removes don't invalidate later indices.
                 let mut sorted = existing_src_indices.clone();
                 sorted.sort_unstable_by(|a, b| b.cmp(a));
@@ -2713,8 +2696,6 @@ pub fn build(
                     s.playlist.tracks.insert(insert_at + i, t);
                 }
                 moved_range = Some((insert_at, removed_n));
-                let after_len = s.playlist.tracks.len();
-                eprintln!("[pl_view drop] reorder: before_len={before_len}, removed={removed_n}, insert_at={insert_at}, after_len={after_len}");
             }
 
             let mut did_add = false;
@@ -9364,7 +9345,6 @@ fn open_image_viewer(path: &str) {
     use gtk4::ContentFit;
 
     let exists = std::path::Path::new(path).exists();
-    eprintln!("[open_image_viewer] path={path} exists={exists}");
 
     let win = gtk4::Window::new();
     win.set_title(Some("Artwork — Sparkamp"));
@@ -9400,7 +9380,6 @@ fn open_image_viewer(path: &str) {
             win.set_child(Some(&picture));
         }
         Err(e) => {
-            eprintln!("[open_image_viewer] decode failed: {e}");
             let lbl = gtk4::Label::builder()
                 .label(format!("Could not decode artwork:\n{e}"))
                 .halign(Align::Center)
@@ -11428,9 +11407,7 @@ fn open_media_library_window(
                 let g_scroll     = setup_scroll.clone();
                 let g_act        = setup_actgroup.clone();
                 gesture.connect_pressed(move |g, _n, x, y| {
-                    eprintln!("[editor right-click] gesture fired ({x}, {y})");
                     let Some(item) = g_li.item() else {
-                        eprintln!("[editor right-click] g_li.item() returned None");
                         return;
                     };
                     let item_clone = item.clone();
@@ -11486,31 +11463,38 @@ fn open_media_library_window(
                     // editor — actions never fired even when group was
                     // attached at multiple ancestors.  Plain Popover with
                     // direct connect_clicked closures guarantees action
-                    // delivery; tradeoff is slightly different visuals
-                    // versus files view.
+                    // delivery.  Visual style is matched to the files
+                    // view via the `menu` CSS class on both the popover
+                    // and the content box, plus a "modelbutton"-style
+                    // CSS class on each button (mimics PopoverMenu's
+                    // internal GtkModelButtons).
                     let popover = gtk4::Popover::new();
                     popover.set_has_arrow(false);
                     popover.set_position(gtk4::PositionType::Bottom);
+                    popover.add_css_class("menu");
 
                     let vbox = GtkBox::new(Orientation::Vertical, 0);
                     vbox.add_css_class("menu");
                     vbox.set_size_request(240, -1);
 
-                    // Build buttons that look like PopoverMenu items —
-                    // left-aligned label, no frame, flat hover state.
+                    // Build buttons that look like PopoverMenu items.
+                    // Marked "modelbutton" so the GTK4 default theme
+                    // applies the same hover/padding/border treatment
+                    // PopoverMenu uses internally for its GtkModelButton
+                    // entries.
                     let add_btn = |label: &str, vbox: &GtkBox| -> Button {
                         let lbl = Label::builder()
                             .label(label)
                             .halign(Align::Start)
-                            .margin_start(12).margin_end(12)
-                            .margin_top(4).margin_bottom(4)
+                            .hexpand(true)
+                            .xalign(0.0)
                             .build();
                         let b = Button::new();
                         b.set_child(Some(&lbl));
                         b.set_has_frame(false);
                         b.set_hexpand(true);
                         b.add_css_class("flat");
-                        b.add_css_class("model");
+                        b.add_css_class("modelbutton");
                         vbox.append(&b);
                         b
                     };
@@ -11526,7 +11510,6 @@ fn open_media_library_window(
                         let st_track_c = g_set_track.clone();
                         btn.connect_clicked(move |_| {
                             pop_c.popdown();
-                            eprintln!("[ple.append] click");
                             let tracks: Vec<crate::media_library::LibTrack> = {
                                 let et_b = et_c.borrow();
                                 pi_c().into_iter().filter_map(|i| et_b.get(i).cloned()).collect()
@@ -11556,7 +11539,6 @@ fn open_media_library_window(
                         let st_track_c = g_set_track.clone();
                         btn.connect_clicked(move |_| {
                             pop_c.popdown();
-                            eprintln!("[ple.replace] click");
                             let tracks: Vec<crate::media_library::LibTrack> = {
                                 let et_b = et_c.borrow();
                                 pi_c().into_iter().filter_map(|i| et_b.get(i).cloned()).collect()
@@ -11587,7 +11569,6 @@ fn open_media_library_window(
                         btn.connect_clicked(move |_| {
                             pop_c.popdown();
                             let c = ctx_c.get();
-                            eprintln!("[ple.edit-id3] click, canonical_idx={c}");
                             if c < 0 { return }
                             let path = et_c.borrow().get(c as usize).map(|t| t.path.clone());
                             let Some(path) = path else { return };
@@ -11613,7 +11594,6 @@ fn open_media_library_window(
                         btn.connect_clicked(move |_| {
                             pop_c.popdown();
                             let mut idxs = pi_c();
-                            eprintln!("[ple.remove] click, idxs={idxs:?}");
                             if idxs.is_empty() { return }
                             idxs.sort_unstable_by(|a, b| b.cmp(a));
                             {
@@ -11748,200 +11728,8 @@ fn open_media_library_window(
                     popover.set_parent(&parent_widget);
                     popover.set_pointing_to(Some(&rect));
 
-                    // Dead code from the abandoned PopoverMenu attempt;
-                    // kept here only to allow the closure to compile
-                    // against the still-existing live_group references
-                    // below in the unchanged tail of the gesture body.
-                    let live_group = gio::SimpleActionGroup::new();
-                    {
-                        let st = g_state.clone();
-                        let et = g_et.clone();
-                        let pi = pick_idxs.clone();
-                        let rbpl = g_rebuild_pl.clone();
-                        let strk = g_set_track.clone();
-                        let act = gio::SimpleAction::new("append", None);
-                        act.connect_activate(move |_, _| {
-                            eprintln!("[ple.append] activate (live)");
-                            let tracks: Vec<crate::media_library::LibTrack> = {
-                                let et_b = et.borrow();
-                                pi().into_iter().filter_map(|i| et_b.get(i).cloned()).collect()
-                            };
-                            if tracks.is_empty() { return }
-                            let was_empty = st.borrow().playlist.is_empty();
-                            let autoplay = st.borrow().config.behavior.autoplay_on_add;
-                            {
-                                let mut s = st.borrow_mut();
-                                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
-                            }
-                            if autoplay && was_empty {
-                                if let Some(d) = st.borrow_mut().play_current() { strk(&d); }
-                            }
-                            rbpl();
-                        });
-                        live_group.add_action(&act);
-                    }
-                    {
-                        let st = g_state.clone();
-                        let et = g_et.clone();
-                        let pi = pick_idxs.clone();
-                        let rbpl = g_rebuild_pl.clone();
-                        let strk = g_set_track.clone();
-                        let act = gio::SimpleAction::new("replace", None);
-                        act.connect_activate(move |_, _| {
-                            eprintln!("[ple.replace] activate (live)");
-                            let tracks: Vec<crate::media_library::LibTrack> = {
-                                let et_b = et.borrow();
-                                pi().into_iter().filter_map(|i| et_b.get(i).cloned()).collect()
-                            };
-                            if tracks.is_empty() { return }
-                            let autoplay = st.borrow().config.behavior.autoplay_on_add;
-                            {
-                                let mut s = st.borrow_mut();
-                                let _ = s.player.stop();
-                                s.playlist = crate::model::Playlist::new();
-                                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
-                            }
-                            if autoplay {
-                                if let Some(d) = st.borrow_mut().play_current() { strk(&d); }
-                            }
-                            rbpl();
-                        });
-                        live_group.add_action(&act);
-                    }
-                    {
-                        let st = g_state.clone();
-                        let et = g_et.clone();
-                        let ctx = g_ctx_id.clone();
-                        let rbpl = g_rebuild_pl.clone();
-                        let act = gio::SimpleAction::new("edit-id3", None);
-                        act.connect_activate(move |_, _| {
-                            let c = ctx.get();
-                            eprintln!("[ple.edit-id3] activate (live), canonical_idx={c}");
-                            if c < 0 { return }
-                            let path = et.borrow().get(c as usize).map(|t| t.path.clone());
-                            let Some(path) = path else { return };
-                            open_id3_editor_window(
-                                None::<&gtk4::Window>,
-                                path.into(),
-                                st.clone(),
-                                rbpl.clone(),
-                                None,
-                            );
-                        });
-                        live_group.add_action(&act);
-                    }
-                    {
-                        let st = g_state.clone();
-                        let et = g_et.clone();
-                        let pi = pick_idxs.clone();
-                        let ep = g_ep_id.clone();
-                        let rb = g_rebuild.clone();
-                        let act = gio::SimpleAction::new("remove", None);
-                        act.connect_activate(move |_, _| {
-                            let mut idxs = pi();
-                            eprintln!("[ple.remove] activate (live), idxs={idxs:?}");
-                            if idxs.is_empty() { return }
-                            idxs.sort_unstable_by(|a, b| b.cmp(a));
-                            {
-                                let mut e = et.borrow_mut();
-                                for i in idxs.iter() {
-                                    if *i < e.len() { e.remove(*i); }
-                                }
-                            }
-                            let pid = ep.get();
-                            if pid >= 0 {
-                                let s = st.borrow();
-                                if let Some(lib) = s.media_lib.as_ref() {
-                                    let paths: Vec<String> = et.borrow()
-                                        .iter().map(|t| t.path.clone()).collect();
-                                    if let Ok(pl) = lib.playlist_by_id(pid) {
-                                        let _ = lib.save_playlist_tracks_to_path(
-                                            std::path::Path::new(&pl.path),
-                                            &paths,
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(rebuild) = rb.borrow().as_ref() { rebuild(); }
-                        });
-                        live_group.add_action(&act);
-                    }
-                    {
-                        let st = g_state.clone();
-                        let et = g_et.clone();
-                        let pi = pick_idxs.clone();
-                        let win_c = g_win.clone();
-                        let act = gio::SimpleAction::new("add-to-new", None);
-                        act.connect_activate(move |_, _| {
-                            eprintln!("[ple.add-to-new] activate (live)");
-                            let paths: Vec<String> = {
-                                let et_b = et.borrow();
-                                pi().into_iter()
-                                    .filter_map(|i| et_b.get(i))
-                                    .map(|t| t.path.clone())
-                                    .collect()
-                            };
-                            if paths.is_empty() { return }
-                            let default_stem = glib::DateTime::now_local().ok()
-                                .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "Playlist".to_string());
-                            let state_cb = st.clone();
-                            let paths_cb = paths.clone();
-                            run_playlist_save_dialog(
-                                st.clone(),
-                                win_c.clone(),
-                                &default_stem,
-                                move |path, win_cb| {
-                                    if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                                        if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                                            eprintln!("save_playlist_tracks_to_path: {e}");
-                                            show_playlist_save_error(&win_cb, &path, &e);
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                        live_group.add_action(&act);
-                    }
-                    {
-                        let st = g_state.clone();
-                        let et = g_et.clone();
-                        let pi = pick_idxs.clone();
-                        let act = gio::SimpleAction::new(
-                            "add-to-saved",
-                            Some(glib::VariantTy::INT64),
-                        );
-                        act.connect_activate(move |_, param| {
-                            let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
-                            eprintln!("[ple.add-to-saved] activate (live), pid={pid}");
-                            let paths: Vec<String> = {
-                                let et_b = et.borrow();
-                                pi().into_iter()
-                                    .filter_map(|i| et_b.get(i))
-                                    .map(|t| t.path.clone())
-                                    .collect()
-                            };
-                            if paths.is_empty() { return }
-                            let mut ok = false;
-                            if let Some(lib) = st.borrow().media_lib.as_ref() {
-                                match lib.append_paths_to_playlist(pid, &paths) {
-                                    Ok(_)  => ok = true,
-                                    Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
-                                }
-                            }
-                            if ok { notify_playlist_changed(pid); }
-                        });
-                        live_group.add_action(&act);
-                    }
-                    popover.insert_action_group("ple", Some(&live_group));
-
                     popover.connect_closed(|p| p.unparent());
-                    eprintln!("[editor right-click] popup; parent={:?} sel_count={sel_count}",
-                        parent_widget.widget_name());
                     popover.popup();
-                    eprintln!("[editor right-click] popup returned, visible={}",
-                        popover.is_visible());
                     let _ = g;
                     let _ = g_scroll;
                     let _ = g_act;
@@ -13402,7 +13190,6 @@ fn open_media_library_window(
                 let pick_idxs  = selected_canonical_indices.clone();
                 let action     = gio::SimpleAction::new("append", None);
                 action.connect_activate(move |_, _| {
-                    eprintln!("[ple.append] activate");
                     let tracks: Vec<crate::media_library::LibTrack> = {
                         let et_b = et.borrow();
                         pick_idxs().into_iter()
@@ -13437,7 +13224,6 @@ fn open_media_library_window(
                 let pick_idxs  = selected_canonical_indices.clone();
                 let action     = gio::SimpleAction::new("replace", None);
                 action.connect_activate(move |_, _| {
-                    eprintln!("[ple.replace] activate");
                     let tracks: Vec<crate::media_library::LibTrack> = {
                         let et_b = et.borrow();
                         pick_idxs().into_iter()
@@ -13473,15 +13259,12 @@ fn open_media_library_window(
                 let action        = gio::SimpleAction::new("edit-id3", None);
                 action.connect_activate(move |_, _| {
                     let c = id_ref.get();
-                    eprintln!("[ple.edit-id3] activate, ctx_canonical_idx={c}");
                     if c < 0 { return }
                     let path = et.borrow().get(c as usize)
                         .map(|t| t.path.clone());
                     let Some(path) = path else {
-                        eprintln!("[ple.edit-id3] no path at canonical_idx={c}");
                         return;
                     };
-                    eprintln!("[ple.edit-id3] opening editor for {path}");
                     open_id3_editor_window(
                         None::<&gtk4::Window>,
                         path.into(),
@@ -13507,7 +13290,6 @@ fn open_media_library_window(
                 let action   = gio::SimpleAction::new("remove", None);
                 action.connect_activate(move |_, _| {
                     let mut idxs = pick_idxs();
-                    eprintln!("[ple.remove] activate, canonical_indices={idxs:?}");
                     if idxs.is_empty() { return }
                     idxs.sort_unstable_by(|a, b| b.cmp(a));
                     {
@@ -13659,15 +13441,6 @@ fn open_media_library_window(
                 }
             }
             *ple_action_group_holder.borrow_mut() = Some(action_group.clone());
-
-            // Self-test: invoke action_group.activate_action manually
-            // for a parameterless action and confirm the connected
-            // handler fires.  If `[ple.remove] activate` eprintln does
-            // NOT appear after this line, dispatch is broken at the
-            // action-group level (not the popover lookup level).
-            eprintln!("[editor self-test] invoking action_group.activate_action(\"remove\")");
-            gio::prelude::ActionGroupExt::activate_action(&action_group, "remove", None);
-            eprintln!("[editor self-test] activate_action returned");
             // Per-cell right-click gesture lives inside each column's
             // factory.connect_setup — see the editor column builder at the
             // top of this scope.  Nothing to register here at the row level.
