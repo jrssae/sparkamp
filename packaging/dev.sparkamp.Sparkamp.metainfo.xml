@@ -28,6 +28,30 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.0.2" date="2026-05-27">
+      <description>
+        <p>Playlist editor overhaul. The specific-playlist view now uses a
+        ColumnView mirroring the files-view columns (visibility, widths, order
+        share the same config and refresh on every playlist load), gains a
+        position column with canonical play-order tracking that survives
+        duplicate entries, and an artwork View button to match the files view.
+        Right-click menus across the active playlist, files view, and editor
+        gain a unified Add to Playlist submenu with New Playlist… plus every
+        saved playlist; Edit ID3 hides on multi-select; the editor's Remove
+        now removes from the playlist (rewriting the M3U8) rather than the
+        library DB.  Multi-select drag-and-drop in the active playlist
+        preserves the selection across GTK's transient collapse and reorders
+        all dragged rows, with drop-position honoring before/after halves.
+        Drag-reorder in the editor is gated to position-ASC sort.  Several
+        smaller fixes: BOM-prefixed M3U8 files parse correctly, default save
+        directory falls back through first ML folder / ~/Music / home, save
+        errors surface in a modal dialog, the artwork viewer reports decode
+        failures inline, Delete key removes from the editor, the info-button
+        glyph matches the surrounding mode-buttons, and a new crash log at
+        ~/.config/sparkamp/crash.log captures panics + GLib criticals on
+        Linux so silent crashes leave a trace.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-04-28">
       <description>
         <p>First stable release. Adds macOS DMG build, GTK skin system with 14-variable
