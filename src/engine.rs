@@ -423,6 +423,19 @@ impl Player {
         self.granite.as_mut().map(|g| g.random_switch())
     }
 
+    /// Estimated tempo from the Granite beat detector; 0.0 when unknown.
+    #[allow(dead_code)] // used by the macOS FFI only; GTK doesn't surface BPM yet.
+    pub fn granite_bpm(&self) -> f32 {
+        self.granite.as_ref().map(|g| g.bpm()).unwrap_or(0.0)
+    }
+
+    /// Estimated beats-per-measure from the Granite beat detector (3 or 4);
+    /// 0 while unknown.
+    #[allow(dead_code)] // used by the macOS FFI only; GTK doesn't surface it yet.
+    pub fn granite_meter(&self) -> u8 {
+        self.granite.as_ref().map(|g| g.meter()).unwrap_or(0)
+    }
+
     /// Load a URI (e.g. `"file:///path/to/track.mp3"`) and reset to the
     /// stopped state.
     ///

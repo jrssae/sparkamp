@@ -665,6 +665,10 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_cycle_viz_mode(ctx)
         vizMode = Int(sparkamp_get_viz_mode(ctx))
+        // Persist immediately: the willTerminate save never runs when the
+        // process is killed (Xcode Stop sends SIGKILL), and "which
+        // visualizer was I on" is exactly what users expect to survive.
+        saveState()
     }
 
     /// Switch Granite to a random other effect (`n` key). No-op until the
@@ -672,6 +676,7 @@ final class SparkampModel: ObservableObject {
     func graniteRandomEffect() {
         guard let ctx = ctx else { return }
         _ = sparkamp_granite_random_effect(ctx)
+        saveState()
     }
 
     func openFullscreenViz() {

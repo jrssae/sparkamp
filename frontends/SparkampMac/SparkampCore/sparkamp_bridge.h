@@ -157,9 +157,25 @@ void    sparkamp_set_granite_effect(SparkampCtx *ctx, int32_t effect);
 int32_t sparkamp_granite_random_effect(SparkampCtx *ctx);
 
 /** Granite auto-switch toggle. When on, the scheduler rotates effects
- *  every 12–24 s with a one-second crossfade. */
+ *  every 12–24 s with a one-second crossfade (sooner on strong beats). */
 bool    sparkamp_get_granite_auto_switch(const SparkampCtx *ctx);
 void    sparkamp_set_granite_auto_switch(SparkampCtx *ctx, bool on);
+
+/** Granite beat sensitivity (1.05–3.0; lower = more beats). */
+float   sparkamp_get_granite_beat_sensitivity(const SparkampCtx *ctx);
+void    sparkamp_set_granite_beat_sensitivity(SparkampCtx *ctx, float s);
+
+/** Estimated tempo (BPM) from the Granite beat detector; 0.0 while
+ *  unknown. Debug aid for the fullscreen FPS/BPM overlay. */
+float   sparkamp_get_granite_bpm(const SparkampCtx *ctx);
+
+/** Estimated beats-per-measure (3 or 4) from the Granite beat detector;
+ *  0 while unknown. Drives the (x/4) suffix in the debug overlay. */
+int32_t sparkamp_get_granite_meter(const SparkampCtx *ctx);
+
+/** Brighten the waveform ink on detected beats (Geiss-style beat flash). */
+bool    sparkamp_get_granite_beat_brightness(const SparkampCtx *ctx);
+void    sparkamp_set_granite_beat_brightness(SparkampCtx *ctx, bool on);
 
 /* ── Visualizer mode ─────────────────────────────────────────────────────── */
 

@@ -1297,6 +1297,63 @@ pub unsafe extern "C" fn sparkamp_granite_random_effect(ctx: *mut SparkampCtx) -
     }
 }
 
+/// Estimated tempo (BPM) from the Granite beat detector — median of recent
+/// inter-beat intervals. 0.0 while unknown (warming up, silence, or no
+/// Granite frame rendered yet). Debug aid for the fullscreen overlay.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_granite_bpm(ctx: *const SparkampCtx) -> f32 {
+    if ctx.is_null() {
+        return 0.0;
+    }
+    (*ctx).player.granite_bpm()
+}
+
+/// Estimated beats-per-measure from the Granite beat detector: 3 or 4,
+/// or 0 while unknown. Debug aid for the fullscreen overlay.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_granite_meter(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    (*ctx).player.granite_meter() as c_int
+}
+
+/// Get Granite beat sensitivity (1.05–3.0; lower = more beats).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_granite_beat_sensitivity(ctx: *const SparkampCtx) -> f32 {
+    if ctx.is_null() {
+        return 1.5;
+    }
+    (*ctx).config.visualizer.granite.beat_sensitivity
+}
+
+/// Set Granite beat sensitivity (clamped 1.05–3.0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_granite_beat_sensitivity(ctx: *mut SparkampCtx, s: f32) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).config.visualizer.granite.beat_sensitivity = s.clamp(1.05, 3.0);
+}
+
+/// Get whether the waveform ink brightens on detected beats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_granite_beat_brightness(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    (*ctx).config.visualizer.granite.beat_brightness
+}
+
+/// Set whether the waveform ink brightens on detected beats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_granite_beat_brightness(ctx: *mut SparkampCtx, on: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).config.visualizer.granite.beat_brightness = on;
+}
+
 /// Get whether Granite auto-switches between effects.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_granite_auto_switch(ctx: *const SparkampCtx) -> bool {

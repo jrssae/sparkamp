@@ -55,6 +55,8 @@ struct FullscreenVisualizerView: View {
     @State private var toastMessage: String  = ""
     @State private var toastVisible: Bool    = false
     @State private var fpsValue: Double      = 0
+    @State private var bpmValue: Double      = 0
+    @State private var meterValue: Int       = 0
     @State private var fpsLastTick: Date?    = nil
     @State private var fpsEmaMs: Double      = 33.3
 
@@ -83,13 +85,17 @@ struct FullscreenVisualizerView: View {
                 .ignoresSafeArea()
             }
 
-            // FPS overlay (top-right; toggled with `g` via the app-wide key
-            // monitor — model.fullscreenFpsVisible, not local state).
+            // FPS + BPM overlay (top-right; toggled with `g` via the app-wide
+            // key monitor — model.fullscreenFpsVisible, not local state).
+            // BPM comes from the Granite beat detector; "--" until it locks.
             if model.fullscreenFpsVisible {
                 VStack {
                     HStack {
                         Spacer()
-                        Text(String(format: "FPS: %.0f", fpsValue))
+                        Text(String(format: "FPS: %.0f   BPM: %@%@",
+                                    fpsValue,
+                                    bpmValue > 0 ? String(format: "%.0f", bpmValue) : "--",
+                                    meterValue > 0 ? " (\(meterValue)/4)" : ""))
                             .font(.system(size: 14, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 10)
@@ -115,6 +121,10 @@ struct FullscreenVisualizerView: View {
                             if fpsEmaMs > 0 { fpsValue = 1000.0 / fpsEmaMs }
                         }
                         fpsLastTick = now
+                        if let c = model.ctx {
+                            bpmValue = Double(sparkamp_get_granite_bpm(c))
+                            meterValue = Int(sparkamp_get_granite_meter(c))
+                        }
                     }
             }
             .allowsHitTesting(false)

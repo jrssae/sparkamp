@@ -33,9 +33,13 @@ pub const GRANITE_INTERNAL_HEIGHT: u32 = 360;
 const PHI: f32 = 1.618_034;
 const TAU: f32 = 2.0 * PI;
 
-/// Brightness the waveform ink is stamped at. The palette LUT maps this to
-/// its near-top colour; beat-linked boosting arrives with the beat detector.
-const INK_BRIGHTNESS: f32 = 0.92;
+/// Waveform ink levels. With beat-linked brightness on (the default), ink
+/// sits at the quiet level and snaps to full on detected beats — Geiss
+/// v4.00's "wave brightness sharply linked to the beat". With it off, ink
+/// is a constant mid-bright stroke (Geiss made this optional in 4.24b).
+const INK_QUIET: f32 = 0.80;
+const INK_BEAT:  f32 = 1.00;
+const INK_FLAT:  f32 = 0.92;
 
 // ---------------------------------------------------------------------------
 // Public configuration
@@ -130,6 +134,7 @@ const ALL_SHAPES: [WaveShape; 6] = [
 ];
 
 fn default_true() -> bool { true }
+fn default_beat_sensitivity() -> f32 { 1.5 }
 
 /// User-tunable settings that feed the kernel.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -148,6 +153,14 @@ pub struct GraniteConfig {
     /// When true, the scheduler rotates effects every 12–24 s.
     #[serde(default = "default_true")]
     pub auto_switch: bool,
+    /// Beat detection threshold: bass energy must exceed its own recent
+    /// average by this factor to count as a beat. Lower = more beats.
+    /// Clamped to 1.05–3.0 at use.
+    #[serde(default = "default_beat_sensitivity")]
+    pub beat_sensitivity: f32,
+    /// Brighten the waveform ink on detected beats.
+    #[serde(default = "default_true")]
+    pub beat_brightness: bool,
 }
 
 impl Default for GraniteConfig {
@@ -158,6 +171,8 @@ impl Default for GraniteConfig {
             feedback: 0.6,
             effect: GraniteEffect::Plasma,
             auto_switch: true,
+            beat_sensitivity: default_beat_sensitivity(),
+            beat_brightness: true,
         }
     }
 }
@@ -414,6 +429,258 @@ fn generate_warp_map(effect: GraniteEffect, w: u32, h: u32, rng: &mut StdRng) ->
 }
 
 // ---------------------------------------------------------------------------
+// Beat detection
+// ---------------------------------------------------------------------------
+
+/// Frames of bass-energy history the detector compares against — ~1.4 s at
+/// 30 fps, long enough to track the song's current loudness, short enough
+/// to follow section changes.
+const BEAT_HISTORY: usize = 43;
+
+/// Per-beat accent saliences kept for meter (time-signature) analysis —
+/// 24 beats ≈ 6–8 bars, enough for the 3-vs-4 autocorrelation to settle.
+const ACCENT_RING: usize = 24;
+
+/// What one frame of audio produced: nothing, a beat, or a beat that lands
+/// on the estimated downbeat (the "1" of the measure).
+#[derive(Clone, Copy)]
+struct BeatTick {
+    is_beat: bool,
+    is_downbeat: bool,
+}
+
+const NO_TICK: BeatTick = BeatTick { is_beat: false, is_downbeat: false };
+
+/// Online beat + meter detector fed the same PCM window the scope ink uses.
+///
+/// Beats trigger on **onset flux** — the frame-to-frame *rise* in band
+/// energy — not on the energy level itself. A sustained bass note has zero
+/// flux after its attack, so it cannot re-trigger; the level-triggered
+/// first version machine-gunned at the refractory rate (exactly 200 BPM)
+/// through quiet intros. Two bands (one-pole low-pass ≈ kick, remainder ≈
+/// snare/mids) feed both the trigger and the per-beat accent salience.
+///
+/// Meter: the salience sequence is autocful at lags 3 and 4 — accents
+/// repeat every measure, so the better-correlating lag is the beats-per-
+/// measure estimate (vote-hysteresis smoothed). The downbeat phase is the
+/// offset class with the highest mean salience.
+struct BeatDetector {
+    bass_lpf: f32,
+    prev_bass: f32,
+    prev_mid: f32,
+    flux_hist: [f32; BEAT_HISTORY],
+    fh_idx: usize,
+    fh_filled: usize,
+    refractory: u8,
+    // BPM estimation: recent inter-beat intervals in frames (30 fps).
+    intervals: [u16; 8],
+    interval_idx: usize,
+    interval_count: usize,
+    frames_since_beat: u32,
+    // Meter / downbeat estimation.
+    salience: [f32; ACCENT_RING],
+    beat_index: usize,
+    beat_count: usize,
+    meter: u8,
+    meter_votes: i32,
+    anchor: usize,
+}
+
+impl BeatDetector {
+    fn new() -> Self {
+        BeatDetector {
+            bass_lpf: 0.0,
+            prev_bass: 0.0,
+            prev_mid: 0.0,
+            flux_hist: [0.0; BEAT_HISTORY],
+            fh_idx: 0,
+            fh_filled: 0,
+            refractory: 0,
+            intervals: [0; 8],
+            interval_idx: 0,
+            interval_count: 0,
+            frames_since_beat: 0,
+            salience: [0.0; ACCENT_RING],
+            beat_index: 0,
+            beat_count: 0,
+            meter: 4,
+            meter_votes: 0,
+            anchor: 0,
+        }
+    }
+
+    /// Feed one frame's PCM window.
+    fn process(&mut self, pcm: &[f32], sensitivity: f32) -> BeatTick {
+        self.frames_since_beat = self.frames_since_beat.saturating_add(1);
+        if pcm.is_empty() {
+            self.refractory = self.refractory.saturating_sub(1);
+            return NO_TICK;
+        }
+        // One-pole low-pass keeps roughly the bottom ~150 Hz of a 44.1 kHz
+        // window (kick); everything above it is the mid band (snare et al).
+        let mut lpf = self.bass_lpf;
+        let mut bass_e = 0.0f32;
+        let mut full_e = 0.0f32;
+        for &x in pcm {
+            lpf += 0.02 * (x - lpf);
+            bass_e += lpf * lpf;
+            full_e += x * x;
+        }
+        self.bass_lpf = lpf;
+        let n = pcm.len() as f32;
+        bass_e /= n;
+        full_e /= n;
+        let mid_e = (full_e - bass_e).max(0.0);
+
+        // Onset flux: only energy RISES count. Kick-weighted because the
+        // beat grid lives in the low end.
+        let bass_flux = (bass_e - self.prev_bass).max(0.0);
+        let mid_flux = (mid_e - self.prev_mid).max(0.0);
+        self.prev_bass = bass_e;
+        self.prev_mid = mid_e;
+        let flux = bass_flux * 2.0 + mid_flux;
+
+        let mean = if self.fh_filled > 0 {
+            self.flux_hist[..self.fh_filled].iter().sum::<f32>() / self.fh_filled as f32
+        } else {
+            0.0
+        };
+        self.flux_hist[self.fh_idx] = flux;
+        self.fh_idx = (self.fh_idx + 1) % BEAT_HISTORY;
+        self.fh_filled = (self.fh_filled + 1).min(BEAT_HISTORY);
+
+        if self.refractory > 0 {
+            self.refractory -= 1;
+            return NO_TICK;
+        }
+        // The 1e-6 floor keeps near-silence from "beating" on noise; the
+        // warm-up guard keeps the first frames from comparing against an
+        // empty history.
+        let is_beat = self.fh_filled >= 10
+            && flux > 1e-6
+            && flux > mean * sensitivity;
+        if !is_beat {
+            return NO_TICK;
+        }
+        self.refractory = 8; // ~270 ms at 30 fps — caps at ~220 BPM
+
+        // Inter-beat interval for BPM; gaps over ~3 s mean playback paused
+        // or the song broke down — not an interval worth averaging.
+        if self.frames_since_beat <= 90 && self.frames_since_beat > 0 {
+            self.intervals[self.interval_idx] = self.frames_since_beat as u16;
+            self.interval_idx = (self.interval_idx + 1) % self.intervals.len();
+            self.interval_count = (self.interval_count + 1).min(self.intervals.len());
+        }
+        self.frames_since_beat = 0;
+
+        // Accent bookkeeping for meter + downbeat.
+        self.beat_index = self.beat_index.wrapping_add(1);
+        self.salience[self.beat_index % ACCENT_RING] = flux;
+        self.beat_count = (self.beat_count + 1).min(ACCENT_RING);
+        self.update_meter();
+
+        let is_downbeat = self.meter_known()
+            && self.beat_index % self.meter as usize == self.anchor;
+        BeatTick { is_beat: true, is_downbeat }
+    }
+
+    /// Salience of the beat `j` beats before the latest one.
+    fn sal(&self, j: usize) -> f32 {
+        self.salience[(self.beat_index + ACCENT_RING - j) % ACCENT_RING]
+    }
+
+    fn meter_known(&self) -> bool {
+        self.beat_count >= 12
+    }
+
+    /// Re-estimate beats-per-measure (3 vs 4) and the downbeat phase from
+    /// the recent accent saliences. Vote hysteresis keeps the meter from
+    /// flapping frame to frame; the anchor only moves on a clear win.
+    fn update_meter(&mut self) {
+        if !self.meter_known() {
+            return;
+        }
+        let n = self.beat_count;
+        let score = |lag: usize| -> f32 {
+            let mut s = 0.0;
+            let mut c = 0;
+            for j in 0..n.saturating_sub(lag) {
+                s += self.sal(j) * self.sal(j + lag);
+                c += 1;
+            }
+            if c == 0 { 0.0 } else { s / c as f32 }
+        };
+        let s3 = score(3);
+        let s4 = score(4);
+        if s4 > s3 * 1.05 {
+            self.meter_votes = (self.meter_votes + 1).min(8);
+        } else if s3 > s4 * 1.05 {
+            self.meter_votes = (self.meter_votes - 1).max(-8);
+        }
+        self.meter = if self.meter_votes >= 0 { 4 } else { 3 };
+
+        // Downbeat phase: the offset class with the highest mean salience.
+        let m = self.meter as usize;
+        let mut best_r = 0usize;
+        let mut best = -1.0f32;
+        let mut current = -1.0f32;
+        for r in 0..m {
+            let mut s = 0.0;
+            let mut c = 0;
+            for j in 0..n {
+                // `+ m * ACCENT_RING` keeps the subtraction positive; it is
+                // a multiple of m so it never changes the offset class.
+                if (self.beat_index + m * ACCENT_RING - j) % m == r {
+                    s += self.sal(j);
+                    c += 1;
+                }
+            }
+            let avg = if c > 0 { s / c as f32 } else { 0.0 };
+            if r == self.anchor % m {
+                current = avg;
+            }
+            if avg > best {
+                best = avg;
+                best_r = r;
+            }
+        }
+        if best_r != self.anchor % m && best > current * 1.15 {
+            self.anchor = best_r;
+        }
+        self.anchor %= m;
+    }
+
+    /// Estimated beats per measure (3 or 4); 0 until enough beats analysed.
+    fn meter(&self) -> u8 {
+        if self.meter_known() { self.meter } else { 0 }
+    }
+
+    /// Estimated tempo from the median of recent inter-beat intervals.
+    /// 0.0 until at least two intervals exist or after ~5 s without a beat.
+    /// Assumes the 30 fps cadence both frontends drive the renderer at.
+    /// Estimates above 180 fold down an octave — a visualizer wants the
+    /// felt tempo, and >180 readings are nearly always double-time locks.
+    fn bpm(&self) -> f32 {
+        if self.interval_count < 2 || self.frames_since_beat > 150 {
+            return 0.0;
+        }
+        let mut v = [0u16; 8];
+        v[..self.interval_count].copy_from_slice(&self.intervals[..self.interval_count]);
+        let v = &mut v[..self.interval_count];
+        v.sort_unstable();
+        let median = v[v.len() / 2] as f32;
+        if median <= 0.0 {
+            return 0.0;
+        }
+        let mut bpm = 60.0 * 30.0 / median;
+        if bpm > 180.0 {
+            bpm *= 0.5;
+        }
+        bpm
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Renderer state
 // ---------------------------------------------------------------------------
 
@@ -436,7 +703,23 @@ pub struct Granite {
     switch_at_frame: u64,
     crossfade_remaining: u8,
     rng: StdRng,
+    // Beat reactions.
+    beat: BeatDetector,
+    /// 1.0 on a beat, decaying ~5 frames; drives the ink brightness boost.
+    beat_glow: f32,
+    /// 1.0 on a downbeat (the "1"), decaying ~5 frames; widens the ink
+    /// stroke so measure starts visibly punch harder than ordinary beats.
+    downbeat_glow: f32,
+    /// Beat colour change: frames left in the LUT fade from
+    /// `palette_fade_from` to `current_palette`.
+    palette_fade_remaining: u8,
+    palette_fade_from: GranitePalette,
+    /// Dwell guard so beat-triggered switches never machine-gun.
+    last_switch_frame: u64,
 }
+
+/// ~0.5 s LUT fade when a beat rolls a new palette.
+const PALETTE_FADE_FRAMES: u8 = 15;
 
 const CROSSFADE_FRAMES: u8 = 30; // ~1 s at 30 fps
 const SWITCH_INTERVAL_MIN: u64 = 360;  // 12 s
@@ -463,6 +746,12 @@ impl Granite {
             switch_at_frame: SWITCH_INTERVAL_MIN,
             crossfade_remaining: 0,
             rng: StdRng::seed_from_u64(0xC0FFEE),
+            beat: BeatDetector::new(),
+            beat_glow: 0.0,
+            downbeat_glow: 0.0,
+            palette_fade_remaining: 0,
+            palette_fade_from: GranitePalette::Granite,
+            last_switch_frame: 0,
         };
         g.resize(w, h);
         g
@@ -496,6 +785,7 @@ impl Granite {
         self.map_next = None;
         self.crossfade_remaining = 0;
         self.map_current = generate_warp_map(effect, self.w, self.h, &mut self.rng);
+        self.last_switch_frame = self.frame;
         // Push the next auto-switch out by ~20 s.
         self.switch_at_frame = self.frame + 600;
     }
@@ -537,8 +827,48 @@ impl Granite {
 
         self.frame = self.frame.wrapping_add(1);
 
+        // Beat tick: drives the ink brightness boost; downbeats (the "1" of
+        // the estimated measure) drive colour changes and early map switches.
+        let tick = self
+            .beat
+            .process(waveform, cfg.beat_sensitivity.clamp(1.05, 3.0));
+        if tick.is_beat {
+            self.beat_glow = 1.0;
+        }
+        if tick.is_downbeat {
+            self.downbeat_glow = 1.0;
+            // Downbeat colour change: about a third of measure starts roll a
+            // new palette and fade the LUT over ~half a second. The geometry
+            // is left alone — only the plasma's colours move. Auto mode only
+            // (a pinned palette is the user's explicit choice), and skipped
+            // during an effect crossfade, which is already blending palettes.
+            if cfg.auto_switch
+                && self.crossfade_remaining == 0
+                && self.palette_fade_remaining == 0
+                && self.rng.gen_bool(0.33)
+            {
+                self.palette_fade_from = self.current_palette;
+                self.current_palette =
+                    random_other_palette(self.current_palette, &mut self.rng);
+                self.palette_fade_remaining = PALETTE_FADE_FRAMES;
+            }
+        }
+        self.beat_glow *= 0.80; // ~5-frame tail
+        self.downbeat_glow *= 0.80;
+
         // Scheduler: pick / advance / start crossfades.
         if cfg.auto_switch {
+            // "Map now changes on beat" (Geiss v4.00), quantised to measure
+            // starts: some downbeats pull the next switch forward, with a
+            // ≥4 s dwell so it can't thrash. The 12–24 s timer remains the
+            // fallback when no beats land.
+            if tick.is_downbeat
+                && self.crossfade_remaining == 0
+                && self.frame.saturating_sub(self.last_switch_frame) > 120
+                && self.rng.gen_bool(0.25)
+            {
+                self.switch_at_frame = self.frame;
+            }
             self.tick_scheduler();
         } else {
             // User-pinned: snap to the configured effect + palette, drop any
@@ -550,6 +880,7 @@ impl Granite {
             self.map_next = None;
             self.next_palette = None;
             self.crossfade_remaining = 0;
+            self.palette_fade_remaining = 0;
             self.current_palette = cfg_palette;
         }
 
@@ -573,23 +904,37 @@ impl Granite {
         );
 
         // Stamp fresh ink into the feedback buffer so the next frame's warp
-        // carries it (this ordering is the entire Geiss flow).
+        // carries it (this ordering is the entire Geiss flow). Downbeats
+        // widen the stroke for a few frames so the "1" lands harder.
         if !waveform.is_empty() {
+            let ink = if cfg.beat_brightness {
+                INK_QUIET + (INK_BEAT - INK_QUIET) * self.beat_glow
+            } else {
+                INK_FLAT
+            };
+            let radius = 1.4 + 0.9 * self.downbeat_glow;
             draw_waveform_ink(
-                &mut self.curr, w, h, waveform, self.current_shape, INK_BRIGHTNESS,
+                &mut self.curr, w, h, waveform, self.current_shape, ink, radius,
             );
         }
 
-        // Present through the palette LUT (crossfading palettes if the
-        // scheduler is mid-switch), then swap buffers.
+        // Present through the palette LUT: effect crossfades blend the two
+        // scheduled palettes; beat colour changes fade from the previous
+        // palette; otherwise the active palette straight through.
         let pal_a = if cfg.auto_switch { self.current_palette } else { cfg_palette };
-        let lut = match (alpha > 0.0, self.next_palette) {
-            (true, Some(pb)) => {
-                let la = build_lut(pal_a, palette_phase);
-                let lb = build_lut(pb, palette_phase);
-                lerp_lut(&la, &lb, alpha)
-            }
-            _ => build_lut(pal_a, palette_phase),
+        let lut = if alpha > 0.0 && self.next_palette.is_some() {
+            let pb = self.next_palette.unwrap_or(pal_a);
+            let la = build_lut(pal_a, palette_phase);
+            let lb = build_lut(pb, palette_phase);
+            lerp_lut(&la, &lb, alpha)
+        } else if self.palette_fade_remaining > 0 {
+            self.palette_fade_remaining -= 1;
+            let t = 1.0 - (self.palette_fade_remaining as f32 / PALETTE_FADE_FRAMES as f32);
+            let la = build_lut(self.palette_fade_from, palette_phase);
+            let lb = build_lut(pal_a, palette_phase);
+            lerp_lut(&la, &lb, t)
+        } else {
+            build_lut(pal_a, palette_phase)
         };
         emit_rgba(&self.curr, dst, &lut, self.w as usize);
         std::mem::swap(&mut self.prev, &mut self.curr);
@@ -600,6 +945,20 @@ impl Granite {
     /// `auto_switch` is on.
     #[allow(dead_code)] // used by tests + macOS FFI; GTK reads config.effect instead.
     pub fn active_effect(&self) -> GraniteEffect { self.current }
+
+    /// Estimated tempo of the playing audio (median of recent inter-beat
+    /// intervals). 0.0 while the detector has too little data or the music
+    /// stopped beating. Debug aid for the fullscreen FPS/BPM overlay.
+    #[allow(dead_code)] // used by tests + macOS FFI; GTK doesn't surface BPM yet.
+    pub fn bpm(&self) -> f32 {
+        self.beat.bpm()
+    }
+
+    /// Estimated beats per measure (3 or 4); 0 until enough beats analysed.
+    #[allow(dead_code)] // used by tests + macOS FFI; GTK doesn't surface it yet.
+    pub fn meter(&self) -> u8 {
+        self.beat.meter()
+    }
 
     /// Begin an immediate switch to a random other effect (bound to a
     /// keyboard shortcut in the frontends). With `auto_switch` on the normal
@@ -613,6 +972,7 @@ impl Granite {
         self.next_palette = Some(random_other_palette(self.current_palette, &mut self.rng));
         self.current_shape = random_other_shape(self.current_shape, &mut self.rng);
         self.crossfade_remaining = CROSSFADE_FRAMES;
+        self.last_switch_frame = self.frame;
         next_eff
     }
 
@@ -634,6 +994,7 @@ impl Granite {
                 if let Some(p) = self.next_palette.take() {
                     self.current_palette = p;
                 }
+                self.last_switch_frame = self.frame;
                 // Schedule the next switch.
                 let interval = self.rng.gen_range(SWITCH_INTERVAL_MIN..=SWITCH_INTERVAL_MAX);
                 self.switch_at_frame = self.frame + interval;
@@ -642,6 +1003,9 @@ impl Granite {
         }
         // Time for a new switch?
         if self.frame >= self.switch_at_frame {
+            // An effect crossfade owns palette blending; drop any beat
+            // colour fade still in flight.
+            self.palette_fade_remaining = 0;
             let next_eff = random_other_effect(self.current, &mut self.rng);
             self.map_next = Some(generate_warp_map(next_eff, self.w, self.h, &mut self.rng));
             self.next = Some(next_eff);
@@ -768,7 +1132,9 @@ fn bilinear1(buf: &[f32], w: i32, h: i32, x: f32, y: f32) -> f32 {
 
 /// Stamp the active scope shape into the intensity buffer, using PCM samples
 /// in `[-1, 1]` to modulate the shape's amplitude. Max-blend (not additive)
-/// so self-crossing figures don't blow out.
+/// so self-crossing figures don't blow out. `radius` is the stamp radius in
+/// pixels (≈ 1.4 normally; widened briefly on downbeats).
+#[allow(clippy::too_many_arguments)]
 fn draw_waveform_ink(
     buf: &mut [f32],
     w: u32,
@@ -776,11 +1142,10 @@ fn draw_waveform_ink(
     samples: &[f32],
     shape: WaveShape,
     ink: f32,
+    radius: f32,
 ) {
     if samples.is_empty() || w < 4 || h < 4 { return; }
 
-    // Stamp radius ≈ 1.4 px → drawn stroke ≈ 2.5-3 px.
-    let radius: f32 = 1.4;
     let n = samples.len();
     let n_f = n as f32;
     let wf = w as f32;
@@ -1210,6 +1575,119 @@ mod tests {
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;
         println!("granite 576x360: {ms:.2} ms/frame");
         assert!(ms < 33.0, "kernel too slow: {ms:.2} ms/frame");
+    }
+
+    #[test]
+    fn beat_detector_fires_on_kicks_only() {
+        let mut d = BeatDetector::new();
+        // Quiet high-frequency hiss: the low-pass strips it, so its energy
+        // baseline is tiny and steady.
+        let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
+        // Loud low-frequency kick: passes the low-pass nearly intact.
+        let kick: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
+
+        let mut fired = 0;
+        for _ in 0..40 {
+            if d.process(&quiet, 1.5).is_beat { fired += 1; }
+        }
+        assert_eq!(fired, 0, "steady quiet signal must not register beats");
+        assert!(d.process(&kick, 1.5).is_beat, "kick against quiet history must trigger");
+        assert!(!d.process(&kick, 1.5).is_beat, "refractory window must suppress the next frame");
+    }
+
+    #[test]
+    fn sustained_bass_does_not_machine_gun() {
+        // Regression for the 200-BPM readout: a sustained loud bass note
+        // must fire at most once (its attack), never at the refractory rate.
+        // Flux triggering makes this structural — no rise, no beat.
+        let mut d = BeatDetector::new();
+        let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
+        let drone: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
+        for _ in 0..40 {
+            d.process(&quiet, 1.5);
+        }
+        let mut fired = 0;
+        for _ in 0..80 {
+            if d.process(&drone, 1.5).is_beat { fired += 1; }
+        }
+        assert!(fired <= 1, "sustained bass fired {fired} times");
+        assert_eq!(d.bpm(), 0.0, "no repeating interval may produce a BPM");
+    }
+
+    #[test]
+    fn meter_detects_waltz_vs_common_time() {
+        // Accented kick every `period` beats (strong-weak-weak[-weak]);
+        // the autocorrelation must pick the right beats-per-measure and the
+        // downbeat must land on the strong kicks once locked.
+        fn run(period: usize) -> (u8, usize, usize) {
+            let mut d = BeatDetector::new();
+            let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
+            let strong: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
+            let weak: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.45).collect();
+            let mut beats = 0usize;
+            let mut down_on_strong = 0usize;
+            let mut down_total = 0usize;
+            for f in 0..1500 {
+                let (pcm, is_strong) = if f % 15 == 0 {
+                    beats += 1;
+                    if (beats - 1) % period == 0 { (&strong, true) } else { (&weak, false) }
+                } else {
+                    (&quiet, false)
+                };
+                let tick = d.process(pcm, 1.5);
+                if tick.is_downbeat && f > 750 {
+                    down_total += 1;
+                    if is_strong { down_on_strong += 1; }
+                }
+            }
+            (d.meter(), down_on_strong, down_total)
+        }
+
+        let (m4, hit4, tot4) = run(4);
+        assert_eq!(m4, 4, "4-beat accent pattern must read as common time");
+        assert!(tot4 > 0 && hit4 == tot4,
+                "downbeats must land on accents: {hit4}/{tot4}");
+
+        let (m3, hit3, tot3) = run(3);
+        assert_eq!(m3, 3, "3-beat accent pattern must read as waltz");
+        assert!(tot3 > 0 && hit3 == tot3,
+                "downbeats must land on accents: {hit3}/{tot3}");
+    }
+
+    #[test]
+    fn bpm_tracks_kick_interval() {
+        let mut d = BeatDetector::new();
+        let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
+        let kick: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
+        // 120 BPM at the renderer's 30 fps cadence = a kick every 15 frames.
+        for f in 0..200 {
+            let pcm = if f >= 45 && f % 15 == 0 { &kick } else { &quiet };
+            d.process(pcm, 1.5);
+        }
+        let bpm = d.bpm();
+        assert!(
+            (bpm - 120.0).abs() < 12.0,
+            "expected ~120 BPM from 15-frame kicks, got {bpm}"
+        );
+    }
+
+    #[test]
+    fn beats_keep_render_deterministic() {
+        // Alternating quiet/kick PCM exercises the beat paths (glow, shift,
+        // early switches) on both instances; outputs must stay identical.
+        let cfg = GraniteConfig::default();
+        let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
+        let kick: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
+        let mut g1 = Granite::new(32, 18);
+        let mut g2 = Granite::new(32, 18);
+        let mut a = buf_for(32, 18);
+        let mut b = buf_for(32, 18);
+        for f in 0..60 {
+            let pcm = if f % 15 == 0 { &kick } else { &quiet };
+            g1.render(&mut a, 32, 18, f as f32 / 30.0, true, pcm, &cfg);
+            g2.render(&mut b, 32, 18, f as f32 / 30.0, true, pcm, &cfg);
+        }
+        assert_eq!(a, b);
     }
 
     #[test]
