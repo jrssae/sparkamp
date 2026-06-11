@@ -1172,23 +1172,38 @@ pub unsafe extern "C" fn sparkamp_get_granite_palette(ctx: *const SparkampCtx) -
         return 0;
     }
     match (*ctx).config.visualizer.granite.palette {
-        crate::granite::GranitePalette::Granite => 0,
-        crate::granite::GranitePalette::Fire    => 1,
-        crate::granite::GranitePalette::Neon    => 2,
+        crate::granite::GranitePalette::Granite  => 0,
+        crate::granite::GranitePalette::Fire     => 1,
+        crate::granite::GranitePalette::Neon     => 2,
+        crate::granite::GranitePalette::Ocean    => 3,
+        crate::granite::GranitePalette::Violet   => 4,
+        crate::granite::GranitePalette::Sunset   => 5,
+        crate::granite::GranitePalette::Crt      => 6,
+        crate::granite::GranitePalette::Spectrum => 7,
     }
 }
 
-/// Set Granite palette: 0 = Granite, 1 = Fire, 2 = Neon.
+/// Set Granite palette: 0 = Granite, 1 = Fire, 2 = Neon, 3 = Ocean,
+/// 4 = Violet, 5 = Sunset, 6 = CRT, 7 = Spectrum.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_granite_palette(ctx: *mut SparkampCtx, palette: c_int) {
     if ctx.is_null() {
         return;
     }
-    (*ctx).config.visualizer.granite.palette = match palette {
+    let chosen = match palette {
         1 => crate::granite::GranitePalette::Fire,
         2 => crate::granite::GranitePalette::Neon,
+        3 => crate::granite::GranitePalette::Ocean,
+        4 => crate::granite::GranitePalette::Violet,
+        5 => crate::granite::GranitePalette::Sunset,
+        6 => crate::granite::GranitePalette::Crt,
+        7 => crate::granite::GranitePalette::Spectrum,
         _ => crate::granite::GranitePalette::Granite,
     };
+    (*ctx).config.visualizer.granite.palette = chosen;
+    // Push it into the live renderer too: with auto_switch on, the
+    // scheduler owns the palette and the config value alone is never read.
+    (*ctx).player.granite_set_palette(chosen);
 }
 
 /// Get Granite feedback strength (clamped 0.0–0.9).
@@ -1295,6 +1310,24 @@ pub unsafe extern "C" fn sparkamp_granite_random_effect(ctx: *mut SparkampCtx) -
         }
         None => -1,
     }
+}
+
+/// Get whether the display is kept awake during the fullscreen visualizer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_keep_screen_awake(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    (*ctx).config.visualizer.keep_screen_awake
+}
+
+/// Set whether the display is kept awake during the fullscreen visualizer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_keep_screen_awake(ctx: *mut SparkampCtx, on: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).config.visualizer.keep_screen_awake = on;
 }
 
 /// Estimated tempo (BPM) from the Granite beat detector — median of recent

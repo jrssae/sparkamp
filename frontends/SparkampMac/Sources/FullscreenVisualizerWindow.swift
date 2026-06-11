@@ -54,6 +54,9 @@ struct FullscreenVisualizerView: View {
     @State private var hostWindow: NSWindow? = nil
     @State private var toastMessage: String  = ""
     @State private var toastVisible: Bool    = false
+    /// Pending toast-hide; cancelled and rescheduled on each new toast so the
+    /// dismiss timer restarts rather than the old one firing early.
+    @State private var toastDismiss: DispatchWorkItem? = nil
     @State private var fpsValue: Double      = 0
     @State private var bpmValue: Double      = 0
     @State private var meterValue: Int       = 0
@@ -135,7 +138,7 @@ struct FullscreenVisualizerView: View {
                 VStack {
                     Spacer()
                     Text(toastMessage)
-                        .font(.custom(vars.fontFamily, size: 16).weight(.semibold))
+                        .font(.custom(vars.primaryFontFamily, size: 16).weight(.semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
@@ -177,18 +180,31 @@ struct FullscreenVisualizerView: View {
         // Needed so the window accepts key events at all, but never draw
         // the blue focus ring over the visualizer.
         .focusEffectDisabled()
-        // Show a toast whenever the track changes (auto-advance, etc.)
-        .onChange(of: model.currentTitle) { _, title in
-            if !title.isEmpty { showToast(title) }
+        // Show a toast whenever the now-playing track (re)starts: next/prev,
+        // play after pause/stop, or auto-advance. Driven by the model's
+        // nonce (not currentTitle) so a same-track replay still toasts.
+        // Uses the same "Artist — Title" convention as the marquee and
+        // playlist rows (album-artist fallback; the raw title is already the
+        // filename stem when the file has no tags).
+        .onChange(of: model.nowPlayingNonce) { _, _ in
+            let display = model.playlistItems
+                .first(where: { $0.id == model.currentIndex })?
+                .displayName ?? model.currentTitle
+            guard !display.isEmpty else { return }
+            showToast(display)
         }
     }
 
     private func showToast(_ message: String) {
         toastMessage = message
         withAnimation { toastVisible = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            withAnimation { toastVisible = false }
-        }
+        // Restart the dismiss timer: cancel any pending hide first, so rapid
+        // toasts (e.g. holding next/prev) keep the toast up a fresh 3 s each
+        // time instead of an earlier hide firing partway through.
+        toastDismiss?.cancel()
+        let work = DispatchWorkItem { withAnimation { toastVisible = false } }
+        toastDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
     // MARK: - Bars renderer (identical logic to VisualizerView)

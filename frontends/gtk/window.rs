@@ -6456,6 +6456,22 @@ fn open_settings_window(
         }
         grid.attach(&dd_mode, 1, 0, 1, 1);
 
+        // ── Keep display awake during fullscreen visualizer ────────────
+        // Mode-independent: applies to Waveform and Granite fullscreen.
+        let lbl_awake = Label::new(Some("Keep display awake in fullscreen"));
+        lbl_awake.set_halign(Align::Start);
+        grid.attach(&lbl_awake, 0, 4, 1, 1);
+        let chk_awake = CheckButton::new();
+        chk_awake.set_active(state.borrow().config.visualizer.keep_screen_awake);
+        {
+            let state_rc = state.clone();
+            chk_awake.connect_toggled(move |c| {
+                state_rc.borrow_mut().config.visualizer.keep_screen_awake =
+                    c.is_active();
+            });
+        }
+        grid.attach(&chk_awake, 1, 4, 1, 1);
+
         // ── Bars Settings (visible only when Bars mode is selected) ───
         let bars_settings_box = Grid::new();
         bars_settings_box.set_row_spacing(12);
@@ -9207,9 +9223,36 @@ fn open_waveform_fullscreen(
     });
     fs_win.add_controller(key_ctrl);
 
-    // Stop the 33 ms tick before the fullscreen window's surface is freed.
+    // Keep the display awake while fullscreen, when configured. The
+    // session manager auto-releases the inhibit if the app dies, so only
+    // the orderly close path needs the explicit uninhibit.
+    let inhibit_cookie: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+    if state.borrow().config.visualizer.keep_screen_awake {
+        if let Some(app) = gtk4::gio::Application::default()
+            .and_downcast::<gtk4::Application>()
+        {
+            let cookie = app.inhibit(
+                Some(&fs_win),
+                gtk4::ApplicationInhibitFlags::IDLE,
+                Some("Fullscreen visualizer"),
+            );
+            inhibit_cookie.set(cookie);
+        }
+    }
+
+    // Stop the 33 ms tick before the fullscreen window's surface is freed,
+    // and let the display sleep again.
+    let cookie_close = inhibit_cookie.clone();
     fs_win.connect_close_request(move |_| {
         fs_shutting_down.set(true);
+        if cookie_close.get() != 0 {
+            if let Some(app) = gtk4::gio::Application::default()
+                .and_downcast::<gtk4::Application>()
+            {
+                app.uninhibit(cookie_close.get());
+            }
+            cookie_close.set(0);
+        }
         glib::Propagation::Proceed
     });
 

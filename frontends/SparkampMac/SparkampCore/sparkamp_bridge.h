@@ -136,7 +136,8 @@ void    sparkamp_render_granite(SparkampCtx *ctx, uint8_t *out,
 float   sparkamp_get_granite_speed(const SparkampCtx *ctx);
 void    sparkamp_set_granite_speed(SparkampCtx *ctx, float speed);
 
-/** Granite palette: 0 = Granite, 1 = Fire, 2 = Neon. */
+/** Granite palette: 0 = Granite, 1 = Fire, 2 = Neon, 3 = Ocean,
+ *  4 = Violet, 5 = Sunset, 6 = CRT, 7 = Spectrum. */
 int32_t sparkamp_get_granite_palette(const SparkampCtx *ctx);
 void    sparkamp_set_granite_palette(SparkampCtx *ctx, int32_t palette);
 
@@ -164,6 +165,11 @@ void    sparkamp_set_granite_auto_switch(SparkampCtx *ctx, bool on);
 /** Granite beat sensitivity (1.05–3.0; lower = more beats). */
 float   sparkamp_get_granite_beat_sensitivity(const SparkampCtx *ctx);
 void    sparkamp_set_granite_beat_sensitivity(SparkampCtx *ctx, float s);
+
+/** Keep the display awake while the fullscreen visualizer is open.
+ *  When the display sleeps anyway, frontends drop back to windowed mode. */
+bool    sparkamp_get_keep_screen_awake(const SparkampCtx *ctx);
+void    sparkamp_set_keep_screen_awake(SparkampCtx *ctx, bool on);
 
 /** Estimated tempo (BPM) from the Granite beat detector; 0.0 while
  *  unknown. Debug aid for the fullscreen FPS/BPM overlay. */

@@ -148,9 +148,18 @@ pub struct VisualizerConfig {
     /// Granite plasma settings (speed / palette / feedback).
     #[serde(default)]
     pub granite: crate::granite::GraniteConfig,
+    /// Keep the display awake while the fullscreen visualizer is open.
+    /// When the display sleeps anyway (manual sleep, or this is off), the
+    /// frontends drop back to windowed mode — macOS otherwise bounces
+    /// between Spaces on wake.
+    #[serde(default = "VisualizerConfig::default_keep_screen_awake")]
+    pub keep_screen_awake: bool,
 }
 
 impl VisualizerConfig {
+    fn default_keep_screen_awake() -> bool {
+        true
+    }
     fn default_spectrum_bands() -> u32 {
         64
     }
@@ -201,6 +210,7 @@ impl Default for VisualizerConfig {
             waveform_zone_colors: Self::default_waveform_zone_colors(),
             waveform_style: WaveformStyle::default(),
             granite: crate::granite::GraniteConfig::default(),
+            keep_screen_awake: Self::default_keep_screen_awake(),
         }
     }
 }

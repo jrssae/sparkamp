@@ -423,6 +423,17 @@ impl Player {
         self.granite.as_mut().map(|g| g.random_switch())
     }
 
+    /// Apply a user-picked Granite palette immediately (Settings). Holds
+    /// the choice ~20 s before auto palette rolling resumes.
+    // Called by the GTK frontend (Linux bin) and the C FFI (lib); dead in
+    // the macOS bin where neither is compiled.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn granite_set_palette(&mut self, palette: crate::granite::GranitePalette) {
+        if let Some(g) = self.granite.as_mut() {
+            g.set_palette(palette);
+        }
+    }
+
     /// Estimated tempo from the Granite beat detector; 0.0 when unknown.
     #[allow(dead_code)] // used by the macOS FFI only; GTK doesn't surface BPM yet.
     pub fn granite_bpm(&self) -> f32 {

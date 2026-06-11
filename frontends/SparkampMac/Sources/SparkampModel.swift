@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import IOKit.pwr_mgt
 
 // MARK: - C-array string helper
 
@@ -220,7 +221,16 @@ final class SparkampModel: ObservableObject {
     /// Current visualizer mode mirrored from config: 0 = Bars, 1 = Waveform.
     @Published var vizMode: Int = 0
     /// When true, the fullscreen visualizer window is open.
-    @Published var fullscreenVizVisible: Bool = false
+    @Published var fullscreenVizVisible: Bool = false {
+        // Single chokepoint for the display-sleep assertion: every open and
+        // close path (f key, Esc, double-click, onDisappear) flips this flag.
+        didSet { updateDisplaySleepAssertion() }
+    }
+    /// Incremented whenever the now-playing track (re)starts — track change
+    /// via next/prev, play after pause/stop, or auto-advance. The fullscreen
+    /// visualizer observes this to (re)show its track toast even when the
+    /// title is unchanged. See `announceNowPlaying()`.
+    @Published var nowPlayingNonce: Int = 0
     /// FPS overlay in the fullscreen visualizer (`g` key). Lives on the model
     /// because the app-wide key monitor handles the keypress — SwiftUI
     /// `.onKeyPress` on the fullscreen view never fires for keys the monitor
@@ -339,6 +349,20 @@ final class SparkampModel: ObservableObject {
                 // Save full state (Rust config + Swift UserDefaults) at quit time
                 // so window visibility is correctly restored on next launch.
                 self.saveState()
+            }
+        }
+
+        // Exit fullscreen when the display sleeps anyway (manual sleep, or
+        // keep-awake is off): on wake, macOS otherwise bounces focus between
+        // the main Space and the fullscreen visualizer Space.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                if self.fullscreenVizVisible { self.closeFullscreenViz() }
             }
         }
     }
@@ -534,6 +558,15 @@ final class SparkampModel: ObservableObject {
         sparkamp_advance_after_eos(ctx)
         refreshAll()
         saveState()
+        announceNowPlaying()
+    }
+
+    /// Bump the now-playing nonce so the fullscreen visualizer re-shows its
+    /// track toast. A nonce (not `currentTitle`) is the trigger because the
+    /// toast must also fire when the SAME track restarts — play after a
+    /// pause or stop — where the title never changes.
+    private func announceNowPlaying() {
+        nowPlayingNonce &+= 1
     }
 
     private func handlePlaybackError() {
@@ -546,6 +579,7 @@ final class SparkampModel: ObservableObject {
         // Advance past the broken track the same way EOS does (respects repeat/shuffle).
         sparkamp_advance_after_eos(ctx)
         refreshAll()
+        announceNowPlaying()
     }
 
     // MARK: Refresh helpers
@@ -602,7 +636,7 @@ final class SparkampModel: ObservableObject {
 
     // MARK: Transport actions
 
-    func play()  { if let ctx = ctx { sparkamp_play(ctx);  tick() } }
+    func play()  { if let ctx = ctx { sparkamp_play(ctx);  tick(); announceNowPlaying() } }
     func pause() { if let ctx = ctx { sparkamp_pause(ctx); tick() } }
     func stop()  { if let ctx = ctx { sparkamp_stop(ctx);  tick() } }
 
@@ -615,6 +649,7 @@ final class SparkampModel: ObservableObject {
         sparkamp_nav_next(ctx)
         refreshAll()
         saveState()
+        announceNowPlaying()
     }
 
     func prev() {
@@ -622,6 +657,7 @@ final class SparkampModel: ObservableObject {
         sparkamp_nav_prev(ctx)
         refreshAll()
         saveState()
+        announceNowPlaying()
     }
 
     func seek(to fraction: Double) {
@@ -692,6 +728,39 @@ final class SparkampModel: ObservableObject {
     func openId3Editor(trackIndex: Int = -1) {
         id3TrackIndex = trackIndex
         id3EditorVisible = true
+    }
+
+    /// ID of the held "prevent display sleep" power assertion; 0 = none.
+    private var displaySleepAssertion: IOPMAssertionID = 0
+
+    /// Hold a no-display-sleep assertion exactly while the fullscreen
+    /// visualizer is open AND the keep-awake setting is on. Without it
+    /// macOS sleeps the display mid-visualization, and on wake bounces
+    /// between the main Space and the fullscreen Space.
+    func updateDisplaySleepAssertion() {
+        let wantAwake = fullscreenVizVisible
+            && (ctx.map { sparkamp_get_keep_screen_awake($0) } ?? false)
+        if wantAwake && displaySleepAssertion == 0 {
+            var id: IOPMAssertionID = 0
+            let result = IOPMAssertionCreateWithName(
+                kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Sparkamp fullscreen visualizer" as CFString,
+                &id
+            )
+            if result == kIOReturnSuccess { displaySleepAssertion = id }
+        } else if !wantAwake && displaySleepAssertion != 0 {
+            IOPMAssertionRelease(displaySleepAssertion)
+            displaySleepAssertion = 0
+        }
+    }
+
+    /// Settings toggle: persist + apply to any currently-held assertion.
+    func setKeepScreenAwake(_ on: Bool) {
+        guard let ctx = ctx else { return }
+        sparkamp_set_keep_screen_awake(ctx, on)
+        saveState()
+        updateDisplaySleepAssertion()
     }
 
     func closeFullscreenViz() {

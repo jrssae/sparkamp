@@ -58,6 +58,7 @@ struct KeyboardShortcutsView: View {
             entries: [
                 ShortcutEntry(key: "a",          action: "Cycle visualizer mode (Bars / Waveform / Granite)"),
                 ShortcutEntry(key: "n",          action: "Random Granite effect (Granite mode)"),
+                ShortcutEntry(key: "g",          action: "FPS / BPM overlay (fullscreen only)"),
                 ShortcutEntry(key: "f",          action: "Fullscreen visualizer (Waveform or Granite mode)"),
                 ShortcutEntry(key: "dbl-click",  action: "Fullscreen visualizer (double-click)"),
                 ShortcutEntry(key: "Esc",        action: "Exit fullscreen"),
