@@ -341,19 +341,12 @@ struct PlayerWindow: View {
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        let group = DispatchGroup()
-        var urls: [URL] = []
-        for p in providers {
-            group.enter()
-            p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                if let data = item as? Data,
-                   let url = URL(dataRepresentation: data, relativeTo: nil) {
-                    urls.append(url)
-                }
-                group.leave()
-            }
+        // Accept both Sparkamp's internal tracklist UTI (multi-row drag
+        // from any list) and plain file URLs (Finder, single-row drag).
+        TrackDragPayload.resolvePaths(from: providers) { paths in
+            guard !paths.isEmpty else { return }
+            model.addFiles(paths.map { URL(fileURLWithPath: $0) })
         }
-        group.notify(queue: .main) { model.addFiles(urls) }
         return true
     }
 }

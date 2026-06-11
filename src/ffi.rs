@@ -2467,9 +2467,12 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
     let start_idx = ctx.playlist.tracks.len();
     for &id in id_slice {
         if let Some(t) = by_id.get(&id) {
-            if let Ok(track) = Track::from_path_fast(Path::new(&t.path)) {
-                ctx.playlist.tracks.push(track);
-            }
+            // Build the active-playlist Track directly from the ML row so
+            // duration + tags are inherited synchronously.  The background
+            // probe below still runs to refine values for tracks the ML
+            // hasn't scanned yet (length_secs == None) and to catch any
+            // file-vs-DB drift.
+            ctx.playlist.tracks.push(Track::from(*t));
         }
     }
     // Kick off metadata + duration probing for the newly added tracks.
@@ -2555,9 +2558,10 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
     ctx.playlist.tracks.clear();
     ctx.playlist.current_index = 0;
     for t in &tracks {
-        if let Ok(track) = Track::from_path_fast(Path::new(&t.path)) {
-            ctx.playlist.tracks.push(track);
-        }
+        // Inherit duration + tags from the ML row (or the EXTINF data the
+        // loader fell back to for stub entries).  Background probes below
+        // still refine missing values.
+        ctx.playlist.tracks.push(Track::from(t));
     }
     // Kick off background metadata + duration probing.
     for (i, t) in tracks.iter().enumerate() {
@@ -2604,7 +2608,7 @@ pub unsafe extern "C" fn sparkamp_ml_playlist_id(
 
 /// Create a new empty playlist with `name`.
 ///
-/// Writes `~/.config/sparkamp/playlists/<name>.m3u` and registers it in the
+/// Writes `~/.config/sparkamp/playlists/<name>.m3u8` and registers it in the
 /// library DB.  Returns the new playlist row id, or -1 on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_create_playlist(
@@ -2621,7 +2625,97 @@ pub unsafe extern "C" fn sparkamp_ml_create_playlist(
     }
 }
 
-/// Delete the playlist with `id` from the DB.  The `.m3u` file is not removed.
+/// Append raw track paths to an existing saved playlist's file
+/// (`.m3u8` or legacy `.m3u`).  Each entry gets an `#EXTINF` line.
+///
+/// Used by the active-playlist right-click "Add to Playlist" menu so the
+/// user can grow a saved playlist with the currently-selected rows.  The
+/// `paths` array must contain `count` valid null-terminated UTF-8 C
+/// strings.  No-op if any pointer is null or `count <= 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_append_paths_to_playlist(
+    ctx: *mut SparkampCtx,
+    playlist_id: i64,
+    paths: *const *const c_char,
+    count: c_int,
+) {
+    if ctx.is_null() || paths.is_null() || count <= 0 { return; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let mut owned: Vec<String> = Vec::with_capacity(count as usize);
+    for i in 0..count as isize {
+        let p = *paths.offset(i);
+        if p.is_null() { return; }
+        if let Ok(s) = CStr::from_ptr(p).to_str() {
+            owned.push(s.to_string());
+        }
+    }
+    if let Err(e) = ml.append_paths_to_playlist(playlist_id, &owned) {
+        eprintln!("[sparkamp] append_paths_to_playlist {playlist_id}: {e}");
+    }
+}
+
+/// Write a playlist `.m3u8` file at exactly `target_path` (caller-chosen
+/// directory + filename) populated with `paths`, then register it in the
+/// library.  Each path is looked up in the library so the file gets
+/// `#EXTINF` lines (duration / artist / title) for every track the library
+/// has metadata for; unknown paths get a `-1` EXTINF + filename fallback.
+///
+/// Use this for the macOS NSSavePanel "Save As…" flow when the user picks
+/// a destination outside Sparkamp's managed playlists folder.  Returns
+/// the new playlist row id, or -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_save_playlist_to_path(
+    ctx: *mut SparkampCtx,
+    target_path: *const c_char,
+    paths: *const *const c_char,
+    count: c_int,
+) -> i64 {
+    if ctx.is_null() || target_path.is_null() || count < 0 { return -1; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return -1 };
+    let Ok(target) = CStr::from_ptr(target_path).to_str() else { return -1 };
+    let track_paths: Vec<String> = if paths.is_null() || count == 0 {
+        Vec::new()
+    } else {
+        let slice = std::slice::from_raw_parts(paths, count as usize);
+        slice.iter()
+            .filter_map(|&p| if p.is_null() {
+                None
+            } else {
+                CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned())
+            })
+            .collect()
+    };
+    match ml.save_playlist_tracks_to_path(Path::new(target), &track_paths) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("[sparkamp] save_playlist_to_path: {e}"); -1 }
+    }
+}
+
+/// Register an existing `.m3u` / `.m3u8` file on disk as a playlist in
+/// the library.
+///
+/// Use after the frontend has written the file itself, so the new
+/// playlist appears in the sidebar without a full library rescan.  Returns
+/// the new playlist row id, or -1 on error (including malformed UTF-8 in
+/// `path`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_add_playlist_file(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) -> i64 {
+    if ctx.is_null() || path.is_null() { return -1; }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return -1 };
+    let Ok(p) = CStr::from_ptr(path).to_str() else { return -1 };
+    match ml.add_playlist_file(p) {
+        Ok(id) => id,
+        Err(e) => { eprintln!("[sparkamp] add_playlist_file: {e}"); -1 }
+    }
+}
+
+/// Delete the playlist with `id` from the DB.  The playlist file is not removed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_delete_playlist(
     ctx: *mut SparkampCtx,
@@ -2635,7 +2729,8 @@ pub unsafe extern "C" fn sparkamp_ml_delete_playlist(
     }
 }
 
-/// Rename playlist `id`.  Updates both the DB record and the `.m3u` file.
+/// Rename playlist `id`.  Updates both the DB record and the playlist file
+/// on disk (extension preserved — legacy `.m3u` stays `.m3u`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_rename_playlist(
     ctx: *mut SparkampCtx,
@@ -2653,8 +2748,9 @@ pub unsafe extern "C" fn sparkamp_ml_rename_playlist(
 
 /// Overwrite playlist `id` with the given track IDs (in order).
 ///
-/// Writes the new track list to the `.m3u` file on disk.  Track IDs not found
-/// in the library are silently skipped.
+/// Writes the new track list to the playlist file on disk (`.m3u8` or legacy
+/// `.m3u`), emitting `#EXTINF` metadata per entry.  Track IDs not found in
+/// the library are silently skipped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_save_playlist(
     ctx: *mut SparkampCtx,
@@ -2792,6 +2888,63 @@ pub unsafe extern "C" fn sparkamp_ml_record_play(
     let Some(ml) = &ctx.media_library else { return };
     if let Ok(p) = CStr::from_ptr(path).to_str() {
         let _ = ml.record_play(p);
+    }
+}
+
+/// Force a single track to be re-scanned (tags + duration upserted into the
+/// library DB).  Used after the ID3 editor saves so the Files view shows the
+/// new metadata without a full library rescan.  No-op when ML is not open
+/// or the file is missing / not in a watched folder.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_rescan_track(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) {
+    if ctx.is_null() || path.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    if let Ok(p) = CStr::from_ptr(path).to_str() {
+        if let Err(e) = ml.rescan_track(p) {
+            eprintln!("[sparkamp] rescan_track {p}: {e}");
+        }
+    }
+}
+
+/// Add a batch of file paths to the library DB.  Each path is upserted
+/// under the deepest watched folder whose path is its prefix; paths that
+/// don't fall inside any watched folder are silently skipped.  Returns
+/// the number of paths actually inserted/updated.
+///
+/// Used by the macOS frontend when the user drags tracks onto the Files
+/// view (scenarios 5 & 8): we add the files to the library DB but do
+/// NOT register a new watched folder.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_add_files(
+    ctx: *mut SparkampCtx,
+    paths: *const *const c_char,
+    count: i32,
+) -> i32 {
+    if ctx.is_null() || paths.is_null() || count <= 0 {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let slice = std::slice::from_raw_parts(paths, count as usize);
+    let mut owned: Vec<String> = Vec::with_capacity(slice.len());
+    for &p in slice {
+        if p.is_null() { continue }
+        if let Ok(s) = CStr::from_ptr(p).to_str() {
+            owned.push(s.to_owned());
+        }
+    }
+    match ml.add_files_to_library(&owned) {
+        Ok(n) => n as i32,
+        Err(e) => {
+            eprintln!("[sparkamp] add_files_to_library: {e}");
+            0
+        }
     }
 }
 

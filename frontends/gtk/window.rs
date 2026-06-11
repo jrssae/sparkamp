@@ -1133,6 +1133,66 @@ fn start_playlist_scan_poller(
     });
 }
 
+/// Determine the default initial folder for the playlist Save dialog.
+/// Mirrors `SparkampModel.mlDefaultSaveAsDir()` on macOS:
+///
+/// 1. First watched ML folder if one exists on disk.
+/// 2. The current user's `~/Music` folder.
+/// 3. The home directory as a last-resort fallback.
+///
+/// Avoids defaulting to Sparkamp's managed `~/.config/sparkamp/playlists/`
+/// directory — saving there has the side effect of registering that
+/// internal dir as a watched folder via `add_playlist_file`.
+fn default_playlist_save_dir(
+    state: &std::rc::Rc<std::cell::RefCell<crate::state::AppState>>,
+) -> std::path::PathBuf {
+    if let Some(lib) = state.borrow().media_lib.as_ref() {
+        if let Ok(folders) = lib.list_folders() {
+            if let Some((_, p)) = folders.first() {
+                let pb = std::path::PathBuf::from(p);
+                if pb.exists() { return pb; }
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let music = home.join("Music");
+        if music.exists() { return music; }
+        return home;
+    }
+    std::path::PathBuf::from("/")
+}
+
+/// Run the native Save dialog for a playlist file (`.m3u8`).  Initial
+/// name is `initial_stem.m3u8`, initial folder is the first watched ML
+/// folder or `~/Music`.  On accept, calls `on_accept` with the chosen
+/// absolute path (extension is forced to `.m3u8` if the user didn't add
+/// one).  Single helper used by every playlist-creation flow so all
+/// paths share the same defaults.
+fn run_playlist_save_dialog<F>(
+    state: std::rc::Rc<std::cell::RefCell<crate::state::AppState>>,
+    win: gtk4::ApplicationWindow,
+    initial_stem: &str,
+    on_accept: F,
+) where
+    F: 'static + FnOnce(std::path::PathBuf),
+{
+    let dialog = gtk4::FileDialog::new();
+    dialog.set_title("Save Playlist As");
+    dialog.set_initial_name(Some(&format!("{initial_stem}.m3u8")));
+    let initial_folder = default_playlist_save_dir(&state);
+    if initial_folder.exists() {
+        dialog.set_initial_folder(Some(&gio::File::for_path(&initial_folder)));
+    }
+    dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
+        let Ok(file) = res else { return };
+        let Some(mut path) = file.path() else { return };
+        if path.extension().is_none() {
+            path.set_extension("m3u8");
+        }
+        on_accept(path);
+    });
+}
+
 pub fn build(
     app: &Application,
     playlist: Playlist,
@@ -1709,6 +1769,11 @@ pub fn build(
     // making a separate single-file button redundant.
     let btn_add_files = Button::with_label("+ Files"); // one or more audio files
     let btn_add_dir = Button::with_label("+ Folder"); // directory (recursive scan)
+    // Save the entire active playlist to an M3U8 file via the native
+    // Save dialog.  Mirrors the macOS frontend's Save button.
+    let btn_save_active = Button::with_label("⤓ Save");
+    btn_save_active.add_css_class("pl-btn");
+    btn_save_active.set_tooltip_text(Some("Save active playlist to an M3U8 file"));
     let btn_remove = Button::with_label("✕ Remove"); // remove selected row(s)
     let btn_clear_all = Button::with_label("✕ All"); // clear entire playlist
     let btn_cancel = Button::with_label("✕ Cancel Scan");
@@ -1727,6 +1792,7 @@ pub fn build(
     // Left-align the add buttons; right-align destructive buttons with a flexible spacer.
     pl_btn_row.append(&btn_add_files);
     pl_btn_row.append(&btn_add_dir);
+    pl_btn_row.append(&btn_save_active);
     let spacer = GtkBox::new(Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     pl_btn_row.append(&spacer);
@@ -2913,6 +2979,36 @@ pub fn build(
                     phase1_done_rx,
                     scan_start,
                 );
+            });
+        }
+    });
+
+    // [⤓ Save] active playlist: open the native Save dialog, write the
+    // current queue's track paths to the chosen .m3u8 file via the core
+    // helper (which emits #EXTINF lines and registers the playlist in
+    // the library), then refresh the sidebar so the new entry appears.
+    btn_save_active.connect_clicked({
+        let state = state.clone();
+        let window_wk = playlist_win.downgrade();
+        move |_| {
+            let Some(win) = window_wk.upgrade() else { return };
+            let paths: Vec<String> = state.borrow().playlist.tracks
+                .iter().map(|t| t.path.clone()).collect();
+            if paths.is_empty() { return }
+            // Timestamped default name (readable, sortable, no colons).
+            // Uses glib's local time so we don't add a chrono dependency.
+            let default_stem = glib::DateTime::now_local()
+                .ok()
+                .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Playlist".to_string());
+            let state_cb = state.clone();
+            run_playlist_save_dialog(state.clone(), win, &default_stem, move |path| {
+                if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
+                    if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths) {
+                        eprintln!("save_playlist_tracks_to_path: {e}");
+                    }
+                }
             });
         }
     });
@@ -8069,7 +8165,7 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
                                 if let Some(info) = tm_borrow.get(&tid) {
                                     st.borrow_mut()
                                         .playlist
-                                        .add(libtrack_to_track(&info.track));
+                                        .add(crate::model::Track::from(&info.track));
                                 }
                                 #[allow(deprecated)]
                                 if !ts.iter_next(&ci) {
@@ -8640,24 +8736,6 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
         "lyric" => t.lyric.as_deref().unwrap_or("").to_lowercase(),
         "artwork_path" => t.artwork_path.as_deref().unwrap_or("").to_lowercase(),
         _ => String::new(),
-    }
-}
-
-fn libtrack_to_track(t: &crate::media_library::LibTrack) -> crate::model::Track {
-    use std::time::Duration;
-    let path = std::path::PathBuf::from(&t.path);
-    let read_only = crate::media_library::is_read_only(&path);
-    crate::model::Track {
-        path,
-        title: t.title.clone().unwrap_or_else(|| t.filename.clone()),
-        artist: t.artist.clone().unwrap_or_default(),
-        album_artist: String::new(),
-        album: t.album.clone().unwrap_or_default(),
-        duration: t
-            .length_secs
-            .map(|s| Duration::try_from_secs_f64(s).unwrap_or_default()),
-        broken: false,
-        read_only,
     }
 }
 
@@ -10101,7 +10179,7 @@ fn open_media_library_window(
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
                             let t = obj.borrow::<crate::media_library::LibTrack>();
-                            let track = libtrack_to_track(&t);
+                            let track = crate::model::Track::from(&*t);
                             state_rc.borrow_mut().playlist.add(track);
                             added += 1;
                         }
@@ -10143,7 +10221,7 @@ fn open_media_library_window(
                     let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
                         == crate::config::PlaylistAddBehavior::Replace;
                     let t = obj.borrow::<crate::media_library::LibTrack>();
-                    let track = libtrack_to_track(&t);
+                    let track = crate::model::Track::from(&*t);
                     drop(t);
                     if should_replace {
                         // Stop before clearing so the current track doesn't
@@ -10852,30 +10930,7 @@ fn open_media_library_window(
             let load          = load_pl_by_id.clone();
             let win_wk        = win.downgrade();
             btn_new_pl.connect_clicked(move |_| {
-                let dialog = gtk4::Window::builder()
-                    .title("New Playlist").modal(true).resizable(false).default_width(300)
-                    .build();
-                if let Some(w) = win_wk.upgrade() { dialog.set_transient_for(Some(&w)); }
-                let vbox = GtkBox::new(Orientation::Vertical, 8);
-                vbox.set_margin_top(12); vbox.set_margin_bottom(12);
-                vbox.set_margin_start(12); vbox.set_margin_end(12);
-                let lbl = Label::builder().label("Playlist name:").halign(Align::Start).build();
-                let name_entry = Entry::new();
-                name_entry.set_text("New Playlist");
-                name_entry.set_hexpand(true);
-                let dialog_btns = GtkBox::new(Orientation::Horizontal, 6);
-                dialog_btns.set_halign(Align::End);
-                let cancel_btn = Button::with_label("Cancel");
-                let ok_btn = Button::with_label("Create");
-                ok_btn.add_css_class("suggested-action");
-                dialog_btns.append(&cancel_btn);
-                dialog_btns.append(&ok_btn);
-                vbox.append(&lbl); vbox.append(&name_entry); vbox.append(&dialog_btns);
-                dialog.set_child(Some(&vbox));
-                let d = dialog.clone();
-                cancel_btn.connect_clicked(move |_| { d.close(); });
-                let d       = dialog.clone();
-                let e       = name_entry.clone();
+                let Some(win) = win_wk.upgrade() else { return };
                 let state2  = state_rc.clone();
                 let pl_ref2 = pl_list_ref.clone();
                 let sid2    = sidebar_ref.clone();
@@ -10883,45 +10938,49 @@ fn open_media_library_window(
                 let exp2    = expanded_ref.clone();
                 let pls2    = pl_sub_ref.clone();
                 let load2   = load.clone();
-                ok_btn.connect_clicked(move |_| {
-                    let name = e.text().to_string();
-                    if name.is_empty() { return; }
-                    if let Some(id) = state2.borrow().media_lib.as_ref()
-                        .and_then(|lib| lib.create_playlist(&name).ok())
-                    {
-                        // Add to manage list
-                        let row_lbl = Label::builder().label(&name)
-                            .halign(Align::Start)
-                            .margin_start(8).margin_end(8)
-                            .margin_top(3).margin_bottom(3).build();
-                        let manage_row = ListBoxRow::new();
-                        manage_row.set_widget_name(&id.to_string());
-                        manage_row.set_child(Some(&row_lbl));
-                        pl_ref2.append(&manage_row);
-                        pl_ref2.select_row(Some(&manage_row));
+                // Save dialog replaces the previous name-only popup —
+                // user picks BOTH the filename and the target folder so
+                // the new playlist no longer lands silently in Sparkamp's
+                // managed `~/.config/sparkamp/playlists/` directory (which
+                // had the side effect of registering itself as a watched
+                // folder via `add_playlist_file`).
+                run_playlist_save_dialog(state_rc.clone(), win, "New Playlist", move |path| {
+                    let name = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Untitled")
+                        .to_string();
+                    let Some(new_id) = state2.borrow().media_lib.as_ref()
+                        .and_then(|lib| lib.save_playlist_tracks_to_path(&path, &[]).ok())
+                    else { return };
 
-                        // Add sidebar sub-row and select it
-                        let s_lbl = Label::builder().label(&name)
-                            .halign(Align::Start)
-                            .xalign(0.0)
-                            .margin_start(24).margin_end(8)
-                            .margin_top(4).margin_bottom(4).build();
-                        let s_row = ListBoxRow::new();
-                        s_row.set_widget_name(&format!("pl:{}", id));
-                        s_row.set_child(Some(&s_lbl));
-                        s_row.set_visible(exp2.get());
-                        sid2.append(&s_row);
-                        sub2.borrow_mut().push(s_row.clone());
-                        sid2.select_row(Some(&s_row));
+                    // Add to manage list
+                    let row_lbl = Label::builder().label(&name)
+                        .halign(Align::Start)
+                        .margin_start(8).margin_end(8)
+                        .margin_top(3).margin_bottom(3).build();
+                    let manage_row = ListBoxRow::new();
+                    manage_row.set_widget_name(&new_id.to_string());
+                    manage_row.set_child(Some(&row_lbl));
+                    pl_ref2.append(&manage_row);
+                    pl_ref2.select_row(Some(&manage_row));
 
-                        load2(id);
-                        pls2.set_visible_child_name("pl-edit");
-                    }
-                    d.close();
+                    // Add sidebar sub-row and select it
+                    let s_lbl = Label::builder().label(&name)
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .margin_start(24).margin_end(8)
+                        .margin_top(4).margin_bottom(4).build();
+                    let s_row = ListBoxRow::new();
+                    s_row.set_widget_name(&format!("pl:{}", new_id));
+                    s_row.set_child(Some(&s_lbl));
+                    s_row.set_visible(exp2.get());
+                    sid2.append(&s_row);
+                    sub2.borrow_mut().push(s_row.clone());
+                    sid2.select_row(Some(&s_row));
+
+                    load2(new_id);
+                    pls2.set_visible_child_name("pl-edit");
                 });
-                let ok2 = ok_btn.clone();
-                name_entry.connect_activate(move |_| { ok2.activate(); });
-                dialog.present();
             });
         }
 
@@ -11284,103 +11343,64 @@ fn open_media_library_window(
             let pl_ml_ref    = pl_manage_list.clone();
             let win_wk       = win.downgrade();
             btn_save_as_pl.connect_clicked(move |_| {
-                // Prompt for new playlist name.
-                let dialog = gtk4::AlertDialog::builder()
-                    .message("Save As New Playlist")
-                    .detail("Enter a name for the new playlist:")
-                    .build();
-                // Use an Entry inside a popover-style dialog via a simple GTK dialog window.
-                let win_ref = win_wk.upgrade();
-                let name_dlg = gtk4::Window::builder()
-                    .title("Save As New Playlist")
-                    .modal(true)
-                    .resizable(false)
-                    .default_width(320)
-                    .build();
-                if let Some(ref w) = win_ref { name_dlg.set_transient_for(Some(w)); }
-                let dlg_vbox = GtkBox::new(Orientation::Vertical, 8);
-                dlg_vbox.set_margin_top(16); dlg_vbox.set_margin_bottom(16);
-                dlg_vbox.set_margin_start(16); dlg_vbox.set_margin_end(16);
-                let _ = dialog; // silence unused warning
-                let lbl = Label::builder().label("Playlist name:").halign(Align::Start).build();
-                let entry = gtk4::Entry::new();
-                entry.set_placeholder_text(Some("New Playlist"));
-                // Pre-fill with current playlist name if we have one.
-                if ep_id.get() >= 0 {
-                    if let Some(ref lib) = state_rc.borrow().media_lib {
-                        if let Ok(pl) = lib.playlist_by_id(ep_id.get()) {
-                            entry.set_text(&pl.name);
-                        }
-                    }
-                }
-                let btn_row = GtkBox::new(Orientation::Horizontal, 8);
-                let btn_cancel = Button::with_label("Cancel"); btn_cancel.add_css_class("pl-btn");
-                let btn_ok     = Button::with_label("Save");   btn_ok.add_css_class("pl-btn");
-                let spr = GtkBox::new(Orientation::Horizontal, 0); spr.set_hexpand(true);
-                btn_row.append(&spr);
-                btn_row.append(&btn_cancel);
-                btn_row.append(&btn_ok);
-                dlg_vbox.append(&lbl);
-                dlg_vbox.append(&entry);
-                dlg_vbox.append(&btn_row);
-                name_dlg.set_child(Some(&dlg_vbox));
+                let Some(win) = win_wk.upgrade() else { return };
+                // Pre-fill the Save dialog with the current playlist's name
+                // (or "New Playlist" when the editor has no playlist loaded).
+                let initial_stem = if ep_id.get() >= 0 {
+                    state_rc.borrow().media_lib.as_ref()
+                        .and_then(|lib| lib.playlist_by_id(ep_id.get()).ok())
+                        .map(|pl| pl.name)
+                        .unwrap_or_else(|| "New Playlist".to_string())
+                } else {
+                    "New Playlist".to_string()
+                };
+                let paths: Vec<String> = et.borrow().iter().map(|t| t.path.clone()).collect();
+                let state2   = state_rc.clone();
+                let ep_id2   = ep_id.clone();
+                let load2    = load.clone();
+                let sidebar2 = sidebar_ref.clone();
+                let pl_ml2   = pl_ml_ref.clone();
+                // Native Save dialog replaces the previous name-only popup —
+                // user chooses both filename and folder so the new .m3u8
+                // doesn't silently land in the managed-playlists dir (which
+                // `add_playlist_file` then registered as a watched folder).
+                run_playlist_save_dialog(state_rc.clone(), win, &initial_stem, move |path| {
+                    let new_name = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Untitled")
+                        .to_string();
+                    let Some(new_id) = state2.borrow().media_lib.as_ref()
+                        .and_then(|lib| lib.save_playlist_tracks_to_path(&path, &paths).ok())
+                    else { return };
 
-                // Cancel handler
-                {
-                    let d = name_dlg.clone();
-                    btn_cancel.connect_clicked(move |_| { d.close(); });
-                }
-                // Save handler
-                {
-                    let state2    = state_rc.clone();
-                    let et2       = et.clone();
-                    let ep_id2    = ep_id.clone();
-                    let load2     = load.clone();
-                    let sidebar2  = sidebar_ref.clone();
-                    let pl_ml2    = pl_ml_ref.clone();
-                    let entry2    = entry.clone();
-                    let d         = name_dlg.clone();
-                    btn_ok.connect_clicked(move |_| {
-                        let new_name = entry2.text().to_string();
-                        let new_name = new_name.trim();
-                        if new_name.is_empty() { return; }
-                        let paths: Vec<String> = et2.borrow().iter().map(|t| t.path.clone()).collect();
-                        let new_id = if let Some(ref lib) = state2.borrow().media_lib {
-                            lib.save_playlist_tracks_as(new_name, &paths).ok()
-                        } else { None };
-                        if let Some(new_id) = new_id {
-                            // Add row to manage list + sidebar
-                            let lbl = Label::builder()
-                                .label(new_name)
-                                .halign(Align::Start)
-                                .margin_start(8).margin_end(8)
-                                .margin_top(3).margin_bottom(3)
-                                .build();
-                            let manage_row = ListBoxRow::new();
-                            manage_row.set_widget_name(&new_id.to_string());
-                            manage_row.set_child(Some(&lbl));
-                            pl_ml2.append(&manage_row);
+                    // Add row to manage list + sidebar
+                    let lbl = Label::builder()
+                        .label(&new_name)
+                        .halign(Align::Start)
+                        .margin_start(8).margin_end(8)
+                        .margin_top(3).margin_bottom(3)
+                        .build();
+                    let manage_row = ListBoxRow::new();
+                    manage_row.set_widget_name(&new_id.to_string());
+                    manage_row.set_child(Some(&lbl));
+                    pl_ml2.append(&manage_row);
 
-                            let s_lbl = Label::builder()
-                                .label(new_name)
-                                .halign(Align::Start)
-                                .xalign(0.0)
-                                .margin_start(24).margin_end(8)
-                                .margin_top(4).margin_bottom(4)
-                                .build();
-                            let s_row = ListBoxRow::new();
-                            s_row.set_widget_name(&format!("pl:{}", new_id));
-                            s_row.set_child(Some(&s_lbl));
-                            sidebar2.append(&s_row);
-                            sidebar2.select_row(Some(&s_row));
+                    let s_lbl = Label::builder()
+                        .label(&new_name)
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .margin_start(24).margin_end(8)
+                        .margin_top(4).margin_bottom(4)
+                        .build();
+                    let s_row = ListBoxRow::new();
+                    s_row.set_widget_name(&format!("pl:{}", new_id));
+                    s_row.set_child(Some(&s_lbl));
+                    sidebar2.append(&s_row);
+                    sidebar2.select_row(Some(&s_row));
 
-                            ep_id2.set(new_id);
-                            load2(new_id);
-                        }
-                        d.close();
-                    });
-                }
-                name_dlg.present();
+                    ep_id2.set(new_id);
+                    load2(new_id);
+                });
             });
         }
 
@@ -11416,7 +11436,7 @@ fn open_media_library_window(
                     let _ = s.player.stop();
                     s.playlist = crate::model::Playlist::new();
                     for lt in &tracks {
-                        s.playlist.add(libtrack_to_track(lt));
+                        s.playlist.add(crate::model::Track::from(lt));
                     }
                 }
                 if autoplay {
@@ -11442,7 +11462,7 @@ fn open_media_library_window(
                 {
                     let mut s = state_rc.borrow_mut();
                     for lt in &tracks {
-                        s.playlist.add(libtrack_to_track(lt));
+                        s.playlist.add(crate::model::Track::from(lt));
                     }
                 }
                 // Don't interrupt a track the user is already listening to.
@@ -11645,7 +11665,7 @@ fn open_media_library_window(
                     let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
                     {
                         let mut s = state_rc.borrow_mut();
-                        s.playlist.add(libtrack_to_track(&lt));
+                        s.playlist.add(crate::model::Track::from(&lt));
                     }
                     if autoplay && was_empty {
                         if let Some(display) = state_rc.borrow_mut().play_current() {
@@ -11674,7 +11694,7 @@ fn open_media_library_window(
                         let mut s = state_rc.borrow_mut();
                         let _ = s.player.stop();
                         s.playlist = crate::model::Playlist::new();
-                        s.playlist.add(libtrack_to_track(&lt));
+                        s.playlist.add(crate::model::Track::from(&lt));
                     }
                     if autoplay {
                         if let Some(display) = state_rc.borrow_mut().play_current() {

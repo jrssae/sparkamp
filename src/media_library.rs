@@ -11,7 +11,7 @@
 //! - **folders** — watched root directories (paths the user added).
 //! - **tracks** — every audio file found under a watched folder, with
 //!   metadata read from ID3 / Symphonia tags.
-//! - **playlists** — `.m3u` files found under watched folders.
+//! - **playlists** — `.m3u8` / `.m3u` files found under watched folders.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -612,6 +612,40 @@ impl MediaLibrary {
             .context("list_folders query")
     }
 
+    /// Add a list of audio file paths to the library DB.  For each path,
+    /// finds the deepest watched folder whose path is a prefix of the
+    /// file's path and upserts the track under that folder.  Paths that
+    /// live outside every watched folder are silently skipped — adding
+    /// them would require registering a new watched folder, which the
+    /// drop-onto-Files-table flow explicitly forbids (user-facing rule:
+    /// "add to library DB only, no new watch folders").
+    ///
+    /// Returns the count of paths that were actually upserted.
+    pub fn add_files_to_library(&self, paths: &[String]) -> Result<usize> {
+        let folders = self.list_folders()?;
+        let mut added = 0;
+        for path in paths {
+            // Deepest matching folder wins (handles nested watched folders).
+            let mut best: Option<(i64, &str)> = None;
+            for (fid, fpath) in &folders {
+                if path.starts_with(fpath.as_str())
+                    && (best.is_none() || fpath.len() > best.unwrap().1.len())
+                {
+                    best = Some((*fid, fpath.as_str()));
+                }
+            }
+            let Some((folder_id, _)) = best else { continue };
+            // upsert_track is fallible per-file (probe failure, IO, etc.);
+            // log and continue so one bad file doesn't abort the batch.
+            if let Err(e) = self.upsert_track(folder_id, path) {
+                eprintln!("add_files_to_library: skip {path}: {e}");
+                continue;
+            }
+            added += 1;
+        }
+        Ok(added)
+    }
+
     /// Return all track IDs in a folder, for soft-delete UI updates.
     pub fn track_ids_for_folder(&self, folder_id: i64) -> Result<Vec<i64>> {
         let mut stmt = self
@@ -643,11 +677,11 @@ impl MediaLibrary {
         Ok((total_added, total_removed))
     }
 
-    /// Scan a single folder for audio files and `.m3u` playlists.
+    /// Scan a single folder for audio files and `.m3u8` / `.m3u` playlists.
     ///
     /// Walk the directory tree recursively, collecting:
     /// - Audio files (by extension) → upsert into `tracks`.
-    /// - `.m3u` files → upsert into `playlists`.
+    /// - `.m3u8` / `.m3u` files → upsert into `playlists`.
     ///
     /// Tracks that were previously in the DB but whose file no longer exists
     /// on disk are removed.  Returns `(added, removed)` counts.
@@ -701,12 +735,19 @@ impl MediaLibrary {
             }
         }
 
-        // Upsert .m3u playlists.
+        // Upsert .m3u8 / .m3u playlists.  Use ON CONFLICT … DO UPDATE
+        // (not INSERT OR REPLACE) so the row's id is preserved across
+        // rescans — REPLACE deletes + re-inserts, churning the id and
+        // invalidating any UI that captured the old value.
         for m3u in &m3u_files {
             if let Some(name) = m3u.file_stem().and_then(|s| s.to_str()) {
                 let p = m3u.to_string_lossy();
                 self.conn.execute(
-                    "INSERT OR REPLACE INTO playlists (path, folder_id, name) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO playlists (path, folder_id, name)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(path) DO UPDATE SET
+                         folder_id = excluded.folder_id,
+                         name      = excluded.name",
                     params![p.as_ref(), folder_id, name],
                 )?;
             }
@@ -801,12 +842,19 @@ impl MediaLibrary {
         }
         self.conn.execute("COMMIT", [])?;
 
-        // Upsert .m3u playlists.
+        // Upsert .m3u8 / .m3u playlists.  Use ON CONFLICT … DO UPDATE
+        // (not INSERT OR REPLACE) so the row's id is preserved across
+        // rescans — REPLACE deletes + re-inserts, churning the id and
+        // invalidating any UI that captured the old value.
         for m3u in &m3u_files {
             if let Some(name) = m3u.file_stem().and_then(|s| s.to_str()) {
                 let p = m3u.to_string_lossy();
                 self.conn.execute(
-                    "INSERT OR REPLACE INTO playlists (path, folder_id, name) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO playlists (path, folder_id, name)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(path) DO UPDATE SET
+                         folder_id = excluded.folder_id,
+                         name      = excluded.name",
                     params![p.as_ref(), folder_id, name],
                 )?;
             }
@@ -1044,8 +1092,26 @@ impl MediaLibrary {
         let dir = if desc { "DESC" } else { "ASC" };
         match col {
             "title" => format!("LOWER(COALESCE(title,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "artist" => format!(
+                "LOWER(COALESCE(artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"
+            ),
             "album" => format!(
                 "LOWER(COALESCE(album,'')) {dir}, LOWER(COALESCE(artist,'')) ASC, track_num ASC"
+            ),
+            "album_artist" => format!(
+                "LOWER(COALESCE(album_artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"
+            ),
+            "composer" => format!(
+                "LOWER(COALESCE(composer,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "comment" => format!(
+                "LOWER(COALESCE(comment,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "bpm" => format!(
+                "LOWER(COALESCE(bpm,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "disc_num" => format!(
+                "COALESCE(disc_num, 0) {dir}, COALESCE(track_num, 0) ASC, LOWER(COALESCE(artist,'')) ASC"
             ),
             "duration" => format!("COALESCE(length_secs, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "filename" => format!("LOWER(COALESCE(filename,'')) {dir}"),
@@ -1084,7 +1150,7 @@ impl MediaLibrary {
             .context("all_playlists query")
     }
 
-    /// Parse an `.m3u` file and return all entries.
+    /// Parse a playlist file (`.m3u8` or legacy `.m3u`) and return all entries.
     ///
     /// Tracks found in the library are returned with full metadata.  Tracks
     /// whose paths are not present in the library (e.g. Windows-originated
@@ -1387,7 +1453,7 @@ impl MediaLibrary {
 
     /// Remove a playlist entry from the library by its row ID.
     ///
-    /// The `.m3u` file on disk is **not** deleted.
+    /// The playlist file on disk is **not** deleted.
     #[allow(dead_code)]
     pub fn remove_playlist(&self, playlist_id: i64) -> Result<()> {
         self.conn
@@ -1408,12 +1474,88 @@ impl MediaLibrary {
         dir
     }
 
+    /// Format an `#EXTINF` line for a single entry.
+    ///
+    /// `duration` is rounded to whole seconds; `-1` is emitted when the
+    /// duration is unknown (matches the Winamp / VLC convention).  The
+    /// display name is `"Artist - Title"` when both are known, `"Title"`
+    /// alone when only the title is known, else the filename fallback.
+    fn extinf_line(
+        duration: Option<f64>,
+        artist: Option<&str>,
+        title: Option<&str>,
+        fallback: &str,
+    ) -> String {
+        let secs = duration.map(|d| d.round() as i64).unwrap_or(-1);
+        let artist = artist.filter(|s| !s.is_empty());
+        let title = title.filter(|s| !s.is_empty());
+        let display = match (artist, title) {
+            (Some(a), Some(t)) => format!("{a} - {t}"),
+            (None, Some(t)) => t.to_string(),
+            _ => fallback.to_string(),
+        };
+        format!("#EXTINF:{secs},{display}")
+    }
+
+    /// Look up `(duration, artist, title)` for a track by its on-disk path,
+    /// returning `(None, None, None)` when the path is not in the library.
+    /// Used by `.m3u8` writers that only know paths (e.g. append-paths,
+    /// save-as from raw paths) so the written file still gets `#EXTINF`
+    /// metadata for tracks the library has already scanned.
+    fn metadata_by_path(
+        &self,
+        path: &str,
+    ) -> (Option<f64>, Option<String>, Option<String>) {
+        self.conn
+            .query_row(
+                "SELECT length_secs, artist, title FROM tracks WHERE path = ?1",
+                params![path],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<f64>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap_or((None, None, None))
+    }
+
+    /// Build an `#EXTM3U` body from `(path, duration, artist, title)` tuples,
+    /// emitting one `#EXTINF` line + the path for each entry.  Used by every
+    /// path that writes a `.m3u8` so the format stays consistent.
+    fn build_m3u_body(
+        entries: &[(String, Option<f64>, Option<String>, Option<String>)],
+    ) -> String {
+        let mut out = String::from("#EXTM3U\n");
+        for (path, dur, artist, title) in entries {
+            let fallback = Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            out.push_str(&Self::extinf_line(
+                *dur,
+                artist.as_deref(),
+                title.as_deref(),
+                fallback,
+            ));
+            out.push('\n');
+            out.push_str(path);
+            out.push('\n');
+        }
+        out
+    }
+
     /// Create a new empty playlist with `name`.
     ///
     /// Writes an `#EXTM3U` header to
-    /// `~/.config/sparkamp/playlists/<name>.m3u` (sanitising the name for
+    /// `~/.config/sparkamp/playlists/<name>.m3u8` (sanitising the name for
     /// the filesystem) and registers the file in the library database.
     /// Returns the new playlist row id.
+    ///
+    /// New playlists are written as `.m3u8` (UTF-8 explicit) rather than
+    /// `.m3u`; the loader still reads both extensions so existing files
+    /// remain accessible.
     pub fn create_playlist(&self, name: &str) -> Result<i64> {
         let dir = Self::playlists_dir();
         let safe = name
@@ -1423,10 +1565,10 @@ impl MediaLibrary {
         let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
 
         // Avoid clobbering an existing file.
-        let mut path = dir.join(format!("{safe}.m3u"));
+        let mut path = dir.join(format!("{safe}.m3u8"));
         let mut counter = 1u32;
         while path.exists() {
-            path = dir.join(format!("{safe}_{counter}.m3u"));
+            path = dir.join(format!("{safe}_{counter}.m3u8"));
             counter += 1;
         }
         std::fs::write(&path, b"#EXTM3U\n")
@@ -1436,6 +1578,10 @@ impl MediaLibrary {
 
     /// Rename playlist `id`.  Updates both the database record and the `.m3u`
     /// file on disk.
+    ///
+    /// Preserves the existing file extension (so a legacy `.m3u` stays
+    /// `.m3u` and a new `.m3u8` stays `.m3u8`) — renaming should not
+    /// silently change the on-disk format under the user.
     pub fn rename_playlist(&self, id: i64, new_name: &str) -> Result<()> {
         let pl = self.playlist_by_id(id)?;
         let old_path = Path::new(&pl.path);
@@ -1444,7 +1590,11 @@ impl MediaLibrary {
             .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
             .collect::<String>();
         let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
-        let new_filename = format!("{safe}.m3u");
+        let ext = old_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("m3u8");
+        let new_filename = format!("{safe}.{ext}");
         let new_path = old_path
             .parent()
             .unwrap_or(Path::new("."))
@@ -1461,39 +1611,130 @@ impl MediaLibrary {
         Ok(())
     }
 
-    /// Overwrite the playlist `.m3u` file with the tracks specified by
+    /// Overwrite the playlist `.m3u8` file with the tracks specified by
     /// `track_ids` (in order).  IDs not found in the library are skipped.
+    ///
+    /// Emits an `#EXTINF` line for every entry, pulling duration / artist /
+    /// title from the library row, so the file can be reopened (here or by
+    /// any other player) with the metadata intact.
     pub fn save_playlist_tracks(&self, id: i64, track_ids: &[i64]) -> Result<()> {
         let pl = self.playlist_by_id(id)?;
-        let mut lines = vec!["#EXTM3U".to_string()];
+        let mut entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> =
+            Vec::with_capacity(track_ids.len());
         for &tid in track_ids {
-            if let Ok(path) = self.conn.query_row(
-                "SELECT path FROM tracks WHERE id = ?1",
+            if let Ok((path, dur, artist, title)) = self.conn.query_row(
+                "SELECT path, length_secs, artist, title FROM tracks WHERE id = ?1",
                 params![tid],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
             ) {
-                lines.push(path);
+                entries.push((path, dur, artist, title));
             }
         }
-        std::fs::write(&pl.path, lines.join("\n") + "\n")
+        let body = Self::build_m3u_body(&entries);
+        std::fs::write(&pl.path, body)
             .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
     }
 
     /// Create a new playlist named `new_name` and write `track_paths` to it.
     ///
+    /// Write a new playlist file at exactly `target_path` and
+    /// register it in the library.  Use this when the caller wants to
+    /// choose the destination directory + filename (e.g. macOS NSSavePanel
+    /// or any "Save As" flow that escapes the managed playlists dir).
+    /// For the simple managed-dir case use [`save_playlist_tracks_as`]
+    /// instead, which derives the path from the supplied name.
+    ///
+    /// Centralises the playlist body format so frontends don't reinvent it.
+    /// Returns the new playlist row id.
+    pub fn save_playlist_tracks_to_path(
+        &self,
+        target_path: &Path,
+        track_paths: &[String],
+    ) -> Result<i64> {
+        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> = track_paths
+            .iter()
+            .map(|p| {
+                let (dur, artist, title) = self.metadata_by_path(p);
+                (p.clone(), dur, artist, title)
+            })
+            .collect();
+        std::fs::write(target_path, Self::build_m3u_body(&entries))
+            .with_context(|| format!("write playlist {}", target_path.display()))?;
+        self.add_playlist_file(&target_path.to_string_lossy())
+    }
+
+    /// Append `track_paths` to an existing playlist's `.m3u8` file on disk.
+    ///
+    /// Used by the "Add to Playlist" right-click menu so the user can grow
+    /// a saved playlist with raw paths (including stubs from the active
+    /// playlist).  Duplicates are not filtered — callers that care should
+    /// pre-filter.  The DB row is unchanged because playlist contents live
+    /// in the playlist file, not the database.
+    ///
+    /// Looks each path up in the library and emits an `#EXTINF` line ahead
+    /// of it so duration / artist / title round-trip through the file.
+    pub fn append_paths_to_playlist(
+        &self,
+        playlist_id: i64,
+        track_paths: &[String],
+    ) -> Result<()> {
+        if track_paths.is_empty() { return Ok(()); }
+        let pl = self.playlist_by_id(playlist_id)?;
+        let existing = std::fs::read_to_string(&pl.path)
+            .with_context(|| format!("read playlist {}", pl.path))?;
+        // Preserve the existing trailing newline (or add one) before appending
+        // so each new EXTINF/path pair starts on its own line.
+        let mut body = existing;
+        if !body.ends_with('\n') { body.push('\n'); }
+        for p in track_paths {
+            let (dur, artist, title) = self.metadata_by_path(p);
+            let fallback = Path::new(p)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(p);
+            body.push_str(&Self::extinf_line(
+                dur,
+                artist.as_deref(),
+                title.as_deref(),
+                fallback,
+            ));
+            body.push('\n');
+            body.push_str(p);
+            body.push('\n');
+        }
+        std::fs::write(&pl.path, body)
+            .with_context(|| format!("write playlist {}", pl.path))?;
+        Ok(())
+    }
+
     /// Unlike [`save_playlist_tracks`] (which takes DB row IDs), this method
     /// accepts raw path strings so that missing-file stubs originating from
     /// Windows or moved-file playlists are preserved verbatim in the new file.
     /// Returns the new playlist's row id.
+    ///
+    /// Each path is looked up in the library; when a row exists its
+    /// duration / artist / title are written as an `#EXTINF` line.  Stubs
+    /// (paths not in the library) get a `-1` duration EXTINF using the
+    /// filename as a display fallback.
     pub fn save_playlist_tracks_as(&self, new_name: &str, track_paths: &[String]) -> Result<i64> {
         let id = self.create_playlist(new_name)?;
         let pl = self.playlist_by_id(id)?;
-        let mut lines = vec!["#EXTM3U".to_string()];
-        for path in track_paths {
-            lines.push(path.clone());
-        }
-        std::fs::write(&pl.path, lines.join("\n") + "\n")
+        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> = track_paths
+            .iter()
+            .map(|p| {
+                let (dur, artist, title) = self.metadata_by_path(p);
+                (p.clone(), dur, artist, title)
+            })
+            .collect();
+        std::fs::write(&pl.path, Self::build_m3u_body(&entries))
             .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(id)
     }
@@ -1531,7 +1772,7 @@ impl MediaLibrary {
             .context("playlist_by_id")
     }
 
-    /// Add a playlist `.m3u` file to the library without scanning for audio tracks.
+    /// Add a playlist file (`.m3u8` / `.m3u`) to the library without scanning for audio tracks.
     ///
     /// Inserts the playlist into a synthetic folder (created if needed) whose
     /// path is the playlist file's parent directory.  Returns the new or

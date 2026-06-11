@@ -69,6 +69,18 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "click time", action: "Switch elapsed / remaining"),
             ]
         ),
+        (
+            // Track-list shortcuts.  Active in the active-playlist window,
+            // the Media Library files view, and any saved-playlist editor
+            // — anywhere a row selection exists.
+            title: "Track lists",
+            entries: [
+                ShortcutEntry(key: "Delete",     action: "Remove selected track(s) from current list"),
+                ShortcutEntry(key: "fn+Delete",  action: "Remove selected track(s) (forward-delete)"),
+                ShortcutEntry(key: "Return",     action: "Play selected track"),
+                ShortcutEntry(key: "dbl-click",  action: "Play selected track"),
+            ]
+        ),
     ]
 
     // MARK: – Body

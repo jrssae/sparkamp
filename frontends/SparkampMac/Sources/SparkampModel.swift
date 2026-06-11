@@ -53,6 +53,34 @@ struct MLTrack: Identifiable {
         return outFmt.string(from: date)
     }
 
+    /// Stub init for a path that's not in the library DB.  All metadata
+    /// fields default to empty / zero.  Used by drop handlers that
+    /// receive raw file URLs and need a placeholder row until the next
+    /// library scan picks up the file.
+    init(stubPath: String) {
+        id = 0
+        path = stubPath
+        title = ""
+        artist = ""
+        album = ""
+        genre = ""
+        year = 0
+        trackNum = 0
+        lengthSecs = 0
+        bitrate = 0
+        playCount = 0
+        scanned = false
+        albumArtist = ""
+        discNum = 0
+        bpm = ""
+        comment = ""
+        composer = ""
+        readOnly = false
+        hasArt = false
+        fileMissing = !FileManager.default.fileExists(atPath: stubPath)
+        lastPlayed = ""
+    }
+
     init(from c: SparkampLibTrack) {
         var c = c
         id          = c.id
@@ -84,7 +112,7 @@ struct MLTrack: Identifiable {
 struct MLPlaylistItem: Identifiable {
     let id: Int64   // DB row id — stable key for CRUD operations
     let name: String
-    /// File path of the .m3u file on disk.
+    /// File path of the playlist file on disk (.m3u8, or legacy .m3u).
     var path: String = ""
 }
 
@@ -232,6 +260,12 @@ final class SparkampModel: ObservableObject {
     /// observes this and re-runs its own filtered/sorted fetch so the
     /// table reflects the new value without resetting search or sort.
     @Published var mlReloadTrigger: Int = 0
+    /// Bumps every time a saved playlist's *contents* (the playlist file on disk)
+    /// change — e.g. append-paths, save, save-as.  The playlist editor
+    /// observes this so right-click "Add to Playlist" from the active
+    /// playlist (or any other path-level mutation) reflects in the editor
+    /// without manual reload.
+    @Published var mlPlaylistContentTrigger: Int = 0
     /// True once `sparkamp_ml_open` has been called.
     var mlIsOpen: Bool = false
     /// Counts ticks while a scan is running; used to throttle intermediate reloads.
@@ -834,6 +868,11 @@ final class SparkampModel: ObservableObject {
             let path = mlPlaylistPath(id: dbId) ?? ""
             return MLPlaylistItem(id: dbId, name: String(cString: ptr), path: path)
         }
+        // Any caller that mutates the saved-playlists list also affects what
+        // the open editor might be showing; nudge content observers so the
+        // editor reloads its track list (handles e.g. external rename → path
+        // change → editor's cached tracks become stale).
+        mlPlaylistContentTrigger &+= 1
     }
 
     /// One-shot fetch of every track in the library, ignoring the current
@@ -850,6 +889,14 @@ final class SparkampModel: ObservableObject {
             sparkamp_ml_get_tracks(ctx, qPtr, nil, 0, 0, Int32(limit), buf)
         }
         return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+    }
+
+    /// Look up a single library track by absolute path, or nil if the
+    /// path isn't in the library.  Implemented as an `mlAllTracks` scan
+    /// for simplicity — fine for typical library sizes; if libraries grow
+    /// large enough to make this a bottleneck, add a dedicated FFI lookup.
+    func mlGetTrackByPath(_ path: String) -> MLTrack? {
+        mlAllTracks().first(where: { $0.path == path })
     }
 
     /// Fetch tracks from the library, applying optional search query and sort.
@@ -999,6 +1046,35 @@ final class SparkampModel: ObservableObject {
         mlFetchTracks()
     }
 
+    /// Force the library DB to re-read tags + duration for `path`.  Call after
+    /// the ID3 editor saves so the Files-view row picks up the new metadata
+    /// without waiting for a full library rescan.  Bumps `mlReloadTrigger`
+    /// so the open Media Library window re-fetches its current page.
+    func mlRescanTrack(path: String) {
+        guard let ctx = ctx else { return }
+        path.withCString { sparkamp_ml_rescan_track(ctx, $0) }
+        mlReloadTrigger &+= 1
+    }
+
+    /// Upsert a batch of file paths into the library DB without registering
+    /// new watched folders.  Paths whose parent dir lives outside every
+    /// watched folder are silently skipped.  Returns the count actually
+    /// added.  Bumps `mlReloadTrigger` so the Files view picks up the new
+    /// rows on its next render.
+    @discardableResult
+    func mlAddFilesToLibrary(paths: [String]) -> Int {
+        guard let ctx = ctx, !paths.isEmpty else { return 0 }
+        let nsStrings: [NSString]              = paths.map { $0 as NSString }
+        let cPaths:    [UnsafePointer<CChar>?] = nsStrings.map { $0.utf8String }
+        let added: Int32 = cPaths.withUnsafeBufferPointer { buf in
+            let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                mutating: buf.baseAddress)
+            return sparkamp_ml_add_files(ctx, mutablePtr, Int32(paths.count))
+        }
+        if added > 0 { mlReloadTrigger &+= 1 }
+        return Int(added)
+    }
+
     func mlOpenTagEditorForPath(_ path: String) {
         id3DirectPath = path
         id3EditorVisible = true
@@ -1024,7 +1100,7 @@ final class SparkampModel: ObservableObject {
         return id
     }
 
-    /// Delete a playlist by row ID (DB only; .m3u file is kept on disk).
+    /// Delete a playlist by row ID (DB only; playlist file is kept on disk).
     func mlDeletePlaylist(id: Int64) {
         guard let ctx = ctx else { return }
         sparkamp_ml_delete_playlist(ctx, id)
@@ -1038,27 +1114,96 @@ final class SparkampModel: ObservableObject {
         mlRefreshSavedPlaylists()
     }
 
-    /// Overwrite a saved playlist's .m3u file with the given ordered track IDs.
+    /// Overwrite a saved playlist's file (.m3u8 or legacy .m3u) with the
+    /// given ordered track IDs.
     func mlSavePlaylist(id: Int64, trackIds: [Int64]) {
         guard let ctx = ctx else { return }
         var ids = trackIds
         ids.withUnsafeMutableBufferPointer { buf in
             sparkamp_ml_save_playlist(ctx, id, buf.baseAddress, Int32(trackIds.count))
         }
+        // The on-disk playlist file has new contents — let any open editor reload.
+        mlPlaylistContentTrigger &+= 1
     }
 
-    /// Create a new Sparkamp-managed playlist with `name`, writing the given
-    /// raw track paths verbatim (so missing/stub entries are preserved).
-    /// Returns the new playlist row id, or -1 on failure.
-    func mlSavePlaylistAs(name: String, trackPaths: [String]) -> Int64 {
+    /// Active-playlist track path at `index`, or nil if out of range.
+    /// Used by the active-playlist Add-to-Playlist menu to feed raw paths
+    /// into `mlAppendPathsToPlaylist`.
+    func playlistTrackPath(index: Int) -> String? {
+        guard let ctx = ctx else { return nil }
+        guard let cstr = sparkamp_playlist_get_path(ctx, Int32(index)) else { return nil }
+        defer { sparkamp_free_string(cstr) }
+        return String(cString: cstr)
+    }
+
+    /// Append raw track paths to a saved playlist's file on disk (.m3u8 or
+    /// legacy .m3u).  The core emits an `#EXTINF` line for every entry,
+    /// looking up duration / artist / title from the library where known.
+    func mlAppendPathsToPlaylist(playlistId: Int64, paths: [String]) {
+        guard let ctx = ctx, !paths.isEmpty else { return }
+        let nsStrings: [NSString]              = paths.map { $0 as NSString }
+        let cPaths:    [UnsafePointer<CChar>?] = nsStrings.map { $0.utf8String }
+        cPaths.withUnsafeBufferPointer { buf in
+            let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                mutating: buf.baseAddress)
+            sparkamp_ml_append_paths_to_playlist(ctx, playlistId,
+                                                 mutablePtr, Int32(paths.count))
+        }
+        // Notify any open editor of that playlist so it re-reads the file.
+        mlPlaylistContentTrigger &+= 1
+    }
+
+    /// Default destination directory for newly-created saved playlists
+    /// (Save As… and the active-playlist "New Playlist" context-menu action).
+    ///
+    /// 1. First watched folder in the media library, if one exists on disk.
+    /// 2. The current user's `~/Music` folder (created implicitly by macOS).
+    /// 3. The Sparkamp-managed playlists directory as a last-resort fallback.
+    ///
+    /// Routing through this avoids the legacy create-in-managed-dir path,
+    /// which had the side effect of registering Sparkamp's internal
+    /// playlists folder as a "watched folder" via `add_playlist_file`.
+    func mlDefaultSaveAsDir() -> URL {
+        if let first = mlFolders.first {
+            let url = URL(fileURLWithPath: first, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        let music = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Music", isDirectory: true)
+        return music
+    }
+
+    /// Create a new playlist with `name` containing `trackPaths`.
+    ///
+    /// When `directory` is nil the file is written to Sparkamp's managed
+    /// playlists folder (as `<name>.m3u8`) via the existing FFI helper.
+    /// When `directory` is provided (typical Save-As flow with NSSavePanel)
+    /// the file is written at `<directory>/<name>.m3u8` by the Rust core
+    /// so it gets `#EXTINF` lines and is registered in the library in one
+    /// step.  Returns the new playlist row id, or -1 on failure.
+    func mlSavePlaylistAs(name: String,
+                          trackPaths: [String],
+                          directory: URL? = nil) -> Int64 {
         guard let ctx = ctx else { return -1 }
-        // Keep NSString objects alive so their utf8String pointers remain valid.
-        let nsStrings: [NSString]                   = trackPaths.map { $0 as NSString }
-        let cPaths:    [UnsafePointer<CChar>?]      = nsStrings.map { $0.utf8String }
+        let nsStrings: [NSString]              = trackPaths.map { $0 as NSString }
+        let cPaths:    [UnsafePointer<CChar>?] = nsStrings.map { $0.utf8String }
+        if let dir = directory {
+            // Custom location — let the core write the file (so EXTINF
+            // metadata is emitted) and register it atomically.
+            let dest = dir.appendingPathComponent("\(name).m3u8")
+            return cPaths.withUnsafeBufferPointer { buf in
+                dest.path.withCString { destCStr in
+                    let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
+                        mutating: buf.baseAddress)
+                    return sparkamp_ml_save_playlist_to_path(ctx, destCStr,
+                                                             mutablePtr,
+                                                             Int32(trackPaths.count))
+                }
+            }
+        }
+        // Default: managed-directory create-and-write via existing FFI.
         return cPaths.withUnsafeBufferPointer { buf in
             name.withCString { nameCStr in
-                // Bridge `const char **` — the C function does not mutate the
-                // array, so re-cast our immutable buffer to a mutable pointer.
                 let mutablePtr = UnsafeMutablePointer<UnsafePointer<CChar>?>(
                     mutating: buf.baseAddress)
                 return sparkamp_ml_save_playlist_as(ctx, nameCStr,
@@ -1195,6 +1340,14 @@ final class SparkampModel: ObservableObject {
             // TextField is backed by NSTextView on macOS, so this one check
             // covers all text inputs (jump-to-track search, etc.).
             if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+            // Bail out entirely when the Jump-to-Track window is visible
+            // so its List can consume arrow keys for selection movement
+            // (and Return / Escape for play / dismiss) instead of the
+            // monitor swallowing arrows as volume adjust.  The check is
+            // an instance property read on the main actor — safe here
+            // because NSEvent local monitors fire on the main thread.
+            let jumpVisible = MainActor.assumeIsolated { self.jumpToTrackVisible }
+            if jumpVisible { return event }
             let chars   = event.charactersIgnoringModifiers
             let keyCode = event.keyCode
             let hasMods = !event.modifierFlags

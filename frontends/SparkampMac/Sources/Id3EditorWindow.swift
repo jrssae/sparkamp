@@ -310,6 +310,18 @@ struct Id3EditorView: View {
                 let idx = model.id3TrackIndex >= 0 ? model.id3TrackIndex : model.currentIndex
                 if idx >= 0 { sparkamp_scan_metadata(ctx, Int32(idx)) }
             }
+            // Push the new tags through to the library DB so the Media
+            // Library window's Files view reflects them immediately.  The
+            // playlist-side `sparkamp_scan_metadata` above only updates the
+            // active playlist; the ML row is independent.
+            if !filePath.isEmpty { model.mlRescanTrack(path: filePath) }
+            // Save acts as save-and-close: dismiss the editor so the user
+            // returns straight to the table/playlist they came from.
+            // Defer slightly so the "Saved ✓" status flashes briefly first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                model.id3EditorVisible = false
+                model.id3DirectPath = ""
+            }
         case -1: saveStatus = "Read-only"
         default:  saveStatus = "Save failed"
         }

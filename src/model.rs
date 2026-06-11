@@ -358,7 +358,13 @@ impl Track {
 }
 
 /// Create a Track from a media library LibTrack, copying the duration directly
-/// without re-probing the file. This is much faster when adding tracks from ML.
+/// without re-probing the file.  Much faster than re-parsing tags + duration
+/// from disk and lets the active playlist show known values immediately.
+///
+/// Uses `Duration::try_from_secs_f64` (not the panicking variant) because
+/// `length_secs` originates in the DB and could conceivably be NaN /
+/// negative for legacy rows; we fall back to `Duration::ZERO` in that case
+/// rather than aborting playback.
 impl From<&crate::media_library::LibTrack> for Track {
     fn from(lib: &crate::media_library::LibTrack) -> Self {
         let path = PathBuf::from(&lib.path);
@@ -369,7 +375,9 @@ impl From<&crate::media_library::LibTrack> for Track {
             artist: lib.artist.clone().unwrap_or_default(),
             album_artist: String::new(),
             album: lib.album.clone().unwrap_or_default(),
-            duration: lib.length_secs.map(Duration::from_secs_f64),
+            duration: lib
+                .length_secs
+                .and_then(|s| Duration::try_from_secs_f64(s).ok()),
             broken: false,
             read_only,
         }
