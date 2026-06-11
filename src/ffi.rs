@@ -1209,9 +1209,10 @@ pub unsafe extern "C" fn sparkamp_set_granite_feedback(ctx: *mut SparkampCtx, fb
     (*ctx).config.visualizer.granite.feedback = fb.clamp(0.0, 0.9);
 }
 
-/// Get Granite effect: 0 = Plasma, 1 = Tunnel, 2 = Swirl, 3 = RadialSweep,
-/// 4 = Cells. When `auto_switch` is on, this reflects the live scheduler state
-/// so the UI can show what's currently on screen.
+/// Get Granite effect: 0 = Plasma, 1 = Tunnel, 2 = Swirl, 3 = Spin (radial
+/// sweep), 4 = Cells, 5 = Explode, 6 = Ripple, 7 = Shear, 8 = Kaleido,
+/// 9 = Gravity Well, 10 = Drain, 11 = Flag. When `auto_switch` is on, this
+/// reflects the live scheduler state so the UI can show what's on screen.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_granite_effect(ctx: *const SparkampCtx) -> c_int {
     if ctx.is_null() {
@@ -1229,25 +1230,71 @@ pub unsafe extern "C" fn sparkamp_get_granite_effect(ctx: *const SparkampCtx) ->
         crate::granite::GraniteEffect::Swirl       => 2,
         crate::granite::GraniteEffect::RadialSweep => 3,
         crate::granite::GraniteEffect::Cells       => 4,
+        crate::granite::GraniteEffect::Explode     => 5,
+        crate::granite::GraniteEffect::Ripple      => 6,
+        crate::granite::GraniteEffect::Shear       => 7,
+        crate::granite::GraniteEffect::Kaleido     => 8,
+        crate::granite::GraniteEffect::GravityWell => 9,
+        crate::granite::GraniteEffect::Drain       => 10,
+        crate::granite::GraniteEffect::Flag        => 11,
     }
 }
 
-/// Set Granite effect. When `auto_switch` is on, the scheduler's next switch
-/// is pushed out so the user's selection stays visible for ~20 s.
+/// Set Granite effect. Same numbering as `sparkamp_get_granite_effect`.
+/// When `auto_switch` is on, the scheduler's next switch is pushed out so
+/// the user's selection stays visible for ~20 s.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_granite_effect(ctx: *mut SparkampCtx, effect: c_int) {
     if ctx.is_null() {
         return;
     }
     let chosen = match effect {
-        1 => crate::granite::GraniteEffect::Tunnel,
-        2 => crate::granite::GraniteEffect::Swirl,
-        3 => crate::granite::GraniteEffect::RadialSweep,
-        4 => crate::granite::GraniteEffect::Cells,
-        _ => crate::granite::GraniteEffect::Plasma,
+        1  => crate::granite::GraniteEffect::Tunnel,
+        2  => crate::granite::GraniteEffect::Swirl,
+        3  => crate::granite::GraniteEffect::RadialSweep,
+        4  => crate::granite::GraniteEffect::Cells,
+        5  => crate::granite::GraniteEffect::Explode,
+        6  => crate::granite::GraniteEffect::Ripple,
+        7  => crate::granite::GraniteEffect::Shear,
+        8  => crate::granite::GraniteEffect::Kaleido,
+        9  => crate::granite::GraniteEffect::GravityWell,
+        10 => crate::granite::GraniteEffect::Drain,
+        11 => crate::granite::GraniteEffect::Flag,
+        _  => crate::granite::GraniteEffect::Plasma,
     };
     (*ctx).config.visualizer.granite.effect = chosen;
     (*ctx).player.granite_set_effect(chosen);
+}
+
+/// Trigger an immediate switch to a random other Granite effect (the `n`
+/// keyboard shortcut). Also records the new effect in the config so pinned
+/// mode (`auto_switch` off) follows along instead of snapping back. Returns
+/// the new effect index, or -1 when the renderer hasn't drawn a frame yet.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_granite_random_effect(ctx: *mut SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return -1;
+    }
+    match (*ctx).player.granite_random_effect() {
+        Some(e) => {
+            (*ctx).config.visualizer.granite.effect = e;
+            match e {
+                crate::granite::GraniteEffect::Plasma      => 0,
+                crate::granite::GraniteEffect::Tunnel      => 1,
+                crate::granite::GraniteEffect::Swirl       => 2,
+                crate::granite::GraniteEffect::RadialSweep => 3,
+                crate::granite::GraniteEffect::Cells       => 4,
+                crate::granite::GraniteEffect::Explode     => 5,
+                crate::granite::GraniteEffect::Ripple      => 6,
+                crate::granite::GraniteEffect::Shear       => 7,
+                crate::granite::GraniteEffect::Kaleido     => 8,
+                crate::granite::GraniteEffect::GravityWell => 9,
+                crate::granite::GraniteEffect::Drain       => 10,
+                crate::granite::GraniteEffect::Flag        => 11,
+            }
+        }
+        None => -1,
+    }
 }
 
 /// Get whether Granite auto-switches between effects.

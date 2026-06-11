@@ -193,6 +193,11 @@ final class SparkampModel: ObservableObject {
     @Published var vizMode: Int = 0
     /// When true, the fullscreen visualizer window is open.
     @Published var fullscreenVizVisible: Bool = false
+    /// FPS overlay in the fullscreen visualizer (`g` key). Lives on the model
+    /// because the app-wide key monitor handles the keypress — SwiftUI
+    /// `.onKeyPress` on the fullscreen view never fires for keys the monitor
+    /// doesn't pass through, and focus there is unreliable anyway.
+    @Published var fullscreenFpsVisible: Bool = false
     /// When true, the jump-to-track overlay is open.
     @Published var jumpToTrackVisible: Bool = false
     /// When true, the equalizer window is open.
@@ -626,6 +631,13 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_cycle_viz_mode(ctx)
         vizMode = Int(sparkamp_get_viz_mode(ctx))
+    }
+
+    /// Switch Granite to a random other effect (`n` key). No-op until the
+    /// Granite renderer has drawn its first frame.
+    func graniteRandomEffect() {
+        guard let ctx = ctx else { return }
+        _ = sparkamp_granite_random_effect(ctx)
     }
 
     func openFullscreenViz() {
@@ -1200,6 +1212,14 @@ final class SparkampModel: ObservableObject {
     func handleRawKey(chars: String?, keyCode: UInt16, hasModifiers: Bool) -> Bool {
         guard !hasModifiers, let chars = chars else { return false }
 
+        // Keys that open auxiliary windows are disabled while the fullscreen
+        // visualizer is up: the new window appears in the main Space and
+        // macOS yanks focus out of fullscreen to show it. (`j` instead exits
+        // fullscreen first — see its case below.)
+        if fullscreenVizVisible, ["p", "i", "u", "d"].contains(chars) {
+            return true
+        }
+
         switch chars {
         case "z": prev();          return true
         case "x": play();          return true
@@ -1216,8 +1236,28 @@ final class SparkampModel: ObservableObject {
             return true
         case "i": toggleKeyboardShortcuts();  return true
         case "a": cycleVizMode();             return true
+        case "n": graniteRandomEffect();      return true
         case "f": openFullscreenViz();        return true  // toggles open/close
-        case "j": jumpToTrackVisible.toggle(); return true
+        case "j":
+            if fullscreenVizVisible {
+                // Leave fullscreen first, then open the jump window once
+                // back in the main Space. Opening it over fullscreen makes
+                // macOS switch Spaces and fight for focus. 0.8 s clears the
+                // 0.7 s fullscreen-exit animation in closeFullscreenViz.
+                closeFullscreenViz()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    self.jumpToTrackVisible = true
+                }
+                return true
+            }
+            jumpToTrackVisible.toggle()
+            return true
+        case "g":
+            if fullscreenVizVisible {
+                fullscreenFpsVisible.toggle()
+                return true
+            }
+            return false
         case "u": equalizerVisible.toggle(); saveState(); return true
         case "d":
             id3TrackIndex = -1  // current track

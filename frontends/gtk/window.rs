@@ -6703,13 +6703,14 @@ fn open_settings_window(
         }
         gr_settings_box.attach(&scale_gr_fb, 1, 3, 1, 1);
 
-        // Effect dropdown (Plasma / Tunnel / Swirl / Radial Sweep / Cells).
+        // Effect dropdown — one entry per warp-map family.
         let lbl_gr_effect = Label::new(Some("Effect"));
         lbl_gr_effect.set_halign(Align::Start);
         gr_settings_box.attach(&lbl_gr_effect, 0, 4, 1, 1);
-        let dd_gr_effect = DropDown::from_strings(
-            &["Plasma", "Tunnel", "Swirl", "Radial Sweep", "Cells"],
-        );
+        let dd_gr_effect = DropDown::from_strings(&[
+            "Plasma", "Tunnel", "Swirl", "Spin", "Cells", "Explode",
+            "Ripple", "Shear", "Kaleidoscope", "Gravity Well", "Drain", "Flag",
+        ]);
         {
             use crate::granite::GraniteEffect;
             let cur = state.borrow().config.visualizer.granite.effect;
@@ -6719,6 +6720,13 @@ fn open_settings_window(
                 GraniteEffect::Swirl       => 2,
                 GraniteEffect::RadialSweep => 3,
                 GraniteEffect::Cells       => 4,
+                GraniteEffect::Explode     => 5,
+                GraniteEffect::Ripple      => 6,
+                GraniteEffect::Shear       => 7,
+                GraniteEffect::Kaleido     => 8,
+                GraniteEffect::GravityWell => 9,
+                GraniteEffect::Drain       => 10,
+                GraniteEffect::Flag        => 11,
             });
         }
         {
@@ -6726,11 +6734,18 @@ fn open_settings_window(
             let state_rc = state.clone();
             dd_gr_effect.connect_selected_notify(move |d| {
                 let e = match d.selected() {
-                    1 => GraniteEffect::Tunnel,
-                    2 => GraniteEffect::Swirl,
-                    3 => GraniteEffect::RadialSweep,
-                    4 => GraniteEffect::Cells,
-                    _ => GraniteEffect::Plasma,
+                    1  => GraniteEffect::Tunnel,
+                    2  => GraniteEffect::Swirl,
+                    3  => GraniteEffect::RadialSweep,
+                    4  => GraniteEffect::Cells,
+                    5  => GraniteEffect::Explode,
+                    6  => GraniteEffect::Ripple,
+                    7  => GraniteEffect::Shear,
+                    8  => GraniteEffect::Kaleido,
+                    9  => GraniteEffect::GravityWell,
+                    10 => GraniteEffect::Drain,
+                    11 => GraniteEffect::Flag,
+                    _  => GraniteEffect::Plasma,
                 };
                 let mut s = state_rc.borrow_mut();
                 s.config.visualizer.granite.effect = e;

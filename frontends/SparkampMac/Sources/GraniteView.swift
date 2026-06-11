@@ -3,89 +3,101 @@ import AppKit
 
 // MARK: - Granite plasma visualizer (mini + fullscreen)
 
-/// SwiftUI shim around an `NSImageView` driven at 30 fps. Each frame asks
-/// the Rust core to fill an RGBA8 buffer with the Granite plasma, wraps
-/// that buffer in a `CGImage`, and assigns it as the `NSImageView.image`.
+/// Layer-blit host for the Granite plasma. Each 30 fps tick asks the Rust
+/// core to fill an RGBA8 buffer at a view-scaled internal resolution, wraps
+/// it in a CGImage backed by copied bytes, and assigns it straight to the
+/// backing layer's `contents` — the cheapest path to the GPU compositor
+/// (no NSImage, no NSImageView layout machinery).
 ///
-/// `NSImageView` is `CALayer`-backed, so the upscale to display size is a
-/// GPU bilinear blit handled by Quartz — keeping CPU cost on the granite
-/// kernel itself (≈ 12 ms/frame at 640×360) regardless of viewport.
+/// Exactly one instance drives the shared Rust renderer at a time: the mini
+/// view stops ticking while the fullscreen visualizer is open, and any
+/// instance whose window is occluded skips its tick. Two live views with
+/// different aspect ratios would otherwise force a buffer-clearing
+/// `resize()` + warp-map rebuild inside the Rust core every single frame —
+/// the visible result is a black visualizer and a tanked framerate.
 struct GraniteView: NSViewRepresentable {
     @EnvironmentObject var model: SparkampModel
+    /// True for the instance inside FullscreenVisualizerView.
+    var isFullscreen: Bool = false
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(model: model)
+        Coordinator(model: model, isFullscreen: isFullscreen)
     }
 
-    func makeNSView(context: Context) -> NSImageView {
-        let v = NSImageView()
-        v.imageScaling = .scaleAxesIndependently
-        v.imageAlignment = .alignCenter
-        v.wantsLayer = true
-        // Solid background so the plasma sits on a known black canvas instead
-        // of bleeding the SwiftUI view's transparency through during resize.
-        v.layer?.backgroundColor = NSColor.black.cgColor
-
+    func makeNSView(context: Context) -> GraniteBlitView {
+        let v = GraniteBlitView()
         // Drive at 30 fps via a Timer on the main run loop. Stored on the
-        // coordinator so it lives exactly as long as the view.
+        // coordinator so it lives exactly as long as the view. Hop onto the
+        // main actor the same way SparkampModel's tick timer does.
+        let coordinator = context.coordinator
         let timer = Timer.scheduledTimer(
             withTimeInterval: 1.0 / 30.0,
             repeats: true
         ) { [weak v] _ in
-            guard let v else { return }
-            context.coordinator.tick(into: v)
+            Task { @MainActor in
+                guard let v else { return }
+                coordinator.tick(into: v)
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
-        context.coordinator.timer = timer
+        coordinator.timer = timer
         return v
     }
 
-    func updateNSView(_ nsView: NSImageView, context: Context) {
+    func updateNSView(_ nsView: GraniteBlitView, context: Context) {
         // Nothing to do; the timer pulls the latest `model.ctx` each tick.
     }
 
-    static func dismantleNSView(_ nsView: NSImageView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: GraniteBlitView, coordinator: Coordinator) {
         coordinator.timer?.invalidate()
         coordinator.timer = nil
     }
 
-    /// Per-instance state: the pixel buffer, last-seen dimensions, and the
-    /// timer reference for cleanup.
+    /// Per-instance state: the pixel buffer and the timer reference for
+    /// cleanup. @MainActor because it reads `model.ctx`.
+    @MainActor
     final class Coordinator {
         let model: SparkampModel
+        let isFullscreen: Bool
         var timer: Timer?
         private var buffer = [UInt8]()
-        private var w: Int = 0
-        private var h: Int = 0
 
-        init(model: SparkampModel) {
+        init(model: SparkampModel, isFullscreen: Bool) {
             self.model = model
+            self.isFullscreen = isFullscreen
         }
 
         /// 30 fps tick: render one frame and present it.
-        func tick(into view: NSImageView) {
+        func tick(into view: GraniteBlitView) {
             guard let ctx = model.ctx else { return }
-            let viewSize = view.bounds.size
-            // Aspect-matched internal resolution: short axis fixed at 360,
-            // long axis derived from the view's aspect ratio. Matches the GTK
-            // path via `sparkamp::granite::GRANITE_INTERNAL_HEIGHT`.
-            let internalH = 360
-            let aspect: Double
-            if viewSize.height > 0 {
-                aspect = max(0.5, min(4.0, Double(viewSize.width / viewSize.height)))
-            } else {
-                aspect = 16.0 / 9.0
-            }
-            let internalW = max(64, Int((Double(internalH) * aspect).rounded()))
+            // Single-driver rule (see type comment): the mini view yields
+            // while the fullscreen window owns the renderer.
+            if model.fullscreenVizVisible && !isFullscreen { return }
+            // Skip entirely when our window can't be seen (occluded by the
+            // fullscreen Space, miniaturized, hidden) — saves the whole
+            // render and avoids fighting over the renderer's dimensions.
+            guard let win = view.window,
+                  win.occlusionState.contains(.visible) else { return }
 
-            // Reallocate the buffer if dimensions changed.
+            let viewSize = view.bounds.size
+            guard viewSize.width > 1, viewSize.height > 1 else { return }
+
+            // View-scaled internal resolution: the mini strip renders at its
+            // own (retina) pixel height instead of a fixed 360 — an order of
+            // magnitude fewer pixels. Fullscreen caps at the granite-internal
+            // 360 and lets the GPU compositor upscale. Width is rounded down
+            // to a multiple of 16 so live window resizes don't regenerate
+            // the warp map on every single frame.
+            let scale = min(win.backingScaleFactor, 2.0)
+            let internalH = min(360, max(64, Int(viewSize.height * scale)))
+            let aspect = max(0.5, min(4.0, Double(viewSize.width / viewSize.height)))
+            var internalW = max(64, Int((Double(internalH) * aspect).rounded()))
+            internalW &= ~15
+
             let need = internalW * internalH * 4
             if buffer.count != need {
                 buffer = [UInt8](repeating: 0, count: need)
-                w = internalW
-                h = internalH
             }
-
             buffer.withUnsafeMutableBufferPointer { ptr in
                 guard let base = ptr.baseAddress else { return }
                 sparkamp_render_granite(
@@ -95,47 +107,55 @@ struct GraniteView: NSViewRepresentable {
                     UInt32(internalH)
                 )
             }
-
-            guard let cgImage = makeCGImage(width: internalW, height: internalH) else {
-                return
-            }
-            // NSImage from CGImage at 1× — Quartz handles the bilinear upscale.
-            let nsImage = NSImage(cgImage: cgImage,
-                                  size: NSSize(width: internalW, height: internalH))
-            view.image = nsImage
+            view.present(buffer: buffer, width: internalW, height: internalH)
         }
+    }
+}
 
-        /// Wrap `buffer` in a CGImage with RGBA8 → premultiplied-last layout.
-        private func makeCGImage(width: Int, height: Int) -> CGImage? {
-            let stride = width * 4
-            let dataLen = stride * height
-            return buffer.withUnsafeBufferPointer { ptr -> CGImage? in
-                guard let base = ptr.baseAddress else { return nil }
-                guard let provider = CGDataProvider(
-                    dataInfo: nil,
-                    data: base,
-                    size: dataLen,
-                    releaseData: { _, _, _ in }
-                ) else {
-                    return nil
-                }
-                let bitmapInfo = CGBitmapInfo(rawValue:
-                    CGImageAlphaInfo.premultipliedLast.rawValue
-                )
-                return CGImage(
-                    width: width,
-                    height: height,
-                    bitsPerComponent: 8,
-                    bitsPerPixel: 32,
-                    bytesPerRow: stride,
-                    space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: bitmapInfo,
-                    provider: provider,
-                    decode: nil,
-                    shouldInterpolate: true,
-                    intent: .defaultIntent
-                )
-            }
-        }
+/// Plain layer-backed view whose contents are replaced each frame.
+///
+/// Deliberately reports no intrinsic content size: the plasma must never
+/// influence layout (an NSImageView in this spot once grew the whole player
+/// window to its image's pixel size). Also refuses focus so it can't draw
+/// a focus ring over the visual.
+final class GraniteBlitView: NSView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+    override var acceptsFirstResponder: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.magnificationFilter = .linear
+        layer?.contentsGravity = .resize
+        focusRingType = .none
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("GraniteBlitView is never decoded from a nib")
+    }
+
+    /// Wrap the RGBA8 buffer in a CGImage and hand it to the backing layer.
+    /// The bytes are copied (`Data(buffer)`) so the image never aliases the
+    /// live render buffer the Rust core writes into on the next tick.
+    func present(buffer: [UInt8], width: Int, height: Int) {
+        let data = Data(buffer)
+        guard let provider = CGDataProvider(data: data as CFData) else { return }
+        guard let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        ) else { return }
+        layer?.contents = image
     }
 }

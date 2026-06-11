@@ -370,6 +370,9 @@ impl Player {
     /// `dst.len()` must equal `(w * h * 4) as usize`. The renderer's previous-
     /// frame buffer is allocated lazily and persists across calls, so the
     /// feedback effect builds up the same way the plugin's did.
+    // Called by the GTK frontend (Linux bin) and the C FFI (lib); dead in
+    // the macOS bin where neither is compiled.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn render_granite(
         &mut self,
         dst: &mut [u8],
@@ -401,10 +404,23 @@ impl Player {
 
     /// Pin a specific Granite effect (used when the user picks one from
     /// Settings). Skips the scheduler for ~20 s so the choice sticks.
+    // Called by the GTK frontend (Linux bin) and the C FFI (lib); dead in
+    // the macOS bin where neither is compiled.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn granite_set_effect(&mut self, effect: crate::granite::GraniteEffect) {
         if let Some(g) = self.granite.as_mut() {
             g.set_effect(effect);
         }
+    }
+
+    /// Force an immediate switch to a random other Granite effect (keyboard
+    /// shortcut). Returns the newly-chosen effect, or `None` when the
+    /// renderer hasn't drawn a frame yet.
+    // Called by the GTK frontend (Linux bin) and the C FFI (lib); dead in
+    // the macOS bin where neither is compiled.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn granite_random_effect(&mut self) -> Option<crate::granite::GraniteEffect> {
+        self.granite.as_mut().map(|g| g.random_switch())
     }
 
     /// Load a URI (e.g. `"file:///path/to/track.mp3"`) and reset to the

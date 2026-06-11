@@ -17,6 +17,7 @@
 		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
 		AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
 		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
+		AA5000000000000000000020 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
 		AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */; };
 		AA5000000000000000000012 /* JumpToTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000015 /* JumpToTrackView.swift */; };
 		AA5000000000000000000013 /* EqualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000016 /* EqualizerWindow.swift */; };
@@ -43,6 +44,7 @@
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000023 /* GraniteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraniteView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenVisualizerWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000015 /* JumpToTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpToTrackView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000016 /* EqualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerWindow.swift; sourceTree = "<group>"; };
@@ -96,6 +98,7 @@
 				AA4000000000000000000022 /* Theme+Guide.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
 				AA4000000000000000000013 /* VisualizerView.swift */,
+				AA4000000000000000000023 /* GraniteView.swift */,
 				AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */,
 				AA4000000000000000000015 /* JumpToTrackView.swift */,
 				AA4000000000000000000016 /* EqualizerWindow.swift */,
@@ -195,7 +198,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Build the Rust static library.\n# SRCROOT = frontends/SparkampMac/\ncd \"$SRCROOT/../..\"\n\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nexport PKG_CONFIG_PATH=\"/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:$PKG_CONFIG_PATH\"\n\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    cargo build --release -p sparkamp-macos\n    cp target/release/libsparkamp_macos.a \"$SRCROOT\"\nelse\n    cargo build -p sparkamp-macos\n    cp target/debug/libsparkamp_macos.a \"$SRCROOT\"\nfi\n";
+			shellScript = "# Build the Rust static library.\n# SRCROOT = frontends/SparkampMac/\ncd \"$SRCROOT/../..\"\n\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nexport PKG_CONFIG_PATH=\"/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:$PKG_CONFIG_PATH\"\n\n# Always optimize the Rust core, even for Debug app builds: the Granite\n# per-pixel kernel is 10-30x slower unoptimized, which tanks the\n# visualizer's framerate while debugging the Swift side.\ncargo build --release -p sparkamp-macos\ncp target/release/libsparkamp_macos.a \"$SRCROOT\"\n";
 			showEnvVarsInLog = 0;
 		};
 		AA2000000000000000000004 /* Embed Skin Guide */ = {
@@ -238,6 +241,7 @@
 				AA5000000000000000000019 /* Theme+Guide.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,
 				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
+				AA5000000000000000000020 /* GraniteView.swift in Sources */,
 				AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */,
 				AA5000000000000000000012 /* JumpToTrackView.swift in Sources */,
 				AA5000000000000000000013 /* EqualizerWindow.swift in Sources */,

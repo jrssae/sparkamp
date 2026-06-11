@@ -144,10 +144,17 @@ void    sparkamp_set_granite_palette(SparkampCtx *ctx, int32_t palette);
 float   sparkamp_get_granite_feedback(const SparkampCtx *ctx);
 void    sparkamp_set_granite_feedback(SparkampCtx *ctx, float fb);
 
-/** Granite effect: 0=Plasma, 1=Tunnel, 2=Swirl, 3=RadialSweep, 4=Cells.
+/** Granite effect (warp-map family): 0=Plasma, 1=Tunnel, 2=Swirl,
+ *  3=Spin (radial sweep), 4=Cells, 5=Explode, 6=Ripple, 7=Shear,
+ *  8=Kaleido, 9=Gravity Well, 10=Drain, 11=Flag.
  *  When auto-switch is on, the get returns the live scheduler state. */
 int32_t sparkamp_get_granite_effect(const SparkampCtx *ctx);
 void    sparkamp_set_granite_effect(SparkampCtx *ctx, int32_t effect);
+
+/** Trigger an immediate switch to a random other Granite effect (the `n`
+ *  keyboard shortcut). Returns the new effect index, or -1 if the renderer
+ *  hasn't drawn a frame yet. */
+int32_t sparkamp_granite_random_effect(SparkampCtx *ctx);
 
 /** Granite auto-switch toggle. When on, the scheduler rotates effects
  *  every 12–24 s with a one-second crossfade. */

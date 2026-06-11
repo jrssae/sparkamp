@@ -40,10 +40,13 @@ private struct WindowAccessor: NSViewRepresentable {
 
 /// Full-screen waveform or bars visualizer.
 ///
-/// Opened via `f` key or double-click on the mini visualizer (Waveform mode).
-/// Covers the entire display using OS-level fullscreen.
-/// Keyboard passthrough: z x c v b r s i j all work as in the main window.
-/// Esc exits fullscreen.
+/// Opened via `f` key or double-click on the mini visualizer (Waveform or
+/// Granite mode). Covers the entire display using OS-level fullscreen.
+/// All keys are handled by the app-wide monitor (SparkampModel.handleRawKey):
+/// transport keys work as in the main window, `g` toggles the FPS overlay,
+/// `n` switches the Granite effect, `j` exits fullscreen then opens the jump
+/// window, Esc exits. Window-opening keys (p i u d) are disabled — they
+/// would open in the main Space and yank focus out of fullscreen.
 struct FullscreenVisualizerView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
@@ -51,7 +54,6 @@ struct FullscreenVisualizerView: View {
     @State private var hostWindow: NSWindow? = nil
     @State private var toastMessage: String  = ""
     @State private var toastVisible: Bool    = false
-    @State private var fpsVisible: Bool      = false
     @State private var fpsValue: Double      = 0
     @State private var fpsLastTick: Date?    = nil
     @State private var fpsEmaMs: Double      = 33.3
@@ -60,11 +62,11 @@ struct FullscreenVisualizerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Full-size visualizer. Granite uses the dedicated NSImageView path
+            // Full-size visualizer. Granite uses the dedicated layer-blit path
             // so the GPU compositor handles upscaling at 4K; Bars / Waveform
             // stay on SwiftUI Canvas.
             if let ctx = model.ctx, sparkamp_get_viz_mode(ctx) == 2 {
-                GraniteView()
+                GraniteView(isFullscreen: true)
                     .ignoresSafeArea()
             } else {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
@@ -81,8 +83,9 @@ struct FullscreenVisualizerView: View {
                 .ignoresSafeArea()
             }
 
-            // FPS overlay (top-right; toggled with `g`).
-            if fpsVisible {
+            // FPS overlay (top-right; toggled with `g` via the app-wide key
+            // monitor — model.fullscreenFpsVisible, not local state).
+            if model.fullscreenFpsVisible {
                 VStack {
                     HStack {
                         Spacer()
@@ -154,42 +157,19 @@ struct FullscreenVisualizerView: View {
         .onDisappear {
             model.fullscreenVizVisible = false
         }
-        // Keyboard handling for the fullscreen window
-        .onKeyPress(.escape) {
-            closeFullscreen()
-            return .handled
-        }
-        .onKeyPress("z") { model.prev();          showPlaybackToast(); return .handled }
-        .onKeyPress("x") { model.play();          showPlaybackToast(); return .handled }
-        .onKeyPress("c") { model.togglePlay();    showPlaybackToast(); return .handled }
-        .onKeyPress("v") { model.stop();          showToast("Stopped"); return .handled }
-        .onKeyPress("b") { model.next();          showPlaybackToast(); return .handled }
-        .onKeyPress("r") { model.cycleRepeat();   showRepeatToast();   return .handled }
-        .onKeyPress("s") { model.toggleShuffle(); showShuffleToast();  return .handled }
-        .onKeyPress("i") { model.keyboardShortcutsVisible.toggle(); return .handled }
-        .onKeyPress("j") { model.jumpToTrackVisible.toggle();       return .handled }
-        .onKeyPress("a") { model.cycleVizMode();  return .handled }
-        .onKeyPress("g") {
-            fpsVisible.toggle()
-            return .handled
-        }
+        // No key handlers here: every shortcut (Esc, transport keys, `g` for
+        // the FPS overlay, `j` exit-then-jump) is handled by the app-wide
+        // key monitor in SparkampModel.handleRawKey. SwiftUI `.onKeyPress`
+        // never fires for keys the monitor consumes, and focus on this view
+        // is unreliable, so routing everything through the monitor is the
+        // only dependable path.
         .focusable()
+        // Needed so the window accepts key events at all, but never draw
+        // the blue focus ring over the visualizer.
+        .focusEffectDisabled()
         // Show a toast whenever the track changes (auto-advance, etc.)
         .onChange(of: model.currentTitle) { _, title in
             if !title.isEmpty { showToast(title) }
-        }
-    }
-
-    private func closeFullscreen() {
-        // Exit OS fullscreen first; dismiss the window after the animation
-        // completes (~0.6 s) so SwiftUI doesn't tear down the view mid-animation.
-        if let win = hostWindow, win.styleMask.contains(.fullScreen) {
-            win.toggleFullScreen(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                model.fullscreenVizVisible = false
-            }
-        } else {
-            model.fullscreenVizVisible = false
         }
     }
 
@@ -199,28 +179,6 @@ struct FullscreenVisualizerView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             withAnimation { toastVisible = false }
         }
-    }
-
-    private func showPlaybackToast() {
-        let state: String
-        if model.isPlaying    { state = "▶ \(model.currentArtist.isEmpty ? model.currentTitle : "\(model.currentArtist) — \(model.currentTitle)")" }
-        else if model.isPaused { state = "⏸ Paused" }
-        else                   { state = "⏹ Stopped" }
-        showToast(state)
-    }
-
-    private func showRepeatToast() {
-        let label: String
-        switch model.repeatMode {
-        case 1: label = "Repeat One"
-        case 2: label = "Repeat All"
-        default: label = "Repeat Off"
-        }
-        showToast(label)
-    }
-
-    private func showShuffleToast() {
-        showToast(model.shuffleEnabled ? "Shuffle On" : "Shuffle Off")
     }
 
     // MARK: - Bars renderer (identical logic to VisualizerView)

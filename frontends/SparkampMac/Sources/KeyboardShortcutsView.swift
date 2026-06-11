@@ -56,8 +56,9 @@ struct KeyboardShortcutsView: View {
         (
             title: "Visualizer",
             entries: [
-                ShortcutEntry(key: "a",          action: "Cycle visualizer mode (Bars / Waveform)"),
-                ShortcutEntry(key: "f",          action: "Fullscreen waveform (Waveform mode only)"),
+                ShortcutEntry(key: "a",          action: "Cycle visualizer mode (Bars / Waveform / Granite)"),
+                ShortcutEntry(key: "n",          action: "Random Granite effect (Granite mode)"),
+                ShortcutEntry(key: "f",          action: "Fullscreen visualizer (Waveform or Granite mode)"),
                 ShortcutEntry(key: "dbl-click",  action: "Fullscreen visualizer (double-click)"),
                 ShortcutEntry(key: "Esc",        action: "Exit fullscreen"),
             ]
