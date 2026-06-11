@@ -434,8 +434,8 @@ impl Controller<'_> {
 
     /// Cycle the visualizer to the next available mode.
     ///
-    /// Cycle order: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is simply Bars ↔ Waveform.
+    /// Cycle order: Bars → Waveform → Granite → plugin 0 → plugin 1 → … → Bars.
+    /// When no plugins are loaded the cycle is Bars → Waveform → Granite → Bars.
     pub fn toggle_visualizer_mode(&mut self) {
         let viz_count = self.plugin_manager.viz_plugins().count();
         match self.plugin_manager.active_viz_index() {
@@ -444,6 +444,9 @@ impl Controller<'_> {
                     self.config.visualizer.mode = VisualizerMode::Waveform;
                 }
                 VisualizerMode::Waveform => {
+                    self.config.visualizer.mode = VisualizerMode::Granite;
+                }
+                VisualizerMode::Granite => {
                     if viz_count > 0 {
                         self.plugin_manager.set_active_viz_index(Some(0));
                     } else {

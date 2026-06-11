@@ -152,13 +152,21 @@ extension SkinVars {
 // MARK: - Font helpers
 
 extension SkinVars {
+    /// First family from the skin's CSS font-family list. `Font.custom`
+    /// takes ONE PostScript/family name — handing it the whole CSS list
+    /// ("Inter, system-ui, sans-serif") makes AppKit log a font-descriptor
+    /// warning on every weight lookup and fall back silently.
+    var primaryFontFamily: String {
+        let first = fontFamily.split(separator: ",").first.map(String.init) ?? fontFamily
+        return first.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+    }
     /// Body font (family + standard size). Inherited as the SwiftUI default.
     var bodyFont: Font {
-        .custom(fontFamily, size: fontSize)
+        .custom(primaryFontFamily, size: fontSize)
     }
     /// Marquee title font (family + marquee size, bold).
     var marqueeFont: Font {
-        .custom(fontFamily, size: fontSizeMarquee).weight(.bold)
+        .custom(primaryFontFamily, size: fontSizeMarquee).weight(.bold)
     }
     /// Large display font for the time index — always monospaced regardless of family.
     var largeMonospaceFont: Font {

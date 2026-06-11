@@ -40,10 +40,13 @@ private struct WindowAccessor: NSViewRepresentable {
 
 /// Full-screen waveform or bars visualizer.
 ///
-/// Opened via `f` key or double-click on the mini visualizer (Waveform mode).
-/// Covers the entire display using OS-level fullscreen.
-/// Keyboard passthrough: z x c v b r s i j all work as in the main window.
-/// Esc exits fullscreen.
+/// Opened via `f` key or double-click on the mini visualizer (Waveform or
+/// Granite mode). Covers the entire display using OS-level fullscreen.
+/// All keys are handled by the app-wide monitor (SparkampModel.handleRawKey):
+/// transport keys work as in the main window, `g` toggles the FPS overlay,
+/// `n` switches the Granite effect, `j` exits fullscreen then opens the jump
+/// window, Esc exits. Window-opening keys (p i u d) are disabled — they
+/// would open in the main Space and yank focus out of fullscreen.
 struct FullscreenVisualizerView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
@@ -51,24 +54,83 @@ struct FullscreenVisualizerView: View {
     @State private var hostWindow: NSWindow? = nil
     @State private var toastMessage: String  = ""
     @State private var toastVisible: Bool    = false
+    /// Pending toast-hide; cancelled and rescheduled on each new toast so the
+    /// dismiss timer restarts rather than the old one firing early.
+    @State private var toastDismiss: DispatchWorkItem? = nil
+    @State private var fpsValue: Double      = 0
+    @State private var bpmValue: Double      = 0
+    @State private var meterValue: Int       = 0
+    @State private var fpsLastTick: Date?    = nil
+    @State private var fpsEmaMs: Double      = 33.3
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Full-size visualizer canvas
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
-                Canvas { gctx, size in
-                    guard let ctx = model.ctx else { return }
-                    let mode = sparkamp_get_viz_mode(ctx)
-                    if mode == 0 {
-                        drawBars(gctx: gctx, size: size, ctx: ctx)
-                    } else {
-                        drawWaveform(gctx: gctx, size: size, ctx: ctx)
+            // Full-size visualizer. Granite uses the dedicated layer-blit path
+            // so the GPU compositor handles upscaling at 4K; Bars / Waveform
+            // stay on SwiftUI Canvas.
+            if let ctx = model.ctx, sparkamp_get_viz_mode(ctx) == 2 {
+                GraniteView(isFullscreen: true)
+                    .ignoresSafeArea()
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+                    Canvas { gctx, size in
+                        guard let ctx = model.ctx else { return }
+                        let mode = sparkamp_get_viz_mode(ctx)
+                        if mode == 0 {
+                            drawBars(gctx: gctx, size: size, ctx: ctx)
+                        } else {
+                            drawWaveform(gctx: gctx, size: size, ctx: ctx)
+                        }
                     }
                 }
+                .ignoresSafeArea()
             }
-            .ignoresSafeArea()
+
+            // FPS + BPM overlay (top-right; toggled with `g` via the app-wide
+            // key monitor — model.fullscreenFpsVisible, not local state).
+            // BPM comes from the Granite beat detector; "--" until it locks.
+            if model.fullscreenFpsVisible {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text(String(format: "FPS: %.0f   BPM: %@%@",
+                                    fpsValue,
+                                    bpmValue > 0 ? String(format: "%.0f", bpmValue) : "--",
+                                    meterValue > 0 ? " (\(meterValue)/4)" : ""))
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.55))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .padding(.top, 16)
+                            .padding(.trailing, 20)
+                    }
+                    Spacer()
+                }
+                .transition(.opacity)
+            }
+
+            // FPS sampler — fires at 30 fps via TimelineView and updates the
+            // smoothed FPS reading via @State without re-rendering the viz.
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+                Color.clear
+                    .onChange(of: ctx.date) { _, now in
+                        if let prev = fpsLastTick {
+                            let dt = now.timeIntervalSince(prev) * 1000.0
+                            fpsEmaMs = fpsEmaMs * 0.9 + dt * 0.1
+                            if fpsEmaMs > 0 { fpsValue = 1000.0 / fpsEmaMs }
+                        }
+                        fpsLastTick = now
+                        if let c = model.ctx {
+                            bpmValue = Double(sparkamp_get_granite_bpm(c))
+                            meterValue = Int(sparkamp_get_granite_meter(c))
+                        }
+                    }
+            }
+            .allowsHitTesting(false)
 
             // Toast overlay
             let vars = themeManager.currentVars
@@ -76,7 +138,7 @@ struct FullscreenVisualizerView: View {
                 VStack {
                     Spacer()
                     Text(toastMessage)
-                        .font(.custom(vars.fontFamily, size: 16).weight(.semibold))
+                        .font(.custom(vars.primaryFontFamily, size: 16).weight(.semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
@@ -108,69 +170,41 @@ struct FullscreenVisualizerView: View {
         .onDisappear {
             model.fullscreenVizVisible = false
         }
-        // Keyboard handling for the fullscreen window
-        .onKeyPress(.escape) {
-            closeFullscreen()
-            return .handled
-        }
-        .onKeyPress("z") { model.prev();          showPlaybackToast(); return .handled }
-        .onKeyPress("x") { model.play();          showPlaybackToast(); return .handled }
-        .onKeyPress("c") { model.togglePlay();    showPlaybackToast(); return .handled }
-        .onKeyPress("v") { model.stop();          showToast("Stopped"); return .handled }
-        .onKeyPress("b") { model.next();          showPlaybackToast(); return .handled }
-        .onKeyPress("r") { model.cycleRepeat();   showRepeatToast();   return .handled }
-        .onKeyPress("s") { model.toggleShuffle(); showShuffleToast();  return .handled }
-        .onKeyPress("i") { model.keyboardShortcutsVisible.toggle(); return .handled }
-        .onKeyPress("j") { model.jumpToTrackVisible.toggle();       return .handled }
-        .onKeyPress("a") { model.cycleVizMode();  return .handled }
+        // No key handlers here: every shortcut (Esc, transport keys, `g` for
+        // the FPS overlay, `j` exit-then-jump) is handled by the app-wide
+        // key monitor in SparkampModel.handleRawKey. SwiftUI `.onKeyPress`
+        // never fires for keys the monitor consumes, and focus on this view
+        // is unreliable, so routing everything through the monitor is the
+        // only dependable path.
         .focusable()
-        // Show a toast whenever the track changes (auto-advance, etc.)
-        .onChange(of: model.currentTitle) { _, title in
-            if !title.isEmpty { showToast(title) }
-        }
-    }
-
-    private func closeFullscreen() {
-        // Exit OS fullscreen first; dismiss the window after the animation
-        // completes (~0.6 s) so SwiftUI doesn't tear down the view mid-animation.
-        if let win = hostWindow, win.styleMask.contains(.fullScreen) {
-            win.toggleFullScreen(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                model.fullscreenVizVisible = false
-            }
-        } else {
-            model.fullscreenVizVisible = false
+        // Needed so the window accepts key events at all, but never draw
+        // the blue focus ring over the visualizer.
+        .focusEffectDisabled()
+        // Show a toast whenever the now-playing track (re)starts: next/prev,
+        // play after pause/stop, or auto-advance. Driven by the model's
+        // nonce (not currentTitle) so a same-track replay still toasts.
+        // Uses the same "Artist — Title" convention as the marquee and
+        // playlist rows (album-artist fallback; the raw title is already the
+        // filename stem when the file has no tags).
+        .onChange(of: model.nowPlayingNonce) { _, _ in
+            let display = model.playlistItems
+                .first(where: { $0.id == model.currentIndex })?
+                .displayName ?? model.currentTitle
+            guard !display.isEmpty else { return }
+            showToast(display)
         }
     }
 
     private func showToast(_ message: String) {
         toastMessage = message
         withAnimation { toastVisible = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            withAnimation { toastVisible = false }
-        }
-    }
-
-    private func showPlaybackToast() {
-        let state: String
-        if model.isPlaying    { state = "▶ \(model.currentArtist.isEmpty ? model.currentTitle : "\(model.currentArtist) — \(model.currentTitle)")" }
-        else if model.isPaused { state = "⏸ Paused" }
-        else                   { state = "⏹ Stopped" }
-        showToast(state)
-    }
-
-    private func showRepeatToast() {
-        let label: String
-        switch model.repeatMode {
-        case 1: label = "Repeat One"
-        case 2: label = "Repeat All"
-        default: label = "Repeat Off"
-        }
-        showToast(label)
-    }
-
-    private func showShuffleToast() {
-        showToast(model.shuffleEnabled ? "Shuffle On" : "Shuffle Off")
+        // Restart the dismiss timer: cancel any pending hide first, so rapid
+        // toasts (e.g. holding next/prev) keep the toast up a fresh 3 s each
+        // time instead of an earlier hide firing partway through.
+        toastDismiss?.cancel()
+        let work = DispatchWorkItem { withAnimation { toastVisible = false } }
+        toastDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
     // MARK: - Bars renderer (identical logic to VisualizerView)

@@ -98,6 +98,8 @@ pub enum VisualizerMode {
     /// Serialised as "waveform"; the legacy "oscilloscope" value is accepted
     /// on load for backward compatibility.
     Waveform,
+    /// Granite plasma — full-frame Geiss-inspired plasma with feedback blur.
+    Granite,
 }
 
 /// How the waveform trace is rendered.
@@ -143,9 +145,21 @@ pub struct VisualizerConfig {
     /// Whether the waveform is drawn as a stroke line or a filled shape.
     #[serde(default)]
     pub waveform_style: WaveformStyle,
+    /// Granite plasma settings (speed / palette / feedback).
+    #[serde(default)]
+    pub granite: crate::granite::GraniteConfig,
+    /// Keep the display awake while the fullscreen visualizer is open.
+    /// When the display sleeps anyway (manual sleep, or this is off), the
+    /// frontends drop back to windowed mode — macOS otherwise bounces
+    /// between Spaces on wake.
+    #[serde(default = "VisualizerConfig::default_keep_screen_awake")]
+    pub keep_screen_awake: bool,
 }
 
 impl VisualizerConfig {
+    fn default_keep_screen_awake() -> bool {
+        true
+    }
     fn default_spectrum_bands() -> u32 {
         64
     }
@@ -195,6 +209,8 @@ impl Default for VisualizerConfig {
             waveform_color_zones: Self::default_waveform_color_zones(),
             waveform_zone_colors: Self::default_waveform_zone_colors(),
             waveform_style: WaveformStyle::default(),
+            granite: crate::granite::GraniteConfig::default(),
+            keep_screen_awake: Self::default_keep_screen_awake(),
         }
     }
 }
