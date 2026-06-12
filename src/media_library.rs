@@ -19,23 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::AUDIO_EXTENSIONS;
-
-// ---------------------------------------------------------------------------
-// String sanitization
-// ---------------------------------------------------------------------------
-
-/// Remove NUL bytes from a string.
-///
-/// ID3 tags can contain malformed data with embedded NUL bytes.  These cause
-/// crashes when passed to GTK APIs which use C-style NUL-terminated strings.
-/// This function strips any NUL bytes so the string is safe for UI display.
-fn sanitize(s: &str) -> String {
-    if s.contains('\0') {
-        s.replace('\0', "")
-    } else {
-        s.to_owned()
-    }
-}
+use crate::tags::read_track_tags;
+use crate::textutil::sanitize;
+use crate::timeutil;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -1812,25 +1798,7 @@ impl MediaLibrary {
     /// exists in the database.
     pub fn record_play(&self, path: &str) -> Result<()> {
         // Build an ISO-8601 UTC timestamp from the current system time.
-        let now = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            // Manual formatting: YYYY-MM-DDTHH:MM:SSZ from UNIX seconds.
-            let s = secs;
-            let sec = s % 60;
-            let min = (s / 60) % 60;
-            let hour = (s / 3600) % 24;
-            let days = s / 86400;
-            // Rough Gregorian calendar calculation (good enough for a timestamp).
-            let (year, month, day) = days_to_ymd(days);
-            format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                year, month, day, hour, min, sec
-            )
-        };
+        let now = timeutil::format_current_timestamp();
 
         self.conn.execute(
             "UPDATE tracks SET play_count = play_count + 1, last_played = ?1
@@ -1989,132 +1957,21 @@ impl MediaLibrary {
         // Parse last_scanned (format: YYYY-MM-DDTHH:MM:SSZ)
         // We use second-level precision, so add a 2-second buffer to handle timing
         // edge cases where file mtime and scan timestamp are in the same second.
-        if let Some(scanned_secs) = Self::parse_iso_timestamp(last_scanned) {
+        if let Some(scanned_secs) = timeutil::parse_iso_timestamp(last_scanned) {
             return mtime_secs > scanned_secs + 2;
         }
 
         true // If we can't parse the timestamp, rescan
     }
 
-    /// Parse an ISO 8601 timestamp (format: YYYY-MM-DDTHH:MM:SSZ) to Unix seconds.
-    fn parse_iso_timestamp(ts: &str) -> Option<u64> {
-        // Expected format: "2024-01-15T10:30:00Z"
-        let ts = ts.strip_suffix('Z')?;
-        let parts: Vec<&str> = ts.split(|c| c == '-' || c == 'T' || c == ':').collect();
-        if parts.len() < 6 {
-            return None;
-        }
-
-        let year: u64 = parts[0].parse().ok()?;
-        let month: u64 = parts[1].parse().ok()?;
-        let day: u64 = parts[2].parse().ok()?;
-        let hour: u64 = parts[3].parse().ok()?;
-        let min: u64 = parts[4].parse().ok()?;
-        let sec: u64 = parts[5].parse().ok()?;
-
-        // Validate ranges
-        if month < 1 || month > 12 {
-            return None;
-        }
-        if day < 1 || day > 31 {
-            return None;
-        }
-        if hour > 23 || min > 59 || sec > 59 {
-            return None;
-        }
-        if day > Self::days_in_month(year, month) {
-            return None;
-        }
-
-        // Simple conversion to Unix timestamp (ignoring leap seconds and timezone)
-        let days_since_epoch = Self::days_since_1970(year, month, day);
-        let secs = days_since_epoch as u64 * 86400 + hour * 3600 + min * 60 + sec;
-        Some(secs)
-    }
-
-    /// Calculate days since 1970-01-01 (simplified, not accounting for Julian calendar)
-    fn days_since_1970(year: u64, month: u64, day: u64) -> u64 {
-        let mut days = (year - 1970) * 365;
-        days += (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400; // leap days
-        for m in 1..month {
-            days += Self::days_in_month(year, m);
-        }
-        days + day - 1
-    }
-
-    /// Get days in a month
-    fn days_in_month(year: u64, month: u64) -> u64 {
-        match month {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 => {
-                if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                    29
-                } else {
-                    28
-                }
-            }
-            _ => 30,
-        }
-    }
-
     /// Update the `last_scanned` timestamp for a track.
     fn update_last_scanned(&self, path: &str) -> Result<()> {
-        let now = Self::format_current_timestamp();
+        let now = timeutil::format_current_timestamp();
         self.conn.execute(
             "UPDATE tracks SET last_scanned = ?1 WHERE path = ?2",
             params![now, path],
         )?;
         Ok(())
-    }
-
-    /// Get current timestamp in ISO 8601 format.
-    fn format_current_timestamp() -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        let secs = now.as_secs();
-        let days = secs / 86400;
-        let rem = secs % 86400;
-        let hour = rem / 3600;
-        let min = (rem % 3600) / 60;
-        let sec = rem % 60;
-
-        // Find year, month, day from days since 1970
-        let (year, month, day) = Self::year_month_day_from_days(days);
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            year, month, day, hour, min, sec
-        )
-    }
-
-    /// Convert days since 1970 to (year, month, day).
-    fn year_month_day_from_days(days: u64) -> (u64, u64, u64) {
-        let mut year = 1970;
-        let mut remaining_days = days;
-
-        loop {
-            let days_in_year = if Self::is_leap_year(year) { 366 } else { 365 };
-            if remaining_days < days_in_year {
-                break;
-            }
-            remaining_days -= days_in_year;
-            year += 1;
-        }
-
-        let mut month = 1;
-        loop {
-            let days_in_month = Self::days_in_month(year, month);
-            if remaining_days < days_in_month {
-                return (year, month, remaining_days + 1);
-            }
-            remaining_days -= days_in_month;
-            month += 1;
-        }
-    }
-
-    fn is_leap_year(year: u64) -> bool {
-        (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
     }
 
     /// Scan a single folder, updating metadata for files that have changed.
@@ -2361,236 +2218,6 @@ impl MediaLibrary {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tag reading helpers
-// ---------------------------------------------------------------------------
-
-/// Raw tag data extracted from an audio file.
-#[derive(Default)]
-struct TrackTags {
-    title: Option<String>,
-    artist: Option<String>,
-    album: Option<String>,
-    track_num: Option<i64>,
-    genre: Option<String>,
-    year: Option<i64>,
-    bpm: Option<String>,
-    bitrate: Option<i64>,
-    channels: Option<i64>,
-    comment: Option<String>,
-    album_artist: Option<String>,
-    disc_num: Option<i64>,
-    disc_total: Option<i64>,
-    composer: Option<String>,
-    original_artist: Option<String>,
-    copyright: Option<String>,
-    url: Option<String>,
-    encoded_by: Option<String>,
-    lyric: Option<String>,
-    artwork_path: Option<String>,
-}
-
-/// Read metadata from an audio file.
-///
-/// Tries ID3 tags first (works well for MP3), then falls back to Symphonia's
-/// generic reader (Vorbis Comments for OGG/FLAC/Opus, etc.).  Returns a
-/// best-effort [`TrackTags`] even when no tags are present.
-fn read_track_tags(path: &Path) -> TrackTags {
-    use id3::TagLike;
-
-    // Strategy 1: ID3 (MP3 and some other formats).
-    if let Ok(tag) = id3::Tag::read_from_path(path) {
-        let get_text = |frame_id: &str| -> Option<String> {
-            tag.get(frame_id)
-                .and_then(|f| f.content().text())
-                .map(|s| sanitize(&s))
-        };
-        let get_first_comment =
-            || -> Option<String> { tag.comments().next().map(|c| sanitize(&c.text)) };
-        let disc = tag.disc();
-        let (disc_num, disc_total) = if let Some(d) = disc {
-            (Some(d as i64), tag.total_discs().map(|t| t as i64))
-        } else {
-            (None, None)
-        };
-        let lyric_text = tag.lyrics().next().map(|l| sanitize(&l.text));
-
-        // Look for APIC (album art) and save it to the cache dir.
-        let artwork_path = tag.pictures().next().map(|pic| {
-            let cache_dir = dirs::cache_dir()
-                .unwrap_or_else(|| std::env::temp_dir())
-                .join("sparkamp");
-            let _ = std::fs::create_dir_all(&cache_dir);
-            // Use a hash of the path as the filename to avoid collisions.
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            path.hash(&mut h);
-            let hash = h.finish();
-            let ext = match pic.mime_type.as_str() {
-                "image/png" => "png",
-                "image/jpeg" | "image/jpg" => "jpg",
-                _ => "bin",
-            };
-            let art_path = cache_dir.join(format!("{:016x}.{}", hash, ext));
-            if !art_path.exists() {
-                let _ = std::fs::write(&art_path, &pic.data);
-            }
-            art_path.to_string_lossy().into_owned()
-        });
-
-        TrackTags {
-            title: tag.title().map(|s| sanitize(&s)),
-            artist: tag.artist().map(|s| sanitize(&s)),
-            album: tag.album().map(|s| sanitize(&s)),
-            track_num: tag.track().map(|n| n as i64),
-            genre: tag.genre().map(|s| sanitize(&s)),
-            year: tag.year().map(|y| y as i64),
-            bpm: get_text("TBPM"),
-            bitrate: None,
-            channels: None,
-            comment: get_first_comment(),
-            album_artist: tag.album_artist().map(|s| sanitize(&s)),
-            disc_num,
-            disc_total,
-            composer: get_text("TCOM"),
-            original_artist: get_text("TOPE"),
-            copyright: get_text("TCOP"),
-            url: get_text("WXXX"),
-            encoded_by: get_text("TENC"),
-            lyric: lyric_text,
-            artwork_path,
-        }
-    } else {
-        // Strategy 2: Symphonia generic (Vorbis Comments, FLAC, Opus, etc.).
-        if let Some(meta) = read_symphonia_tags(path) {
-            return meta;
-        }
-        // Fallback: no tags at all.
-        TrackTags::default()
-    }
-}
-
-/// Read metadata using Symphonia's generic reader.
-///
-/// Handles formats that don't use ID3 tags: OGG/Vorbis, FLAC, Opus.
-/// Returns `None` when the file cannot be opened or the format is unrecognised.
-fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::{MetadataOptions, StandardTagKey, Value};
-    use symphonia::core::probe::Hint;
-
-    let file = std::fs::File::open(path).ok()?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-    let mut probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .ok()?;
-
-    let mut title: Option<String> = None;
-    let mut artist: Option<String> = None;
-    let mut album: Option<String> = None;
-    let mut track_num: Option<i64> = None;
-    let mut genre: Option<String> = None;
-    let mut year: Option<i64> = None;
-
-    // Read from the format reader's own metadata (Vorbis Comments, etc.).
-    if let Some(rev) = probed.format.metadata().current() {
-        for tag in rev.tags() {
-            let text = match &tag.value {
-                Value::String(s) => s.clone(),
-                _ => continue,
-            };
-            // Sanitize to remove NUL bytes that can crash GTK.
-            let safe_text = sanitize(&text);
-            match tag.std_key {
-                Some(StandardTagKey::TrackTitle) => title = Some(safe_text),
-                Some(StandardTagKey::Artist) => artist = Some(safe_text),
-                Some(StandardTagKey::Album) => album = Some(safe_text),
-                Some(StandardTagKey::TrackNumber) => {
-                    // Track number may be "5" or "5/12" — parse the first part.
-                    track_num = safe_text
-                        .split('/')
-                        .next()
-                        .and_then(|n| n.trim().parse::<i64>().ok());
-                }
-                Some(StandardTagKey::Genre) => genre = Some(safe_text),
-                Some(StandardTagKey::Date) => {
-                    // Date can be "2003", "2003-04-15", etc. — take the year.
-                    year = safe_text
-                        .split('-')
-                        .next()
-                        .and_then(|y| y.trim().parse::<i64>().ok());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Collect channel count from codec parameters.
-    let channels = probed
-        .format
-        .tracks()
-        .first()
-        .and_then(|t| t.codec_params.channels)
-        .map(|c| c.count() as i64);
-
-    Some(TrackTags {
-        title,
-        artist,
-        album,
-        track_num,
-        genre,
-        year,
-        bpm: None,
-        bitrate: None,
-        channels,
-        comment: None,
-        album_artist: None,
-        disc_num: None,
-        disc_total: None,
-        composer: None,
-        original_artist: None,
-        copyright: None,
-        url: None,
-        encoded_by: None,
-        lyric: None,
-        artwork_path: None,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Date helper
-// ---------------------------------------------------------------------------
-
-/// Convert a count of days since 1970-01-01 to (year, month, day).
-///
-/// Uses the Gregorian calendar proleptic formula (accurate for all dates
-/// after 1970).  Only needed for the `record_play` timestamp.
-#[allow(dead_code)]
-fn days_to_ymd(days: u64) -> (u64, u64, u64) {
-    // Shift to the Julian Day Number epoch for the Gregorian algorithm.
-    let jdn = days + 2_440_588; // Unix day 0 = JDN 2440588
-    let a = jdn + 32044;
-    let b = (4 * a + 3) / 146097;
-    let c = a - (146097 * b) / 4;
-    let d = (4 * c + 3) / 1461;
-    let e = c - (1461 * d) / 4;
-    let m = (5 * e + 2) / 153;
-    let day = e - (153 * m + 2) / 5 + 1;
-    let month = m + 3 - 12 * (m / 10);
-    let year = 100 * b + d - 4800 + m / 10;
-    (year, month, day)
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -2615,20 +2242,6 @@ mod tests {
             fs::write(&file_path, b"fake audio data").unwrap();
         }
         dir
-    }
-
-    // ── sanitize() ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn sanitize_passes_through_normal_strings() {
-        assert_eq!(sanitize("hello"), "hello");
-        assert_eq!(sanitize(""), "");
-    }
-
-    #[test]
-    fn sanitize_removes_nul_bytes() {
-        assert_eq!(sanitize("a\x00b"), "ab");
-        assert_eq!(sanitize("\x00"), "");
     }
 
     // ── add_folder / remove_folder ─────────────────────────────────────────
@@ -2904,22 +2517,7 @@ mod tests {
     }
 
     // ── Smart scan helpers ─────────────────────────────────────────────────
-
-    #[test]
-    fn parse_iso_timestamp_valid() {
-        // 2024-01-15T10:30:00Z
-        let secs = MediaLibrary::parse_iso_timestamp("2024-01-15T10:30:00Z");
-        assert!(secs.is_some());
-        // Just verify it's a reasonable timestamp (after 2020)
-        assert!(secs.unwrap() > 1700000000);
-    }
-
-    #[test]
-    fn parse_iso_timestamp_invalid() {
-        assert!(MediaLibrary::parse_iso_timestamp("not-a-date").is_none());
-        assert!(MediaLibrary::parse_iso_timestamp("2024-13-45T10:30:00Z").is_none()); // Invalid date
-        assert!(MediaLibrary::parse_iso_timestamp("").is_none());
-    }
+    // (parse/format timestamp tests live in `crate::timeutil`.)
 
     #[test]
     fn needs_metadata_scan_never_scanned() {
@@ -2966,19 +2564,10 @@ mod tests {
         let path = file_path.to_str().unwrap();
 
         // Get current mtime as a string (this is what we'd store after scanning)
-        let current_ts = MediaLibrary::format_current_timestamp();
+        let current_ts = crate::timeutil::format_current_timestamp();
 
         // File hasn't changed since scan - should NOT need scan
         assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts)));
-    }
-
-    #[test]
-    fn format_current_timestamp_format() {
-        let ts = MediaLibrary::format_current_timestamp();
-        // Should end with Z
-        assert!(ts.ends_with('Z'));
-        // Should be parseable
-        assert!(MediaLibrary::parse_iso_timestamp(&ts).is_some());
     }
 
     // ── scan_folder ─────────────────────────────────────────────────────────
