@@ -1,5 +1,17 @@
 # Large-file refactor plan (branch: cleanup-large-files)
 
+## Status (2026-06-12)
+
+- Phase 1 (a–d): DONE. 642 tests green, zero warnings.
+- Phase 3 (a–c): DONE. Xcode build green.
+- Phase 2 (GTK window.rs) and Phase 4 (ML columns): NOT STARTED — blocked
+  on this machine. `frontends/gtk` is `#[cfg(target_os = "linux")]`, so the
+  GTK code is never compiled on macOS (no syntax/name-resolution checking
+  possible), and no docker/podman is available for a Linux toolchain.
+  Run these phases on a Linux host, or set up a GitHub Actions
+  `cargo check` workflow (ubuntu + libgtk-4-dev) and iterate through CI.
+  Phase 4 goes with Phase 2: its GTK consumer is the larger half.
+
 Goal: no source file over ~800 lines, no function over ~300, so smaller
 models (Opus/Sonnet) can work on any file without losing context. Zero
 functional change — every step is a mechanical move or a named-function
