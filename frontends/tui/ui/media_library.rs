@@ -1,0 +1,430 @@
+//! Media-library overlay rendering: files table and playlists list.
+
+#[rustfmt::skip]
+use super::imports::*;
+
+/// Render the full-screen media library browser.
+///
+/// ## Layout (Winamp-style)
+///
+/// ```text
+/// ┌──────────────────────────────────────────────────────────────┐
+/// │ Sparkamp — Media Library                                      │  ← title border
+/// │ ▶ Files    │ Search: ________________                         │
+/// │   Playlists│ Artist │ Title  │ Album │ Len                    │  ← column headers
+/// │            │ row 1 …                                          │
+/// │            │ …                                                │
+/// │            │ Esc:close  Tab:tab  /:search  Enter:add  s:sort  │  ← hint/toast
+/// └──────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// The left sidebar shows the navigation sections; the right pane shows the
+/// content for the active section.  Occupies the full terminal area.
+pub(super) fn draw_media_library(
+    frame: &mut Frame,
+    state: &MediaLibraryState,
+    toast: Option<&str>,
+    area: Rect,
+) {
+    // Erase the player/playlist underneath so there are no legibility issues.
+    frame.render_widget(Clear, area);
+
+    // Outer border.
+    let block = Block::default()
+        .title(Span::styled(
+            " Sparkamp — Media Library ",
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    frame.render_widget(block, area);
+
+    // Work inside the border.
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    if inner.height < 4 {
+        return;
+    }
+
+    // Split horizontally: narrow sidebar on the left, content on the right.
+    const SIDEBAR_W: u16 = 13;
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(SIDEBAR_W), Constraint::Min(1)])
+        .split(inner);
+
+    // ── Left sidebar: vertical tab list ──────────────────────────────────
+    let sidebar_items: Vec<ListItem> = [
+        ("Files", MediaLibraryTab::Files),
+        ("Playlists", MediaLibraryTab::Playlists),
+    ]
+    .iter()
+    .map(|(label, tab)| {
+        if *tab == state.tab {
+            ListItem::new(Span::styled(
+                format!("▶ {label}"),
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            ListItem::new(Span::styled(
+                format!("  {label}"),
+                Style::default().fg(C_DIM),
+            ))
+        }
+    })
+    .collect();
+
+    let sidebar = List::new(sidebar_items).block(
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(C_DIM)),
+    );
+    frame.render_widget(sidebar, cols[0]);
+
+    // ── Right pane ────────────────────────────────────────────────────────
+    // Split: search bar (1 row), content (rest − 1), hint/toast bar (1 row).
+    let right = cols[1];
+    let pane = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // search bar
+            Constraint::Min(1),    // content
+            Constraint::Length(1), // hint / toast
+        ])
+        .split(right);
+
+    // Top bar: add-path prompt takes priority over search bar.
+    let (top_str, top_style) = if let Some(ref buf) = state.add_input {
+        (format!("Add path: {buf}|"), Style::default().fg(C_ACCENT))
+    } else if state.search_active {
+        (
+            format!("Search: {}|", state.search_query),
+            Style::default().fg(C_WARN),
+        )
+    } else if !state.search_query.is_empty() {
+        (
+            format!("Search: {}", state.search_query),
+            Style::default().fg(C_WARN),
+        )
+    } else {
+        (" /: search".to_string(), Style::default().fg(C_DIM))
+    };
+    frame.render_widget(Paragraph::new(Span::styled(top_str, top_style)), pane[0]);
+
+    // Content.
+    match state.tab {
+        MediaLibraryTab::Files => draw_ml_files(frame, state, pane[1]),
+        MediaLibraryTab::Playlists => draw_ml_playlists(frame, state, pane[1]),
+    }
+
+    // Hint / toast bar — show a status message if one is pending, show a
+    // minimal "Esc: exit search" hint while typing, otherwise display all hints.
+    let hint_line = if let Some(msg) = toast {
+        Line::from(Span::styled(msg, Style::default().fg(C_PLAYING)))
+    } else if state.add_input.is_some() {
+        Line::from(vec![
+            hint("Enter", "add path"),
+            sep(),
+            hint("Esc", "cancel"),
+        ])
+    } else if state.search_active {
+        Line::from(hint("Esc", "exit search"))
+    } else {
+        Line::from(vec![
+            hint("Esc", "close"),
+            sep(),
+            hint("Tab", "tab"),
+            sep(),
+            hint("/", "search"),
+            sep(),
+            hint("Enter", "add"),
+            sep(),
+            hint("←→", "scroll cols"),
+            sep(),
+            hint("s", "sort"),
+            sep(),
+            hint("a", "add to ML"),
+            sep(),
+            hint("i", "help"),
+            sep(),
+            Span::styled("Alt+z/x/c/v/b/j", Style::default().fg(C_DIM)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(hint_line), pane[2]);
+}
+
+/// Width (chars) for each column ID in the Files tab.
+pub(super) fn ml_col_width(id: &str) -> usize {
+    match id {
+        "num" => 4,
+        "title" => 28,
+        "artist" => 22,
+        "album" => 20,
+        "duration" => 6,
+        "filename" => 24,
+        "year" => 5,
+        "genre" => 12,
+        "bitrate" => 7,
+        _ => 12,
+    }
+}
+
+/// Human-readable header label for a column ID.
+pub(super) fn ml_col_label(id: &str) -> &'static str {
+    match id {
+        "num" => "#",
+        "title" => "Title",
+        "artist" => "Artist",
+        "album" => "Album",
+        "duration" => "Len",
+        "filename" => "Filename",
+        "year" => "Year",
+        "genre" => "Genre",
+        "bitrate" => "Bitrate",
+        _ => "?",
+    }
+}
+
+/// Extract the display value for a given column from a `LibTrack`.
+pub(super) fn ml_col_value<'a>(id: &str, t: &'a crate::media_library::LibTrack) -> std::borrow::Cow<'a, str> {
+    match id {
+        "num" => t
+            .track_num
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+            .into(),
+        "title" => t.title.as_deref().unwrap_or(&t.filename).into(),
+        "artist" => t.artist.as_deref().unwrap_or("-").into(),
+        "album" => t.album.as_deref().unwrap_or("-").into(),
+        "duration" => t
+            .length_secs
+            .map(|s| {
+                let u = s as u64;
+                format!("{:>2}:{:02}", u / 60, u % 60)
+            })
+            .unwrap_or_else(|| "-:--".to_string())
+            .into(),
+        "filename" => t.filename.as_str().into(),
+        "year" => t.year.map(|y| y.to_string()).unwrap_or_default().into(),
+        "genre" => t.genre.as_deref().unwrap_or("").into(),
+        "bitrate" => t
+            .bitrate
+            .map(|b| format!("{b}k"))
+            .unwrap_or_default()
+            .into(),
+        _ => "".into(),
+    }
+}
+
+/// Render the Files tab: column headers and a scrollable track list.
+///
+/// The columns shown, their order, and the starting scroll offset come from
+/// `state.visible_columns` and `state.col_offset`.  The sorted column is
+/// marked with ▲ / ▼ in the header.
+pub(super) fn draw_ml_files(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+    if area.height < 2 {
+        return;
+    }
+
+    let header_area = Rect { height: 1, ..area };
+    let list_area = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+
+    // The visible columns starting from the scroll offset.
+    let cols: Vec<&str> = state
+        .visible_columns
+        .iter()
+        .skip(state.col_offset)
+        .map(String::as_str)
+        .collect();
+
+    if cols.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No columns selected. Add columns via Settings → Media Library.",
+                Style::default().fg(C_DIM),
+            )),
+            area,
+        );
+        return;
+    }
+
+    // Build the header line.
+    let mut header_spans: Vec<Span> = Vec::new();
+    for (ci, &col) in cols.iter().enumerate() {
+        let w = ml_col_width(col);
+        let label = ml_col_label(col);
+        let sort_indicator = if col == state.sort_col.as_str() {
+            if state.sort_desc {
+                " ▼"
+            } else {
+                " ▲"
+            }
+        } else {
+            ""
+        };
+        let text = format!("{:<w$}", format!("{label}{sort_indicator}"), w = w);
+        let style = if col == state.sort_col.as_str() {
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(C_DIM)
+        };
+        header_spans.push(Span::styled(text, style));
+        if ci + 1 < cols.len() {
+            header_spans.push(Span::styled("  ", Style::default().fg(C_DIM)));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
+
+    if state.tracks.is_empty() {
+        let msg = if state.search_query.is_empty() {
+            "No tracks in the media library.  Open the GTK4 UI and add a folder with the ML button."
+        } else {
+            "No tracks match the search query."
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::default().fg(C_DIM))),
+            list_area,
+        );
+        return;
+    }
+
+    let items: Vec<ListItem> = state
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut row = String::new();
+            for (ci, &col) in cols.iter().enumerate() {
+                let w = ml_col_width(col);
+                let val = ml_col_value(col, t);
+                // Right-align numeric/duration columns; left-align text columns.
+                match col {
+                    "num" | "duration" | "year" | "bitrate" => {
+                        row.push_str(&format!("{:>w$}", ml_truncate(&val, w), w = w));
+                    }
+                    _ => {
+                        row.push_str(&format!("{:<w$}", ml_truncate(&val, w), w = w));
+                    }
+                }
+                if ci + 1 < cols.len() {
+                    row.push_str("  ");
+                }
+            }
+            let style = if i == state.selected_track {
+                Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Span::styled(row, style))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected_track));
+    let list =
+        List::new(items).highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+}
+
+/// Render the Playlists tab: left pane = playlist list, right pane = track
+/// preview for the selected playlist (populated after pressing Enter).
+pub(super) fn draw_ml_playlists(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+    if area.width < 20 {
+        return;
+    }
+
+    // Split: left ~30 % for playlist names, rest for preview.
+    let left_w = (area.width / 3).max(20).min(40);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(left_w), Constraint::Min(1)])
+        .split(area);
+
+    // Left: playlist names.
+    if state.playlists.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No playlists found.",
+                Style::default().fg(C_DIM),
+            )),
+            cols[0],
+        );
+    } else {
+        let pl_items: Vec<ListItem> = state
+            .playlists
+            .iter()
+            .enumerate()
+            .map(|(i, pl)| {
+                let style = if i == state.selected_playlist {
+                    Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+                } else {
+                    Style::default().fg(C_TEXT)
+                };
+                ListItem::new(Span::styled(pl.name.clone(), style))
+            })
+            .collect();
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected_playlist));
+        let list = List::new(pl_items)
+            .block(
+                Block::default()
+                    .borders(Borders::RIGHT)
+                    .border_style(Style::default().fg(C_DIM)),
+            )
+            .highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+        frame.render_stateful_widget(list, cols[0], &mut list_state);
+    }
+
+    // Right: track preview.
+    let right = Rect {
+        x: cols[1].x + 1,
+        width: cols[1].width.saturating_sub(1),
+        ..cols[1]
+    };
+    match &state.playlist_preview {
+        None => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "Press Enter to load playlist tracks.",
+                    Style::default().fg(C_DIM),
+                )),
+                right,
+            );
+        }
+        Some(tracks) => {
+            let items: Vec<ListItem> = tracks
+                .iter()
+                .map(|t| {
+                    let title = t.title.as_deref().unwrap_or(&t.filename);
+                    let artist = t.artist.as_deref().unwrap_or("-");
+                    ListItem::new(Span::styled(
+                        format!("{} — {}", artist, title),
+                        Style::default().fg(C_TEXT),
+                    ))
+                })
+                .collect();
+            frame.render_widget(List::new(items), right);
+        }
+    }
+}
+
+/// Truncate a string to at most `max_chars` characters, appending `…` when cut.
+pub(super) fn ml_truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        s.chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    }
+}
