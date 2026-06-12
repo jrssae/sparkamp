@@ -1144,7 +1144,7 @@ fn start_playlist_scan_poller(
 /// directory — saving there has the side effect of registering that
 /// internal dir as a watched folder via `add_playlist_file`.
 fn default_playlist_save_dir(
-    state: &std::rc::Rc<std::cell::RefCell<crate::state::AppState>>,
+    state: &std::rc::Rc<std::cell::RefCell<AppState>>,
 ) -> std::path::PathBuf {
     if let Some(lib) = state.borrow().media_lib.as_ref() {
         if let Ok(folders) = lib.list_folders() {
@@ -1169,8 +1169,8 @@ fn default_playlist_save_dir(
 /// one).  Single helper used by every playlist-creation flow so all
 /// paths share the same defaults.
 fn run_playlist_save_dialog<F>(
-    state: std::rc::Rc<std::cell::RefCell<crate::state::AppState>>,
-    win: gtk4::ApplicationWindow,
+    state: std::rc::Rc<std::cell::RefCell<AppState>>,
+    win: gtk4::Window,
     initial_stem: &str,
     on_accept: F,
 ) where
@@ -1440,15 +1440,28 @@ pub fn build(
         let click = GestureClick::new();
         // Single click: cycle mode (or retry spectrum).
         // Double click: open fullscreen when in Waveform or Granite mode.
+        // GestureClick fires `released` once per click (n_press 1 then 2),
+        // so the first release of a double-click has already cycled the mode
+        // by the time the second arrives. Remember the pre-click state so
+        // the double-click can undo the cycle and judge fullscreen support
+        // on the mode the user actually double-clicked.
+        let pre_click: Rc<RefCell<Option<(VisualizerMode, Option<usize>)>>> =
+            Rc::new(RefCell::new(None));
         click.connect_released(move |_, n_press, _, _| {
-            let mode = state_vc.borrow().config.visualizer.mode.clone();
-            let supports_fs = matches!(
-                mode,
-                VisualizerMode::Waveform | VisualizerMode::Granite,
-            );
-            if n_press == 2 && supports_fs {
-                if let Some(ref opener) = *open_fs_vc.borrow() {
-                    opener();
+            if n_press == 2 {
+                if let Some((mode, plugin_idx)) = pre_click.borrow_mut().take() {
+                    let mut s = state_vc.borrow_mut();
+                    s.config.visualizer.mode = mode;
+                    s.active_plugin_idx = plugin_idx;
+                }
+                let supports_fs = matches!(
+                    state_vc.borrow().config.visualizer.mode,
+                    VisualizerMode::Waveform | VisualizerMode::Granite,
+                );
+                if supports_fs {
+                    if let Some(ref opener) = *open_fs_vc.borrow() {
+                        opener();
+                    }
                 }
                 return;
             }
@@ -1457,9 +1470,13 @@ pub fn build(
                 !s.player.has_spectrum_data() && s.config.visualizer.mode == VisualizerMode::Bars
             };
             if needs_retry {
+                *pre_click.borrow_mut() = None;
                 let _ = state_vc.borrow_mut().retry_spectrum();
             } else {
-                state_vc.borrow_mut().toggle_visualizer_mode();
+                let mut s = state_vc.borrow_mut();
+                *pre_click.borrow_mut() =
+                    Some((s.config.visualizer.mode.clone(), s.active_plugin_idx));
+                s.toggle_visualizer_mode();
             }
         });
         // Attach the click controller to the Stack rather than each child so
@@ -2993,7 +3010,7 @@ pub fn build(
         move |_| {
             let Some(win) = window_wk.upgrade() else { return };
             let paths: Vec<String> = state.borrow().playlist.tracks
-                .iter().map(|t| t.path.clone()).collect();
+                .iter().map(|t| t.path.to_string_lossy().into_owned()).collect();
             if paths.is_empty() { return }
             // Timestamped default name (readable, sortable, no colons).
             // Uses glib's local time so we don't add a chrono dependency.
@@ -3003,7 +3020,7 @@ pub fn build(
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "Playlist".to_string());
             let state_cb = state.clone();
-            run_playlist_save_dialog(state.clone(), win, &default_stem, move |path| {
+            run_playlist_save_dialog(state.clone(), win.upcast(), &default_stem, move |path| {
                 if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
                     if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths) {
                         eprintln!("save_playlist_tracks_to_path: {e}");
@@ -3154,6 +3171,13 @@ pub fn build(
     // visualizer timer breaks on it before gsk paints a freed surface.
     let viz_shutting_down: std::rc::Rc<std::cell::Cell<bool>> =
         std::rc::Rc::new(std::cell::Cell::new(false));
+    // Single-driver rule (mirrors GraniteView.swift on macOS): while the
+    // fullscreen visualizer is open it owns the shared Granite renderer.
+    // The mini tick must yield — its aspect-derived width differs from the
+    // fullscreen one, and alternating sizes makes Granite::resize() wipe
+    // the feedback buffer every frame (leaving just the raw waveform ink).
+    let fs_viz_open: std::rc::Rc<std::cell::Cell<bool>> =
+        std::rc::Rc::new(std::cell::Cell::new(false));
     {
         let state = state.clone();
         let time_disp_label = time_disp_label.clone();
@@ -3184,6 +3208,7 @@ pub fn build(
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         // Tick-side handle on the shutdown flag declared above.
         let viz_shut_for_tick = viz_shutting_down.clone();
+        let fs_viz_open_tick = fs_viz_open.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
@@ -3626,30 +3651,34 @@ pub fn build(
                     if stack.visible_child_name().as_deref() != Some("granite") {
                         stack.set_visible_child_name("granite");
                     }
-                    // Aspect-matched internal width: viewport-aspect × fixed
-                    // 360 short axis. Fall back to 16:9 when the widget hasn't
-                    // been allocated yet.
-                    let viewport_w = pic.width().max(1) as f64;
-                    let viewport_h = pic.height().max(1) as f64;
-                    let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
-                    let h: u32 = crate::granite::GRANITE_INTERNAL_HEIGHT;
-                    let w: u32 = (h as f64 * aspect).round() as u32;
-                    let mut buf = granite_buf_tick.borrow_mut();
-                    let need = (w as usize) * (h as usize) * 4;
-                    if buf.len() != need {
-                        buf.resize(need, 0);
+                    // Single-driver rule: yield while the fullscreen window
+                    // owns the renderer (the mini keeps its last texture).
+                    if !fs_viz_open_tick.get() {
+                        // Aspect-matched internal width: viewport-aspect × fixed
+                        // 360 short axis. Fall back to 16:9 when the widget hasn't
+                        // been allocated yet.
+                        let viewport_w = pic.width().max(1) as f64;
+                        let viewport_h = pic.height().max(1) as f64;
+                        let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
+                        let h: u32 = crate::granite::GRANITE_INTERNAL_HEIGHT;
+                        let w: u32 = (h as f64 * aspect).round() as u32;
+                        let mut buf = granite_buf_tick.borrow_mut();
+                        let need = (w as usize) * (h as usize) * 4;
+                        if buf.len() != need {
+                            buf.resize(need, 0);
+                        }
+                        let cfg = state.borrow().config.visualizer.granite;
+                        state.borrow_mut().player.render_granite(&mut buf, w, h, &cfg);
+                        let bytes = glib::Bytes::from(&buf[..]);
+                        let texture = gdk::MemoryTexture::new(
+                            w as i32,
+                            h as i32,
+                            gdk::MemoryFormat::R8g8b8a8,
+                            &bytes,
+                            (w * 4) as usize,
+                        );
+                        pic.set_paintable(Some(&texture));
                     }
-                    let cfg = state.borrow().config.visualizer.granite;
-                    state.borrow_mut().player.render_granite(&mut buf, w, h, &cfg);
-                    let bytes = glib::Bytes::from(&buf[..]);
-                    let texture = gdk::MemoryTexture::new(
-                        w as i32,
-                        h as i32,
-                        gdk::MemoryFormat::R8g8b8a8,
-                        &bytes,
-                        (w * 4) as usize,
-                    );
-                    pic.set_paintable(Some(&texture));
                 } else if stack.visible_child_name().as_deref() != Some("cairo") {
                     stack.set_visible_child_name("cairo");
                 }
@@ -4099,6 +4128,19 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
+                // ── Random Granite effect (e — Granite mode) ───────────────
+                gdk::Key::e | gdk::Key::E => {
+                    let mut s = state.borrow_mut();
+                    if matches!(s.config.visualizer.mode, VisualizerMode::Granite) {
+                        if let Some(eff) = s.player.granite_random_effect() {
+                            // Record in config so pinned mode (auto-switch
+                            // off) follows along instead of snapping back.
+                            s.config.visualizer.granite.effect = eff;
+                        }
+                    }
+                    glib::Propagation::Stop
+                }
+
                 // ── Visualizer fullscreen (f — Waveform or Granite mode) ──
                 gdk::Key::f | gdk::Key::F => {
                     let supports_fs = matches!(
@@ -4289,6 +4331,7 @@ pub fn build(
         let jump_entry_fs = jump_entry.clone();
         let rebuild_jump_fs = rebuild_jump.clone();
         let btn_info_fs = btn_info.clone();
+        let fs_viz_open_fs = fs_viz_open.clone();
         *open_fullscreen_fn.borrow_mut() = Some(Rc::new(move || {
             open_waveform_fullscreen(
                 state_fs.clone(),
@@ -4297,6 +4340,7 @@ pub fn build(
                 jump_entry_fs.clone(),
                 rebuild_jump_fs.clone(),
                 btn_info_fs.clone(),
+                fs_viz_open_fs.clone(),
             );
         }));
     }
@@ -4344,6 +4388,7 @@ pub fn build(
                 ("b",          "Next track"),
                 ("← →",        "Seek −5 s / +5 s"),
                 ("r",          "Cycle repeat (off / song / playlist)"),
+                ("s",          "Toggle shuffle on/off"),
             ]),
             ("Volume", &[
                 ("-",          "Volume down 5 %"),
@@ -4358,16 +4403,13 @@ pub fn build(
                 ("p",          "Toggle playlist window"),
             ]),
             ("View & Tags", &[
-                ("a",           "Cycle visualizer mode (bars / waveform)"),
+                ("a",           "Cycle visualizer mode (Bars / Waveform / Granite)"),
+                ("e",           "Random Granite effect (Granite mode)"),
                 ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
-                ("g",           "Toggle FPS overlay (fullscreen only)"),
+                ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
                 ("d",           "View/Edit ID3 tags for current track"),
                 ("u",           "Open EQ (TUI only — use EQ button in GUI)"),
                 ("Click logo",  "Open settings"),
-                ("Right-click", "Toggle dark / light theme"),
-            ]),
-            ("Hidden shortcuts", &[
-                ("s",          "Toggle shuffle on/off"),
             ]),
             ("Other", &[
                 ("i",          "Toggle this help"),
@@ -6745,10 +6787,32 @@ fn open_settings_window(
         gr_settings_box.set_margin_start(16);
         gr_settings_box.attach(&Label::new(Some("Granite Settings")), 0, 0, 2, 1);
 
+        // Credit where it's due: Granite is a re-creation, not an original
+        // idea. Same text as the macOS Settings window.
+        let lbl_gr_credit = Label::new(None);
+        lbl_gr_credit.set_markup(
+            "<small>Granite is an interpretation of the Geiss Winamp plugin \
+             by Ryan Geiss. All credit to his amazing work on the original. \
+             <a href=\"https://www.geisswerks.com/geiss/\">Click</a> for \
+             more information.</small>",
+        );
+        lbl_gr_credit.set_wrap(true);
+        lbl_gr_credit.set_xalign(0.0);
+        lbl_gr_credit.set_halign(Align::Start);
+        // Pin min width == natural width so the wrap point — and therefore
+        // the measured height — is the same in every measure pass. A wrapped
+        // label whose min and natural widths differ makes the fixed-size
+        // Settings window log "Trying to measure GtkWindow for height of X,
+        // but it needs at least Y" warnings.
+        lbl_gr_credit.set_width_chars(52);
+        lbl_gr_credit.set_max_width_chars(52);
+        lbl_gr_credit.add_css_class("dim-label");
+        gr_settings_box.attach(&lbl_gr_credit, 0, 1, 2, 1);
+
         // Speed slider (0.1–5.0).
         let lbl_gr_speed = Label::new(Some("Speed"));
         lbl_gr_speed.set_halign(Align::Start);
-        gr_settings_box.attach(&lbl_gr_speed, 0, 1, 1, 1);
+        gr_settings_box.attach(&lbl_gr_speed, 0, 2, 1, 1);
         let speed_adj = Adjustment::new(
             state.borrow().config.visualizer.granite.speed as f64,
             0.1, 5.0, 0.1, 0.5, 0.0,
@@ -6764,20 +6828,27 @@ fn open_settings_window(
                     a.value().clamp(0.1, 5.0) as f32;
             });
         }
-        gr_settings_box.attach(&scale_gr_speed, 1, 1, 1, 1);
+        gr_settings_box.attach(&scale_gr_speed, 1, 2, 1, 1);
 
-        // Palette dropdown (Granite / Fire / Neon).
+        // Palette dropdown — order must match GranitePalette declaration.
         let lbl_gr_palette = Label::new(Some("Palette"));
         lbl_gr_palette.set_halign(Align::Start);
-        gr_settings_box.attach(&lbl_gr_palette, 0, 2, 1, 1);
-        let dd_gr_palette = DropDown::from_strings(&["Granite", "Fire", "Neon"]);
+        gr_settings_box.attach(&lbl_gr_palette, 0, 3, 1, 1);
+        let dd_gr_palette = DropDown::from_strings(&[
+            "Granite", "Fire", "Neon", "Ocean", "Violet", "Sunset", "CRT", "Spectrum",
+        ]);
         {
             use crate::granite::GranitePalette;
             let cur = state.borrow().config.visualizer.granite.palette;
             dd_gr_palette.set_selected(match cur {
-                GranitePalette::Granite => 0,
-                GranitePalette::Fire    => 1,
-                GranitePalette::Neon    => 2,
+                GranitePalette::Granite  => 0,
+                GranitePalette::Fire     => 1,
+                GranitePalette::Neon     => 2,
+                GranitePalette::Ocean    => 3,
+                GranitePalette::Violet   => 4,
+                GranitePalette::Sunset   => 5,
+                GranitePalette::Crt      => 6,
+                GranitePalette::Spectrum => 7,
             });
         }
         {
@@ -6787,17 +6858,26 @@ fn open_settings_window(
                 let p = match d.selected() {
                     1 => GranitePalette::Fire,
                     2 => GranitePalette::Neon,
+                    3 => GranitePalette::Ocean,
+                    4 => GranitePalette::Violet,
+                    5 => GranitePalette::Sunset,
+                    6 => GranitePalette::Crt,
+                    7 => GranitePalette::Spectrum,
                     _ => GranitePalette::Granite,
                 };
-                state_rc.borrow_mut().config.visualizer.granite.palette = p;
+                let mut s = state_rc.borrow_mut();
+                s.config.visualizer.granite.palette = p;
+                // Apply to the live renderer too — it auto-rolls palettes on
+                // beats, so the config value alone never reaches the screen.
+                s.player.granite_set_palette(p);
             });
         }
-        gr_settings_box.attach(&dd_gr_palette, 1, 2, 1, 1);
+        gr_settings_box.attach(&dd_gr_palette, 1, 3, 1, 1);
 
         // Feedback slider (0.0–0.9). Higher = stronger trail.
         let lbl_gr_fb = Label::new(Some("Feedback"));
         lbl_gr_fb.set_halign(Align::Start);
-        gr_settings_box.attach(&lbl_gr_fb, 0, 3, 1, 1);
+        gr_settings_box.attach(&lbl_gr_fb, 0, 4, 1, 1);
         let fb_adj = Adjustment::new(
             state.borrow().config.visualizer.granite.feedback as f64,
             0.0, 0.9, 0.05, 0.1, 0.0,
@@ -6813,12 +6893,12 @@ fn open_settings_window(
                     a.value().clamp(0.0, 0.9) as f32;
             });
         }
-        gr_settings_box.attach(&scale_gr_fb, 1, 3, 1, 1);
+        gr_settings_box.attach(&scale_gr_fb, 1, 4, 1, 1);
 
         // Effect dropdown — one entry per warp-map family.
         let lbl_gr_effect = Label::new(Some("Effect"));
         lbl_gr_effect.set_halign(Align::Start);
-        gr_settings_box.attach(&lbl_gr_effect, 0, 4, 1, 1);
+        gr_settings_box.attach(&lbl_gr_effect, 0, 5, 1, 1);
         let dd_gr_effect = DropDown::from_strings(&[
             "Plasma", "Tunnel", "Swirl", "Spin", "Cells", "Explode",
             "Ripple", "Shear", "Kaleidoscope", "Gravity Well", "Drain", "Flag",
@@ -6864,12 +6944,12 @@ fn open_settings_window(
                 s.player.granite_set_effect(e);
             });
         }
-        gr_settings_box.attach(&dd_gr_effect, 1, 4, 1, 1);
+        gr_settings_box.attach(&dd_gr_effect, 1, 5, 1, 1);
 
         // Auto-switch toggle (rotates effects every ~15s).
         let lbl_gr_auto = Label::new(Some("Auto-switch effect"));
         lbl_gr_auto.set_halign(Align::Start);
-        gr_settings_box.attach(&lbl_gr_auto, 0, 5, 1, 1);
+        gr_settings_box.attach(&lbl_gr_auto, 0, 6, 1, 1);
         let chk_gr_auto = CheckButton::new();
         chk_gr_auto.set_active(state.borrow().config.visualizer.granite.auto_switch);
         {
@@ -6878,7 +6958,7 @@ fn open_settings_window(
                 state_rc.borrow_mut().config.visualizer.granite.auto_switch = c.is_active();
             });
         }
-        gr_settings_box.attach(&chk_gr_auto, 1, 5, 1, 1);
+        gr_settings_box.attach(&chk_gr_auto, 1, 6, 1, 1);
 
         // Show/hide based on mode (mirrors Bars/Waveform pattern).
         gr_settings_box.set_visible(false);
@@ -8955,7 +9035,11 @@ fn open_waveform_fullscreen(
     jump_entry: gtk4::SearchEntry,
     rebuild_jump: Rc<dyn Fn()>,
     btn_info: gtk4::Button,
+    // Single-driver rule: set while this window is open so the mini-viz
+    // tick yields the shared Granite renderer (see the tick loop in build).
+    fs_viz_open: Rc<Cell<bool>>,
 ) {
+    fs_viz_open.set(true);
     let fs_win = gtk4::Window::new();
     fs_win.set_decorated(false);
 
@@ -9118,7 +9202,23 @@ fn open_waveform_fullscreen(
                 let n = fps_update_countdown.get();
                 if n == 0 {
                     let fps = if ema_dt_ms.get() > 0.0 { 1000.0 / ema_dt_ms.get() } else { 0.0 };
-                    label.set_text(&format!("FPS: {:.0}", fps));
+                    // BPM from the Granite beat detector; "--" until it locks.
+                    // Same format as the macOS overlay.
+                    let (bpm, meter) = {
+                        let s = state_tick.borrow();
+                        (s.player.granite_bpm(), s.player.granite_meter())
+                    };
+                    let bpm_str = if bpm > 0.0 {
+                        format!("{bpm:.0}")
+                    } else {
+                        "--".to_string()
+                    };
+                    let meter_str = if meter > 0 {
+                        format!(" ({meter}/4)")
+                    } else {
+                        String::new()
+                    };
+                    label.set_text(&format!("FPS: {fps:.0}   BPM: {bpm_str}{meter_str}"));
                     fps_update_countdown.set(10);
                 } else {
                     fps_update_countdown.set(n - 1);
@@ -9188,6 +9288,10 @@ fn open_waveform_fullscreen(
                 btn_info.activate();
                 glib::Propagation::Stop
             }
+            // Random Granite effect — forward to the main-window handler.
+            // The fullscreen window has its own key controller, so keys not
+            // matched here never reach the main window.
+            gdk::Key::e | gdk::Key::E => handle_key(key),
             // Transport + mode keys — pass through, then show toast
             gdk::Key::z
             | gdk::Key::x
@@ -9245,6 +9349,7 @@ fn open_waveform_fullscreen(
     let cookie_close = inhibit_cookie.clone();
     fs_win.connect_close_request(move |_| {
         fs_shutting_down.set(true);
+        fs_viz_open.set(false);
         if cookie_close.get() != 0 {
             if let Some(app) = gtk4::gio::Application::default()
                 .and_downcast::<gtk4::Application>()
@@ -12680,7 +12785,6 @@ mod tests {
         // starts fresh and can be counted independently of the previous one.
         let mut s = state_with_tracks(&["A", "B"]);
         let path_a = s.playlist.tracks[0].path.to_string_lossy().into_owned();
-        let path_b = s.playlist.tracks[1].path.to_string_lossy().into_owned();
 
         // Simulate: A was counted, then user switched to B.
         s.counted_play_path = Some(path_a.clone());
