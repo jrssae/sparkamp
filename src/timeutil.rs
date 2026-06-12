@@ -6,6 +6,7 @@
 //! all a "when did this file get scanned" timestamp ever needs.
 
 /// Parse an ISO 8601 timestamp (format: YYYY-MM-DDTHH:MM:SSZ) to Unix seconds.
+#[allow(dead_code)] // bin-unreachable on macOS (callers are GTK/FFI-gated)
 pub(crate) fn parse_iso_timestamp(ts: &str) -> Option<u64> {
     // Expected format: "2024-01-15T10:30:00Z"
     let ts = ts.strip_suffix('Z')?;
@@ -42,6 +43,7 @@ pub(crate) fn parse_iso_timestamp(ts: &str) -> Option<u64> {
 }
 
 /// Calculate days since 1970-01-01 (simplified, not accounting for Julian calendar)
+#[allow(dead_code)] // bin-unreachable on macOS (callers are GTK/FFI-gated)
 pub(crate) fn days_since_1970(year: u64, month: u64, day: u64) -> u64 {
     let mut days = (year - 1970) * 365;
     days += (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400; // leap days
