@@ -78,7 +78,7 @@ extension SparkampModel {
         saveState()
     }
 
-    /// Switch Granite to a random other effect (`n` key). No-op until the
+    /// Switch Granite to a random other effect (`e` key). No-op until the
     /// Granite renderer has drawn its first frame.
     func graniteRandomEffect() {
         guard let ctx = ctx else { return }

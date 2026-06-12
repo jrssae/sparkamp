@@ -62,7 +62,7 @@ extension SparkampModel {
             return true
         case "i": toggleKeyboardShortcuts();  return true
         case "a": cycleVizMode();             return true
-        case "n": graniteRandomEffect();      return true
+        case "e": graniteRandomEffect();      return true
         case "f": openFullscreenViz();        return true  // toggles open/close
         case "j":
             if fullscreenVizVisible {

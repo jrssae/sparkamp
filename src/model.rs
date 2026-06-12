@@ -909,6 +909,9 @@ impl SpectrumData {
 /// `Arc<RwLock<WaveformBuffer>>`.
 pub struct WaveformBuffer {
     samples: std::collections::VecDeque<f64>,
+    // Only read by push_samples, whose sole caller (the GStreamer pad probe)
+    // is compiled out under cfg(test).
+    #[cfg_attr(test, allow(dead_code))]
     capacity: usize,
 }
 
@@ -922,6 +925,8 @@ impl WaveformBuffer {
     }
 
     /// Append PCM samples, evicting the oldest when full.
+    // Sole caller is the GStreamer pad probe, compiled out under cfg(test).
+    #[cfg_attr(test, allow(dead_code))]
     pub fn push_samples(&mut self, new_samples: &[f64]) {
         for &s in new_samples {
             if self.samples.len() >= self.capacity {

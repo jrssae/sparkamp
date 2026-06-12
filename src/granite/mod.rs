@@ -393,13 +393,13 @@ impl Granite {
     /// Estimated tempo of the playing audio (median of recent inter-beat
     /// intervals). 0.0 while the detector has too little data or the music
     /// stopped beating. Debug aid for the fullscreen FPS/BPM overlay.
-    #[allow(dead_code)] // used by tests + macOS FFI; GTK doesn't surface BPM yet.
+    #[allow(dead_code)] // used by tests, GTK overlay + macOS FFI; dead in the macOS bin.
     pub fn bpm(&self) -> f32 {
         self.beat.bpm()
     }
 
     /// Estimated beats per measure (3 or 4); 0 until enough beats analysed.
-    #[allow(dead_code)] // used by tests + macOS FFI; GTK doesn't surface it yet.
+    #[allow(dead_code)] // used by tests, GTK overlay + macOS FFI; dead in the macOS bin.
     pub fn meter(&self) -> u8 {
         self.beat.meter()
     }
