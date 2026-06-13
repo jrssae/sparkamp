@@ -173,6 +173,8 @@ mod tests {
         assert!(parse_os_release("ID=bazzite\n", false).immutable);
         assert!(parse_os_release("ID=steamos\n", false).immutable);
         assert!(parse_os_release("ID=fedora\nVARIANT_ID=silverblue\n", false).immutable);
+        assert!(parse_os_release("ID=fedora\nVARIANT_ID=atomic-desktop\n", false).immutable);
+        assert!(!parse_os_release("ID=fedora\nVARIANT_ID=not-atomic\n", false).immutable);
         assert!(parse_os_release("ID=fedora\n", true).immutable); // ostree-booted
         assert!(!parse_os_release("ID=fedora\nVARIANT_ID=workstation\n", false).immutable);
         assert!(!parse_os_release("ID=arch\n", false).immutable);
