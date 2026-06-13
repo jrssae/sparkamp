@@ -86,7 +86,7 @@ pub fn parse_os_release(os_release: &str, ostree_booted: bool) -> DistroInfo {
         || id == "bazzite"
         || variant.contains("silverblue")
         || variant.contains("kinoite")
-        || variant.contains("atomic");
+        || variant.contains("atomic-desktop");
     DistroInfo { id, immutable }
 }
 
@@ -211,6 +211,30 @@ mod tests {
         assert_eq!(
             classify(true, &arch, DbusErrorKind::NotAuthorized),
             Diagnosis::EjectUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_covers_remaining_branches() {
+        let arch = DistroInfo { id: "arch".into(), immutable: false };
+        // AccessDenied is unconditional → PermissionOff even when not granted.
+        assert_eq!(
+            classify(false, &arch, DbusErrorKind::AccessDenied),
+            Diagnosis::PermissionOff
+        );
+        // NotAuthorized is unconditional → EjectUnavailable even when not granted.
+        assert_eq!(
+            classify(false, &arch, DbusErrorKind::NotAuthorized),
+            Diagnosis::EjectUnavailable
+        );
+        // Other depends on the grant.
+        assert_eq!(
+            classify(true, &arch, DbusErrorKind::Other),
+            Diagnosis::EjectUnavailable
+        );
+        assert_eq!(
+            classify(false, &arch, DbusErrorKind::Other),
+            Diagnosis::PermissionOff
         );
     }
 }
