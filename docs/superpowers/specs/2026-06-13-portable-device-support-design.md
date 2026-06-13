@@ -242,6 +242,7 @@ deletes from disk.
 | 8 | Deletions: device + library-removal device prompt | unit + on-host |
 | 9 | Smart-sync rules: add-only + deletion-review checklist | unit + on-host |
 | 10 | macOS parity: DiskArbitration + FFI + SwiftUI | DMG build |
+| 11 | **Collaborative redesign of the Devices overview** — a dedicated brainstorming phase at the end to design the overview view properly (it currently ships as a functional list). Run the brainstorming skill with the user before implementing. | design |
 
 ## 11. Testing strategy
 
