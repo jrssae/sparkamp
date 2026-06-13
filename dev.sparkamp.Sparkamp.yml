@@ -24,6 +24,9 @@ finish-args:
   - --filesystem=xdg-cache/sparkamp:create
   # DBus for system integration (media keys, MPRIS if added later)
   - --talk-name=org.freedesktop.portal.Desktop
+  # System DBus access to udisks2 for external-device detection, free space,
+  # and safe eject (Unmount + PowerOff). Narrow, media-manager-style grant.
+  - --system-talk-name=org.freedesktop.UDisks2
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

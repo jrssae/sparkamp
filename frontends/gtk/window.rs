@@ -10184,6 +10184,112 @@ fn open_media_library_window(
         }
     }
 
+    // ── "Devices" header row (external USB/SD storage via udisks2) ────────
+    // Mirrors the Playlists header: an expand/collapse chevron, with device
+    // sub-rows populated live by the poll below.
+    let devices_expanded = Rc::new(Cell::new(true));
+    let dev_sub_rows: Rc<RefCell<Vec<ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
+    // Latest detected devices, so the selection handler + Eject can resolve a
+    // sidebar row back to its Device (mount path, capacity, backend id).
+    let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    {
+        let hdr = GtkBox::new(Orientation::Horizontal, 0);
+        let lbl = Label::builder()
+            .label("Devices")
+            .halign(Align::Start)
+            .xalign(0.0)
+            .hexpand(true)
+            .margin_start(10)
+            .margin_top(7)
+            .margin_bottom(7)
+            .build();
+        let chev = Label::builder()
+            .label(if devices_expanded.get() { "▾" } else { "▸" })
+            .margin_end(8)
+            .build();
+        hdr.append(&lbl);
+        hdr.append(&chev);
+        let row = ListBoxRow::new();
+        row.set_widget_name("devices");
+        row.set_child(Some(&hdr));
+        sidebar.append(&row);
+
+        let gesture = GestureClick::new();
+        let exp = devices_expanded.clone();
+        let subs = dev_sub_rows.clone();
+        let chev2 = chev.clone();
+        gesture.connect_released(move |g, _n, x, _y| {
+            let w = g.widget().map(|w| w.width()).unwrap_or(0) as f64;
+            if x < w - 24.0 {
+                return; // left of the chevron = navigation, handled elsewhere
+            }
+            let v = !exp.get();
+            exp.set(v);
+            chev2.set_text(if v { "▾" } else { "▸" });
+            for r in subs.borrow().iter() {
+                r.set_visible(v);
+            }
+        });
+        row.add_controller(gesture);
+    }
+
+    // ── Devices content page widgets (added to the stack below) ───────────
+    let dev_page = GtkBox::new(Orientation::Vertical, 8);
+    dev_page.set_margin_top(8);
+    dev_page.set_margin_start(8);
+    dev_page.set_margin_end(8);
+
+    // Diagnostics banner — shown only when udisks2 can't be reached.
+    let dev_banner = GtkBox::new(Orientation::Horizontal, 8);
+    dev_banner.set_visible(false);
+    let dev_banner_lbl = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .hexpand(true)
+        .build();
+    dev_banner_lbl.add_css_class("broken");
+    let dev_banner_retry = Button::with_label("Retry");
+    dev_banner_retry.add_css_class("pl-btn");
+    dev_banner.append(&dev_banner_lbl);
+    dev_banner.append(&dev_banner_retry);
+    dev_page.append(&dev_banner);
+
+    // Selected-device header: label + Eject, then capacity + free-space bar.
+    let dev_title = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_title.add_css_class("ml-section-header");
+    let dev_eject = Button::with_label("Eject");
+    dev_eject.add_css_class("pl-btn");
+    dev_eject.set_sensitive(false);
+    let dev_hdr_row = GtkBox::new(Orientation::Horizontal, 8);
+    dev_hdr_row.append(&dev_title);
+    let dev_spring = GtkBox::new(Orientation::Horizontal, 0);
+    dev_spring.set_hexpand(true);
+    dev_hdr_row.append(&dev_spring);
+    dev_hdr_row.append(&dev_eject);
+    dev_page.append(&dev_hdr_row);
+
+    let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_capacity.add_css_class("status-label");
+    dev_page.append(&dev_capacity);
+    let dev_levelbar = gtk4::LevelBar::new();
+    dev_levelbar.set_min_value(0.0);
+    dev_levelbar.set_max_value(1.0);
+    dev_page.append(&dev_levelbar);
+
+    let dev_hint = Label::builder()
+        .label("Browsing and sending files to this device is coming next.")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    dev_hint.add_css_class("status-label");
+    dev_page.append(&dev_hint);
+
+    // Backend object id of the currently shown device, for the Eject button.
+    let selected_dev_backend: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
     let _vsep_unused = (); // replaced by Paned divider
 
     // ── Content stack ─────────────────────────────────────────────────────
@@ -10191,6 +10297,7 @@ fn open_media_library_window(
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     stack.set_transition_type(StackTransitionType::None);
+    stack.add_named(&dev_page, Some("devices"));
 
     // Holders so close_request can save Files-tab state (col_view and all_cols are
     // defined inside the Files block scope below).
@@ -14257,6 +14364,215 @@ fn open_media_library_window(
 
     // Persist sidebar expansion state on window close (handled in close_request below).
 
+
+    // ── Device detection: poll udisks2 and keep the sidebar live ──────────
+    // A 2 s poll (rather than D-Bus signal wiring) keeps this simple while
+    // still updating in place — devices appear/disappear and free space
+    // refreshes without reopening the window.
+    let refresh_devices: Rc<dyn Fn()> = {
+        let sidebar = sidebar.clone();
+        let dev_sub_rows = dev_sub_rows.clone();
+        let devices_expanded = devices_expanded.clone();
+        let current_devices = current_devices.clone();
+        let banner = dev_banner.clone();
+        let banner_lbl = dev_banner_lbl.clone();
+        Rc::new(move || {
+            match crate::devices::detect::list_devices() {
+                Ok(devs) => {
+                    banner.set_visible(false);
+                    let want: Vec<String> =
+                        devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
+                    // Remove rows for devices that went away.
+                    dev_sub_rows.borrow_mut().retain(|r| {
+                        let keep = want.contains(&r.widget_name().to_string());
+                        if !keep {
+                            sidebar.remove(r);
+                        }
+                        keep
+                    });
+                    // Add rows for new devices; update free-space bars in place
+                    // so selection isn't disturbed when nothing changed.
+                    let expanded = devices_expanded.get();
+                    for d in &devs {
+                        let name = format!("dev:{}", d.backend_id);
+                        let used = if d.total_bytes > 0 {
+                            1.0 - (d.free_bytes as f64 / d.total_bytes as f64)
+                        } else {
+                            0.0
+                        };
+                        let existing = dev_sub_rows
+                            .borrow()
+                            .iter()
+                            .find(|r| r.widget_name().as_str() == name)
+                            .cloned();
+                        match existing {
+                            Some(row) => {
+                                if let Some(bx) =
+                                    row.child().and_then(|c| c.downcast::<GtkBox>().ok())
+                                {
+                                    if let Some(bar) = bx
+                                        .last_child()
+                                        .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
+                                    {
+                                        bar.set_value(used);
+                                    }
+                                }
+                            }
+                            None => {
+                                let label_text = if d.label.is_empty() {
+                                    "Untitled device".to_string()
+                                } else {
+                                    d.label.clone()
+                                };
+                                let bx = GtkBox::new(Orientation::Vertical, 2);
+                                bx.set_margin_start(24);
+                                bx.set_margin_end(8);
+                                bx.set_margin_top(4);
+                                bx.set_margin_bottom(4);
+                                let lbl = Label::builder()
+                                    .label(&gtk_safe(&label_text))
+                                    .halign(Align::Start)
+                                    .xalign(0.0)
+                                    .build();
+                                let bar = gtk4::LevelBar::new();
+                                bar.set_min_value(0.0);
+                                bar.set_max_value(1.0);
+                                bar.set_value(used);
+                                bx.append(&lbl);
+                                bx.append(&bar);
+                                let row = ListBoxRow::new();
+                                row.set_widget_name(&name);
+                                row.set_child(Some(&bx));
+                                row.set_visible(expanded);
+                                sidebar.append(&row);
+                                dev_sub_rows.borrow_mut().push(row);
+                            }
+                        }
+                    }
+                    *current_devices.borrow_mut() = devs;
+                }
+                Err(e) => {
+                    for r in dev_sub_rows.borrow_mut().drain(..) {
+                        sidebar.remove(&r);
+                    }
+                    current_devices.borrow_mut().clear();
+                    use crate::devices::diagnostics::{self, Diagnosis};
+                    let diag = diagnostics::classify(
+                        diagnostics::has_udisks_grant(&diagnostics::read_flatpak_info()),
+                        &diagnostics::read_distro_info(),
+                        crate::devices::detect::classify_error(&e),
+                    );
+                    let msg = match diag {
+                        Diagnosis::PermissionOff => {
+                            "Can't access drives — Sparkamp needs permission to use the system \
+                             disk service. Enable org.freedesktop.UDisks2 under System Bus in \
+                             Flatseal, then Retry."
+                        }
+                        Diagnosis::NotInstalled => {
+                            "Can't access drives — your system's disk service (udisks2) isn't \
+                             installed. Install it, then Retry."
+                        }
+                        Diagnosis::EjectUnavailable => {
+                            "Couldn't reach the disk service. Retry, or manage the device through \
+                             your file browser."
+                        }
+                    };
+                    banner_lbl.set_text(msg);
+                    banner.set_visible(true);
+                }
+            }
+        })
+    };
+
+    // Initial scan + 2 s poll (stops once the window — hence the sidebar — is gone).
+    refresh_devices();
+    {
+        let refresh = refresh_devices.clone();
+        let sidebar_weak = sidebar.downgrade();
+        glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            if sidebar_weak.upgrade().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            refresh();
+            glib::ControlFlow::Continue
+        });
+    }
+    {
+        let refresh = refresh_devices.clone();
+        dev_banner_retry.connect_clicked(move |_| refresh());
+    }
+
+    // Selecting a device (or the Devices header) shows the devices page.
+    {
+        let stack_ref = stack.clone();
+        let current = current_devices.clone();
+        let title = dev_title.clone();
+        let capacity = dev_capacity.clone();
+        let levelbar = dev_levelbar.clone();
+        let eject = dev_eject.clone();
+        let sel_backend = selected_dev_backend.clone();
+        let exp = devices_expanded.clone();
+        sidebar.connect_row_selected(move |_, opt_row| {
+            let Some(row) = opt_row else { return };
+            let name = row.widget_name().to_string();
+            if name == "devices" {
+                stack_ref.set_visible_child_name("devices");
+                title.set_text("Devices");
+                capacity.set_text("Select a connected device.");
+                levelbar.set_value(0.0);
+                eject.set_sensitive(false);
+                *sel_backend.borrow_mut() = None;
+                if !exp.get() {
+                    exp.set(true);
+                }
+            } else if let Some(backend) = name.strip_prefix("dev:") {
+                stack_ref.set_visible_child_name("devices");
+                if let Some(d) = current.borrow().iter().find(|d| d.backend_id == backend) {
+                    title.set_text(&gtk_safe(if d.label.is_empty() {
+                        "Untitled device"
+                    } else {
+                        &d.label
+                    }));
+                    capacity.set_text(&format!(
+                        "{} — {:.1} GB free of {:.1} GB",
+                        d.fs_type,
+                        d.free_bytes as f64 / 1e9,
+                        d.total_bytes as f64 / 1e9,
+                    ));
+                    let used = if d.total_bytes > 0 {
+                        1.0 - d.free_bytes as f64 / d.total_bytes as f64
+                    } else {
+                        0.0
+                    };
+                    levelbar.set_value(used);
+                    eject.set_sensitive(d.ejectable);
+                    *sel_backend.borrow_mut() = Some(d.backend_id.clone());
+                }
+            }
+        });
+    }
+
+    // Eject: unmount + power off the selected device, then refresh the list.
+    {
+        let sel_backend = selected_dev_backend.clone();
+        let refresh = refresh_devices.clone();
+        let banner = dev_banner.clone();
+        let banner_lbl = dev_banner_lbl.clone();
+        dev_eject.connect_clicked(move |btn| {
+            let Some(backend) = sel_backend.borrow().clone() else { return };
+            btn.set_sensitive(false);
+            match crate::devices::detect::eject(&backend) {
+                Ok(()) => refresh(),
+                Err(_) => {
+                    banner_lbl.set_text(
+                        "Couldn't eject — a file may still be open, or your system requires \
+                         ejecting through your file browser.",
+                    );
+                    banner.set_visible(true);
+                }
+            }
+        });
+    }
 
     sidebar.select_row(sidebar.row_at_index(0).as_ref());
 
