@@ -126,8 +126,17 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
         }
 
         let free_bytes = free_bytes_at(&mount_path);
+        // Identity: prefer the filesystem UUID; fall back to a marker-file id
+        // already present on the device. Enumeration never writes a marker —
+        // that happens lazily when a file is first paired to the device.
+        let uuid = block.and_then(|b| prop_str(b, "IdUUID")).unwrap_or_default();
+        let id = if uuid.is_empty() {
+            super::marker::read_marker(&mount_path).unwrap_or_default()
+        } else {
+            uuid
+        };
         devices.push(Device {
-            id: block.and_then(|b| prop_str(b, "IdUUID")).unwrap_or_default(),
+            id,
             label: block.and_then(|b| prop_str(b, "IdLabel")).unwrap_or_default(),
             mount_path,
             fs_type: block.and_then(|b| prop_str(b, "IdType")).unwrap_or_default(),
