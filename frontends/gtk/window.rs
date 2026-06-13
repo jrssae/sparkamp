@@ -10117,6 +10117,99 @@ fn copy_paths_to_device(
     Ok((copied, skipped, failed))
 }
 
+/// File modification time in whole seconds since the epoch (0 on error).
+fn file_mtime(p: &std::path::Path) -> i64 {
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Compute the per-pair sync decisions for a device: for each recorded sync
+/// pair, hash the current tags on each side and decide the direction.
+fn device_sync_plan(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+) -> Vec<(crate::media_library::SyncPair, crate::devices::sync::SyncAction)> {
+    use crate::devices::sync::{self, SideState};
+    let device_id = if dev.id.is_empty() {
+        crate::devices::marker::read_marker(&dev.mount_path).unwrap_or_default()
+    } else {
+        dev.id.clone()
+    };
+    if device_id.is_empty() {
+        return Vec::new();
+    }
+    let pairs = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .and_then(|l| l.sync_pairs_for_device(&device_id).ok())
+        .unwrap_or_default();
+    pairs
+        .into_iter()
+        .map(|pair| {
+            let lib_path = std::path::PathBuf::from(&pair.library_path);
+            let dev_path = dev.mount_path.join(&pair.device_relpath);
+            let side = |p: &std::path::Path| {
+                p.exists().then(|| SideState {
+                    hash: sync::tag_hash(&sync::read_tag_state(p)),
+                    mtime: file_mtime(p),
+                })
+            };
+            let action = sync::decide(
+                &pair.baseline_tag_hash,
+                side(&lib_path).as_ref(),
+                side(&dev_path).as_ref(),
+            );
+            (pair, action)
+        })
+        .collect()
+}
+
+/// Apply a sync plan: propagate the winning side's tags and refresh each
+/// pair's baseline. Returns `(applied, failed)`.
+fn apply_device_sync(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+) -> (usize, usize) {
+    use crate::devices::sync::{self, SyncAction};
+    let (mut applied, mut failed) = (0usize, 0usize);
+    for (pair, action) in plan {
+        let lib_path = std::path::PathBuf::from(&pair.library_path);
+        let dev_path = dev.mount_path.join(&pair.device_relpath);
+        let result = match action {
+            SyncAction::DeviceToLibrary => {
+                let st = sync::read_tag_state(&dev_path);
+                sync::apply_tags(&st, &lib_path).map(|_| st)
+            }
+            SyncAction::LibraryToDevice => {
+                let st = sync::read_tag_state(&lib_path);
+                sync::apply_tags(&st, &dev_path).map(|_| st)
+            }
+            _ => continue,
+        };
+        match result {
+            Ok(st) => {
+                applied += 1;
+                if let Some(lib) = state.borrow().media_lib.as_ref() {
+                    let mut p = pair.clone();
+                    p.baseline_tag_hash = sync::tag_hash(&st);
+                    p.baseline_rating = st.rating as i64;
+                    p.baseline_playcount = st.play_count as i64;
+                    p.last_sync_at = Some(crate::timeutil::format_current_timestamp());
+                    let _ = lib.upsert_sync_pair(&p);
+                }
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    (applied, failed)
+}
+
 fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -10421,6 +10514,9 @@ fn open_media_library_window(
 
     let dev_title = Label::builder().halign(Align::Start).xalign(0.0).build();
     dev_title.add_css_class("ml-section-header");
+    let dev_sync = Button::with_label("Sync");
+    dev_sync.add_css_class("pl-btn");
+    dev_sync.set_sensitive(false);
     let dev_eject = Button::with_label("Eject");
     dev_eject.add_css_class("pl-btn");
     dev_eject.set_sensitive(false);
@@ -10429,6 +10525,7 @@ fn open_media_library_window(
     let dev_spring = GtkBox::new(Orientation::Horizontal, 0);
     dev_spring.set_hexpand(true);
     dev_hdr_row.append(&dev_spring);
+    dev_hdr_row.append(&dev_sync);
     dev_hdr_row.append(&dev_eject);
     dev_detail.append(&dev_hdr_row);
 
@@ -14773,6 +14870,7 @@ fn open_media_library_window(
         let rebuild_overview_sel = rebuild_overview.clone();
         let hint = dev_hint.clone();
         let tracks_list = dev_tracks_list.clone();
+        let sync_btn = dev_sync.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
@@ -14825,6 +14923,7 @@ fn open_media_library_window(
                     };
                     levelbar.set_value(used);
                     eject.set_sensitive(d.ejectable);
+                    sync_btn.set_sensitive(true);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
 
                     // List the audio files currently on the device.
@@ -14888,6 +14987,79 @@ fn open_media_library_window(
                     banner.set_visible(true);
                 }
             }
+        });
+    }
+
+    // Sync: compare tags on each side of every pair, confirm en masse, apply.
+    {
+        let state_sync = state.clone();
+        let devices_sync = current_devices.clone();
+        let sel_backend = selected_dev_backend.clone();
+        let win_wk = win.downgrade();
+        dev_sync.connect_clicked(move |_| {
+            use crate::devices::sync::SyncAction;
+            let Some(backend) = sel_backend.borrow().clone() else { return };
+            let dev = devices_sync
+                .borrow()
+                .iter()
+                .find(|d| d.backend_id == backend)
+                .cloned();
+            let Some(dev) = dev else { return };
+
+            let plan = device_sync_plan(&state_sync, &dev);
+            let to_lib = plan
+                .iter()
+                .filter(|(_, a)| *a == SyncAction::DeviceToLibrary)
+                .count();
+            let to_dev = plan
+                .iter()
+                .filter(|(_, a)| *a == SyncAction::LibraryToDevice)
+                .count();
+            if to_lib == 0 && to_dev == 0 {
+                show_error_alert("Already in sync — no tag changes to apply.");
+                return;
+            }
+            let dname = if dev.label.is_empty() {
+                "The device".to_string()
+            } else {
+                dev.label.clone()
+            };
+            let detail = format!(
+                "{dname} has {to_lib} updated song{}, this computer has {to_dev} updated song{}. \
+                 Sync all changes?",
+                if to_lib == 1 { "" } else { "s" },
+                if to_dev == 1 { "" } else { "s" },
+            );
+            let dialog = gtk4::AlertDialog::builder()
+                .message("Sync device")
+                .detail(detail)
+                .buttons(vec!["Cancel".to_string(), "Sync".to_string()])
+                .cancel_button(0)
+                .default_button(1)
+                .modal(true)
+                .build();
+            let state2 = state_sync.clone();
+            let dev2 = dev.clone();
+            let plan2 = plan;
+            dialog.choose(
+                win_wk.upgrade().as_ref(),
+                None::<&gio::Cancellable>,
+                move |res| {
+                    if res != Ok(1) {
+                        return;
+                    }
+                    let (applied, failed) = apply_device_sync(&state2, &dev2, &plan2);
+                    let tail = if failed > 0 {
+                        format!(", {failed} failed")
+                    } else {
+                        String::new()
+                    };
+                    show_error_alert(&format!(
+                        "Synced {applied} song{}{tail}.",
+                        if applied == 1 { "" } else { "s" }
+                    ));
+                },
+            );
         });
     }
 

@@ -12,6 +12,8 @@ pub mod marker;
 pub mod browse;
 // Copying library files onto a device under a Music/Artist/Album layout.
 pub mod transfer;
+// Tag sync (text + rating + play count) between paired library/device files.
+pub mod sync;
 
 // udisks2-backed detection is Linux-only (macOS uses DiskArbitration, added
 // in a later phase). The `zbus` dependency is itself Linux-gated.
