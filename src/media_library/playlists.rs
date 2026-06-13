@@ -118,66 +118,90 @@ impl MediaLibrary {
                 Err(_) => path.to_string_lossy().into_owned(),
             };
 
-            // 1. Exact path match in DB.
-            if let Ok(t) = self.track_by_path(&path_str) {
-                tracks.push(t);
-                extinf_title = None;
-                extinf_artist = None;
-                extinf_secs = None;
-                continue;
-            }
-
-            // 2. Filename-only fallback (handles tracks moved within the library).
-            if let Ok(t) = self.track_by_filename_first(&filename) {
-                tracks.push(t);
-                extinf_title = None;
-                extinf_artist = None;
-                extinf_secs = None;
-                continue;
-            }
-
-            // 3. Not in library — emit a synthetic missing-file stub so the UI
-            //    can display it in red rather than hiding it entirely.
+            // Snapshot any EXTINF metadata for this entry and clear it so it
+            // never leaks onto a later line.
             let title  = extinf_title.take();
             let artist = extinf_artist.take();
             let secs   = extinf_secs.take();
-            let sort   = SortKeys {
-                title:    title.as_deref().unwrap_or(&filename).to_lowercase(),
-                artist:   artist.as_deref().unwrap_or("").to_lowercase(),
-                filename: filename.to_lowercase(),
-                ..SortKeys::default()
+
+            // Build a non-DB LibTrack ("stub") on `stub_path` from the EXTINF
+            // metadata. `id == 0` only means "not catalogued" — whether the
+            // UI shows it as missing is decided by the path's existence, so a
+            // stub on an accessible path is a normal, playable track.
+            let make_stub = |stub_path: String| -> LibTrack {
+                let sort = SortKeys {
+                    title:    title.as_deref().unwrap_or(&filename).to_lowercase(),
+                    artist:   artist.as_deref().unwrap_or("").to_lowercase(),
+                    filename: filename.to_lowercase(),
+                    ..SortKeys::default()
+                };
+                LibTrack {
+                    id:              0,          // sentinel: not in the DB
+                    path:            stub_path,
+                    filename:        filename.clone(),
+                    title:           title.clone(),
+                    artist:          artist.clone(),
+                    length_secs:     secs,
+                    album:           None,
+                    track_num:       None,
+                    genre:           None,
+                    year:            None,
+                    bpm:             None,
+                    bitrate:         None,
+                    channels:        None,
+                    filetype:        None,
+                    play_count:      0,
+                    last_played:     None,
+                    comment:         None,
+                    album_artist:    None,
+                    disc_num:        None,
+                    disc_total:      None,
+                    composer:        None,
+                    original_artist: None,
+                    copyright:       None,
+                    url:             None,
+                    encoded_by:      None,
+                    lyric:           None,
+                    artwork_path:    None,
+                    last_scanned:    None,
+                    sort_keys:       sort,
+                }
             };
-            tracks.push(LibTrack {
-                id:              0,          // sentinel: not in the DB
-                path:            raw_line.to_string(),
-                filename,
-                title,
-                artist,
-                length_secs:     secs,
-                album:           None,
-                track_num:       None,
-                genre:           None,
-                year:            None,
-                bpm:             None,
-                bitrate:         None,
-                channels:        None,
-                filetype:        None,
-                play_count:      0,
-                last_played:     None,
-                comment:         None,
-                album_artist:    None,
-                disc_num:        None,
-                disc_total:      None,
-                composer:        None,
-                original_artist: None,
-                copyright:       None,
-                url:             None,
-                encoded_by:      None,
-                lyric:           None,
-                artwork_path:    None,
-                last_scanned:    None,
-                sort_keys:       sort,
-            });
+
+            // 1. Exact path match in the catalogue — richest, trusted data.
+            if let Ok(t) = self.track_by_path(&path_str) {
+                tracks.push(t);
+                continue;
+            }
+
+            // 2. The line points at a file that exists on disk but isn't
+            //    catalogued under this exact path (e.g. added to the active
+            //    playlist without scanning, or the catalogue only knows a
+            //    stale, inaccessible copy under a different path). Trust the
+            //    file: keep its real, accessible path so it stays playable and
+            //    never shows as missing. Borrow metadata from a same-filename
+            //    catalogue row when one exists, but keep the verified path.
+            if Path::new(&path_str).exists() {
+                let mut t = self
+                    .track_by_filename_first(&filename)
+                    .unwrap_or_else(|_| make_stub(path_str.clone()));
+                t.path = path_str.clone();
+                t.filename = filename.clone();
+                tracks.push(t);
+                continue;
+            }
+
+            // 3. The literal path is gone — the file may have moved within the
+            //    library. Fall back to a same-filename catalogue row, which
+            //    can resolve to a new, accessible location.
+            if let Ok(t) = self.track_by_filename_first(&filename) {
+                tracks.push(t);
+                continue;
+            }
+
+            // 4. Genuinely missing — synthetic stub on the raw path so the UI
+            //    shows it in the unavailable color rather than hiding it.
+            tracks.push(make_stub(raw_line.to_string()));
         }
         Ok(tracks)
     }

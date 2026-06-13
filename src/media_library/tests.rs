@@ -1031,3 +1031,64 @@ fn read_only_track_fields_channels_multi() {
     assert_eq!(ro.channels, "6ch");
 }
 
+
+// ── load_playlist_tracks path resolution ──────────────────────────────
+
+#[test]
+fn load_playlist_prefers_accessible_path_over_stale_catalogue_row() {
+    // A playlist line pointing at a file that exists must round-trip as a
+    // playable track on that accessible path — even when the catalogue only
+    // knows a same-named file under a now-inaccessible (stale) path. This
+    // guards against the filename fallback substituting the dead path and
+    // making an accessible track appear missing.
+    let (lib, _db) = temp_lib();
+
+    // Catalogue a "song.mp3" then delete it on disk, leaving a stale row
+    // whose recorded path no longer exists.
+    let stale_dir = tempfile::tempdir().unwrap();
+    fs::write(stale_dir.path().join("song.mp3"), b"x").unwrap();
+    let fid = lib.add_folder(stale_dir.path().to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(fid, stale_dir.path().to_str().unwrap()).unwrap();
+    fs::remove_file(stale_dir.path().join("song.mp3")).unwrap();
+
+    // A different, accessible "song.mp3" referenced by the playlist file.
+    let live_dir = tempfile::tempdir().unwrap();
+    let live_path = live_dir.path().join("song.mp3");
+    fs::write(&live_path, b"x").unwrap();
+
+    let m3u_path = live_dir.path().join("list.m3u8");
+    fs::write(&m3u_path, format!("#EXTM3U\n{}\n", live_path.display())).unwrap();
+
+    let pl = LibPlaylist {
+        id: 0,
+        path: m3u_path.to_string_lossy().into_owned(),
+        name: "list".into(),
+        tracks: Vec::new(),
+    };
+    let tracks = lib.load_playlist_tracks(&pl).unwrap();
+    assert_eq!(tracks.len(), 1);
+    let canon = live_path.canonicalize().unwrap();
+    assert_eq!(tracks[0].path, canon.to_string_lossy());
+    assert!(std::path::Path::new(&tracks[0].path).exists());
+}
+
+#[test]
+fn load_playlist_marks_genuinely_missing_entry_as_stub() {
+    // A playlist line whose file does not exist anywhere stays a stub on the
+    // raw path so the UI can show it in the unavailable color.
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let m3u_path = dir.path().join("list.m3u8");
+    fs::write(&m3u_path, "#EXTM3U\n/no/such/file/ghost.mp3\n").unwrap();
+
+    let pl = LibPlaylist {
+        id: 0,
+        path: m3u_path.to_string_lossy().into_owned(),
+        name: "list".into(),
+        tracks: Vec::new(),
+    };
+    let tracks = lib.load_playlist_tracks(&pl).unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].id, 0);
+    assert!(!std::path::Path::new(&tracks[0].path).exists());
+}

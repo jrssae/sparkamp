@@ -92,6 +92,7 @@ struct Id3EditorView: View {
                     .foregroundStyle(theme.titleText)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .textSelection(.enabled)
 
                 if fileMissing {
                     Text("File not found")

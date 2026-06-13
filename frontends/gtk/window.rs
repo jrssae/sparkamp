@@ -863,18 +863,42 @@ fn format_last_played(iso_timestamp: &str) -> String {
 
 #[allow(deprecated)]
 fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
-    let dd = DropDown::from_strings(crate::id3_editor::ID3V1_GENRES);
+    // First item clears the genre; a custom (non-ID3v1) value gets its own
+    // item so the dropdown reflects what's actually in the tag.
+    const UNDEFINED: &str = "(undefined)";
+    let mut items: Vec<&str> = Vec::with_capacity(crate::id3_editor::ID3V1_GENRES.len() + 2);
+    items.push(UNDEFINED);
+    if !initial_value.is_empty()
+        && !crate::id3_editor::ID3V1_GENRES.contains(&initial_value)
+    {
+        items.push(initial_value);
+    }
+    items.extend_from_slice(crate::id3_editor::ID3V1_GENRES);
+    let dd = DropDown::from_strings(&items);
+
+    // Hidden value carrier — the save handler reads this entry, so the
+    // dropdown mirrors every selection into it ("" for undefined).
     let entry = Entry::new();
     entry.set_width_chars(16);
+    entry.set_text(initial_value);
 
-    // Try to match initial value to a predefined genre
-    if let Some(idx) = crate::id3_editor::ID3V1_GENRES
-        .iter()
-        .position(|g| *g == initial_value)
-    {
-        dd.set_selected(idx as u32);
+    let selected = if initial_value.is_empty() {
+        0
     } else {
-        entry.set_text(initial_value);
+        items.iter().position(|g| *g == initial_value).unwrap_or(0)
+    };
+    dd.set_selected(selected as u32);
+
+    {
+        let entry_sync = entry.clone();
+        dd.connect_selected_notify(move |d| {
+            let text = d
+                .selected_item()
+                .and_then(|o| o.downcast::<gtk4::StringObject>().ok())
+                .map(|s| s.string().to_string())
+                .unwrap_or_default();
+            entry_sync.set_text(if text == UNDEFINED { "" } else { &text });
+        });
     }
 
     (dd, entry)
@@ -1211,6 +1235,14 @@ thread_local! {
     /// glyph clears alongside the files view's own refresh.
     static EDITOR_CURRENT_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
         const { RefCell::new(None) };
+
+    /// Re-sync the ML window's playlist navigation (sidebar sub-rows +
+    /// manage list) with the playlists table.  Fired after a playlist is
+    /// created outside the ML window (e.g. "Add to new playlist" in the
+    /// active-playlist window) so it appears immediately.  No-op when no
+    /// ML window is open.
+    static PLAYLIST_NAV_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
+        const { RefCell::new(None) };
 }
 
 fn notify_playlist_changed(pid: i64) {
@@ -1223,6 +1255,14 @@ fn notify_playlist_changed(pid: i64) {
 
 fn notify_editor_refresh() {
     EDITOR_CURRENT_REFRESH_HOOK.with(|h| {
+        if let Some(cb) = h.borrow().as_ref() {
+            cb();
+        }
+    });
+}
+
+fn notify_playlist_nav_refresh() {
+    PLAYLIST_NAV_REFRESH_HOOK.with(|h| {
         if let Some(cb) = h.borrow().as_ref() {
             cb();
         }
@@ -3138,6 +3178,7 @@ pub fn build(
                                 show_playlist_save_error(&win_cb, &path, &e);
                             }
                         }
+                        notify_playlist_nav_refresh();
                     },
                 );
             });
@@ -3542,6 +3583,7 @@ pub fn build(
                         show_playlist_save_error(&win_cb, &path, &e);
                     }
                 }
+                notify_playlist_nav_refresh();
             });
         }
     });
@@ -4777,7 +4819,6 @@ pub fn build(
                     } else {
                         kbd_btn_repeat.add_css_class("mode-btn-active");
                     }
-                    status_label.set_text(new_mode.label());
                     glib::Propagation::Stop
                 }
 
@@ -4794,10 +4835,8 @@ pub fn build(
                     };
                     if enabled {
                         kbd_btn_shuffle.add_css_class("mode-btn-active");
-                        status_label.set_text("Shuffle: On");
                     } else {
                         kbd_btn_shuffle.remove_css_class("mode-btn-active");
-                        status_label.set_text("Shuffle: Off");
                     }
                     glib::Propagation::Stop
                 }
@@ -6193,9 +6232,12 @@ fn open_id3_editor_window(
             get_id3_field_value(&fields, &track_meta, id)
         };
         if *id == "genre" {
-            let (combo, _entry) = make_genre_combo(&value);
+            let (combo, entry) = make_genre_combo(&value);
             combo.set_hexpand(true);
             grid.attach(&combo, 1, row as i32, 1, 1);
+            // Register the hidden carrier entry so Save picks the genre up;
+            // without it the save handler writes an empty genre.
+            left_entries.push((id.to_string(), entry));
         } else {
             let entry = Entry::new();
             entry.set_hexpand(true);
@@ -6374,7 +6416,20 @@ fn open_id3_editor_window(
     btn_row.append(&btn_save);
 
     // ── Main layout ──────────────────────────────────────────────────────────
+    // Filename header — non-editable but selectable, so the name can be
+    // copied (mirrors the macOS editor header).
+    let fname_lbl = Label::new(Some(&fname));
+    fname_lbl.set_selectable(true);
+    fname_lbl.set_xalign(0.0);
+    fname_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+    fname_lbl.set_margin_top(10);
+    fname_lbl.set_margin_start(12);
+    fname_lbl.set_margin_end(12);
+    fname_lbl.add_css_class("heading");
+
     let vbox = GtkBox::new(Orientation::Vertical, 0);
+    vbox.append(&fname_lbl);
+    vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&grid);
     vbox.append(&artwork_vbox);
     vbox.append(&Separator::new(Orientation::Horizontal));
@@ -11668,7 +11723,10 @@ fn open_media_library_window(
                 let entry = boxed.borrow::<EditorEntry>();
                 let t = &entry.track;
                 let path = std::path::Path::new(&t.path);
-                let missing  = t.id == 0 || !path.exists();
+                // Missing == the file is gone, mirroring the macOS/FFI
+                // `file_missing` flag. `id == 0` only means "not catalogued";
+                // an uncatalogued file that exists is a normal playable track.
+                let missing  = !path.exists();
                 let readonly = !missing && crate::media_library::is_read_only(path);
                 let glyph = if missing { "⚠" } else if readonly { "🔒" } else { "" };
                 if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
@@ -12381,6 +12439,16 @@ fn open_media_library_window(
                     _ => String::new(),
                 };
                 lbl.set_text(&gtk_safe(&text));
+                // Unavailable file → broken color, mirroring the macOS
+                // editor's red rows for missing files. Existence — not library
+                // membership — decides this, so an uncatalogued but present
+                // file shows normally.
+                let missing = !std::path::Path::new(&t.path).exists();
+                if missing {
+                    lbl.add_css_class("broken");
+                } else {
+                    lbl.remove_css_class("broken");
+                }
             });
 
             let col = ColumnViewColumn::new(Some(c.header), Some(factory));
@@ -12552,6 +12620,22 @@ fn open_media_library_window(
     // can refresh the editor after a successful reorder.
     *rebuild_track_list_holder.borrow_mut() = Some(rebuild_track_list.clone());
 
+    // Error banner shown when a playlist's file can't be read (e.g. the
+    // library was scanned in another sandbox and the stored path doesn't
+    // resolve here).  Hidden while the playlist loads normally.  Hoisted
+    // here so load_pl_by_id below can capture it; packed into the
+    // pl-edit page further down.
+    let edit_error_label: Label = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(8).margin_end(8)
+        .margin_top(4).margin_bottom(4)
+        .visible(false)
+        .build();
+    edit_error_label.add_css_class("broken");
+
     // ── Helper: load a playlist by DB id into editing state ───────────────
     let load_pl_by_id: Rc<dyn Fn(i64)> = {
         let state_rc   = state.clone();
@@ -12560,21 +12644,41 @@ fn open_media_library_window(
         let rebuild    = rebuild_track_list.clone();
         let ep_id      = editing_pl_id.clone();
         let apply_cols = apply_editor_columns.clone();
+        let err_lbl    = edit_error_label.clone();
         Rc::new(move |id: i64| {
             ep_id.set(id);
             // Re-apply files-view column state so customizations made
             // while the editor was elsewhere take effect immediately.
             apply_cols();
-            let tracks = state_rc
+            let loaded = state_rc
                 .borrow()
                 .media_lib
                 .as_ref()
-                .and_then(|lib| {
+                .map(|lib| {
                     lib.playlist_by_id(id)
-                        .ok()
-                        .and_then(|pl| lib.load_playlist_tracks(&pl).ok())
-                })
-                .unwrap_or_default();
+                        .and_then(|pl| lib.load_playlist_tracks(&pl))
+                });
+            let tracks = match loaded {
+                Some(Ok(tracks)) => {
+                    err_lbl.set_visible(false);
+                    tracks
+                }
+                Some(Err(e)) => {
+                    // Playlist entries live only in the .m3u8 file, so an
+                    // unreadable file means there is nothing to show — say
+                    // why instead of presenting a silently empty playlist.
+                    err_lbl.set_text(&gtk_safe(&format!(
+                        "This playlist has not been scanned yet and its \
+                         file is not accessible from here ({e:#})."
+                    )));
+                    err_lbl.set_visible(true);
+                    Vec::new()
+                }
+                None => {
+                    err_lbl.set_visible(false);
+                    Vec::new()
+                }
+            };
             let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
             *et.borrow_mut() = tracks;
             *saved.borrow_mut() = ids;
@@ -12605,6 +12709,71 @@ fn open_media_library_window(
             if id >= 0 { load(id); }
         });
         EDITOR_CURRENT_REFRESH_HOOK.with(|h| *h.borrow_mut() = Some(hook));
+    }
+    // Nav-refresh hook: re-sync the playlist sidebar sub-rows and the
+    // manage list with the playlists table after a playlist is created
+    // from another window (e.g. active-playlist "Add to new playlist").
+    {
+        let state_rc     = state.clone();
+        let sidebar_ref  = sidebar.clone();
+        let sub_rows_ref = pl_sub_rows.clone();
+        let expanded_ref = playlists_expanded.clone();
+        let manage_ref   = pl_manage_list.clone();
+        let hook: Rc<dyn Fn()> = Rc::new(move || {
+            let playlists = state_rc
+                .borrow()
+                .media_lib
+                .as_ref()
+                .and_then(|lib| lib.all_playlists().ok())
+                .unwrap_or_default();
+
+            // Remember the selected sidebar playlist (if any) so the
+            // rebuild doesn't visually drop the user's place.
+            let selected = sidebar_ref
+                .selected_row()
+                .map(|r| r.widget_name().to_string());
+
+            // Clear both lists, then rebuild from the playlists table.
+            // Sidebar sub-rows are tracked in `pl_sub_rows`, so drain that;
+            // the manage list isn't tracked, so empty it by index.
+            for row in sub_rows_ref.borrow_mut().drain(..) {
+                sidebar_ref.remove(&row);
+            }
+            while let Some(row) = manage_ref.row_at_index(0) {
+                manage_ref.remove(&row);
+            }
+
+            for pl in &playlists {
+                let s_lbl = Label::builder()
+                    .label(&pl.name)
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .margin_start(24).margin_end(8)
+                    .margin_top(4).margin_bottom(4)
+                    .build();
+                let s_row = ListBoxRow::new();
+                s_row.set_widget_name(&format!("pl:{}", pl.id));
+                s_row.set_child(Some(&s_lbl));
+                s_row.set_visible(expanded_ref.get());
+                sidebar_ref.append(&s_row);
+                if selected.as_deref() == Some(s_row.widget_name().as_str()) {
+                    sidebar_ref.select_row(Some(&s_row));
+                }
+                sub_rows_ref.borrow_mut().push(s_row);
+
+                let m_lbl = Label::builder()
+                    .label(&pl.name)
+                    .halign(Align::Start)
+                    .margin_start(8).margin_end(8)
+                    .margin_top(3).margin_bottom(3)
+                    .build();
+                let m_row = ListBoxRow::new();
+                m_row.set_widget_name(&pl.id.to_string());
+                m_row.set_child(Some(&m_lbl));
+                manage_ref.append(&m_row);
+            }
+        });
+        PLAYLIST_NAV_REFRESH_HOOK.with(|h| *h.borrow_mut() = Some(hook));
     }
 
     // ── Helper: add a sub-row to both the sidebar and pl_manage_list ──────
@@ -12977,6 +13146,7 @@ fn open_media_library_window(
         header_row.append(&btn_rename_pl_inline);
         edit_vbox.append(&header_row);
         edit_vbox.append(&edit_path_label);
+        edit_vbox.append(&edit_error_label);
 
         let track_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Automatic)
@@ -14145,6 +14315,7 @@ fn open_media_library_window(
             // Rcs in thread-local storage across an ML reopen.
             EDITOR_REFRESH_HOOK.with(|h| *h.borrow_mut() = None);
             EDITOR_CURRENT_REFRESH_HOOK.with(|h| *h.borrow_mut() = None);
+            PLAYLIST_NAV_REFRESH_HOOK.with(|h| *h.borrow_mut() = None);
             glib::Propagation::Proceed
         }
     });

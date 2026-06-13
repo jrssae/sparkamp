@@ -262,7 +262,11 @@ impl Track {
 impl From<&crate::media_library::LibTrack> for Track {
     fn from(lib: &crate::media_library::LibTrack) -> Self {
         let path = PathBuf::from(&lib.path);
-        let read_only = crate::media_library::is_read_only(&path);
+        // A file that no longer exists at this path is broken from the
+        // outset, so adding it to the active playlist shows the unavailable
+        // status immediately rather than only after a failed play attempt.
+        let exists = path.exists();
+        let read_only = exists && crate::media_library::is_read_only(&path);
         Track {
             path,
             title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
@@ -272,7 +276,7 @@ impl From<&crate::media_library::LibTrack> for Track {
             duration: lib
                 .length_secs
                 .and_then(|s| Duration::try_from_secs_f64(s).ok()),
-            broken: false,
+            broken: !exists,
             read_only,
         }
     }
@@ -992,9 +996,14 @@ mod tests {
     fn track_from_libtrack_copies_all_fields() {
         use crate::media_library::{LibTrack, SortKeys};
 
+        // Use a real file so `broken` (existence-derived) is false; the test
+        // is about field copying, not the missing-file path.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp_path = tmp.path().to_string_lossy().into_owned();
+
         let lib = LibTrack {
             id: 42,
-            path: "/music/test.mp3".into(),
+            path: tmp_path.clone(),
             artist: Some("Test Artist".into()),
             title: Some("Test Title".into()),
             album: Some("Test Album".into()),
@@ -1026,7 +1035,7 @@ mod tests {
 
         let track = Track::from(&lib);
 
-        assert_eq!(track.path, PathBuf::from("/music/test.mp3"));
+        assert_eq!(track.path, PathBuf::from(&tmp_path));
         assert_eq!(track.title, "Test Title");
         assert_eq!(track.artist, "Test Artist");
         assert_eq!(track.album, "Test Album");
