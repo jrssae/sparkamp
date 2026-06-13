@@ -64,6 +64,8 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # GTK4 GUI — Linux only; not needed on macOS where SwiftUI replaces it.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
+# udisks2 client for external-device detection + eject over the system D-Bus.
+zbus = "5"
 
 [dev-dependencies]
 # Temporary files for ID3 editor tests
