@@ -26,7 +26,7 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - Release: Confirm the intended version number with the user first (never assume a bump). Update Cargo.toml, README.md, and a metainfo `<release>` entry, then run `scripts/pre-release-check.sh <version>` before tagging — it refuses a forgotten bump and syncs the macOS `MARKETING_VERSION`. Verify Flatpak build ( packaging/ ).
 
-- Deletion Rule: Removing skins/plugins/music from UI must not delete files from disk.
+- Deletion Rule: Permanently deleting a music file from disk is allowed ONLY from the Media Library file view or the Media Library external-device view, and ONLY after explicit user confirmation. Removing a track from the active playlist or any saved playlist must only remove it from that list — never delete the file from disk. Removing skins/plugins from the UI must not delete their files from disk.
 
 - Refactoring: Ask before refactoring. Focus on requested changes; avoid over-engineering.
 
