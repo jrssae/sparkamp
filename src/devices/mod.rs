@@ -8,6 +8,8 @@ pub mod diagnostics;
 // Marker-file identity fallback is pure filesystem logic, shared by the Linux
 // and (future) macOS backends.
 pub mod marker;
+// Listing the audio files on a device's mounted filesystem.
+pub mod browse;
 
 // udisks2-backed detection is Linux-only (macOS uses DiskArbitration, added
 // in a later phase). The `zbus` dependency is itself Linux-gated.

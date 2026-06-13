@@ -10338,13 +10338,25 @@ fn open_media_library_window(
     dev_detail.append(&dev_warn);
 
     let dev_hint = Label::builder()
-        .label("Browsing and sending files to this device is coming next.")
+        .label("")
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
         .build();
     dev_hint.add_css_class("status-label");
     dev_detail.append(&dev_hint);
+
+    // Audio files found on the device.
+    let dev_tracks_list = ListBox::new();
+    dev_tracks_list.add_css_class("rich-list");
+    dev_tracks_list.set_selection_mode(gtk4::SelectionMode::None);
+    let dev_tracks_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .vexpand(true)
+        .child(&dev_tracks_list)
+        .build();
+    dev_detail.append(&dev_tracks_scroll);
 
     dev_page.append(&dev_detail);
 
@@ -14636,6 +14648,8 @@ fn open_media_library_window(
         let detail = dev_detail.clone();
         let warn = dev_warn.clone();
         let rebuild_overview_sel = rebuild_overview.clone();
+        let hint = dev_hint.clone();
+        let tracks_list = dev_tracks_list.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
@@ -14689,6 +14703,36 @@ fn open_media_library_window(
                     levelbar.set_value(used);
                     eject.set_sensitive(d.ejectable);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
+
+                    // List the audio files currently on the device.
+                    let files = crate::devices::browse::list_audio_files(&d.mount_path);
+                    while let Some(c) = tracks_list.first_child() {
+                        tracks_list.remove(&c);
+                    }
+                    for f in &files {
+                        let nm = f
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let lbl = Label::builder()
+                            .label(&gtk_safe(&nm))
+                            .halign(Align::Start)
+                            .xalign(0.0)
+                            .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+                            .margin_start(6)
+                            .margin_end(6)
+                            .margin_top(2)
+                            .margin_bottom(2)
+                            .build();
+                        let r = ListBoxRow::new();
+                        r.set_child(Some(&lbl));
+                        tracks_list.append(&r);
+                    }
+                    hint.set_text(&format!(
+                        "{} audio file{} on this device",
+                        files.len(),
+                        if files.len() == 1 { "" } else { "s" }
+                    ));
                 }
             }
         });
