@@ -15,6 +15,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod devices;
 mod config;
 mod controller;
 #[cfg(target_os = "linux")]
