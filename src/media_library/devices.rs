@@ -122,7 +122,7 @@ impl MediaLibrary {
         let mut stmt = self.conn.prepare(
             "SELECT device_id, device_relpath, library_path, baseline_tag_hash,
                     baseline_rating, baseline_playcount, last_sync_at
-             FROM device_sync_pairs WHERE library_path = ?1",
+             FROM device_sync_pairs WHERE library_path = ?1 ORDER BY device_id, device_relpath",
         )?;
         let rows = stmt.query_map(params![library_path], Self::row_to_pair)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()

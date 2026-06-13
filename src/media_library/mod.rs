@@ -18,6 +18,7 @@ mod playlists;
 mod queries;
 mod scan;
 
+// Re-export for callers; no consumer in the bin build yet, so allow the unused-import warning.
 #[allow(unused_imports)]
 pub use devices::{DeviceRecord, SyncPair};
 #[cfg(test)]
