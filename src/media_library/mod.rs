@@ -13,9 +13,13 @@
 //!   metadata read from ID3 / Symphonia tags.
 //! - **playlists** — `.m3u8` / `.m3u` files found under watched folders.
 
+mod devices;
 mod playlists;
 mod queries;
 mod scan;
+
+#[allow(unused_imports)]
+pub use devices::{DeviceRecord, SyncPair};
 #[cfg(test)]
 mod tests;
 
