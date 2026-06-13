@@ -80,6 +80,17 @@ fn free_bytes_at(mount: &Path) -> u64 {
     }
 }
 
+/// Whether the mount path is writable by this process (W_OK). Catches
+/// read-only mounts and permission denials that the block-level `ReadOnly`
+/// flag alone misses.
+fn is_writable(mount: &Path) -> bool {
+    let Ok(c) = std::ffi::CString::new(mount.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c` is a valid NUL-terminated path.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
 // ── live udisks2 access ─────────────────────────────────────────────────────
 
 /// Enumerate currently-connected external storage with a mounted filesystem.
@@ -135,6 +146,11 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
         } else {
             uuid
         };
+        // Read-only if the block device reports it OR we lack write access to
+        // the mount (ro mount option, or permissions) — so "can't send files"
+        // is detected regardless of the cause.
+        let read_only = block.and_then(|b| prop_bool(b, "ReadOnly")).unwrap_or(false)
+            || !is_writable(&mount_path);
         devices.push(Device {
             id,
             label: block.and_then(|b| prop_str(b, "IdLabel")).unwrap_or_default(),
@@ -142,7 +158,7 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
             fs_type: block.and_then(|b| prop_str(b, "IdType")).unwrap_or_default(),
             total_bytes: block.and_then(|b| prop_u64(b, "Size")).unwrap_or(0),
             free_bytes,
-            read_only: block.and_then(|b| prop_bool(b, "ReadOnly")).unwrap_or(false),
+            read_only,
             ejectable,
             backend_id: path.as_str().to_string(),
         });

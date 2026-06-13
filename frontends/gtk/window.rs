@@ -10000,6 +10000,28 @@ fn open_image_viewer(path: &str) {
     win.present();
 }
 
+/// Filesystems Sparkamp can't reliably read/write yet — shown with a warning.
+fn device_fs_unsupported(fs_type: &str) -> bool {
+    matches!(fs_type.to_ascii_lowercase().as_str(), "ntfs" | "exfat")
+}
+
+/// Leading status glyphs for a device label: ⚠ for an unsupported filesystem,
+/// 🔒 for read-only (matching the read-only file convention).
+fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
+    let mut p = String::new();
+    if device_fs_unsupported(fs_type) {
+        p.push_str("⚠ ");
+    }
+    if read_only {
+        p.push_str("🔒 ");
+    }
+    p
+}
+
+/// Tooltip shown on the device row / detail for an unsupported filesystem.
+const UNSUPPORTED_FS_TOOLTIP: &str =
+    "Unsupported filesystem (NTFS/exFAT) — Sparkamp can't reliably read or write this device yet.";
+
 fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -10256,7 +10278,24 @@ fn open_media_library_window(
     dev_banner.append(&dev_banner_retry);
     dev_page.append(&dev_banner);
 
-    // Selected-device header: label + Eject, then capacity + free-space bar.
+    // ── Overview: a live list of all connected devices (shown when the
+    // Devices header is selected). ───────────────────────────────────────
+    let dev_overview = GtkBox::new(Orientation::Vertical, 6);
+    let dev_overview_title = Label::builder()
+        .label("Devices")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .build();
+    dev_overview_title.add_css_class("ml-section-header");
+    dev_overview.append(&dev_overview_title);
+    let dev_overview_list = GtkBox::new(Orientation::Vertical, 4);
+    dev_overview.append(&dev_overview_list);
+    dev_page.append(&dev_overview);
+
+    // ── Detail: the selected device (hidden until one is picked) ─────────
+    let dev_detail = GtkBox::new(Orientation::Vertical, 8);
+    dev_detail.set_visible(false);
+
     let dev_title = Label::builder().halign(Align::Start).xalign(0.0).build();
     dev_title.add_css_class("ml-section-header");
     let dev_eject = Button::with_label("Eject");
@@ -10268,15 +10307,35 @@ fn open_media_library_window(
     dev_spring.set_hexpand(true);
     dev_hdr_row.append(&dev_spring);
     dev_hdr_row.append(&dev_eject);
-    dev_page.append(&dev_hdr_row);
+    dev_detail.append(&dev_hdr_row);
+
+    // Mount path (selectable so it can be copied), then filesystem + free space.
+    let dev_path = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .selectable(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+        .build();
+    dev_path.add_css_class("status-label");
+    dev_detail.append(&dev_path);
 
     let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
     dev_capacity.add_css_class("status-label");
-    dev_page.append(&dev_capacity);
+    dev_detail.append(&dev_capacity);
     let dev_levelbar = gtk4::LevelBar::new();
     dev_levelbar.set_min_value(0.0);
     dev_levelbar.set_max_value(1.0);
-    dev_page.append(&dev_levelbar);
+    dev_detail.append(&dev_levelbar);
+
+    // Unsupported-filesystem warning (NTFS / exFAT) — shown only for those.
+    let dev_warn = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .visible(false)
+        .build();
+    dev_warn.add_css_class("broken");
+    dev_detail.append(&dev_warn);
 
     let dev_hint = Label::builder()
         .label("Browsing and sending files to this device is coming next.")
@@ -10285,7 +10344,9 @@ fn open_media_library_window(
         .wrap(true)
         .build();
     dev_hint.add_css_class("status-label");
-    dev_page.append(&dev_hint);
+    dev_detail.append(&dev_hint);
+
+    dev_page.append(&dev_detail);
 
     // Backend object id of the currently shown device, for the Eject button.
     let selected_dev_backend: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -14369,6 +14430,53 @@ fn open_media_library_window(
     // A 2 s poll (rather than D-Bus signal wiring) keeps this simple while
     // still updating in place — devices appear/disappear and free space
     // refreshes without reopening the window.
+    // Rebuild the device overview list (shown when the Devices header is
+    // selected) from the latest detection results.
+    let rebuild_overview: Rc<dyn Fn()> = {
+        let list = dev_overview_list.clone();
+        let current = current_devices.clone();
+        Rc::new(move || {
+            while let Some(c) = list.first_child() {
+                list.remove(&c);
+            }
+            let devs = current.borrow();
+            if devs.is_empty() {
+                let l = Label::builder()
+                    .label("No devices connected.")
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                l.add_css_class("status-label");
+                list.append(&l);
+                return;
+            }
+            for d in devs.iter() {
+                let name = if d.label.is_empty() {
+                    "Untitled device".to_string()
+                } else {
+                    d.label.clone()
+                };
+                let text = format!(
+                    "{}{} — {} — {:.1} GB free of {:.1} GB",
+                    device_glyph_prefix(d.read_only, &d.fs_type),
+                    name,
+                    if d.fs_type.is_empty() { "unknown" } else { &d.fs_type },
+                    d.free_bytes as f64 / 1e9,
+                    d.total_bytes as f64 / 1e9,
+                );
+                let l = Label::builder()
+                    .label(&gtk_safe(&text))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                if device_fs_unsupported(&d.fs_type) {
+                    l.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                }
+                list.append(&l);
+            }
+        })
+    };
+
     let refresh_devices: Rc<dyn Fn()> = {
         let sidebar = sidebar.clone();
         let dev_sub_rows = dev_sub_rows.clone();
@@ -14376,6 +14484,7 @@ fn open_media_library_window(
         let current_devices = current_devices.clone();
         let banner = dev_banner.clone();
         let banner_lbl = dev_banner_lbl.clone();
+        let rebuild_overview = rebuild_overview.clone();
         Rc::new(move || {
             match crate::devices::detect::list_devices() {
                 Ok(devs) => {
@@ -14419,11 +14528,16 @@ fn open_media_library_window(
                                 }
                             }
                             None => {
-                                let label_text = if d.label.is_empty() {
+                                let base = if d.label.is_empty() {
                                     "Untitled device".to_string()
                                 } else {
                                     d.label.clone()
                                 };
+                                // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
+                                let label_text = format!(
+                                    "{}{base}",
+                                    device_glyph_prefix(d.read_only, &d.fs_type)
+                                );
                                 let bx = GtkBox::new(Orientation::Vertical, 2);
                                 bx.set_margin_start(24);
                                 bx.set_margin_end(8);
@@ -14444,6 +14558,9 @@ fn open_media_library_window(
                                 row.set_widget_name(&name);
                                 row.set_child(Some(&bx));
                                 row.set_visible(expanded);
+                                if device_fs_unsupported(&d.fs_type) {
+                                    row.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                                }
                                 sidebar.append(&row);
                                 dev_sub_rows.borrow_mut().push(row);
                             }
@@ -14481,6 +14598,8 @@ fn open_media_library_window(
                     banner.set_visible(true);
                 }
             }
+            // Keep the overview list in sync with the latest results.
+            rebuild_overview();
         })
     };
 
@@ -14512,15 +14631,20 @@ fn open_media_library_window(
         let eject = dev_eject.clone();
         let sel_backend = selected_dev_backend.clone();
         let exp = devices_expanded.clone();
+        let path_lbl = dev_path.clone();
+        let overview = dev_overview.clone();
+        let detail = dev_detail.clone();
+        let warn = dev_warn.clone();
+        let rebuild_overview_sel = rebuild_overview.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
             if name == "devices" {
+                // Overview mode: list every connected device.
                 stack_ref.set_visible_child_name("devices");
-                title.set_text("Devices");
-                capacity.set_text("Select a connected device.");
-                levelbar.set_value(0.0);
-                eject.set_sensitive(false);
+                rebuild_overview_sel();
+                overview.set_visible(true);
+                detail.set_visible(false);
                 *sel_backend.borrow_mut() = None;
                 if !exp.get() {
                     exp.set(true);
@@ -14528,17 +14652,35 @@ fn open_media_library_window(
             } else if let Some(backend) = name.strip_prefix("dev:") {
                 stack_ref.set_visible_child_name("devices");
                 if let Some(d) = current.borrow().iter().find(|d| d.backend_id == backend) {
-                    title.set_text(&gtk_safe(if d.label.is_empty() {
-                        "Untitled device"
+                    // Detail mode for the selected device.
+                    overview.set_visible(false);
+                    detail.set_visible(true);
+                    let base = if d.label.is_empty() {
+                        "Untitled device".to_string()
                     } else {
-                        &d.label
-                    }));
+                        d.label.clone()
+                    };
+                    // ⚠ unsupported fs + 🔒 read-only glyphs, matching the
+                    // file conventions elsewhere in the library.
+                    title.set_text(&gtk_safe(&format!(
+                        "{}{base}",
+                        device_glyph_prefix(d.read_only, &d.fs_type)
+                    )));
+                    path_lbl.set_text(&gtk_safe(&d.mount_path.to_string_lossy()));
                     capacity.set_text(&format!(
-                        "{} — {:.1} GB free of {:.1} GB",
-                        d.fs_type,
+                        "Filesystem: {}    Free: {:.1} GB of {:.1} GB{}",
+                        if d.fs_type.is_empty() { "unknown" } else { &d.fs_type },
                         d.free_bytes as f64 / 1e9,
                         d.total_bytes as f64 / 1e9,
+                        if d.read_only { "    (read-only)" } else { "" },
                     ));
+                    if device_fs_unsupported(&d.fs_type) {
+                        warn.set_text(UNSUPPORTED_FS_TOOLTIP);
+                        warn.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                        warn.set_visible(true);
+                    } else {
+                        warn.set_visible(false);
+                    }
                     let used = if d.total_bytes > 0 {
                         1.0 - d.free_bytes as f64 / d.total_bytes as f64
                     } else {
@@ -14558,11 +14700,19 @@ fn open_media_library_window(
         let refresh = refresh_devices.clone();
         let banner = dev_banner.clone();
         let banner_lbl = dev_banner_lbl.clone();
+        let sidebar_ej = sidebar.clone();
         dev_eject.connect_clicked(move |btn| {
             let Some(backend) = sel_backend.borrow().clone() else { return };
             btn.set_sensitive(false);
             match crate::devices::detect::eject(&backend) {
-                Ok(()) => refresh(),
+                Ok(()) => {
+                    refresh();
+                    // The detail view now shows a device that's gone — return
+                    // to the Devices overview.
+                    if let Some(r) = find_row_by_name(&sidebar_ej, "devices") {
+                        sidebar_ej.select_row(Some(&r));
+                    }
+                }
                 Err(_) => {
                     banner_lbl.set_text(
                         "Couldn't eject — a file may still be open, or your system requires \
