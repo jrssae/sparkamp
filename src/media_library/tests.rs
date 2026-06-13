@@ -1092,3 +1092,36 @@ fn load_playlist_marks_genuinely_missing_entry_as_stub() {
     assert_eq!(tracks[0].id, 0);
     assert!(!std::path::Path::new(&tracks[0].path).exists());
 }
+
+// ── device schema ──────────────────────────────────────────────────────
+
+fn table_exists(lib: &MediaLibrary, name: &str) -> bool {
+    lib.conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
+fn column_exists(lib: &MediaLibrary, table: &str, col: &str) -> bool {
+    let mut stmt = lib
+        .conn
+        .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+        .unwrap();
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    cols.iter().any(|c| c == col)
+}
+
+#[test]
+fn schema_has_device_tables_and_rating_column() {
+    let (lib, _db) = temp_lib();
+    assert!(table_exists(&lib, "devices"));
+    assert!(table_exists(&lib, "device_sync_pairs"));
+    assert!(column_exists(&lib, "tracks", "rating"));
+}

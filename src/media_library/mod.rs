@@ -390,6 +390,27 @@ impl MediaLibrary {
                 name      TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS devices (
+                id          TEXT PRIMARY KEY,
+                label       TEXT NOT NULL DEFAULT '',
+                last_seen   TEXT,
+                smart_rules TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS device_sync_pairs (
+                device_id          TEXT NOT NULL,
+                device_relpath     TEXT NOT NULL,
+                library_path       TEXT NOT NULL,
+                baseline_tag_hash  TEXT NOT NULL DEFAULT '',
+                baseline_rating    INTEGER NOT NULL DEFAULT 0,
+                baseline_playcount INTEGER NOT NULL DEFAULT 0,
+                last_sync_at       TEXT,
+                PRIMARY KEY (device_id, device_relpath)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pairs_library
+                ON device_sync_pairs(library_path);
+
             CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
             CREATE INDEX IF NOT EXISTS idx_tracks_title  ON tracks(title);
             CREATE INDEX IF NOT EXISTS idx_tracks_album  ON tracks(album);
@@ -411,6 +432,7 @@ impl MediaLibrary {
             ("artwork_path", "TEXT"),
             ("last_scanned", "TEXT"),
             ("deleted_at", "TEXT"),
+            ("rating", "INTEGER"),
         ];
         let existing: std::collections::HashSet<String> = {
             let mut stmt = self
