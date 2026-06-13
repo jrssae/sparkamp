@@ -41,6 +41,19 @@ BUNDLE_NAME="Sparkamp"
 VERSION="$(grep 'MARKETING_VERSION' "$XCODEPROJ/project.pbxproj" \
            | head -1 | sed 's/.*= //;s/;//;s/ //')"
 
+# Guard against version drift: the DMG name and the app's CFBundleShortVersionString
+# both come from MARKETING_VERSION above, while the Rust core and Flatpak read
+# Cargo.toml. If a release bump touches one but not the other (as happened at
+# v1.0.2 and v1.1.0), the DMG ships mislabeled. Fail the build instead of
+# producing a wrongly-versioned asset; `scripts/sync-version.sh` fixes drift.
+CARGO_VERSION="$(grep -E '^version = "' "$REPO_ROOT/Cargo.toml" \
+                 | head -1 | sed -E 's/^version = "([^"]+)".*/\1/')"
+if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
+  echo "error: version drift — MARKETING_VERSION ($VERSION) != Cargo.toml ($CARGO_VERSION)." >&2
+  echo "       Run scripts/sync-version.sh before building." >&2
+  exit 1
+fi
+
 ARCHIVE_PATH="/tmp/${APP_NAME}.xcarchive"
 EXPORT_DIR="/tmp/${APP_NAME}_export"
 EXPORT_PLIST="/tmp/${APP_NAME}_export_options.plist"

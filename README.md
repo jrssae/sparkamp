@@ -12,7 +12,7 @@ There are a number of various Winamp clones and other audio players available fo
 
 ---
 
-## What's New (v1.1.0)
+## What's New (v1.0.3)
 
 Granite goes native, and a large internal refactor.
 

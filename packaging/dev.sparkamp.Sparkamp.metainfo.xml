@@ -28,7 +28,7 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
-    <release version="1.1.0" date="2026-06-13">
+    <release version="1.0.3" date="2026-06-13">
       <description>
         <p>Granite becomes a built-in visualizer. The Geiss-inspired plasma now
         lives in the core (no separate plugin) with a warp-map feedback engine:
