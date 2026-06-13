@@ -1,0 +1,220 @@
+//! udisks2-backed detection of removable/external storage (Linux).
+//!
+//! Talks to the host udisks2 service over the **system** D-Bus to enumerate
+//! mounted removable filesystems, report free space, and eject. The zbus
+//! call shapes here were verified against real hardware on Bazzite: a USB
+//! stick (`vfat`, removable, `ConnectionBus=usb`) is detected while internal
+//! NVMe/SATA disks are classified as internal.
+//!
+//! The GTK Devices UI consumes this in a later phase; until then the module
+//! has no in-crate caller, hence the module-wide dead-code allow (mirrors
+//! `diagnostics.rs`).
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
+use zbus::blocking::Connection;
+use zbus::blocking::fdo::ObjectManagerProxy;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+use super::Device;
+use super::diagnostics::DbusErrorKind;
+
+const UDISKS: &str = "org.freedesktop.UDisks2";
+const MANAGER_PATH: &str = "/org/freedesktop/UDisks2";
+const FILESYSTEM_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
+const BLOCK_IFACE: &str = "org.freedesktop.UDisks2.Block";
+const DRIVE_IFACE: &str = "org.freedesktop.UDisks2.Drive";
+
+type Props = HashMap<String, OwnedValue>;
+
+// ── pure property extraction (unit-testable) ───────────────────────────────
+
+fn prop_str(props: &Props, key: &str) -> Option<String> {
+    props.get(key).and_then(|v| String::try_from(v.clone()).ok())
+}
+fn prop_u64(props: &Props, key: &str) -> Option<u64> {
+    props.get(key).and_then(|v| u64::try_from(v.clone()).ok())
+}
+fn prop_bool(props: &Props, key: &str) -> Option<bool> {
+    props.get(key).and_then(|v| bool::try_from(v.clone()).ok())
+}
+fn prop_path(props: &Props, key: &str) -> Option<OwnedObjectPath> {
+    props.get(key).and_then(|v| OwnedObjectPath::try_from(v.clone()).ok())
+}
+
+/// Decode udisks2's `MountPoints` (`aay` — an array of NUL-terminated byte
+/// paths) into filesystem paths. Byte-exact so paths with spaces or non-UTF-8
+/// bytes survive.
+pub(crate) fn decode_mountpoints(raw: &[Vec<u8>]) -> Vec<PathBuf> {
+    raw.iter()
+        .map(|b| {
+            let bytes = if b.last() == Some(&0) { &b[..b.len() - 1] } else { &b[..] };
+            PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+        })
+        .collect()
+}
+
+/// Whether the drive backing a filesystem is external — removable media or a
+/// hot-plug bus — so it belongs in the Devices list rather than being a fixed
+/// internal disk.
+pub(crate) fn is_external(removable: bool, connection_bus: &str) -> bool {
+    removable || matches!(connection_bus, "usb" | "sdio" | "mmc")
+}
+
+/// Free bytes available on the filesystem mounted at `mount`, via `statvfs`.
+/// Returns 0 if the call fails (the UI shows "unknown").
+fn free_bytes_at(mount: &Path) -> u64 {
+    let Ok(c) = std::ffi::CString::new(mount.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    // SAFETY: `c` is a valid NUL-terminated path; `stat` is zeroed and only
+    // read after a successful (0) return.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } == 0 {
+        (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64)
+    } else {
+        0
+    }
+}
+
+// ── live udisks2 access ─────────────────────────────────────────────────────
+
+/// Enumerate currently-connected external storage with a mounted filesystem.
+///
+/// Returns an empty vec when nothing external is mounted. Errors only when the
+/// udisks2 service itself can't be reached — map those with
+/// [`classify_error`] to drive the friendly diagnostics UI.
+pub fn list_devices() -> zbus::Result<Vec<Device>> {
+    let conn = Connection::system()?;
+    let manager = ObjectManagerProxy::builder(&conn)
+        .destination(UDISKS)?
+        .path(MANAGER_PATH)?
+        .build()?;
+    let objects = manager.get_managed_objects()?;
+
+    let mut devices = Vec::new();
+    for (path, ifaces) in &objects {
+        // Only objects that are a mounted filesystem are candidate devices.
+        let Some(fs) = ifaces.get(FILESYSTEM_IFACE) else { continue };
+        let mounts = fs
+            .get("MountPoints")
+            .and_then(|v| Vec::<Vec<u8>>::try_from(v.clone()).ok())
+            .unwrap_or_default();
+        let Some(mount_path) = decode_mountpoints(&mounts).into_iter().next() else {
+            continue;
+        };
+
+        let block = ifaces.get(BLOCK_IFACE);
+        let drive_path = block.and_then(|b| prop_path(b, "Drive"));
+        let (removable, connection_bus, ejectable) = drive_path
+            .as_ref()
+            .and_then(|dp| objects.get(dp).and_then(|di| di.get(DRIVE_IFACE)))
+            .map(|d| {
+                (
+                    prop_bool(d, "Removable").unwrap_or(false),
+                    prop_str(d, "ConnectionBus").unwrap_or_default(),
+                    prop_bool(d, "Ejectable").unwrap_or(false),
+                )
+            })
+            .unwrap_or((false, String::new(), false));
+
+        if !is_external(removable, &connection_bus) {
+            continue;
+        }
+
+        let free_bytes = free_bytes_at(&mount_path);
+        devices.push(Device {
+            id: block.and_then(|b| prop_str(b, "IdUUID")).unwrap_or_default(),
+            label: block.and_then(|b| prop_str(b, "IdLabel")).unwrap_or_default(),
+            mount_path,
+            fs_type: block.and_then(|b| prop_str(b, "IdType")).unwrap_or_default(),
+            total_bytes: block.and_then(|b| prop_u64(b, "Size")).unwrap_or(0),
+            free_bytes,
+            read_only: block.and_then(|b| prop_bool(b, "ReadOnly")).unwrap_or(false),
+            ejectable,
+            backend_id: path.as_str().to_string(),
+        });
+    }
+    Ok(devices)
+}
+
+/// Safely eject the device identified by its udisks2 block object path:
+/// unmount the filesystem, then best-effort power off the drive so it is safe
+/// to physically remove. The unmount is the essential step; power-off failures
+/// (drives that don't support it) are ignored.
+pub fn eject(block_object: &str) -> zbus::Result<()> {
+    let conn = Connection::system()?;
+    let no_opts: HashMap<String, Value> = HashMap::new();
+
+    let fs = zbus::blocking::Proxy::new(&conn, UDISKS, block_object, FILESYSTEM_IFACE)?;
+    fs.call_method("Unmount", &(no_opts.clone(),))?;
+
+    if let Ok(block) = zbus::blocking::Proxy::new(&conn, UDISKS, block_object, BLOCK_IFACE) {
+        if let Ok(drive) = block.get_property::<OwnedObjectPath>("Drive") {
+            if drive.as_str() != "/" {
+                if let Ok(d) =
+                    zbus::blocking::Proxy::new(&conn, UDISKS, drive.as_str(), DRIVE_IFACE)
+                {
+                    let _ = d.call_method("PowerOff", &(no_opts,));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Map a zbus error from a udisks2 call to the diagnostics [`DbusErrorKind`]
+/// the UI uses to choose a friendly message.
+pub fn classify_error(err: &zbus::Error) -> DbusErrorKind {
+    let s = err.to_string();
+    if s.contains("ServiceUnknown")
+        || s.contains("NameHasNoOwner")
+        || s.contains("was not provided by any")
+    {
+        DbusErrorKind::ServiceUnknown
+    } else if s.contains("NotAuthorized") {
+        DbusErrorKind::NotAuthorized
+    } else if s.contains("AccessDenied") || s.contains("not allowed") {
+        DbusErrorKind::AccessDenied
+    } else {
+        DbusErrorKind::Other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_mountpoints_strips_nul_and_keeps_spaces() {
+        // Mirrors the real udisks2 reply for the test USB stick.
+        let raw = vec![b"/run/media/josef/LINDY TECH\0".to_vec()];
+        assert_eq!(
+            decode_mountpoints(&raw),
+            vec![PathBuf::from("/run/media/josef/LINDY TECH")]
+        );
+    }
+
+    #[test]
+    fn decode_mountpoints_handles_multiple_and_no_trailing_nul() {
+        let raw = vec![b"/mnt/a\0".to_vec(), b"/mnt/b".to_vec()];
+        assert_eq!(
+            decode_mountpoints(&raw),
+            vec![PathBuf::from("/mnt/a"), PathBuf::from("/mnt/b")]
+        );
+        assert!(decode_mountpoints(&[]).is_empty());
+    }
+
+    #[test]
+    fn is_external_matches_removable_and_hotplug_buses() {
+        assert!(is_external(true, "")); // removable flag alone
+        assert!(is_external(false, "usb")); // USB stick
+        assert!(is_external(false, "sdio"));
+        assert!(is_external(false, "mmc")); // SD card
+        assert!(!is_external(false, "sata")); // internal disk
+        assert!(!is_external(false, "")); // internal NVMe
+    }
+}
