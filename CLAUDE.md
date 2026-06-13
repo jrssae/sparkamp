@@ -24,7 +24,7 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - Verification: Run cargo build && cargo test before completion. Zero warnings/failures allowed.
 
-- Release: Update README.md and verify Flatpak build ( packaging/ ).
+- Release: Confirm the intended version number with the user first (never assume a bump). Update Cargo.toml, README.md, and a metainfo `<release>` entry, then run `scripts/pre-release-check.sh <version>` before tagging — it refuses a forgotten bump and syncs the macOS `MARKETING_VERSION`. Verify Flatpak build ( packaging/ ).
 
 - Deletion Rule: Removing skins/plugins/music from UI must not delete files from disk.
 
