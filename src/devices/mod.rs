@@ -10,6 +10,8 @@ pub mod diagnostics;
 pub mod marker;
 // Listing the audio files on a device's mounted filesystem.
 pub mod browse;
+// Copying library files onto a device under a Music/Artist/Album layout.
+pub mod transfer;
 
 // udisks2-backed detection is Linux-only (macOS uses DiskArbitration, added
 // in a later phase). The `zbus` dependency is itself Linux-gated.

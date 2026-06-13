@@ -10022,6 +10022,101 @@ fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
 const UNSUPPORTED_FS_TOOLTIP: &str =
     "Unsupported filesystem (NTFS/exFAT) — Sparkamp can't reliably read or write this device yet.";
 
+/// Copy library files `srcs` onto `dev` under the `Music/Artist/Album` layout,
+/// skipping files already present, guarding against insufficient space, and
+/// recording a sync pair for each. Returns `(copied, skipped, failed)` counts
+/// on success, or a user-facing error string (read-only device, no space).
+fn copy_paths_to_device(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+    srcs: &[std::path::PathBuf],
+) -> Result<(usize, usize, usize), String> {
+    use crate::devices::transfer::{self, CopyOutcome, TrackMeta};
+
+    if dev.read_only {
+        let n = if dev.label.is_empty() { "This device" } else { &dev.label };
+        return Err(format!("{n} is read-only — can't copy files to it."));
+    }
+    if device_fs_unsupported(&dev.fs_type) {
+        return Err(format!(
+            "{} is an unsupported filesystem — Sparkamp can't reliably write to this device yet.",
+            dev.fs_type
+        ));
+    }
+
+    // Build (source, on-device relative path) pairs using library metadata.
+    let pairs: Vec<(std::path::PathBuf, std::path::PathBuf)> = {
+        let s = state.borrow();
+        let lib = s.media_lib.as_ref();
+        srcs.iter()
+            .map(|src| {
+                let (artist, album, title, track_num) = lib
+                    .and_then(|l| l.track_by_path(&src.to_string_lossy()).ok())
+                    .map(|t| {
+                        (
+                            t.artist.unwrap_or_default(),
+                            t.album.unwrap_or_default(),
+                            t.title.unwrap_or_default(),
+                            t.track_num,
+                        )
+                    })
+                    .unwrap_or_default();
+                let rel = transfer::device_relpath(&TrackMeta {
+                    src,
+                    artist: &artist,
+                    album: &album,
+                    title: &title,
+                    track_num,
+                });
+                (src.clone(), rel)
+            })
+            .collect()
+    };
+
+    let need = transfer::bytes_needed(&pairs, &dev.mount_path);
+    if dev.free_bytes > 0 && need > dev.free_bytes {
+        return Err(format!(
+            "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+            need as f64 / 1e9,
+            dev.free_bytes as f64 / 1e9
+        ));
+    }
+
+    // Device identity for the sync pair: UUID, or a marker id written now (the
+    // first time a file is paired to this device).
+    let device_id = if dev.id.is_empty() {
+        crate::devices::marker::ensure_marker(&dev.mount_path).unwrap_or_default()
+    } else {
+        dev.id.clone()
+    };
+
+    let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+    for (src, rel) in &pairs {
+        match transfer::copy_to_device(src, &dev.mount_path, rel) {
+            Ok(CopyOutcome::Copied) => copied += 1,
+            Ok(CopyOutcome::SkippedPresent) => skipped += 1,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        }
+        if !device_id.is_empty() {
+            if let Some(lib) = state.borrow().media_lib.as_ref() {
+                let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
+                    device_id: device_id.clone(),
+                    device_relpath: rel.to_string_lossy().into_owned(),
+                    library_path: src.to_string_lossy().into_owned(),
+                    baseline_tag_hash: String::new(),
+                    baseline_rating: 0,
+                    baseline_playcount: 0,
+                    last_sync_at: None,
+                });
+            }
+        }
+    }
+    Ok((copied, skipped, failed))
+}
+
 fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -10051,6 +10146,11 @@ fn open_media_library_window(
     sidebar.add_css_class("ml-sidebar");
     sidebar.set_vexpand(true);
 
+    // Latest detected devices — declared here (ahead of the sidebar DropTarget,
+    // which routes drops onto device rows) and kept current by the poll below.
+    let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
+        Rc::new(RefCell::new(Vec::new()));
+
     // Sidebar DropTarget — accept FileList drags from the active playlist,
     // ML files view, or ML editor and append paths to the saved playlist
     // whose `pl:<id>` row is under the drop coordinate.  Drops landing on
@@ -10059,6 +10159,7 @@ fn open_media_library_window(
         let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         let sidebar_for_drop = sidebar.clone();
         let state_for_drop   = state.clone();
+        let current_devices_drop = current_devices.clone();
         dt.connect_drop(move |_, value, _x, y| {
             let file_list = match value.get::<gdk::FileList>() {
                 Ok(fl) => fl,
@@ -10083,6 +10184,31 @@ fn open_media_library_window(
             }
             let Some(row) = hit else { return false };
             let name = row.widget_name().to_string();
+            // Drop onto a device row → copy the dragged files to that device.
+            if let Some(backend) = name.strip_prefix("dev:") {
+                let dev = current_devices_drop
+                    .borrow()
+                    .iter()
+                    .find(|d| d.backend_id == backend)
+                    .cloned();
+                let Some(dev) = dev else { return false };
+                let srcs: Vec<std::path::PathBuf> =
+                    paths.iter().map(std::path::PathBuf::from).collect();
+                match copy_paths_to_device(&state_for_drop, &dev, &srcs) {
+                    Ok((copied, skipped, failed)) => {
+                        let dname = if dev.label.is_empty() {
+                            "device".to_string()
+                        } else {
+                            dev.label.clone()
+                        };
+                        show_error_alert(&format!(
+                            "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
+                        ));
+                    }
+                    Err(e) => show_error_alert(&e),
+                }
+                return true;
+            }
             let Some(id_str) = name.strip_prefix("pl:") else { return false };
             let Ok(pid) = id_str.parse::<i64>() else { return false };
             if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
@@ -10211,10 +10337,7 @@ fn open_media_library_window(
     // sub-rows populated live by the poll below.
     let devices_expanded = Rc::new(Cell::new(true));
     let dev_sub_rows: Rc<RefCell<Vec<ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
-    // Latest detected devices, so the selection handler + Eject can resolve a
-    // sidebar row back to its Device (mount path, capacity, backend id).
-    let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    // `current_devices` is declared earlier (before the sidebar DropTarget).
     {
         let hdr = GtkBox::new(Orientation::Horizontal, 0);
         let lbl = Label::builder()
