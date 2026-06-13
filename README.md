@@ -12,6 +12,15 @@ There are a number of various Winamp clones and other audio players available fo
 
 ---
 
+## What's New (v1.1.0)
+
+Granite goes native, and a large internal refactor.
+
+- **Granite built-in visualizer** — the Geiss-inspired plasma is now a first-class visualizer in the core (no separate `.so`), rendered with a warp-map feedback engine: 8 palettes, 12 warp effects, beat-reactive palette/effect rolling, and a flux beat detector that drives BPM + time-signature. Press `a` to cycle to Granite, `e` for a random effect, `f` or double-click for fullscreen. Settings → Visualizer exposes speed, palette, feedback, effect, auto-switch, and credits the original by Ryan Geiss.
+- **Cross-platform parity** — the same Granite renderer drives the GTK and macOS frontends under a single-driver rule (one view at a time), so the mini and fullscreen views stay in sync. Fullscreen `g` overlay shows FPS + BPM + meter.
+- **Large-file refactor** — the monolithic core and frontend files were split into focused modules: `src/ffi/*`, `src/media_library/*`, shared `tags`/`textutil`/`timeutil` helpers, and the TUI / macOS sources by domain. Behavior is unchanged; the codebase is now far easier to navigate and review.
+- **Playlist fixes** — playlist entries keep their real, accessible paths instead of resolving to stale catalogue rows, so a saved track no longer appears missing; unavailable files show the correct red status everywhere; the ID3 editor genre field gains an explicit "(undefined)" option and a selectable filename header.
+
 ## What's New (v1.0.0)
 
 First stable release.

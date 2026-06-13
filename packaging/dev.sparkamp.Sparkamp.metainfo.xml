@@ -28,6 +28,28 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.1.0" date="2026-06-13">
+      <description>
+        <p>Granite becomes a built-in visualizer. The Geiss-inspired plasma now
+        lives in the core (no separate plugin) with a warp-map feedback engine:
+        8 palettes, 12 warp effects, beat-reactive palette and effect rolling,
+        and a flux beat detector that surfaces BPM and time signature. Press
+        'a' to cycle to Granite, 'e' for a random effect, 'f' or double-click
+        for fullscreen; Settings exposes speed, palette, feedback, effect, and
+        auto-switch, and credits the original by Ryan Geiss. The same renderer
+        drives the GTK and macOS frontends under a single-driver rule so the
+        mini and fullscreen views stay in sync, and the fullscreen 'g' overlay
+        shows FPS, BPM, and meter.</p>
+        <p>Large internal refactor: the monolithic core and frontend files were
+        split into focused modules (FFI, media library, shared tag/text/time
+        helpers, and the TUI and macOS sources by domain) with no behavior
+        change. Playlist handling now preserves a track's real, accessible path
+        instead of substituting a stale catalogue row, so saved tracks no
+        longer appear missing and unavailable files show the correct status;
+        the ID3 editor gains an explicit "(undefined)" genre option and a
+        selectable filename header.</p>
+      </description>
+    </release>
     <release version="1.0.2" date="2026-05-27">
       <description>
         <p>Playlist editor overhaul. The specific-playlist view now uses a
