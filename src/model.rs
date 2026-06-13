@@ -11,35 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::{MetadataOptions, StandardTagKey, Value};
-use symphonia::core::probe::Hint;
-
-// ---------------------------------------------------------------------------
-// String sanitization
-// ---------------------------------------------------------------------------
-
-/// Remove NUL bytes from a string.
-///
-/// ID3 tags can contain malformed data with embedded NUL bytes.  These cause
-/// crashes when passed to GTK APIs which use C-style NUL-terminated strings.
-/// This function strips any NUL bytes so the string is safe for UI display.
-fn sanitize(s: &str) -> String {
-    // First, remove any actual NUL bytes
-    let result = if s.contains('\0') {
-        s.replace('\0', "")
-    } else {
-        s.to_owned()
-    };
-    // Also remove the TOML escape sequence \u0000 which becomes NUL on deserialization
-    // Check if the string contains literal "\u0000" as text
-    if result.contains("\\u0000") {
-        result.replace("\\u0000", "")
-    } else {
-        result
-    }
-}
+use crate::textutil::sanitize;
 
 // ---------------------------------------------------------------------------
 // Audio file extension detection
@@ -96,84 +68,6 @@ pub fn is_audio_file_extended(path: &Path, extra_extensions: &[String]) -> bool 
                 || extra_extensions.iter().any(|e| e == &lower)
         })
         .unwrap_or(false)
-}
-
-// ---------------------------------------------------------------------------
-// Symphonia metadata fallback
-// ---------------------------------------------------------------------------
-
-/// Try to read title, artist, album-artist, and album from a file using
-/// Symphonia's generic tag reader.
-///
-/// This succeeds for formats that don't use ID3 tags but are supported by
-/// Symphonia — in particular OGG/Vorbis (Vorbis Comments), FLAC, and Opus.
-/// Returns `None` when the file cannot be opened, the format is unrecognised,
-/// or no relevant tags are present.
-pub fn read_symphonia_metadata(path: &Path) -> Option<(String, String, String, String)> {
-    let file = std::fs::File::open(path).ok()?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let mut probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .ok()?;
-
-    // Symphonia can surface tags from two places:
-    // 1. The outer container metadata log (e.g. ID3 tags in MP3 streams).
-    // 2. The format reader's internal metadata (Vorbis Comments, FLAC tags).
-    // We try both and merge, giving the format-reader priority.
-    let mut title = String::new();
-    let mut artist = String::new();
-    let mut album_artist = String::new();
-    let mut album = String::new();
-
-    let apply_tags = |tags: &[symphonia::core::meta::Tag],
-                      title: &mut String,
-                      artist: &mut String,
-                      album_artist: &mut String,
-                      album: &mut String| {
-        for tag in tags {
-            let text = match &tag.value {
-                Value::String(s) => s.as_str(),
-                _ => continue,
-            };
-            // Sanitize to remove NUL bytes that can crash GTK.
-            let safe_text = sanitize(text);
-            match tag.std_key {
-                Some(StandardTagKey::TrackTitle) => *title = safe_text,
-                Some(StandardTagKey::Artist) => *artist = safe_text,
-                Some(StandardTagKey::AlbumArtist) => *album_artist = safe_text,
-                Some(StandardTagKey::Album) => *album = safe_text,
-                _ => {}
-            }
-        }
-    };
-
-    // Pass 1: format-reader metadata (Vorbis Comments, FLAC tags, etc.).
-    if let Some(rev) = probed.format.metadata().current() {
-        apply_tags(
-            rev.tags(),
-            &mut title,
-            &mut artist,
-            &mut album_artist,
-            &mut album,
-        );
-    }
-
-    if title.is_empty() {
-        None
-    } else {
-        Some((title, artist, album_artist, album))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +175,7 @@ impl Track {
                 // No readable ID3 tag — try Symphonia for Vorbis Comments,
                 // FLAC tags, etc.  This handles OGG/Vorbis, FLAC, and Opus
                 // files which store metadata in format-specific tag blocks.
-                if let Some((t, ar, aa, al)) = read_symphonia_metadata(&path) {
+                if let Some((t, ar, aa, al)) = crate::tags::read_symphonia_basic(&path) {
                     let title = if t.is_empty() {
                         path.file_stem()
                             .and_then(|s| s.to_str())
@@ -368,7 +262,11 @@ impl Track {
 impl From<&crate::media_library::LibTrack> for Track {
     fn from(lib: &crate::media_library::LibTrack) -> Self {
         let path = PathBuf::from(&lib.path);
-        let read_only = crate::media_library::is_read_only(&path);
+        // A file that no longer exists at this path is broken from the
+        // outset, so adding it to the active playlist shows the unavailable
+        // status immediately rather than only after a failed play attempt.
+        let exists = path.exists();
+        let read_only = exists && crate::media_library::is_read_only(&path);
         Track {
             path,
             title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
@@ -378,7 +276,7 @@ impl From<&crate::media_library::LibTrack> for Track {
             duration: lib
                 .length_secs
                 .and_then(|s| Duration::try_from_secs_f64(s).ok()),
-            broken: false,
+            broken: !exists,
             read_only,
         }
     }
@@ -1095,40 +993,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_passes_through_normal_strings() {
-        assert_eq!(sanitize("hello world"), "hello world");
-        assert_eq!(sanitize(""), "");
-        assert_eq!(sanitize("🎵 Artist — Album"), "🎵 Artist — Album");
-    }
-
-    #[test]
-    fn sanitize_removes_nul_bytes() {
-        assert_eq!(sanitize("hello\x00world"), "helloworld");
-        assert_eq!(sanitize("\x00start"), "start");
-        assert_eq!(sanitize("end\x00"), "end");
-        assert_eq!(sanitize("\x00\x00\x00"), "");
-    }
-
-    #[test]
-    fn sanitize_removes_toml_unicode_escape() {
-        assert_eq!(sanitize("hello\\u0000world"), "helloworld");
-        assert_eq!(sanitize("\\u0000start"), "start");
-        assert_eq!(sanitize("end\\u0000"), "end");
-        assert_eq!(sanitize("\\u0000"), "");
-    }
-
-    #[test]
-    fn sanitize_handles_both_nul_and_toml_escape() {
-        assert_eq!(sanitize("a\x00b\\u0000c"), "abc");
-    }
-
-    #[test]
     fn track_from_libtrack_copies_all_fields() {
         use crate::media_library::{LibTrack, SortKeys};
 
+        // Use a real file so `broken` (existence-derived) is false; the test
+        // is about field copying, not the missing-file path.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp_path = tmp.path().to_string_lossy().into_owned();
+
         let lib = LibTrack {
             id: 42,
-            path: "/music/test.mp3".into(),
+            path: tmp_path.clone(),
             artist: Some("Test Artist".into()),
             title: Some("Test Title".into()),
             album: Some("Test Album".into()),
@@ -1160,7 +1035,7 @@ mod tests {
 
         let track = Track::from(&lib);
 
-        assert_eq!(track.path, PathBuf::from("/music/test.mp3"));
+        assert_eq!(track.path, PathBuf::from(&tmp_path));
         assert_eq!(track.title, "Test Title");
         assert_eq!(track.artist, "Test Artist");
         assert_eq!(track.album, "Test Album");

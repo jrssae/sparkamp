@@ -743,7 +743,8 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {broken}; \
     }}").unwrap();
     writeln!(css, ".playlist row.broken label, .playlist row.broken cell, \
-                   columnview row.broken label, columnview row.broken cell {{ \
+                   columnview row.broken label, columnview row.broken cell, \
+                   label.broken {{ \
         color: {broken}; \
     }}").unwrap();
     writeln!(css, ".pl-dur-label {{ color: {text_dim}; font-family: monospace; }}").unwrap();

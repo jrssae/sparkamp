@@ -38,6 +38,9 @@ mod plugin_manager;
 mod plugin_settings;
 mod shuffle;
 mod skin;
+mod tags;
+mod textutil;
+mod timeutil;
 mod viz_plugin;
 
 // GTK4 frontend — Linux only. On macOS the SwiftUI app bundle replaces it.
