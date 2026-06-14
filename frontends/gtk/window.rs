@@ -14732,121 +14732,151 @@ fn open_media_library_window(
         let banner = dev_banner.clone();
         let banner_lbl = dev_banner_lbl.clone();
         let rebuild_overview = rebuild_overview.clone();
+        // Guard against overlapping polls stacking up.
+        let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
-            match crate::devices::detect::list_devices() {
-                Ok(devs) => {
-                    banner.set_visible(false);
-                    let want: Vec<String> =
-                        devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
-                    // Remove rows for devices that went away.
-                    dev_sub_rows.borrow_mut().retain(|r| {
-                        let keep = want.contains(&r.widget_name().to_string());
-                        if !keep {
-                            sidebar.remove(r);
-                        }
-                        keep
-                    });
-                    // Add rows for new devices; update free-space bars in place
-                    // so selection isn't disturbed when nothing changed.
-                    let expanded = devices_expanded.get();
-                    for d in &devs {
-                        let name = format!("dev:{}", d.backend_id);
-                        let used = if d.total_bytes > 0 {
-                            1.0 - (d.free_bytes as f64 / d.total_bytes as f64)
-                        } else {
-                            0.0
-                        };
-                        let existing = dev_sub_rows
-                            .borrow()
-                            .iter()
-                            .find(|r| r.widget_name().as_str() == name)
-                            .cloned();
-                        match existing {
-                            Some(row) => {
-                                if let Some(bx) =
-                                    row.child().and_then(|c| c.downcast::<GtkBox>().ok())
-                                {
-                                    if let Some(bar) = bx
-                                        .last_child()
-                                        .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
+            if in_flight.get() {
+                return;
+            }
+            in_flight.set(true);
+            let sidebar = sidebar.clone();
+            let dev_sub_rows = dev_sub_rows.clone();
+            let devices_expanded = devices_expanded.clone();
+            let current_devices = current_devices.clone();
+            let banner = banner.clone();
+            let banner_lbl = banner_lbl.clone();
+            let rebuild_overview = rebuild_overview.clone();
+            let in_flight = in_flight.clone();
+            // udisks2 access runs on a worker thread so a stalled D-Bus call
+            // can never freeze the UI — a main-thread block previously made
+            // the app impossible to quit or eject after a copy.
+            glib::spawn_future_local(async move {
+                let result = gio::spawn_blocking(crate::devices::detect::list_devices).await;
+                in_flight.set(false);
+                match result {
+                    Ok(Ok(devs)) => {
+                        banner.set_visible(false);
+                        let want: Vec<String> =
+                            devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
+                        // Remove rows for devices that went away.
+                        dev_sub_rows.borrow_mut().retain(|r| {
+                            let keep = want.contains(&r.widget_name().to_string());
+                            if !keep {
+                                sidebar.remove(r);
+                            }
+                            keep
+                        });
+                        // Add rows for new devices; update free-space bars in
+                        // place so selection isn't disturbed when unchanged.
+                        let expanded = devices_expanded.get();
+                        for d in &devs {
+                            let name = format!("dev:{}", d.backend_id);
+                            let used = if d.total_bytes > 0 {
+                                1.0 - (d.free_bytes as f64 / d.total_bytes as f64)
+                            } else {
+                                0.0
+                            };
+                            let existing = dev_sub_rows
+                                .borrow()
+                                .iter()
+                                .find(|r| r.widget_name().as_str() == name)
+                                .cloned();
+                            match existing {
+                                Some(row) => {
+                                    if let Some(bx) =
+                                        row.child().and_then(|c| c.downcast::<GtkBox>().ok())
                                     {
-                                        bar.set_value(used);
+                                        if let Some(bar) = bx
+                                            .last_child()
+                                            .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
+                                        {
+                                            bar.set_value(used);
+                                        }
                                     }
                                 }
-                            }
-                            None => {
-                                let base = if d.label.is_empty() {
-                                    "Untitled device".to_string()
-                                } else {
-                                    d.label.clone()
-                                };
-                                // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
-                                let label_text = format!(
-                                    "{}{base}",
-                                    device_glyph_prefix(d.read_only, &d.fs_type)
-                                );
-                                let bx = GtkBox::new(Orientation::Vertical, 2);
-                                bx.set_margin_start(24);
-                                bx.set_margin_end(8);
-                                bx.set_margin_top(4);
-                                bx.set_margin_bottom(4);
-                                let lbl = Label::builder()
-                                    .label(&gtk_safe(&label_text))
-                                    .halign(Align::Start)
-                                    .xalign(0.0)
-                                    .build();
-                                let bar = gtk4::LevelBar::new();
-                                bar.set_min_value(0.0);
-                                bar.set_max_value(1.0);
-                                bar.set_value(used);
-                                bx.append(&lbl);
-                                bx.append(&bar);
-                                let row = ListBoxRow::new();
-                                row.set_widget_name(&name);
-                                row.set_child(Some(&bx));
-                                row.set_visible(expanded);
-                                if device_fs_unsupported(&d.fs_type) {
-                                    row.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                                None => {
+                                    let base = if d.label.is_empty() {
+                                        "Untitled device".to_string()
+                                    } else {
+                                        d.label.clone()
+                                    };
+                                    // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
+                                    let label_text = format!(
+                                        "{}{base}",
+                                        device_glyph_prefix(d.read_only, &d.fs_type)
+                                    );
+                                    let bx = GtkBox::new(Orientation::Vertical, 2);
+                                    bx.set_margin_start(24);
+                                    bx.set_margin_end(8);
+                                    bx.set_margin_top(4);
+                                    bx.set_margin_bottom(4);
+                                    let lbl = Label::builder()
+                                        .label(&gtk_safe(&label_text))
+                                        .halign(Align::Start)
+                                        .xalign(0.0)
+                                        .build();
+                                    let bar = gtk4::LevelBar::new();
+                                    bar.set_min_value(0.0);
+                                    bar.set_max_value(1.0);
+                                    bar.set_value(used);
+                                    bx.append(&lbl);
+                                    bx.append(&bar);
+                                    let row = ListBoxRow::new();
+                                    row.set_widget_name(&name);
+                                    row.set_child(Some(&bx));
+                                    row.set_visible(expanded);
+                                    if device_fs_unsupported(&d.fs_type) {
+                                        row.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                                    }
+                                    sidebar.append(&row);
+                                    dev_sub_rows.borrow_mut().push(row);
                                 }
-                                sidebar.append(&row);
-                                dev_sub_rows.borrow_mut().push(row);
                             }
                         }
+                        *current_devices.borrow_mut() = devs;
                     }
-                    *current_devices.borrow_mut() = devs;
-                }
-                Err(e) => {
-                    for r in dev_sub_rows.borrow_mut().drain(..) {
-                        sidebar.remove(&r);
+                    Ok(Err(e)) => {
+                        for r in dev_sub_rows.borrow_mut().drain(..) {
+                            sidebar.remove(&r);
+                        }
+                        current_devices.borrow_mut().clear();
+                        use crate::devices::diagnostics::{self, Diagnosis};
+                        let diag = diagnostics::classify(
+                            diagnostics::has_udisks_grant(&diagnostics::read_flatpak_info()),
+                            &diagnostics::read_distro_info(),
+                            crate::devices::detect::classify_error(&e),
+                        );
+                        let msg = match diag {
+                            Diagnosis::PermissionOff => {
+                                "Can't access drives — Sparkamp needs permission to use the system \
+                                 disk service. Enable org.freedesktop.UDisks2 under System Bus in \
+                                 Flatseal, then Retry."
+                            }
+                            Diagnosis::NotInstalled => {
+                                "Can't access drives — your system's disk service (udisks2) isn't \
+                                 installed. Install it, then Retry."
+                            }
+                            Diagnosis::EjectUnavailable => {
+                                "Couldn't reach the disk service. Retry, or manage the device \
+                                 through your file browser."
+                            }
+                        };
+                        banner_lbl.set_text(msg);
+                        banner.set_visible(true);
                     }
-                    current_devices.borrow_mut().clear();
-                    use crate::devices::diagnostics::{self, Diagnosis};
-                    let diag = diagnostics::classify(
-                        diagnostics::has_udisks_grant(&diagnostics::read_flatpak_info()),
-                        &diagnostics::read_distro_info(),
-                        crate::devices::detect::classify_error(&e),
-                    );
-                    let msg = match diag {
-                        Diagnosis::PermissionOff => {
-                            "Can't access drives — Sparkamp needs permission to use the system \
-                             disk service. Enable org.freedesktop.UDisks2 under System Bus in \
-                             Flatseal, then Retry."
+                    Err(_) => {
+                        // The worker thread panicked.
+                        for r in dev_sub_rows.borrow_mut().drain(..) {
+                            sidebar.remove(&r);
                         }
-                        Diagnosis::NotInstalled => {
-                            "Can't access drives — your system's disk service (udisks2) isn't \
-                             installed. Install it, then Retry."
-                        }
-                        Diagnosis::EjectUnavailable => {
-                            "Couldn't reach the disk service. Retry, or manage the device through \
-                             your file browser."
-                        }
-                    };
-                    banner_lbl.set_text(msg);
-                    banner.set_visible(true);
+                        current_devices.borrow_mut().clear();
+                        banner_lbl.set_text("Couldn't query the device service.");
+                        banner.set_visible(true);
+                    }
                 }
-            }
-            // Keep the overview list in sync with the latest results.
-            rebuild_overview();
+                // Keep the overview list in sync with the latest results.
+                rebuild_overview();
+            });
         })
     };
 
@@ -14984,30 +15014,47 @@ fn open_media_library_window(
         dev_eject.connect_clicked(move |btn| {
             let Some(backend) = sel_backend.borrow().clone() else { return };
             btn.set_sensitive(false);
-            match crate::devices::detect::eject(&backend) {
-                Ok(()) => {
-                    refresh();
-                    // The detail view now shows a device that's gone — return
-                    // to the Devices overview.
-                    if let Some(r) = find_row_by_name(&sidebar_ej, "devices") {
-                        sidebar_ej.select_row(Some(&r));
+            let btn = btn.clone();
+            let refresh = refresh.clone();
+            let sidebar_ej = sidebar_ej.clone();
+            let win_wk = win_wk_ej.clone();
+            // Run the unmount/power-off on a worker thread so a busy device
+            // can't freeze the UI.
+            glib::spawn_future_local(async move {
+                let res =
+                    gio::spawn_blocking(move || crate::devices::detect::eject(&backend)).await;
+                match res {
+                    Ok(Ok(())) => {
+                        refresh();
+                        // The detail view now shows a device that's gone —
+                        // return to the Devices overview.
+                        if let Some(r) = find_row_by_name(&sidebar_ej, "devices") {
+                            sidebar_ej.select_row(Some(&r));
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        // Re-enable so the user can retry, and surface why.
+                        btn.set_sensitive(true);
+                        let dialog = gtk4::AlertDialog::builder()
+                            .message("Couldn't eject")
+                            .detail(format!(
+                                "The device is still busy or couldn't be ejected ({e}). \
+                                 Close anything using it and try again, or eject it from \
+                                 your file browser."
+                            ))
+                            .modal(true)
+                            .build();
+                        dialog.show(win_wk.upgrade().as_ref());
+                    }
+                    Err(_) => {
+                        btn.set_sensitive(true);
+                        show_alert_parented(
+                            win_wk.upgrade().as_ref(),
+                            "Eject failed unexpectedly.",
+                        );
                     }
                 }
-                Err(e) => {
-                    // Re-enable so the user can retry, and surface why.
-                    btn.set_sensitive(true);
-                    let dialog = gtk4::AlertDialog::builder()
-                        .message("Couldn't eject")
-                        .detail(format!(
-                            "The device is still busy or couldn't be ejected ({e}). \
-                             Close anything using it and try again, or eject it from \
-                             your file browser."
-                        ))
-                        .modal(true)
-                        .build();
-                    dialog.show(win_wk_ej.upgrade().as_ref());
-                }
-            }
+            });
         });
     }
 
