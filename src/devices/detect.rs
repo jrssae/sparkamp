@@ -171,6 +171,11 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
 /// to physically remove. The unmount is the essential step; power-off failures
 /// (drives that don't support it) are ignored.
 pub fn eject(block_object: &str) -> zbus::Result<()> {
+    // Flush pending writes so a just-copied file doesn't make the unmount fail
+    // as busy, and so the data is safely on the device.
+    // SAFETY: `sync()` takes no arguments and cannot fail.
+    unsafe { libc::sync() };
+
     let conn = Connection::system()?;
     let no_opts: HashMap<String, Value> = HashMap::new();
 

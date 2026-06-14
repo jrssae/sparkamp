@@ -928,6 +928,17 @@ fn show_error_alert(msg: &str) {
     alert.show(gtk4::Window::NONE);
 }
 
+/// Show a modal alert parented to `parent` (avoids the "GtkDialog mapped
+/// without a transient parent" warning).
+fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
+    let alert = gtk4::AlertDialog::builder()
+        .message("Sparkamp")
+        .detail(msg)
+        .modal(true)
+        .build();
+    alert.show(parent);
+}
+
 /// Embedded app logo PNG bytes (compiled into the binary).
 /// Replace `square logo.png` in the project root with the SparkAmp logo asset.
 static LOGO_BYTES: &[u8] = include_bytes!("../../square logo.png");
@@ -10253,6 +10264,7 @@ fn open_media_library_window(
         let sidebar_for_drop = sidebar.clone();
         let state_for_drop   = state.clone();
         let current_devices_drop = current_devices.clone();
+        let win_wk_drop = win.downgrade();
         dt.connect_drop(move |_, value, _x, y| {
             let file_list = match value.get::<gdk::FileList>() {
                 Ok(fl) => fl,
@@ -10294,11 +10306,14 @@ fn open_media_library_window(
                         } else {
                             dev.label.clone()
                         };
-                        show_error_alert(&format!(
-                            "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
-                        ));
+                        show_alert_parented(
+                            win_wk_drop.upgrade().as_ref(),
+                            &format!(
+                                "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
+                            ),
+                        );
                     }
-                    Err(e) => show_error_alert(&e),
+                    Err(e) => show_alert_parented(win_wk_drop.upgrade().as_ref(), &e),
                 }
                 return true;
             }
@@ -14964,9 +14979,8 @@ fn open_media_library_window(
     {
         let sel_backend = selected_dev_backend.clone();
         let refresh = refresh_devices.clone();
-        let banner = dev_banner.clone();
-        let banner_lbl = dev_banner_lbl.clone();
         let sidebar_ej = sidebar.clone();
+        let win_wk_ej = win.downgrade();
         dev_eject.connect_clicked(move |btn| {
             let Some(backend) = sel_backend.borrow().clone() else { return };
             btn.set_sensitive(false);
@@ -14979,12 +14993,19 @@ fn open_media_library_window(
                         sidebar_ej.select_row(Some(&r));
                     }
                 }
-                Err(_) => {
-                    banner_lbl.set_text(
-                        "Couldn't eject — a file may still be open, or your system requires \
-                         ejecting through your file browser.",
-                    );
-                    banner.set_visible(true);
+                Err(e) => {
+                    // Re-enable so the user can retry, and surface why.
+                    btn.set_sensitive(true);
+                    let dialog = gtk4::AlertDialog::builder()
+                        .message("Couldn't eject")
+                        .detail(format!(
+                            "The device is still busy or couldn't be ejected ({e}). \
+                             Close anything using it and try again, or eject it from \
+                             your file browser."
+                        ))
+                        .modal(true)
+                        .build();
+                    dialog.show(win_wk_ej.upgrade().as_ref());
                 }
             }
         });
@@ -15016,7 +15037,10 @@ fn open_media_library_window(
                 .filter(|(_, a)| *a == SyncAction::LibraryToDevice)
                 .count();
             if to_lib == 0 && to_dev == 0 {
-                show_error_alert("Already in sync — no tag changes to apply.");
+                show_alert_parented(
+                    win_wk.upgrade().as_ref(),
+                    "Already in sync — no tag changes to apply.",
+                );
                 return;
             }
             let dname = if dev.label.is_empty() {
@@ -15041,6 +15065,7 @@ fn open_media_library_window(
             let state2 = state_sync.clone();
             let dev2 = dev.clone();
             let plan2 = plan;
+            let win_wk2 = win_wk.clone();
             dialog.choose(
                 win_wk.upgrade().as_ref(),
                 None::<&gio::Cancellable>,
@@ -15054,10 +15079,13 @@ fn open_media_library_window(
                     } else {
                         String::new()
                     };
-                    show_error_alert(&format!(
-                        "Synced {applied} song{}{tail}.",
-                        if applied == 1 { "" } else { "s" }
-                    ));
+                    show_alert_parented(
+                        win_wk2.upgrade().as_ref(),
+                        &format!(
+                            "Synced {applied} song{}{tail}.",
+                            if applied == 1 { "" } else { "s" }
+                        ),
+                    );
                 },
             );
         });
