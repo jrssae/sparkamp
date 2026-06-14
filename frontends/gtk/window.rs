@@ -9389,6 +9389,78 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
     },
 ];
 
+/// Text shown for a `LibTrack` in a given media-library column. Shared by the
+/// device track view so it mirrors the files view's columns.
+fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str) -> String {
+    match id {
+        "num" | "track_num" => t.track_num.map(|n| n.to_string()).unwrap_or_default(),
+        "title" => t.title.clone().unwrap_or_else(|| t.filename.clone()),
+        "artist" => t.artist.clone().unwrap_or_default(),
+        "album" => t.album.clone().unwrap_or_default(),
+        "album_artist" => t.album_artist.clone().unwrap_or_default(),
+        "duration" => t
+            .length_secs
+            .map(|s| {
+                let ss = s as u64;
+                format!("{}:{:02}", ss / 60, ss % 60)
+            })
+            .unwrap_or_else(|| "-:--".to_string()),
+        "filename" => t.filename.clone(),
+        "path" => t.path.clone(),
+        "year" => t.year.map(|y| y.to_string()).unwrap_or_default(),
+        "genre" => t.genre.clone().unwrap_or_default(),
+        "bitrate" => t.bitrate.map(|b| format!("{b}k")).unwrap_or_default(),
+        "channels" => match t.channels.unwrap_or(0) {
+            0 => String::new(),
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            n => format!("{n}ch"),
+        },
+        "filetype" => t.filetype.clone().unwrap_or_default(),
+        "play_count" => t.play_count.to_string(),
+        "last_played" => t
+            .last_played
+            .as_deref()
+            .map(format_last_played)
+            .unwrap_or_default(),
+        "last_scanned" => t.last_scanned.clone().unwrap_or_default(),
+        "disc_num" => {
+            let d = t.disc_num.unwrap_or(0);
+            if d == 0 {
+                String::new()
+            } else if let Some(total) = t.disc_total.filter(|x| *x > 0) {
+                format!("{d}/{total}")
+            } else {
+                d.to_string()
+            }
+        }
+        "disc_total" => t.disc_total.map(|d| d.to_string()).unwrap_or_default(),
+        "bpm" => t.bpm.clone().unwrap_or_default(),
+        "comment" => t.comment.clone().unwrap_or_default(),
+        "composer" => t.composer.clone().unwrap_or_default(),
+        "original_artist" => t.original_artist.clone().unwrap_or_default(),
+        "copyright" => t.copyright.clone().unwrap_or_default(),
+        "url" => t.url.clone().unwrap_or_default(),
+        "encoded_by" => t.encoded_by.clone().unwrap_or_default(),
+        "lyric" => {
+            let ly = t.lyric.as_deref().unwrap_or("");
+            if ly.chars().count() > 30 {
+                format!("{}…", ly.chars().take(30).collect::<String>())
+            } else {
+                ly.to_string()
+            }
+        }
+        "artwork_path" => {
+            if t.artwork_path.is_some() {
+                "Yes".to_string()
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
     match col {
         "num" => t.sort_keys.num.clone(),
@@ -10581,17 +10653,243 @@ fn open_media_library_window(
     dev_hint.add_css_class("status-label");
     dev_detail.append(&dev_hint);
 
-    // Audio files found on the device.
-    let dev_tracks_list = ListBox::new();
-    dev_tracks_list.add_css_class("rich-list");
-    dev_tracks_list.set_selection_mode(gtk4::SelectionMode::None);
-    let dev_tracks_scroll = ScrolledWindow::builder()
+    // Playlist filter: "All files" + one row per device .m3u/.m3u8. Selecting
+    // one filters the track view (below) to that playlist's tracks.
+    let dev_pl_header = Label::builder()
+        .label("Playlists")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .build();
+    dev_pl_header.add_css_class("ml-section-header");
+    dev_detail.append(&dev_pl_header);
+    let dev_pl_filter = ListBox::new();
+    dev_pl_filter.add_css_class("rich-list");
+    dev_pl_filter.set_selection_mode(gtk4::SelectionMode::Single);
+    let dev_pl_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
+        .max_content_height(110)
+        .propagate_natural_height(true)
+        .child(&dev_pl_filter)
+        .build();
+    dev_detail.append(&dev_pl_scroll);
+
+    // Track view mirroring the files-view columns, populated from device tags.
+    let dev_store = gio::ListStore::new::<glib::BoxedAnyObject>();
+    // Active playlist filter: filename → 1-based position in the selected
+    // playlist; None = show all files. Drives both filtering and the
+    // playlist-order column.
+    let dev_pl_positions: Rc<RefCell<Option<std::collections::HashMap<String, i64>>>> =
+        Rc::new(RefCell::new(None));
+    let dev_filter = gtk4::CustomFilter::new({
+        let pos = dev_pl_positions.clone();
+        move |obj| {
+            let Some(boxed) = obj.downcast_ref::<glib::BoxedAnyObject>() else {
+                return true;
+            };
+            let t = boxed.borrow::<crate::media_library::LibTrack>();
+            match &*pos.borrow() {
+                None => true,
+                Some(map) => map.contains_key(&t.filename),
+            }
+        }
+    });
+    let dev_filter_model =
+        gtk4::FilterListModel::new(Some(dev_store.clone()), Some(dev_filter.clone()));
+    let dev_sort_model = SortListModel::new(Some(dev_filter_model), None::<gtk4::Sorter>);
+    let dev_selection = gtk4::NoSelection::new(Some(dev_sort_model.clone()));
+    let dev_col_view = ColumnView::new(Some(dev_selection));
+    dev_col_view.add_css_class("ml-col-view");
+    dev_col_view.set_hexpand(true);
+    dev_col_view.set_vexpand(true);
+
+    // Playlist-order column (front): shown only while a playlist filter is
+    // active, then made the default sort — like the editor's position column.
+    let dev_pos_col = {
+        let factory = SignalListItemFactory::new();
+        factory.connect_setup(|_, obj| {
+            let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+            if li.child().is_some() {
+                return;
+            }
+            let lbl = Label::builder()
+                .halign(Align::End)
+                .xalign(1.0)
+                .margin_start(6)
+                .margin_end(6)
+                .css_classes(["pl-duration"])
+                .build();
+            li.set_child(Some(&lbl));
+        });
+        let pos = dev_pl_positions.clone();
+        factory.connect_bind(move |_, obj| {
+            let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                return;
+            };
+            let Some(boxed) = li
+                .item()
+                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+            else {
+                return;
+            };
+            let t = boxed.borrow::<crate::media_library::LibTrack>();
+            let text = pos
+                .borrow()
+                .as_ref()
+                .and_then(|m| m.get(&t.filename))
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            lbl.set_text(&text);
+        });
+        let col = ColumnViewColumn::new(Some("#"), Some(factory));
+        col.set_fixed_width(48);
+        col.set_visible(false);
+        let pos2 = dev_pl_positions.clone();
+        let sorter = CustomSorter::new(move |a, b| {
+            let key = |o: &glib::Object| -> i64 {
+                o.downcast_ref::<glib::BoxedAnyObject>()
+                    .and_then(|bo| {
+                        let t = bo.borrow::<crate::media_library::LibTrack>();
+                        pos2.borrow().as_ref().and_then(|m| m.get(&t.filename).copied())
+                    })
+                    .unwrap_or(i64::MAX)
+            };
+            key(a).cmp(&key(b)).into()
+        });
+        col.set_sorter(Some(&sorter));
+        dev_col_view.append_column(&col);
+        col
+    };
+
+    {
+        // Columns that are library bookkeeping, not ID3 tags — irrelevant for a
+        // device, so never shown here even if visible in the files view.
+        const DEVICE_HIDDEN_COLS: &[&str] = &["play_count", "last_played", "last_scanned"];
+        let visible_ids: Vec<String> =
+            state.borrow().config.media_library.visible_columns.clone();
+        let widths: std::collections::HashMap<String, i32> =
+            state.borrow().config.media_library.ml_file_col_widths.clone();
+        let order = state.borrow().config.media_library.ml_file_col_order.clone();
+        // Build columns in the saved order (unknown/leftover ids appended).
+        let ordered: Vec<&MlColumnDef> = {
+            let mut v: Vec<&MlColumnDef> = Vec::new();
+            for id in &order {
+                if let Some(c) = ALL_COLUMNS.iter().find(|c| &c.id == id) {
+                    v.push(c);
+                }
+            }
+            for c in ALL_COLUMNS.iter() {
+                if !order.iter().any(|id| id == c.id) {
+                    v.push(c);
+                }
+            }
+            v
+        };
+        for c in ordered {
+            if DEVICE_HIDDEN_COLS.contains(&c.id) {
+                continue;
+            }
+            let id_str = c.id.to_string();
+            let factory = SignalListItemFactory::new();
+            factory.connect_setup(|_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                if li.child().is_some() {
+                    return;
+                }
+                let lbl = Label::builder()
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .ellipsize(gtk4::pango::EllipsizeMode::End)
+                    .css_classes(["ml-col-label"])
+                    .build();
+                li.set_child(Some(&lbl));
+            });
+            let bind_id = id_str.clone();
+            factory.connect_bind(move |_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                    return;
+                };
+                let Some(boxed) = li
+                    .item()
+                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                else {
+                    return;
+                };
+                let t = boxed.borrow::<crate::media_library::LibTrack>();
+                lbl.set_text(&gtk_safe(&ml_cell_text(&t, &bind_id)));
+            });
+            let col = ColumnViewColumn::new(Some(c.header), Some(factory));
+            col.set_resizable(true);
+            if c.expand {
+                col.set_expand(true);
+            }
+            col.set_visible(visible_ids.contains(&id_str));
+            if let Some(&w) = widths.get(&id_str) {
+                if w > 0 {
+                    col.set_fixed_width(w);
+                }
+            }
+            let sort_id = id_str.clone();
+            let sorter = CustomSorter::new(move |a, b| {
+                let ka = a
+                    .downcast_ref::<glib::BoxedAnyObject>()
+                    .map(|o| ml_sort_key(&o.borrow::<crate::media_library::LibTrack>(), &sort_id))
+                    .unwrap_or_default();
+                let kb = b
+                    .downcast_ref::<glib::BoxedAnyObject>()
+                    .map(|o| ml_sort_key(&o.borrow::<crate::media_library::LibTrack>(), &sort_id))
+                    .unwrap_or_default();
+                ka.cmp(&kb).into()
+            });
+            col.set_sorter(Some(&sorter));
+            dev_col_view.append_column(&col);
+        }
+        // Header clicks drive the sort model.
+        dev_sort_model.set_sorter(dev_col_view.sorter().as_ref());
+    }
+
+    let dev_tracks_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Automatic)
+        .vscrollbar_policy(PolicyType::Automatic)
         .vexpand(true)
-        .child(&dev_tracks_list)
+        .child(&dev_col_view)
         .build();
     dev_detail.append(&dev_tracks_scroll);
+
+    // Selecting a playlist filters the track view to its entries and sorts by
+    // playlist order; "All files" clears the filter and the order column.
+    {
+        let positions = dev_pl_positions.clone();
+        let filter = dev_filter.clone();
+        let pos_col = dev_pos_col.clone();
+        let col_view = dev_col_view.clone();
+        dev_pl_filter.connect_row_selected(move |_, opt| {
+            let Some(row) = opt else { return };
+            let name = row.widget_name().to_string();
+            if name == "all" || name.is_empty() {
+                *positions.borrow_mut() = None;
+                pos_col.set_visible(false);
+                col_view.sort_by_column(None::<&ColumnViewColumn>, gtk4::SortType::Ascending);
+            } else {
+                let order = crate::devices::browse::playlist_entry_order(std::path::Path::new(
+                    &name,
+                ));
+                let mut map: std::collections::HashMap<String, i64> =
+                    std::collections::HashMap::new();
+                for (i, fname) in order.into_iter().enumerate() {
+                    map.entry(fname).or_insert((i + 1) as i64);
+                }
+                *positions.borrow_mut() = Some(map);
+                pos_col.set_visible(true);
+                col_view.sort_by_column(Some(&pos_col), gtk4::SortType::Ascending);
+            }
+            filter.changed(gtk4::FilterChange::Different);
+        });
+    }
 
     dev_page.append(&dev_detail);
 
@@ -14914,7 +15212,8 @@ fn open_media_library_window(
         let warn = dev_warn.clone();
         let rebuild_overview_sel = rebuild_overview.clone();
         let hint = dev_hint.clone();
-        let tracks_list = dev_tracks_list.clone();
+        let dev_store_sel = dev_store.clone();
+        let dev_pl_filter_sel = dev_pl_filter.clone();
         let sync_btn = dev_sync.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
@@ -14971,35 +15270,62 @@ fn open_media_library_window(
                     sync_btn.set_sensitive(true);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
 
-                    // List the audio files currently on the device.
-                    let files = crate::devices::browse::list_audio_files(&d.mount_path);
-                    while let Some(c) = tracks_list.first_child() {
-                        tracks_list.remove(&c);
+                    // Rebuild the playlist filter rows ("All files" + each
+                    // device .m3u/.m3u8); selecting "All files" resets the
+                    // filter via the playlist-list handler.
+                    let mount = d.mount_path.clone();
+                    while let Some(r) = dev_pl_filter_sel.row_at_index(0) {
+                        dev_pl_filter_sel.remove(&r);
                     }
-                    for f in &files {
-                        let nm = f
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
+                    let mk_row = |name: &str, label: &str| {
                         let lbl = Label::builder()
-                            .label(&gtk_safe(&nm))
+                            .label(&gtk_safe(label))
                             .halign(Align::Start)
                             .xalign(0.0)
-                            .ellipsize(gtk4::pango::EllipsizeMode::Middle)
                             .margin_start(6)
                             .margin_end(6)
                             .margin_top(2)
                             .margin_bottom(2)
                             .build();
-                        let r = ListBoxRow::new();
-                        r.set_child(Some(&lbl));
-                        tracks_list.append(&r);
+                        let row = ListBoxRow::new();
+                        row.set_widget_name(name);
+                        row.set_child(Some(&lbl));
+                        row
+                    };
+                    dev_pl_filter_sel.append(&mk_row("all", "All files"));
+                    for pl in crate::devices::browse::device_playlist_files(&mount) {
+                        let nm = pl
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        dev_pl_filter_sel.append(&mk_row(&pl.to_string_lossy(), &nm));
                     }
-                    hint.set_text(&format!(
-                        "{} audio file{} on this device",
-                        files.len(),
-                        if files.len() == 1 { "" } else { "s" }
-                    ));
+                    dev_pl_filter_sel.select_row(dev_pl_filter_sel.row_at_index(0).as_ref());
+
+                    // Read device tags off the UI thread, then fill the columns.
+                    hint.set_text("Reading device…");
+                    dev_store_sel.remove_all();
+                    let store2 = dev_store_sel.clone();
+                    let hint2 = hint.clone();
+                    glib::spawn_future_local(async move {
+                        let tracks = gio::spawn_blocking(move || {
+                            crate::devices::browse::list_audio_files(&mount)
+                                .iter()
+                                .map(|p| crate::devices::browse::read_device_track(p))
+                                .collect::<Vec<_>>()
+                        })
+                        .await
+                        .unwrap_or_default();
+                        store2.remove_all();
+                        for t in &tracks {
+                            store2.append(&glib::BoxedAnyObject::new(t.clone()));
+                        }
+                        hint2.set_text(&format!(
+                            "{} audio file{} on this device",
+                            tracks.len(),
+                            if tracks.len() == 1 { "" } else { "s" }
+                        ));
+                    });
                 }
             }
         });

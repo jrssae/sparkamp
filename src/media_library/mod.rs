@@ -123,7 +123,7 @@ pub struct SortKeys {
 }
 
 impl SortKeys {
-    fn from_track(track: &LibTrack) -> Self {
+    pub(crate) fn from_track(track: &LibTrack) -> Self {
         SortKeys {
             num: format!("{:010}", track.track_num.unwrap_or(0)),
             title: track
