@@ -916,6 +916,20 @@ fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
     row.add_controller(src);
 }
 
+/// Index of the ML sidebar's Devices header (= the end of the Playlists
+/// section). New playlist rows insert here so they land inside the Playlists
+/// section rather than below Devices.
+fn sidebar_pl_end_index(sidebar: &gtk4::ListBox) -> i32 {
+    let mut idx = 0i32;
+    while let Some(r) = sidebar.row_at_index(idx) {
+        if r.widget_name() == "devices" {
+            return idx;
+        }
+        idx += 1;
+    }
+    idx
+}
+
 /// Find a ListBoxRow by its widget name.
 fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
     let mut child = listbox.first_child();
@@ -13771,6 +13785,21 @@ fn open_media_library_window(
                 manage_ref.remove(&row);
             }
 
+            // Insert the rebuilt rows right after the Playlists header — not at
+            // the sidebar end, which is below the Devices section.
+            let mut insert_at = {
+                let mut idx = 0i32;
+                let mut after = 1i32;
+                while let Some(r) = sidebar_ref.row_at_index(idx) {
+                    if r.widget_name() == "playlists" {
+                        after = idx + 1;
+                        break;
+                    }
+                    idx += 1;
+                }
+                after
+            };
+
             for pl in &playlists {
                 let s_lbl = Label::builder()
                     .label(&pl.name)
@@ -13784,7 +13813,8 @@ fn open_media_library_window(
                 s_row.set_child(Some(&s_lbl));
                 s_row.set_visible(expanded_ref.get());
                 attach_pl_row_drag(&s_row, pl.id);
-                sidebar_ref.append(&s_row);
+                sidebar_ref.insert(&s_row, insert_at);
+                insert_at += 1;
                 if selected.as_deref() == Some(s_row.widget_name().as_str()) {
                     sidebar_ref.select_row(Some(&s_row));
                 }
@@ -13988,7 +14018,7 @@ fn open_media_library_window(
                     s_row.set_child(Some(&s_lbl));
                     s_row.set_visible(exp2.get());
                     attach_pl_row_drag(&s_row, new_id);
-                    sid2.append(&s_row);
+                    sid2.insert(&s_row, sidebar_pl_end_index(&sid2));
                     sub2.borrow_mut().push(s_row.clone());
                     sid2.select_row(Some(&s_row));
 
@@ -14713,7 +14743,7 @@ fn open_media_library_window(
                     s_row.set_widget_name(&format!("pl:{}", new_id));
                     s_row.set_child(Some(&s_lbl));
                     attach_pl_row_drag(&s_row, new_id);
-                    sidebar2.append(&s_row);
+                    sidebar2.insert(&s_row, sidebar_pl_end_index(&sidebar2));
                     sidebar2.select_row(Some(&s_row));
 
                     ep_id2.set(new_id);
