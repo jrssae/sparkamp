@@ -10906,6 +10906,39 @@ fn open_media_library_window(
     }
     let dev_named_cols = Rc::new(dev_named_cols);
 
+    // Reload a device's tracks into the column store (tags re-read on a worker
+    // thread). Used on device select and after a sync so changed values show
+    // immediately.
+    let reload_device_store: Rc<dyn Fn(std::path::PathBuf)> = {
+        let store = dev_store.clone();
+        let hint = dev_hint.clone();
+        Rc::new(move |mount: std::path::PathBuf| {
+            hint.set_text("Reading device…");
+            store.remove_all();
+            let store2 = store.clone();
+            let hint2 = hint.clone();
+            glib::spawn_future_local(async move {
+                let tracks = gio::spawn_blocking(move || {
+                    crate::devices::browse::list_audio_files(&mount)
+                        .iter()
+                        .map(|p| crate::devices::browse::read_device_track(p))
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+                store2.remove_all();
+                for t in &tracks {
+                    store2.append(&glib::BoxedAnyObject::new(t.clone()));
+                }
+                hint2.set_text(&format!(
+                    "{} audio file{} on this device",
+                    tracks.len(),
+                    if tracks.len() == 1 { "" } else { "s" }
+                ));
+            });
+        })
+    };
+
     let dev_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Automatic)
@@ -15234,9 +15267,8 @@ fn open_media_library_window(
         let detail = dev_detail.clone();
         let warn = dev_warn.clone();
         let rebuild_overview_sel = rebuild_overview.clone();
-        let hint = dev_hint.clone();
-        let dev_store_sel = dev_store.clone();
         let dev_pl_filter_sel = dev_pl_filter.clone();
+        let reload_device_store_sel = reload_device_store.clone();
         let dev_named_cols_sel = dev_named_cols.clone();
         let dev_col_view_sel = dev_col_view.clone();
         let state_devcols = state.clone();
@@ -15332,29 +15364,7 @@ fn open_media_library_window(
                     dev_pl_filter_sel.select_row(dev_pl_filter_sel.row_at_index(0).as_ref());
 
                     // Read device tags off the UI thread, then fill the columns.
-                    hint.set_text("Reading device…");
-                    dev_store_sel.remove_all();
-                    let store2 = dev_store_sel.clone();
-                    let hint2 = hint.clone();
-                    glib::spawn_future_local(async move {
-                        let tracks = gio::spawn_blocking(move || {
-                            crate::devices::browse::list_audio_files(&mount)
-                                .iter()
-                                .map(|p| crate::devices::browse::read_device_track(p))
-                                .collect::<Vec<_>>()
-                        })
-                        .await
-                        .unwrap_or_default();
-                        store2.remove_all();
-                        for t in &tracks {
-                            store2.append(&glib::BoxedAnyObject::new(t.clone()));
-                        }
-                        hint2.set_text(&format!(
-                            "{} audio file{} on this device",
-                            tracks.len(),
-                            if tracks.len() == 1 { "" } else { "s" }
-                        ));
-                    });
+                    reload_device_store_sel(mount);
                 }
             }
         });
@@ -15419,6 +15429,7 @@ fn open_media_library_window(
         let devices_sync = current_devices.clone();
         let sel_backend = selected_dev_backend.clone();
         let win_wk = win.downgrade();
+        let reload_sync = reload_device_store.clone();
         dev_sync.connect_clicked(move |_| {
             use crate::devices::sync::SyncAction;
             let Some(backend) = sel_backend.borrow().clone() else { return };
@@ -15468,6 +15479,7 @@ fn open_media_library_window(
             let dev2 = dev.clone();
             let plan2 = plan;
             let win_wk2 = win_wk.clone();
+            let reload2 = reload_sync.clone();
             dialog.choose(
                 win_wk.upgrade().as_ref(),
                 None::<&gio::Cancellable>,
@@ -15476,6 +15488,8 @@ fn open_media_library_window(
                         return;
                     }
                     let (applied, failed) = apply_device_sync(&state2, &dev2, &plan2);
+                    // Re-read the device so the updated tag values show now.
+                    reload2(dev2.mount_path.clone());
                     let tail = if failed > 0 {
                         format!(", {failed} failed")
                     } else {
