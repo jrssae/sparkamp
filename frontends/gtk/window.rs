@@ -10251,6 +10251,90 @@ fn copy_paths_to_device(
     Ok((copied, skipped, failed))
 }
 
+/// A validated plan for sending a whole playlist to a device: the files to
+/// copy (with their on-device paths), the device identity for sync pairs, and
+/// where the `.m3u8` will be written on the device.
+struct PlaylistSendPlan {
+    pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    device_id: String,
+    m3u_path: std::path::PathBuf,
+}
+
+/// Validate and build a [`PlaylistSendPlan`] for `playlist_id` on `dev`, or a
+/// user-facing error (read-only / unsupported device, empty playlist, no space).
+fn prepare_playlist_send(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+    playlist_id: i64,
+    playlist_name: &str,
+) -> Result<PlaylistSendPlan, String> {
+    use crate::devices::transfer::{self, TrackMeta};
+    if dev.read_only {
+        let n = if dev.label.is_empty() { "This device" } else { &dev.label };
+        return Err(format!("{n} is read-only — can't copy files to it."));
+    }
+    if device_fs_unsupported(&dev.fs_type) {
+        return Err(format!(
+            "{} is an unsupported filesystem — can't write to this device yet.",
+            dev.fs_type
+        ));
+    }
+    let tracks = {
+        let s = state.borrow();
+        s.media_lib
+            .as_ref()
+            .and_then(|lib| {
+                lib.playlist_by_id(playlist_id)
+                    .ok()
+                    .and_then(|pl| lib.load_playlist_tracks(&pl).ok())
+            })
+            .unwrap_or_default()
+    };
+    let mut pairs = Vec::new();
+    for t in &tracks {
+        let src = std::path::PathBuf::from(&t.path);
+        if !src.exists() {
+            continue;
+        }
+        let rel = transfer::device_relpath(&TrackMeta {
+            src: &src,
+            artist: t.artist.as_deref().unwrap_or(""),
+            album: t.album.as_deref().unwrap_or(""),
+            title: t.title.as_deref().unwrap_or(""),
+            track_num: t.track_num,
+        });
+        pairs.push((src, rel));
+    }
+    if pairs.is_empty() {
+        return Err("No playable files in this playlist.".to_string());
+    }
+    let need = transfer::bytes_needed(&pairs, &dev.mount_path);
+    if dev.free_bytes > 0 && need > dev.free_bytes {
+        return Err(format!(
+            "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+            need as f64 / 1e9,
+            dev.free_bytes as f64 / 1e9
+        ));
+    }
+    let device_id = if dev.id.is_empty() {
+        crate::devices::marker::ensure_marker(&dev.mount_path).unwrap_or_default()
+    } else {
+        dev.id.clone()
+    };
+    let safe: String = playlist_name
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect();
+    let safe = safe.trim().trim_matches('.').trim();
+    let safe = if safe.is_empty() { "Playlist" } else { safe };
+    let m3u_path = dev.mount_path.join(format!("{safe}.m3u8"));
+    Ok(PlaylistSendPlan {
+        pairs,
+        device_id,
+        m3u_path,
+    })
+}
+
 /// File modification time in whole seconds since the epoch (0 on error).
 fn file_mtime(p: &std::path::Path) -> i64 {
     std::fs::metadata(p)
@@ -10906,6 +10990,9 @@ fn open_media_library_window(
     }
     let dev_named_cols = Rc::new(dev_named_cols);
 
+    // Backend object id of the currently shown device (Eject/Sync target).
+    let selected_dev_backend: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
     // Reload a device's tracks into the column store (tags re-read on a worker
     // thread). Used on device select and after a sync so changed values show
     // immediately.
@@ -10935,6 +11022,120 @@ fn open_media_library_window(
                     tracks.len(),
                     if tracks.len() == 1 { "" } else { "s" }
                 ));
+            });
+        })
+    };
+
+    // Send a whole playlist (files + .m3u8) to a device, copying on a worker
+    // thread with live progress shown on the device's sidebar row and detail.
+    let send_playlist_run: Rc<dyn Fn(crate::devices::Device, i64, String)> = {
+        let state = state.clone();
+        let sidebar = sidebar.clone();
+        let hint = dev_hint.clone();
+        let reload = reload_device_store.clone();
+        let sel_backend = selected_dev_backend.clone();
+        let win_wk = win.downgrade();
+        Rc::new(move |dev: crate::devices::Device, playlist_id: i64, name: String| {
+            let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
+                Ok(p) => p,
+                Err(e) => {
+                    show_alert_parented(win_wk.upgrade().as_ref(), &e);
+                    return;
+                }
+            };
+            let backend = dev.backend_id.clone();
+            let dname = if dev.label.is_empty() {
+                "device".to_string()
+            } else {
+                dev.label.clone()
+            };
+            let row_base = format!(
+                "{}{}",
+                device_glyph_prefix(dev.read_only, &dev.fs_type),
+                if dev.label.is_empty() {
+                    "Untitled device".to_string()
+                } else {
+                    dev.label.clone()
+                }
+            );
+            let set_row_label = {
+                let sidebar = sidebar.clone();
+                let row_name = format!("dev:{backend}");
+                move |text: &str| {
+                    if let Some(row) = find_row_by_name(&sidebar, &row_name) {
+                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok()) {
+                            if let Some(lbl) =
+                                bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                            {
+                                lbl.set_text(text);
+                            }
+                        }
+                    }
+                }
+            };
+
+            let total = plan.pairs.len();
+            let pairs = plan.pairs.clone();
+            let device_id = plan.device_id.clone();
+            let m3u_path = plan.m3u_path.clone();
+            let mount = dev.mount_path.clone();
+            let state2 = state.clone();
+            let hint2 = hint.clone();
+            let reload2 = reload.clone();
+            let sel2 = sel_backend.clone();
+            let win2 = win_wk.clone();
+            glib::spawn_future_local(async move {
+                use crate::devices::transfer::CopyOutcome;
+                let mut entries: Vec<String> = Vec::new();
+                let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+                for (i, (src, rel)) in pairs.iter().enumerate() {
+                    let prog = format!("{}/{}", i + 1, total);
+                    set_row_label(&format!("{row_base} — {prog}"));
+                    if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                        hint2.set_text(&format!("Copying {prog}…"));
+                    }
+                    let s = src.clone();
+                    let r = rel.clone();
+                    let m = mount.clone();
+                    let outcome =
+                        gio::spawn_blocking(move || crate::devices::transfer::copy_to_device(&s, &m, &r))
+                            .await;
+                    match outcome {
+                        Ok(Ok(CopyOutcome::Copied)) => copied += 1,
+                        Ok(Ok(CopyOutcome::SkippedPresent)) => skipped += 1,
+                        _ => {
+                            failed += 1;
+                            continue;
+                        }
+                    }
+                    entries.push(rel.to_string_lossy().replace('\\', "/"));
+                    if !device_id.is_empty() {
+                        if let Some(lib) = state2.borrow().media_lib.as_ref() {
+                            let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
+                                device_id: device_id.clone(),
+                                device_relpath: rel.to_string_lossy().into_owned(),
+                                library_path: src.to_string_lossy().into_owned(),
+                                baseline_tag_hash: String::new(),
+                                baseline_rating: 0,
+                                baseline_playcount: 0,
+                                last_sync_at: None,
+                            });
+                        }
+                    }
+                }
+                // Write the playlist file referencing the copied relative paths.
+                let body = format!("#EXTM3U\n{}\n", entries.join("\n"));
+                let mp = m3u_path.clone();
+                let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
+                set_row_label(&row_base);
+                reload2(mount.clone());
+                show_alert_parented(
+                    win2.upgrade().as_ref(),
+                    &format!(
+                        "Sent to {dname}: {copied} copied, {skipped} skipped, {failed} failed, \
+                         plus the playlist."
+                    ),
+                );
             });
         })
     };
@@ -10979,9 +11180,6 @@ fn open_media_library_window(
     }
 
     dev_page.append(&dev_detail);
-
-    // Backend object id of the currently shown device, for the Eject button.
-    let selected_dev_backend: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     let _vsep_unused = (); // replaced by Paned divider
 
@@ -14174,6 +14372,7 @@ fn open_media_library_window(
         let btn_save_as_pl    = Button::with_label("Save As…");  btn_save_as_pl.add_css_class("pl-btn");
         let btn_save_pl       = btn_save_pl_outer.clone();
         let btn_enqueue_pl    = Button::with_label("Enqueue"); btn_enqueue_pl.add_css_class("pl-btn");
+        let btn_send_dev      = Button::with_label("Send to…"); btn_send_dev.add_css_class("pl-btn");
         let btn_play_pl       = Button::with_label("▶ Play");  btn_play_pl.add_css_class("pl-btn");
 
         edit_btn_row.append(&btn_add_files_pl);
@@ -14185,8 +14384,61 @@ fn open_media_library_window(
         edit_btn_row.append(&btn_save_as_pl);
         edit_btn_row.append(&btn_save_pl);
         edit_btn_row.append(&btn_enqueue_pl);
+        edit_btn_row.append(&btn_send_dev);
         edit_btn_row.append(&btn_play_pl);
         edit_vbox.append(&edit_btn_row);
+
+        // "Send to…" → popover listing connected devices; picking one sends the
+        // whole playlist (files + .m3u8) to it.
+        {
+            let devices = current_devices.clone();
+            let ep_id = editing_pl_id.clone();
+            let state_rc = state.clone();
+            let send = send_playlist_run.clone();
+            let win_wk = win.downgrade();
+            btn_send_dev.connect_clicked(move |btn| {
+                let devs = devices.borrow().clone();
+                if devs.is_empty() {
+                    show_alert_parented(win_wk.upgrade().as_ref(), "No devices connected.");
+                    return;
+                }
+                let id = ep_id.get();
+                if id < 0 {
+                    return;
+                }
+                let name = state_rc
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|l| l.playlist_by_id(id).ok())
+                    .map(|p| p.name)
+                    .unwrap_or_default();
+                let pop = gtk4::Popover::new();
+                pop.set_parent(btn);
+                pop.connect_closed(|p| p.unparent());
+                let vbox = GtkBox::new(Orientation::Vertical, 2);
+                for d in devs {
+                    let label = if d.label.is_empty() {
+                        "Untitled device".to_string()
+                    } else {
+                        d.label.clone()
+                    };
+                    let b = Button::with_label(&gtk_safe(&label));
+                    b.add_css_class("flat");
+                    let send2 = send.clone();
+                    let name2 = name.clone();
+                    let pop2 = pop.clone();
+                    let d2 = d.clone();
+                    b.connect_clicked(move |_| {
+                        pop2.popdown();
+                        send2(d2.clone(), id, name2.clone());
+                    });
+                    vbox.append(&b);
+                }
+                pop.set_child(Some(&vbox));
+                pop.popup();
+            });
+        }
 
         // ── Add Files ─────────────────────────────────────────────────────
         {
