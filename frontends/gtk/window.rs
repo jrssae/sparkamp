@@ -9389,6 +9389,57 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
     },
 ];
 
+/// Re-apply the shared media-library column config (visibility, widths, order)
+/// to a ColumnView's named columns. `fixed_leading` is how many pinned columns
+/// precede the named ones (the files view has 0, the editor 2 = status +
+/// position, the device view 1 = playlist-order). Used so the files view, the
+/// playlist editor, and the device view all reflect the same column settings.
+fn apply_ml_columns_to(
+    col_view: &ColumnView,
+    named: &[(String, ColumnViewColumn)],
+    state: &Rc<RefCell<AppState>>,
+    fixed_leading: u32,
+) {
+    let (visible_ids, widths, order): (
+        Vec<String>,
+        std::collections::HashMap<String, i32>,
+        Vec<String>,
+    ) = {
+        let s = state.borrow();
+        (
+            s.config.media_library.visible_columns.clone(),
+            s.config.media_library.ml_file_col_widths.clone(),
+            s.config.media_library.ml_file_col_order.clone(),
+        )
+    };
+    for (id, col) in named {
+        col.set_visible(visible_ids.contains(id));
+        if let Some(&w) = widths.get(id) {
+            if w > 0 {
+                col.set_fixed_width(w);
+            }
+        }
+    }
+    if !order.is_empty() {
+        for (_, col) in named {
+            col_view.remove_column(col);
+        }
+        let mut pos = fixed_leading;
+        for col_id in &order {
+            if let Some((_, col)) = named.iter().find(|(id, _)| id == col_id) {
+                col_view.insert_column(pos, col);
+                pos += 1;
+            }
+        }
+        for (id, col) in named {
+            if !order.contains(id) {
+                col_view.insert_column(pos, col);
+                pos += 1;
+            }
+        }
+    }
+}
+
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the
 /// device track view so it mirrors the files view's columns.
 fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str) -> String {
@@ -10762,6 +10813,7 @@ fn open_media_library_window(
         col
     };
 
+    let mut dev_named_cols: Vec<(String, ColumnViewColumn)> = Vec::new();
     {
         // Columns that are library bookkeeping, not ID3 tags — irrelevant for a
         // device, so never shown here even if visible in the files view.
@@ -10846,11 +10898,13 @@ fn open_media_library_window(
                 ka.cmp(&kb).into()
             });
             col.set_sorter(Some(&sorter));
+            dev_named_cols.push((id_str.clone(), col.clone()));
             dev_col_view.append_column(&col);
         }
         // Header clicks drive the sort model.
         dev_sort_model.set_sorter(dev_col_view.sorter().as_ref());
     }
+    let dev_named_cols = Rc::new(dev_named_cols);
 
     let dev_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
@@ -13233,39 +13287,8 @@ fn open_media_library_window(
         let cols = editor_cols_rc.clone();
         let state_rc = state.clone();
         let tl = track_list.clone();
-        Rc::new(move || {
-            let (visible_ids, widths, order): (Vec<String>,
-                std::collections::HashMap<String, i32>, Vec<String>) = {
-                let s = state_rc.borrow();
-                (
-                    s.config.media_library.visible_columns.clone(),
-                    s.config.media_library.ml_file_col_widths.clone(),
-                    s.config.media_library.ml_file_col_order.clone(),
-                )
-            };
-            for (id, col) in cols.iter() {
-                col.set_visible(visible_ids.contains(id));
-                if let Some(&w) = widths.get(id) {
-                    if w > 0 { col.set_fixed_width(w); }
-                }
-            }
-            if !order.is_empty() {
-                for (_, col) in cols.iter() { tl.remove_column(col); }
-                let mut pos = 2u32; // 0=status, 1=position
-                for col_id in &order {
-                    if let Some((_, col)) = cols.iter().find(|(id, _)| id == col_id) {
-                        tl.insert_column(pos, col);
-                        pos += 1;
-                    }
-                }
-                for (id, col) in cols.iter() {
-                    if !order.contains(id) {
-                        tl.insert_column(pos, col);
-                        pos += 1;
-                    }
-                }
-            }
-        })
+        // 2 pinned leading columns: status glyph + position.
+        Rc::new(move || apply_ml_columns_to(&tl, cols.as_slice(), &state_rc, 2))
     };
 
     // Connect the sort model to the ColumnView's column-driven sorter so
@@ -15214,6 +15237,9 @@ fn open_media_library_window(
         let hint = dev_hint.clone();
         let dev_store_sel = dev_store.clone();
         let dev_pl_filter_sel = dev_pl_filter.clone();
+        let dev_named_cols_sel = dev_named_cols.clone();
+        let dev_col_view_sel = dev_col_view.clone();
+        let state_devcols = state.clone();
         let sync_btn = dev_sync.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
@@ -15234,6 +15260,9 @@ fn open_media_library_window(
                     // Detail mode for the selected device.
                     overview.set_visible(false);
                     detail.set_visible(true);
+                    // Re-apply the shared column config so device columns track
+                    // changes made in the files view (same as the editor does).
+                    apply_ml_columns_to(&dev_col_view_sel, &dev_named_cols_sel, &state_devcols, 1);
                     let base = if d.label.is_empty() {
                         "Untitled device".to_string()
                     } else {
