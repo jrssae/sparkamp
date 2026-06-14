@@ -29,43 +29,42 @@ pub fn sanitize_component(s: &str, fallback: &str) -> String {
 }
 
 /// Metadata needed to place a track on the device.
-pub struct TrackMeta<'a> {
-    pub src: &'a Path,
-    pub artist: &'a str,
-    pub album: &'a str,
-    pub title: &'a str,
-    pub track_num: Option<i64>,
+/// Build the on-device relative path for `src`: a flat `Music/<filename>`,
+/// keeping the source filename (sanitized for FAT-illegal characters). Flat by
+/// design — collisions between genuinely different files are resolved with a
+/// `-N` suffix via [`resolve_collision`].
+pub fn device_flat_relpath(src: &Path) -> PathBuf {
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("track");
+    Path::new("Music").join(sanitize_component(name, "track"))
 }
 
-/// Build the on-device relative path:
-/// `Music/<Artist>/<Album>/<NN - Title>.<ext>`.
-///
-/// Falls back to "Unknown Artist"/"Unknown Album" and the source filename stem
-/// for the title; the source file extension is preserved. The track number
-/// prefix is included only when present and positive.
-pub fn device_relpath(meta: &TrackMeta) -> PathBuf {
-    let ext = meta.src.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let stem = meta
-        .src
+/// If `mount/relpath` is already taken (by a *different* file — callers
+/// dedup the same file via sync pairs first), return a free path by appending
+/// `-2`, `-3`, … to the stem. Otherwise return `relpath` unchanged.
+pub fn resolve_collision(mount: &Path, relpath: &Path) -> PathBuf {
+    if !mount.join(relpath).exists() {
+        return relpath.to_path_buf();
+    }
+    let dir = relpath.parent().unwrap_or_else(|| Path::new(""));
+    let stem = relpath
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("track");
-    let artist = sanitize_component(meta.artist, "Unknown Artist");
-    let album = sanitize_component(meta.album, "Unknown Album");
-    let title = sanitize_component(
-        if meta.title.is_empty() { stem } else { meta.title },
-        stem,
-    );
-    let base = match meta.track_num {
-        Some(n) if n > 0 => format!("{n:02} - {title}"),
-        _ => title,
-    };
-    let filename = if ext.is_empty() {
-        base
-    } else {
-        format!("{base}.{ext}")
-    };
-    Path::new("Music").join(artist).join(album).join(filename)
+    let ext = relpath.extension().and_then(|e| e.to_str());
+    for n in 2..100_000 {
+        let name = match ext {
+            Some(e) => format!("{stem}-{n}.{e}"),
+            None => format!("{stem}-{n}"),
+        };
+        let candidate = dir.join(name);
+        if !mount.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    relpath.to_path_buf()
 }
 
 /// Result of copying one file to the device.
@@ -115,31 +114,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relpath_layout_with_and_without_track_number() {
-        let src = PathBuf::from("/lib/song.mp3");
-        let with_num = device_relpath(&TrackMeta {
-            src: &src,
-            artist: "Daft Punk",
-            album: "Discovery",
-            title: "Aerodynamic",
-            track_num: Some(3),
-        });
+    fn flat_relpath_keeps_sanitized_filename_under_music() {
         assert_eq!(
-            with_num,
-            PathBuf::from("Music/Daft Punk/Discovery/03 - Aerodynamic.mp3")
+            device_flat_relpath(Path::new("/lib/03 - Aerodynamic.mp3")),
+            PathBuf::from("Music/03 - Aerodynamic.mp3")
         );
-
-        let no_num = device_relpath(&TrackMeta {
-            src: &src,
-            artist: "",
-            album: "",
-            title: "",
-            track_num: None,
-        });
-        // Falls back to Unknown Artist/Album and the source stem as title.
+        // FAT-illegal characters in the name are replaced.
         assert_eq!(
-            no_num,
-            PathBuf::from("Music/Unknown Artist/Unknown Album/song.mp3")
+            device_flat_relpath(Path::new("/lib/AC:DC?.mp3")),
+            PathBuf::from("Music/AC_DC_.mp3")
+        );
+    }
+
+    #[test]
+    fn resolve_collision_suffixes_only_when_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let mount = dir.path();
+        let rel = Path::new("Music/song.mp3");
+        // Free → unchanged.
+        assert_eq!(resolve_collision(mount, rel), rel.to_path_buf());
+        // Taken → -2.
+        std::fs::create_dir_all(mount.join("Music")).unwrap();
+        std::fs::write(mount.join(rel), b"x").unwrap();
+        assert_eq!(
+            resolve_collision(mount, rel),
+            PathBuf::from("Music/song-2.mp3")
+        );
+        // -2 also taken → -3.
+        std::fs::write(mount.join("Music/song-2.mp3"), b"x").unwrap();
+        assert_eq!(
+            resolve_collision(mount, rel),
+            PathBuf::from("Music/song-3.mp3")
         );
     }
 

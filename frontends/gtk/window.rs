@@ -10182,58 +10182,106 @@ fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
 const UNSUPPORTED_FS_TOOLTIP: &str =
     "Unsupported filesystem (NTFS/exFAT) — Sparkamp can't reliably read or write this device yet.";
 
-/// Copy library files `srcs` onto `dev` under the `Music/Artist/Album` layout,
-/// skipping files already present, guarding against insufficient space, and
-/// recording a sync pair for each. Returns `(copied, skipped, failed)` counts
-/// on success, or a user-facing error string (read-only device, no space).
+/// Device identity for sync pairs: the volume UUID, or a marker id written now
+/// (the first time a file is paired to this device).
+fn device_sync_id(dev: &crate::devices::Device) -> String {
+    if dev.id.is_empty() {
+        crate::devices::marker::ensure_marker(&dev.mount_path).unwrap_or_default()
+    } else {
+        dev.id.clone()
+    }
+}
+
+/// Decide where `src` goes on the device and whether it's already there.
+///
+/// If the file is already paired to this device, reuse the recorded location
+/// (so changing metadata can never duplicate it) and report present iff the
+/// device file still exists. Otherwise pick a flat `Music/<filename>` path,
+/// collision-resolved against the current device contents.
+fn device_plan_one(
+    state: &Rc<RefCell<AppState>>,
+    mount: &std::path::Path,
+    device_id: &str,
+    src: &std::path::Path,
+) -> (std::path::PathBuf, bool) {
+    use crate::devices::transfer;
+    let lib_path = src.to_string_lossy().into_owned();
+    let existing = if device_id.is_empty() {
+        None
+    } else {
+        state
+            .borrow()
+            .media_lib
+            .as_ref()
+            .and_then(|l| l.sync_pairs_for_library_path(&lib_path).ok())
+            .and_then(|ps| ps.into_iter().find(|p| p.device_id == device_id))
+    };
+    if let Some(p) = &existing {
+        let rel = std::path::PathBuf::from(&p.device_relpath);
+        let present = mount.join(&rel).exists();
+        return (rel, present);
+    }
+    (
+        transfer::resolve_collision(mount, &transfer::device_flat_relpath(src)),
+        false,
+    )
+}
+
+/// Record (or refresh) the sync pair for a just-copied file with its REAL tag
+/// baseline, so a later sync sees no change until a tag is actually edited.
+fn device_record_pair(
+    state: &Rc<RefCell<AppState>>,
+    device_id: &str,
+    src: &std::path::Path,
+    relpath: &std::path::Path,
+) {
+    if device_id.is_empty() {
+        return;
+    }
+    use crate::devices::sync;
+    let st = sync::read_tag_state(src);
+    if let Some(lib) = state.borrow().media_lib.as_ref() {
+        let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
+            device_id: device_id.to_string(),
+            device_relpath: relpath.to_string_lossy().into_owned(),
+            library_path: src.to_string_lossy().into_owned(),
+            baseline_tag_hash: sync::tag_hash(&st),
+            baseline_rating: st.rating as i64,
+            baseline_playcount: st.play_count as i64,
+            last_sync_at: Some(crate::timeutil::format_current_timestamp()),
+        });
+    }
+}
+
+/// Copy library files `srcs` onto `dev` (flat `Music/<filename>`), skipping
+/// files already paired+present, guarding against insufficient space, and
+/// recording a real-baseline sync pair for each. Returns `(copied, skipped,
+/// failed)`, or a user-facing error (read-only / unsupported device, no space).
 fn copy_paths_to_device(
     state: &Rc<RefCell<AppState>>,
     dev: &crate::devices::Device,
     srcs: &[std::path::PathBuf],
 ) -> Result<(usize, usize, usize), String> {
-    use crate::devices::transfer::{self, CopyOutcome, TrackMeta};
-
     if dev.read_only {
         let n = if dev.label.is_empty() { "This device" } else { &dev.label };
         return Err(format!("{n} is read-only — can't copy files to it."));
     }
     if device_fs_unsupported(&dev.fs_type) {
         return Err(format!(
-            "{} is an unsupported filesystem — Sparkamp can't reliably write to this device yet.",
+            "{} is an unsupported filesystem — can't write to this device yet.",
             dev.fs_type
         ));
     }
+    let device_id = device_sync_id(dev);
+    let mount = dev.mount_path.clone();
 
-    // Build (source, on-device relative path) pairs using library metadata.
-    let pairs: Vec<(std::path::PathBuf, std::path::PathBuf)> = {
-        let s = state.borrow();
-        let lib = s.media_lib.as_ref();
-        srcs.iter()
-            .map(|src| {
-                let (artist, album, title, track_num) = lib
-                    .and_then(|l| l.track_by_path(&src.to_string_lossy()).ok())
-                    .map(|t| {
-                        (
-                            t.artist.unwrap_or_default(),
-                            t.album.unwrap_or_default(),
-                            t.title.unwrap_or_default(),
-                            t.track_num,
-                        )
-                    })
-                    .unwrap_or_default();
-                let rel = transfer::device_relpath(&TrackMeta {
-                    src,
-                    artist: &artist,
-                    album: &album,
-                    title: &title,
-                    track_num,
-                });
-                (src.clone(), rel)
-            })
-            .collect()
-    };
-
-    let need = transfer::bytes_needed(&pairs, &dev.mount_path);
+    // Free-space guard: sum sizes of files not already present.
+    let mut need = 0u64;
+    for src in srcs {
+        if src.exists() && !device_plan_one(state, &mount, &device_id, src).1 {
+            need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        }
+    }
     if dev.free_bytes > 0 && need > dev.free_bytes {
         return Err(format!(
             "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
@@ -10242,36 +10290,23 @@ fn copy_paths_to_device(
         ));
     }
 
-    // Device identity for the sync pair: UUID, or a marker id written now (the
-    // first time a file is paired to this device).
-    let device_id = if dev.id.is_empty() {
-        crate::devices::marker::ensure_marker(&dev.mount_path).unwrap_or_default()
-    } else {
-        dev.id.clone()
-    };
-
     let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
-    for (src, rel) in &pairs {
-        match transfer::copy_to_device(src, &dev.mount_path, rel) {
-            Ok(CopyOutcome::Copied) => copied += 1,
-            Ok(CopyOutcome::SkippedPresent) => skipped += 1,
-            Err(_) => {
-                failed += 1;
-                continue;
-            }
+    for src in srcs {
+        if !src.exists() {
+            failed += 1;
+            continue;
         }
-        if !device_id.is_empty() {
-            if let Some(lib) = state.borrow().media_lib.as_ref() {
-                let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
-                    device_id: device_id.clone(),
-                    device_relpath: rel.to_string_lossy().into_owned(),
-                    library_path: src.to_string_lossy().into_owned(),
-                    baseline_tag_hash: String::new(),
-                    baseline_rating: 0,
-                    baseline_playcount: 0,
-                    last_sync_at: None,
-                });
+        let (rel, present) = device_plan_one(state, &mount, &device_id, src);
+        if present {
+            skipped += 1;
+            continue;
+        }
+        match crate::devices::transfer::copy_to_device(src, &mount, &rel) {
+            Ok(_) => {
+                copied += 1;
+                device_record_pair(state, &device_id, src, &rel);
             }
+            Err(_) => failed += 1,
         }
     }
     Ok((copied, skipped, failed))
@@ -10281,7 +10316,7 @@ fn copy_paths_to_device(
 /// copy (with their on-device paths), the device identity for sync pairs, and
 /// where the `.m3u8` will be written on the device.
 struct PlaylistSendPlan {
-    pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    srcs: Vec<std::path::PathBuf>,
     device_id: String,
     m3u_path: std::path::PathBuf,
 }
@@ -10294,7 +10329,6 @@ fn prepare_playlist_send(
     playlist_id: i64,
     playlist_name: &str,
 ) -> Result<PlaylistSendPlan, String> {
-    use crate::devices::transfer::{self, TrackMeta};
     if dev.read_only {
         let n = if dev.label.is_empty() { "This device" } else { &dev.label };
         return Err(format!("{n} is read-only — can't copy files to it."));
@@ -10316,25 +10350,22 @@ fn prepare_playlist_send(
             })
             .unwrap_or_default()
     };
-    let mut pairs = Vec::new();
-    for t in &tracks {
-        let src = std::path::PathBuf::from(&t.path);
-        if !src.exists() {
-            continue;
-        }
-        let rel = transfer::device_relpath(&TrackMeta {
-            src: &src,
-            artist: t.artist.as_deref().unwrap_or(""),
-            album: t.album.as_deref().unwrap_or(""),
-            title: t.title.as_deref().unwrap_or(""),
-            track_num: t.track_num,
-        });
-        pairs.push((src, rel));
-    }
-    if pairs.is_empty() {
+    let srcs: Vec<std::path::PathBuf> = tracks
+        .iter()
+        .map(|t| std::path::PathBuf::from(&t.path))
+        .filter(|p| p.exists())
+        .collect();
+    if srcs.is_empty() {
         return Err("No playable files in this playlist.".to_string());
     }
-    let need = transfer::bytes_needed(&pairs, &dev.mount_path);
+    let device_id = device_sync_id(dev);
+    // Free-space guard: sum sizes of files not already present.
+    let mut need = 0u64;
+    for src in &srcs {
+        if !device_plan_one(state, &dev.mount_path, &device_id, src).1 {
+            need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        }
+    }
     if dev.free_bytes > 0 && need > dev.free_bytes {
         return Err(format!(
             "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
@@ -10342,11 +10373,6 @@ fn prepare_playlist_send(
             dev.free_bytes as f64 / 1e9
         ));
     }
-    let device_id = if dev.id.is_empty() {
-        crate::devices::marker::ensure_marker(&dev.mount_path).unwrap_or_default()
-    } else {
-        dev.id.clone()
-    };
     let safe: String = playlist_name
         .chars()
         .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
@@ -10355,7 +10381,7 @@ fn prepare_playlist_send(
     let safe = if safe.is_empty() { "Playlist" } else { safe };
     let m3u_path = dev.mount_path.join(format!("{safe}.m3u8"));
     Ok(PlaylistSendPlan {
-        pairs,
+        srcs,
         device_id,
         m3u_path,
     })
@@ -11148,8 +11174,8 @@ fn open_media_library_window(
                 }
             };
 
-            let total = plan.pairs.len();
-            let pairs = plan.pairs.clone();
+            let total = plan.srcs.len();
+            let srcs = plan.srcs.clone();
             let device_id = plan.device_id.clone();
             let m3u_path = plan.m3u_path.clone();
             let mount = dev.mount_path.clone();
@@ -11159,14 +11185,21 @@ fn open_media_library_window(
             let sel2 = sel_backend.clone();
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
-                use crate::devices::transfer::CopyOutcome;
                 let mut entries: Vec<String> = Vec::new();
                 let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
-                for (i, (src, rel)) in pairs.iter().enumerate() {
+                for (i, src) in srcs.iter().enumerate() {
                     let prog = format!("{}/{}", i + 1, total);
                     set_row_label(&format!("{row_base} — {prog}"));
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
                         hint2.set_text(&format!("Copying {prog}…"));
+                    }
+                    // Plan on the main thread (DB), copy on a worker thread.
+                    let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    if present {
+                        skipped += 1;
+                        entries.push(rel_str);
+                        continue;
                     }
                     let s = src.clone();
                     let r = rel.clone();
@@ -11175,29 +11208,15 @@ fn open_media_library_window(
                         gio::spawn_blocking(move || crate::devices::transfer::copy_to_device(&s, &m, &r))
                             .await;
                     match outcome {
-                        Ok(Ok(CopyOutcome::Copied)) => copied += 1,
-                        Ok(Ok(CopyOutcome::SkippedPresent)) => skipped += 1,
-                        _ => {
-                            failed += 1;
-                            continue;
+                        Ok(Ok(_)) => {
+                            copied += 1;
+                            device_record_pair(&state2, &device_id, src, &rel);
+                            entries.push(rel_str);
                         }
-                    }
-                    entries.push(rel.to_string_lossy().replace('\\', "/"));
-                    if !device_id.is_empty() {
-                        if let Some(lib) = state2.borrow().media_lib.as_ref() {
-                            let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
-                                device_id: device_id.clone(),
-                                device_relpath: rel.to_string_lossy().into_owned(),
-                                library_path: src.to_string_lossy().into_owned(),
-                                baseline_tag_hash: String::new(),
-                                baseline_rating: 0,
-                                baseline_playcount: 0,
-                                last_sync_at: None,
-                            });
-                        }
+                        _ => failed += 1,
                     }
                 }
-                // Write the playlist file referencing the copied relative paths.
+                // Write the playlist file referencing the relative paths.
                 let body = format!("#EXTM3U\n{}\n", entries.join("\n"));
                 let mp = m3u_path.clone();
                 let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
