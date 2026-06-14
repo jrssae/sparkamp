@@ -904,6 +904,18 @@ fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
     (dd, entry)
 }
 
+/// Make a sidebar/manage playlist row draggable, carrying `pl:<id>` so a drop
+/// onto a device row can send the whole playlist.
+fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
+    let src = gtk4::DragSource::new();
+    src.set_actions(gdk::DragAction::COPY);
+    let payload = format!("pl:{id}");
+    src.connect_prepare(move |_, _, _| {
+        Some(gdk::ContentProvider::for_value(&payload.to_value()))
+    });
+    row.add_controller(src);
+}
+
 /// Find a ListBoxRow by its widget name.
 fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
     let mut child = listbox.first_child();
@@ -10466,22 +10478,21 @@ fn open_media_library_window(
     // ML files view, or ML editor and append paths to the saved playlist
     // whose `pl:<id>` row is under the drop coordinate.  Drops landing on
     // the Files/Playlists header rows fall through to no-op.
+    // Deferred handle to the playlist-send runner (defined later, in the
+    // device-view section). Lets the sidebar drop handler send a playlist
+    // dragged onto a device row.
+    let send_playlist_holder: Rc<
+        RefCell<Option<Rc<dyn Fn(crate::devices::Device, i64, String)>>>,
+    > = Rc::new(RefCell::new(None));
     {
         let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        dt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
         let sidebar_for_drop = sidebar.clone();
         let state_for_drop   = state.clone();
         let current_devices_drop = current_devices.clone();
         let win_wk_drop = win.downgrade();
+        let send_holder_drop = send_playlist_holder.clone();
         dt.connect_drop(move |_, value, _x, y| {
-            let file_list = match value.get::<gdk::FileList>() {
-                Ok(fl) => fl,
-                Err(_) => return false,
-            };
-            let paths: Vec<String> = file_list.files().iter()
-                .filter_map(|f| f.path())
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            if paths.is_empty() { return false }
             // Locate the sidebar row under the drop coordinate.
             let mut hit: Option<ListBoxRow> = None;
             let mut i = 0i32;
@@ -10496,14 +10507,61 @@ fn open_media_library_window(
             }
             let Some(row) = hit else { return false };
             let name = row.widget_name().to_string();
-            // Drop onto a device row → copy the dragged files to that device.
-            if let Some(backend) = name.strip_prefix("dev:") {
-                let dev = current_devices_drop
+
+            // A playlist row (`pl:<id>` String) dropped onto a device row →
+            // send the whole playlist (files + .m3u8) to that device.
+            if let Ok(s) = value.get::<String>() {
+                let Some(pid) = s.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok()) else {
+                    return false;
+                };
+                let Some(backend) = name.strip_prefix("dev:") else {
+                    return false;
+                };
+                let Some(dev) = current_devices_drop
                     .borrow()
                     .iter()
                     .find(|d| d.backend_id == backend)
-                    .cloned();
-                let Some(dev) = dev else { return false };
+                    .cloned()
+                else {
+                    return false;
+                };
+                let plname = state_for_drop
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|l| l.playlist_by_id(pid).ok())
+                    .map(|p| p.name)
+                    .unwrap_or_default();
+                if let Some(send) = send_holder_drop.borrow().as_ref() {
+                    send(dev, pid, plname);
+                    return true;
+                }
+                return false;
+            }
+
+            // Otherwise a file-list drag (tracks from a view).
+            let Ok(file_list) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<String> = file_list
+                .files()
+                .iter()
+                .filter_map(|f| f.path())
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            if paths.is_empty() {
+                return false;
+            }
+            // Drop onto a device row → copy the dragged files to that device.
+            if let Some(backend) = name.strip_prefix("dev:") {
+                let Some(dev) = current_devices_drop
+                    .borrow()
+                    .iter()
+                    .find(|d| d.backend_id == backend)
+                    .cloned()
+                else {
+                    return false;
+                };
                 let srcs: Vec<std::path::PathBuf> =
                     paths.iter().map(std::path::PathBuf::from).collect();
                 match copy_paths_to_device(&state_for_drop, &dev, &srcs) {
@@ -10524,8 +10582,9 @@ fn open_media_library_window(
                 }
                 return true;
             }
-            let Some(id_str) = name.strip_prefix("pl:") else { return false };
-            let Ok(pid) = id_str.parse::<i64>() else { return false };
+            let Some(pid) = name.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok()) else {
+                return false;
+            };
             if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
                 if let Err(e) = lib.append_paths_to_playlist(pid, &paths) {
                     eprintln!("append_paths_to_playlist {pid}: {e}");
@@ -10642,6 +10701,7 @@ fn open_media_library_window(
             row.set_widget_name(&format!("pl:{}", pl.id));
             row.set_child(Some(&lbl));
             row.set_visible(expanded);
+            attach_pl_row_drag(&row, pl.id);
             sidebar.append(&row);
             pl_sub_rows.borrow_mut().push(row);
         }
@@ -11139,6 +11199,7 @@ fn open_media_library_window(
             });
         })
     };
+    *send_playlist_holder.borrow_mut() = Some(send_playlist_run.clone());
 
     let dev_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
@@ -13722,6 +13783,7 @@ fn open_media_library_window(
                 s_row.set_widget_name(&format!("pl:{}", pl.id));
                 s_row.set_child(Some(&s_lbl));
                 s_row.set_visible(expanded_ref.get());
+                attach_pl_row_drag(&s_row, pl.id);
                 sidebar_ref.append(&s_row);
                 if selected.as_deref() == Some(s_row.widget_name().as_str()) {
                     sidebar_ref.select_row(Some(&s_row));
@@ -13737,6 +13799,7 @@ fn open_media_library_window(
                 let m_row = ListBoxRow::new();
                 m_row.set_widget_name(&pl.id.to_string());
                 m_row.set_child(Some(&m_lbl));
+                attach_pl_row_drag(&m_row, pl.id);
                 manage_ref.append(&m_row);
             }
         });
@@ -13762,6 +13825,7 @@ fn open_media_library_window(
             s_row.set_widget_name(&format!("pl:{}", id));
             s_row.set_child(Some(&s_lbl));
             s_row.set_visible(expanded_ref.get());
+            attach_pl_row_drag(&s_row, id);
             sidebar_ref.append(&s_row);
             sub_rows_ref.borrow_mut().push(s_row.clone());
             s_row
@@ -13789,6 +13853,7 @@ fn open_media_library_window(
             let row = ListBoxRow::new();
             row.set_widget_name(&pl.id.to_string());
             row.set_child(Some(&lbl));
+            attach_pl_row_drag(&row, pl.id);
             pl_manage_list.append(&row);
         }
 
@@ -13908,6 +13973,7 @@ fn open_media_library_window(
                     let manage_row = ListBoxRow::new();
                     manage_row.set_widget_name(&new_id.to_string());
                     manage_row.set_child(Some(&row_lbl));
+                    attach_pl_row_drag(&manage_row, new_id);
                     pl_ref2.append(&manage_row);
                     pl_ref2.select_row(Some(&manage_row));
 
@@ -13921,6 +13987,7 @@ fn open_media_library_window(
                     s_row.set_widget_name(&format!("pl:{}", new_id));
                     s_row.set_child(Some(&s_lbl));
                     s_row.set_visible(exp2.get());
+                    attach_pl_row_drag(&s_row, new_id);
                     sid2.append(&s_row);
                     sub2.borrow_mut().push(s_row.clone());
                     sid2.select_row(Some(&s_row));
@@ -14632,6 +14699,7 @@ fn open_media_library_window(
                     let manage_row = ListBoxRow::new();
                     manage_row.set_widget_name(&new_id.to_string());
                     manage_row.set_child(Some(&lbl));
+                    attach_pl_row_drag(&manage_row, new_id);
                     pl_ml2.append(&manage_row);
 
                     let s_lbl = Label::builder()
@@ -14644,6 +14712,7 @@ fn open_media_library_window(
                     let s_row = ListBoxRow::new();
                     s_row.set_widget_name(&format!("pl:{}", new_id));
                     s_row.set_child(Some(&s_lbl));
+                    attach_pl_row_drag(&s_row, new_id);
                     sidebar2.append(&s_row);
                     sidebar2.select_row(Some(&s_row));
 
