@@ -10217,10 +10217,16 @@ fn canonical_lib_path(src: &std::path::Path) -> String {
 
 /// Decide where `src` goes on the device and whether it's already there.
 ///
-/// If the file is already paired to this device, reuse the recorded location
-/// (so changing metadata can never duplicate it) and report present iff the
-/// device file still exists. Otherwise pick a flat `Music/<filename>` path,
-/// collision-resolved against the current device contents.
+/// Resolution order, all yielding the canonical flat `Music/<filename>` layout:
+/// 1. A recorded sync pair whose device file still exists *and* matches the
+///    current flat layout → reuse it (so editing metadata never duplicates).
+///    Stale pairs from older layouts (subfolders) or missing files are ignored
+///    and re-planned flat, so they're never perpetuated.
+/// 2. An identical file (same name, same size) already at `Music/<filename>` →
+///    treat as present, even without a pair, so a lost/mismatched pair can't
+///    spawn a `-N` duplicate of a file that's already there.
+/// 3. A *different* file occupying `Music/<filename>` → `-N` collision suffix.
+/// 4. Otherwise the free `Music/<filename>` slot.
 fn device_plan_one(
     state: &Rc<RefCell<AppState>>,
     mount: &std::path::Path,
@@ -10241,13 +10247,23 @@ fn device_plan_one(
     };
     if let Some(p) = &existing {
         let rel = std::path::PathBuf::from(&p.device_relpath);
-        let present = mount.join(&rel).exists();
-        return (rel, present);
+        // Only honour the recorded slot if it still matches the flat layout
+        // (Music/<file>, two components) and the file is actually present.
+        let flat = rel.starts_with("Music") && rel.components().count() == 2;
+        if flat && mount.join(&rel).exists() {
+            return (rel, true);
+        }
     }
-    (
-        transfer::resolve_collision(mount, &transfer::device_flat_relpath(src)),
-        false,
-    )
+
+    // No usable pair: plan flat, deduping by name+size against the device.
+    let base = transfer::device_flat_relpath(src);
+    let dest = mount.join(&base);
+    let src_len = std::fs::metadata(src).ok().map(|m| m.len());
+    match std::fs::metadata(&dest) {
+        Ok(dmeta) if Some(dmeta.len()) == src_len => (base, true), // same file already there
+        Ok(_) => (transfer::resolve_collision(mount, &base), false), // different file → suffix
+        Err(_) => (base, false),                                    // free slot
+    }
 }
 
 /// Record (or refresh) the sync pair for a just-copied file with its REAL tag
@@ -11213,6 +11229,42 @@ fn open_media_library_window(
         })
     };
 
+    // Rebuild the device playlist-filter rows ("All files" + each device
+    // .m3u/.m3u8) for a mount. Shared by the device-select handler and the
+    // playlist-send completion so a just-copied playlist appears immediately.
+    let reload_dev_playlists: Rc<dyn Fn(std::path::PathBuf)> = {
+        let filter = dev_pl_filter.clone();
+        Rc::new(move |mount: std::path::PathBuf| {
+            while let Some(r) = filter.row_at_index(0) {
+                filter.remove(&r);
+            }
+            let mk_row = |name: &str, label: &str| {
+                let lbl = Label::builder()
+                    .label(&gtk_safe(label))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(2)
+                    .margin_bottom(2)
+                    .build();
+                let row = ListBoxRow::new();
+                row.set_widget_name(name);
+                row.set_child(Some(&lbl));
+                row
+            };
+            filter.append(&mk_row("all", "All files"));
+            for pl in crate::devices::browse::device_playlist_files(&mount) {
+                let nm = pl
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                filter.append(&mk_row(&pl.to_string_lossy(), &nm));
+            }
+            filter.select_row(filter.row_at_index(0).as_ref());
+        })
+    };
+
     // Send a whole playlist (files + .m3u8) to a device, copying on a worker
     // thread with live progress shown on the device's sidebar row and detail.
     let send_playlist_run: Rc<dyn Fn(crate::devices::Device, i64, String)> = {
@@ -11221,6 +11273,7 @@ fn open_media_library_window(
         let hint = dev_hint.clone();
         let progress = dev_progress.clone();
         let reload = reload_device_store.clone();
+        let reload_pls = reload_dev_playlists.clone();
         let sel_backend = selected_dev_backend.clone();
         let win_wk = win.downgrade();
         Rc::new(move |dev: crate::devices::Device, playlist_id: i64, name: String| {
@@ -11272,6 +11325,7 @@ fn open_media_library_window(
             let hint2 = hint.clone();
             let progress2 = progress.clone();
             let reload2 = reload.clone();
+            let reload_pls2 = reload_pls.clone();
             let sel2 = sel_backend.clone();
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
@@ -11291,6 +11345,9 @@ fn open_media_library_window(
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
                     if present {
                         skipped += 1;
+                        // Ensure a pair exists for the already-present file so
+                        // sync tracks it and future dedup matches it.
+                        device_record_pair(&state2, &device_id, src, &rel);
                         entries.push(rel_str);
                         continue;
                     }
@@ -11316,6 +11373,11 @@ fn open_media_library_window(
                 set_row_label(&row_base);
                 progress2.set_visible(false);
                 reload2(dev_for_reload.clone());
+                // Refresh the playlist filter so the just-written .m3u8 shows
+                // immediately, without needing to reselect the device.
+                if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                    reload_pls2(mount.clone());
+                }
                 show_alert_parented(
                     win2.upgrade().as_ref(),
                     &format!(
@@ -11437,6 +11499,9 @@ fn open_media_library_window(
                     let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
                     if present {
                         skipped += 1;
+                        // Ensure a pair exists for the already-present file so
+                        // sync tracks it and future dedup matches it.
+                        device_record_pair(&state2, &device_id, src, &rel);
                         continue;
                     }
                     let s = src.clone();
@@ -15915,7 +15980,7 @@ fn open_media_library_window(
         let detail = dev_detail.clone();
         let warn = dev_warn.clone();
         let rebuild_overview_sel = rebuild_overview.clone();
-        let dev_pl_filter_sel = dev_pl_filter.clone();
+        let reload_dev_playlists_sel = reload_dev_playlists.clone();
         let reload_device_store_sel = reload_device_store.clone();
         let dev_named_cols_sel = dev_named_cols.clone();
         let dev_col_view_sel = dev_col_view.clone();
@@ -15982,34 +16047,7 @@ fn open_media_library_window(
                     // Rebuild the playlist filter rows ("All files" + each
                     // device .m3u/.m3u8); selecting "All files" resets the
                     // filter via the playlist-list handler.
-                    let mount = d.mount_path.clone();
-                    while let Some(r) = dev_pl_filter_sel.row_at_index(0) {
-                        dev_pl_filter_sel.remove(&r);
-                    }
-                    let mk_row = |name: &str, label: &str| {
-                        let lbl = Label::builder()
-                            .label(&gtk_safe(label))
-                            .halign(Align::Start)
-                            .xalign(0.0)
-                            .margin_start(6)
-                            .margin_end(6)
-                            .margin_top(2)
-                            .margin_bottom(2)
-                            .build();
-                        let row = ListBoxRow::new();
-                        row.set_widget_name(name);
-                        row.set_child(Some(&lbl));
-                        row
-                    };
-                    dev_pl_filter_sel.append(&mk_row("all", "All files"));
-                    for pl in crate::devices::browse::device_playlist_files(&mount) {
-                        let nm = pl
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        dev_pl_filter_sel.append(&mk_row(&pl.to_string_lossy(), &nm));
-                    }
-                    dev_pl_filter_sel.select_row(dev_pl_filter_sel.row_at_index(0).as_ref());
+                    reload_dev_playlists_sel(d.mount_path.clone());
 
                     // Read device tags off the UI thread, then fill the columns.
                     reload_device_store_sel(d.clone());
