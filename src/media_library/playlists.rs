@@ -212,18 +212,41 @@ impl MediaLibrary {
             }
 
             // 2. The line points at a file that exists on disk but isn't
-            //    catalogued under this exact path (e.g. added to the active
-            //    playlist without scanning, or the catalogue only knows a
-            //    stale, inaccessible copy under a different path). Trust the
-            //    file: keep its real, accessible path so it stays playable and
-            //    never shows as missing. Borrow metadata from a same-filename
-            //    catalogue row when one exists, but keep the verified path.
+            //    catalogued under this exact path (e.g. a copy outside any
+            //    watched folder). Read ITS OWN current tags so the displayed
+            //    metadata reflects the actual file — not a borrowed same-
+            //    filename catalogue row, which may be a different copy with
+            //    stale/different tags (e.g. an older library copy). DB-only
+            //    stats (play count, last played) are merged from a same-
+            //    filename row when one exists.
             if Path::new(&path_str).exists() {
-                let mut t = self
-                    .track_by_filename_first(&filename)
-                    .unwrap_or_else(|_| make_stub(path_str.clone()));
-                t.path = path_str.clone();
-                t.filename = filename.clone();
+                let tags = crate::tags::read_track_tags(Path::new(&path_str));
+                let same = self.track_by_filename_first(&filename).ok();
+                let mut t = make_stub(path_str.clone());
+                t.title = tags.title.or_else(|| title.clone());
+                t.artist = tags.artist.or_else(|| artist.clone());
+                t.album = tags.album;
+                t.album_artist = tags.album_artist;
+                t.track_num = tags.track_num;
+                t.genre = tags.genre;
+                t.year = tags.year;
+                t.bpm = tags.bpm;
+                t.comment = tags.comment;
+                t.disc_num = tags.disc_num;
+                t.disc_total = tags.disc_total;
+                t.composer = tags.composer;
+                t.original_artist = tags.original_artist;
+                t.copyright = tags.copyright;
+                t.url = tags.url;
+                t.encoded_by = tags.encoded_by;
+                t.lyric = tags.lyric;
+                t.artwork_path = tags.artwork_path;
+                t.bitrate = tags.bitrate;
+                t.channels = tags.channels;
+                t.length_secs = secs.or_else(|| same.as_ref().and_then(|s| s.length_secs));
+                t.play_count = same.as_ref().map(|s| s.play_count).unwrap_or(0);
+                t.last_played = same.as_ref().and_then(|s| s.last_played.clone());
+                t.sort_keys = SortKeys::from_track(&t);
                 tracks.push(t);
                 continue;
             }

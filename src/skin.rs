@@ -749,6 +749,12 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     }}").unwrap();
     writeln!(css, ".pl-dur-label {{ color: {text_dim}; font-family: monospace; }}").unwrap();
     writeln!(css, ".pl-count-label {{ color: {text}; font-size: {fs}px; }}").unwrap();
+    // Artwork "View" button inside ColumnView cells: strip the default button
+    // min-height/padding so an art row is exactly as tall as a text row, and
+    // every row in the files / device track view has a uniform height.
+    writeln!(css, "columnview cell button {{ \
+        min-height: 0; padding: 0 4px; margin: 0; \
+    }}").unwrap();
 
     // Playlist buttons
     writeln!(css, "button.pl-btn {{ \

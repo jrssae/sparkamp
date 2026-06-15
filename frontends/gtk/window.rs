@@ -11539,6 +11539,91 @@ fn open_media_library_window(
         .build();
     dev_detail.append(&dev_tracks_scroll);
 
+    // Drop target on the device track list: dropping files (from the active
+    // playlist, files view, or editor) copies them to the device currently
+    // shown in the detail view; dropping a playlist row sends the playlist.
+    // Same routing as the sidebar device row, just with a fixed target.
+    {
+        let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        dt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
+        let sel_backend_drop = selected_dev_backend.clone();
+        let current_devices_drop = current_devices.clone();
+        let state_drop = state.clone();
+        let copy_holder = copy_files_holder.clone();
+        let send_holder = send_playlist_holder.clone();
+        dt.connect_drop(move |_, value, _x, _y| {
+            // Resolve the device currently shown in the detail view.
+            let Some(backend) = sel_backend_drop.borrow().clone() else {
+                return false;
+            };
+            let Some(dev) = current_devices_drop
+                .borrow()
+                .iter()
+                .find(|d| d.backend_id == backend)
+                .cloned()
+            else {
+                return false;
+            };
+
+            // A playlist row (`pl:<id>` String) → send the whole playlist.
+            if let Ok(s) = value.get::<String>() {
+                if let Some(pid) = s.strip_prefix("pl:").and_then(|n| n.trim().parse::<i64>().ok())
+                {
+                    let plname = state_drop
+                        .borrow()
+                        .media_lib
+                        .as_ref()
+                        .and_then(|l| l.playlist_by_id(pid).ok())
+                        .map(|p| p.name)
+                        .unwrap_or_default();
+                    if let Some(send) = send_holder.borrow().as_ref() {
+                        send(dev, pid, plname);
+                        return true;
+                    }
+                    return false;
+                }
+                // Otherwise a uri/path-list String → copy those files.
+                let paths: Vec<std::path::PathBuf> = s
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(|l| {
+                        if l.starts_with("file://") {
+                            gio::File::for_uri(l)
+                                .path()
+                                .unwrap_or_else(|| std::path::PathBuf::from(l))
+                        } else {
+                            std::path::PathBuf::from(l)
+                        }
+                    })
+                    .collect();
+                if paths.is_empty() {
+                    return false;
+                }
+                if let Some(copy) = copy_holder.borrow().as_ref() {
+                    copy(dev, paths);
+                    return true;
+                }
+                return false;
+            }
+
+            // A FileList drag → copy the dragged files.
+            if let Ok(file_list) = value.get::<gdk::FileList>() {
+                let paths: Vec<std::path::PathBuf> =
+                    file_list.files().iter().filter_map(|f| f.path()).collect();
+                if paths.is_empty() {
+                    return false;
+                }
+                if let Some(copy) = copy_holder.borrow().as_ref() {
+                    copy(dev, paths);
+                    return true;
+                }
+            }
+            false
+        });
+        dev_tracks_scroll.add_controller(dt);
+    }
+
     // Selecting a playlist filters the track view to its entries and sorts by
     // playlist order; "All files" clears the filter and the order column.
     {
