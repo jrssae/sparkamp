@@ -64,6 +64,14 @@ pub(crate) fn is_external(removable: bool, connection_bus: &str) -> bool {
     removable || matches!(connection_bus, "usb" | "sdio" | "mmc")
 }
 
+/// Mounts that are never real removable media: the flatpak document portal and
+/// other per-user runtime mounts. Their tree is the user's exported files, so
+/// treating one as a device would list the whole home as "on the device".
+pub(crate) fn is_pseudo_mount(mount: &std::path::Path) -> bool {
+    let s = mount.to_string_lossy();
+    s.starts_with("/run/user/") || s.starts_with("/run/flatpak/")
+}
+
 /// Free bytes available on the filesystem mounted at `mount`, via `statvfs`.
 /// Returns 0 if the call fails (the UI shows "unknown").
 fn free_bytes_at(mount: &Path) -> u64 {
@@ -117,6 +125,13 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
         let Some(mount_path) = decode_mountpoints(&mounts).into_iter().next() else {
             continue;
         };
+        // Skip sandbox / pseudo mounts (flatpak document portal, per-user
+        // runtime dirs). These can surface a mounted-filesystem object whose
+        // tree is the user's exported home — never real removable media — and
+        // must not be browsed as a device.
+        if is_pseudo_mount(&mount_path) {
+            continue;
+        }
 
         let block = ifaces.get(BLOCK_IFACE);
         let drive_path = block.and_then(|b| prop_path(b, "Drive"));
@@ -254,5 +269,14 @@ mod tests {
         assert!(is_external(false, "mmc")); // SD card
         assert!(!is_external(false, "sata")); // internal disk
         assert!(!is_external(false, "")); // internal NVMe
+    }
+
+    #[test]
+    fn is_pseudo_mount_excludes_portal_and_runtime_mounts() {
+        assert!(is_pseudo_mount(&PathBuf::from("/run/user/1000/doc/4f1f2acb")));
+        assert!(is_pseudo_mount(&PathBuf::from("/run/flatpak/something")));
+        assert!(!is_pseudo_mount(&PathBuf::from("/run/media/josef/LINDY TECH")));
+        assert!(!is_pseudo_mount(&PathBuf::from("/media/usb")));
+        assert!(!is_pseudo_mount(&PathBuf::from("/mnt/stick")));
     }
 }

@@ -52,8 +52,19 @@ pub(crate) fn read_track_tags(path: &Path) -> TrackTags {
                 .and_then(|f| f.content().text())
                 .map(|s| sanitize(&s))
         };
-        let get_first_comment =
-            || -> Option<String> { tag.comments().next().map(|c| sanitize(&c.text)) };
+        // Prefer the empty-description COMM frame — that's the "main" user
+        // comment our editor reads and writes. Files often also carry tool /
+        // release COMM frames with a non-empty description (e.g. "PMEDIA
+        // NETWORK"); picking the first frame regardless would surface those
+        // instead of the value shown and edited in the UI.
+        let get_first_comment = || -> Option<String> {
+            let comments: Vec<&id3::frame::Comment> = tag.comments().collect();
+            comments
+                .iter()
+                .find(|c| c.description.is_empty())
+                .or_else(|| comments.first())
+                .map(|c| sanitize(&c.text))
+        };
         let disc = tag.disc();
         let (disc_num, disc_total) = if let Some(d) = disc {
             (Some(d as i64), tag.total_discs().map(|t| t as i64))

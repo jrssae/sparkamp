@@ -113,6 +113,30 @@ impl MediaLibrary {
             } else {
                 base.join(&normalised)
             };
+            // Flatpak document-portal paths (/run/user/<uid>/doc/<handle>/<rest>)
+            // are sandbox-only and ephemeral — unreadable outside the granting
+            // sandbox (e.g. from a host `cargo run`) and re-keyed each grant. If
+            // such a path doesn't resolve, retry the remainder under $HOME so the
+            // entry still points at the real file.
+            let path = if path.exists() {
+                path
+            } else if let Some(rehomed) = (|| -> Option<PathBuf> {
+                let s = path.to_str()?;
+                let rest = s.strip_prefix("/run/user/")?;
+                let mut it = rest.splitn(4, '/');
+                it.next()?; // uid
+                if it.next()? != "doc" {
+                    return None;
+                }
+                it.next()?; // doc handle
+                let rest = it.next()?;
+                let cand = dirs::home_dir()?.join(rest);
+                cand.exists().then_some(cand)
+            })() {
+                rehomed
+            } else {
+                path
+            };
             let path_str = match path.canonicalize() {
                 Ok(p) => p.to_string_lossy().into_owned(),
                 Err(_) => path.to_string_lossy().into_owned(),
