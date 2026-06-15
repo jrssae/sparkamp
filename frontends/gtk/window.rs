@@ -10259,65 +10259,6 @@ fn device_record_pair(
     }
 }
 
-/// Copy library files `srcs` onto `dev` (flat `Music/<filename>`), skipping
-/// files already paired+present, guarding against insufficient space, and
-/// recording a real-baseline sync pair for each. Returns `(copied, skipped,
-/// failed)`, or a user-facing error (read-only / unsupported device, no space).
-fn copy_paths_to_device(
-    state: &Rc<RefCell<AppState>>,
-    dev: &crate::devices::Device,
-    srcs: &[std::path::PathBuf],
-) -> Result<(usize, usize, usize), String> {
-    if dev.read_only {
-        let n = if dev.label.is_empty() { "This device" } else { &dev.label };
-        return Err(format!("{n} is read-only — can't copy files to it."));
-    }
-    if device_fs_unsupported(&dev.fs_type) {
-        return Err(format!(
-            "{} is an unsupported filesystem — can't write to this device yet.",
-            dev.fs_type
-        ));
-    }
-    let device_id = device_sync_id(dev);
-    let mount = dev.mount_path.clone();
-
-    // Free-space guard: sum sizes of files not already present.
-    let mut need = 0u64;
-    for src in srcs {
-        if src.exists() && !device_plan_one(state, &mount, &device_id, src).1 {
-            need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
-        }
-    }
-    if dev.free_bytes > 0 && need > dev.free_bytes {
-        return Err(format!(
-            "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
-            need as f64 / 1e9,
-            dev.free_bytes as f64 / 1e9
-        ));
-    }
-
-    let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
-    for src in srcs {
-        if !src.exists() {
-            failed += 1;
-            continue;
-        }
-        let (rel, present) = device_plan_one(state, &mount, &device_id, src);
-        if present {
-            skipped += 1;
-            continue;
-        }
-        match crate::devices::transfer::copy_to_device(src, &mount, &rel) {
-            Ok(_) => {
-                copied += 1;
-                device_record_pair(state, &device_id, src, &rel);
-            }
-            Err(_) => failed += 1,
-        }
-    }
-    Ok((copied, skipped, failed))
-}
-
 /// A validated plan for sending a whole playlist to a device: the files to
 /// copy (with their on-device paths), the device identity for sync pairs, and
 /// where the `.m3u8` will be written on the device.
@@ -10536,14 +10477,20 @@ fn open_media_library_window(
     let send_playlist_holder: Rc<
         RefCell<Option<Rc<dyn Fn(crate::devices::Device, i64, String)>>>,
     > = Rc::new(RefCell::new(None));
+    // Deferred handle to the file-copy runner (defined later, with the device
+    // detail widgets it needs for the progress bar). Lets the sidebar drop
+    // handler copy dragged files to a device asynchronously with progress.
+    let copy_files_holder: Rc<
+        RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>,
+    > = Rc::new(RefCell::new(None));
     {
         let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         dt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
         let sidebar_for_drop = sidebar.clone();
         let state_for_drop   = state.clone();
         let current_devices_drop = current_devices.clone();
-        let win_wk_drop = win.downgrade();
         let send_holder_drop = send_playlist_holder.clone();
+        let copy_holder_drop = copy_files_holder.clone();
         dt.connect_drop(move |_, value, _x, y| {
             // Locate the sidebar row under the drop coordinate.
             let mut hit: Option<ListBoxRow> = None;
@@ -10560,91 +10507,114 @@ fn open_media_library_window(
             let Some(row) = hit else { return false };
             let name = row.widget_name().to_string();
 
-            // A playlist row (`pl:<id>` String) dropped onto a device row →
-            // send the whole playlist (files + .m3u8) to that device.
-            if let Ok(s) = value.get::<String>() {
-                let Some(pid) = s.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok()) else {
-                    return false;
-                };
-                let Some(backend) = name.strip_prefix("dev:") else {
-                    return false;
-                };
-                let Some(dev) = current_devices_drop
-                    .borrow()
-                    .iter()
-                    .find(|d| d.backend_id == backend)
-                    .cloned()
-                else {
-                    return false;
-                };
-                let plname = state_for_drop
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|l| l.playlist_by_id(pid).ok())
-                    .map(|p| p.name)
-                    .unwrap_or_default();
-                if let Some(send) = send_holder_drop.borrow().as_ref() {
-                    send(dev, pid, plname);
-                    return true;
-                }
-                return false;
+            // Resolve the drag payload. A playlist row drags a `pl:<id>`
+            // String. Track drags ship a FileList — but when the drop target
+            // also advertises STRING (it does, for `pl:`), GTK may instead
+            // deliver the FileList as a text/uri-list String. Handle both so a
+            // drag from the active playlist works regardless of which format
+            // gets negotiated.
+            enum Payload {
+                Playlist(i64),
+                Files(Vec<std::path::PathBuf>),
             }
-
-            // Otherwise a file-list drag (tracks from a view).
-            let Ok(file_list) = value.get::<gdk::FileList>() else {
-                return false;
-            };
-            let paths: Vec<String> = file_list
-                .files()
-                .iter()
-                .filter_map(|f| f.path())
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            if paths.is_empty() {
-                return false;
-            }
-            // Drop onto a device row → copy the dragged files to that device.
-            if let Some(backend) = name.strip_prefix("dev:") {
-                let Some(dev) = current_devices_drop
-                    .borrow()
-                    .iter()
-                    .find(|d| d.backend_id == backend)
-                    .cloned()
-                else {
-                    return false;
-                };
-                let srcs: Vec<std::path::PathBuf> =
-                    paths.iter().map(std::path::PathBuf::from).collect();
-                match copy_paths_to_device(&state_for_drop, &dev, &srcs) {
-                    Ok((copied, skipped, failed)) => {
-                        let dname = if dev.label.is_empty() {
-                            "device".to_string()
-                        } else {
-                            dev.label.clone()
-                        };
-                        show_alert_parented(
-                            win_wk_drop.upgrade().as_ref(),
-                            &format!(
-                                "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
-                            ),
-                        );
+            let payload = if let Ok(s) = value.get::<String>() {
+                if let Some(pid) = s.strip_prefix("pl:").and_then(|n| n.trim().parse::<i64>().ok())
+                {
+                    Payload::Playlist(pid)
+                } else {
+                    // A newline-separated uri-list or path-list.
+                    let paths: Vec<std::path::PathBuf> = s
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                        .map(|l| {
+                            if l.starts_with("file://") {
+                                gio::File::for_uri(l)
+                                    .path()
+                                    .unwrap_or_else(|| std::path::PathBuf::from(l))
+                            } else {
+                                std::path::PathBuf::from(l)
+                            }
+                        })
+                        .collect();
+                    if paths.is_empty() {
+                        return false;
                     }
-                    Err(e) => show_alert_parented(win_wk_drop.upgrade().as_ref(), &e),
+                    Payload::Files(paths)
                 }
-                return true;
-            }
-            let Some(pid) = name.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok()) else {
-                return false;
-            };
-            if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
-                if let Err(e) = lib.append_paths_to_playlist(pid, &paths) {
-                    eprintln!("append_paths_to_playlist {pid}: {e}");
+            } else if let Ok(file_list) = value.get::<gdk::FileList>() {
+                let paths: Vec<std::path::PathBuf> =
+                    file_list.files().iter().filter_map(|f| f.path()).collect();
+                if paths.is_empty() {
                     return false;
                 }
+                Payload::Files(paths)
+            } else {
+                return false;
+            };
+
+            match payload {
+                // Playlist dropped onto a device row → send files + .m3u8.
+                Payload::Playlist(pid) => {
+                    let Some(backend) = name.strip_prefix("dev:") else {
+                        return false;
+                    };
+                    let Some(dev) = current_devices_drop
+                        .borrow()
+                        .iter()
+                        .find(|d| d.backend_id == backend)
+                        .cloned()
+                    else {
+                        return false;
+                    };
+                    let plname = state_for_drop
+                        .borrow()
+                        .media_lib
+                        .as_ref()
+                        .and_then(|l| l.playlist_by_id(pid).ok())
+                        .map(|p| p.name)
+                        .unwrap_or_default();
+                    if let Some(send) = send_holder_drop.borrow().as_ref() {
+                        send(dev, pid, plname);
+                        return true;
+                    }
+                    false
+                }
+                Payload::Files(srcs) => {
+                    // Onto a device row → copy the files (async, with progress).
+                    if let Some(backend) = name.strip_prefix("dev:") {
+                        let Some(dev) = current_devices_drop
+                            .borrow()
+                            .iter()
+                            .find(|d| d.backend_id == backend)
+                            .cloned()
+                        else {
+                            return false;
+                        };
+                        if let Some(copy) = copy_holder_drop.borrow().as_ref() {
+                            copy(dev, srcs);
+                            return true;
+                        }
+                        return false;
+                    }
+                    // Onto a saved-playlist row → append the files to it.
+                    let Some(pid) =
+                        name.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok())
+                    else {
+                        return false;
+                    };
+                    let path_strs: Vec<String> =
+                        srcs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                    if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
+                        if let Err(e) = lib.append_paths_to_playlist(pid, &path_strs) {
+                            eprintln!("append_paths_to_playlist {pid}: {e}");
+                            return false;
+                        }
+                    }
+                    notify_playlist_changed(pid);
+                    true
+                }
             }
-            notify_playlist_changed(pid);
-            true
         });
         sidebar.add_controller(dt);
     }
@@ -10838,7 +10808,8 @@ fn open_media_library_window(
         .build();
     dev_overview_title.add_css_class("ml-section-header");
     dev_overview.append(&dev_overview_title);
-    let dev_overview_list = GtkBox::new(Orientation::Vertical, 4);
+    let dev_overview_list = GtkBox::new(Orientation::Vertical, 12);
+    dev_overview_list.set_margin_top(6);
     dev_overview.append(&dev_overview_list);
     dev_page.append(&dev_overview);
 
@@ -10899,6 +10870,13 @@ fn open_media_library_window(
         .build();
     dev_hint.add_css_class("status-label");
     dev_detail.append(&dev_hint);
+
+    // Copy progress bar — shown only while files are being copied to this
+    // device, alongside the "(x/y)" text in the hint label.
+    let dev_progress = gtk4::ProgressBar::new();
+    dev_progress.set_show_text(true);
+    dev_progress.set_visible(false);
+    dev_detail.append(&dev_progress);
 
     // Playlist filter: "All files" + one row per device .m3u/.m3u8. Selecting
     // one filters the track view (below) to that playlist's tracks.
@@ -11010,6 +10988,10 @@ fn open_media_library_window(
     };
 
     let mut dev_named_cols: Vec<(String, ColumnViewColumn)> = Vec::new();
+    // Buttons that already have a click handler wired (artwork "View"), so the
+    // device factory connects each button instance only once.
+    let dev_connected_artwork: Rc<RefCell<std::collections::HashSet<glib::Object>>> =
+        Rc::new(RefCell::new(std::collections::HashSet::new()));
     {
         // Columns that are library bookkeeping, not ID3 tags — irrelevant for a
         // device, so never shown here even if visible in the files view.
@@ -11039,28 +11021,40 @@ fn open_media_library_window(
                 continue;
             }
             let id_str = c.id.to_string();
+            let is_art = c.id == "artwork_path";
             let factory = SignalListItemFactory::new();
-            factory.connect_setup(|_, obj| {
+            factory.connect_setup(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
                 if li.child().is_some() {
                     return;
                 }
-                let lbl = Label::builder()
-                    .halign(Align::Start)
-                    .xalign(0.0)
-                    .margin_start(6)
-                    .margin_end(6)
-                    .ellipsize(gtk4::pango::EllipsizeMode::End)
-                    .css_classes(["ml-col-label"])
-                    .build();
-                li.set_child(Some(&lbl));
+                // Artwork column shows a "View" button (mirrors the files view),
+                // every other column a plain label.
+                let child: gtk4::Widget = if is_art {
+                    let btn = Button::with_label("View");
+                    btn.add_css_class("link");
+                    btn.set_halign(Align::Start);
+                    btn.set_margin_start(4);
+                    btn.set_margin_end(4);
+                    btn.set_visible(false);
+                    btn.upcast::<gtk4::Widget>()
+                } else {
+                    Label::builder()
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .margin_start(6)
+                        .margin_end(6)
+                        .ellipsize(gtk4::pango::EllipsizeMode::End)
+                        .css_classes(["ml-col-label"])
+                        .build()
+                        .upcast::<gtk4::Widget>()
+                };
+                li.set_child(Some(&child));
             });
             let bind_id = id_str.clone();
+            let bind_connected = dev_connected_artwork.clone();
             factory.connect_bind(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
-                    return;
-                };
                 let Some(boxed) = li
                     .item()
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
@@ -11068,6 +11062,26 @@ fn open_media_library_window(
                     return;
                 };
                 let t = boxed.borrow::<crate::media_library::LibTrack>();
+                if is_art {
+                    let Some(btn) = li.child().and_then(|c| c.downcast::<Button>().ok()) else {
+                        return;
+                    };
+                    if let Some(ref art_path) = t.artwork_path {
+                        btn.set_visible(true);
+                        let btn_obj = btn.clone().upcast::<glib::Object>();
+                        if !bind_connected.borrow().contains(&btn_obj) {
+                            bind_connected.borrow_mut().insert(btn_obj);
+                            let art = art_path.clone();
+                            btn.connect_clicked(move |_| open_image_viewer(&art));
+                        }
+                    } else {
+                        btn.set_visible(false);
+                    }
+                    return;
+                }
+                let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                    return;
+                };
                 lbl.set_text(&gtk_safe(&ml_cell_text(&t, &bind_id)));
             });
             let col = ColumnViewColumn::new(Some(c.header), Some(factory));
@@ -11108,23 +11122,67 @@ fn open_media_library_window(
     // Reload a device's tracks into the column store (tags re-read on a worker
     // thread). Used on device select and after a sync so changed values show
     // immediately.
-    let reload_device_store: Rc<dyn Fn(std::path::PathBuf)> = {
+    let reload_device_store: Rc<dyn Fn(crate::devices::Device)> = {
         let store = dev_store.clone();
         let hint = dev_hint.clone();
-        Rc::new(move |mount: std::path::PathBuf| {
+        let state = state.clone();
+        Rc::new(move |dev: crate::devices::Device| {
             hint.set_text("Reading device…");
             store.remove_all();
             let store2 = store.clone();
             let hint2 = hint.clone();
+            let state2 = state.clone();
+            let mount = dev.mount_path.clone();
+            // Non-writing device id (don't drop a marker just to browse).
+            let device_id = if dev.id.is_empty() {
+                crate::devices::marker::read_marker(&dev.mount_path).unwrap_or_default()
+            } else {
+                dev.id.clone()
+            };
             glib::spawn_future_local(async move {
-                let tracks = gio::spawn_blocking(move || {
-                    crate::devices::browse::list_audio_files(&mount)
+                let mount_w = mount.clone();
+                let mut tracks = gio::spawn_blocking(move || {
+                    crate::devices::browse::list_audio_files(&mount_w)
                         .iter()
                         .map(|p| crate::devices::browse::read_device_track(p))
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<crate::media_library::LibTrack>>()
                 })
                 .await
                 .unwrap_or_default();
+
+                // Prefill calculated values (duration, bitrate, channels) from
+                // the paired library track for files copied from this computer,
+                // so device rows match the files view even when the on-device
+                // tags don't carry that info.
+                if !device_id.is_empty() {
+                    let s = state2.borrow();
+                    if let Some(lib) = s.media_lib.as_ref() {
+                        if let Ok(pairs) = lib.sync_pairs_for_device(&device_id) {
+                            for t in tracks.iter_mut() {
+                                let tp = std::path::Path::new(&t.path);
+                                let Some(pair) = pairs.iter().find(|p| {
+                                    mount.join(&p.device_relpath) == tp
+                                }) else {
+                                    continue;
+                                };
+                                let Ok(libt) = lib.track_by_path(&pair.library_path) else {
+                                    continue;
+                                };
+                                if t.length_secs.is_none() {
+                                    t.length_secs = libt.length_secs;
+                                }
+                                if t.bitrate.is_none() {
+                                    t.bitrate = libt.bitrate;
+                                }
+                                if t.channels.is_none() {
+                                    t.channels = libt.channels;
+                                }
+                                t.sort_keys = crate::media_library::SortKeys::from_track(t);
+                            }
+                        }
+                    }
+                }
+
                 store2.remove_all();
                 for t in &tracks {
                     store2.append(&glib::BoxedAnyObject::new(t.clone()));
@@ -11144,6 +11202,7 @@ fn open_media_library_window(
         let state = state.clone();
         let sidebar = sidebar.clone();
         let hint = dev_hint.clone();
+        let progress = dev_progress.clone();
         let reload = reload_device_store.clone();
         let sel_backend = selected_dev_backend.clone();
         let win_wk = win.downgrade();
@@ -11191,8 +11250,10 @@ fn open_media_library_window(
             let device_id = plan.device_id.clone();
             let m3u_path = plan.m3u_path.clone();
             let mount = dev.mount_path.clone();
+            let dev_for_reload = dev.clone();
             let state2 = state.clone();
             let hint2 = hint.clone();
+            let progress2 = progress.clone();
             let reload2 = reload.clone();
             let sel2 = sel_backend.clone();
             let win2 = win_wk.clone();
@@ -11204,6 +11265,9 @@ fn open_media_library_window(
                     set_row_label(&format!("{row_base} — {prog}"));
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
                         hint2.set_text(&format!("Copying {prog}…"));
+                        progress2.set_visible(true);
+                        progress2.set_text(Some(&prog));
+                        progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                     }
                     // Plan on the main thread (DB), copy on a worker thread.
                     let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
@@ -11233,7 +11297,8 @@ fn open_media_library_window(
                 let mp = m3u_path.clone();
                 let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
                 set_row_label(&row_base);
-                reload2(mount.clone());
+                progress2.set_visible(false);
+                reload2(dev_for_reload.clone());
                 show_alert_parented(
                     win2.upgrade().as_ref(),
                     &format!(
@@ -11245,6 +11310,144 @@ fn open_media_library_window(
         })
     };
     *send_playlist_holder.borrow_mut() = Some(send_playlist_run.clone());
+
+    // Copy loose files (drag-drop from a view) onto a device on a worker
+    // thread, with the same sidebar "(x/y)" label and detail progress bar the
+    // playlist send uses. No .m3u8 is written — these are just files.
+    let copy_files_run: Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)> = {
+        let state = state.clone();
+        let sidebar = sidebar.clone();
+        let hint = dev_hint.clone();
+        let progress = dev_progress.clone();
+        let reload = reload_device_store.clone();
+        let sel_backend = selected_dev_backend.clone();
+        let win_wk = win.downgrade();
+        Rc::new(move |dev: crate::devices::Device, srcs: Vec<std::path::PathBuf>| {
+            if dev.read_only {
+                let n = if dev.label.is_empty() { "This device" } else { &dev.label };
+                show_alert_parented(
+                    win_wk.upgrade().as_ref(),
+                    &format!("{n} is read-only — can't copy files to it."),
+                );
+                return;
+            }
+            if device_fs_unsupported(&dev.fs_type) {
+                show_alert_parented(
+                    win_wk.upgrade().as_ref(),
+                    &format!(
+                        "{} is an unsupported filesystem — can't write to this device yet.",
+                        dev.fs_type
+                    ),
+                );
+                return;
+            }
+            let device_id = device_sync_id(&dev);
+            let mount = dev.mount_path.clone();
+            let srcs: Vec<std::path::PathBuf> =
+                srcs.into_iter().filter(|p| p.exists()).collect();
+            if srcs.is_empty() {
+                return;
+            }
+            // Free-space guard: sum sizes of files not already present.
+            let mut need = 0u64;
+            for src in &srcs {
+                if !device_plan_one(&state, &mount, &device_id, src).1 {
+                    need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+                }
+            }
+            if dev.free_bytes > 0 && need > dev.free_bytes {
+                show_alert_parented(
+                    win_wk.upgrade().as_ref(),
+                    &format!(
+                        "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                        need as f64 / 1e9,
+                        dev.free_bytes as f64 / 1e9
+                    ),
+                );
+                return;
+            }
+
+            let backend = dev.backend_id.clone();
+            let dname = if dev.label.is_empty() {
+                "device".to_string()
+            } else {
+                dev.label.clone()
+            };
+            let row_base = format!(
+                "{}{}",
+                device_glyph_prefix(dev.read_only, &dev.fs_type),
+                if dev.label.is_empty() {
+                    "Untitled device".to_string()
+                } else {
+                    dev.label.clone()
+                }
+            );
+            let set_row_label = {
+                let sidebar = sidebar.clone();
+                let row_name = format!("dev:{backend}");
+                move |text: &str| {
+                    if let Some(row) = find_row_by_name(&sidebar, &row_name) {
+                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok()) {
+                            if let Some(lbl) =
+                                bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                            {
+                                lbl.set_text(text);
+                            }
+                        }
+                    }
+                }
+            };
+
+            let total = srcs.len();
+            let dev_for_reload = dev.clone();
+            let state2 = state.clone();
+            let hint2 = hint.clone();
+            let progress2 = progress.clone();
+            let reload2 = reload.clone();
+            let sel2 = sel_backend.clone();
+            let win2 = win_wk.clone();
+            glib::spawn_future_local(async move {
+                let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+                for (i, src) in srcs.iter().enumerate() {
+                    let prog = format!("{}/{}", i + 1, total);
+                    set_row_label(&format!("{row_base} — {prog}"));
+                    if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                        hint2.set_text(&format!("Copying {prog}…"));
+                        progress2.set_visible(true);
+                        progress2.set_text(Some(&prog));
+                        progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
+                    }
+                    let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
+                    if present {
+                        skipped += 1;
+                        continue;
+                    }
+                    let s = src.clone();
+                    let r = rel.clone();
+                    let m = mount.clone();
+                    let outcome = gio::spawn_blocking(move || {
+                        crate::devices::transfer::copy_to_device(&s, &m, &r)
+                    })
+                    .await;
+                    match outcome {
+                        Ok(Ok(_)) => {
+                            copied += 1;
+                            device_record_pair(&state2, &device_id, src, &rel);
+                        }
+                        _ => failed += 1,
+                    }
+                }
+                set_row_label(&row_base);
+                progress2.set_visible(false);
+                reload2(dev_for_reload.clone());
+                show_alert_parented(
+                    win2.upgrade().as_ref(),
+                    &format!("Copied {copied}, skipped {skipped}, failed {failed} to {dname}."),
+                );
+            });
+        })
+    };
+    *copy_files_holder.borrow_mut() = Some(copy_files_run);
 
     let dev_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
@@ -15413,11 +15616,22 @@ fn open_media_library_window(
     // A 2 s poll (rather than D-Bus signal wiring) keeps this simple while
     // still updating in place — devices appear/disappear and free space
     // refreshes without reopening the window.
+    // Deferred handles to the eject / sync runners (defined further down, once
+    // the refresh + reload closures they need exist). The overview rows' Sync
+    // and Eject buttons call through these.
+    let eject_run_holder: Rc<RefCell<Option<Rc<dyn Fn(String)>>>> =
+        Rc::new(RefCell::new(None));
+    let sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device)>>>> =
+        Rc::new(RefCell::new(None));
+
     // Rebuild the device overview list (shown when the Devices header is
-    // selected) from the latest detection results.
+    // selected) from the latest detection results. Each device is its own row
+    // with Sync and Eject buttons on the right.
     let rebuild_overview: Rc<dyn Fn()> = {
         let list = dev_overview_list.clone();
         let current = current_devices.clone();
+        let eject_holder = eject_run_holder.clone();
+        let sync_holder = sync_run_holder.clone();
         Rc::new(move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
@@ -15447,15 +15661,50 @@ fn open_media_library_window(
                     d.free_bytes as f64 / 1e9,
                     d.total_bytes as f64 / 1e9,
                 );
+                let row = GtkBox::new(Orientation::Horizontal, 8);
                 let l = Label::builder()
                     .label(&gtk_safe(&text))
                     .halign(Align::Start)
                     .xalign(0.0)
+                    .hexpand(true)
+                    .wrap(true)
                     .build();
                 if device_fs_unsupported(&d.fs_type) {
                     l.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
                 }
-                list.append(&l);
+                row.append(&l);
+
+                let sync_btn = Button::with_label("Sync");
+                sync_btn.add_css_class("pl-btn");
+                sync_btn.set_valign(Align::Center);
+                {
+                    let holder = sync_holder.clone();
+                    let dev = d.clone();
+                    sync_btn.connect_clicked(move |_| {
+                        if let Some(run) = holder.borrow().as_ref() {
+                            run(dev.clone());
+                        }
+                    });
+                }
+                row.append(&sync_btn);
+
+                let eject_btn = Button::with_label("Eject");
+                eject_btn.add_css_class("pl-btn");
+                eject_btn.set_valign(Align::Center);
+                eject_btn.set_sensitive(d.ejectable);
+                {
+                    let holder = eject_holder.clone();
+                    let backend = d.backend_id.clone();
+                    eject_btn.connect_clicked(move |btn| {
+                        btn.set_sensitive(false);
+                        if let Some(run) = holder.borrow().as_ref() {
+                            run(backend.clone());
+                        }
+                    });
+                }
+                row.append(&eject_btn);
+
+                list.append(&row);
             }
         })
     };
@@ -15746,22 +15995,19 @@ fn open_media_library_window(
                     dev_pl_filter_sel.select_row(dev_pl_filter_sel.row_at_index(0).as_ref());
 
                     // Read device tags off the UI thread, then fill the columns.
-                    reload_device_store_sel(mount);
+                    reload_device_store_sel(d.clone());
                 }
             }
         });
     }
 
-    // Eject: unmount + power off the selected device, then refresh the list.
-    {
-        let sel_backend = selected_dev_backend.clone();
+    // Eject: unmount + power off a device, then refresh the list. Shared by
+    // the detail Eject button and each overview row's Eject button.
+    let eject_run: Rc<dyn Fn(String)> = {
         let refresh = refresh_devices.clone();
         let sidebar_ej = sidebar.clone();
         let win_wk_ej = win.downgrade();
-        dev_eject.connect_clicked(move |btn| {
-            let Some(backend) = sel_backend.borrow().clone() else { return };
-            btn.set_sensitive(false);
-            let btn = btn.clone();
+        Rc::new(move |backend: String| {
             let refresh = refresh.clone();
             let sidebar_ej = sidebar_ej.clone();
             let win_wk = win_wk_ej.clone();
@@ -15773,15 +16019,13 @@ fn open_media_library_window(
                 match res {
                     Ok(Ok(())) => {
                         refresh();
-                        // The detail view now shows a device that's gone —
+                        // The detail view may now show a device that's gone —
                         // return to the Devices overview.
                         if let Some(r) = find_row_by_name(&sidebar_ej, "devices") {
                             sidebar_ej.select_row(Some(&r));
                         }
                     }
                     Ok(Err(e)) => {
-                        // Re-enable so the user can retry, and surface why.
-                        btn.set_sensitive(true);
                         let dialog = gtk4::AlertDialog::builder()
                             .message("Couldn't eject")
                             .detail(format!(
@@ -15794,7 +16038,6 @@ fn open_media_library_window(
                         dialog.show(win_wk.upgrade().as_ref());
                     }
                     Err(_) => {
-                        btn.set_sensitive(true);
                         show_alert_parented(
                             win_wk.upgrade().as_ref(),
                             "Eject failed unexpectedly.",
@@ -15802,26 +16045,27 @@ fn open_media_library_window(
                     }
                 }
             });
+        })
+    };
+    *eject_run_holder.borrow_mut() = Some(eject_run.clone());
+    {
+        let sel_backend = selected_dev_backend.clone();
+        let eject_run = eject_run.clone();
+        dev_eject.connect_clicked(move |btn| {
+            let Some(backend) = sel_backend.borrow().clone() else { return };
+            btn.set_sensitive(false);
+            eject_run(backend);
         });
     }
 
     // Sync: compare tags on each side of every pair, confirm en masse, apply.
-    {
+    // Shared by the detail Sync button and each overview row's Sync button.
+    let sync_run: Rc<dyn Fn(crate::devices::Device)> = {
         let state_sync = state.clone();
-        let devices_sync = current_devices.clone();
-        let sel_backend = selected_dev_backend.clone();
         let win_wk = win.downgrade();
         let reload_sync = reload_device_store.clone();
-        dev_sync.connect_clicked(move |_| {
+        Rc::new(move |dev: crate::devices::Device| {
             use crate::devices::sync::SyncAction;
-            let Some(backend) = sel_backend.borrow().clone() else { return };
-            let dev = devices_sync
-                .borrow()
-                .iter()
-                .find(|d| d.backend_id == backend)
-                .cloned();
-            let Some(dev) = dev else { return };
-
             let plan = device_sync_plan(&state_sync, &dev);
             let to_lib = plan
                 .iter()
@@ -15871,7 +16115,7 @@ fn open_media_library_window(
                     }
                     let (applied, failed) = apply_device_sync(&state2, &dev2, &plan2);
                     // Re-read the device so the updated tag values show now.
-                    reload2(dev2.mount_path.clone());
+                    reload2(dev2.clone());
                     let tail = if failed > 0 {
                         format!(", {failed} failed")
                     } else {
@@ -15886,6 +16130,22 @@ fn open_media_library_window(
                     );
                 },
             );
+        })
+    };
+    *sync_run_holder.borrow_mut() = Some(sync_run.clone());
+    {
+        let devices_sync = current_devices.clone();
+        let sel_backend = selected_dev_backend.clone();
+        let sync_run = sync_run.clone();
+        dev_sync.connect_clicked(move |_| {
+            let Some(backend) = sel_backend.borrow().clone() else { return };
+            let dev = devices_sync
+                .borrow()
+                .iter()
+                .find(|d| d.backend_id == backend)
+                .cloned();
+            let Some(dev) = dev else { return };
+            sync_run(dev);
         });
     }
 

@@ -163,6 +163,14 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
             backend_id: path.as_str().to_string(),
         });
     }
+    // Stable, name-first ordering so the sidebar and overview list devices
+    // alphabetically rather than in udisks2's arbitrary enumeration order.
+    devices.sort_by(|a, b| {
+        a.label
+            .to_lowercase()
+            .cmp(&b.label.to_lowercase())
+            .then_with(|| a.mount_path.cmp(&b.mount_path))
+    });
     Ok(devices)
 }
 

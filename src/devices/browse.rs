@@ -38,7 +38,12 @@ pub fn read_device_track(path: &Path) -> crate::media_library::LibTrack {
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase());
-    let length_secs = crate::duration_probe::probe_duration(path).map(|d| d.as_secs_f64());
+    // Header probe first (fast); fall back to the GStreamer discoverer for
+    // CBR MP3 and anything Symphonia can't measure, so duration is populated
+    // for device files just like the files view.
+    let length_secs = crate::duration_probe::probe_duration(path)
+        .or_else(|| crate::duration_probe::discover_duration(path))
+        .map(|d| d.as_secs_f64());
     let play_count = crate::devices::sync::read_tag_state(path).play_count as i64;
     let mut t = LibTrack {
         id: 0,
