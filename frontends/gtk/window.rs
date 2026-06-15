@@ -2626,6 +2626,7 @@ pub fn build(
         press.set_button(gtk4::gdk::BUTTON_PRIMARY);
         let pl_view_p = pl_view.clone();
         let snap = pl_drag_selection.clone();
+        let active_press = pl_drag_active.clone();
         press.connect_pressed(move |_, _n, x, y| {
             #[allow(deprecated)]
             let row_under = pl_view_p.path_at_pos(x as i32, y as i32)
@@ -2651,6 +2652,11 @@ pub fn build(
                         }
                     }
                 });
+            } else if !active_press.get() {
+                // Click landed outside the multi-selection (and no drag is in
+                // progress) → forget the snapshot, so a later click on a row
+                // that used to be selected doesn't resurrect the whole group.
+                snap.borrow_mut().clear();
             }
         });
         pl_view.add_controller(press);
@@ -10198,6 +10204,17 @@ fn device_sync_id(dev: &crate::devices::Device) -> String {
     }
 }
 
+/// Canonical identity for a library file, used as the sync-pair key. Every
+/// copy path (drag-drop, playlist send, sync) resolves the same file to the
+/// same string so dedup works regardless of which view supplied the path.
+/// Falls back to the raw path when the file can't be canonicalized.
+fn canonical_lib_path(src: &std::path::Path) -> String {
+    src.canonicalize()
+        .unwrap_or_else(|_| src.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Decide where `src` goes on the device and whether it's already there.
 ///
 /// If the file is already paired to this device, reuse the recorded location
@@ -10211,7 +10228,7 @@ fn device_plan_one(
     src: &std::path::Path,
 ) -> (std::path::PathBuf, bool) {
     use crate::devices::transfer;
-    let lib_path = src.to_string_lossy().into_owned();
+    let lib_path = canonical_lib_path(src);
     let existing = if device_id.is_empty() {
         None
     } else {
@@ -10250,7 +10267,7 @@ fn device_record_pair(
         let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
             device_id: device_id.to_string(),
             device_relpath: relpath.to_string_lossy().into_owned(),
-            library_path: src.to_string_lossy().into_owned(),
+            library_path: canonical_lib_path(src),
             baseline_tag_hash: sync::tag_hash(&st),
             baseline_rating: st.rating as i64,
             baseline_playcount: st.play_count as i64,
