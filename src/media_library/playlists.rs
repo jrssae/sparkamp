@@ -9,6 +9,35 @@ use crate::timeutil;
 
 use super::{AddFolderResult, LibPlaylist, LibTrack, MediaLibrary, SortKeys};
 
+/// Translate a flatpak Document-Portal path back to its real on-disk location.
+///
+/// Portal paths (`/run/user/<uid>/doc/<handle>/<rest>`) are sandbox-only and
+/// re-keyed on every grant, so persisting them into a playlist produces a file
+/// that can't be reopened later or by any other program. The `<rest>` after the
+/// handle is the real path relative to the granted root; for the common
+/// home-rooted grant that's `$HOME/<rest>`. The rewrite is applied only when the
+/// resolved file actually exists, so a non-portal or unresolvable path is
+/// returned unchanged and a valid path is never turned into a bogus one.
+///
+/// Used on both the write side (so saved playlists store durable paths) and the
+/// read side (so already-saved portal paths still resolve).
+pub(super) fn dehydrate_portal_path(path: &str) -> String {
+    (|| -> Option<String> {
+        let rest = path.strip_prefix("/run/user/")?;
+        let mut it = rest.splitn(4, '/');
+        it.next()?; // uid
+        if it.next()? != "doc" {
+            return None;
+        }
+        it.next()?; // doc handle
+        let rest = it.next()?;
+        let cand = dirs::home_dir()?.join(rest);
+        cand.exists()
+            .then(|| cand.to_string_lossy().into_owned())
+    })()
+    .unwrap_or_else(|| path.to_string())
+}
+
 // Bin build on macOS gates out GTK, leaving these FFI/GTK-reachable
 // methods unused there; mirrors the allow on the original impl block.
 #[allow(dead_code)]
@@ -113,29 +142,13 @@ impl MediaLibrary {
             } else {
                 base.join(&normalised)
             };
-            // Flatpak document-portal paths (/run/user/<uid>/doc/<handle>/<rest>)
-            // are sandbox-only and ephemeral — unreadable outside the granting
-            // sandbox (e.g. from a host `cargo run`) and re-keyed each grant. If
-            // such a path doesn't resolve, retry the remainder under $HOME so the
-            // entry still points at the real file.
+            // Rescue already-saved flatpak document-portal paths: they're
+            // sandbox-only and re-keyed each grant, so an unresolved one is
+            // retried at its real location (see dehydrate_portal_path).
             let path = if path.exists() {
                 path
-            } else if let Some(rehomed) = (|| -> Option<PathBuf> {
-                let s = path.to_str()?;
-                let rest = s.strip_prefix("/run/user/")?;
-                let mut it = rest.splitn(4, '/');
-                it.next()?; // uid
-                if it.next()? != "doc" {
-                    return None;
-                }
-                it.next()?; // doc handle
-                let rest = it.next()?;
-                let cand = dirs::home_dir()?.join(rest);
-                cand.exists().then_some(cand)
-            })() {
-                rehomed
             } else {
-                path
+                PathBuf::from(dehydrate_portal_path(&path.to_string_lossy()))
             };
             let path_str = match path.canonicalize() {
                 Ok(p) => p.to_string_lossy().into_owned(),
@@ -308,10 +321,12 @@ impl MediaLibrary {
     ) -> String {
         let mut out = String::from("#EXTM3U\n");
         for (path, dur, artist, title) in entries {
-            let fallback = Path::new(path)
+            // Store a durable path, never a sandbox-only flatpak portal path.
+            let path = dehydrate_portal_path(path);
+            let fallback = Path::new(&path)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or(path);
+                .unwrap_or(&path);
             out.push_str(&Self::extinf_line(
                 *dur,
                 artist.as_deref(),
@@ -319,7 +334,7 @@ impl MediaLibrary {
                 fallback,
             ));
             out.push('\n');
-            out.push_str(path);
+            out.push_str(&path);
             out.push('\n');
         }
         out
@@ -603,4 +618,47 @@ impl MediaLibrary {
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::dehydrate_portal_path;
+
+    #[test]
+    fn leaves_non_portal_paths_unchanged() {
+        assert_eq!(
+            dehydrate_portal_path("/home/josef/Music/a.mp3"),
+            "/home/josef/Music/a.mp3"
+        );
+        assert_eq!(dehydrate_portal_path("relative/b.flac"), "relative/b.flac");
+    }
+
+    #[test]
+    fn leaves_unresolvable_portal_paths_unchanged() {
+        // Rehomes to $HOME/__sparkamp_nonexistent__/zzz.mp3, which doesn't
+        // exist, so the original portal path is returned untouched.
+        let p = "/run/user/1000/doc/deadbeef/__sparkamp_nonexistent__/zzz.mp3";
+        assert_eq!(dehydrate_portal_path(p), p);
+    }
+
+    #[test]
+    fn rewrites_portal_path_to_home_when_target_exists() {
+        // Create a real file under $HOME and verify a portal path pointing at
+        // its relative location is rewritten to the real path.
+        let Some(home) = dirs::home_dir() else { return };
+        let rel = "__sparkamp_portal_test__/probe.mp3";
+        let real = home.join(rel);
+        if std::fs::create_dir_all(real.parent().unwrap()).is_err() {
+            return; // unwritable home in CI — skip
+        }
+        if std::fs::write(&real, b"x").is_err() {
+            return;
+        }
+        let portal = format!("/run/user/1000/doc/abc123/{rel}");
+        assert_eq!(
+            dehydrate_portal_path(&portal),
+            real.to_string_lossy().into_owned()
+        );
+        let _ = std::fs::remove_dir_all(home.join("__sparkamp_portal_test__"));
+    }
 }
