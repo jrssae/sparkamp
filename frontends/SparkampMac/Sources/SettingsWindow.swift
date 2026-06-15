@@ -279,9 +279,26 @@ private struct PlaybackPane: View {
 
     @State private var autoplayOnAdd: Bool = false
     @State private var addBehavior: Int    = 0    // 0=Append, 1=Replace
+    @State private var playlistFormat: Int = 0    // 0=m3u8, 1=m3u
 
     var body: some View {
         Form {
+            Section("Playlists") {
+                Picker("Playlist format", selection: $playlistFormat) {
+                    Text("m3u8 (UTF-8)").tag(0)
+                    Text("m3u").tag(1)
+                }
+                .onChange(of: playlistFormat) { _, newValue in
+                    guard let ctx = model.ctx else { return }
+                    sparkamp_set_playlist_format(ctx, Int32(newValue))
+                    sparkamp_save_config(ctx)
+                }
+                Text("New playlists, Save As, and device exports use this format. Existing playlists keep their own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("On Add") {
                 Toggle("Autoplay when files are added", isOn: $autoplayOnAdd)
                     .onChange(of: autoplayOnAdd) { _, newValue in
@@ -305,8 +322,9 @@ private struct PlaybackPane: View {
         .formStyle(.grouped)
         .onAppear {
             guard let ctx = model.ctx else { return }
-            autoplayOnAdd = sparkamp_get_autoplay_on_add(ctx)
-            addBehavior   = Int(sparkamp_get_playlist_add_behavior(ctx))
+            autoplayOnAdd  = sparkamp_get_autoplay_on_add(ctx)
+            addBehavior    = Int(sparkamp_get_playlist_add_behavior(ctx))
+            playlistFormat = Int(sparkamp_get_playlist_format(ctx))
         }
     }
 }

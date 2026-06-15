@@ -1238,19 +1238,26 @@ fn run_playlist_save_dialog<W, F>(
     W: gtk4::prelude::IsA<gtk4::Window>,
     F: 'static + FnOnce(std::path::PathBuf, gtk4::Window),
 {
+    let ext = state
+        .borrow()
+        .config
+        .media_library
+        .playlist_format
+        .extension();
     let dialog = gtk4::FileDialog::new();
     dialog.set_title("Save Playlist As");
-    dialog.set_initial_name(Some(&format!("{initial_stem}.m3u8")));
+    dialog.set_initial_name(Some(&format!("{initial_stem}.{ext}")));
     let initial_folder = default_playlist_save_dir(&state);
     if initial_folder.exists() {
         dialog.set_initial_folder(Some(&gio::File::for_path(&initial_folder)));
     }
     let win_for_cb: gtk4::Window = win.clone().upcast();
+    let ext = ext.to_string();
     dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
         let Ok(file) = res else { return };
         let Some(mut path) = file.path() else { return };
         if path.extension().is_none() {
-            path.set_extension("m3u8");
+            path.set_extension(&ext);
         }
         on_accept(path, win_for_cb);
     });
@@ -7592,8 +7599,9 @@ fn open_settings_window(
         notebook.append_page(&grid, Some(&tab_lbl));
     }
 
-    // ── Tab 3: Filetypes (plugin search paths) ────────────────────────────
+    // ── Tab 3: Filetypes ──────────────────────────────────────────────────
     {
+        use crate::config::PlaylistFormat;
         let grid = Grid::new();
         grid.set_row_spacing(12);
         grid.set_column_spacing(16);
@@ -7602,39 +7610,37 @@ fn open_settings_window(
         grid.set_margin_start(16);
         grid.set_margin_end(16);
 
-        // Row 0: Visualizer plugin directory
-        let lbl_viz = Label::new(Some("Visualizer plugin dir"));
-        lbl_viz.set_halign(Align::Start);
-        grid.attach(&lbl_viz, 0, 0, 1, 1);
+        // Preferred playlist format for new saves.
+        let lbl_fmt = Label::new(Some("Playlist format"));
+        lbl_fmt.set_halign(Align::Start);
+        grid.attach(&lbl_fmt, 0, 0, 1, 1);
 
-        let entry_viz = Entry::new();
-        entry_viz.set_text(&state.borrow().config.plugins.visualizer_dir);
-        entry_viz.set_width_chars(32);
-        entry_viz.set_placeholder_text(Some("(leave blank to skip)"));
+        let dd_fmt = DropDown::from_strings(&["m3u8", "m3u"]);
+        dd_fmt.set_selected(match state.borrow().config.media_library.playlist_format {
+            PlaylistFormat::M3u8 => 0,
+            PlaylistFormat::M3u => 1,
+        });
         {
             let state_rc = state.clone();
-            entry_viz.connect_changed(move |e| {
-                state_rc.borrow_mut().config.plugins.visualizer_dir = e.text().to_string();
+            dd_fmt.connect_selected_notify(move |d| {
+                let fmt = if d.selected() == 1 {
+                    PlaylistFormat::M3u
+                } else {
+                    PlaylistFormat::M3u8
+                };
+                state_rc.borrow_mut().config.media_library.playlist_format = fmt;
             });
         }
-        grid.attach(&entry_viz, 1, 0, 1, 1);
+        grid.attach(&dd_fmt, 1, 0, 1, 1);
 
-        // Row 1: Filetype plugin directory
-        let lbl_ft = Label::new(Some("Filetype plugin dir"));
-        lbl_ft.set_halign(Align::Start);
-        grid.attach(&lbl_ft, 0, 1, 1, 1);
-
-        let entry_ft = Entry::new();
-        entry_ft.set_text(&state.borrow().config.plugins.filetype_dir);
-        entry_ft.set_width_chars(32);
-        entry_ft.set_placeholder_text(Some("(leave blank to skip)"));
-        {
-            let state_rc = state.clone();
-            entry_ft.connect_changed(move |e| {
-                state_rc.borrow_mut().config.plugins.filetype_dir = e.text().to_string();
-            });
-        }
-        grid.attach(&entry_ft, 1, 1, 1, 1);
+        let hint = Label::new(Some(
+            "New playlists, Save As, and device exports use this format. \
+             Existing playlists keep their own.",
+        ));
+        hint.set_halign(Align::Start);
+        hint.set_wrap(true);
+        hint.add_css_class("status-label");
+        grid.attach(&hint, 0, 1, 2, 1);
 
         let tab_lbl = Label::new(Some("Filetypes"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -10379,7 +10385,13 @@ fn prepare_playlist_send(
         .collect();
     let safe = safe.trim().trim_matches('.').trim();
     let safe = if safe.is_empty() { "Playlist" } else { safe };
-    let m3u_path = dev.mount_path.join(format!("{safe}.m3u8"));
+    let ext = state
+        .borrow()
+        .config
+        .media_library
+        .playlist_format
+        .extension();
+    let m3u_path = dev.mount_path.join(format!("{safe}.{ext}"));
     Ok(PlaylistSendPlan {
         srcs,
         device_id,

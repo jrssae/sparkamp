@@ -650,9 +650,10 @@ pub unsafe extern "C" fn sparkamp_ml_create_playlist(
 ) -> i64 {
     if ctx.is_null() || name.is_null() { return -1; }
     let ctx = &mut *ctx;
+    let ext = ctx.config.media_library.playlist_format.extension();
     let Some(ml) = &ctx.media_library else { return -1 };
     let Ok(name_str) = CStr::from_ptr(name).to_str() else { return -1 };
-    match ml.create_playlist(name_str) {
+    match ml.create_playlist(name_str, ext) {
         Ok(id) => id,
         Err(e) => { eprintln!("[sparkamp] create_playlist: {e}"); -1 }
     }
@@ -815,6 +816,7 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist_as(
 ) -> i64 {
     if ctx.is_null() || new_name.is_null() || count < 0 { return -1; }
     let ctx = &mut *ctx;
+    let ext = ctx.config.media_library.playlist_format.extension();
     let Some(ml) = &ctx.media_library else { return -1 };
     let Ok(name_str) = CStr::from_ptr(new_name).to_str() else { return -1 };
     let track_paths: Vec<String> = if paths.is_null() || count == 0 {
@@ -825,7 +827,7 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist_as(
             .filter_map(|&p| if p.is_null() { None } else { CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned()) })
             .collect()
     };
-    match ml.save_playlist_tracks_as(name_str, &track_paths) {
+    match ml.save_playlist_tracks_as(name_str, &track_paths, ext) {
         Ok(id) => id,
         Err(e) => { eprintln!("[sparkamp] save_playlist_as: {e}"); -1 }
     }

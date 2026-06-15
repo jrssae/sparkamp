@@ -311,7 +311,7 @@ impl MediaLibrary {
     /// New playlists are written as `.m3u8` (UTF-8 explicit) rather than
     /// `.m3u`; the loader still reads both extensions so existing files
     /// remain accessible.
-    pub fn create_playlist(&self, name: &str) -> Result<i64> {
+    pub fn create_playlist(&self, name: &str, ext: &str) -> Result<i64> {
         let dir = Self::playlists_dir();
         let safe = name
             .chars()
@@ -320,10 +320,10 @@ impl MediaLibrary {
         let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
 
         // Avoid clobbering an existing file.
-        let mut path = dir.join(format!("{safe}.m3u8"));
+        let mut path = dir.join(format!("{safe}.{ext}"));
         let mut counter = 1u32;
         while path.exists() {
-            path = dir.join(format!("{safe}_{counter}.m3u8"));
+            path = dir.join(format!("{safe}_{counter}.{ext}"));
             counter += 1;
         }
         std::fs::write(&path, b"#EXTM3U\n")
@@ -479,8 +479,13 @@ impl MediaLibrary {
     /// duration / artist / title are written as an `#EXTINF` line.  Stubs
     /// (paths not in the library) get a `-1` duration EXTINF using the
     /// filename as a display fallback.
-    pub fn save_playlist_tracks_as(&self, new_name: &str, track_paths: &[String]) -> Result<i64> {
-        let id = self.create_playlist(new_name)?;
+    pub fn save_playlist_tracks_as(
+        &self,
+        new_name: &str,
+        track_paths: &[String],
+        ext: &str,
+    ) -> Result<i64> {
+        let id = self.create_playlist(new_name, ext)?;
         let pl = self.playlist_by_id(id)?;
         let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> = track_paths
             .iter()

@@ -263,6 +263,9 @@ const char  *sparkamp_audio_extension(int idx);
 // ---------------------------------------------------------------------------
 int     sparkamp_get_playlist_add_behavior(SparkampCtx *ctx);
 void    sparkamp_set_playlist_add_behavior(SparkampCtx *ctx, int value);
+// Preferred new-playlist format: 0 = m3u8 (default), 1 = m3u.
+int     sparkamp_get_playlist_format(SparkampCtx *ctx);
+void    sparkamp_set_playlist_format(SparkampCtx *ctx, int value);
 bool    sparkamp_get_autoplay_on_add(SparkampCtx *ctx);
 void    sparkamp_set_autoplay_on_add(SparkampCtx *ctx, bool value);
 int     sparkamp_get_ml_rescan_interval(SparkampCtx *ctx);

@@ -77,6 +77,31 @@ pub unsafe extern "C" fn sparkamp_set_playlist_add_behavior(
     };
 }
 
+/// Preferred new-playlist format: 0 = m3u8 (default), 1 = m3u.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_playlist_format(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    match ctx.config.media_library.playlist_format {
+        crate::config::PlaylistFormat::M3u8 => 0,
+        crate::config::PlaylistFormat::M3u => 1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_playlist_format(ctx: *mut SparkampCtx, value: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.playlist_format = match value {
+        1 => crate::config::PlaylistFormat::M3u,
+        _ => crate::config::PlaylistFormat::M3u8,
+    };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_autoplay_on_add(ctx: *const SparkampCtx) -> bool {
     if ctx.is_null() {

@@ -524,6 +524,27 @@ impl Default for EqConfig {
 // MediaLibraryConfig
 // ---------------------------------------------------------------------------
 
+/// Preferred on-disk format for newly-saved playlists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaylistFormat {
+    /// `.m3u` — broadest device compatibility.
+    M3u,
+    /// `.m3u8` — UTF-8 explicit. Default.
+    #[default]
+    M3u8,
+}
+
+impl PlaylistFormat {
+    /// File extension (without the leading dot).
+    pub fn extension(self) -> &'static str {
+        match self {
+            PlaylistFormat::M3u => "m3u",
+            PlaylistFormat::M3u8 => "m3u8",
+        }
+    }
+}
+
 /// Media library behaviour settings under `[media_library]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaLibraryConfig {
@@ -567,6 +588,11 @@ pub struct MediaLibraryConfig {
     /// Missing entries fall back to the column's natural width.
     #[serde(default)]
     pub ml_file_col_widths: std::collections::HashMap<String, i32>,
+
+    /// Preferred format for newly-saved playlists (Save As, new playlist,
+    /// device send). Existing playlists keep their own extension. Default m3u8.
+    #[serde(default)]
+    pub playlist_format: PlaylistFormat,
 }
 
 impl MediaLibraryConfig {
@@ -629,6 +655,7 @@ impl Default for MediaLibraryConfig {
             id3_column_position: Self::default_id3_column_position(),
             ml_file_col_order: Vec::new(),
             ml_file_col_widths: std::collections::HashMap::new(),
+            playlist_format: PlaylistFormat::default(),
         }
     }
 }
