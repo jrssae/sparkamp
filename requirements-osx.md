@@ -147,7 +147,6 @@ Add the macos bridge crate to the workspace:
 [workspace]
 members = [
     ".",
-    "plugins/viz_granite",
     "frontends/macos",    # macOS bridge
 ]
 ```

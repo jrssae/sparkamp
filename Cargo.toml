@@ -1,7 +1,6 @@
 # Workspace root — main Sparkamp binary plus the macOS bridge crate. The
-# Granite plasma visualizer was promoted to a built-in `VisualizerMode` and
-# lives in `src/granite.rs`; the legacy `plugins/viz_granite` directory is
-# kept as a historical reference but is no longer compiled.
+# Granite plasma visualizer is a built-in `VisualizerMode` living in
+# `src/granite/`; both the GTK and macOS frontends render it directly.
 [workspace]
 members = [
     ".",                     # sparkamp main binary + library

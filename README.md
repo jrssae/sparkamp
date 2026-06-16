@@ -246,12 +246,7 @@ bash packaging/macos/build-dmg.sh
 
 To build and run directly in Xcode, open `frontends/SparkampMac/SparkampMac.xcodeproj`. The Cargo build phase runs automatically and links the Rust static library.
 
-Build and install just the Granite visualizer plugin:
-```bash
-cargo build --release -p viz_granite
-# Copy the .so to your Sparkamp plugins directory or install via the app
-cp target/release/libviz_granite.so ~/.local/share/sparkamp/plugins/dev.sparkamp.viz.granite/
-```
+> The Granite plasma visualizer is built in (`src/granite/`) — no separate plugin to build or install. Both the GTK and macOS frontends render it directly.
 
 For TUI mode:
 ```bash
@@ -276,7 +271,7 @@ Every plugin exports one C function:
 const SparkPluginAbi *sparkamp_plugin(void);
 ```
 
-The returned struct declares the plugin's identity, settings schema, and callbacks. See `src/plugin_abi.rs` for the full type definitions. A reference implementation is in `plugins/viz_granite/`.
+The returned struct declares the plugin's identity, settings schema, and callbacks. See `src/plugin_abi.rs` for the full type definitions.
 
 ### Settings
 
