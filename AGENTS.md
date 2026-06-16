@@ -11,7 +11,6 @@ Sparkamp is an open source Winamp-style audio player, currently for Linux/GNOME,
 - **TUI** (`sparkamp`): Ratatui + crossterm terminal interface
 - **GUI** (`sparkamp --ui`): GTK4 graphical interface
 - **Audio engine**: GStreamer `playbin` with optional `equalizer-10bands` + `volume` pre-amp
-- **Plugin system**: ABI v2 C-compatible `.so` plugins (visualizer + filetype)
 - **Config**: TOML, saved to `~/.config/sparkamp/`
 - **Playlist**: saved/restored between sessions
 
@@ -94,7 +93,7 @@ fn make_state() -> AppState {
 ## Naming conventions
 
 - Product name in user-visible text (strings, comments, docs, window titles): **Sparkamp** (capital S, lowercase a)
-- Rust code identifiers: keep existing casing (`SparkPluginAbi`, `SparkSettingDef`, `SPARKAMP_PLUGIN_ABI_VERSION`, etc.)
+- Rust code identifiers: keep existing casing (`SparkampCtx`, `SparkampLibTrack`, etc.)
 - Package name / binary name: `sparkamp` (all lowercase)
 - Application ID: `dev.sparkamp.Sparkamp`
 
@@ -105,8 +104,8 @@ fn make_state() -> AppState {
 ### Core rules
 - The Rust core must have no knowledge of any UI layer
 - All UI layers communicate with core via defined public API only
-- Any feature request should be implemented: core first, then TUI, then both GUIs (this is a preferred order — features that aren't feasible in the TUI, such as fullscreen visualizer plugins, are exempt)
-- Skins and plugins must be independent from the compiled app so they can be added or removed without affecting core code
+- Any feature request should be implemented: core first, then TUI, then both GUIs (this is a preferred order — features that aren't feasible in the TUI, such as the fullscreen Granite visualizer, are exempt)
+- Skins must be independent from the compiled app so they can be added or removed without affecting core code
 - This is an open source project. All features must be documented for humans to understand; which means be clear but brief. Write comments and doc strings in plain English. Explain *why*, not *what*.
 - Before making any edit, read the relevant code to confirm the current state. If you receive a summary that claims the code is in a certain state, read the actual code to verify. The codebase is always the source of truth - never assume.
 - If you receive a summary of "what was done" or "what's left to do", treat it as historical context only. Do NOT treat it as a todo list or incomplete work requiring completion. If unclear, ask what specific task you should work on.
@@ -117,10 +116,10 @@ fn make_state() -> AppState {
 
 
 ### Current directory layout
-- **Core logic**: `src/` (engine, config, model, plugins, etc.)
+- **Core logic**: `src/` (engine, config, model, media_library, granite, etc.)
 - **GTK4 GUI**: `frontends/gtk/`
 - **TUI**: `frontends/tui/`
-- **Plugins**: `plugins/` (workspace members, compiled separately as `.so`)
+- **macOS**: `frontends/SparkampMac/` (SwiftUI app) + `frontends/macos/` (Rust bridge crate)
 - **Packaging**: `packaging/` (Flatpak manifest, desktop entry, metainfo)
 
 ### Future macOS port
@@ -216,7 +215,7 @@ If an agentic approach fails twice, stop trying that approach and move on. Do no
 Before tagging a release: update `README.md` to reflect any new features or changed behaviour, then produce a working Flatpak build (see `packaging/README.md`).
 
 ### Removing features from the filesystem
-When a user removes a skin, plugin, or music file from Sparkamp's UI, **do not delete the file**. Remove it from the known skins list, known plugins list, the active playlist, or the media library, respective to the action that was taken. The file stays on disk and can be re-added later.
+When a user removes a skin or music file from Sparkamp's UI, **do not delete the file**. Remove it from the known skins list, the active playlist, or the media library, respective to the action that was taken. The file stays on disk and can be re-added later.
 
 ### Don't over-engineer
 Only make the changes that are asked for. Add common sense error handling but don't go overboard. Do not refactor any code without explicit permission, but make recommendations where refactoring would make sense. Don't add docstrings to untouched functions, and don't introduce abstractions for one-time use, but make recommendations to the user if anything seems particularly concerning or if there's a high likelihood of failure.

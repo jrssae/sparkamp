@@ -22,7 +22,6 @@ use crate::{
     engine::{BusEvent, Player},
     id3_editor::{ExtraFrame, TagFields, ID3V1_GENRES},
     model::{Playlist, Track},
-    plugin_manager::PluginManager,
     shuffle::ShuffleState,
 };
 
@@ -245,10 +244,8 @@ pub(super) fn settings_tab_len(tab: usize) -> usize {
         0 => 2,
         // Visualizer: 1 item (mode)
         1 => 1,
-        // Filetypes: 2 items (visualizer_dir, filetype_dir)
-        2 => 2,
         // Media Library: 3 items (rescan_on_startup, periodic_rescan, rescan_interval_mins)
-        3 => 3,
+        2 => 3,
         _ => 0,
     }
 }
@@ -292,10 +289,6 @@ pub struct App {
     broken_rx: mpsc::Receiver<PathBuf>,
     /// Sending end — cloned into `duration_probe::spawn_probes` calls.
     broken_tx: mpsc::Sender<PathBuf>,
-    /// Plugin registry: owns all loaded visualizer and filetype plugins.
-    /// Populated at startup by scanning the managed directory and any
-    /// legacy directories from the config.
-    pub plugin_manager: PluginManager,
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<crate::media_library::MediaLibrary>,
@@ -333,11 +326,6 @@ impl App {
         if !uncached.is_empty() {
             duration_probe::spawn_probes(uncached, probe_tx.clone(), broken_tx.clone());
         }
-
-        // Load plugins from the managed directory and any legacy user-configured
-        // directories (best-effort; failures are logged but never block startup).
-        let mut plugin_manager = PluginManager::new();
-        plugin_manager.load_from_config(&config);
 
         // Create the player and apply the saved EQ config immediately so the
         // correct settings are in effect from the very first track.
@@ -383,7 +371,6 @@ impl App {
             probe_tx,
             broken_rx,
             broken_tx,
-            plugin_manager,
             media_lib,
             scan_channels: None,
         })
@@ -467,7 +454,6 @@ impl App {
             playlist: &mut self.playlist,
             config: &mut self.config,
             shuffle_state: &mut self.shuffle_state,
-            plugin_manager: &mut self.plugin_manager,
         }
     }
 
@@ -586,16 +572,6 @@ impl App {
         if !self.visualizer_active {
             return vec![0.0; count];
         }
-        let pos = self
-            .player
-            .position()
-            .unwrap_or(std::time::Duration::ZERO)
-            .as_secs_f64();
-
-        // If a plugin viz is selected, delegate to it; otherwise use the built-in mode.
-        if let Some(plugin) = self.plugin_manager.active_viz_plugin() {
-            return plugin.render(pos, self.visualizer_active, count);
-        }
 
         match self.config.visualizer.mode {
             // Granite has no terminal renderer; fall back to bars in the TUI.
@@ -628,19 +604,15 @@ impl App {
     // Visualizer mode cycling
     // -----------------------------------------------------------------------
 
-    /// Advance the visualizer to the next available mode.
+    /// Advance the visualizer to the next mode.
     ///
-    /// Cycle order in the TUI: Bars → Waveform → plugin 0 → plugin 1 → … → Bars.
-    ///
-    /// The shared core cycle goes Bars → Waveform → Granite → plugins → Bars,
-    /// but Granite is a GUI-only built-in (CPU-rendered RGBA buffer). When the
-    /// core cycle lands on Granite with no active plugin, advance once more so
-    /// the TUI never displays a mode it can't render.
+    /// Cycle order in the TUI: Bars → Waveform → Bars. The shared core cycle
+    /// goes Bars → Waveform → Granite → Bars, but Granite is GUI-only
+    /// (CPU-rendered RGBA buffer), so when the core cycle lands on Granite the
+    /// TUI advances once more to a mode it can render.
     pub(super) fn cycle_visualizer_mode(&mut self) {
         self.ctrl().toggle_visualizer_mode();
-        if self.config.visualizer.mode == VisualizerMode::Granite
-            && self.plugin_manager.active_viz_index().is_none()
-        {
+        if self.config.visualizer.mode == VisualizerMode::Granite {
             self.ctrl().toggle_visualizer_mode();
         }
         self.visualizer_active = true;

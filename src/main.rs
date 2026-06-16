@@ -24,25 +24,19 @@ mod dedupe;
 mod duration_cache;
 mod duration_probe;
 mod engine;
-mod filetype_plugin;
 // Consumed by the GTK frontend (Linux) and the C FFI in the lib target
 // (macOS app). In the macOS *bin* neither exists, so the whole module is
 // dead there — silence that case only; Linux still checks for real rot.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod granite;
 mod id3_editor;
-mod loaded_plugin;
 mod media_library;
 mod model;
-mod plugin_abi;
-mod plugin_manager;
-mod plugin_settings;
 mod shuffle;
 mod skin;
 mod tags;
 mod textutil;
 mod timeutil;
-mod viz_plugin;
 
 // GTK4 frontend — Linux only. On macOS the SwiftUI app bundle replaces it.
 #[cfg(target_os = "linux")]

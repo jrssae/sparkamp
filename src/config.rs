@@ -37,9 +37,6 @@ pub struct Config {
     /// Behaviour tweaks that do not belong under playback or visualizer.
     #[serde(default)]
     pub behavior: BehaviorConfig,
-    /// Paths searched for dynamic plugin libraries (`.so` files).
-    #[serde(default)]
-    pub plugins: PluginsConfig,
     /// 10-band parametric equalizer settings.
     #[serde(default)]
     pub equalizer: EqConfig,
@@ -367,33 +364,6 @@ impl Default for BehaviorConfig {
         BehaviorConfig {
             autoplay_on_add: false,
             playlist_add_behavior: PlaylistAddBehavior::default(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PluginsConfig
-// ---------------------------------------------------------------------------
-
-/// Plugin-search-path configuration under `[plugins]` in the TOML.
-///
-/// Both fields hold file-system paths that sparkamp scans for `.so` files
-/// at startup.  Empty strings mean "don't scan any extra directory".
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginsConfig {
-    /// Directory searched for visualizer plugin libraries.
-    #[serde(default)]
-    pub visualizer_dir: String,
-    /// Directory searched for filetype / decoder plugin libraries.
-    #[serde(default)]
-    pub filetype_dir: String,
-}
-
-impl Default for PluginsConfig {
-    fn default() -> Self {
-        PluginsConfig {
-            visualizer_dir: String::new(),
-            filetype_dir: String::new(),
         }
     }
 }
@@ -736,7 +706,6 @@ impl Default for Config {
             window: WindowConfig::default(),
             appearance: AppearanceConfig::default(),
             behavior: BehaviorConfig::default(),
-            plugins: PluginsConfig::default(),
             equalizer: EqConfig::default(),
             media_library: MediaLibraryConfig::default(),
         }

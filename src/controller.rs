@@ -30,7 +30,6 @@ use crate::{
     config::{Config, VisualizerMode},
     engine::{Player, PlayerState},
     model::Playlist,
-    plugin_manager::PluginManager,
     shuffle::{RepeatMode, ShuffleState},
 };
 
@@ -99,7 +98,6 @@ pub struct Controller<'a> {
     pub playlist: &'a mut Playlist,
     pub config: &'a mut Config,
     pub shuffle_state: &'a mut ShuffleState,
-    pub plugin_manager: &'a mut PluginManager,
 }
 
 impl Controller<'_> {
@@ -432,36 +430,14 @@ impl Controller<'_> {
     // Visualizer
     // -----------------------------------------------------------------------
 
-    /// Cycle the visualizer to the next available mode.
+    /// Cycle the visualizer to the next built-in mode.
     ///
-    /// Cycle order: Bars → Waveform → Granite → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is Bars → Waveform → Granite → Bars.
+    /// Cycle order: Bars → Waveform → Granite → Bars.
     pub fn toggle_visualizer_mode(&mut self) {
-        let viz_count = self.plugin_manager.viz_plugins().count();
-        match self.plugin_manager.active_viz_index() {
-            None => match self.config.visualizer.mode {
-                VisualizerMode::Bars => {
-                    self.config.visualizer.mode = VisualizerMode::Waveform;
-                }
-                VisualizerMode::Waveform => {
-                    self.config.visualizer.mode = VisualizerMode::Granite;
-                }
-                VisualizerMode::Granite => {
-                    if viz_count > 0 {
-                        self.plugin_manager.set_active_viz_index(Some(0));
-                    } else {
-                        self.config.visualizer.mode = VisualizerMode::Bars;
-                    }
-                }
-            },
-            Some(idx) => {
-                if idx + 1 < viz_count {
-                    self.plugin_manager.set_active_viz_index(Some(idx + 1));
-                } else {
-                    self.plugin_manager.set_active_viz_index(None);
-                    self.config.visualizer.mode = VisualizerMode::Bars;
-                }
-            }
-        }
+        self.config.visualizer.mode = match self.config.visualizer.mode {
+            VisualizerMode::Bars => VisualizerMode::Waveform,
+            VisualizerMode::Waveform => VisualizerMode::Granite,
+            VisualizerMode::Granite => VisualizerMode::Bars,
+        };
     }
 }

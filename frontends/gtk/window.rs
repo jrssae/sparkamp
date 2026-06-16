@@ -53,11 +53,8 @@ use crate::{
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player, PlayerState},
-    filetype_plugin::{self, FiletypePlugin},
     model::{fmt_duration, Playlist, Track},
-    plugin_manager::PluginManager,
     shuffle::ShuffleState,
-    viz_plugin::{load_plugins_from_dir, VizPlugin},
 };
 
 // ---------------------------------------------------------------------------
@@ -95,19 +92,8 @@ struct AppState {
     /// Populated by background probes and saved periodically to
     /// `~/.cache/gnomamp/duration_cache.toml`.
     duration_cache: DurationCache,
-    /// Visualizer plugins loaded from `config.plugins.visualizer_dir` at startup.
-    /// Empty when no directory is configured or no valid plugins were found.
-    viz_plugins: Vec<VizPlugin>,
-    /// Index into `viz_plugins` of the currently active plugin.
-    /// `None` means use the built-in visualizer mode from `config.visualizer.mode`.
-    active_plugin_idx: Option<usize>,
-    /// Filetype plugins loaded from `config.plugins.filetype_dir` at startup.
-    /// Empty when no directory is configured or no valid plugins were found.
-    filetype_plugins: Vec<FiletypePlugin>,
     /// Media library — open on startup, or `None` when the DB cannot be opened.
     media_lib: Option<crate::media_library::MediaLibrary>,
-    /// Plugin registry: owns all loaded visualizer and filetype plugins.
-    plugin_manager: PluginManager,
     /// The media library browser window, if one is currently open.
     ml_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
@@ -261,12 +247,6 @@ impl AppState {
         // Apply the saved EQ config so the correct settings are active from
         // the very first track — even before the user opens the EQ window.
         player.apply_eq_bands(&config.equalizer.effective_bands());
-        // Load visualizer and filetype plugins from their configured directories
-        // (best-effort; failures produce warnings but never block startup).
-        let viz_plugins = load_plugins_from_dir(&config.plugins.visualizer_dir);
-        let filetype_plugins = filetype_plugin::load_plugins_from_dir(&config.plugins.filetype_dir);
-        let mut plugin_manager = PluginManager::new();
-        plugin_manager.load_from_config(&config);
         let media_lib = crate::media_library::MediaLibrary::open().ok();
 
         // Startup cleanup: purge any soft-deleted records from previous sessions
@@ -293,11 +273,7 @@ impl AppState {
             last_duration: None,
             mute_pending: None,
             duration_cache: DurationCache::load(),
-            viz_plugins,
-            active_plugin_idx: None,
-            filetype_plugins,
             media_lib,
-            plugin_manager,
             ml_window: None,
             id3_editor_window: None,
             rebuild_ml_callback: None,
@@ -467,36 +443,15 @@ impl AppState {
         }
     }
 
-    /// Cycle the visualizer to the next available mode.
+    /// Cycle the visualizer to the next built-in mode.
     ///
-    /// Cycle order: Bars → Waveform → Granite → plugin 0 → plugin 1 → … → Bars.
-    /// When no plugins are loaded the cycle is Bars → Waveform → Granite → Bars.
+    /// Cycle order: Bars → Waveform → Granite → Bars.
     fn toggle_visualizer_mode(&mut self) {
-        match self.active_plugin_idx {
-            None => match self.config.visualizer.mode {
-                VisualizerMode::Bars => {
-                    self.config.visualizer.mode = VisualizerMode::Waveform;
-                }
-                VisualizerMode::Waveform => {
-                    self.config.visualizer.mode = VisualizerMode::Granite;
-                }
-                VisualizerMode::Granite => {
-                    if !self.viz_plugins.is_empty() {
-                        self.active_plugin_idx = Some(0);
-                    } else {
-                        self.config.visualizer.mode = VisualizerMode::Bars;
-                    }
-                }
-            },
-            Some(idx) => {
-                if idx + 1 < self.viz_plugins.len() {
-                    self.active_plugin_idx = Some(idx + 1);
-                } else {
-                    self.active_plugin_idx = None;
-                    self.config.visualizer.mode = VisualizerMode::Bars;
-                }
-            }
-        }
+        self.config.visualizer.mode = match self.config.visualizer.mode {
+            VisualizerMode::Bars => VisualizerMode::Waveform,
+            VisualizerMode::Waveform => VisualizerMode::Granite,
+            VisualizerMode::Granite => VisualizerMode::Bars,
+        };
     }
 
     /// Attempt to retry spectrum initialization.
@@ -701,10 +656,8 @@ impl AppState {
     /// an error string if the path does not exist / cannot be resolved at all.
     fn add_path(&mut self, path: &std::path::Path) -> Result<String, String> {
         if path.is_dir() {
-            // Recursively collect all audio files, including any extensions
-            // registered by loaded filetype plugins.
-            let extra = crate::filetype_plugin::extra_extensions(&self.filetype_plugins);
-            let files = Playlist::collect_audio_files_extended(path, &extra);
+            // Recursively collect all audio files under the directory.
+            let files = Playlist::collect_audio_files(path);
             let total = files.len();
             if total == 0 {
                 return Err(format!("No audio files found in '{}'", path.display()));
@@ -1656,14 +1609,13 @@ pub fn build(
         // by the time the second arrives. Remember the pre-click state so
         // the double-click can undo the cycle and judge fullscreen support
         // on the mode the user actually double-clicked.
-        let pre_click: Rc<RefCell<Option<(VisualizerMode, Option<usize>)>>> =
+        let pre_click: Rc<RefCell<Option<VisualizerMode>>> =
             Rc::new(RefCell::new(None));
         click.connect_released(move |_, n_press, _, _| {
             if n_press == 2 {
-                if let Some((mode, plugin_idx)) = pre_click.borrow_mut().take() {
+                if let Some(mode) = pre_click.borrow_mut().take() {
                     let mut s = state_vc.borrow_mut();
                     s.config.visualizer.mode = mode;
-                    s.active_plugin_idx = plugin_idx;
                 }
                 let supports_fs = matches!(
                     state_vc.borrow().config.visualizer.mode,
@@ -1685,8 +1637,7 @@ pub fn build(
                 let _ = state_vc.borrow_mut().retry_spectrum();
             } else {
                 let mut s = state_vc.borrow_mut();
-                *pre_click.borrow_mut() =
-                    Some((s.config.visualizer.mode.clone(), s.active_plugin_idx));
+                *pre_click.borrow_mut() = Some(s.config.visualizer.mode.clone());
                 s.toggle_visualizer_mode();
             }
         });
@@ -3683,9 +3634,6 @@ pub fn build(
                 status_cb.set_text("Scanning…");
                 cancel_ref.set_visible(true);
 
-                // Collect extra extensions on the main thread — plugin_manager is not Send.
-                let extra = state_cb.borrow().plugin_manager.extra_extensions();
-
                 // Capture where the new tracks will start before any are added.
                 let scan_start = state_cb.borrow().playlist.len();
 
@@ -3697,7 +3645,6 @@ pub fn build(
 
                 crate::model::Playlist::scan_folder_for_ui(
                     folder,
-                    extra,
                     cancel,
                     fast_tx,
                     meta_tx,
@@ -4325,9 +4272,7 @@ pub fn build(
 
             let s = state.borrow();
             let is_playing = *s.player.state() == PlayerState::Playing;
-            let pos_secs = s.player.position().unwrap_or(Duration::ZERO).as_secs_f64();
             let mode = s.config.visualizer.mode.clone();
-            let plugin_idx = s.active_plugin_idx;
             let display_bands_count = s.config.visualizer.display_bands;
             let bars_mirror = s.config.visualizer.bars_mirror;
             let color_zones = s.config.visualizer.color_zones as usize;
@@ -4336,41 +4281,10 @@ pub fn build(
             let wf_zone_colors = s.config.visualizer.waveform_zone_colors.clone();
             let wf_style = s.config.visualizer.waveform_style.clone();
 
-            // Get spectrum, waveform, and plugin data before dropping the borrow.
+            // Get spectrum and waveform data before dropping the borrow.
             let display_bands_data = s.player.get_spectrum_display_bands(display_bands_count);
             let waveform_samples = s.player.get_waveform_samples(width.max(64) as usize);
-            // Render plugin frame if one is active.
-            let plugin_frame: Option<Vec<f64>> = if is_playing {
-                if let Some(idx) = plugin_idx {
-                    s.viz_plugins
-                        .get(idx)
-                        .map(|plugin| plugin.render(pos_secs, true, (width / 5).max(10) as usize))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
             drop(s);
-
-            if let Some(values) = plugin_frame {
-                let count = values.len();
-                let bar_w = width as f64 / count.max(1) as f64;
-                for (i, &v) in values.iter().enumerate() {
-                    let x = i as f64 * bar_w;
-                    draw_zoned_bar(
-                        &cr,
-                        x,
-                        bar_w,
-                        height as f64,
-                        v,
-                        bars_mirror,
-                        color_zones,
-                        &zone_colors,
-                    );
-                }
-                return;
-            }
 
             if !is_playing {
                 // Idle: flat dim centre line.
@@ -16696,7 +16610,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_visualizer_mode_granite_becomes_bars_when_no_plugins() {
+    fn toggle_visualizer_mode_granite_becomes_bars() {
         let mut s = make_state();
         s.config.visualizer.mode = VisualizerMode::Granite;
         s.toggle_visualizer_mode();
@@ -16705,9 +16619,8 @@ mod tests {
 
     #[test]
     fn toggle_visualizer_mode_99_times_ends_back_at_bars() {
-        // Cycle is Bars → Waveform → Granite → Bars (when no plugins are
-        // loaded), period 3. 99 toggles is divisible by 3, so the mode must
-        // return to its starting value.
+        // Cycle is Bars → Waveform → Granite → Bars, period 3. 99 toggles is
+        // divisible by 3, so the mode must return to its starting value.
         let mut s = make_state();
         for _ in 0..99 {
             s.toggle_visualizer_mode();

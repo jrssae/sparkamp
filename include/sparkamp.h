@@ -19,11 +19,6 @@
 extern "C" {
 #endif
 
-/* ── Plugin ABI version constants (from plugin_abi.rs) ───────────────────── */
-#define SPARKAMP_FILETYPE_ABI_VERSION 1
-#define SPARKAMP_PLUGIN_ABI_VERSION   2
-#define SPARKAMP_VIZ_ABI_VERSION      1
-
 /* ── Opaque context ───────────────────────────────────────────────────────── */
 
 /**

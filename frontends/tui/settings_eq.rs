@@ -83,9 +83,7 @@ impl App {
                     };
                     // Dispatch by (tab, cursor).
                     match (tab, cursor) {
-                        (2, 0) => self.config.plugins.visualizer_dir = val,
-                        (2, 1) => self.config.plugins.filetype_dir = val,
-                        (3, 2) => {
+                        (2, 2) => {
                             // Parse interval minutes; silently keep old value on error.
                             if let Ok(mins) = val.trim().parse::<u64>() {
                                 self.config.media_library.set_rescan_interval_mins(mins);
@@ -130,10 +128,10 @@ impl App {
                     s.cursor = 0;
                 }
             }
-            // Right / l: go to the next tab (tabs 0–3).
+            // Right / l: go to the next tab (tabs 0–2).
             KeyCode::Right | KeyCode::Char('l') => {
                 if let Mode::Settings(s) = &mut self.mode {
-                    if s.tab < 3 {
+                    if s.tab < 2 {
                         s.tab += 1;
                     }
                     s.cursor = 0;
@@ -193,19 +191,8 @@ impl App {
                             VisualizerMode::Granite  => VisualizerMode::Bars,
                         };
                     }
-                    // Filetypes: enter text-edit mode for the focused path field.
-                    2 => {
-                        let current = match cursor {
-                            0 => self.config.plugins.visualizer_dir.clone(),
-                            1 => self.config.plugins.filetype_dir.clone(),
-                            _ => String::new(),
-                        };
-                        if let Mode::Settings(s) = &mut self.mode {
-                            s.edit_buf = Some(current);
-                        }
-                    }
                     // Media Library: toggle booleans or edit the interval field.
-                    3 => {
+                    2 => {
                         match cursor {
                             0 => {
                                 self.config.media_library.rescan_on_startup =

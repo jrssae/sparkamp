@@ -52,24 +52,6 @@ pub fn is_audio_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Like [`is_audio_file`] but also accepts any extension in `extra_extensions`.
-///
-/// `extra_extensions` contains lower-case extension strings without the
-/// leading dot (e.g. `"xyz"`).  This is used at runtime to include extensions
-/// registered by loaded filetype plugins without modifying the static
-/// [`AUDIO_EXTENSIONS`] slice.
-#[allow(dead_code)]
-pub fn is_audio_file_extended(path: &Path, extra_extensions: &[String]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            let lower = ext.to_lowercase();
-            AUDIO_EXTENSIONS.contains(&lower.as_str())
-                || extra_extensions.iter().any(|e| e == &lower)
-        })
-        .unwrap_or(false)
-}
-
 // ---------------------------------------------------------------------------
 // Track
 // ---------------------------------------------------------------------------
@@ -582,15 +564,7 @@ impl Playlist {
     /// (case-insensitively) are included.
     pub fn collect_audio_files(dir: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
-        Self::collect_audio_files_inner(dir, &[], &mut files);
-        files
-    }
-
-    /// Like [`collect_audio_files`] but also recognises extensions registered
-    /// by filetype plugins at runtime.
-    pub fn collect_audio_files_extended(dir: &Path, extra_exts: &[String]) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        Self::collect_audio_files_inner(dir, extra_exts, &mut files);
+        Self::collect_audio_files_inner(dir, &mut files);
         files
     }
 
@@ -684,7 +658,6 @@ impl Playlist {
     #[allow(dead_code)]
     pub fn scan_folder_for_ui(
         folder: PathBuf,
-        extra_extensions: Vec<String>,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         fast_tx: std::sync::mpsc::Sender<Track>,
         metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
@@ -692,7 +665,7 @@ impl Playlist {
         phase1_done_tx: std::sync::mpsc::Sender<usize>,
     ) {
         std::thread::spawn(move || {
-            let files = Self::collect_audio_files_extended(&folder, &extra_extensions);
+            let files = Self::collect_audio_files(&folder);
             Self::scan_paths_in_thread(
                 files,
                 cancel,
@@ -735,10 +708,8 @@ impl Playlist {
     ///
     /// Populates `files` with audio file paths found under `dir`.  Entries in
     /// each directory are sorted alphabetically before recursion so that the
-    /// final order is stable across runs and platforms.  `extra_exts` contains
-    /// additional lower-case extension strings (without dots) to recognise
-    /// beyond the built-in [`AUDIO_EXTENSIONS`] list.
-    fn collect_audio_files_inner(dir: &Path, extra_exts: &[String], files: &mut Vec<PathBuf>) {
+    /// final order is stable across runs and platforms.
+    fn collect_audio_files_inner(dir: &Path, files: &mut Vec<PathBuf>) {
         // Attempt to read the directory; silently skip on any error (e.g.
         // permission denied) to keep the scan robust.
         let read_dir = match std::fs::read_dir(dir) {
@@ -756,10 +727,9 @@ impl Playlist {
         for path in entries {
             if path.is_dir() {
                 // Recurse depth-first into sub-directories.
-                Self::collect_audio_files_inner(&path, extra_exts, files);
-            } else if is_audio_file_extended(&path, extra_exts) {
-                // Include files whose extension is a known audio type, plus
-                // any extra extensions contributed by filetype plugins.
+                Self::collect_audio_files_inner(&path, files);
+            } else if is_audio_file(&path) {
+                // Include files whose extension is a known audio type.
                 files.push(path);
             }
         }
@@ -1151,36 +1121,6 @@ mod tests {
         let files =
             Playlist::collect_audio_files(Path::new("/nonexistent_dir_that_does_not_exist"));
         assert!(files.is_empty());
-    }
-
-    #[test]
-    fn collect_audio_files_extended_includes_extra_extensions() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("song.mp3"), b"mp3").unwrap();
-        std::fs::write(dir.path().join("song.ogg"), b"ogg").unwrap();
-        std::fs::write(dir.path().join("song.custom"), b"custom").unwrap();
-        std::fs::write(dir.path().join("song.unknown"), b"unknown").unwrap();
-
-        let built_in = Playlist::collect_audio_files(dir.path());
-        assert!(
-            built_in.iter().all(|p| p.extension().unwrap() != "custom"),
-            "built-in scan must not include .custom files"
-        );
-
-        let with_extra =
-            Playlist::collect_audio_files_extended(dir.path(), &["custom".to_string()]);
-        assert!(
-            with_extra
-                .iter()
-                .any(|p| p.extension().unwrap() == "custom"),
-            "extended scan must include .custom files"
-        );
-        assert!(
-            with_extra
-                .iter()
-                .all(|p| p.extension().unwrap() != "unknown"),
-            "extended scan must not include unknown extensions"
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -1593,7 +1533,6 @@ mod tests {
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
         Playlist::scan_folder_for_ui(
             dir.path().to_path_buf(),
-            vec![],
             cancel,
             fast_tx,
             meta_tx,
@@ -1620,7 +1559,6 @@ mod tests {
         let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
         Playlist::scan_folder_for_ui(
             dir.path().to_path_buf(),
-            vec![],
             cancel,
             fast_tx,
             meta_tx,

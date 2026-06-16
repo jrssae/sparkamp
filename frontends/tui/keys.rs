@@ -42,9 +42,7 @@ impl App {
             let path = expanded.as_path();
 
             if path.is_dir() {
-                // Use extended scan so filetype plugins' formats are included.
-                let extra = self.plugin_manager.extra_extensions();
-                let audio_files = Playlist::collect_audio_files_extended(path, &extra);
+                let audio_files = Playlist::collect_audio_files(path);
                 for audio_path in audio_files {
                     match Track::from_path(&audio_path) {
                         Ok(track) => {
@@ -295,7 +293,7 @@ impl App {
             KeyCode::Left => self.seek_delta_secs(-5.0),
             KeyCode::Right => self.seek_delta_secs(5.0),
 
-            // Visualizer mode cycle: Bars → Waveform → plugin 0 → plugin 1 → … → Bars
+            // Visualizer mode cycle: Bars → Waveform → Bars
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 self.cycle_visualizer_mode();
             }
@@ -551,7 +549,6 @@ impl App {
                 // Collect all audio files from the comma-separated input.  Dir
                 // walks are fast (readdir only, no metadata), so we do this on
                 // the main thread before handing the list to the background scan.
-                let extra = self.plugin_manager.extra_extensions();
                 let mut all_files: Vec<PathBuf> = Vec::new();
                 for part in input.split(',') {
                     let part = part.trim();
@@ -560,7 +557,7 @@ impl App {
                     }
                     let path = expand_tilde(part);
                     if path.is_dir() {
-                        let files = Playlist::collect_audio_files_extended(&path, &extra);
+                        let files = Playlist::collect_audio_files(&path);
                         all_files.extend(files);
                     } else {
                         all_files.push(path);

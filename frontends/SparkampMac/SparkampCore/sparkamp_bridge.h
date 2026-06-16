@@ -13,11 +13,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* ── Plugin ABI version constants ────────────────────────────────────────── */
-#define SPARKAMP_FILETYPE_ABI_VERSION 1
-#define SPARKAMP_PLUGIN_ABI_VERSION   2
-#define SPARKAMP_VIZ_ABI_VERSION      1
-
 /* ── Opaque context ──────────────────────────────────────────────────────── */
 
 typedef struct SparkampCtx SparkampCtx;

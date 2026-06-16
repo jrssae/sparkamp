@@ -198,7 +198,6 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
         playlist: &mut ctx.playlist,
         config: &mut ctx.config,
         shuffle_state: &mut ctx.shuffle_state,
-        plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_next() {
         NavResult::Target { was_playing: true } => {
@@ -231,7 +230,6 @@ pub unsafe extern "C" fn sparkamp_advance_after_eos(ctx: *mut SparkampCtx) {
         playlist: &mut ctx.playlist,
         config: &mut ctx.config,
         shuffle_state: &mut ctx.shuffle_state,
-        plugin_manager: &mut ctx.plugin_manager,
     };
     ctrl.advance_to_next_playable();
 }
@@ -259,7 +257,6 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         playlist: &mut ctx.playlist,
         config: &mut ctx.config,
         shuffle_state: &mut ctx.shuffle_state,
-        plugin_manager: &mut ctx.plugin_manager,
     };
     match ctrl.nav_prev() {
         NavResult::Target { was_playing: true } => {

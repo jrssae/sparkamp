@@ -14,8 +14,6 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - Engine: GStreamer playbin + equalizer-10bands + volume
 
-- Plugins: C-compatible .so (ABI v2)
-
 - Storage: TOML in ~/.config/sparkamp/; Playlists and settings restored between sessions.
 ---
 
@@ -26,7 +24,7 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - Release: Confirm the intended version number with the user first (never assume a bump). Update Cargo.toml, README.md, and a metainfo `<release>` entry, then run `scripts/pre-release-check.sh <version>` before tagging — it refuses a forgotten bump and syncs the macOS `MARKETING_VERSION`. Verify Flatpak build ( packaging/ ).
 
-- Deletion Rule: Permanently deleting a music file from disk is allowed ONLY from the Media Library file view or the Media Library external-device view, and ONLY after explicit user confirmation. Removing a track from the active playlist or any saved playlist must only remove it from that list — never delete the file from disk. Removing skins/plugins from the UI must not delete their files from disk.
+- Deletion Rule: Permanently deleting a music file from disk is allowed ONLY from the Media Library file view or the Media Library external-device view, and ONLY after explicit user confirmation. Removing a track from the active playlist or any saved playlist must only remove it from that list — never delete the file from disk. Removing skins from the UI must not delete their files from disk.
 
 - Refactoring: Ask before refactoring. Focus on requested changes; avoid over-engineering.
 
@@ -38,7 +36,7 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - App ID: dev.sparkamp.Sparkamp.
 
-- Code: Keep existing casing (e.g., SparkPluginAbi).
+- Code: Keep existing casing (e.g., SparkampCtx).
 
 - Docs: Plain English. Explain why, not what. Assume human reviewers and contributors.
 
@@ -54,7 +52,7 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - macOS (Future): Keep Core ready for C FFI extraction into core/.
 
-- Files: Core (src/), GTK (frontends/gtk/), TUI (frontends/tui/), Plugins (plugins/).
+- Files: Core (src/), GTK (frontends/gtk/), TUI (frontends/tui/), macOS (frontends/SparkampMac/).
 
 ---
 

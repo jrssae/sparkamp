@@ -126,7 +126,6 @@ This release added the media library and resolved a number of accumulated issues
 - **Fixed ML remove performance** — no longer re-queries the entire DB after every delete
 
 ### Architecture
-- **Plugin manager** — loads visualizer and filetype plugins from configured directories at startup
 - **Refactored build setup** — workspace with `src/` for core and `frontends/` for UI layers
 - **32 new tests** — covering media library operations, duration cache, and EQ config
 - **CLI agent rules** — `AGENTS.md` documents working conventions for AI-assisted development
@@ -145,18 +144,17 @@ This release added the media library and resolved a number of accumulated issues
 - **10-band equalizer** — built-in GStreamer EQ with 7 presets (Flat, Rock, Pop, Jazz, Classical, Bass Boost, Treble Boost); accessible via the EQ button or `u` key
 - **EQ pre-amp** — 50 %–150 % gain slider above the EQ bands; only active when EQ is enabled
 - **ID3 tag viewer/editor** — view and edit title, artist, album, year, track, genre, comment; access custom frames; press `d` in the TUI
-- **Settings panel** — appearance (theme, custom skin), behaviour, visualizer mode, plugin directories
+- **Settings panel** — appearance (theme, custom skin), behaviour, visualizer mode
 - **Background duration probing** — file lengths appear immediately on load without blocking the UI, with a persistent cache
 - **Missing file detection** — files that disappear from disk are marked with a warning indicator
 - **Duration cache** — probed durations persist to disk and appear instantly on next launch
-- **Mini visualizer** — bars or waveform mode, with support for external plugin visualizers
-- **Granite visualizer plugin** — a Geiss-inspired plasma animation (separate `.so` plugin) with configurable speed, palette, and feedback strength; press `f` or double-click the visualizer to run a fullscreen mode
-- **Plugin framework (ABI v2)** — install/uninstall `.so` plugins at runtime; visualizer and filetype plugins; settings schema with per-plugin TOML persistence; live `on_setting_changed` callbacks; automatic v1 plugin shimming for backward compatibility
+- **Mini visualizer** — bars or waveform mode
+- **Granite visualizer** — a built-in Geiss-inspired plasma animation with configurable speed, palette, and feedback strength; press `f` or double-click the visualizer to run a fullscreen mode
 - **Media library** — SQLite-backed library with Files and Playlists tabs, full-text search, play-count tracking, folder watch/rescan, configurable periodic rescans
 - **CLI / TUI mode** — a full terminal UI for headless or keyboard-only use (`sparkamp`) - note that this hasn't been actively tested so it's a bit sketchy. 
 - **Playlist persistence** — saves and restores the playlist and player position between sessions
 - **Skin system** — light and dark CSS skins, switchable at runtime; user skins at `~/.config/sparkamp/skins/`
-- **Format support** — MP3, FLAC, OGG Vorbis, Opus, WAV, M4A; filetype plugin API for additional formats
+- **Format support** — MP3, FLAC, OGG Vorbis, Opus, WAV, M4A
 - **Flatpak packaging** — manifest and GitHub Actions workflow that builds and uploads a `.flatpak` bundle on every push to `main`
 
 ---
@@ -165,8 +163,6 @@ This release added the media library and resolved a number of accumulated issues
 
 These are the directions the project is heading, in no particular order. Nothing here is committed to a timeline.
 
-- **Plugin Settings UI** — in-app settings panel for installed plugins (schema-driven widgets auto-generated from the plugin's declared settings)
-- **Plugin install dialog** — browse and install `.so` files from within the app
 - **Skin format and migration tool** — a new skin format with a migration path from classic Winamp `.wsz` skins
 - **macOS support** — Milestone 1 complete: native SwiftUI player with full playback, playlist, background metadata scanning, broken-file detection, and CSS skin system. Milestone 2 complete: Bars + Waveform visualizers (zoned colors, Lines/Filled styles, OS-level fullscreen), Jump-to-Track window (`j`), state persistence across launches. Milestone 3 complete: Equalizer window with presets, ID3 tag editor, album artwork zoom window, volume fade label, AGPL-linked About panel, standalone self-contained DMG distribution (no Xcode or Homebrew required).
 - **Equalizer UI polish** — save named custom presets, per-band labels in the GTK window
@@ -191,7 +187,6 @@ These are the directions the project is heading, in no particular order. Nothing
 | Metadata | id3 + Symphonia (OGG/FLAC/Opus fallback) |
 | Config / playlist | TOML + Serde |
 | Media library | SQLite via `rusqlite` (bundled, no system dep) |
-| Plugin loading | `libloading` (dlopen) |
 
 
 ---
@@ -214,7 +209,7 @@ sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
                  libgtk-4-dev
 ```
 
-Build the main binary and all plugins (workspace build):
+Build the main binary:
 ```bash
 cargo build --release
 ./target/release/sparkamp --ui      # GTK4 graphical interface
@@ -252,34 +247,6 @@ For TUI mode:
 ```bash
 ./target/release/sparkamp
 ```
-
----
-
-## Plugin System
-
-Sparkamp will eventually support third-party plugins as shared libraries (`.so` files on Linux). It hasn't yet been tested and likely doesn't work yet. 
-
-### Plugin types
-
-- **Visualizer plugins** — replace the built-in bars/oscilloscope with custom GPU or software rendering; can declare an optional `fullscreen` callback triggered by `f` or double-click
-- **Filetype plugins** — add support for additional audio container formats (decoder + metadata reader)
-
-### ABI v2
-
-Every plugin exports one C function:
-```c
-const SparkPluginAbi *sparkamp_plugin(void);
-```
-
-The returned struct declares the plugin's identity, settings schema, and callbacks. See `src/plugin_abi.rs` for the full type definitions.
-
-### Settings
-
-Plugins declare a null-terminated array of `SparkSettingDef` entries. Sparkamp reads the schema at load time, persists values to `~/.local/share/sparkamp/plugins/<plugin_id>/settings.toml`, and calls `on_setting_changed` whenever the user modifies a value.
-
-### Backward compatibility
-
-Plugins compiled against the v1 API (`sparkamp_viz_plugin` / `sparkamp_filetype_plugin` entry points) are automatically shimmed to the v2 interface at load time. No rebuild required.
 
 ---
 

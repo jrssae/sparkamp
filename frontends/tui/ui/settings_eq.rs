@@ -3,11 +3,10 @@
 #[rustfmt::skip]
 use super::imports::*;
 
-/// Names for the four settings tabs, shown in the tab bar.
-const SETTINGS_TABS: [&str; 4] = [
+/// Names for the settings tabs, shown in the tab bar.
+const SETTINGS_TABS: [&str; 3] = [
     "Behavior",
     "Visualizer",
-    "Filetypes",
     "Media Lib",
 ];
 
@@ -181,54 +180,8 @@ pub(super) fn settings_rows_for_tab<'a>(
             },
         )],
 
-        // ── Filetypes ─────────────────────────────────────────────────────
-        2 => {
-            let viz_val = if state.cursor == 0 {
-                if let Some(buf) = &state.edit_buf {
-                    format!("{buf}▌") // show cursor block in edit mode
-                } else {
-                    let v = &app.config.plugins.visualizer_dir;
-                    if v.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        v.clone()
-                    }
-                }
-            } else {
-                let v = &app.config.plugins.visualizer_dir;
-                if v.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    v.clone()
-                }
-            };
-            let ft_val = if state.cursor == 1 {
-                if let Some(buf) = &state.edit_buf {
-                    format!("{buf}▌")
-                } else {
-                    let v = &app.config.plugins.filetype_dir;
-                    if v.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        v.clone()
-                    }
-                }
-            } else {
-                let v = &app.config.plugins.filetype_dir;
-                if v.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    v.clone()
-                }
-            };
-            vec![
-                ("Visualizer plugin dir", viz_val),
-                ("Filetype plugin dir", ft_val),
-            ]
-        }
-
         // ── Media Library ─────────────────────────────────────────────────
-        3 => {
+        2 => {
             let startup_val = if app.config.media_library.rescan_on_startup {
                 "[ On  / Off ]  ●  On".to_string()
             } else {

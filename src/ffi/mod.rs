@@ -48,7 +48,6 @@ use crate::config::Config;
 use crate::engine::{Player, PlayerState};
 use crate::media_library::MediaLibrary;
 use crate::model::Playlist;
-use crate::plugin_manager::PluginManager;
 use crate::shuffle::ShuffleState;
 
 // ---------------------------------------------------------------------------
@@ -65,7 +64,6 @@ pub struct SparkampCtx {
     playlist: Playlist,
     config: Config,
     shuffle_state: ShuffleState,
-    plugin_manager: PluginManager,
     /// Sender half kept in the ctx so `sparkamp_scan_metadata` can clone it for
     /// each Rayon task.  Receiver half is polled in `sparkamp_tick`.
     meta_tx: mpsc::Sender<(usize, String, String, String)>,
@@ -128,8 +126,6 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     let mut shuffle_state = ShuffleState::new();
     shuffle_state.enabled = config.playback.shuffle_enabled;
 
-    let plugin_manager = PluginManager::new();
-
     let (meta_tx, meta_rx) = mpsc::channel();
     let (duration_tx, duration_rx) = mpsc::channel();
 
@@ -138,7 +134,6 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         playlist,
         config,
         shuffle_state,
-        plugin_manager,
         meta_tx,
         meta_rx,
         duration_tx,
