@@ -12012,16 +12012,33 @@ fn open_media_library_window(
                     return;
                 };
                 let path = std::path::Path::new(&t.path);
-                let needs_scan = crate::media_library::MediaLibrary::needs_metadata_scan(
-                    &t.path,
-                    t.last_scanned.as_deref(),
-                );
-                if needs_scan {
+                // Distinguish "never scanned" from "scanned but the file has
+                // since changed". Both previously showed ❓, which made an
+                // already-scanned file (with metadata + duration) look
+                // unscanned. ❓ now means only never-scanned; a changed file
+                // gets 🔄 ("rescan to refresh").
+                let never_scanned = t.last_scanned.is_none();
+                let changed = !never_scanned
+                    && crate::media_library::MediaLibrary::needs_metadata_scan(
+                        &t.path,
+                        t.last_scanned.as_deref(),
+                    );
+                if never_scanned {
                     lbl.set_label("❓");
+                    lbl.set_tooltip_text(Some(
+                        "Not scanned yet — metadata loads on the next scan",
+                    ));
+                } else if changed {
+                    lbl.set_label("🔄");
+                    lbl.set_tooltip_text(Some(
+                        "File changed since last scan — rescan to refresh its metadata",
+                    ));
                 } else if crate::media_library::is_read_only(path) {
                     lbl.set_label("🔒");
+                    lbl.set_tooltip_text(Some("Read-only file"));
                 } else {
                     lbl.set_label("");
+                    lbl.set_tooltip_text(None);
                 }
             });
 
