@@ -310,8 +310,10 @@ impl MediaLibrary {
         let conn = Connection::open(&db_path)
             .with_context(|| format!("open SQLite at {}", db_path.display()))?;
 
-        // Enable WAL mode for better concurrent read performance.
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        // Enable WAL mode for better concurrent read performance, and a busy
+        // timeout so a second connection (e.g. a background scan thread) waits
+        // for the write lock instead of failing with SQLITE_BUSY.
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
 
         let lib = Self { conn };
         lib.init_schema()?;
@@ -331,7 +333,7 @@ impl MediaLibrary {
     pub fn open_at(path: &std::path::Path) -> Result<Self> {
         let conn =
             Connection::open(path).with_context(|| format!("open SQLite at {}", path.display()))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
         let lib = Self { conn };
         lib.init_schema()?;
         Ok(lib)

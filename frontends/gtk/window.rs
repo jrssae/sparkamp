@@ -7735,9 +7735,15 @@ fn open_settings_window(
 
         rebuild_list();
 
+        // Filled once the Rescan button is built (below). Lets "Add Folder"
+        // trigger a rescan after a concurrent scan finishes.
+        let rescan_holder: Rc<RefCell<Option<Button>>> = Rc::new(RefCell::new(None));
+
         let rebuild_for_add = rebuild_list.clone();
         let status_for_add = status_lbl.clone();
         let state_for_add = state.clone();
+        let win_add = win.downgrade();
+        let rescan_holder_add = rescan_holder.clone();
         btn_add_folder.connect_clicked(move |_| {
             let dialog = gtk4::FileDialog::builder()
                 .title("Select Music Folder")
@@ -7745,8 +7751,9 @@ fn open_settings_window(
             let rebuild_cb = rebuild_for_add.clone();
             let status_rc = status_for_add.clone();
             let state_rc = state_for_add.clone();
+            let rescan_holder = rescan_holder_add.clone();
             dialog.select_folder(
-                None::<&gtk4::Window>,
+                win_add.upgrade().as_ref(),
                 None::<&gio::Cancellable>,
                 move |result| {
                     let path = match result {
@@ -7756,10 +7763,79 @@ fn open_settings_window(
                     let Some(path_str) = path else {
                         return;
                     };
-                    // Refuse to start a second concurrent scan — only one ML
-                    // scan may run at a time, from any source.
+                    // A scan is already running (only one metadata scan may run
+                    // at a time). Register + fast-scan the folder now so it
+                    // appears immediately, then queue a full rescan to pick up
+                    // its metadata once the current scan finishes.
                     if state_rc.borrow().ml_scan.is_some() {
-                        status_rc.set_text("Scan already in progress — please wait");
+                        let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                        let path_for_thread = path_str.clone();
+                        status_rc.set_text(
+                            "Adding folder — it will be scanned after the current scan finishes…",
+                        );
+                        let (fast_tx, fast_rx) =
+                            std::sync::mpsc::channel::<Result<(), String>>();
+                        std::thread::spawn(move || {
+                            let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    let _ = fast_tx.send(Err(format!("DB error: {e}")));
+                                    return;
+                                }
+                            };
+                            let folder_id = match lib.add_folder(&path_for_thread) {
+                                Ok(r) => r.id(),
+                                Err(e) => {
+                                    let _ = fast_tx.send(Err(format!("Could not add: {e}")));
+                                    return;
+                                }
+                            };
+                            if let Err(e) = lib.rescan_folder_fast(folder_id, &path_for_thread) {
+                                let _ = fast_tx.send(Err(format!("Fast scan error: {e}")));
+                                return;
+                            }
+                            let _ = fast_tx.send(Ok(()));
+                        });
+                        let fast_rx = std::cell::RefCell::new(fast_rx);
+                        let fast_done = std::cell::Cell::new(false);
+                        let rebuild_q = rebuild_cb.clone();
+                        let status_q = status_rc.clone();
+                        let state_q = state_rc.clone();
+                        let rescan_q = rescan_holder.clone();
+                        glib::timeout_add_local(
+                            std::time::Duration::from_millis(400),
+                            move || {
+                                if !fast_done.get() {
+                                    match fast_rx.borrow().try_recv() {
+                                        Ok(Ok(())) => {
+                                            fast_done.set(true);
+                                            rebuild_q();
+                                            if let Some(ref cb) =
+                                                state_q.borrow().rebuild_ml_callback
+                                            {
+                                                cb();
+                                            }
+                                            status_q.set_text("Folder added — waiting to scan…");
+                                        }
+                                        Ok(Err(e)) => {
+                                            status_q.set_text(&e);
+                                            return glib::ControlFlow::Break;
+                                        }
+                                        Err(_) => {}
+                                    }
+                                    return glib::ControlFlow::Continue;
+                                }
+                                // Fast add done; once the running scan ends,
+                                // trigger a rescan to scan the new folder.
+                                if state_q.borrow().ml_scan.is_none() {
+                                    if let Some(btn) = rescan_q.borrow().as_ref() {
+                                        btn.emit_clicked();
+                                    }
+                                    return glib::ControlFlow::Break;
+                                }
+                                glib::ControlFlow::Continue
+                            },
+                        );
                         return;
                     }
                     let path_for_thread = path_str.clone();
@@ -7874,6 +7950,7 @@ fn open_settings_window(
         let btn_rm_rebuild = rebuild_list.clone();
         let btn_rm_status = status_lbl.clone();
         let btn_rm_list = folder_list.clone();
+        let btn_rm_win = win.downgrade();
         btn_remove.connect_clicked(move |_| {
             let idx = btn_rm_list.selected_row().map(|r| r.index() as usize);
             if let Some(idx) = idx {
@@ -7890,6 +7967,7 @@ fn open_settings_window(
                     let state_for_dialog = btn_rm_state.clone();
                     let rebuild_for_dialog = btn_rm_rebuild.clone();
                     let status_for_dialog = btn_rm_status.clone();
+                    let win_for_dialog = btn_rm_win.clone();
 
                     let dialog = gtk4::AlertDialog::builder()
                         .message("Remove Folder from Library")
@@ -7904,20 +7982,25 @@ fn open_settings_window(
                     let folder_path_cb = folder_path.clone();
 
                     dialog.choose(
-                        None::<&gtk4::Window>,
+                        win_for_dialog.upgrade().as_ref(),
                         None::<&gio::Cancellable>,
                         move |result| {
                             if result == Ok(1) {
                                 status_for_dialog.set_text(&format!("Removing: {}", folder_path_cb));
 
-                                // Soft delete tracks on main thread
+                                // Soft-delete the tracks AND delete the folder
+                                // row on the main thread so the watched-folder
+                                // list reflects the removal immediately (the
+                                // folder row is what `list_folders` reads). The
+                                // heavy purge runs in the background.
                                 if let Some(ref lib) = state_for_dialog.borrow().media_lib {
                                     if let Ok(track_ids) = lib.track_ids_for_folder(folder_id_cb) {
                                         let _ = lib.soft_delete_tracks(&track_ids);
                                     }
+                                    let _ = lib.remove_folder(folder_id_cb);
                                 }
 
-                                // Rebuild UI immediately
+                                // Rebuild UI immediately — folder is now gone.
                                 rebuild_for_dialog();
                                 status_for_dialog.set_text(&format!("Removed: {}", folder_path_cb));
 
@@ -7926,18 +8009,13 @@ fn open_settings_window(
                                     cb();
                                 }
 
-                                // Background: purge deleted tracks, then delete folder
+                                // Background: purge the soft-deleted track rows.
                                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
-                                let folder_id_bg = folder_id_cb;
-
                                 std::thread::spawn(move || {
                                     if let Ok(lib) =
                                         crate::media_library::MediaLibrary::open_at(&db_path)
                                     {
-                                        // Purge all soft-deleted records
                                         let _ = lib.purge_deleted_tracks();
-                                        // Then delete the folder entry
-                                        let _ = lib.remove_folder(folder_id_bg);
                                     }
                                 });
                             }
@@ -7960,6 +8038,8 @@ fn open_settings_window(
         let btn_rescan = Button::with_label("⟳ Rescan");
         let btn_cancel_scan = Button::with_label("✕ Cancel Scan");
         btn_cancel_scan.set_visible(false);
+        // Let "Add Folder" trigger a rescan once a concurrent scan finishes.
+        *rescan_holder.borrow_mut() = Some(btn_rescan.clone());
 
         let status_scan = Label::new(None);
         status_scan.set_halign(Align::Start);
