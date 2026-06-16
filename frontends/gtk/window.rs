@@ -12012,23 +12012,25 @@ fn open_media_library_window(
                     return;
                 };
                 let path = std::path::Path::new(&t.path);
-                // Distinguish "never scanned" from "scanned but the file has
-                // since changed". Both previously showed ❓, which made an
-                // already-scanned file (with metadata + duration) look
-                // unscanned. ❓ now means only never-scanned; a changed file
-                // gets 🔄 ("rescan to refresh").
-                let never_scanned = t.last_scanned.is_none();
-                let changed = !never_scanned
-                    && crate::media_library::MediaLibrary::needs_metadata_scan(
-                        &t.path,
-                        t.last_scanned.as_deref(),
-                    );
-                if never_scanned {
+                // A row can carry a `last_scanned` timestamp yet have no real
+                // metadata: `update_last_scanned` runs after every scan pass
+                // even when extraction produced nothing (e.g. the duration
+                // probe failed). So "scanned" for the status glyph means
+                // metadata was actually extracted — duration is the reliable
+                // tell — not merely that a timestamp exists.
+                //   ❓ never (properly) scanned — no metadata
+                //   🔄 scanned, but the file changed since (rescan to refresh)
+                //   🔒 read-only
+                let scanned = t.length_secs.is_some() && t.last_scanned.is_some();
+                if !scanned {
                     lbl.set_label("❓");
                     lbl.set_tooltip_text(Some(
                         "Not scanned yet — metadata loads on the next scan",
                     ));
-                } else if changed {
+                } else if crate::media_library::MediaLibrary::needs_metadata_scan(
+                    &t.path,
+                    t.last_scanned.as_deref(),
+                ) {
                     lbl.set_label("🔄");
                     lbl.set_tooltip_text(Some(
                         "File changed since last scan — rescan to refresh its metadata",
