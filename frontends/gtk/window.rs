@@ -1569,9 +1569,9 @@ pub fn build(
         time_row.add_controller(click);
     }
 
-    // Mini visualizer — a Stack holding the Cairo DrawingArea (Bars / Waveform
-    // / plugin scanline) and a Picture (Granite plasma RGBA buffer). The
-    // visible child is swapped to match the active visualizer mode.
+    // Mini visualizer — a Stack holding the Cairo DrawingArea (Bars / Waveform)
+    // and a Picture (Granite plasma RGBA buffer). The visible child is swapped
+    // to match the active visualizer mode.
     let viz = DrawingArea::new();
     viz.set_content_height(52);
     viz.set_valign(Align::Center);
@@ -4177,9 +4177,8 @@ pub fn build(
                 }
             }
 
-            // 5. Trigger a Cairo repaint of the visualizer (Bars / Waveform /
-            // plugin scanline). Granite renders into a Picture instead — see
-            // step 5b below.
+            // 5. Trigger a Cairo repaint of the visualizer (Bars / Waveform).
+            // Granite renders into a Picture instead — see step 5b below.
             viz.queue_draw();
 
             // 5b. Granite plasma path. Cheap when not the active mode (the

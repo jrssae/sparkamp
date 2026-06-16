@@ -8,7 +8,7 @@
 
 ## 1. Philosophy & Goals
 
-The macOS port must feel like a first-class native application, not a Linux app bolted onto macOS. The GTK4 frontend is not available on macOS; it is replaced with a SwiftUI frontend. The Rust core — the audio engine, playlist model, config persistence, media library, ID3 editor, shuffle/repeat logic, and plugin ABI — stays Rust and is shared byte-for-byte between the Linux and macOS builds. No features are dropped.
+The macOS port must feel like a first-class native application, not a Linux app bolted onto macOS. The GTK4 frontend is not available on macOS; it is replaced with a SwiftUI frontend. The Rust core — the audio engine, playlist model, config persistence, media library, ID3 editor, and shuffle/repeat logic — stays Rust and is shared byte-for-byte between the Linux and macOS builds. No features are dropped.
 
 The TUI (`sparkamp` without `--ui`) is already cross-platform and will work on macOS without any changes. The macOS GUI port is separate from and does not disturb the TUI.
 
@@ -29,11 +29,10 @@ Key constraints:
 ```
 src/               ← Core Rust (engine, model, config, controller,
                      media_library, shuffle, id3_editor, dedupe,
-                     plugin_abi, duration_cache, duration_probe, skin)
+                     granite, duration_cache, duration_probe, skin)
 frontends/
   gtk/             ← GTK4 GUI (Linux only)
   tui/             ← Terminal UI (cross-platform, no changes needed)
-plugins/           ← .so visualizer/filetype plugins
 ```
 
 ### 2.2 Target structure after port
@@ -365,7 +364,7 @@ Open fullscreen via `f` key or double-click on the mini visualizer.
 
 #### 2.4 `a` key: cycle visualizer mode
 
-Same as GTK: Bars → Waveform → (plugin 1 if any) → … → Bars.
+Same as GTK: Bars → Waveform → Bars.
 
 #### 2.5 Tests
 
@@ -492,7 +491,6 @@ The settings panel is a `Form`-based window with sections:
 | **Behavior** | Playlist add behavior (Append/Replace); Autoplay on add |
 | **Visualizer** | Mode selector (Bars/Waveform); Bars: band count (10–64); Waveform: style (Lines/Filled), zone count (1–6), color pickers for each zone |
 | **Media Library** | Watch folder list (add/remove); Rescan interval |
-| **Plugins** | Visualizer plugin directory; Filetype plugin directory (deferred — see Milestone 10) |
 
 #### 5.3 macOS-specific notes
 
@@ -705,46 +703,6 @@ void sparkamp_open_file_location(const char* path);               // Finder reve
 - [ ] Closing window during scan shows confirmation dialog
 - [ ] "Add to Playlist" appends all group tracks
 
-
----
-
-### Milestone 10 — Plugin System (Visualizer + Filetype Plugins)
-
-**Goal:** Load `.dylib` visualizer and filetype plugins on macOS. The ABI is already defined and cross-platform (C FFI). `libloading` works on macOS.
-
-#### 10.1 Changes needed
-
-- Ensure `libloading` load path accepts `.dylib` extension (it does; it checks `dlopen`)
-- Plugin directory defaults to `~/Library/Application Support/sparkamp/plugins/` on macOS (already handled by `dirs::data_dir()`)
-- Test with the `viz_granite` plugin compiled as a macOS `.dylib`
-
-#### 10.2 FFI additions
-
-```c
-// Plugin management
-int    sparkamp_plugin_count(SparkampCtx*);
-char*  sparkamp_plugin_name(SparkampCtx*, int index);
-void   sparkamp_plugin_install(SparkampCtx*, const char* dylib_path);
-void   sparkamp_plugin_uninstall(SparkampCtx*, int index);
-
-// Visualizer plugin rendering (for plugin-drawn canvas on macOS)
-void   sparkamp_viz_plugin_render(SparkampCtx*, int plugin_index,
-                                   float* out_values, int len);
-// Fullscreen plugin callback
-void   sparkamp_viz_plugin_fullscreen(SparkampCtx*, int plugin_index,
-                                       void* native_view_handle);
-```
-
-#### 10.3 SwiftUI integration
-
-Plugin visualizers that render their own frames: expose a `CAMetalLayer` or `NSView` raw pointer via `sparkamp_viz_plugin_fullscreen`. The plugin is responsible for rendering into it (same model as the Linux GTK `DrawingArea` pointer).
-
-#### 10.4 Tests
-
-- [ ] `viz_granite.dylib` loads without crash
-- [ ] Plugin renders in mini visualizer slot
-- [ ] Plugin renders in fullscreen mode
-- [ ] Plugin settings (speed, palette, feedback) persist
 
 ---
 

@@ -54,9 +54,6 @@ anyhow = "1"
 # Random number generation (shuffle)
 rand = "0.8"
 
-# Dynamic library loading (visualizer + filetype plugins)
-libloading = "0.8"
-
 # Media library database (SQLite, bundled so no system dep needed)
 rusqlite = { version = "0.31", features = ["bundled"] }
 
