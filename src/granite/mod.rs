@@ -157,30 +157,44 @@ const SWITCH_INTERVAL_MAX: u64 = 720;  // 24 s
 
 impl Granite {
     /// Allocate a renderer for `w × h` pixels.
+    ///
+    /// Seeded from system entropy so every play session gets a different
+    /// effect / palette / shape combination and switch sequence. Tests that
+    /// need reproducibility use [`Self::new_seeded`].
     pub fn new(w: u32, h: u32) -> Self {
+        Self::new_seeded(w, h, rand::random::<u64>())
+    }
+
+    /// Like [`Self::new`] but with an explicit RNG seed for reproducible tests.
+    pub fn new_seeded(w: u32, h: u32, seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        // Randomize the *starting* effect / palette / shape too — otherwise the
+        // visualizer always opens on the same Plasma / Granite / Line combo
+        // before the scheduler's first switch.
+        let current = random_other_effect(GraniteEffect::Plasma, &mut rng);
+        let current_palette = random_other_palette(GranitePalette::Granite, &mut rng);
+        let current_shape = random_other_shape(WaveShape::Line, &mut rng);
         let mut g = Granite {
             prev: Vec::new(),
             curr: Vec::new(),
             w: 0,
             h: 0,
             frame: 0,
-            current: GraniteEffect::Plasma,
+            current,
             next: None,
             map_current: WarpMap::empty(),
             map_next: None,
-            current_palette: GranitePalette::Granite,
+            current_palette,
             next_palette: None,
-            current_shape: WaveShape::Line,
-            // Seeded for reproducible unit tests; switch cadence is still
-            // perceived as "random" over a multi-minute play session.
+            current_shape,
             switch_at_frame: SWITCH_INTERVAL_MIN,
             crossfade_remaining: 0,
-            rng: StdRng::seed_from_u64(0xC0FFEE),
+            rng,
             beat: BeatDetector::new(),
             beat_glow: 0.0,
             downbeat_glow: 0.0,
             palette_fade_remaining: 0,
-            palette_fade_from: GranitePalette::Granite,
+            palette_fade_from: current_palette,
             palette_hold_until: 0,
             last_switch_frame: 0,
         };
@@ -486,6 +500,12 @@ mod tests {
         vec![0u8; (w * h * 4) as usize]
     }
 
+    /// Fixed-seed renderer so tests stay reproducible (production `new` seeds
+    /// from entropy). Two instances built this way are byte-identical.
+    fn gnew(w: u32, h: u32) -> Granite {
+        Granite::new_seeded(w, h, 0xC0FFEE)
+    }
+
     fn luminance_total(buf: &[u8]) -> u64 {
         buf.chunks_exact(4)
             .map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64)
@@ -500,7 +520,7 @@ mod tests {
 
     #[test]
     fn render_active_writes_nonzero() {
-        let mut g = Granite::new(64, 36);
+        let mut g = gnew(64, 36);
         let mut dst = buf_for(64, 36);
         g.render(&mut dst, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default());
         assert!(luminance_total(&dst) > 0);
@@ -516,7 +536,7 @@ mod tests {
             feedback: 0.8,
             ..Default::default()
         };
-        let mut g = Granite::new(64, 36);
+        let mut g = gnew(64, 36);
         let mut dst = buf_for(64, 36);
         g.render(&mut dst, 64, 36, 0.0, true, &test_wave(), &cfg);
         let initial = luminance_total(&dst);
@@ -539,7 +559,7 @@ mod tests {
 
     #[test]
     fn inactive_decays_to_black() {
-        let mut g = Granite::new(32, 18);
+        let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
         for f in 0..3 {
             g.render(&mut dst, 32, 18, f as f32 / 30.0, true, &test_wave(),
@@ -557,7 +577,7 @@ mod tests {
 
     #[test]
     fn palettes_produce_in_range_bytes() {
-        let mut g = Granite::new(48, 27);
+        let mut g = gnew(48, 27);
         let mut dst = buf_for(48, 27);
         for palette in ALL_PALETTES {
             let cfg = GraniteConfig { palette, auto_switch: false, ..Default::default() };
@@ -572,7 +592,7 @@ mod tests {
 
     #[test]
     fn resize_clears_prev_and_no_panic() {
-        let mut g = Granite::new(64, 36);
+        let mut g = gnew(64, 36);
         let mut dst1 = buf_for(64, 36);
         g.render(&mut dst1, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default());
 
@@ -591,8 +611,8 @@ mod tests {
     fn render_is_deterministic() {
         let cfg = GraniteConfig { auto_switch: false, ..Default::default() };
         let wave = test_wave();
-        let mut g1 = Granite::new(32, 18);
-        let mut g2 = Granite::new(32, 18);
+        let mut g1 = gnew(32, 18);
+        let mut g2 = gnew(32, 18);
         let mut a = buf_for(32, 18);
         let mut b = buf_for(32, 18);
         for f in 0..10 {
@@ -610,8 +630,8 @@ mod tests {
         let cfg = GraniteConfig::default();
         let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
         let kick: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
-        let mut g1 = Granite::new(32, 18);
-        let mut g2 = Granite::new(32, 18);
+        let mut g1 = gnew(32, 18);
+        let mut g2 = gnew(32, 18);
         let mut a = buf_for(32, 18);
         let mut b = buf_for(32, 18);
         for f in 0..60 {
@@ -629,7 +649,7 @@ mod tests {
         let cfg = GraniteConfig::default(); // auto_switch on
         let quiet: Vec<f32> = (0..512).map(|i| (i as f32 * 0.5).sin() * 0.05).collect();
         let kick: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
-        let mut g = Granite::new(32, 18);
+        let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
         g.render(&mut dst, 32, 18, 0.0, true, &quiet, &cfg);
         g.set_palette(GranitePalette::Crt);
@@ -647,7 +667,7 @@ mod tests {
     fn random_switch_changes_effect() {
         let cfg = GraniteConfig { auto_switch: true, ..Default::default() };
         let wave = test_wave();
-        let mut g = Granite::new(32, 18);
+        let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
         g.render(&mut dst, 32, 18, 0.0, true, &wave, &cfg);
         let before = g.active_effect();
@@ -668,7 +688,7 @@ mod tests {
         let mut hashes: HashSet<u64> = HashSet::new();
         let wave = test_wave();
         for effect in ALL_EFFECTS.iter().copied() {
-            let mut g = Granite::new(48, 27);
+            let mut g = gnew(48, 27);
             let mut dst = buf_for(48, 27);
             let cfg = GraniteConfig { auto_switch: false, effect, ..Default::default() };
             // Several frames so each map's flow visibly diverges.
@@ -688,7 +708,7 @@ mod tests {
         // Fullscreen-sized internal buffer; must stay well inside the 33 ms
         // frame budget in release. Debug builds are 10-30× slower — that is
         // why the Xcode build phase always compiles the Rust core --release.
-        let mut g = Granite::new(576, 360);
+        let mut g = gnew(576, 360);
         let mut dst = buf_for(576, 360);
         let wave = test_wave();
         let cfg = GraniteConfig::default();
@@ -709,7 +729,7 @@ mod tests {
     fn auto_switch_changes_effect_within_max_interval() {
         let cfg = GraniteConfig { auto_switch: true, ..Default::default() };
         let wave = test_wave();
-        let mut g = Granite::new(16, 9);
+        let mut g = gnew(16, 9);
         let mut dst = buf_for(16, 9);
         let start = g.active_effect();
         // Run enough frames to guarantee at least one switch + crossfade
