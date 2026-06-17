@@ -176,6 +176,7 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
             read_only,
             ejectable,
             backend_id: path.as_str().to_string(),
+            backend: super::DeviceBackend::Udisks,
         });
     }
     // Stable, name-first ordering so the sidebar and overview list devices

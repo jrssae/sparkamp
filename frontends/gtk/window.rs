@@ -11747,14 +11747,17 @@ fn open_media_library_window(
             } else {
                 dev.id.clone()
             };
+            // Backend-specific IO (POSIX today; gio/MTP later) — move it onto the
+            // worker thread for the blocking scan.
+            let io = crate::devices::io::for_device(&dev);
             glib::spawn_future_local(async move {
-                let mount_w = mount.clone();
                 let (mut tracks, pl_count) = gio::spawn_blocking(move || {
-                    let tracks = crate::devices::browse::list_audio_files(&mount_w)
+                    let tracks = io
+                        .list_audio_files()
                         .iter()
                         .map(|p| crate::devices::browse::read_device_track(p))
                         .collect::<Vec<crate::media_library::LibTrack>>();
-                    let pl_count = crate::devices::browse::device_playlist_files(&mount_w).len();
+                    let pl_count = io.playlist_files().len();
                     (tracks, pl_count)
                 })
                 .await
