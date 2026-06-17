@@ -807,6 +807,16 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Capacity LevelBar fullness colors (filled portion).
     writeln!(css, "levelbar.cap-warn trough block.filled {{ background-color: #d08a16; }}").unwrap();
     writeln!(css, "levelbar.cap-full trough block.filled {{ background-color: {broken}; }}").unwrap();
+    // Device playlist filter chips (grouped toggle buttons).
+    writeln!(css, ".device-chips {{ padding: 2px 0; }}").unwrap();
+    writeln!(css, "button.device-chip {{ \
+        background-color: {btn}; background-image: none; color: {btext}; \
+        border: 1px solid {border}; border-radius: 999px; padding: 2px 12px; \
+        min-height: 0; \
+    }}").unwrap();
+    writeln!(css, "button.device-chip:checked {{ \
+        background-color: {hl}; color: {text}; border-color: {hl}; \
+    }}").unwrap();
     writeln!(css, ".info-text {{ \
         color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
         padding: 6px; border-radius: 3px; \

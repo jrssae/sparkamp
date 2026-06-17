@@ -11003,15 +11003,16 @@ fn open_media_library_window(
         .build();
     dev_pl_header.add_css_class("ml-section-header");
     dev_detail.append(&dev_pl_header);
-    let dev_pl_filter = ListBox::new();
-    dev_pl_filter.add_css_class("rich-list");
-    dev_pl_filter.set_selection_mode(gtk4::SelectionMode::Single);
+    // Filter chips: "All files" + one toggle per device .m3u/.m3u8 (grouped so
+    // exactly one is active, radio-style). Rebuilt per device by
+    // reload_dev_playlists; the active chip drives the track filter.
+    let dev_pl_chips = GtkBox::new(Orientation::Horizontal, 4);
+    dev_pl_chips.add_css_class("device-chips");
     let dev_pl_scroll = ScrolledWindow::builder()
-        .hscrollbar_policy(PolicyType::Never)
-        .vscrollbar_policy(PolicyType::Automatic)
-        .max_content_height(110)
+        .hscrollbar_policy(PolicyType::Automatic)
+        .vscrollbar_policy(PolicyType::Never)
         .propagate_natural_height(true)
-        .child(&dev_pl_filter)
+        .child(&dev_pl_chips)
         .build();
     dev_detail.append(&dev_pl_scroll);
 
@@ -11341,36 +11342,72 @@ fn open_media_library_window(
     // Rebuild the device playlist-filter rows ("All files" + each device
     // .m3u/.m3u8) for a mount. Shared by the device-select handler and the
     // playlist-send completion so a just-copied playlist appears immediately.
-    let reload_dev_playlists: Rc<dyn Fn(std::path::PathBuf)> = {
-        let filter = dev_pl_filter.clone();
-        Rc::new(move |mount: std::path::PathBuf| {
-            while let Some(r) = filter.row_at_index(0) {
-                filter.remove(&r);
+    // Apply a playlist filter to the device track view by name ("all" clears
+    // it; otherwise the device .m3u/.m3u8 path). Shared by every filter chip.
+    let apply_pl_filter: Rc<dyn Fn(&str)> = {
+        let positions = dev_pl_positions.clone();
+        let filter = dev_filter.clone();
+        let pos_col = dev_pos_col.clone();
+        let col_view = dev_col_view.clone();
+        Rc::new(move |name: &str| {
+            if name == "all" || name.is_empty() {
+                *positions.borrow_mut() = None;
+                pos_col.set_visible(false);
+                col_view.sort_by_column(None::<&ColumnViewColumn>, gtk4::SortType::Ascending);
+            } else {
+                let order =
+                    crate::devices::browse::playlist_entry_order(std::path::Path::new(name));
+                let mut map: std::collections::HashMap<String, i64> =
+                    std::collections::HashMap::new();
+                for (i, fname) in order.into_iter().enumerate() {
+                    map.entry(fname).or_insert((i + 1) as i64);
+                }
+                *positions.borrow_mut() = Some(map);
+                pos_col.set_visible(true);
+                col_view.sort_by_column(Some(&pos_col), gtk4::SortType::Ascending);
             }
-            let mk_row = |name: &str, label: &str| {
-                let lbl = Label::builder()
-                    .label(&gtk_safe(label))
-                    .halign(Align::Start)
-                    .xalign(0.0)
-                    .margin_start(6)
-                    .margin_end(6)
-                    .margin_top(2)
-                    .margin_bottom(2)
-                    .build();
-                let row = ListBoxRow::new();
-                row.set_widget_name(name);
-                row.set_child(Some(&lbl));
-                row
+            filter.changed(gtk4::FilterChange::Different);
+        })
+    };
+
+    let reload_dev_playlists: Rc<dyn Fn(std::path::PathBuf)> = {
+        let chips = dev_pl_chips.clone();
+        let apply = apply_pl_filter.clone();
+        Rc::new(move |mount: std::path::PathBuf| {
+            while let Some(c) = chips.first_child() {
+                chips.remove(&c);
+            }
+            let mk_chip = |label: &str,
+                           name: String,
+                           group: Option<&gtk4::ToggleButton>|
+             -> gtk4::ToggleButton {
+                let b = gtk4::ToggleButton::with_label(label);
+                b.add_css_class("device-chip");
+                if let Some(g) = group {
+                    b.set_group(Some(g));
+                }
+                let apply2 = apply.clone();
+                b.connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        apply2(&name);
+                    }
+                });
+                b
             };
-            filter.append(&mk_row("all", "All files"));
+            let all = mk_chip("All files", "all".to_string(), None);
+            chips.append(&all);
             for pl in crate::devices::browse::device_playlist_files(&mount) {
                 let nm = pl
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                filter.append(&mk_row(&pl.to_string_lossy(), &nm));
+                let chip =
+                    mk_chip(&gtk_safe(&nm), pl.to_string_lossy().into_owned(), Some(&all));
+                chips.append(&chip);
             }
-            filter.select_row(filter.row_at_index(0).as_ref());
+            // Default to "All files" (also applies the cleared filter).
+            all.set_active(true);
+            apply(&"all".to_string());
         })
     };
 
@@ -11761,37 +11798,6 @@ fn open_media_library_window(
             false
         });
         dev_tracks_scroll.add_controller(dt);
-    }
-
-    // Selecting a playlist filters the track view to its entries and sorts by
-    // playlist order; "All files" clears the filter and the order column.
-    {
-        let positions = dev_pl_positions.clone();
-        let filter = dev_filter.clone();
-        let pos_col = dev_pos_col.clone();
-        let col_view = dev_col_view.clone();
-        dev_pl_filter.connect_row_selected(move |_, opt| {
-            let Some(row) = opt else { return };
-            let name = row.widget_name().to_string();
-            if name == "all" || name.is_empty() {
-                *positions.borrow_mut() = None;
-                pos_col.set_visible(false);
-                col_view.sort_by_column(None::<&ColumnViewColumn>, gtk4::SortType::Ascending);
-            } else {
-                let order = crate::devices::browse::playlist_entry_order(std::path::Path::new(
-                    &name,
-                ));
-                let mut map: std::collections::HashMap<String, i64> =
-                    std::collections::HashMap::new();
-                for (i, fname) in order.into_iter().enumerate() {
-                    map.entry(fname).or_insert((i + 1) as i64);
-                }
-                *positions.borrow_mut() = Some(map);
-                pos_col.set_visible(true);
-                col_view.sort_by_column(Some(&pos_col), gtk4::SortType::Ascending);
-            }
-            filter.changed(gtk4::FilterChange::Different);
-        });
     }
 
     dev_page.append(&dev_detail);
