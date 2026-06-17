@@ -792,6 +792,21 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         padding: 1px 8px; font-size: {fs}px; \
     }}").unwrap();
     writeln!(css, ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}").unwrap();
+    // Device detail page: header band, storage section, bottom status bar.
+    writeln!(css, ".device-detail-header {{ \
+        background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
+        padding: 10px 12px; \
+    }}").unwrap();
+    writeln!(css, ".device-detail-name {{ \
+        color: {text}; font-size: {fs}px; font-weight: bold; \
+    }}").unwrap();
+    writeln!(css, ".device-section {{ padding: 4px 2px; }}").unwrap();
+    writeln!(css, ".device-statusbar {{ \
+        border-top: 1px solid {border}; padding: 4px 2px; \
+    }}").unwrap();
+    // Capacity LevelBar fullness colors (filled portion).
+    writeln!(css, "levelbar.cap-warn trough block.filled {{ background-color: #d08a16; }}").unwrap();
+    writeln!(css, "levelbar.cap-full trough block.filled {{ background-color: {broken}; }}").unwrap();
     writeln!(css, ".info-text {{ \
         color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
         padding: 6px; border-radius: 3px; \

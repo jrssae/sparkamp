@@ -10203,6 +10203,18 @@ fn apply_card_progress(bar: &gtk4::ProgressBar, state: Option<(usize, usize)>) {
     }
 }
 
+/// Color a capacity LevelBar by fullness: normal < 75%, `cap-warn` ≥ 75%,
+/// `cap-full` ≥ 90%. The classes are styled in `skin.rs`.
+fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
+    bar.remove_css_class("cap-warn");
+    bar.remove_css_class("cap-full");
+    if used >= 0.90 {
+        bar.add_css_class("cap-full");
+    } else if used >= 0.75 {
+        bar.add_css_class("cap-warn");
+    }
+}
+
 /// "N songs · M playlists" with singular/plural agreement.
 fn counts_text(songs: usize, playlists: usize) -> String {
     format!(
@@ -10911,24 +10923,15 @@ fn open_media_library_window(
     let dev_detail = GtkBox::new(Orientation::Vertical, 8);
     dev_detail.set_visible(false);
 
-    let dev_title = Label::builder().halign(Align::Start).xalign(0.0).build();
-    dev_title.add_css_class("ml-section-header");
-    let dev_sync = Button::with_label("Sync");
-    dev_sync.add_css_class("pl-btn");
-    dev_sync.set_sensitive(false);
-    let dev_eject = Button::with_label("Eject");
-    dev_eject.add_css_class("pl-btn");
-    dev_eject.set_sensitive(false);
-    let dev_hdr_row = GtkBox::new(Orientation::Horizontal, 8);
-    dev_hdr_row.append(&dev_title);
-    let dev_spring = GtkBox::new(Orientation::Horizontal, 0);
-    dev_spring.set_hexpand(true);
-    dev_hdr_row.append(&dev_spring);
-    dev_hdr_row.append(&dev_sync);
-    dev_hdr_row.append(&dev_eject);
-    dev_detail.append(&dev_hdr_row);
+    // Header band: device icon · name + (filesystem · path) · status badges ·
+    // Sync / Eject. Populated by the device-select handler.
+    let dev_icon = Image::from_icon_name("drive-removable-media");
+    dev_icon.set_pixel_size(40);
+    dev_icon.set_valign(Align::Center);
 
-    // Mount path (selectable so it can be copied), then filesystem + free space.
+    let dev_title = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_title.add_css_class("device-detail-name");
+    // Filesystem + mount path subtitle (selectable so the path can be copied).
     let dev_path = Label::builder()
         .halign(Align::Start)
         .xalign(0.0)
@@ -10936,37 +10939,56 @@ fn open_media_library_window(
         .ellipsize(gtk4::pango::EllipsizeMode::Middle)
         .build();
     dev_path.add_css_class("status-label");
-    dev_detail.append(&dev_path);
+    let dev_title_box = GtkBox::new(Orientation::Vertical, 0);
+    dev_title_box.set_hexpand(true);
+    dev_title_box.set_valign(Align::Center);
+    dev_title_box.append(&dev_title);
+    dev_title_box.append(&dev_path);
 
-    let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
-    dev_capacity.add_css_class("status-label");
-    dev_detail.append(&dev_capacity);
+    let dev_ro_badge = Label::new(Some("🔒 Read-only"));
+    dev_ro_badge.add_css_class("device-badge");
+    dev_ro_badge.set_valign(Align::Center);
+    dev_ro_badge.set_visible(false);
+    let dev_warn_badge = Label::new(Some("⚠ Unsupported"));
+    dev_warn_badge.add_css_class("device-badge");
+    dev_warn_badge.add_css_class("device-badge-warn");
+    dev_warn_badge.set_valign(Align::Center);
+    dev_warn_badge.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+    dev_warn_badge.set_visible(false);
+
+    let dev_sync = Button::with_label("Sync");
+    dev_sync.add_css_class("pl-btn");
+    dev_sync.set_valign(Align::Center);
+    dev_sync.set_sensitive(false);
+    let dev_eject = Button::with_label("Eject");
+    dev_eject.add_css_class("pl-btn");
+    dev_eject.set_valign(Align::Center);
+    dev_eject.set_sensitive(false);
+
+    let dev_hdr_row = GtkBox::new(Orientation::Horizontal, 10);
+    dev_hdr_row.add_css_class("device-detail-header");
+    dev_hdr_row.append(&dev_icon);
+    dev_hdr_row.append(&dev_title_box);
+    dev_hdr_row.append(&dev_ro_badge);
+    dev_hdr_row.append(&dev_warn_badge);
+    dev_hdr_row.append(&dev_sync);
+    dev_hdr_row.append(&dev_eject);
+    dev_detail.append(&dev_hdr_row);
+
+    // Storage section: capacity bar + used/free/total text.
     let dev_levelbar = gtk4::LevelBar::new();
     dev_levelbar.set_min_value(0.0);
     dev_levelbar.set_max_value(1.0);
-    dev_detail.append(&dev_levelbar);
-
-    // Unsupported-filesystem warning (NTFS / exFAT) — shown only for those.
-    let dev_warn = Label::builder()
-        .halign(Align::Start)
-        .xalign(0.0)
-        .wrap(true)
-        .visible(false)
-        .build();
-    dev_warn.add_css_class("broken");
-    dev_detail.append(&dev_warn);
-
-    let dev_hint = Label::builder()
-        .label("")
-        .halign(Align::Start)
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    dev_hint.add_css_class("status-label");
-    dev_detail.append(&dev_hint);
+    let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_capacity.add_css_class("status-label");
+    let dev_storage = GtkBox::new(Orientation::Vertical, 4);
+    dev_storage.add_css_class("device-section");
+    dev_storage.append(&dev_levelbar);
+    dev_storage.append(&dev_capacity);
+    dev_detail.append(&dev_storage);
 
     // Copy progress bar — shown only while files are being copied to this
-    // device, alongside the "(x/y)" text in the hint label.
+    // device; carries an "x/y · filename" label.
     let dev_progress = gtk4::ProgressBar::new();
     dev_progress.set_show_text(true);
     dev_progress.set_visible(false);
@@ -10992,6 +11014,28 @@ fn open_media_library_window(
         .child(&dev_pl_filter)
         .build();
     dev_detail.append(&dev_pl_scroll);
+
+    // Bottom status bar (Finder-style): song count + unsupported note. Appended
+    // after the track view (below). `dev_hint` is also reused for live copy
+    // status ("Copying x/y…").
+    let dev_hint = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .build();
+    dev_hint.add_css_class("status-label");
+    let dev_warn = Label::builder()
+        .halign(Align::End)
+        .xalign(1.0)
+        .visible(false)
+        .build();
+    dev_warn.add_css_class("broken");
+    let dev_statusbar = GtkBox::new(Orientation::Horizontal, 8);
+    dev_statusbar.add_css_class("device-statusbar");
+    dev_statusbar.append(&dev_hint);
+    dev_statusbar.append(&dev_warn);
 
     // Track view mirroring the files-view columns, populated from device tags.
     let dev_store = gio::ListStore::new::<glib::BoxedAnyObject>();
@@ -11341,6 +11385,7 @@ fn open_media_library_window(
         let reload_pls = reload_dev_playlists.clone();
         let sel_backend = selected_dev_backend.clone();
         let update_card = update_card_progress.clone();
+        let eject = dev_eject.clone();
         let win_wk = win.downgrade();
         Rc::new(move |dev: crate::devices::Device, playlist_id: i64, name: String| {
             let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
@@ -11394,18 +11439,25 @@ fn open_media_library_window(
             let reload_pls2 = reload_pls.clone();
             let sel2 = sel_backend.clone();
             let update_card2 = update_card.clone();
+            let eject2 = eject.clone();
+            let dev_ejectable = dev.ejectable;
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
                 let mut entries: Vec<String> = Vec::new();
                 let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+                let on_dev = sel2.borrow().as_deref() == Some(backend.as_str());
+                if on_dev {
+                    eject2.set_sensitive(false); // no eject mid-copy
+                }
                 for (i, src) in srcs.iter().enumerate() {
                     let prog = format!("{}/{}", i + 1, total);
                     set_row_label(&format!("{row_base} — {prog}"));
                     update_card2(&backend, Some((i + 1, total)));
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                        hint2.set_text(&format!("Copying {prog}…"));
+                        let fname = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        hint2.set_text(&format!("Copying {prog} · {fname}"));
                         progress2.set_visible(true);
-                        progress2.set_text(Some(&prog));
+                        progress2.set_text(Some(&format!("{prog} · {fname}")));
                         progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                     }
                     // Plan on the main thread (DB), copy on a worker thread.
@@ -11441,6 +11493,9 @@ fn open_media_library_window(
                 set_row_label(&row_base);
                 progress2.set_visible(false);
                 update_card2(&backend, None);
+                if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                    eject2.set_sensitive(dev_ejectable);
+                }
                 reload2(dev_for_reload.clone());
                 // Refresh the playlist filter so the just-written .m3u8 shows
                 // immediately, without needing to reselect the device.
@@ -11470,6 +11525,7 @@ fn open_media_library_window(
         let reload = reload_device_store.clone();
         let sel_backend = selected_dev_backend.clone();
         let update_card = update_card_progress.clone();
+        let eject = dev_eject.clone();
         let win_wk = win.downgrade();
         Rc::new(move |dev: crate::devices::Device, srcs: Vec<std::path::PathBuf>| {
             if dev.read_only {
@@ -11555,17 +11611,23 @@ fn open_media_library_window(
             let reload2 = reload.clone();
             let sel2 = sel_backend.clone();
             let update_card2 = update_card.clone();
+            let eject2 = eject.clone();
+            let dev_ejectable = dev.ejectable;
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
                 let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+                if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                    eject2.set_sensitive(false); // no eject mid-copy
+                }
                 for (i, src) in srcs.iter().enumerate() {
                     let prog = format!("{}/{}", i + 1, total);
                     set_row_label(&format!("{row_base} — {prog}"));
                     update_card2(&backend, Some((i + 1, total)));
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                        hint2.set_text(&format!("Copying {prog}…"));
+                        let fname = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        hint2.set_text(&format!("Copying {prog} · {fname}"));
                         progress2.set_visible(true);
-                        progress2.set_text(Some(&prog));
+                        progress2.set_text(Some(&format!("{prog} · {fname}")));
                         progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                     }
                     let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
@@ -11594,6 +11656,9 @@ fn open_media_library_window(
                 set_row_label(&row_base);
                 progress2.set_visible(false);
                 update_card2(&backend, None);
+                if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                    eject2.set_sensitive(dev_ejectable);
+                }
                 reload2(dev_for_reload.clone());
                 show_alert_parented(
                     win2.upgrade().as_ref(),
@@ -11611,6 +11676,7 @@ fn open_media_library_window(
         .child(&dev_col_view)
         .build();
     dev_detail.append(&dev_tracks_scroll);
+    dev_detail.append(&dev_statusbar);
 
     // Drop target on the device track list: dropping files (from the active
     // playlist, files view, or editor) copies them to the device currently
@@ -15976,6 +16042,7 @@ fn open_media_library_window(
                 bar.set_min_value(0.0);
                 bar.set_max_value(1.0);
                 bar.set_value(used);
+                set_levelbar_fullness(&bar, used);
                 card.append(&bar);
 
                 let cap_lbl = Label::builder()
@@ -16056,7 +16123,10 @@ fn open_media_library_window(
 
                 let eject_btn = Button::with_label("Eject");
                 eject_btn.add_css_class("pl-btn");
-                eject_btn.set_sensitive(d.ejectable);
+                // Unavailable while a copy to this device is running.
+                eject_btn.set_sensitive(
+                    d.ejectable && !transfers.borrow().contains_key(&d.backend_id),
+                );
                 {
                     let holder = eject_holder.clone();
                     let backend = d.backend_id.clone();
@@ -16263,6 +16333,9 @@ fn open_media_library_window(
         let overview = dev_overview.clone();
         let detail = dev_detail.clone();
         let warn = dev_warn.clone();
+        let ro_badge = dev_ro_badge.clone();
+        let warn_badge = dev_warn_badge.clone();
+        let transfers_sel = device_transfers.clone();
         let rebuild_overview_sel = rebuild_overview.clone();
         let reload_dev_playlists_sel = reload_dev_playlists.clone();
         let reload_device_store_sel = reload_device_store.clone();
@@ -16297,22 +16370,26 @@ fn open_media_library_window(
                     } else {
                         d.label.clone()
                     };
-                    // ⚠ unsupported fs + 🔒 read-only glyphs, matching the
-                    // file conventions elsewhere in the library.
-                    title.set_text(&gtk_safe(&format!(
-                        "{}{base}",
-                        device_glyph_prefix(d.read_only, &d.fs_type)
-                    )));
-                    path_lbl.set_text(&gtk_safe(&d.mount_path.to_string_lossy()));
-                    capacity.set_text(&format!(
-                        "Filesystem: {}    Free: {:.1} GB of {:.1} GB{}",
+                    // Name in the header; status shown as pill badges instead
+                    // of inline glyphs.
+                    title.set_text(&gtk_safe(&base));
+                    path_lbl.set_text(&gtk_safe(&format!(
+                        "{} · {}",
                         if d.fs_type.is_empty() { "unknown" } else { &d.fs_type },
+                        d.mount_path.to_string_lossy(),
+                    )));
+                    ro_badge.set_visible(d.read_only);
+                    let unsupported = device_fs_unsupported(&d.fs_type);
+                    warn_badge.set_visible(unsupported);
+                    let used_bytes = d.total_bytes.saturating_sub(d.free_bytes);
+                    capacity.set_text(&format!(
+                        "{:.1} GB used · {:.1} GB free · {:.1} GB total",
+                        used_bytes as f64 / 1e9,
                         d.free_bytes as f64 / 1e9,
                         d.total_bytes as f64 / 1e9,
-                        if d.read_only { "    (read-only)" } else { "" },
                     ));
-                    if device_fs_unsupported(&d.fs_type) {
-                        warn.set_text(UNSUPPORTED_FS_TOOLTIP);
+                    if unsupported {
+                        warn.set_text("⚠ NTFS/exFAT — limited support");
                         warn.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
                         warn.set_visible(true);
                     } else {
@@ -16324,7 +16401,10 @@ fn open_media_library_window(
                         0.0
                     };
                     levelbar.set_value(used);
-                    eject.set_sensitive(d.ejectable);
+                    set_levelbar_fullness(&levelbar, used);
+                    // Eject is unavailable while a copy to this device is running.
+                    let busy = transfers_sel.borrow().contains_key(&d.backend_id);
+                    eject.set_sensitive(d.ejectable && !busy);
                     sync_btn.set_sensitive(true);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
 
