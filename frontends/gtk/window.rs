@@ -6396,8 +6396,21 @@ fn open_id3_editor_window(
     fname_lbl.set_margin_end(12);
     fname_lbl.add_css_class("heading");
 
+    // Full path — selectable (so it can be copied) but not editable, so the
+    // exact source location of the file being edited is visible/confirmable.
+    let path_lbl = Label::new(Some(&gtk_safe(&path_str)));
+    path_lbl.set_selectable(true);
+    path_lbl.set_xalign(0.0);
+    path_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
+    path_lbl.set_margin_bottom(10);
+    path_lbl.set_margin_start(12);
+    path_lbl.set_margin_end(12);
+    path_lbl.set_tooltip_text(Some(&path_str));
+    path_lbl.add_css_class("status-label");
+
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&fname_lbl);
+    vbox.append(&path_lbl);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&grid);
     vbox.append(&artwork_vbox);
@@ -10687,7 +10700,9 @@ fn apply_playlist_push(
     dev: &crate::devices::Device,
     item: &PlaylistSyncItem,
 ) -> (usize, bool) {
-    let mut entries: Vec<String> = Vec::new();
+    // (device relpath, library source path) pairs, so the written file carries
+    // #EXTINF metadata from the library.
+    let mut entries: Vec<(String, String)> = Vec::new();
     let mut copied = 0usize;
     for src in &item.srcs {
         let (rel, present) = device_plan_one(state, &dev.mount_path, &item.device_id, src);
@@ -10698,10 +10713,24 @@ fn apply_playlist_push(
             copied += 1;
         }
         device_record_pair(state, &item.device_id, src, &rel);
-        entries.push(rel.to_string_lossy().replace('\\', "/"));
+        entries.push((
+            rel.to_string_lossy().replace('\\', "/"),
+            src.to_string_lossy().into_owned(),
+        ));
     }
     let dest = dev.mount_path.join(&item.desired_device_filename);
-    let ok = std::fs::write(&dest, format!("#EXTM3U\n{}\n", entries.join("\n"))).is_ok();
+    let body = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .map(|l| l.build_device_m3u(&entries))
+        .unwrap_or_else(|| {
+            format!(
+                "#EXTM3U\n{}\n",
+                entries.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>().join("\n")
+            )
+        });
+    let ok = std::fs::write(&dest, body).is_ok();
     // Library-side rename: remove the stale device file under the old name.
     if let Some(old) = &item.device_file {
         if old != &dest && old.exists() {
@@ -10710,7 +10739,7 @@ fn apply_playlist_push(
     }
     let basenames: Vec<String> = entries
         .iter()
-        .map(|e| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
+        .map(|(e, _)| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
         .collect();
     update_playlist_baseline(
         state,
@@ -10821,9 +10850,24 @@ fn device_m3u_remove_basenames(
     };
     let mut out = String::new();
     let mut changed = false;
+    // A removed track's `#EXTINF` line precedes its path, so buffer it and drop
+    // the pair together rather than leaving a dangling EXTINF.
+    let mut pending_extinf: Option<String> = None;
     for line in content.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("#EXTINF") {
+            if let Some(e) = pending_extinf.take() {
+                out.push_str(&e);
+                out.push('\n');
+            }
+            pending_extinf = Some(line.to_string());
+            continue;
+        }
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            if let Some(e) = pending_extinf.take() {
+                out.push_str(&e);
+                out.push('\n');
+            }
             out.push_str(line);
             out.push('\n');
             continue;
@@ -10831,9 +10875,18 @@ fn device_m3u_remove_basenames(
         let base = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
         if remove.contains(base) {
             changed = true;
+            pending_extinf = None; // drop the entry's EXTINF too
             continue;
         }
+        if let Some(e) = pending_extinf.take() {
+            out.push_str(&e);
+            out.push('\n');
+        }
         out.push_str(line);
+        out.push('\n');
+    }
+    if let Some(e) = pending_extinf.take() {
+        out.push_str(&e);
         out.push('\n');
     }
     if changed {
@@ -11386,6 +11439,9 @@ fn open_media_library_window(
         .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Never)
         .propagate_natural_height(true)
+        // Non-overlay so the horizontal scrollbar takes its own gutter below the
+        // chips instead of painting over the playlist names.
+        .overlay_scrolling(false)
         .child(&dev_pl_chips)
         .build();
     dev_detail.append(&dev_pl_scroll);
@@ -11888,7 +11944,9 @@ fn open_media_library_window(
             let dev_ejectable = dev.ejectable;
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
-                let mut entries: Vec<String> = Vec::new();
+                // (device relpath, library source path) pairs so the written
+                // .m3u8 carries #EXTINF metadata from the library.
+                let mut entries: Vec<(String, String)> = Vec::new();
                 let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
                 let on_dev = sel2.borrow().as_deref() == Some(backend.as_str());
                 if on_dev {
@@ -11913,7 +11971,7 @@ fn open_media_library_window(
                         // Ensure a pair exists for the already-present file so
                         // sync tracks it and future dedup matches it.
                         device_record_pair(&state2, &device_id, src, &rel);
-                        entries.push(rel_str);
+                        entries.push((rel_str, src.to_string_lossy().into_owned()));
                         continue;
                     }
                     let s = src.clone();
@@ -11926,13 +11984,24 @@ fn open_media_library_window(
                         Ok(Ok(_)) => {
                             copied += 1;
                             device_record_pair(&state2, &device_id, src, &rel);
-                            entries.push(rel_str);
+                            entries.push((rel_str, src.to_string_lossy().into_owned()));
                         }
                         _ => failed += 1,
                     }
                 }
-                // Write the playlist file referencing the relative paths.
-                let body = format!("#EXTM3U\n{}\n", entries.join("\n"));
+                // Write the playlist file, carrying #EXTINF metadata from the
+                // library for each entry.
+                let body = state2
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .map(|l| l.build_device_m3u(&entries))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "#EXTM3U\n{}\n",
+                            entries.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>().join("\n")
+                        )
+                    });
                 let mp = m3u_path.clone();
                 let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
                 // Record the playlist sync baseline so a later edit on either
@@ -11944,7 +12013,7 @@ fn open_media_library_window(
                         .unwrap_or_default();
                     let basenames: Vec<String> = entries
                         .iter()
-                        .map(|e| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
+                        .map(|(e, _)| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
                         .collect();
                     if let Some(lib) = state2.borrow().media_lib.as_ref() {
                         let _ = lib.upsert_playlist_baseline(&crate::media_library::PlaylistBaseline {
@@ -12513,8 +12582,9 @@ fn open_media_library_window(
     dev_detail.append(&dev_file_actions);
     dev_detail.append(&dev_statusbar);
 
-    // Collect the file paths of the currently-selected device track rows.
-    let selected_device_paths: Rc<dyn Fn() -> Vec<std::path::PathBuf>> = {
+    // Collect the currently-selected device track rows (full LibTrack, so
+    // already-known metadata like duration carries into the active playlist).
+    let selected_device_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
         let sel = dev_selection.clone();
         let model = dev_sort_model.clone();
         Rc::new(move || {
@@ -12523,12 +12593,8 @@ fn open_media_library_window(
                 if !sel.is_selected(i) {
                     continue;
                 }
-                if let Some(t) = model
-                    .item(i)
-                    .and_downcast::<glib::BoxedAnyObject>()
-                {
-                    let track = t.borrow::<crate::media_library::LibTrack>();
-                    out.push(std::path::PathBuf::from(&track.path));
+                if let Some(t) = model.item(i).and_downcast::<glib::BoxedAnyObject>() {
+                    out.push(t.borrow::<crate::media_library::LibTrack>().clone());
                 }
             }
             out
@@ -12538,9 +12604,9 @@ fn open_media_library_window(
     // Enable the Delete/Remove button only while one or more files are selected.
     {
         let remove_btn = dev_file_remove.clone();
-        let sel_paths = selected_device_paths.clone();
+        let sel_tracks = selected_device_tracks.clone();
         dev_selection.connect_selection_changed(move |_, _, _| {
-            remove_btn.set_sensitive(!sel_paths().is_empty());
+            remove_btn.set_sensitive(!sel_tracks().is_empty());
         });
     }
 
@@ -12573,22 +12639,21 @@ fn open_media_library_window(
 
     // Play: replace the active playlist with the selected device files and play
     // from the first one (so "Play" plays just the selection, not whatever was
-    // queued before).
+    // queued before). Built from the device LibTrack so known duration/tags
+    // show immediately rather than "-:--" until played.
     {
-        let sel_paths = selected_device_paths.clone();
+        let sel_tracks = selected_device_tracks.clone();
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
         dev_file_play.connect_clicked(move |_| {
-            let paths = sel_paths();
-            if paths.is_empty() {
+            let tracks = sel_tracks();
+            if tracks.is_empty() {
                 return;
             }
             let _ = state.borrow_mut().player.stop();
             state.borrow_mut().playlist.clear();
-            for path in paths {
-                if let Ok(track) = crate::model::Track::from_path(&path) {
-                    state.borrow_mut().playlist.add(track);
-                }
+            for lt in &tracks {
+                state.borrow_mut().playlist.add(crate::model::Track::from(lt));
             }
             if !state.borrow().playlist.is_empty() {
                 state.borrow_mut().play_current();
@@ -12597,21 +12662,20 @@ fn open_media_library_window(
         });
     }
 
-    // Enqueue: append the selected device files to the active playlist.
+    // Enqueue: append the selected device files to the active playlist, carrying
+    // the device row's known metadata (duration etc.) so it shows immediately.
     {
-        let sel_paths = selected_device_paths.clone();
+        let sel_tracks = selected_device_tracks.clone();
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
         dev_file_enqueue.connect_clicked(move |_| {
-            let paths = sel_paths();
-            if paths.is_empty() {
+            let tracks = sel_tracks();
+            if tracks.is_empty() {
                 return;
             }
             let was_empty = state.borrow().playlist.is_empty();
-            for path in paths {
-                if let Ok(track) = crate::model::Track::from_path(&path) {
-                    state.borrow_mut().playlist.add(track);
-                }
+            for lt in &tracks {
+                state.borrow_mut().playlist.add(crate::model::Track::from(lt));
             }
             if state.borrow().config.behavior.autoplay_on_add && was_empty {
                 state.borrow_mut().play_current();
@@ -12628,7 +12692,7 @@ fn open_media_library_window(
     //   • A playlist → "Remove": drop the files from THAT playlist only; the
     //     files stay on the device and in other playlists.
     {
-        let sel_paths = selected_device_paths.clone();
+        let sel_tracks = selected_device_tracks.clone();
         let get_dev = current_device_for_actions.clone();
         let reload_store = reload_device_store.clone();
         let reload_pls = reload_dev_playlists.clone();
@@ -12637,7 +12701,10 @@ fn open_media_library_window(
         let win_wk = win.downgrade();
         dev_file_remove.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
-            let paths = sel_paths();
+            let paths: Vec<std::path::PathBuf> = sel_tracks()
+                .iter()
+                .map(|t| std::path::PathBuf::from(&t.path))
+                .collect();
             if paths.is_empty() {
                 return;
             }

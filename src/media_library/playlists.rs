@@ -363,6 +363,28 @@ impl MediaLibrary {
         out
     }
 
+    /// Build an `#EXTM3U` body for a *device* playlist. Each entry pairs the
+    /// device-relative path to write (`Music/<file>`) with the library source
+    /// path the metadata is pulled from, so device `.m3u8` files carry the same
+    /// `#EXTINF` duration / artist / title as the library's own playlists.
+    pub fn build_device_m3u(&self, entries: &[(String, String)]) -> String {
+        let mut out = String::from("#EXTM3U\n");
+        for (relpath, source) in entries {
+            let (dur, artist, title) = self.metadata_by_path(source);
+            let fallback = relpath.rsplit(['/', '\\']).next().unwrap_or(relpath);
+            out.push_str(&Self::extinf_line(
+                dur,
+                artist.as_deref(),
+                title.as_deref(),
+                fallback,
+            ));
+            out.push('\n');
+            out.push_str(relpath);
+            out.push('\n');
+        }
+        out
+    }
+
     /// Create a new empty playlist with `name`.
     ///
     /// Writes an `#EXTM3U` header to
