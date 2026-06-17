@@ -37,10 +37,76 @@ pub struct SyncPair {
     pub last_sync_at: Option<String>,
 }
 
+/// The state of one library playlist as last synced to a device, used to tell
+/// which side (computer or device) changed a playlist's contents/name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistBaseline {
+    pub device_id: String,
+    pub library_playlist_id: i64,
+    /// The playlist filename on the device at last sync (e.g. "Sync Test.m3u8").
+    pub device_filename: String,
+    /// Hash of the agreed ordered entry list (basenames) at last sync.
+    pub entries_hash: String,
+    pub last_sync_at: Option<String>,
+}
+
 // The macOS bin gates out the GTK/FFI callers of these methods; mirror the
 // dead-code allow used on the other media_library impl blocks.
 #[allow(dead_code)]
 impl MediaLibrary {
+    /// Insert or refresh the sync baseline for one library playlist on a device.
+    pub fn upsert_playlist_baseline(&self, b: &PlaylistBaseline) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO device_playlist_baselines
+                    (device_id, library_playlist_id, device_filename, entries_hash, last_sync_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(device_id, library_playlist_id) DO UPDATE SET
+                     device_filename = excluded.device_filename,
+                     entries_hash    = excluded.entries_hash,
+                     last_sync_at    = excluded.last_sync_at",
+                params![
+                    b.device_id,
+                    b.library_playlist_id,
+                    b.device_filename,
+                    b.entries_hash,
+                    b.last_sync_at
+                ],
+            )
+            .context("upsert_playlist_baseline")?;
+        Ok(())
+    }
+
+    /// All playlist baselines recorded for a device.
+    pub fn playlist_baselines_for_device(&self, device_id: &str) -> Result<Vec<PlaylistBaseline>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT device_id, library_playlist_id, device_filename, entries_hash, last_sync_at
+             FROM device_playlist_baselines WHERE device_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![device_id], |row| {
+            Ok(PlaylistBaseline {
+                device_id: row.get(0)?,
+                library_playlist_id: row.get(1)?,
+                device_filename: row.get(2)?,
+                entries_hash: row.get(3)?,
+                last_sync_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("playlist_baselines_for_device")
+    }
+
+    /// Remove a playlist baseline (e.g. when the playlist no longer exists).
+    pub fn delete_playlist_baseline(&self, device_id: &str, library_playlist_id: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM device_playlist_baselines
+                 WHERE device_id = ?1 AND library_playlist_id = ?2",
+                params![device_id, library_playlist_id],
+            )
+            .context("delete_playlist_baseline")?;
+        Ok(())
+    }
     /// Insert a device, or update its label/last_seen/rules if `id` exists.
     pub fn upsert_device(&self, dev: &DeviceRecord) -> Result<()> {
         self.conn

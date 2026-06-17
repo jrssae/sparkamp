@@ -132,6 +132,76 @@ pub fn decide(baseline: &str, lib: Option<&SideState>, dev: Option<&SideState>) 
     }
 }
 
+/// A stable hash of an ordered playlist entry list (basenames), used as the
+/// per-playlist sync baseline so a later sync can tell which side changed.
+/// Order- and duplicate-sensitive (a reorder or a repeated entry changes it).
+pub fn entries_hash(entries: &[String]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for e in entries {
+        for b in e.bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= 0x1f; // unit separator between entries
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Which way to sync one playlist between the library and a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistSyncDir {
+    /// In sync — nothing to do.
+    None,
+    /// Library is the changed side — push it to the device.
+    Push,
+    /// Device is the changed side — pull it into the library.
+    Pull,
+    /// Both sides changed since the baseline — ask the user.
+    Conflict,
+}
+
+/// Decide which way a single playlist should sync, from the per-playlist
+/// baseline hash and the current library/device entry hashes.
+///
+/// - No baseline (never synced via the baseline): if the device copy is absent
+///   there is nothing to compare (caller skips); if present and equal it is
+///   already in sync; if present and different the library wins (legacy push,
+///   establishing the baseline).
+/// - With a baseline: only-library-changed → push; only-device-changed → pull;
+///   the device copy missing → push (recreate); both changed → conflict.
+pub fn decide_playlist(
+    baseline: Option<&str>,
+    device_present: bool,
+    lib_hash: &str,
+    dev_hash: &str,
+) -> PlaylistSyncDir {
+    match baseline {
+        None => {
+            if !device_present {
+                PlaylistSyncDir::None
+            } else if lib_hash == dev_hash {
+                PlaylistSyncDir::None
+            } else {
+                PlaylistSyncDir::Push
+            }
+        }
+        Some(base) => {
+            if !device_present {
+                return PlaylistSyncDir::Push;
+            }
+            let lib_changed = lib_hash != base;
+            let dev_changed = dev_hash != base;
+            match (lib_changed, dev_changed) {
+                (false, false) => PlaylistSyncDir::None,
+                (true, false) => PlaylistSyncDir::Push,
+                (false, true) => PlaylistSyncDir::Pull,
+                (true, true) => PlaylistSyncDir::Conflict,
+            }
+        }
+    }
+}
+
 /// Read the syncable tags of a file. Returns [`TagState::default`] when the
 /// file has no readable ID3 tag.
 pub fn read_tag_state(path: &Path) -> TagState {
@@ -225,6 +295,31 @@ mod tests {
         for stars in 0..=5u8 {
             assert_eq!(popm_to_stars(stars_to_popm(stars)), stars);
         }
+    }
+
+    #[test]
+    fn entries_hash_is_order_and_dup_sensitive() {
+        let a = vec!["x.mp3".to_string(), "y.mp3".to_string()];
+        let b = vec!["y.mp3".to_string(), "x.mp3".to_string()];
+        let c = vec!["x.mp3".to_string(), "y.mp3".to_string(), "x.mp3".to_string()];
+        assert_eq!(entries_hash(&a), entries_hash(&a.clone()));
+        assert_ne!(entries_hash(&a), entries_hash(&b)); // reorder changes it
+        assert_ne!(entries_hash(&a), entries_hash(&c)); // duplicate changes it
+        assert_ne!(entries_hash(&a), entries_hash(&[])); // empty differs
+    }
+
+    #[test]
+    fn decide_playlist_covers_branches() {
+        // No baseline.
+        assert_eq!(decide_playlist(None, false, "L", "D"), PlaylistSyncDir::None);
+        assert_eq!(decide_playlist(None, true, "X", "X"), PlaylistSyncDir::None);
+        assert_eq!(decide_playlist(None, true, "L", "D"), PlaylistSyncDir::Push);
+        // With baseline "B".
+        assert_eq!(decide_playlist(Some("B"), false, "L", "D"), PlaylistSyncDir::Push);
+        assert_eq!(decide_playlist(Some("B"), true, "B", "B"), PlaylistSyncDir::None);
+        assert_eq!(decide_playlist(Some("B"), true, "L", "B"), PlaylistSyncDir::Push);
+        assert_eq!(decide_playlist(Some("B"), true, "B", "D"), PlaylistSyncDir::Pull);
+        assert_eq!(decide_playlist(Some("B"), true, "L", "D"), PlaylistSyncDir::Conflict);
     }
 
     #[test]

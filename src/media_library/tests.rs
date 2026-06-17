@@ -1181,3 +1181,35 @@ fn sync_pair_crud_and_lookups() {
     lib.delete_sync_pair("UUID-1234", "Music/A/B/song.mp3").unwrap();
     assert!(lib.sync_pairs_for_device("UUID-1234").unwrap().is_empty());
 }
+
+#[test]
+fn playlist_baseline_crud() {
+    let (lib, _db) = temp_lib();
+    let base = crate::media_library::PlaylistBaseline {
+        device_id: "UUID-1234".into(),
+        library_playlist_id: 42,
+        device_filename: "Roadtrip.m3u8".into(),
+        entries_hash: "h1".into(),
+        last_sync_at: None,
+    };
+    lib.upsert_playlist_baseline(&base).unwrap();
+    assert_eq!(
+        lib.playlist_baselines_for_device("UUID-1234").unwrap(),
+        vec![base.clone()]
+    );
+
+    // Upsert on (device_id, playlist_id) replaces (rename + content change).
+    let refreshed = crate::media_library::PlaylistBaseline {
+        device_filename: "Road Trip.m3u8".into(),
+        entries_hash: "h2".into(),
+        ..base.clone()
+    };
+    lib.upsert_playlist_baseline(&refreshed).unwrap();
+    let got = lib.playlist_baselines_for_device("UUID-1234").unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].device_filename, "Road Trip.m3u8");
+    assert_eq!(got[0].entries_hash, "h2");
+
+    lib.delete_playlist_baseline("UUID-1234", 42).unwrap();
+    assert!(lib.playlist_baselines_for_device("UUID-1234").unwrap().is_empty());
+}

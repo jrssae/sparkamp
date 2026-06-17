@@ -20,7 +20,7 @@ mod scan;
 
 // Re-export for callers; no consumer in the bin build yet, so allow the unused-import warning.
 #[allow(unused_imports)]
-pub use devices::{DeviceRecord, SyncPair};
+pub use devices::{DeviceRecord, PlaylistBaseline, SyncPair};
 #[cfg(test)]
 mod tests;
 
@@ -417,6 +417,15 @@ impl MediaLibrary {
 
             CREATE INDEX IF NOT EXISTS idx_pairs_library
                 ON device_sync_pairs(library_path);
+
+            CREATE TABLE IF NOT EXISTS device_playlist_baselines (
+                device_id           TEXT NOT NULL,
+                library_playlist_id INTEGER NOT NULL,
+                device_filename     TEXT NOT NULL,
+                entries_hash        TEXT NOT NULL DEFAULT '',
+                last_sync_at        TEXT,
+                PRIMARY KEY (device_id, library_playlist_id)
+            );
 
             CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
             CREATE INDEX IF NOT EXISTS idx_tracks_title  ON tracks(title);
