@@ -6087,14 +6087,11 @@ fn open_id3_editor_window(
     use crate::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
 
-    if let Some(ref existing_win) = state.borrow().id3_editor_window {
-        let title = format!(
-            "ID3 Tag Editor — {}",
-            gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
-        );
-        existing_win.set_title(Some(&title));
-        existing_win.present();
-        return;
+    // If an editor is already open, close it and build a fresh one for the new
+    // file — the same filename can live at a different path, so the window must
+    // reflect the exact file just requested rather than being reused as-is.
+    if let Some(existing_win) = state.borrow_mut().id3_editor_window.take() {
+        existing_win.close();
     }
 
     let fields = read_tag_fields(&path);
@@ -6116,8 +6113,13 @@ fn open_id3_editor_window(
         .build();
 
     let state_for_close = state.clone();
-    win.connect_close_request(move |_| {
-        state_for_close.borrow_mut().id3_editor_window = None;
+    win.connect_close_request(move |w| {
+        // Only clear the handle if it still points at *this* window — a newer
+        // editor may have replaced it (close fires as the old one is swapped).
+        let mut s = state_for_close.borrow_mut();
+        if s.id3_editor_window.as_ref() == Some(w) {
+            s.id3_editor_window = None;
+        }
         glib::Propagation::Proceed
     });
     state.borrow_mut().id3_editor_window = Some(win.clone());
@@ -6385,23 +6387,14 @@ fn open_id3_editor_window(
     btn_row.append(&btn_save);
 
     // ── Main layout ──────────────────────────────────────────────────────────
-    // Filename header — non-editable but selectable, so the name can be
-    // copied (mirrors the macOS editor header).
-    let fname_lbl = Label::new(Some(&fname));
-    fname_lbl.set_selectable(true);
-    fname_lbl.set_xalign(0.0);
-    fname_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-    fname_lbl.set_margin_top(10);
-    fname_lbl.set_margin_start(12);
-    fname_lbl.set_margin_end(12);
-    fname_lbl.add_css_class("heading");
-
-    // Full path — selectable (so it can be copied) but not editable, so the
-    // exact source location of the file being edited is visible/confirmable.
+    // Full path + filename header — selectable (so it can be copied) but not
+    // editable, so the exact source location of the file being edited is
+    // visible/confirmable. (Shown instead of a bare filename heading.)
     let path_lbl = Label::new(Some(&gtk_safe(&path_str)));
     path_lbl.set_selectable(true);
     path_lbl.set_xalign(0.0);
     path_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
+    path_lbl.set_margin_top(10);
     path_lbl.set_margin_bottom(10);
     path_lbl.set_margin_start(12);
     path_lbl.set_margin_end(12);
@@ -6409,7 +6402,6 @@ fn open_id3_editor_window(
     path_lbl.add_css_class("status-label");
 
     let vbox = GtkBox::new(Orientation::Vertical, 0);
-    vbox.append(&fname_lbl);
     vbox.append(&path_lbl);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&grid);
@@ -11356,7 +11348,6 @@ fn open_media_library_window(
         .build();
     dev_path.add_css_class("status-label");
     let dev_title_box = GtkBox::new(Orientation::Vertical, 0);
-    dev_title_box.set_hexpand(true);
     dev_title_box.set_valign(Align::Center);
     dev_title_box.append(&dev_title);
     dev_title_box.append(&dev_path);
@@ -11381,28 +11372,33 @@ fn open_media_library_window(
     dev_eject.set_valign(Align::Center);
     dev_eject.set_sensitive(false);
 
+    // Capacity meter — capacity bar + used/free/total text. Lives in the header
+    // band (between the name/path and the Sync/Eject buttons) to save vertical
+    // space, taking the flexible middle column.
+    let dev_levelbar = gtk4::LevelBar::new();
+    dev_levelbar.set_min_value(0.0);
+    dev_levelbar.set_max_value(1.0);
+    dev_levelbar.add_css_class("device-capacity");
+    dev_levelbar.set_valign(Align::Center);
+    let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_capacity.add_css_class("status-label");
+    dev_capacity.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    let dev_capacity_box = GtkBox::new(Orientation::Vertical, 2);
+    dev_capacity_box.set_hexpand(true);
+    dev_capacity_box.set_valign(Align::Center);
+    dev_capacity_box.append(&dev_levelbar);
+    dev_capacity_box.append(&dev_capacity);
+
     let dev_hdr_row = GtkBox::new(Orientation::Horizontal, 10);
     dev_hdr_row.add_css_class("device-detail-header");
     dev_hdr_row.append(&dev_icon);
     dev_hdr_row.append(&dev_title_box);
+    dev_hdr_row.append(&dev_capacity_box);
     dev_hdr_row.append(&dev_ro_badge);
     dev_hdr_row.append(&dev_warn_badge);
     dev_hdr_row.append(&dev_sync);
     dev_hdr_row.append(&dev_eject);
     dev_detail.append(&dev_hdr_row);
-
-    // Storage section: capacity bar + used/free/total text.
-    let dev_levelbar = gtk4::LevelBar::new();
-    dev_levelbar.set_min_value(0.0);
-    dev_levelbar.set_max_value(1.0);
-    dev_levelbar.add_css_class("device-capacity");
-    let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
-    dev_capacity.add_css_class("status-label");
-    let dev_storage = GtkBox::new(Orientation::Vertical, 4);
-    dev_storage.add_css_class("device-section");
-    dev_storage.append(&dev_levelbar);
-    dev_storage.append(&dev_capacity);
-    dev_detail.append(&dev_storage);
 
     // Copy progress bar — shown only while files are being copied to this
     // device; carries an "x/y · filename" label.
@@ -11438,10 +11434,11 @@ fn open_media_library_window(
     let dev_pl_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Never)
-        .propagate_natural_height(true)
-        // Non-overlay so the horizontal scrollbar takes its own gutter below the
-        // chips instead of painting over the playlist names.
+        // Non-overlay so the horizontal scrollbar takes its own gutter, and a
+        // reserved content height tall enough for a chip row PLUS that gutter so
+        // the bar never paints over the playlist names.
         .overlay_scrolling(false)
+        .min_content_height(52)
         .child(&dev_pl_chips)
         .build();
     dev_detail.append(&dev_pl_scroll);
