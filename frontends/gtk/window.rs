@@ -11411,6 +11411,12 @@ fn open_media_library_window(
     dev_hdr_row.append(&dev_eject);
     dev_detail.append(&dev_hdr_row);
 
+    // Counts line under the capacity row: "X playlists - Y audio files".
+    let dev_counts = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_counts.add_css_class("status-label");
+    dev_counts.set_margin_start(4);
+    dev_detail.append(&dev_counts);
+
     // Copy progress bar — shown only while files are being copied to this
     // device; carries an "x/y · filename" label.
     // Thick accent bar matching the capacity bar above; the live "Copying x/y ·
@@ -11451,15 +11457,19 @@ fn open_media_library_window(
         .homogeneous(false)
         .build();
     dev_pl_chips.add_css_class("device-chips");
+    dev_pl_chips.set_valign(Align::Start);
     let dev_pl_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
-        // Grow to fit the wrapped chips, but show at most ~2.5 chip rows before
-        // scrolling vertically.
-        .propagate_natural_height(true)
+        // One chip row when there's a single row; grow as chips wrap, up to
+        // ~2.5 rows before a vertical scrollbar appears. (No propagate-natural-
+        // height: the FlowBox over-estimates row count and would inflate to the
+        // max even for a single row.)
+        .min_content_height(34)
         .max_content_height(80)
         .child(&dev_pl_chips)
         .build();
+    dev_pl_scroll.set_vexpand(false);
     dev_detail.append(&dev_pl_scroll);
 
     // Per-playlist management actions — shown only when a specific playlist chip
@@ -11706,18 +11716,20 @@ fn open_media_library_window(
         let store = dev_store.clone();
         let all_tracks = dev_all_tracks.clone();
         let hint = dev_hint.clone();
+        let counts_lbl = dev_counts.clone();
         let state = state.clone();
         let counts_cache = device_counts.clone();
         let sel_backend = selected_dev_backend.clone();
         Rc::new(move |dev: crate::devices::Device| {
-            hint.set_text("Reading device…");
+            counts_lbl.set_text("Reading device…");
+            hint.set_text(""); // clear any stale copy status
             store.remove_all();
             // Device contents may have changed (copy/send/sync) — drop the
             // cached overview counts so the cards recompute next time shown.
             counts_cache.borrow_mut().remove(&dev.backend_id);
             let store2 = store.clone();
             let all_tracks2 = all_tracks.clone();
-            let hint2 = hint.clone();
+            let counts_lbl2 = counts_lbl.clone();
             let state2 = state.clone();
             let mount = dev.mount_path.clone();
             // Guard against a slow scan landing after the user switched devices:
@@ -11734,11 +11746,13 @@ fn open_media_library_window(
             };
             glib::spawn_future_local(async move {
                 let mount_w = mount.clone();
-                let mut tracks = gio::spawn_blocking(move || {
-                    crate::devices::browse::list_audio_files(&mount_w)
+                let (mut tracks, pl_count) = gio::spawn_blocking(move || {
+                    let tracks = crate::devices::browse::list_audio_files(&mount_w)
                         .iter()
                         .map(|p| crate::devices::browse::read_device_track(p))
-                        .collect::<Vec<crate::media_library::LibTrack>>()
+                        .collect::<Vec<crate::media_library::LibTrack>>();
+                    let pl_count = crate::devices::browse::device_playlist_files(&mount_w).len();
+                    (tracks, pl_count)
                 })
                 .await
                 .unwrap_or_default();
@@ -11789,8 +11803,10 @@ fn open_media_library_window(
                 for t in &tracks {
                     store2.append(&glib::BoxedAnyObject::new(t.clone()));
                 }
-                hint2.set_text(&format!(
-                    "{} audio file{} on this device",
+                counts_lbl2.set_text(&format!(
+                    "{} playlist{} - {} audio file{}",
+                    pl_count,
+                    if pl_count == 1 { "" } else { "s" },
                     tracks.len(),
                     if tracks.len() == 1 { "" } else { "s" }
                 ));
