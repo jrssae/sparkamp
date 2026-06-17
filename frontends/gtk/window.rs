@@ -11372,6 +11372,11 @@ fn open_media_library_window(
     dev_ro_badge.set_valign(Align::Center);
     dev_ro_badge.set_visible(false);
 
+    let dev_scan = Button::with_label("Scan");
+    dev_scan.add_css_class("pl-btn");
+    dev_scan.set_valign(Align::Center);
+    dev_scan.set_tooltip_text(Some("Re-read tags + duration from the files on this device"));
+    dev_scan.set_sensitive(false);
     let dev_sync = Button::with_label("Sync");
     dev_sync.add_css_class("pl-btn");
     dev_sync.set_valign(Align::Center);
@@ -11412,6 +11417,7 @@ fn open_media_library_window(
     dev_hdr_row.append(&dev_title_box);
     dev_hdr_row.append(&dev_capacity_box);
     dev_hdr_row.append(&dev_ro_badge);
+    dev_hdr_row.append(&dev_scan);
     dev_hdr_row.append(&dev_sync);
     dev_hdr_row.append(&dev_eject);
     dev_detail.append(&dev_hdr_row);
@@ -17446,6 +17452,7 @@ fn open_media_library_window(
         let dev_col_view_sel = dev_col_view.clone();
         let state_devcols = state.clone();
         let sync_btn = dev_sync.clone();
+        let scan_btn = dev_scan.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
@@ -17509,6 +17516,7 @@ fn open_media_library_window(
                     let busy = transfers_sel.borrow().contains_key(&d.backend_id);
                     eject.set_sensitive(d.ejectable && !busy);
                     sync_btn.set_sensitive(true);
+                    scan_btn.set_sensitive(true);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
 
                     // Rebuild the playlist filter rows ("All files" + each
@@ -17520,6 +17528,26 @@ fn open_media_library_window(
                     reload_device_store_sel(d.clone());
                 }
             }
+        });
+    }
+
+    // Scan: re-read tags + duration from the files on the selected device, and
+    // refresh the playlist chips. Same work the device-select does, on demand.
+    {
+        let devices_scan = current_devices.clone();
+        let sel_backend = selected_dev_backend.clone();
+        let reload_store = reload_device_store.clone();
+        let reload_pls = reload_dev_playlists.clone();
+        dev_scan.connect_clicked(move |_| {
+            let Some(backend) = sel_backend.borrow().clone() else { return };
+            let dev = devices_scan
+                .borrow()
+                .iter()
+                .find(|d| d.backend_id == backend)
+                .cloned();
+            let Some(dev) = dev else { return };
+            reload_pls(dev.mount_path.clone());
+            reload_store(dev);
         });
     }
 
