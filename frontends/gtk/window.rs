@@ -6090,7 +6090,10 @@ fn open_id3_editor_window(
     // If an editor is already open, close it and build a fresh one for the new
     // file — the same filename can live at a different path, so the window must
     // reflect the exact file just requested rather than being reused as-is.
-    if let Some(existing_win) = state.borrow_mut().id3_editor_window.take() {
+    // Take in its own statement so the borrow is released before `close()`,
+    // which synchronously fires the close-request handler (it borrows too).
+    let existing_editor = state.borrow_mut().id3_editor_window.take();
+    if let Some(existing_win) = existing_editor {
         existing_win.close();
     }
 
