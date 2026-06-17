@@ -10695,6 +10695,7 @@ fn apply_playlist_push(
     dev: &crate::devices::Device,
     item: &PlaylistSyncItem,
 ) -> (usize, bool) {
+    let io = crate::devices::io::for_device(dev);
     // (device relpath, library source path) pairs, so the written file carries
     // #EXTINF metadata from the library.
     let mut entries: Vec<(String, String)> = Vec::new();
@@ -10702,7 +10703,7 @@ fn apply_playlist_push(
     for src in &item.srcs {
         let (rel, present) = device_plan_one(state, &dev.mount_path, &item.device_id, src);
         if !present {
-            if crate::devices::transfer::copy_to_device(src, &dev.mount_path, &rel).is_err() {
+            if io.copy_to_device(src, &rel).is_err() {
                 continue;
             }
             copied += 1;
@@ -10729,7 +10730,7 @@ fn apply_playlist_push(
     // Library-side rename: remove the stale device file under the old name.
     if let Some(old) = &item.device_file {
         if old != &dest && old.exists() {
-            let _ = std::fs::remove_file(old);
+            let _ = io.delete(old);
         }
     }
     let basenames: Vec<String> = entries
@@ -10894,18 +10895,19 @@ fn device_m3u_remove_basenames(
 /// referenced them. `paths` are absolute on-device paths. Returns the number of
 /// files that couldn't be deleted.
 fn device_delete_files(dev: &crate::devices::Device, paths: &[std::path::PathBuf]) -> usize {
+    let io = crate::devices::io::for_device(dev);
     let mut failed = 0usize;
     let mut basenames: std::collections::HashSet<String> = std::collections::HashSet::new();
     for p in paths {
         if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
             basenames.insert(name.to_string());
         }
-        if std::fs::remove_file(p).is_err() {
+        if io.delete(p).is_err() {
             failed += 1;
         }
     }
     // Drop the deleted files from every playlist on the device.
-    for pl in crate::devices::browse::device_playlist_files(&dev.mount_path) {
+    for pl in io.playlist_files() {
         device_m3u_remove_basenames(&pl, &basenames);
     }
     failed
@@ -12014,10 +12016,11 @@ fn open_media_library_window(
                     }
                     let s = src.clone();
                     let r = rel.clone();
-                    let m = mount.clone();
-                    let outcome =
-                        gio::spawn_blocking(move || crate::devices::transfer::copy_to_device(&s, &m, &r))
-                            .await;
+                    let dc = dev_for_reload.clone();
+                    let outcome = gio::spawn_blocking(move || {
+                        crate::devices::io::for_device(&dc).copy_to_device(&s, &r)
+                    })
+                    .await;
                     match outcome {
                         Ok(Ok(_)) => {
                             copied += 1;
@@ -12424,7 +12427,7 @@ fn open_media_library_window(
                 if res != Ok(1) {
                     return;
                 }
-                if let Err(err) = std::fs::remove_file(&pl_path2) {
+                if let Err(err) = crate::devices::io::for_device(&dev2).delete(&pl_path2) {
                     show_alert_parented(
                         win_wk2.upgrade().as_ref(),
                         &format!("Couldn't remove the playlist file: {err}"),
@@ -12563,9 +12566,9 @@ fn open_media_library_window(
                     }
                     let s = src.clone();
                     let r = rel.clone();
-                    let m = mount.clone();
+                    let dc = dev_for_reload.clone();
                     let outcome = gio::spawn_blocking(move || {
-                        crate::devices::transfer::copy_to_device(&s, &m, &r)
+                        crate::devices::io::for_device(&dc).copy_to_device(&s, &r)
                     })
                     .await;
                     match outcome {
