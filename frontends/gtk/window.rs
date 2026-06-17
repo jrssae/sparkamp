@@ -10183,6 +10183,21 @@ fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
     p
 }
 
+/// Themed icon name for a device card. Generic removable-media icon for now;
+/// the MTP backend (Android phones) will map to a phone icon when added.
+fn device_icon_name(_dev: &crate::devices::Device) -> &'static str {
+    "drive-removable-media"
+}
+
+/// "N songs · M playlists" with singular/plural agreement.
+fn counts_text(songs: usize, playlists: usize) -> String {
+    format!(
+        "{songs} song{} · {playlists} playlist{}",
+        if songs == 1 { "" } else { "s" },
+        if playlists == 1 { "" } else { "s" },
+    )
+}
+
 /// Tooltip shown on the device row / detail for an unsupported filesystem.
 const UNSUPPORTED_FS_TOOLTIP: &str =
     "Unsupported filesystem (NTFS/exFAT) — Sparkamp can't reliably read or write this device yet.";
@@ -10492,6 +10507,15 @@ fn open_media_library_window(
     // which routes drops onto device rows) and kept current by the poll below.
     let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
         Rc::new(RefCell::new(Vec::new()));
+
+    // Per-device (song, playlist) counts for the overview cards, keyed by
+    // backend_id. Computed off-thread on first show and cleared whenever a
+    // device's contents change (see reload_device_store). `counts_in_flight`
+    // guards against spawning the same count walk twice.
+    let device_counts: Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let counts_in_flight: Rc<RefCell<std::collections::HashSet<String>>> =
+        Rc::new(RefCell::new(std::collections::HashSet::new()));
 
     // Sidebar DropTarget — accept FileList drags from the active playlist,
     // ML files view, or ML editor and append paths to the saved playlist
@@ -11152,9 +11176,13 @@ fn open_media_library_window(
         let store = dev_store.clone();
         let hint = dev_hint.clone();
         let state = state.clone();
+        let counts_cache = device_counts.clone();
         Rc::new(move |dev: crate::devices::Device| {
             hint.set_text("Reading device…");
             store.remove_all();
+            // Device contents may have changed (copy/send/sync) — drop the
+            // cached overview counts so the cards recompute next time shown.
+            counts_cache.borrow_mut().remove(&dev.backend_id);
             let store2 = store.clone();
             let hint2 = hint.clone();
             let state2 = state.clone();
@@ -15811,6 +15839,8 @@ fn open_media_library_window(
         let current = current_devices.clone();
         let eject_holder = eject_run_holder.clone();
         let sync_holder = sync_run_holder.clone();
+        let counts_cache = device_counts.clone();
+        let counts_inflight = counts_in_flight.clone();
         Rc::new(move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
@@ -15832,30 +15862,122 @@ fn open_media_library_window(
                 } else {
                     d.label.clone()
                 };
-                let text = format!(
-                    "{}{} — {} — {:.1} GB free of {:.1} GB",
-                    device_glyph_prefix(d.read_only, &d.fs_type),
-                    name,
-                    if d.fs_type.is_empty() { "unknown" } else { &d.fs_type },
-                    d.free_bytes as f64 / 1e9,
-                    d.total_bytes as f64 / 1e9,
-                );
-                let row = GtkBox::new(Orientation::Horizontal, 8);
-                let l = Label::builder()
-                    .label(&gtk_safe(&text))
+
+                // ── Card ────────────────────────────────────────────────
+                let card = GtkBox::new(Orientation::Vertical, 6);
+                card.add_css_class("device-card");
+
+                // Header: icon · name + filesystem · status badges.
+                let header = GtkBox::new(Orientation::Horizontal, 10);
+                let icon = Image::from_icon_name(device_icon_name(d));
+                icon.set_pixel_size(32);
+                icon.set_valign(Align::Center);
+                header.append(&icon);
+
+                let title_box = GtkBox::new(Orientation::Vertical, 0);
+                title_box.set_hexpand(true);
+                title_box.set_valign(Align::Center);
+                let name_lbl = Label::builder()
+                    .label(&gtk_safe(&name))
                     .halign(Align::Start)
                     .xalign(0.0)
-                    .hexpand(true)
-                    .wrap(true)
                     .build();
-                if device_fs_unsupported(&d.fs_type) {
-                    l.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                name_lbl.add_css_class("device-card-name");
+                let fs_lbl = Label::builder()
+                    .label(if d.fs_type.is_empty() { "unknown" } else { &d.fs_type })
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                fs_lbl.add_css_class("status-label");
+                title_box.append(&name_lbl);
+                title_box.append(&fs_lbl);
+                header.append(&title_box);
+
+                let badges = GtkBox::new(Orientation::Horizontal, 4);
+                badges.set_valign(Align::Center);
+                if d.read_only {
+                    let b = Label::new(Some("🔒 Read-only"));
+                    b.add_css_class("device-badge");
+                    badges.append(&b);
                 }
-                row.append(&l);
+                if device_fs_unsupported(&d.fs_type) {
+                    let b = Label::new(Some("⚠ Unsupported"));
+                    b.add_css_class("device-badge");
+                    b.add_css_class("device-badge-warn");
+                    b.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                    badges.append(&b);
+                }
+                header.append(&badges);
+                card.append(&header);
+
+                // Capacity bar + free/total text.
+                let used = if d.total_bytes > 0 {
+                    1.0 - (d.free_bytes as f64 / d.total_bytes as f64)
+                } else {
+                    0.0
+                };
+                let bar = gtk4::LevelBar::new();
+                bar.set_min_value(0.0);
+                bar.set_max_value(1.0);
+                bar.set_value(used);
+                card.append(&bar);
+
+                let cap_lbl = Label::builder()
+                    .label(&format!(
+                        "{:.1} GB free of {:.1} GB",
+                        d.free_bytes as f64 / 1e9,
+                        d.total_bytes as f64 / 1e9,
+                    ))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                cap_lbl.add_css_class("status-label");
+                card.append(&cap_lbl);
+
+                // Song / playlist counts — cached, computed off-thread on miss.
+                let counts_lbl = Label::builder()
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                counts_lbl.add_css_class("status-label");
+                match counts_cache.borrow().get(&d.backend_id).copied() {
+                    Some((songs, pls)) => {
+                        counts_lbl.set_text(&counts_text(songs, pls));
+                    }
+                    None => {
+                        counts_lbl.set_text("counting…");
+                        let backend = d.backend_id.clone();
+                        if counts_inflight.borrow_mut().insert(backend.clone()) {
+                            let mount = d.mount_path.clone();
+                            let cache = counts_cache.clone();
+                            let inflight = counts_inflight.clone();
+                            let lbl = counts_lbl.clone();
+                            glib::spawn_future_local(async move {
+                                let res = gio::spawn_blocking(move || {
+                                    let songs =
+                                        crate::devices::browse::list_audio_files(&mount).len();
+                                    let pls = crate::devices::browse::device_playlist_files(&mount)
+                                        .len();
+                                    (songs, pls)
+                                })
+                                .await
+                                .unwrap_or((0, 0));
+                                cache.borrow_mut().insert(backend.clone(), res);
+                                inflight.borrow_mut().remove(&backend);
+                                lbl.set_text(&counts_text(res.0, res.1));
+                            });
+                        }
+                    }
+                }
+                card.append(&counts_lbl);
+
+                // Sync / Eject buttons, right-aligned.
+                let btn_row = GtkBox::new(Orientation::Horizontal, 6);
+                btn_row.set_halign(Align::End);
+                btn_row.set_margin_top(2);
 
                 let sync_btn = Button::with_label("Sync");
                 sync_btn.add_css_class("pl-btn");
-                sync_btn.set_valign(Align::Center);
                 {
                     let holder = sync_holder.clone();
                     let dev = d.clone();
@@ -15865,11 +15987,10 @@ fn open_media_library_window(
                         }
                     });
                 }
-                row.append(&sync_btn);
+                btn_row.append(&sync_btn);
 
                 let eject_btn = Button::with_label("Eject");
                 eject_btn.add_css_class("pl-btn");
-                eject_btn.set_valign(Align::Center);
                 eject_btn.set_sensitive(d.ejectable);
                 {
                     let holder = eject_holder.clone();
@@ -15881,9 +16002,10 @@ fn open_media_library_window(
                         }
                     });
                 }
-                row.append(&eject_btn);
+                btn_row.append(&eject_btn);
+                card.append(&btn_row);
 
-                list.append(&row);
+                list.append(&card);
             }
         })
     };

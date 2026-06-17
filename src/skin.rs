@@ -779,6 +779,19 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
 
     // Status bar + info text
     writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}px; }}").unwrap();
+    // Device overview cards (the Devices page list).
+    writeln!(css, ".device-card {{ \
+        background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
+        padding: 10px 12px; \
+    }}").unwrap();
+    writeln!(css, ".device-card-name {{ \
+        color: {text}; font-size: {fs}px; font-weight: bold; \
+    }}").unwrap();
+    writeln!(css, ".device-badge {{ \
+        color: {text_dim}; border: 1px solid {border}; border-radius: 999px; \
+        padding: 1px 8px; font-size: {fs}px; \
+    }}").unwrap();
+    writeln!(css, ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}").unwrap();
     writeln!(css, ".info-text {{ \
         color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
         padding: 6px; border-radius: 3px; \
