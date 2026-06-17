@@ -11392,6 +11392,10 @@ fn open_media_library_window(
     let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
     dev_capacity.add_css_class("status-label");
     dev_capacity.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    // Third row of the capacity area: "X playlists - Y audio files".
+    let dev_counts = Label::builder().halign(Align::Start).xalign(0.0).build();
+    dev_counts.add_css_class("status-label");
+    dev_counts.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     let dev_capacity_box = GtkBox::new(Orientation::Vertical, 2);
     dev_capacity_box.set_hexpand(true);
     dev_capacity_box.set_valign(Align::Center);
@@ -11400,6 +11404,7 @@ fn open_media_library_window(
     dev_capacity_box.set_margin_end(30);
     dev_capacity_box.append(&dev_levelbar);
     dev_capacity_box.append(&dev_capacity);
+    dev_capacity_box.append(&dev_counts);
 
     let dev_hdr_row = GtkBox::new(Orientation::Horizontal, 10);
     dev_hdr_row.add_css_class("device-detail-header");
@@ -11410,12 +11415,6 @@ fn open_media_library_window(
     dev_hdr_row.append(&dev_sync);
     dev_hdr_row.append(&dev_eject);
     dev_detail.append(&dev_hdr_row);
-
-    // Counts line under the capacity row: "X playlists - Y audio files".
-    let dev_counts = Label::builder().halign(Align::Start).xalign(0.0).build();
-    dev_counts.add_css_class("status-label");
-    dev_counts.set_margin_start(4);
-    dev_detail.append(&dev_counts);
 
     // Copy progress bar — shown only while files are being copied to this
     // device; carries an "x/y · filename" label.
@@ -11504,9 +11503,9 @@ fn open_media_library_window(
     dev_file_remove.add_css_class("destructive");
     dev_file_remove.set_sensitive(false);
 
-    // Bottom status bar (Finder-style): song count + unsupported note. Appended
-    // after the track view (below). `dev_hint` is also reused for live copy
-    // status ("Copying x/y…").
+    // Live copy status ("Copying x/y · filename"). Empty when idle, so it acts
+    // as the flexible spacer in the bottom action row (no dedicated status bar,
+    // which left an empty strip at the bottom of the view).
     let dev_hint = Label::builder()
         .label("")
         .halign(Align::Start)
@@ -11515,16 +11514,14 @@ fn open_media_library_window(
         .ellipsize(gtk4::pango::EllipsizeMode::End)
         .build();
     dev_hint.add_css_class("status-label");
+    // Kept for the selection handler's unsupported-fs note; not shown directly
+    // (the title-section badge now carries that), so it stays unparented.
     let dev_warn = Label::builder()
         .halign(Align::End)
         .xalign(1.0)
         .visible(false)
         .build();
     dev_warn.add_css_class("broken");
-    let dev_statusbar = GtkBox::new(Orientation::Horizontal, 8);
-    dev_statusbar.add_css_class("device-statusbar");
-    dev_statusbar.append(&dev_hint);
-    dev_statusbar.append(&dev_warn);
 
     // Track view mirroring the files-view columns, populated from device tags.
     // `dev_store` is the *displayed* model: in the all-files view it holds every
@@ -12603,16 +12600,15 @@ fn open_media_library_window(
     for b in [&dev_file_add, &dev_file_play, &dev_file_enqueue] {
         b.add_css_class("pl-btn");
     }
-    let dev_file_spacer = GtkBox::new(Orientation::Horizontal, 0);
-    dev_file_spacer.set_hexpand(true);
     let dev_file_actions = GtkBox::new(Orientation::Horizontal, 6);
     dev_file_actions.append(&dev_file_add);
     dev_file_actions.append(&dev_file_remove);
-    dev_file_actions.append(&dev_file_spacer);
+    // dev_hint is the flexible middle element: empty (a spacer) when idle, live
+    // copy status while files copy.
+    dev_file_actions.append(&dev_hint);
     dev_file_actions.append(&dev_file_play);
     dev_file_actions.append(&dev_file_enqueue);
     dev_detail.append(&dev_file_actions);
-    dev_detail.append(&dev_statusbar);
 
     // Collect the currently-selected device track rows (full LibTrack, so
     // already-known metadata like duration carries into the active playlist).
