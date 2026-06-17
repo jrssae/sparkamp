@@ -897,16 +897,6 @@ fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBox
     None
 }
 
-/// Show a simple modal alert dialog.
-fn show_error_alert(msg: &str) {
-    let alert = gtk4::AlertDialog::builder()
-        .message("Sparkamp")
-        .detail(msg)
-        .modal(true)
-        .build();
-    alert.show(gtk4::Window::NONE);
-}
-
 /// Show a modal alert parented to `parent` (avoids the "GtkDialog mapped
 /// without a transient parent" warning).
 fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
@@ -6265,7 +6255,7 @@ fn open_id3_editor_window(
 
     let art_entry_clone = art_path_entry.clone();
     let btn_view_for_browse = btn_view.clone();
-    btn_browse.connect_clicked(move |_| {
+    btn_browse.connect_clicked(move |b| {
         let dialog = gtk4::FileDialog::new();
         dialog.set_title("Select Artwork");
         let filters = gtk4::FileFilter::new();
@@ -6278,8 +6268,11 @@ fn open_id3_editor_window(
         dialog.set_default_filter(Some(&filters));
         let entry_clone = art_entry_clone.clone();
         let btn_view_clone = btn_view_for_browse.clone();
+        // Parent to the editor window (the button's toplevel) so the chooser
+        // has a transient parent instead of a throwaway, unmapped window.
+        let parent = b.root().and_downcast::<gtk4::Window>();
         dialog.open(
-            Some(&gtk4::Window::new()),
+            parent.as_ref(),
             None::<&gtk4::gio::Cancellable>,
             move |result| {
                 if let Ok(file) = result {
@@ -6822,6 +6815,7 @@ fn open_settings_window(
                 let state_rc = state_rc.clone();
                 let rebuild = rebuild.clone();
                 let listbox = listbox.clone();
+                let win_alert = win_ref.clone();
                 dialog.open(Some(&win_ref), gio::Cancellable::NONE, move |res| {
                     let Ok(file) = res else { return };
                     let Some(path) = file.path() else { return };
@@ -6837,8 +6831,10 @@ fn open_settings_window(
                             }
                         }
                         Err(e) => {
-                            let msg = format!("Could not add skin: {e}");
-                            show_error_alert(&msg);
+                            show_alert_parented(
+                                Some(&win_alert),
+                                &format!("Could not add skin: {e}"),
+                            );
                         }
                     }
                 });
@@ -9143,7 +9139,7 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
                 let flag = cancel_flag.borrow().clone();
                 let scanning = is_scanning.clone();
                 let win_wk = w.downgrade();
-                dialog.choose(None::<&gtk4::Window>, None::<&gio::Cancellable>, move |result| {
+                dialog.choose(Some(w), None::<&gio::Cancellable>, move |result| {
                     if result == Ok(1) {
                         flag.store(true, Ordering::Relaxed);
                         scanning.set(false);
