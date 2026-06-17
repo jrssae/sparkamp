@@ -10322,6 +10322,39 @@ fn device_record_pair(
     }
 }
 
+/// Sanitize a playlist name into the bare filename stem used for its `.m3u`/
+/// `.m3u8` on a device: strip path-hostile characters and surrounding dots/
+/// spaces, falling back to "Playlist" when nothing usable remains.
+fn safe_playlist_filename(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect();
+    let safe = safe.trim().trim_matches('.').trim();
+    if safe.is_empty() {
+        "Playlist".to_string()
+    } else {
+        safe.to_string()
+    }
+}
+
+/// If a device playlist file is linked to a library playlist — i.e. some
+/// library playlist's safe filename equals the device file's stem — return its
+/// `(id, name)`. Device-only playlists (no library match) return `None`.
+fn linked_library_playlist(
+    state: &Rc<RefCell<AppState>>,
+    dev_playlist: &std::path::Path,
+) -> Option<(i64, String)> {
+    let stem = dev_playlist.file_stem()?.to_string_lossy().into_owned();
+    let s = state.borrow();
+    let lib = s.media_lib.as_ref()?;
+    lib.all_playlists()
+        .ok()?
+        .into_iter()
+        .find(|p| safe_playlist_filename(&p.name) == stem)
+        .map(|p| (p.id, p.name))
+}
+
 /// A validated plan for sending a whole playlist to a device: the files to
 /// copy (with their on-device paths), the device identity for sync pairs, and
 /// where the `.m3u8` will be written on the device.
@@ -10383,12 +10416,7 @@ fn prepare_playlist_send(
             dev.free_bytes as f64 / 1e9
         ));
     }
-    let safe: String = playlist_name
-        .chars()
-        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-        .collect();
-    let safe = safe.trim().trim_matches('.').trim();
-    let safe = if safe.is_empty() { "Playlist" } else { safe };
+    let safe = safe_playlist_filename(playlist_name);
     let ext = state
         .borrow()
         .config
@@ -10494,6 +10522,122 @@ fn apply_device_sync(
         }
     }
     (applied, failed)
+}
+
+/// One library playlist whose on-device `.m3u`/`.m3u8` no longer matches the
+/// library's current membership or order.
+struct PlaylistReconcile {
+    device_id: String,
+    /// The device playlist file to rewrite.
+    m3u_path: std::path::PathBuf,
+    /// The library playlist's existing files, in order.
+    srcs: Vec<std::path::PathBuf>,
+}
+
+/// For every library playlist that already has a matching playlist file on the
+/// device (same safe filename, either extension), compare the device file's
+/// entry order against the library playlist's current files. Returns the
+/// playlists whose contents differ — the library is the source of truth for
+/// playlist membership, so editing a playlist on the computer and syncing
+/// propagates the change to the device.
+fn device_playlist_reconcile_plan(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+) -> Vec<PlaylistReconcile> {
+    let device_id = device_sync_id(dev);
+    if device_id.is_empty() || dev.read_only || device_fs_unsupported(&dev.fs_type) {
+        return Vec::new();
+    }
+    let playlists = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .and_then(|l| l.all_playlists().ok())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for pl in playlists {
+        // Locate the device playlist file by safe name (.m3u8 preferred, .m3u
+        // legacy). Skip playlists that were never sent to this device.
+        let safe = safe_playlist_filename(&pl.name);
+        let cand8 = dev.mount_path.join(format!("{safe}.m3u8"));
+        let cand = dev.mount_path.join(format!("{safe}.m3u"));
+        let m3u_path = if cand8.exists() {
+            cand8
+        } else if cand.exists() {
+            cand
+        } else {
+            continue;
+        };
+        // Existing library files for this playlist, in order.
+        let srcs: Vec<std::path::PathBuf> = state
+            .borrow()
+            .media_lib
+            .as_ref()
+            .and_then(|l| l.load_playlist_tracks(&pl).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(|t| std::path::PathBuf::from(&t.path))
+            .filter(|p| p.exists())
+            .collect();
+        // The device filenames the library tracks map to (flat Music/<file>,
+        // honoring existing dedup slots).
+        let desired: Vec<String> = srcs
+            .iter()
+            .map(|src| {
+                let (rel, _present) = device_plan_one(state, &dev.mount_path, &device_id, src);
+                rel.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let current = crate::devices::browse::playlist_entry_order(&m3u_path);
+        if current != desired {
+            out.push(PlaylistReconcile {
+                device_id: device_id.clone(),
+                m3u_path,
+                srcs,
+            });
+        }
+    }
+    out
+}
+
+/// Apply playlist reconciles: copy any tracks newly added to a playlist (flat
+/// `Music/<file>`, deduped), then rewrite each `.m3u`/`.m3u8` to mirror the
+/// library order. Audio files for tracks removed from a playlist are left on
+/// the device on purpose — they may be referenced by other playlists, and
+/// removing a track from a playlist never deletes the file (Deletion Rule).
+/// Returns `(playlists_updated, files_copied, failed)`.
+fn apply_playlist_reconcile(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+    plan: &[PlaylistReconcile],
+) -> (usize, usize, usize) {
+    let (mut playlists, mut copied, mut failed) = (0usize, 0usize, 0usize);
+    for r in plan {
+        let mut entries: Vec<String> = Vec::new();
+        for src in &r.srcs {
+            let (rel, present) = device_plan_one(state, &dev.mount_path, &r.device_id, src);
+            if !present {
+                match crate::devices::transfer::copy_to_device(src, &dev.mount_path, &rel) {
+                    Ok(_) => copied += 1,
+                    Err(_) => {
+                        failed += 1;
+                        continue;
+                    }
+                }
+            }
+            device_record_pair(state, &r.device_id, src, &rel);
+            entries.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+        let body = format!("#EXTM3U\n{}\n", entries.join("\n"));
+        if std::fs::write(&r.m3u_path, body).is_ok() {
+            playlists += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    (playlists, copied, failed)
 }
 
 fn open_media_library_window(
@@ -10975,6 +11119,7 @@ fn open_media_library_window(
     let dev_levelbar = gtk4::LevelBar::new();
     dev_levelbar.set_min_value(0.0);
     dev_levelbar.set_max_value(1.0);
+    dev_levelbar.add_css_class("device-capacity");
     let dev_capacity = Label::builder().halign(Align::Start).xalign(0.0).build();
     dev_capacity.add_css_class("status-label");
     let dev_storage = GtkBox::new(Orientation::Vertical, 4);
@@ -10985,9 +11130,13 @@ fn open_media_library_window(
 
     // Copy progress bar — shown only while files are being copied to this
     // device; carries an "x/y · filename" label.
+    // Thick accent bar matching the capacity bar above; the live "Copying x/y ·
+    // filename" text rides in the status bar (`dev_hint`), so the bar itself
+    // carries no inline text and can be slim/tall like the capacity meter.
     let dev_progress = gtk4::ProgressBar::new();
-    dev_progress.set_show_text(true);
+    dev_progress.set_show_text(false);
     dev_progress.set_visible(false);
+    dev_progress.add_css_class("device-progress");
     dev_detail.append(&dev_progress);
 
     // Playlist filter: "All files" + one row per device .m3u/.m3u8. Selecting
@@ -11011,6 +11160,28 @@ fn open_media_library_window(
         .child(&dev_pl_chips)
         .build();
     dev_detail.append(&dev_pl_scroll);
+
+    // Per-playlist management actions — enabled only when a specific playlist
+    // chip (not "All files") is selected. Click handlers are wired further down,
+    // once the device run-closures they depend on exist. A device playlist that
+    // is linked to a library playlist (same safe name) is renamed/re-synced via
+    // the library (source of truth); a device-only playlist is acted on in place.
+    let dev_pl_rename = Button::with_label("Rename");
+    let dev_pl_resync = Button::with_label("Re-sync");
+    let dev_pl_delete = Button::with_label("Delete");
+    for b in [&dev_pl_rename, &dev_pl_resync, &dev_pl_delete] {
+        b.add_css_class("pl-btn");
+    }
+    dev_pl_delete.add_css_class("destructive");
+    let dev_pl_actions = GtkBox::new(Orientation::Horizontal, 6);
+    dev_pl_actions.append(&dev_pl_rename);
+    dev_pl_actions.append(&dev_pl_resync);
+    dev_pl_actions.append(&dev_pl_delete);
+    dev_pl_actions.set_sensitive(false);
+    dev_detail.append(&dev_pl_actions);
+    // The device playlist file the active chip points at (None = "All files").
+    let selected_dev_playlist: Rc<RefCell<Option<std::path::PathBuf>>> =
+        Rc::new(RefCell::new(None));
 
     // Bottom status bar (Finder-style): song count + unsupported note. Appended
     // after the track view (below). `dev_hint` is also reused for live copy
@@ -11345,12 +11516,18 @@ fn open_media_library_window(
         let filter = dev_filter.clone();
         let pos_col = dev_pos_col.clone();
         let col_view = dev_col_view.clone();
+        let sel_pl = selected_dev_playlist.clone();
+        let actions = dev_pl_actions.clone();
         Rc::new(move |name: &str| {
             if name == "all" || name.is_empty() {
                 *positions.borrow_mut() = None;
+                *sel_pl.borrow_mut() = None;
+                actions.set_sensitive(false);
                 pos_col.set_visible(false);
                 col_view.sort_by_column(None::<&ColumnViewColumn>, gtk4::SortType::Ascending);
             } else {
+                *sel_pl.borrow_mut() = Some(std::path::PathBuf::from(name));
+                actions.set_sensitive(true);
                 let order =
                     crate::devices::browse::playlist_entry_order(std::path::Path::new(name));
                 let mut map: std::collections::HashMap<String, i64> =
@@ -11546,6 +11723,193 @@ fn open_media_library_window(
         })
     };
     *send_playlist_holder.borrow_mut() = Some(send_playlist_run.clone());
+
+    // ── Device playlist management actions (Rename / Re-sync / Delete) ───────
+    // Resolve the Device backing the currently-selected device row.
+    let current_device_for_actions = {
+        let current_devices = current_devices.clone();
+        let sel_backend = selected_dev_backend.clone();
+        move || -> Option<crate::devices::Device> {
+            let backend = sel_backend.borrow().clone()?;
+            current_devices
+                .borrow()
+                .iter()
+                .find(|d| d.backend_id == backend)
+                .cloned()
+        }
+    };
+
+    // Rename: rename the device .m3u/.m3u8; if it is linked to a library
+    // playlist, rename that too so the link (safe-name match) is preserved.
+    {
+        let state = state.clone();
+        let sel_pl = selected_dev_playlist.clone();
+        let get_dev = current_device_for_actions.clone();
+        let reload_pls = reload_dev_playlists.clone();
+        let reload_store = reload_device_store.clone();
+        let win_wk = win.downgrade();
+        dev_pl_rename.connect_clicked(move |_| {
+            let Some(dev) = get_dev() else { return };
+            let Some(pl_path) = sel_pl.borrow().clone() else { return };
+            if dev.read_only {
+                show_alert_parented(win_wk.upgrade().as_ref(), "Device is read-only.");
+                return;
+            }
+            let current_stem = pl_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let ext = pl_path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "m3u8".to_string());
+
+            let dialog = gtk4::Window::builder()
+                .title("Rename Playlist")
+                .modal(true)
+                .resizable(false)
+                .default_width(300)
+                .build();
+            if let Some(w) = win_wk.upgrade() {
+                dialog.set_transient_for(Some(&w));
+            }
+            let vbox = GtkBox::new(Orientation::Vertical, 8);
+            vbox.set_margin_top(12);
+            vbox.set_margin_bottom(12);
+            vbox.set_margin_start(12);
+            vbox.set_margin_end(12);
+            let lbl = Label::builder().label("New name:").halign(Align::Start).build();
+            let name_entry = Entry::new();
+            name_entry.set_text(&gtk_safe(&current_stem));
+            name_entry.set_hexpand(true);
+            let dialog_btns = GtkBox::new(Orientation::Horizontal, 6);
+            dialog_btns.set_halign(Align::End);
+            let cancel_btn = Button::with_label("Cancel");
+            let ok_btn = Button::with_label("Rename");
+            ok_btn.add_css_class("suggested-action");
+            dialog_btns.append(&cancel_btn);
+            dialog_btns.append(&ok_btn);
+            vbox.append(&lbl);
+            vbox.append(&name_entry);
+            vbox.append(&dialog_btns);
+            dialog.set_child(Some(&vbox));
+            let d = dialog.clone();
+            cancel_btn.connect_clicked(move |_| d.close());
+
+            let d = dialog.clone();
+            let e = name_entry.clone();
+            let state2 = state.clone();
+            let pl_path2 = pl_path.clone();
+            let dev2 = dev.clone();
+            let reload_pls2 = reload_pls.clone();
+            let reload_store2 = reload_store.clone();
+            let win_wk2 = win_wk.clone();
+            let ext2 = ext.clone();
+            ok_btn.connect_clicked(move |_| {
+                let raw = e.text().to_string();
+                if raw.trim().is_empty() {
+                    return;
+                }
+                let safe = safe_playlist_filename(&raw);
+                let new_path = pl_path2
+                    .parent()
+                    .map(|p| p.join(format!("{safe}.{ext2}")))
+                    .unwrap_or_else(|| pl_path2.clone());
+                if new_path != pl_path2 {
+                    if let Err(err) = std::fs::rename(&pl_path2, &new_path) {
+                        show_alert_parented(
+                            win_wk2.upgrade().as_ref(),
+                            &format!("Couldn't rename the playlist file: {err}"),
+                        );
+                        return;
+                    }
+                }
+                // Keep a linked library playlist's name in step.
+                if let Some((id, _)) = linked_library_playlist(&state2, &pl_path2) {
+                    if let Some(lib) = state2.borrow().media_lib.as_ref() {
+                        let _ = lib.rename_playlist(id, raw.trim());
+                    }
+                }
+                reload_pls2(dev2.mount_path.clone());
+                reload_store2(dev2.clone());
+                d.close();
+            });
+            let ok2 = ok_btn.clone();
+            name_entry.connect_activate(move |_| {
+                ok2.activate();
+            });
+            dialog.present();
+        });
+    }
+
+    // Re-sync: re-push the linked library playlist to the device (copy any
+    // new tracks, rewrite the .m3u8). Device-only playlists have nothing in the
+    // library to push from.
+    {
+        let state = state.clone();
+        let sel_pl = selected_dev_playlist.clone();
+        let get_dev = current_device_for_actions.clone();
+        let send = send_playlist_run.clone();
+        let win_wk = win.downgrade();
+        dev_pl_resync.connect_clicked(move |_| {
+            let Some(dev) = get_dev() else { return };
+            let Some(pl_path) = sel_pl.borrow().clone() else { return };
+            match linked_library_playlist(&state, &pl_path) {
+                Some((id, name)) => send(dev, id, name),
+                None => show_alert_parented(
+                    win_wk.upgrade().as_ref(),
+                    "This playlist exists only on the device — there is no library \
+                     playlist to re-sync it from.",
+                ),
+            }
+        });
+    }
+
+    // Delete: remove the .m3u/.m3u8 from the device only. The audio files are
+    // kept (they may belong to other playlists), and no library playlist or
+    // on-disk music file is touched (Deletion Rule).
+    {
+        let sel_pl = selected_dev_playlist.clone();
+        let get_dev = current_device_for_actions.clone();
+        let reload_pls = reload_dev_playlists.clone();
+        let reload_store = reload_device_store.clone();
+        let win_wk = win.downgrade();
+        dev_pl_delete.connect_clicked(move |_| {
+            let Some(dev) = get_dev() else { return };
+            let Some(pl_path) = sel_pl.borrow().clone() else { return };
+            let name = pl_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let dialog = gtk4::AlertDialog::builder()
+                .message(format!("Remove \"{name}\" from the device?"))
+                .detail("Only the playlist file is removed. The songs stay on the device.")
+                .buttons(vec!["Cancel".to_string(), "Remove".to_string()])
+                .cancel_button(0)
+                .default_button(1)
+                .modal(true)
+                .build();
+            let pl_path2 = pl_path.clone();
+            let dev2 = dev.clone();
+            let reload_pls2 = reload_pls.clone();
+            let reload_store2 = reload_store.clone();
+            let win_wk2 = win_wk.clone();
+            dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
+                if res != Ok(1) {
+                    return;
+                }
+                if let Err(err) = std::fs::remove_file(&pl_path2) {
+                    show_alert_parented(
+                        win_wk2.upgrade().as_ref(),
+                        &format!("Couldn't remove the playlist file: {err}"),
+                    );
+                    return;
+                }
+                reload_pls2(dev2.mount_path.clone());
+                reload_store2(dev2.clone());
+            });
+        });
+    }
 
     // Copy loose files (drag-drop from a view) onto a device on a worker
     // thread, with the same sidebar "(x/y)" label and detail progress bar the
@@ -16488,6 +16852,7 @@ fn open_media_library_window(
         Rc::new(move |dev: crate::devices::Device| {
             use crate::devices::sync::SyncAction;
             let plan = device_sync_plan(&state_sync, &dev);
+            let pl_plan = device_playlist_reconcile_plan(&state_sync, &dev);
             let to_lib = plan
                 .iter()
                 .filter(|(_, a)| *a == SyncAction::DeviceToLibrary)
@@ -16496,10 +16861,11 @@ fn open_media_library_window(
                 .iter()
                 .filter(|(_, a)| *a == SyncAction::LibraryToDevice)
                 .count();
-            if to_lib == 0 && to_dev == 0 {
+            let pl_changed = pl_plan.len();
+            if to_lib == 0 && to_dev == 0 && pl_changed == 0 {
                 show_alert_parented(
                     win_wk.upgrade().as_ref(),
-                    "Already in sync — no tag changes to apply.",
+                    "Already in sync — no tag or playlist changes to apply.",
                 );
                 return;
             }
@@ -16508,8 +16874,16 @@ fn open_media_library_window(
             } else {
                 dev.label.clone()
             };
+            let pl_line = if pl_changed > 0 {
+                format!(
+                    " {pl_changed} playlist{} changed on this computer.",
+                    if pl_changed == 1 { " has" } else { "s have" }
+                )
+            } else {
+                String::new()
+            };
             let detail = format!(
-                "{dname} has {to_lib} updated song{}, this computer has {to_dev} updated song{}. \
+                "{dname} has {to_lib} updated song{}, this computer has {to_dev} updated song{}.{pl_line} \
                  Sync all changes?",
                 if to_lib == 1 { "" } else { "s" },
                 if to_dev == 1 { "" } else { "s" },
@@ -16525,6 +16899,7 @@ fn open_media_library_window(
             let state2 = state_sync.clone();
             let dev2 = dev.clone();
             let plan2 = plan;
+            let pl_plan2 = pl_plan;
             let win_wk2 = win_wk.clone();
             let reload2 = reload_sync.clone();
             dialog.choose(
@@ -16535,17 +16910,29 @@ fn open_media_library_window(
                         return;
                     }
                     let (applied, failed) = apply_device_sync(&state2, &dev2, &plan2);
+                    let (pls, pl_copied, pl_failed) =
+                        apply_playlist_reconcile(&state2, &dev2, &pl_plan2);
                     // Re-read the device so the updated tag values show now.
                     reload2(dev2.clone());
-                    let tail = if failed > 0 {
-                        format!(", {failed} failed")
+                    let total_failed = failed + pl_failed;
+                    let tail = if total_failed > 0 {
+                        format!(", {total_failed} failed")
+                    } else {
+                        String::new()
+                    };
+                    let pl_tail = if pls > 0 {
+                        format!(
+                            "; updated {pls} playlist{} ({pl_copied} new file{} copied)",
+                            if pls == 1 { "" } else { "s" },
+                            if pl_copied == 1 { "" } else { "s" },
+                        )
                     } else {
                         String::new()
                     };
                     show_alert_parented(
                         win_wk2.upgrade().as_ref(),
                         &format!(
-                            "Synced {applied} song{}{tail}.",
+                            "Synced {applied} song{}{pl_tail}{tail}.",
                             if applied == 1 { "" } else { "s" }
                         ),
                     );

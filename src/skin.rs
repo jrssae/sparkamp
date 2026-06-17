@@ -804,7 +804,22 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, ".device-statusbar {{ \
         border-top: 1px solid {border}; padding: 4px 2px; \
     }}").unwrap();
-    // Capacity LevelBar fullness colors (filled portion).
+    // Storage capacity meter + copy-progress bar: same chunky height + rounded
+    // accent fill so the two read as a matched pair on the detail page.
+    writeln!(css, "levelbar.device-capacity trough, \
+                   levelbar.device-capacity trough block {{ \
+        min-height: 12px; border-radius: 6px; \
+    }}").unwrap();
+    writeln!(css, "levelbar.device-capacity trough {{ background-color: {tbg}; }}").unwrap();
+    writeln!(css, "levelbar.device-capacity trough block.filled {{ background-color: {hl}; }}").unwrap();
+    writeln!(css, "progressbar.device-progress trough, \
+                   progressbar.device-progress progress {{ \
+        min-height: 12px; border-radius: 6px; \
+    }}").unwrap();
+    writeln!(css, "progressbar.device-progress trough {{ background-color: {tbg}; }}").unwrap();
+    writeln!(css, "progressbar.device-progress progress {{ background-color: {hl}; }}").unwrap();
+    // Capacity LevelBar fullness colors (filled portion). These class-on-levelbar
+    // rules follow the device-capacity fill above so they win the specificity tie.
     writeln!(css, "levelbar.cap-warn trough block.filled {{ background-color: #d08a16; }}").unwrap();
     writeln!(css, "levelbar.cap-full trough block.filled {{ background-color: {broken}; }}").unwrap();
     // Device playlist filter chips (grouped toggle buttons).
@@ -814,8 +829,11 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         border: 1px solid {border}; border-radius: 999px; padding: 2px 12px; \
         min-height: 0; \
     }}").unwrap();
+    // Checked chip mirrors the main player's active mode button (button_active
+    // fill + button text) so a selected playlist reads with the same highlight
+    // as a selected button elsewhere, with an accent border to mark it active.
     writeln!(css, "button.device-chip:checked {{ \
-        background-color: {hl}; color: {text}; border-color: {hl}; \
+        background-color: {bact}; color: {btext}; border-color: {hl}; \
     }}").unwrap();
     writeln!(css, ".info-text {{ \
         color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
