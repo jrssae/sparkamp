@@ -10189,6 +10189,20 @@ fn device_icon_name(_dev: &crate::devices::Device) -> &'static str {
     "drive-removable-media"
 }
 
+/// Apply a copy's progress to an overview card's bar. `Some((done, total))`
+/// shows the bar with an `x/y` label and fraction; `None` makes it transparent
+/// (idle) while still reserving its space, so the card never changes height.
+fn apply_card_progress(bar: &gtk4::ProgressBar, state: Option<(usize, usize)>) {
+    match state {
+        Some((done, total)) => {
+            bar.set_opacity(1.0);
+            bar.set_text(Some(&format!("{done}/{total}")));
+            bar.set_fraction(done as f64 / total.max(1) as f64);
+        }
+        None => bar.set_opacity(0.0),
+    }
+}
+
 /// "N songs · M playlists" with singular/plural agreement.
 fn counts_text(songs: usize, playlists: usize) -> String {
     format!(
@@ -10516,6 +10530,36 @@ fn open_media_library_window(
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let counts_in_flight: Rc<RefCell<std::collections::HashSet<String>>> =
         Rc::new(RefCell::new(std::collections::HashSet::new()));
+
+    // Live copy progress per device (backend_id → (done, total)); absent = idle.
+    // `device_card_progress` maps a backend_id to its overview card's progress
+    // bar (rebuilt each overview render). Together they let a copy show progress
+    // on the card and survive a poll-driven rebuild mid-transfer.
+    let device_transfers: Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let device_card_progress: Rc<RefCell<std::collections::HashMap<String, gtk4::ProgressBar>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+
+    // Apply (or clear) a transfer's progress to a card's bar. The bar always
+    // occupies its space; idle just makes it transparent so the card never
+    // changes size between copying and not.
+    let update_card_progress: Rc<dyn Fn(&str, Option<(usize, usize)>)> = {
+        let transfers = device_transfers.clone();
+        let bars = device_card_progress.clone();
+        Rc::new(move |backend: &str, state: Option<(usize, usize)>| {
+            match state {
+                Some(v) => {
+                    transfers.borrow_mut().insert(backend.to_string(), v);
+                }
+                None => {
+                    transfers.borrow_mut().remove(backend);
+                }
+            }
+            if let Some(bar) = bars.borrow().get(backend) {
+                apply_card_progress(bar, state);
+            }
+        })
+    };
 
     // Sidebar DropTarget — accept FileList drags from the active playlist,
     // ML files view, or ML editor and append paths to the saved playlist
@@ -11296,6 +11340,7 @@ fn open_media_library_window(
         let reload = reload_device_store.clone();
         let reload_pls = reload_dev_playlists.clone();
         let sel_backend = selected_dev_backend.clone();
+        let update_card = update_card_progress.clone();
         let win_wk = win.downgrade();
         Rc::new(move |dev: crate::devices::Device, playlist_id: i64, name: String| {
             let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
@@ -11348,6 +11393,7 @@ fn open_media_library_window(
             let reload2 = reload.clone();
             let reload_pls2 = reload_pls.clone();
             let sel2 = sel_backend.clone();
+            let update_card2 = update_card.clone();
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
                 let mut entries: Vec<String> = Vec::new();
@@ -11355,6 +11401,7 @@ fn open_media_library_window(
                 for (i, src) in srcs.iter().enumerate() {
                     let prog = format!("{}/{}", i + 1, total);
                     set_row_label(&format!("{row_base} — {prog}"));
+                    update_card2(&backend, Some((i + 1, total)));
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
                         hint2.set_text(&format!("Copying {prog}…"));
                         progress2.set_visible(true);
@@ -11393,6 +11440,7 @@ fn open_media_library_window(
                 let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
                 set_row_label(&row_base);
                 progress2.set_visible(false);
+                update_card2(&backend, None);
                 reload2(dev_for_reload.clone());
                 // Refresh the playlist filter so the just-written .m3u8 shows
                 // immediately, without needing to reselect the device.
@@ -11421,6 +11469,7 @@ fn open_media_library_window(
         let progress = dev_progress.clone();
         let reload = reload_device_store.clone();
         let sel_backend = selected_dev_backend.clone();
+        let update_card = update_card_progress.clone();
         let win_wk = win.downgrade();
         Rc::new(move |dev: crate::devices::Device, srcs: Vec<std::path::PathBuf>| {
             if dev.read_only {
@@ -11505,12 +11554,14 @@ fn open_media_library_window(
             let progress2 = progress.clone();
             let reload2 = reload.clone();
             let sel2 = sel_backend.clone();
+            let update_card2 = update_card.clone();
             let win2 = win_wk.clone();
             glib::spawn_future_local(async move {
                 let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
                 for (i, src) in srcs.iter().enumerate() {
                     let prog = format!("{}/{}", i + 1, total);
                     set_row_label(&format!("{row_base} — {prog}"));
+                    update_card2(&backend, Some((i + 1, total)));
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
                         hint2.set_text(&format!("Copying {prog}…"));
                         progress2.set_visible(true);
@@ -11542,6 +11593,7 @@ fn open_media_library_window(
                 }
                 set_row_label(&row_base);
                 progress2.set_visible(false);
+                update_card2(&backend, None);
                 reload2(dev_for_reload.clone());
                 show_alert_parented(
                     win2.upgrade().as_ref(),
@@ -15841,10 +15893,14 @@ fn open_media_library_window(
         let sync_holder = sync_run_holder.clone();
         let counts_cache = device_counts.clone();
         let counts_inflight = counts_in_flight.clone();
+        let transfers = device_transfers.clone();
+        let card_bars = device_card_progress.clone();
         Rc::new(move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
             }
+            // Card progress bars are rebuilt below; drop the stale references.
+            card_bars.borrow_mut().clear();
             let devs = current.borrow();
             if devs.is_empty() {
                 let l = Label::builder()
@@ -15970,6 +16026,15 @@ fn open_media_library_window(
                     }
                 }
                 card.append(&counts_lbl);
+
+                // Copy progress bar — always present (reserves its space) so the
+                // card height is identical whether or not a transfer is running.
+                // Transparent when idle; the runners drive it via backend_id.
+                let prog = gtk4::ProgressBar::new();
+                prog.set_show_text(true);
+                apply_card_progress(&prog, transfers.borrow().get(&d.backend_id).copied());
+                card.append(&prog);
+                card_bars.borrow_mut().insert(d.backend_id.clone(), prog);
 
                 // Sync / Eject buttons, right-aligned.
                 let btn_row = GtkBox::new(Orientation::Horizontal, 6);
