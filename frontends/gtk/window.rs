@@ -12048,41 +12048,67 @@ fn open_media_library_window(
     let reload_dev_playlists: Rc<dyn Fn(std::path::PathBuf)> = {
         let chips = dev_pl_chips.clone();
         let apply = apply_pl_filter.clone();
+        // Generation token: bumped on every call so an in-flight playlist walk
+        // (slow over MTP) that finishes after the user switched devices is
+        // discarded instead of appending stale chips.
+        let generation = Rc::new(Cell::new(0u64));
         Rc::new(move |mount: std::path::PathBuf| {
+            let gen_id = generation.get().wrapping_add(1);
+            generation.set(gen_id);
             while let Some(c) = chips.first_child() {
                 chips.remove(&c);
             }
-            let mk_chip = |label: &str,
-                           name: String,
-                           group: Option<&gtk4::ToggleButton>|
-             -> gtk4::ToggleButton {
-                let b = gtk4::ToggleButton::with_label(label);
-                b.add_css_class("device-chip");
-                if let Some(g) = group {
-                    b.set_group(Some(g));
-                }
+            // "All files" chip + cleared filter are shown immediately so the
+            // detail page paints without waiting on the device walk.
+            let all = gtk4::ToggleButton::with_label("All files");
+            all.add_css_class("device-chip");
+            {
                 let apply2 = apply.clone();
-                b.connect_toggled(move |btn| {
+                all.connect_toggled(move |btn| {
                     if btn.is_active() {
-                        apply2(&name);
+                        apply2("all");
                     }
                 });
-                b
-            };
-            let all = mk_chip("All files", "all".to_string(), None);
-            chips.insert(&all, -1);
-            for pl in crate::devices::browse::device_playlist_files(&mount) {
-                let nm = pl
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let chip =
-                    mk_chip(&gtk_safe(&nm), pl.to_string_lossy().into_owned(), Some(&all));
-                chips.insert(&chip, -1);
             }
-            // Default to "All files" (also applies the cleared filter).
+            chips.insert(&all, -1);
             all.set_active(true);
-            apply(&"all".to_string());
+            apply("all");
+
+            // Walk the device for playlist files off the main thread (a recursive
+            // tree walk over a gvfs/MTP FUSE mount would otherwise freeze the UI),
+            // then append a chip per playlist if this is still the shown device.
+            let chips2 = chips.clone();
+            let all2 = all.clone();
+            let apply3 = apply.clone();
+            let generation2 = generation.clone();
+            glib::spawn_future_local(async move {
+                let m = mount.clone();
+                let pls = gio::spawn_blocking(move || {
+                    crate::devices::browse::device_playlist_files(&m)
+                })
+                .await
+                .unwrap_or_default();
+                if generation2.get() != gen_id {
+                    return; // device switched / chips rebuilt since this walk began
+                }
+                for pl in pls {
+                    let nm = pl
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let path_name = pl.to_string_lossy().into_owned();
+                    let chip = gtk4::ToggleButton::with_label(&gtk_safe(&nm));
+                    chip.add_css_class("device-chip");
+                    chip.set_group(Some(&all2));
+                    let apply4 = apply3.clone();
+                    chip.connect_toggled(move |btn| {
+                        if btn.is_active() {
+                            apply4(&path_name);
+                        }
+                    });
+                    chips2.insert(&chip, -1);
+                }
+            });
         })
     };
 
