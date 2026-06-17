@@ -59,13 +59,21 @@ Do **not** switch to a raw "newest mtime wins" model: MTP mtime over gvfs is unr
 
 ### The both-changed case
 
-When *both* sides changed since the baseline, there is no automatic answer (true conflict) and mtime cannot be trusted on MTP. Today the engine silently tiebreaks by mtime. Replace that with the **conflict dialog** below — which also removes mtime reliance for non-MTP devices, so the behavior is consistent everywhere.
+When *both* sides changed since the baseline, there is no automatic answer (true conflict) and mtime cannot be trusted on MTP. Today the engine silently tiebreaks by mtime. Replace that tiebreak with the **conflict dialog** below.
 
 ---
 
-## 6. Conflict-resolution dialog (applies to ALL devices)
+## 6. Conflict-resolution dialog
 
-When the sync plan contains conflicts (both sides changed since baseline), present a dialog that lets the user decide per song. Single-side-changed pairs still apply automatically; only conflicts go to the dialog.
+### When it appears (trigger condition)
+
+The dialog appears **only for a genuine ID3-level conflict: a paired file whose tags changed on *both* the device and the computer since the last sync** (each side's current tag-hash differs from the stored baseline). This rule is the same for every backend, MTP or not.
+
+- **Single-side-changed pairs always auto-apply, silently, with no dialog** — on USB sticks and every other device exactly as today. A normal sync where only one side was edited never shows the conflict view.
+- The dialog is therefore rare: it only surfaces when the user (or another program) edited the *same song* in two places between syncs.
+- For non-MTP devices this is the **only** change from today's behavior: the silent mtime tiebreak for the both-changed case becomes this dialog. Everything else about USB sync is unchanged.
+
+When the plan contains one or more such conflicts, present the dialog so the user decides per song; the non-conflicting pairs in the same run apply automatically regardless.
 
 ### Per-field diff
 
@@ -152,7 +160,7 @@ Add gvfs access (currently only `--system-talk-name=org.freedesktop.UDisks2` + `
 ## 9. Phasing
 
 1. **Backend abstraction** — add `DeviceBackend` + `DeviceIo` trait; move existing udisks2/`std::fs` logic behind it (no behavior change). Ships independently.
-2. **Conflict dialog** — replace the mtime tiebreak with the diff dialog for all devices. Ships independently and improves USB sync today.
+2. **Conflict dialog** — replace the both-changed mtime tiebreak with the diff dialog (fires only on genuine both-changed ID3 conflicts; single-side syncs stay silent). Ships independently; affects USB sync only in the rare conflict case.
 3. **MTP detection + gio IO + free space** — Android shows up; copy/browse work.
 4. **MTP sync** — LibraryToDevice delete+reupload; baseline refresh.
 5. **Flatpak perms + real-device testing** on an Android phone.
