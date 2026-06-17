@@ -10232,6 +10232,61 @@ fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
     }
 }
 
+/// Detect MTP devices (Android phones in File-transfer mode) via gio's
+/// `VolumeMonitor`. These are surfaced by gvfs as `mtp://` mounts with a FUSE
+/// path under `/run/user/<uid>/gvfs/`. Produces core [`Device`] structs tagged
+/// `DeviceBackend::Mtp`; the udisks2 detection path never sees them.
+///
+/// Must run on the main thread (VolumeMonitor is a GLib main-context object).
+/// A device without a local FUSE path is skipped — `PosixIo` can't browse it
+/// until the gio IO backend (later phase) lands.
+fn detect_mtp_devices() -> Vec<crate::devices::Device> {
+    use crate::devices::{Device, DeviceBackend};
+    let monitor = gio::VolumeMonitor::get();
+    let mut out = Vec::new();
+    for mount in monitor.mounts() {
+        let root = mount.root();
+        let uri = root.uri().to_string();
+        if !uri.starts_with("mtp://") && !uri.starts_with("gphoto2://") {
+            continue;
+        }
+        // Need a local FUSE path so std::fs (PosixIo) can read it for now.
+        let Some(mount_path) = root.path() else {
+            continue;
+        };
+        // Identity: prefer the mount UUID; fall back to the (session-stable) URI.
+        let id = mount
+            .uuid()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| uri.clone());
+        // Capacity via gio filesystem info (gvfs FUSE rarely reports statvfs).
+        let (total_bytes, free_bytes) = root
+            .query_filesystem_info("filesystem::size,filesystem::free", gio::Cancellable::NONE)
+            .map(|info| {
+                (
+                    info.attribute_uint64("filesystem::size"),
+                    info.attribute_uint64("filesystem::free"),
+                )
+            })
+            .unwrap_or((0, 0));
+        out.push(Device {
+            id,
+            label: mount.name().to_string(),
+            mount_path,
+            fs_type: "mtp".to_string(),
+            total_bytes,
+            free_bytes,
+            read_only: false,
+            ejectable: mount.can_eject() || mount.can_unmount(),
+            // The mtp:// URI uniquely identifies the mount (sidebar row key).
+            backend_id: uri,
+            backend: DeviceBackend::Mtp,
+        });
+    }
+    out
+}
+
 /// "N songs · M playlists" with singular/plural agreement.
 fn counts_text(songs: usize, playlists: usize) -> String {
     format!(
@@ -17408,6 +17463,16 @@ fn open_media_library_window(
                 match result {
                     Ok(Ok(devs)) => {
                         banner.set_visible(false);
+                        // Merge MTP (Android) devices, enumerated on this (main)
+                        // thread via gio's VolumeMonitor, then re-sort by label.
+                        let mut devs = devs;
+                        devs.extend(detect_mtp_devices());
+                        devs.sort_by(|a, b| {
+                            a.label
+                                .to_lowercase()
+                                .cmp(&b.label.to_lowercase())
+                                .then_with(|| a.mount_path.cmp(&b.mount_path))
+                        });
                         let want: Vec<String> =
                             devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
                         // Remove rows for devices that went away.

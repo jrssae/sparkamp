@@ -33,9 +33,9 @@ pub mod detect;
 pub enum DeviceBackend {
     #[default]
     Udisks,
-    /// Constructed by the MTP detection backend (a later phase); the IO
-    /// selector already routes it, so wire-up is incremental.
-    #[allow(dead_code)]
+    /// Android phones surfaced by gvfs as `mtp://` mounts (GTK frontend's
+    /// `detect_mtp_devices`); IO currently falls back to `PosixIo` over the
+    /// gvfs FUSE path until the gio backend lands.
     Mtp,
 }
 
