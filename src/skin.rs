@@ -792,6 +792,8 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         padding: 1px 8px; font-size: {fs}px; \
     }}").unwrap();
     writeln!(css, ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}").unwrap();
+    // Smaller badge variant (2pt smaller font + tighter padding).
+    writeln!(css, ".device-badge-sm {{ font-size: {}px; padding: 0px 6px; }}", fs - 2.0).unwrap();
     // Device detail page: header band, storage section, bottom status bar.
     writeln!(css, ".device-detail-header {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \

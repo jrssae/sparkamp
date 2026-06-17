@@ -11350,21 +11350,27 @@ fn open_media_library_window(
         .ellipsize(gtk4::pango::EllipsizeMode::Middle)
         .build();
     dev_path.add_css_class("status-label");
+    // Unsupported-filesystem tag sits under the "fs · path" line on the left,
+    // left-aligned and a touch smaller than the read-only pill.
+    let dev_warn_badge = Label::new(Some("⚠ Unsupported"));
+    dev_warn_badge.add_css_class("device-badge");
+    dev_warn_badge.add_css_class("device-badge-warn");
+    dev_warn_badge.add_css_class("device-badge-sm");
+    dev_warn_badge.set_halign(Align::Start);
+    dev_warn_badge.set_margin_top(4);
+    dev_warn_badge.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+    dev_warn_badge.set_visible(false);
+
     let dev_title_box = GtkBox::new(Orientation::Vertical, 0);
     dev_title_box.set_valign(Align::Center);
     dev_title_box.append(&dev_title);
     dev_title_box.append(&dev_path);
+    dev_title_box.append(&dev_warn_badge);
 
     let dev_ro_badge = Label::new(Some("🔒 Read-only"));
     dev_ro_badge.add_css_class("device-badge");
     dev_ro_badge.set_valign(Align::Center);
     dev_ro_badge.set_visible(false);
-    let dev_warn_badge = Label::new(Some("⚠ Unsupported"));
-    dev_warn_badge.add_css_class("device-badge");
-    dev_warn_badge.add_css_class("device-badge-warn");
-    dev_warn_badge.set_valign(Align::Center);
-    dev_warn_badge.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
-    dev_warn_badge.set_visible(false);
 
     let dev_sync = Button::with_label("Sync");
     dev_sync.add_css_class("pl-btn");
@@ -11389,6 +11395,9 @@ fn open_media_library_window(
     let dev_capacity_box = GtkBox::new(Orientation::Vertical, 2);
     dev_capacity_box.set_hexpand(true);
     dev_capacity_box.set_valign(Align::Center);
+    // Triple the breathing room on either side of the capacity bar.
+    dev_capacity_box.set_margin_start(30);
+    dev_capacity_box.set_margin_end(30);
     dev_capacity_box.append(&dev_levelbar);
     dev_capacity_box.append(&dev_capacity);
 
@@ -11398,7 +11407,6 @@ fn open_media_library_window(
     dev_hdr_row.append(&dev_title_box);
     dev_hdr_row.append(&dev_capacity_box);
     dev_hdr_row.append(&dev_ro_badge);
-    dev_hdr_row.append(&dev_warn_badge);
     dev_hdr_row.append(&dev_sync);
     dev_hdr_row.append(&dev_eject);
     dev_detail.append(&dev_hdr_row);
@@ -11432,16 +11440,24 @@ fn open_media_library_window(
     // Filter chips: "All files" + one toggle per device .m3u/.m3u8 (grouped so
     // exactly one is active, radio-style). Rebuilt per device by
     // reload_dev_playlists; the active chip drives the track filter.
-    let dev_pl_chips = GtkBox::new(Orientation::Horizontal, 4);
+    // Chips wrap onto multiple rows (no horizontal scroll that hid the names).
+    let dev_pl_chips = gtk4::FlowBox::builder()
+        .orientation(Orientation::Horizontal)
+        .selection_mode(gtk4::SelectionMode::None)
+        .row_spacing(4)
+        .column_spacing(4)
+        .min_children_per_line(1)
+        .max_children_per_line(64)
+        .homogeneous(false)
+        .build();
     dev_pl_chips.add_css_class("device-chips");
     let dev_pl_scroll = ScrolledWindow::builder()
-        .hscrollbar_policy(PolicyType::Automatic)
-        .vscrollbar_policy(PolicyType::Never)
-        // Non-overlay so the horizontal scrollbar takes its own gutter, and a
-        // reserved content height tall enough for a chip row PLUS that gutter so
-        // the bar never paints over the playlist names.
-        .overlay_scrolling(false)
-        .min_content_height(52)
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        // Grow to fit the wrapped chips, but show at most ~2.5 chip rows before
+        // scrolling vertically.
+        .propagate_natural_height(true)
+        .max_content_height(80)
         .child(&dev_pl_chips)
         .build();
     dev_detail.append(&dev_pl_scroll);
@@ -11859,7 +11875,7 @@ fn open_media_library_window(
                 b
             };
             let all = mk_chip("All files", "all".to_string(), None);
-            chips.append(&all);
+            chips.insert(&all, -1);
             for pl in crate::devices::browse::device_playlist_files(&mount) {
                 let nm = pl
                     .file_name()
@@ -11867,7 +11883,7 @@ fn open_media_library_window(
                     .unwrap_or_default();
                 let chip =
                     mk_chip(&gtk_safe(&nm), pl.to_string_lossy().into_owned(), Some(&all));
-                chips.append(&chip);
+                chips.insert(&chip, -1);
             }
             // Default to "All files" (also applies the cleared filter).
             all.set_active(true);
