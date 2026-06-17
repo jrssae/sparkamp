@@ -10504,42 +10504,60 @@ fn device_sync_plan(
         .collect()
 }
 
-/// Apply a sync plan: propagate the winning side's tags and refresh each
+/// Apply one tag-sync direction to a single pair and refresh its baseline.
+/// `to_device` true = library→device, false = device→library. Returns ok.
+fn apply_tag_pair(
+    state: &Rc<RefCell<AppState>>,
+    dev: &crate::devices::Device,
+    pair: &crate::media_library::SyncPair,
+    to_device: bool,
+) -> bool {
+    use crate::devices::sync;
+    let lib_path = std::path::PathBuf::from(&pair.library_path);
+    let dev_path = dev.mount_path.join(&pair.device_relpath);
+    let result = if to_device {
+        let st = sync::read_tag_state(&lib_path);
+        sync::apply_tags(&st, &dev_path).map(|_| st)
+    } else {
+        let st = sync::read_tag_state(&dev_path);
+        sync::apply_tags(&st, &lib_path).map(|_| st)
+    };
+    match result {
+        Ok(st) => {
+            if let Some(lib) = state.borrow().media_lib.as_ref() {
+                let mut p = pair.clone();
+                p.baseline_tag_hash = sync::tag_hash(&st);
+                p.baseline_rating = st.rating as i64;
+                p.baseline_playcount = st.play_count as i64;
+                p.last_sync_at = Some(crate::timeutil::format_current_timestamp());
+                let _ = lib.upsert_sync_pair(&p);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Apply a sync plan: propagate the winning side's tags for the unambiguous
+/// directions (conflicts are handled separately by the prompt) and refresh each
 /// pair's baseline. Returns `(applied, failed)`.
 fn apply_device_sync(
     state: &Rc<RefCell<AppState>>,
     dev: &crate::devices::Device,
     plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
 ) -> (usize, usize) {
-    use crate::devices::sync::{self, SyncAction};
+    use crate::devices::sync::SyncAction;
     let (mut applied, mut failed) = (0usize, 0usize);
     for (pair, action) in plan {
-        let lib_path = std::path::PathBuf::from(&pair.library_path);
-        let dev_path = dev.mount_path.join(&pair.device_relpath);
-        let result = match action {
-            SyncAction::DeviceToLibrary => {
-                let st = sync::read_tag_state(&dev_path);
-                sync::apply_tags(&st, &lib_path).map(|_| st)
-            }
-            SyncAction::LibraryToDevice => {
-                let st = sync::read_tag_state(&lib_path);
-                sync::apply_tags(&st, &dev_path).map(|_| st)
-            }
+        let to_device = match action {
+            SyncAction::LibraryToDevice => true,
+            SyncAction::DeviceToLibrary => false,
             _ => continue,
         };
-        match result {
-            Ok(st) => {
-                applied += 1;
-                if let Some(lib) = state.borrow().media_lib.as_ref() {
-                    let mut p = pair.clone();
-                    p.baseline_tag_hash = sync::tag_hash(&st);
-                    p.baseline_rating = st.rating as i64;
-                    p.baseline_playcount = st.play_count as i64;
-                    p.last_sync_at = Some(crate::timeutil::format_current_timestamp());
-                    let _ = lib.upsert_sync_pair(&p);
-                }
-            }
-            Err(_) => failed += 1,
+        if apply_tag_pair(state, dev, pair, to_device) {
+            applied += 1;
+        } else {
+            failed += 1;
         }
     }
     (applied, failed)
@@ -10750,6 +10768,104 @@ fn apply_playlist_push(
 /// changed). Each prompt shows how many entries differ; the user keeps the
 /// computer's copy (push), the device's copy (pull), or skips. After the last
 /// one, `done` runs (refresh + summary).
+/// One song whose tags changed on both the computer and the device since the
+/// last sync, with the differing fields, for the per-file conflict prompt.
+#[derive(Clone)]
+struct TagConflictItem {
+    pair: crate::media_library::SyncPair,
+    song: String,
+    diffs: Vec<crate::devices::sync::FieldDiff>,
+}
+
+/// Prompt the user to resolve per-file tag conflicts one at a time. Each prompt
+/// lists the differing fields (computer vs device); the user keeps the computer
+/// copy (library→device), the device copy (device→library), or skips. After the
+/// last one, `done` runs.
+fn prompt_tag_conflicts(
+    state: Rc<RefCell<AppState>>,
+    dev: crate::devices::Device,
+    mut conflicts: Vec<TagConflictItem>,
+    win_wk: glib::WeakRef<gtk4::Window>,
+    done: Rc<dyn Fn()>,
+) {
+    let Some(item) = conflicts.pop() else {
+        (done)();
+        return;
+    };
+    let mut detail = String::new();
+    for d in &item.diffs {
+        let comp = if d.computer.is_empty() { "(empty)" } else { &d.computer };
+        let dev_v = if d.device.is_empty() { "(empty)" } else { &d.device };
+        detail.push_str(&format!("{}:\n   This computer: {comp}\n   On device: {dev_v}\n", d.label));
+    }
+    let dialog = gtk4::AlertDialog::builder()
+        .message(format!("\"{}\" changed on both sides", item.song))
+        .detail(detail.trim_end().to_string())
+        .buttons(vec![
+            "Skip".to_string(),
+            "Keep device".to_string(),
+            "Keep computer".to_string(),
+        ])
+        .cancel_button(0)
+        .default_button(2)
+        .modal(true)
+        .build();
+    dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
+        match res {
+            Ok(2) => {
+                apply_tag_pair(&state, &dev, &item.pair, true); // keep computer → library→device
+            }
+            Ok(1) => {
+                apply_tag_pair(&state, &dev, &item.pair, false); // keep device → device→library
+            }
+            _ => {} // Skip — leave both sides, no baseline update.
+        }
+        prompt_tag_conflicts(state.clone(), dev.clone(), conflicts, win_wk.clone(), done.clone());
+    });
+}
+
+/// Build the per-file tag-conflict items from a sync plan: for each pair marked
+/// `Conflict`, read both sides' tags and compute the differing fields.
+fn build_tag_conflicts(
+    dev: &crate::devices::Device,
+    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+) -> Vec<TagConflictItem> {
+    use crate::devices::sync::{self, SyncAction};
+    let mut out = Vec::new();
+    for (pair, action) in plan {
+        if *action != SyncAction::Conflict {
+            continue;
+        }
+        let lib_path = std::path::PathBuf::from(&pair.library_path);
+        let dev_path = dev.mount_path.join(&pair.device_relpath);
+        let lib_st = sync::read_tag_state(&lib_path);
+        let dev_st = sync::read_tag_state(&dev_path);
+        let diffs = sync::tag_field_diffs(&lib_st, &dev_st);
+        if diffs.is_empty() {
+            continue; // tag-hash differed but no comparable field did
+        }
+        // Prefer "Artist - Title"; fall back to the filename.
+        let song = if !lib_st.title.is_empty() {
+            if lib_st.artist.is_empty() {
+                lib_st.title.clone()
+            } else {
+                format!("{} - {}", lib_st.artist, lib_st.title)
+            }
+        } else {
+            lib_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        out.push(TagConflictItem {
+            pair: pair.clone(),
+            song,
+            diffs,
+        });
+    }
+    out
+}
+
 fn prompt_playlist_conflicts(
     state: Rc<RefCell<AppState>>,
     dev: crate::devices::Device,
@@ -17632,13 +17748,23 @@ fn open_media_library_window(
                 .iter()
                 .filter(|(_, a)| *a == SyncAction::LibraryToDevice)
                 .count();
+            let song_conflict = plan
+                .iter()
+                .filter(|(_, a)| *a == SyncAction::Conflict)
+                .count();
             let pl_push = pl_plan.iter().filter(|i| i.dir == PlaylistSyncDir::Push).count();
             let pl_pull = pl_plan.iter().filter(|i| i.dir == PlaylistSyncDir::Pull).count();
             let pl_conflict = pl_plan
                 .iter()
                 .filter(|i| i.dir == PlaylistSyncDir::Conflict)
                 .count();
-            if to_lib == 0 && to_dev == 0 && pl_push == 0 && pl_pull == 0 && pl_conflict == 0 {
+            if to_lib == 0
+                && to_dev == 0
+                && song_conflict == 0
+                && pl_push == 0
+                && pl_pull == 0
+                && pl_conflict == 0
+            {
                 show_alert_parented(
                     win_wk.upgrade().as_ref(),
                     "Already in sync — no tag or playlist changes to apply.",
@@ -17651,6 +17777,12 @@ fn open_media_library_window(
                 dev.label.clone()
             };
             let mut pl_bits: Vec<String> = Vec::new();
+            if song_conflict > 0 {
+                pl_bits.push(format!(
+                    "{song_conflict} song conflict{} to resolve",
+                    if song_conflict == 1 { "" } else { "s" }
+                ));
+            }
             if pl_push + pl_pull > 0 {
                 pl_bits.push(format!(
                     "{} playlist{} to update",
@@ -17743,23 +17875,45 @@ fn open_media_library_window(
                         )
                     };
 
-                    if conflicts.is_empty() {
-                        show_alert_parented(win_wk2.upgrade().as_ref(), &summary);
-                    } else {
-                        // Prompt each conflict, then refresh + show the summary.
+                    // Per-file tag conflicts (both sides changed a song's tags).
+                    let tag_conflicts = build_tag_conflicts(&dev2, &plan2);
+
+                    // Final step: refresh + show the summary.
+                    let final_done: Rc<dyn Fn()> = {
                         let reload_done = reload2.clone();
                         let dev_done = dev2.clone();
                         let win_done = win_wk2.clone();
-                        let done: Rc<dyn Fn()> = Rc::new(move || {
+                        Rc::new(move || {
                             reload_done(dev_done.clone());
                             show_alert_parented(win_done.upgrade().as_ref(), &summary);
-                        });
-                        prompt_playlist_conflicts(
+                        })
+                    };
+                    // After tag conflicts, resolve playlist conflicts, then finish.
+                    let after_tags: Rc<dyn Fn()> = if conflicts.is_empty() {
+                        final_done
+                    } else {
+                        let state_pl = state2.clone();
+                        let dev_pl = dev2.clone();
+                        let win_pl = win_wk2.clone();
+                        Rc::new(move || {
+                            prompt_playlist_conflicts(
+                                state_pl.clone(),
+                                dev_pl.clone(),
+                                conflicts.clone(),
+                                win_pl.clone(),
+                                final_done.clone(),
+                            );
+                        })
+                    };
+                    if tag_conflicts.is_empty() {
+                        (after_tags)();
+                    } else {
+                        prompt_tag_conflicts(
                             state2.clone(),
                             dev2.clone(),
-                            conflicts,
+                            tag_conflicts,
                             win_wk2.clone(),
-                            done,
+                            after_tags,
                         );
                     }
                 },

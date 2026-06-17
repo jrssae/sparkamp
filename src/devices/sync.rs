@@ -101,13 +101,64 @@ pub enum SyncAction {
     MissingDevice,
     /// Both files are gone.
     MissingBoth,
+    /// Both sides' tags changed since the baseline — needs the user to choose.
+    Conflict,
+}
+
+/// One tag field that differs between the computer and device copies of a song,
+/// for the conflict dialog. Only differing fields are produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldDiff {
+    pub label: String,
+    pub computer: String,
+    pub device: String,
+}
+
+fn opt_num(v: Option<i64>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_default()
+}
+
+fn stars(n: u8) -> String {
+    if n == 0 {
+        "—".to_string()
+    } else {
+        "★".repeat(n.min(5) as usize)
+    }
+}
+
+/// Compute the differing syncable fields between the computer (`lib`) and the
+/// device (`dev`) tag states. Identical fields are omitted; an empty result
+/// means there is no real conflict.
+pub fn tag_field_diffs(lib: &TagState, dev: &TagState) -> Vec<FieldDiff> {
+    let mut out = Vec::new();
+    let mut push = |label: &str, a: String, b: String| {
+        if a != b {
+            out.push(FieldDiff {
+                label: label.to_string(),
+                computer: a,
+                device: b,
+            });
+        }
+    };
+    push("Title", lib.title.clone(), dev.title.clone());
+    push("Artist", lib.artist.clone(), dev.artist.clone());
+    push("Album", lib.album.clone(), dev.album.clone());
+    push("Album artist", lib.album_artist.clone(), dev.album_artist.clone());
+    push("Genre", lib.genre.clone(), dev.genre.clone());
+    push("Comment", lib.comment.clone(), dev.comment.clone());
+    push("Track", opt_num(lib.track_num), opt_num(dev.track_num));
+    push("Year", opt_num(lib.year), opt_num(dev.year));
+    push("Rating", stars(lib.rating), stars(dev.rating));
+    push("Play count", lib.play_count.to_string(), dev.play_count.to_string());
+    out
 }
 
 /// Decide the sync direction for one pair from the baseline and the current
 /// per-side state.
 ///
 /// Only-device-changed → device wins; only-library-changed → library wins;
-/// both changed → the file with the newer mtime wins; neither → nothing.
+/// both changed → [`SyncAction::Conflict`] (the user chooses); neither →
+/// nothing.
 pub fn decide(baseline: &str, lib: Option<&SideState>, dev: Option<&SideState>) -> SyncAction {
     match (lib, dev) {
         (None, None) => SyncAction::MissingBoth,
@@ -120,13 +171,7 @@ pub fn decide(baseline: &str, lib: Option<&SideState>, dev: Option<&SideState>) 
                 (false, false) => SyncAction::None,
                 (false, true) => SyncAction::DeviceToLibrary,
                 (true, false) => SyncAction::LibraryToDevice,
-                (true, true) => {
-                    if d.mtime >= l.mtime {
-                        SyncAction::DeviceToLibrary
-                    } else {
-                        SyncAction::LibraryToDevice
-                    }
-                }
+                (true, true) => SyncAction::Conflict,
             }
         }
     }
@@ -323,6 +368,31 @@ mod tests {
     }
 
     #[test]
+    fn tag_field_diffs_only_lists_differences() {
+        let a = TagState {
+            title: "T".into(),
+            artist: "A".into(),
+            rating: 3,
+            play_count: 7,
+            comment: "same".into(),
+            ..Default::default()
+        };
+        let mut b = a.clone();
+        // No differences.
+        assert!(tag_field_diffs(&a, &b).is_empty());
+        // Change comment + rating.
+        b.comment = "different".into();
+        b.rating = 5;
+        let diffs = tag_field_diffs(&a, &b);
+        let labels: Vec<&str> = diffs.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(labels, vec!["Comment", "Rating"]);
+        assert_eq!(diffs[0].computer, "same");
+        assert_eq!(diffs[0].device, "different");
+        assert_eq!(diffs[1].computer, "★★★");
+        assert_eq!(diffs[1].device, "★★★★★");
+    }
+
+    #[test]
     fn decide_covers_every_branch() {
         let baseline = "BASE";
         let same = SideState { hash: "BASE".into(), mtime: 100 };
@@ -341,15 +411,14 @@ mod tests {
             decide(baseline, Some(&changed_new), Some(&same)),
             SyncAction::LibraryToDevice
         );
-        // Both changed → newer mtime wins (device newer).
+        // Both changed → conflict (user decides), regardless of mtime.
         assert_eq!(
             decide(baseline, Some(&changed_old), Some(&changed_new)),
-            SyncAction::DeviceToLibrary
+            SyncAction::Conflict
         );
-        // Both changed → library newer.
         assert_eq!(
             decide(baseline, Some(&changed_new), Some(&changed_old)),
-            SyncAction::LibraryToDevice
+            SyncAction::Conflict
         );
         // Missing sides.
         assert_eq!(decide(baseline, None, Some(&same)), SyncAction::MissingLibrary);
