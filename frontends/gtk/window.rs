@@ -10648,7 +10648,7 @@ fn file_mtime(p: &std::path::Path) -> i64 {
 /// Compute the per-pair sync decisions for a device: for each recorded sync
 /// pair, hash the current tags on each side and decide the direction.
 fn device_sync_plan(
-    state: &Rc<RefCell<AppState>>,
+    lib: &crate::media_library::MediaLibrary,
     dev: &crate::devices::Device,
 ) -> Vec<(crate::media_library::SyncPair, crate::devices::sync::SyncAction)> {
     use crate::devices::sync::{self, SideState};
@@ -10660,12 +10660,7 @@ fn device_sync_plan(
     if device_id.is_empty() {
         return Vec::new();
     }
-    let pairs = state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .and_then(|l| l.sync_pairs_for_device(&device_id).ok())
-        .unwrap_or_default();
+    let pairs = lib.sync_pairs_for_device(&device_id).unwrap_or_default();
     pairs
         .into_iter()
         .map(|pair| {
@@ -10702,12 +10697,23 @@ fn apply_tag_pair(
         let st = sync::read_tag_state(&lib_path);
         if dev.backend == DeviceBackend::Mtp {
             // MTP can't rewrite tags in place — delete the device file and
-            // re-upload the local one, which already carries the desired tags.
+            // re-upload the local one (which already carries the desired tags).
+            // Force-overwrite rather than copy_to_device: ID3 padding often
+            // leaves the re-tagged file the same size, which the same-size skip
+            // would treat as "already present" and not update.
             let io = crate::devices::io::for_device(dev);
             let _ = io.delete(&dev_path);
-            io.copy_to_device(&lib_path, std::path::Path::new(&pair.device_relpath))
-                .map(|_| st)
-                .map_err(|_| ())
+            let write = (|| -> std::io::Result<()> {
+                if let Some(parent) = dev_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut reader = std::fs::File::open(&lib_path)?;
+                let mut writer = std::fs::File::create(&dev_path)?;
+                std::io::copy(&mut reader, &mut writer)?;
+                std::io::Write::flush(&mut writer)?;
+                Ok(())
+            })();
+            write.map(|_| st).map_err(|_| ())
         } else {
             sync::apply_tags(&st, &dev_path).map(|_| st).map_err(|_| ())
         }
@@ -10794,29 +10800,19 @@ fn multiset_diff_count(a: &[String], b: &[String]) -> usize {
 /// that is on the device (or was, per a stored baseline), decide whether to
 /// push to the device, pull into the library, or flag a conflict.
 fn device_playlist_sync_plan(
-    state: &Rc<RefCell<AppState>>,
+    lib: &crate::media_library::MediaLibrary,
     dev: &crate::devices::Device,
+    ext: &str,
 ) -> Vec<PlaylistSyncItem> {
     use crate::devices::sync::{decide_playlist, entries_hash};
     let device_id = device_sync_id(dev);
     if device_id.is_empty() || dev.read_only || device_fs_unsupported(&dev.fs_type) {
         return Vec::new();
     }
-    let ext = state
-        .borrow()
-        .config
-        .media_library
-        .playlist_format
-        .extension();
-    let (playlists, baselines) = {
-        let s = state.borrow();
-        let lib = s.media_lib.as_ref();
-        (
-            lib.and_then(|l| l.all_playlists().ok()).unwrap_or_default(),
-            lib.and_then(|l| l.playlist_baselines_for_device(&device_id).ok())
-                .unwrap_or_default(),
-        )
-    };
+    let playlists = lib.all_playlists().unwrap_or_default();
+    let baselines = lib
+        .playlist_baselines_for_device(&device_id)
+        .unwrap_or_default();
     let mut out = Vec::new();
     for pl in playlists {
         let safe = safe_playlist_filename(&pl.name);
@@ -10837,12 +10833,7 @@ fn device_playlist_sync_plan(
         if baseline.is_none() && device_file.is_none() {
             continue;
         }
-        let loaded = state
-            .borrow()
-            .media_lib
-            .as_ref()
-            .and_then(|l| l.load_playlist_tracks(&pl).ok())
-            .unwrap_or_default();
+        let loaded = lib.load_playlist_tracks(&pl).unwrap_or_default();
         let lib_basenames: Vec<String> = loaded.iter().map(|t| t.filename.clone()).collect();
         let srcs: Vec<std::path::PathBuf> = loaded
             .iter()
@@ -18036,8 +18027,34 @@ fn open_media_library_window(
         let reload_sync = reload_device_store.clone();
         Rc::new(move |dev: crate::devices::Device| {
             use crate::devices::sync::{PlaylistSyncDir, SyncAction};
-            let plan = device_sync_plan(&state_sync, &dev);
-            let pl_plan = device_playlist_sync_plan(&state_sync, &dev);
+            // Compute both sync plans on a worker thread — reading device tags
+            // and playlist files over a slow MTP FUSE mount on the UI thread
+            // froze the app. A throwaway read-only library handle is opened on
+            // that thread (same pattern as the scan workers).
+            let ext = state_sync
+                .borrow()
+                .config
+                .media_library
+                .playlist_format
+                .extension()
+                .to_string();
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            let state_sync = state_sync.clone();
+            let win_wk = win_wk.clone();
+            let reload_sync = reload_sync.clone();
+            glib::spawn_future_local(async move {
+                let dev_b = dev.clone();
+                let (plan, pl_plan) = gio::spawn_blocking(move || {
+                    match crate::media_library::MediaLibrary::open_at(&db_path) {
+                        Ok(lib) => (
+                            device_sync_plan(&lib, &dev_b),
+                            device_playlist_sync_plan(&lib, &dev_b, &ext),
+                        ),
+                        Err(_) => (Vec::new(), Vec::new()),
+                    }
+                })
+                .await
+                .unwrap_or((Vec::new(), Vec::new()));
             let to_lib = plan
                 .iter()
                 .filter(|(_, a)| *a == SyncAction::DeviceToLibrary)
@@ -18216,6 +18233,7 @@ fn open_media_library_window(
                     }
                 },
             );
+            });
         })
     };
     *sync_run_holder.borrow_mut() = Some(sync_run.clone());
