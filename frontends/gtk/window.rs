@@ -10353,14 +10353,24 @@ fn enumerate_mtp_raw() -> Vec<MtpRaw> {
 fn mtp_raw_to_device(raw: MtpRaw) -> crate::devices::Device {
     use crate::devices::{Device, DeviceBackend};
     let mount_path = mtp_storage_root(&raw.uri, &raw.fuse_root);
+    // Capacity via gio (gvfs FUSE rarely reports statvfs). Safe here — this runs
+    // on a worker thread, so the blocking query never freezes the UI.
+    let (total_bytes, free_bytes) = gio::File::for_uri(&raw.uri)
+        .query_filesystem_info("filesystem::size,filesystem::free", gio::Cancellable::NONE)
+        .map(|info| {
+            (
+                info.attribute_uint64("filesystem::size"),
+                info.attribute_uint64("filesystem::free"),
+            )
+        })
+        .unwrap_or((0, 0));
     Device {
         id: raw.id,
         label: raw.label,
         mount_path,
         fs_type: "mtp".to_string(),
-        // Capacity unknown (0) until the off-thread gio query lands.
-        total_bytes: 0,
-        free_bytes: 0,
+        total_bytes,
+        free_bytes,
         read_only: false,
         ejectable: raw.ejectable,
         backend_id: raw.uri,
@@ -17922,6 +17932,45 @@ fn open_media_library_window(
             let refresh = refresh.clone();
             let sidebar_ej = sidebar_ej.clone();
             let win_wk = win_wk_ej.clone();
+            // MTP devices have no udisks2 block object — unmount through gvfs
+            // (gio) on the main thread instead; the unmount itself is async.
+            if backend.starts_with("mtp://") || backend.starts_with("gphoto2://") {
+                let monitor = gio::VolumeMonitor::get();
+                let mount = monitor
+                    .mounts()
+                    .into_iter()
+                    .find(|m| m.root().uri() == backend);
+                let Some(mount) = mount else {
+                    refresh();
+                    return;
+                };
+                let refresh2 = refresh.clone();
+                let sidebar2 = sidebar_ej.clone();
+                let win2 = win_wk.clone();
+                mount.unmount_with_operation(
+                    gio::MountUnmountFlags::NONE,
+                    None::<&gio::MountOperation>,
+                    gio::Cancellable::NONE,
+                    move |res| match res {
+                        Ok(()) => {
+                            refresh2();
+                            if let Some(r) = find_row_by_name(&sidebar2, "devices") {
+                                sidebar2.select_row(Some(&r));
+                            }
+                        }
+                        Err(e) => {
+                            show_alert_parented(
+                                win2.upgrade().as_ref(),
+                                &format!(
+                                    "Couldn't disconnect the device ({e}). Close anything \
+                                     using it and try again."
+                                ),
+                            );
+                        }
+                    },
+                );
+                return;
+            }
             // Run the unmount/power-off on a worker thread so a busy device
             // can't freeze the UI.
             glib::spawn_future_local(async move {
