@@ -10695,15 +10695,25 @@ fn apply_tag_pair(
     pair: &crate::media_library::SyncPair,
     to_device: bool,
 ) -> bool {
-    use crate::devices::sync;
+    use crate::devices::{sync, DeviceBackend};
     let lib_path = std::path::PathBuf::from(&pair.library_path);
     let dev_path = dev.mount_path.join(&pair.device_relpath);
-    let result = if to_device {
+    let result: Result<sync::TagState, ()> = if to_device {
         let st = sync::read_tag_state(&lib_path);
-        sync::apply_tags(&st, &dev_path).map(|_| st)
+        if dev.backend == DeviceBackend::Mtp {
+            // MTP can't rewrite tags in place — delete the device file and
+            // re-upload the local one, which already carries the desired tags.
+            let io = crate::devices::io::for_device(dev);
+            let _ = io.delete(&dev_path);
+            io.copy_to_device(&lib_path, std::path::Path::new(&pair.device_relpath))
+                .map(|_| st)
+                .map_err(|_| ())
+        } else {
+            sync::apply_tags(&st, &dev_path).map(|_| st).map_err(|_| ())
+        }
     } else {
         let st = sync::read_tag_state(&dev_path);
-        sync::apply_tags(&st, &lib_path).map(|_| st)
+        sync::apply_tags(&st, &lib_path).map(|_| st).map_err(|_| ())
     };
     match result {
         Ok(st) => {
