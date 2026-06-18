@@ -6390,22 +6390,24 @@ fn open_id3_editor_window(
     btn_row.append(&btn_save);
 
     // ── Main layout ──────────────────────────────────────────────────────────
-    // Full path + filename header — selectable (so it can be copied) but not
-    // editable, so the exact source location of the file being edited is
-    // visible/confirmable. (Shown instead of a bare filename heading.)
-    let path_lbl = Label::new(Some(&gtk_safe(&path_str)));
-    path_lbl.set_selectable(true);
-    path_lbl.set_xalign(0.0);
-    path_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
-    path_lbl.set_margin_top(10);
-    path_lbl.set_margin_bottom(10);
-    path_lbl.set_margin_start(12);
-    path_lbl.set_margin_end(12);
-    path_lbl.set_tooltip_text(Some(&path_str));
-    path_lbl.add_css_class("status-label");
+    // Full path + filename header — a read-only Entry so a long path that
+    // doesn't fit scrolls horizontally (cursor/drag) without a scrollbar, and
+    // stays selectable/copyable, confirming the file's exact source location.
+    let path_entry = Entry::new();
+    path_entry.set_text(&gtk_safe(&path_str));
+    path_entry.set_editable(false);
+    path_entry.set_can_focus(true);
+    path_entry.set_hexpand(true);
+    path_entry.set_margin_top(10);
+    path_entry.set_margin_bottom(10);
+    path_entry.set_margin_start(12);
+    path_entry.set_margin_end(12);
+    path_entry.set_tooltip_text(Some(&path_str));
+    // Show the end (filename) first rather than the start of the path.
+    path_entry.set_position(-1);
 
     let vbox = GtkBox::new(Orientation::Vertical, 0);
-    vbox.append(&path_lbl);
+    vbox.append(&path_entry);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&grid);
     vbox.append(&artwork_vbox);
@@ -10243,7 +10245,10 @@ fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
 fn detect_mtp_devices() -> Vec<crate::devices::Device> {
     use crate::devices::{Device, DeviceBackend};
     let monitor = gio::VolumeMonitor::get();
-    let mut out = Vec::new();
+    // gvfs can expose one MTP device as several mounts sharing the same root URI
+    // (e.g. a friendly "Pixel 8" plus a generic "mtp"). Dedup by URI, keeping
+    // the entry with the better label.
+    let mut by_uri: std::collections::HashMap<String, Device> = std::collections::HashMap::new();
     for mount in monitor.mounts() {
         let root = mount.root();
         let uri = root.uri().to_string();
@@ -10259,9 +10264,9 @@ fn detect_mtp_devices() -> Vec<crate::devices::Device> {
         let mount_name = mount.name().to_string();
         let vol_name = mount.volume().map(|v| v.name().to_string()).unwrap_or_default();
         let label = if !mount_name.is_empty() && mount_name != "mtp" {
-            mount_name.clone()
+            mount_name
         } else if !vol_name.is_empty() {
-            vol_name.clone()
+            vol_name
         } else {
             "MTP device".to_string()
         };
@@ -10271,29 +10276,29 @@ fn detect_mtp_devices() -> Vec<crate::devices::Device> {
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| uri.clone());
-        // NOTE: capacity is left unknown (0). Querying gio filesystem info here
-        // blocks on the gvfs FUSE mount, and this runs in the 2s device poll on
-        // the main thread — doing it froze the UI. Capacity comes with the gio
-        // IO backend (queried off-thread) in a later phase.
-        eprintln!(
-            "[mtp] detected uri={uri} mount_name={mount_name:?} vol_name={vol_name:?} path={}",
-            mount_path.display()
-        );
-        out.push(Device {
+        let device = Device {
             id,
-            label,
+            label: label.clone(),
             mount_path,
             fs_type: "mtp".to_string(),
+            // Capacity left unknown (0): querying gio filesystem info blocks on
+            // the gvfs FUSE mount and this runs in the 2s main-thread poll.
             total_bytes: 0,
             free_bytes: 0,
             read_only: false,
             ejectable: mount.can_eject() || mount.can_unmount(),
-            // The mtp:// URI uniquely identifies the mount (sidebar row key).
-            backend_id: uri,
+            backend_id: uri.clone(),
             backend: DeviceBackend::Mtp,
-        });
+        };
+        // Keep the first good (non-generic) label; otherwise overwrite.
+        match by_uri.get(&uri) {
+            Some(existing) if existing.label != "MTP device" => {}
+            _ => {
+                by_uri.insert(uri, device);
+            }
+        }
     }
-    out
+    by_uri.into_values().collect()
 }
 
 /// "N songs · M playlists" with singular/plural agreement.
@@ -17526,6 +17531,14 @@ fn open_media_library_window(
                             } else {
                                 0.0
                             };
+                            let base = if d.label.is_empty() {
+                                "Untitled device".to_string()
+                            } else {
+                                d.label.clone()
+                            };
+                            // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
+                            let label_text =
+                                format!("{}{base}", device_glyph_prefix(d.read_only, &d.fs_type));
                             let existing = dev_sub_rows
                                 .borrow()
                                 .iter()
@@ -17536,6 +17549,15 @@ fn open_media_library_window(
                                     if let Some(bx) =
                                         row.child().and_then(|c| c.downcast::<GtkBox>().ok())
                                     {
+                                        // Keep the label current (e.g. an MTP
+                                        // device whose friendly name resolved
+                                        // after the first poll).
+                                        if let Some(lbl) = bx
+                                            .first_child()
+                                            .and_then(|c| c.downcast::<Label>().ok())
+                                        {
+                                            lbl.set_text(&gtk_safe(&label_text));
+                                        }
                                         if let Some(bar) = bx
                                             .last_child()
                                             .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
@@ -17545,16 +17567,6 @@ fn open_media_library_window(
                                     }
                                 }
                                 None => {
-                                    let base = if d.label.is_empty() {
-                                        "Untitled device".to_string()
-                                    } else {
-                                        d.label.clone()
-                                    };
-                                    // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
-                                    let label_text = format!(
-                                        "{}{base}",
-                                        device_glyph_prefix(d.read_only, &d.fs_type)
-                                    );
                                     let bx = GtkBox::new(Orientation::Vertical, 2);
                                     bx.set_margin_start(24);
                                     bx.set_margin_end(8);
