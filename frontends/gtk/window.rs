@@ -10660,26 +10660,77 @@ fn device_sync_plan(
     if device_id.is_empty() {
         return Vec::new();
     }
+    let side = |p: &std::path::Path| {
+        p.exists().then(|| SideState {
+            hash: sync::tag_hash(&sync::read_tag_state(p)),
+            mtime: file_mtime(p),
+        })
+    };
     let pairs = lib.sync_pairs_for_device(&device_id).unwrap_or_default();
-    pairs
-        .into_iter()
+    let mut out: Vec<(crate::media_library::SyncPair, sync::SyncAction)> = pairs
+        .iter()
         .map(|pair| {
             let lib_path = std::path::PathBuf::from(&pair.library_path);
             let dev_path = dev.mount_path.join(&pair.device_relpath);
-            let side = |p: &std::path::Path| {
-                p.exists().then(|| SideState {
-                    hash: sync::tag_hash(&sync::read_tag_state(p)),
-                    mtime: file_mtime(p),
-                })
-            };
             let action = sync::decide(
                 &pair.baseline_tag_hash,
                 side(&lib_path).as_ref(),
                 side(&dev_path).as_ref(),
             );
-            (pair, action)
+            (pair.clone(), action)
         })
-        .collect()
+        .collect();
+
+    // Adopt unpaired device files that match a library track by filename, so a
+    // file already on both sides (copied externally, or under an old device id)
+    // still participates in sync. Baseline = the device's current tags, so a
+    // differing library copy pushes to the device (the common "edited on the
+    // computer" case); identical files resolve to no-op.
+    let paired: std::collections::HashSet<String> =
+        pairs.iter().map(|p| p.device_relpath.replace('\\', "/")).collect();
+    let by_filename: std::collections::HashMap<String, String> = lib
+        .all_tracks()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| (t.filename, t.path))
+        .collect();
+    for dev_file in crate::devices::io::for_device(dev).list_audio_files() {
+        let Ok(rel) = dev_file.strip_prefix(&dev.mount_path) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if paired.contains(&rel_str) {
+            continue;
+        }
+        let Some(fname) = dev_file.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(lib_path) = by_filename.get(fname) else {
+            continue;
+        };
+        let dev_side = side(&dev_file);
+        let baseline = dev_side
+            .as_ref()
+            .map(|s| s.hash.clone())
+            .unwrap_or_default();
+        let pair = crate::media_library::SyncPair {
+            device_id: device_id.clone(),
+            device_relpath: rel_str,
+            library_path: lib_path.clone(),
+            baseline_tag_hash: baseline.clone(),
+            baseline_rating: 0,
+            baseline_playcount: 0,
+            last_sync_at: None,
+        };
+        let _ = lib.upsert_sync_pair(&pair);
+        let action = sync::decide(
+            &baseline,
+            side(std::path::Path::new(lib_path)).as_ref(),
+            dev_side.as_ref(),
+        );
+        out.push((pair, action));
+    }
+    out
 }
 
 /// Apply one tag-sync direction to a single pair and refresh its baseline.
