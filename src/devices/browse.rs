@@ -106,6 +106,25 @@ pub fn device_playlist_files(mount: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Audio files under a single directory, sorted. Like [`list_audio_files`] but
+/// for an arbitrary subtree — used to scan only the music folders on a large
+/// MTP device instead of its whole (slow, FUSE-backed) filesystem.
+pub fn audio_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walk(dir, &mut out);
+    out.sort();
+    out
+}
+
+/// Playlist files under a single directory, sorted (MTP-scoped counterpart of
+/// [`device_playlist_files`]).
+pub fn playlist_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walk_playlists(dir, &mut out);
+    out.sort();
+    out
+}
+
 fn walk_playlists(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

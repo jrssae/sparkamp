@@ -10254,29 +10254,38 @@ fn detect_mtp_devices() -> Vec<crate::devices::Device> {
         let Some(mount_path) = root.path() else {
             continue;
         };
+        // Friendly name: the mount name, or its volume's name (what GNOME Files
+        // shows, e.g. "Pixel 8"); fall back to a generic label.
+        let mount_name = mount.name().to_string();
+        let vol_name = mount.volume().map(|v| v.name().to_string()).unwrap_or_default();
+        let label = if !mount_name.is_empty() && mount_name != "mtp" {
+            mount_name.clone()
+        } else if !vol_name.is_empty() {
+            vol_name.clone()
+        } else {
+            "MTP device".to_string()
+        };
         // Identity: prefer the mount UUID; fall back to the (session-stable) URI.
         let id = mount
             .uuid()
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| uri.clone());
-        // Capacity via gio filesystem info (gvfs FUSE rarely reports statvfs).
-        let (total_bytes, free_bytes) = root
-            .query_filesystem_info("filesystem::size,filesystem::free", gio::Cancellable::NONE)
-            .map(|info| {
-                (
-                    info.attribute_uint64("filesystem::size"),
-                    info.attribute_uint64("filesystem::free"),
-                )
-            })
-            .unwrap_or((0, 0));
+        // NOTE: capacity is left unknown (0). Querying gio filesystem info here
+        // blocks on the gvfs FUSE mount, and this runs in the 2s device poll on
+        // the main thread — doing it froze the UI. Capacity comes with the gio
+        // IO backend (queried off-thread) in a later phase.
+        eprintln!(
+            "[mtp] detected uri={uri} mount_name={mount_name:?} vol_name={vol_name:?} path={}",
+            mount_path.display()
+        );
         out.push(Device {
             id,
-            label: mount.name().to_string(),
+            label,
             mount_path,
             fs_type: "mtp".to_string(),
-            total_bytes,
-            free_bytes,
+            total_bytes: 0,
+            free_bytes: 0,
             read_only: false,
             ejectable: mount.can_eject() || mount.can_unmount(),
             // The mtp:// URI uniquely identifies the mount (sidebar row key).
@@ -12045,14 +12054,14 @@ fn open_media_library_window(
         })
     };
 
-    let reload_dev_playlists: Rc<dyn Fn(std::path::PathBuf)> = {
+    let reload_dev_playlists: Rc<dyn Fn(crate::devices::Device)> = {
         let chips = dev_pl_chips.clone();
         let apply = apply_pl_filter.clone();
         // Generation token: bumped on every call so an in-flight playlist walk
         // (slow over MTP) that finishes after the user switched devices is
         // discarded instead of appending stale chips.
         let generation = Rc::new(Cell::new(0u64));
-        Rc::new(move |mount: std::path::PathBuf| {
+        Rc::new(move |dev: crate::devices::Device| {
             let gen_id = generation.get().wrapping_add(1);
             generation.set(gen_id);
             while let Some(c) = chips.first_child() {
@@ -12081,13 +12090,11 @@ fn open_media_library_window(
             let all2 = all.clone();
             let apply3 = apply.clone();
             let generation2 = generation.clone();
+            let io = crate::devices::io::for_device(&dev);
             glib::spawn_future_local(async move {
-                let m = mount.clone();
-                let pls = gio::spawn_blocking(move || {
-                    crate::devices::browse::device_playlist_files(&m)
-                })
-                .await
-                .unwrap_or_default();
+                let pls = gio::spawn_blocking(move || io.playlist_files())
+                    .await
+                    .unwrap_or_default();
                 if generation2.get() != gen_id {
                     return; // device switched / chips rebuilt since this walk began
                 }
@@ -12273,7 +12280,7 @@ fn open_media_library_window(
                 // Refresh the playlist filter so the just-written .m3u8 shows
                 // immediately, without needing to reselect the device.
                 if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                    reload_pls2(mount.clone());
+                    reload_pls2(dev_for_reload.clone());
                 }
                 show_alert_parented(
                     win2.upgrade().as_ref(),
@@ -12393,7 +12400,7 @@ fn open_media_library_window(
                         let _ = lib.rename_playlist(id, raw.trim());
                     }
                 }
-                reload_pls2(dev2.mount_path.clone());
+                reload_pls2(dev2.clone());
                 reload_store2(dev2.clone());
                 d.close();
             });
@@ -12491,7 +12498,7 @@ fn open_media_library_window(
                     );
                     return;
                 }
-                reload_pls2(dev2.mount_path.clone());
+                reload_pls2(dev2.clone());
                 d.close();
             });
             let ok2 = ok_btn.clone();
@@ -12580,7 +12587,7 @@ fn open_media_library_window(
                     );
                     return;
                 }
-                reload_pls2(dev2.mount_path.clone());
+                reload_pls2(dev2.clone());
                 d.close();
             });
             let ok2 = ok_btn.clone();
@@ -12631,7 +12638,7 @@ fn open_media_library_window(
                     );
                     return;
                 }
-                reload_pls2(dev2.mount_path.clone());
+                reload_pls2(dev2.clone());
                 reload_store2(dev2.clone());
             });
         });
@@ -13008,7 +13015,7 @@ fn open_media_library_window(
                         // Delete off the device + drop from every playlist.
                         let failed = device_delete_files(&dev2, &paths);
                         reload_store2(dev2.clone());
-                        reload_pls2(dev2.mount_path.clone());
+                        reload_pls2(dev2.clone());
                         if failed > 0 {
                             show_alert_parented(
                                 win_wk2.upgrade().as_ref(),
@@ -17735,7 +17742,7 @@ fn open_media_library_window(
                     // Rebuild the playlist filter rows ("All files" + each
                     // device .m3u/.m3u8); selecting "All files" resets the
                     // filter via the playlist-list handler.
-                    reload_dev_playlists_sel(d.mount_path.clone());
+                    reload_dev_playlists_sel(d.clone());
 
                     // Read device tags off the UI thread, then fill the columns.
                     reload_device_store_sel(d.clone());
@@ -17759,7 +17766,7 @@ fn open_media_library_window(
                 .find(|d| d.backend_id == backend)
                 .cloned();
             let Some(dev) = dev else { return };
-            reload_pls(dev.mount_path.clone());
+            reload_pls(dev.clone());
             reload_store(dev);
         });
     }
