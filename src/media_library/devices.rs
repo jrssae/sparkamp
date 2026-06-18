@@ -195,6 +195,19 @@ impl MediaLibrary {
             .context("sync_pairs_for_library_path")
     }
 
+    /// Distinct library paths recorded for a device relpath, across *all*
+    /// device ids. Lets sync recover the exact source a device file was copied
+    /// from even when the device's id changed (e.g. an MTP re-detect), instead
+    /// of guessing a same-named library file.
+    pub fn library_paths_for_device_relpath(&self, device_relpath: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT library_path FROM device_sync_pairs WHERE device_relpath = ?1",
+        )?;
+        let rows = stmt.query_map(params![device_relpath], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("library_paths_for_device_relpath")
+    }
+
     /// Remove a single pair. Does nothing if it does not exist.
     pub fn delete_sync_pair(&self, device_id: &str, device_relpath: &str) -> Result<()> {
         self.conn

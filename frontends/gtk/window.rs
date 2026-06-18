@@ -10702,12 +10702,25 @@ fn device_sync_plan(
         if paired.contains(&rel_str) {
             continue;
         }
-        let Some(fname) = dev_file.file_name().and_then(|n| n.to_str()) else {
-            continue;
+        // Prefer the exact source this file was copied from (recorded under any
+        // device id), so a re-detected device keeps its real pairing rather than
+        // guessing among same-named library files. Fall back to a unique
+        // filename match only when there's no recorded source.
+        let recorded = lib
+            .library_paths_for_device_relpath(&rel_str)
+            .unwrap_or_default();
+        let lib_path: String = if recorded.len() == 1 {
+            recorded.into_iter().next().unwrap()
+        } else {
+            let Some(fname) = dev_file.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            match by_filename.get(fname) {
+                Some(p) => p.clone(),
+                None => continue,
+            }
         };
-        let Some(lib_path) = by_filename.get(fname) else {
-            continue;
-        };
+        let lib_path = &lib_path;
         let dev_side = side(&dev_file);
         let baseline = dev_side
             .as_ref()
@@ -10747,24 +10760,15 @@ fn apply_tag_pair(
     let result: Result<sync::TagState, ()> = if to_device {
         let st = sync::read_tag_state(&lib_path);
         if dev.backend == DeviceBackend::Mtp {
-            // MTP can't rewrite tags in place — delete the device file and
+            // MTP can't rewrite tags in place — delete the device file, then
             // re-upload the local one (which already carries the desired tags).
-            // Force-overwrite rather than copy_to_device: ID3 padding often
-            // leaves the re-tagged file the same size, which the same-size skip
-            // would treat as "already present" and not update.
+            // Use copy_to_device (fresh create), NOT a truncating overwrite,
+            // which corrupts MTP files when the delete hasn't taken yet.
             let io = crate::devices::io::for_device(dev);
             let _ = io.delete(&dev_path);
-            let write = (|| -> std::io::Result<()> {
-                if let Some(parent) = dev_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let mut reader = std::fs::File::open(&lib_path)?;
-                let mut writer = std::fs::File::create(&dev_path)?;
-                std::io::copy(&mut reader, &mut writer)?;
-                std::io::Write::flush(&mut writer)?;
-                Ok(())
-            })();
-            write.map(|_| st).map_err(|_| ())
+            io.copy_to_device(&lib_path, std::path::Path::new(&pair.device_relpath))
+                .map(|_| st)
+                .map_err(|_| ())
         } else {
             sync::apply_tags(&st, &dev_path).map(|_| st).map_err(|_| ())
         }
