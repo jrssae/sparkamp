@@ -10244,14 +10244,14 @@ fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
 /// the first. Cached per device URI so the poll doesn't `read_dir` every tick;
 /// the cache self-heals if the path goes stale (replug).
 fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBuf {
-    thread_local! {
-        static CACHE: RefCell<std::collections::HashMap<String, std::path::PathBuf>> =
-            RefCell::new(std::collections::HashMap::new());
-    }
-    if let Some(p) = CACHE.with(|c| c.borrow().get(uri).cloned()) {
-        if p.exists() {
-            return p;
-        }
+    // Thread-safe cache: this is called from a worker thread (off the UI thread)
+    // so the FUSE read_dir never blocks the main loop.
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Some(p) = cache.lock().unwrap().get(uri).cloned() {
+        return p;
     }
     let mut chosen = fuse_root.to_path_buf();
     if let Ok(entries) = std::fs::read_dir(fuse_root) {
@@ -10277,7 +10277,7 @@ fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBu
     // Only cache a real storage — not the device-root fallback (which happens
     // in charge-only mode), so switching the phone to file mode re-resolves.
     if chosen != fuse_root {
-        CACHE.with(|c| c.borrow_mut().insert(uri.to_string(), chosen.clone()));
+        cache.lock().unwrap().insert(uri.to_string(), chosen.clone());
     }
     chosen
 }
@@ -10290,28 +10290,32 @@ fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBu
 /// Must run on the main thread (VolumeMonitor is a GLib main-context object).
 /// A device without a local FUSE path is skipped — `PosixIo` can't browse it
 /// until the gio IO backend (later phase) lands.
-fn detect_mtp_devices() -> Vec<crate::devices::Device> {
-    use crate::devices::{Device, DeviceBackend};
+struct MtpRaw {
+    uri: String,
+    fuse_root: std::path::PathBuf,
+    label: String,
+    id: String,
+    ejectable: bool,
+}
+
+/// Enumerate MTP mount *metadata* via gio's VolumeMonitor. Cheap, no filesystem
+/// IO (so safe to run on the main thread): only cached GLib mount/volume props
+/// and URI→path mapping. The FUSE `read_dir` to find the storage root is done
+/// later, off-thread, by [`mtp_raw_to_device`].
+fn enumerate_mtp_raw() -> Vec<MtpRaw> {
     let monitor = gio::VolumeMonitor::get();
     // gvfs can expose one MTP device as several mounts sharing the same root URI
-    // (e.g. a friendly "Pixel 8" plus a generic "mtp"). Dedup by URI, keeping
-    // the entry with the better label.
-    let mut by_uri: std::collections::HashMap<String, Device> = std::collections::HashMap::new();
+    // (a friendly "Pixel 8" plus a generic "mtp"). Dedup by URI, best label wins.
+    let mut by_uri: std::collections::HashMap<String, MtpRaw> = std::collections::HashMap::new();
     for mount in monitor.mounts() {
         let root = mount.root();
         let uri = root.uri().to_string();
         if !uri.starts_with("mtp://") && !uri.starts_with("gphoto2://") {
             continue;
         }
-        // Need a local FUSE path so std::fs (PosixIo) can read it for now.
         let Some(fuse_root) = root.path() else {
             continue;
         };
-        // Point at the writable storage root, not the device root (Android
-        // rejects files at the device root; storages hold Music/).
-        let mount_path = mtp_storage_root(&uri, &fuse_root);
-        // Friendly name: the mount name, or its volume's name (what GNOME Files
-        // shows, e.g. "Pixel 8"); fall back to a generic label.
         let mount_name = mount.name().to_string();
         let vol_name = mount.volume().map(|v| v.name().to_string()).unwrap_or_default();
         let label = if !mount_name.is_empty() && mount_name != "mtp" {
@@ -10321,35 +10325,47 @@ fn detect_mtp_devices() -> Vec<crate::devices::Device> {
         } else {
             "MTP device".to_string()
         };
-        // Identity: prefer the mount UUID; fall back to the (session-stable) URI.
         let id = mount
             .uuid()
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| uri.clone());
-        let device = Device {
+        let raw = MtpRaw {
+            uri: uri.clone(),
+            fuse_root,
+            label,
             id,
-            label: label.clone(),
-            mount_path,
-            fs_type: "mtp".to_string(),
-            // Capacity left unknown (0): querying gio filesystem info blocks on
-            // the gvfs FUSE mount and this runs in the 2s main-thread poll.
-            total_bytes: 0,
-            free_bytes: 0,
-            read_only: false,
             ejectable: mount.can_eject() || mount.can_unmount(),
-            backend_id: uri.clone(),
-            backend: DeviceBackend::Mtp,
         };
-        // Keep the first good (non-generic) label; otherwise overwrite.
         match by_uri.get(&uri) {
             Some(existing) if existing.label != "MTP device" => {}
             _ => {
-                by_uri.insert(uri, device);
+                by_uri.insert(uri, raw);
             }
         }
     }
     by_uri.into_values().collect()
+}
+
+/// Resolve one [`MtpRaw`] into a [`Device`]. Runs on a worker thread because it
+/// does FUSE `read_dir`s (via [`mtp_storage_root`]) to point `mount_path` at the
+/// device's writable storage root.
+fn mtp_raw_to_device(raw: MtpRaw) -> crate::devices::Device {
+    use crate::devices::{Device, DeviceBackend};
+    let mount_path = mtp_storage_root(&raw.uri, &raw.fuse_root);
+    Device {
+        id: raw.id,
+        label: raw.label,
+        mount_path,
+        fs_type: "mtp".to_string(),
+        // Capacity unknown (0) until the off-thread gio query lands.
+        total_bytes: 0,
+        free_bytes: 0,
+        read_only: false,
+        ejectable: raw.ejectable,
+        backend_id: raw.uri,
+        backend: DeviceBackend::Mtp,
+    }
 }
 
 /// "N songs · M playlists" with singular/plural agreement.
@@ -17547,15 +17563,24 @@ fn open_media_library_window(
             // can never freeze the UI — a main-thread block previously made
             // the app impossible to quit or eject after a copy.
             glib::spawn_future_local(async move {
-                let result = gio::spawn_blocking(crate::devices::detect::list_devices).await;
+                // Enumerate MTP mount metadata on the main thread (cheap, no
+                // FUSE IO), then resolve storage roots + list udisks devices on
+                // the worker thread so no gvfs filesystem call blocks the UI.
+                let mtp_raw = enumerate_mtp_raw();
+                let result = gio::spawn_blocking(move || {
+                    let udisks = crate::devices::detect::list_devices();
+                    let mtp: Vec<crate::devices::Device> =
+                        mtp_raw.into_iter().map(mtp_raw_to_device).collect();
+                    (udisks, mtp)
+                })
+                .await;
                 in_flight.set(false);
                 match result {
-                    Ok(Ok(devs)) => {
+                    Ok((Ok(devs), mtp)) => {
                         banner.set_visible(false);
-                        // Merge MTP (Android) devices, enumerated on this (main)
-                        // thread via gio's VolumeMonitor, then re-sort by label.
+                        // Merge MTP devices, then re-sort by label.
                         let mut devs = devs;
-                        devs.extend(detect_mtp_devices());
+                        devs.extend(mtp);
                         devs.sort_by(|a, b| {
                             a.label
                                 .to_lowercase()
@@ -17648,7 +17673,8 @@ fn open_media_library_window(
                         }
                         *current_devices.borrow_mut() = devs;
                     }
-                    Ok(Err(e)) => {
+                    // udisks failed — MTP (if any) is hidden until it recovers.
+                    Ok((Err(e), _mtp)) => {
                         for r in dev_sub_rows.borrow_mut().drain(..) {
                             sidebar.remove(&r);
                         }
