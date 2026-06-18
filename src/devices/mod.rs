@@ -69,4 +69,10 @@ pub struct Device {
     pub backend_id: String,
     /// Which IO backend drives this device (POSIX std::fs vs gio/MTP).
     pub backend: DeviceBackend,
+    /// Whether the device's filesystem is actually readable. Always `true` for
+    /// mounted block devices. `false` for an MTP phone that is connected but
+    /// whose storage isn't visible (file transfer not authorized, or the OS
+    /// hasn't exposed the storage volumes) — the UI shows a reconnect banner
+    /// instead of empty playlist/file lists.
+    pub fs_visible: bool,
 }

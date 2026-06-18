@@ -177,6 +177,8 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
             ejectable,
             backend_id: path.as_str().to_string(),
             backend: super::DeviceBackend::Udisks,
+            // A mounted block device always has a readable filesystem.
+            fs_visible: true,
         });
     }
     // Stable, name-first ordering so the sidebar and overview list devices

@@ -820,8 +820,12 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     }}").unwrap();
     writeln!(css, "progressbar.device-progress trough {{ background-color: {tbg}; }}").unwrap();
     writeln!(css, "progressbar.device-progress progress {{ background-color: {hl}; }}").unwrap();
-    // Capacity LevelBar fullness colors (filled portion). These class-on-levelbar
-    // rules follow the device-capacity fill above so they win the specificity tie.
+    // Capacity LevelBar fullness colors (filled portion). One class is applied
+    // per bar by set_levelbar_fullness, so every capacity bar (sidebar row,
+    // overview card, detail header) is colored identically regardless of whether
+    // it also carries the device-capacity sizing class: blue/accent when safe,
+    // amber under 15% free, red under 5% free.
+    writeln!(css, "levelbar.cap-ok trough block.filled {{ background-color: {hl}; }}").unwrap();
     writeln!(css, "levelbar.cap-warn trough block.filled {{ background-color: #d08a16; }}").unwrap();
     writeln!(css, "levelbar.cap-full trough block.filled {{ background-color: {broken}; }}").unwrap();
     // Device playlist filter chips (grouped toggle buttons).

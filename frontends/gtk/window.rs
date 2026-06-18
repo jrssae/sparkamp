@@ -10225,12 +10225,35 @@ fn apply_card_progress(bar: &gtk4::ProgressBar, state: Option<(usize, usize)>) {
 /// Color a capacity LevelBar by fullness: normal < 75%, `cap-warn` ≥ 75%,
 /// `cap-full` ≥ 90%. The classes are styled in `skin.rs`.
 fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
+    bar.remove_css_class("cap-ok");
     bar.remove_css_class("cap-warn");
     bar.remove_css_class("cap-full");
-    if used >= 0.90 {
+    // Thresholds are on *free* space: red under 5% free, amber under 15% free,
+    // accent/blue otherwise. Exactly one class is set so every capacity bar
+    // reads the same color across the sidebar, overview, and detail views.
+    let free = 1.0 - used;
+    if free < 0.05 {
         bar.add_css_class("cap-full");
-    } else if used >= 0.75 {
+    } else if free < 0.15 {
         bar.add_css_class("cap-warn");
+    } else {
+        bar.add_css_class("cap-ok");
+    }
+}
+
+/// Toggle a button into a "working" state: a running spinner replaces its label
+/// and it goes insensitive, restored to `idle_label` when done. Used so the
+/// Sync button shows activity during the (sometimes slow over MTP) device
+/// communication before the sync dialog appears.
+fn set_button_busy(btn: &Button, busy: bool, idle_label: &str) {
+    if busy {
+        let spinner = gtk4::Spinner::new();
+        spinner.start();
+        btn.set_child(Some(&spinner));
+        btn.set_sensitive(false);
+    } else {
+        btn.set_label(idle_label);
+        btn.set_sensitive(true);
     }
 }
 
@@ -10350,8 +10373,29 @@ fn enumerate_mtp_raw() -> Vec<MtpRaw> {
 /// Resolve one [`MtpRaw`] into a [`Device`]. Runs on a worker thread because it
 /// does FUSE `read_dir`s (via [`mtp_storage_root`]) to point `mount_path` at the
 /// device's writable storage root.
-fn mtp_raw_to_device(raw: MtpRaw) -> crate::devices::Device {
+///
+/// Returns `None` for a **dead** mount — a gvfs entry left behind in
+/// VolumeMonitor after the phone was unplugged, whose FUSE root can no longer be
+/// read. Dropping it keeps a phantom "MTP device" out of the sidebar when
+/// nothing is actually connected.
+///
+/// Returns a device with `fs_visible == false` when the phone is connected but
+/// exposes no readable storage volume (file transfer not authorized, or the
+/// storage hasn't appeared yet) — the detail view then shows a reconnect banner
+/// instead of empty lists.
+fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
     use crate::devices::{Device, DeviceBackend};
+    // Accessibility gate: an unplugged phone's stale mount still lists in
+    // VolumeMonitor, but its FUSE root errors on read. Treat that as "not
+    // connected" and drop it entirely.
+    let Ok(entries) = std::fs::read_dir(&raw.fuse_root) else {
+        return None;
+    };
+    // At least one storage-volume directory present? (Internal storage / SD
+    // card.) Its absence is the "connected but no visible filesystem" case.
+    let has_storage = entries
+        .flatten()
+        .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false));
     let mount_path = mtp_storage_root(&raw.uri, &raw.fuse_root);
     // Capacity via gio (gvfs FUSE rarely reports statvfs). Safe here — this runs
     // on a worker thread, so the blocking query never freezes the UI.
@@ -10364,7 +10408,7 @@ fn mtp_raw_to_device(raw: MtpRaw) -> crate::devices::Device {
             )
         })
         .unwrap_or((0, 0));
-    Device {
+    Some(Device {
         id: raw.id,
         label: raw.label,
         mount_path,
@@ -10375,7 +10419,8 @@ fn mtp_raw_to_device(raw: MtpRaw) -> crate::devices::Device {
         ejectable: raw.ejectable,
         backend_id: raw.uri,
         backend: DeviceBackend::Mtp,
-    }
+        fs_visible: has_storage,
+    })
 }
 
 /// "N songs · M playlists" with singular/plural agreement.
@@ -11789,6 +11834,26 @@ fn open_media_library_window(
     dev_progress.set_visible(false);
     dev_progress.add_css_class("device-progress");
     dev_detail.append(&dev_progress);
+
+    // Caution banner for a connected device with no readable filesystem (an
+    // MTP phone whose storage isn't shared). Shown in place of the playlist and
+    // file lists, which are hidden while it is up.
+    let dev_nofs_banner = GtkBox::new(Orientation::Horizontal, 8);
+    dev_nofs_banner.set_visible(false);
+    dev_nofs_banner.set_margin_top(12);
+    dev_nofs_banner.set_margin_bottom(12);
+    let dev_nofs_lbl = Label::builder()
+        .label(
+            "⚠ No visible filesystem on this device. Set the phone to file-transfer \
+             mode and allow access, or reconnect it, then press Scan.",
+        )
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    dev_nofs_lbl.add_css_class("broken");
+    dev_nofs_banner.append(&dev_nofs_lbl);
+    dev_detail.append(&dev_nofs_banner);
 
     // Playlists section header: a "Playlists" label on the left and an always-
     // available "+ New" button on the right that creates a device-only playlist.
@@ -17455,7 +17520,7 @@ fn open_media_library_window(
     // and Eject buttons call through these.
     let eject_run_holder: Rc<RefCell<Option<Rc<dyn Fn(String)>>>> =
         Rc::new(RefCell::new(None));
-    let sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device)>>>> =
+    let sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Button)>>>> =
         Rc::new(RefCell::new(None));
 
     // Rebuild the device overview list (shown when the Devices header is
@@ -17470,6 +17535,7 @@ fn open_media_library_window(
         let counts_inflight = counts_in_flight.clone();
         let transfers = device_transfers.clone();
         let card_bars = device_card_progress.clone();
+        let sidebar_ov = sidebar.clone();
         Rc::new(move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
@@ -17539,6 +17605,22 @@ fn open_media_library_window(
                     badges.append(&b);
                 }
                 header.append(&badges);
+                // Clicking the card's banner (icon + name area) opens that
+                // device's detail page by selecting its sidebar row, which the
+                // row-selected handler turns into the detail view. The Sync/Eject
+                // buttons live in their own row below and claim their own clicks.
+                {
+                    let click = gtk4::GestureClick::new();
+                    let sidebar = sidebar_ov.clone();
+                    let row_name = format!("dev:{}", d.backend_id);
+                    click.connect_released(move |_, _, _, _| {
+                        if let Some(row) = find_row_by_name(&sidebar, &row_name) {
+                            sidebar.select_row(Some(&row));
+                        }
+                    });
+                    header.add_controller(click);
+                    header.set_cursor_from_name(Some("pointer"));
+                }
                 card.append(&header);
 
                 // Capacity bar + free/total text.
@@ -17622,9 +17704,9 @@ fn open_media_library_window(
                 {
                     let holder = sync_holder.clone();
                     let dev = d.clone();
-                    sync_btn.connect_clicked(move |_| {
+                    sync_btn.connect_clicked(move |btn| {
                         if let Some(run) = holder.borrow().as_ref() {
-                            run(dev.clone());
+                            run(dev.clone(), btn.clone());
                         }
                     });
                 }
@@ -17688,7 +17770,7 @@ fn open_media_library_window(
                 let result = gio::spawn_blocking(move || {
                     let udisks = crate::devices::detect::list_devices();
                     let mtp: Vec<crate::devices::Device> =
-                        mtp_raw.into_iter().map(mtp_raw_to_device).collect();
+                        mtp_raw.into_iter().filter_map(mtp_raw_to_device).collect();
                     (udisks, mtp)
                 })
                 .await;
@@ -17757,6 +17839,7 @@ fn open_media_library_window(
                                             .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
                                         {
                                             bar.set_value(used);
+                                            set_levelbar_fullness(&bar, used);
                                         }
                                     }
                                 }
@@ -17775,6 +17858,7 @@ fn open_media_library_window(
                                     bar.set_min_value(0.0);
                                     bar.set_max_value(1.0);
                                     bar.set_value(used);
+                                    set_levelbar_fullness(&bar, used);
                                     bx.append(&lbl);
                                     bx.append(&bar);
                                     let row = ListBoxRow::new();
@@ -17880,6 +17964,15 @@ fn open_media_library_window(
         let state_devcols = state.clone();
         let sync_btn = dev_sync.clone();
         let scan_btn = dev_scan.clone();
+        // Sections hidden behind the "no filesystem" banner.
+        let nofs_banner = dev_nofs_banner.clone();
+        let pl_header_sel = dev_pl_header.clone();
+        let pl_scroll_sel = dev_pl_scroll.clone();
+        let pl_actions_sel = dev_pl_actions.clone();
+        let tracks_scroll_sel = dev_tracks_scroll.clone();
+        let file_actions_sel = dev_file_actions.clone();
+        let store_sel = dev_store.clone();
+        let counts_sel = dev_counts.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
@@ -17946,13 +18039,38 @@ fn open_media_library_window(
                     scan_btn.set_sensitive(true);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
 
-                    // Rebuild the playlist filter rows ("All files" + each
-                    // device .m3u/.m3u8); selecting "All files" resets the
-                    // filter via the playlist-list handler.
-                    reload_dev_playlists_sel(d.clone());
+                    if d.fs_visible {
+                        // Normal device: show the lists, hide the banner.
+                        nofs_banner.set_visible(false);
+                        pl_header_sel.set_visible(true);
+                        pl_scroll_sel.set_visible(true);
+                        tracks_scroll_sel.set_visible(true);
+                        file_actions_sel.set_visible(true);
+                        sync_btn.set_sensitive(true);
+                        scan_btn.set_sensitive(true);
 
-                    // Read device tags off the UI thread, then fill the columns.
-                    reload_device_store_sel(d.clone());
+                        // Rebuild the playlist filter rows ("All files" + each
+                        // device .m3u/.m3u8); selecting "All files" resets the
+                        // filter via the playlist-list handler.
+                        reload_dev_playlists_sel(d.clone());
+
+                        // Read device tags off the UI thread, then fill columns.
+                        reload_device_store_sel(d.clone());
+                    } else {
+                        // Connected but no readable filesystem: show the banner
+                        // in place of empty lists. Eject stays available so the
+                        // user can disconnect; Sync/Scan are pointless here.
+                        nofs_banner.set_visible(true);
+                        pl_header_sel.set_visible(false);
+                        pl_scroll_sel.set_visible(false);
+                        pl_actions_sel.set_visible(false);
+                        tracks_scroll_sel.set_visible(false);
+                        file_actions_sel.set_visible(false);
+                        store_sel.remove_all();
+                        counts_sel.set_text("No visible filesystem");
+                        sync_btn.set_sensitive(false);
+                        scan_btn.set_sensitive(false);
+                    }
                 }
             }
         });
@@ -18076,12 +18194,15 @@ fn open_media_library_window(
 
     // Sync: compare tags on each side of every pair, confirm en masse, apply.
     // Shared by the detail Sync button and each overview row's Sync button.
-    let sync_run: Rc<dyn Fn(crate::devices::Device)> = {
+    let sync_run: Rc<dyn Fn(crate::devices::Device, Button)> = {
         let state_sync = state.clone();
         let win_wk = win.downgrade();
         let reload_sync = reload_device_store.clone();
-        Rc::new(move |dev: crate::devices::Device| {
+        Rc::new(move |dev: crate::devices::Device, sync_btn: Button| {
             use crate::devices::sync::{PlaylistSyncDir, SyncAction};
+            // Show activity while the device is read/planned (slow over MTP);
+            // restored on every exit path below, just before a dialog/alert.
+            set_button_busy(&sync_btn, true, "Sync");
             // Compute both sync plans on a worker thread — reading device tags
             // and playlist files over a slow MTP FUSE mount on the UI thread
             // froze the app. A throwaway read-only library handle is opened on
@@ -18135,6 +18256,7 @@ fn open_media_library_window(
                 && pl_pull == 0
                 && pl_conflict == 0
             {
+                set_button_busy(&sync_btn, false, "Sync");
                 show_alert_parented(
                     win_wk.upgrade().as_ref(),
                     "Already in sync — no tag or playlist changes to apply.",
@@ -18177,6 +18299,9 @@ fn open_media_library_window(
                 if to_lib == 1 { "" } else { "s" },
                 if to_dev == 1 { "" } else { "s" },
             );
+            // Planning done — restore the button; the modal dialog now drives
+            // the rest of the flow.
+            set_button_busy(&sync_btn, false, "Sync");
             let dialog = gtk4::AlertDialog::builder()
                 .message("Sync device")
                 .detail(detail)
@@ -18296,7 +18421,7 @@ fn open_media_library_window(
         let devices_sync = current_devices.clone();
         let sel_backend = selected_dev_backend.clone();
         let sync_run = sync_run.clone();
-        dev_sync.connect_clicked(move |_| {
+        dev_sync.connect_clicked(move |btn| {
             let Some(backend) = sel_backend.borrow().clone() else { return };
             let dev = devices_sync
                 .borrow()
@@ -18304,7 +18429,7 @@ fn open_media_library_window(
                 .find(|d| d.backend_id == backend)
                 .cloned();
             let Some(dev) = dev else { return };
-            sync_run(dev);
+            sync_run(dev, btn.clone());
         });
     }
 
