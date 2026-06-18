@@ -56,6 +56,11 @@ use crate::{
     model::{fmt_duration, Playlist, Track},
     shuffle::ShuffleState,
 };
+// Device sync/plan/apply logic lives in core (`crate::devices::plan`); the
+// thin `device_*`/`apply_*` functions below forward to it. These two types are
+// produced/consumed by that logic and the frontend, so they are shared from
+// core rather than redefined here.
+use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -10186,7 +10191,7 @@ fn open_image_viewer(path: &str) {
 
 /// Filesystems Sparkamp can't reliably read/write yet — shown with a warning.
 fn device_fs_unsupported(fs_type: &str) -> bool {
-    matches!(fs_type.to_ascii_lowercase().as_str(), "ntfs" | "exfat")
+    crate::devices::plan::device_fs_unsupported(fs_type)
 }
 
 /// Leading status glyphs for a device label: ⚠ for an unsupported filesystem,
@@ -10383,11 +10388,63 @@ fn enumerate_mtp_raw() -> Vec<MtpRaw> {
 /// exposes no readable storage volume (file transfer not authorized, or the
 /// storage hasn't appeared yet) — the detail view then shows a reconnect banner
 /// instead of empty lists.
+/// Cached MTP device metadata, filled by the one-time FUSE reads in
+/// [`mtp_raw_to_device`] the first time a device URI is seen. Steady-state
+/// polling reuses it and NEVER touches the gvfs mount: issuing a blocking,
+/// uncancellable FUSE read every 2 s would, on a slow or post-sync-wedged
+/// device, hold the mount busy (blocking eject from Sparkamp and GNOME) and pin
+/// a worker thread in uninterruptible IO — delaying process exit and Ctrl-C.
+/// Invalidated by [`invalidate_mtp_meta`] after any operation that changes the
+/// device, so capacity/visibility refresh then rather than on a timer.
+struct MtpMeta {
+    storage_root: std::path::PathBuf,
+    has_storage: bool,
+    total_bytes: u64,
+    free_bytes: u64,
+}
+
+fn mtp_meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, MtpMeta>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, MtpMeta>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Drop a device's cached MTP metadata so the next poll re-reads it once — e.g.
+/// after a copy/sync/delete changed its contents, or on eject. No-op for
+/// non-MTP backend ids (their URIs are never cached here).
+fn invalidate_mtp_meta(uri: &str) {
+    mtp_meta_cache().lock().unwrap().remove(uri);
+}
+
+fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> crate::devices::Device {
+    use crate::devices::DeviceBackend;
+    crate::devices::Device {
+        id: raw.id.clone(),
+        label: raw.label.clone(),
+        mount_path: m.storage_root.clone(),
+        fs_type: "mtp".to_string(),
+        total_bytes: m.total_bytes,
+        free_bytes: m.free_bytes,
+        read_only: false,
+        ejectable: raw.ejectable,
+        backend_id: raw.uri.clone(),
+        backend: DeviceBackend::Mtp,
+        fs_visible: m.has_storage,
+    }
+}
+
 fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
-    use crate::devices::{Device, DeviceBackend};
+    // Cache hit → no FUSE IO at all. This is the steady-state path on every
+    // 2 s poll once a device has been seen, so a slow/wedged mount can never
+    // block the poll worker or hold the mount busy in the background.
+    if let Some(m) = mtp_meta_cache().lock().unwrap().get(&raw.uri) {
+        return Some(mtp_device_from_meta(&raw, m));
+    }
+    // Cache miss (first sight of this URI): do the one-time FUSE reads.
     // Accessibility gate: an unplugged phone's stale mount still lists in
-    // VolumeMonitor, but its FUSE root errors on read. Treat that as "not
-    // connected" and drop it entirely.
+    // VolumeMonitor, but its FUSE root errors on read — treat as "not
+    // connected" and drop it.
     let Ok(entries) = std::fs::read_dir(&raw.fuse_root) else {
         return None;
     };
@@ -10396,7 +10453,7 @@ fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
     let has_storage = entries
         .flatten()
         .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false));
-    let mount_path = mtp_storage_root(&raw.uri, &raw.fuse_root);
+    let storage_root = mtp_storage_root(&raw.uri, &raw.fuse_root);
     // Capacity via gio (gvfs FUSE rarely reports statvfs). Safe here — this runs
     // on a worker thread, so the blocking query never freezes the UI.
     let (total_bytes, free_bytes) = gio::File::for_uri(&raw.uri)
@@ -10408,19 +10465,15 @@ fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
             )
         })
         .unwrap_or((0, 0));
-    Some(Device {
-        id: raw.id,
-        label: raw.label,
-        mount_path,
-        fs_type: "mtp".to_string(),
+    let meta = MtpMeta {
+        storage_root,
+        has_storage,
         total_bytes,
         free_bytes,
-        read_only: false,
-        ejectable: raw.ejectable,
-        backend_id: raw.uri,
-        backend: DeviceBackend::Mtp,
-        fs_visible: has_storage,
-    })
+    };
+    let dev = mtp_device_from_meta(&raw, &meta);
+    mtp_meta_cache().lock().unwrap().insert(raw.uri.clone(), meta);
+    Some(dev)
 }
 
 /// "N songs · M playlists" with singular/plural agreement.
@@ -10439,55 +10492,20 @@ const UNSUPPORTED_FS_TOOLTIP: &str =
 /// Device identity for sync pairs: the volume UUID, or a marker id written now
 /// (the first time a file is paired to this device).
 fn device_sync_id(dev: &crate::devices::Device) -> String {
-    if dev.id.is_empty() {
-        crate::devices::marker::ensure_marker(&dev.mount_path).unwrap_or_default()
-    } else {
-        dev.id.clone()
-    }
+    crate::devices::plan::device_sync_id(dev)
 }
 
-/// Canonical identity for a library file, used as the sync-pair key. Every
-/// copy path (drag-drop, playlist send, sync) resolves the same file to the
-/// same string so dedup works regardless of which view supplied the path.
-/// Falls back to the raw path when the file can't be canonicalized.
-fn canonical_lib_path(src: &std::path::Path) -> String {
-    src.canonicalize()
-        .unwrap_or_else(|_| src.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Decide where `src` goes on the device and whether it's already there.
-///
-/// Resolution order, all yielding the canonical flat `Music/<filename>` layout:
-/// 1. A recorded sync pair whose device file still exists *and* matches the
-///    current flat layout → reuse it (so editing metadata never duplicates).
-///    Stale pairs from older layouts (subfolders) or missing files are ignored
-///    and re-planned flat, so they're never perpetuated.
-/// 2. An identical file (same name, same size) already at `Music/<filename>` →
-///    treat as present, even without a pair, so a lost/mismatched pair can't
-///    spawn a `-N` duplicate of a file that's already there.
-/// 3. A *different* file occupying `Music/<filename>` → `-N` collision suffix.
-/// 4. Otherwise the free `Music/<filename>` slot.
 /// The DB half of [`device_plan_one`]: the recorded sync-pair device relpath for
-/// `src` on this device, if any. Touches only the (main-thread) SQLite library;
-/// no filesystem IO, so the FS half can run on a worker thread.
+/// `src` on this device, if any. Frontend shim over
+/// [`crate::devices::plan::recorded_relpath`] that pulls the open library.
 fn device_recorded_relpath(
     state: &Rc<RefCell<AppState>>,
     device_id: &str,
     src: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
-    if device_id.is_empty() {
-        return None;
-    }
-    let lib_path = canonical_lib_path(src);
-    state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .and_then(|l| l.sync_pairs_for_library_path(&lib_path).ok())
-        .and_then(|ps| ps.into_iter().find(|p| p.device_id == device_id))
-        .map(|p| std::path::PathBuf::from(p.device_relpath))
+    let s = state.borrow();
+    let lib = s.media_lib.as_ref()?;
+    crate::devices::plan::recorded_relpath(lib, device_id, src)
 }
 
 /// The filesystem half of [`device_plan_one`]: given the recorded relpath (from
@@ -10500,24 +10518,7 @@ fn device_plan_fs(
     src: &std::path::Path,
     recorded: Option<std::path::PathBuf>,
 ) -> (std::path::PathBuf, bool) {
-    use crate::devices::transfer;
-    if let Some(rel) = recorded {
-        // Only honour the recorded slot if it still matches the flat layout
-        // (Music/<file>, two components) and the file is actually present.
-        let flat = rel.starts_with("Music") && rel.components().count() == 2;
-        if flat && mount.join(&rel).exists() {
-            return (rel, true);
-        }
-    }
-    // No usable pair: plan flat, deduping by name+size against the device.
-    let base = transfer::device_flat_relpath(src);
-    let dest = mount.join(&base);
-    let src_len = std::fs::metadata(src).ok().map(|m| m.len());
-    match std::fs::metadata(&dest) {
-        Ok(dmeta) if Some(dmeta.len()) == src_len => (base, true), // same file already there
-        Ok(_) => (transfer::resolve_collision(mount, &base), false), // different file → suffix
-        Err(_) => (base, false),                                    // free slot
-    }
+    crate::devices::plan::device_plan_fs(mount, src, recorded)
 }
 
 /// Decide where `src` goes on the device and whether it's already there.
@@ -10549,21 +10550,8 @@ fn device_record_pair(
     src: &std::path::Path,
     relpath: &std::path::Path,
 ) {
-    if device_id.is_empty() {
-        return;
-    }
-    use crate::devices::sync;
-    let st = sync::read_tag_state(src);
     if let Some(lib) = state.borrow().media_lib.as_ref() {
-        let _ = lib.upsert_sync_pair(&crate::media_library::SyncPair {
-            device_id: device_id.to_string(),
-            device_relpath: relpath.to_string_lossy().into_owned(),
-            library_path: canonical_lib_path(src),
-            baseline_tag_hash: sync::tag_hash(&st),
-            baseline_rating: st.rating as i64,
-            baseline_playcount: st.play_count as i64,
-            last_sync_at: Some(crate::timeutil::format_current_timestamp()),
-        });
+        crate::devices::plan::record_pair(lib, device_id, src, relpath);
     }
 }
 
@@ -10571,16 +10559,7 @@ fn device_record_pair(
 /// `.m3u8` on a device: strip path-hostile characters and surrounding dots/
 /// spaces, falling back to "Playlist" when nothing usable remains.
 fn safe_playlist_filename(name: &str) -> String {
-    let safe: String = name
-        .chars()
-        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-        .collect();
-    let safe = safe.trim().trim_matches('.').trim();
-    if safe.is_empty() {
-        "Playlist".to_string()
-    } else {
-        safe.to_string()
-    }
+    crate::devices::plan::safe_playlist_filename(name)
 }
 
 /// If a device playlist file is linked to a library playlist — i.e. some
@@ -10590,14 +10569,9 @@ fn linked_library_playlist(
     state: &Rc<RefCell<AppState>>,
     dev_playlist: &std::path::Path,
 ) -> Option<(i64, String)> {
-    let stem = dev_playlist.file_stem()?.to_string_lossy().into_owned();
     let s = state.borrow();
     let lib = s.media_lib.as_ref()?;
-    lib.all_playlists()
-        .ok()?
-        .into_iter()
-        .find(|p| safe_playlist_filename(&p.name) == stem)
-        .map(|p| (p.id, p.name))
+    crate::devices::plan::linked_library_playlist(lib, dev_playlist)
 }
 
 /// A validated plan for sending a whole playlist to a device: the files to
@@ -10680,115 +10654,13 @@ fn prepare_playlist_send(
     })
 }
 
-/// File modification time in whole seconds since the epoch (0 on error).
-fn file_mtime(p: &std::path::Path) -> i64 {
-    std::fs::metadata(p)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// Compute the per-pair sync decisions for a device: for each recorded sync
 /// pair, hash the current tags on each side and decide the direction.
 fn device_sync_plan(
     lib: &crate::media_library::MediaLibrary,
     dev: &crate::devices::Device,
 ) -> Vec<(crate::media_library::SyncPair, crate::devices::sync::SyncAction)> {
-    use crate::devices::sync::{self, SideState};
-    let device_id = if dev.id.is_empty() {
-        crate::devices::marker::read_marker(&dev.mount_path).unwrap_or_default()
-    } else {
-        dev.id.clone()
-    };
-    if device_id.is_empty() {
-        return Vec::new();
-    }
-    let side = |p: &std::path::Path| {
-        p.exists().then(|| SideState {
-            hash: sync::tag_hash(&sync::read_tag_state(p)),
-            mtime: file_mtime(p),
-        })
-    };
-    let pairs = lib.sync_pairs_for_device(&device_id).unwrap_or_default();
-    let mut out: Vec<(crate::media_library::SyncPair, sync::SyncAction)> = pairs
-        .iter()
-        .map(|pair| {
-            let lib_path = std::path::PathBuf::from(&pair.library_path);
-            let dev_path = dev.mount_path.join(&pair.device_relpath);
-            let action = sync::decide(
-                &pair.baseline_tag_hash,
-                side(&lib_path).as_ref(),
-                side(&dev_path).as_ref(),
-            );
-            (pair.clone(), action)
-        })
-        .collect();
-
-    // Adopt unpaired device files that match a library track by filename, so a
-    // file already on both sides (copied externally, or under an old device id)
-    // still participates in sync. Baseline = the device's current tags, so a
-    // differing library copy pushes to the device (the common "edited on the
-    // computer" case); identical files resolve to no-op.
-    let paired: std::collections::HashSet<String> =
-        pairs.iter().map(|p| p.device_relpath.replace('\\', "/")).collect();
-    let by_filename: std::collections::HashMap<String, String> = lib
-        .all_tracks()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| (t.filename, t.path))
-        .collect();
-    for dev_file in crate::devices::io::for_device(dev).list_audio_files() {
-        let Ok(rel) = dev_file.strip_prefix(&dev.mount_path) else {
-            continue;
-        };
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if paired.contains(&rel_str) {
-            continue;
-        }
-        // Prefer the exact source this file was copied from (recorded under any
-        // device id), so a re-detected device keeps its real pairing rather than
-        // guessing among same-named library files. Fall back to a unique
-        // filename match only when there's no recorded source.
-        let recorded = lib
-            .library_paths_for_device_relpath(&rel_str)
-            .unwrap_or_default();
-        let lib_path: String = if recorded.len() == 1 {
-            recorded.into_iter().next().unwrap()
-        } else {
-            let Some(fname) = dev_file.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            match by_filename.get(fname) {
-                Some(p) => p.clone(),
-                None => continue,
-            }
-        };
-        let lib_path = &lib_path;
-        let dev_side = side(&dev_file);
-        let baseline = dev_side
-            .as_ref()
-            .map(|s| s.hash.clone())
-            .unwrap_or_default();
-        let pair = crate::media_library::SyncPair {
-            device_id: device_id.clone(),
-            device_relpath: rel_str,
-            library_path: lib_path.clone(),
-            baseline_tag_hash: baseline.clone(),
-            baseline_rating: 0,
-            baseline_playcount: 0,
-            last_sync_at: None,
-        };
-        let _ = lib.upsert_sync_pair(&pair);
-        let action = sync::decide(
-            &baseline,
-            side(std::path::Path::new(lib_path)).as_ref(),
-            dev_side.as_ref(),
-        );
-        out.push((pair, action));
-    }
-    out
+    crate::devices::plan::device_sync_plan(lib, dev)
 }
 
 /// Apply one tag-sync direction to a single pair and refresh its baseline.
@@ -10799,41 +10671,9 @@ fn apply_tag_pair(
     pair: &crate::media_library::SyncPair,
     to_device: bool,
 ) -> bool {
-    use crate::devices::{sync, DeviceBackend};
-    let lib_path = std::path::PathBuf::from(&pair.library_path);
-    let dev_path = dev.mount_path.join(&pair.device_relpath);
-    let result: Result<sync::TagState, ()> = if to_device {
-        let st = sync::read_tag_state(&lib_path);
-        if dev.backend == DeviceBackend::Mtp {
-            // MTP can't rewrite tags in place — delete the device file, then
-            // re-upload the local one (which already carries the desired tags).
-            // Use copy_to_device (fresh create), NOT a truncating overwrite,
-            // which corrupts MTP files when the delete hasn't taken yet.
-            let io = crate::devices::io::for_device(dev);
-            let _ = io.delete(&dev_path);
-            io.copy_to_device(&lib_path, std::path::Path::new(&pair.device_relpath))
-                .map(|_| st)
-                .map_err(|_| ())
-        } else {
-            sync::apply_tags(&st, &dev_path).map(|_| st).map_err(|_| ())
-        }
-    } else {
-        let st = sync::read_tag_state(&dev_path);
-        sync::apply_tags(&st, &lib_path).map(|_| st).map_err(|_| ())
-    };
-    match result {
-        Ok(st) => {
-            if let Some(lib) = state.borrow().media_lib.as_ref() {
-                let mut p = pair.clone();
-                p.baseline_tag_hash = sync::tag_hash(&st);
-                p.baseline_rating = st.rating as i64;
-                p.baseline_playcount = st.play_count as i64;
-                p.last_sync_at = Some(crate::timeutil::format_current_timestamp());
-                let _ = lib.upsert_sync_pair(&p);
-            }
-            true
-        }
-        Err(_) => false,
+    match state.borrow().media_lib.as_ref() {
+        Some(lib) => crate::devices::plan::apply_tag_pair(lib, dev, pair, to_device),
+        None => false,
     }
 }
 
@@ -10845,55 +10685,10 @@ fn apply_device_sync(
     dev: &crate::devices::Device,
     plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
 ) -> (usize, usize) {
-    use crate::devices::sync::SyncAction;
-    let (mut applied, mut failed) = (0usize, 0usize);
-    for (pair, action) in plan {
-        let to_device = match action {
-            SyncAction::LibraryToDevice => true,
-            SyncAction::DeviceToLibrary => false,
-            _ => continue,
-        };
-        if apply_tag_pair(state, dev, pair, to_device) {
-            applied += 1;
-        } else {
-            failed += 1;
-        }
+    match state.borrow().media_lib.as_ref() {
+        Some(lib) => crate::devices::plan::apply_device_sync(lib, dev, plan),
+        None => (0, 0),
     }
-    (applied, failed)
-}
-
-/// One library playlist's two-way sync decision against a device.
-#[derive(Clone)]
-struct PlaylistSyncItem {
-    library_playlist_id: i64,
-    library_name: String,
-    /// The library playlist's `.m3u8` file on disk.
-    library_path: std::path::PathBuf,
-    device_id: String,
-    /// The current device playlist file, if one was found.
-    device_file: Option<std::path::PathBuf>,
-    /// Where the device file should live (safe name + configured extension).
-    desired_device_filename: String,
-    /// Existing library files for this playlist, in order (used when pushing).
-    srcs: Vec<std::path::PathBuf>,
-    /// Device entry order (basenames), used when pulling.
-    dev_basenames: Vec<String>,
-    dir: crate::devices::sync::PlaylistSyncDir,
-    /// Number of entries that differ between the two sides (for the prompt).
-    differ: usize,
-}
-
-/// Count of entries differing between two ordered basename lists (multiset
-/// symmetric difference: additions + removals, counting duplicates).
-fn multiset_diff_count(a: &[String], b: &[String]) -> usize {
-    let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
-    for x in a {
-        *counts.entry(x.as_str()).or_default() += 1;
-    }
-    for y in b {
-        *counts.entry(y.as_str()).or_default() -= 1;
-    }
-    counts.values().map(|v| v.unsigned_abs() as usize).sum()
 }
 
 /// Build the two-way playlist sync plan for a device: for each library playlist
@@ -10904,87 +10699,7 @@ fn device_playlist_sync_plan(
     dev: &crate::devices::Device,
     ext: &str,
 ) -> Vec<PlaylistSyncItem> {
-    use crate::devices::sync::{decide_playlist, entries_hash};
-    let device_id = device_sync_id(dev);
-    if device_id.is_empty() || dev.read_only || device_fs_unsupported(&dev.fs_type) {
-        return Vec::new();
-    }
-    let playlists = lib.all_playlists().unwrap_or_default();
-    let baselines = lib
-        .playlist_baselines_for_device(&device_id)
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for pl in playlists {
-        let safe = safe_playlist_filename(&pl.name);
-        let baseline = baselines.iter().find(|b| b.library_playlist_id == pl.id);
-        // Locate the device file: configured extension, legacy variants, then
-        // the baseline's recorded filename (catches a library-side rename).
-        let mut candidates = vec![
-            dev.mount_path.join(format!("{safe}.{ext}")),
-            dev.mount_path.join(format!("{safe}.m3u8")),
-            dev.mount_path.join(format!("{safe}.m3u")),
-        ];
-        if let Some(b) = baseline {
-            candidates.push(dev.mount_path.join(&b.device_filename));
-        }
-        let device_file = candidates.into_iter().find(|p| p.exists());
-        // A playlist never sent to this device (no baseline, no file) is not
-        // part of sync — it is sent explicitly via the Send action.
-        if baseline.is_none() && device_file.is_none() {
-            continue;
-        }
-        let loaded = lib.load_playlist_tracks(&pl).unwrap_or_default();
-        let lib_basenames: Vec<String> = loaded.iter().map(|t| t.filename.clone()).collect();
-        let srcs: Vec<std::path::PathBuf> = loaded
-            .iter()
-            .map(|t| std::path::PathBuf::from(&t.path))
-            .filter(|p| p.exists())
-            .collect();
-        let dev_basenames: Vec<String> = device_file
-            .as_ref()
-            .map(|p| crate::devices::browse::playlist_entry_order(p))
-            .unwrap_or_default();
-        let lib_hash = entries_hash(&lib_basenames);
-        let dev_hash = entries_hash(&dev_basenames);
-        let dir = decide_playlist(
-            baseline.map(|b| b.entries_hash.as_str()),
-            device_file.is_some(),
-            &lib_hash,
-            &dev_hash,
-        );
-        let differ = multiset_diff_count(&lib_basenames, &dev_basenames);
-        out.push(PlaylistSyncItem {
-            library_playlist_id: pl.id,
-            library_name: pl.name,
-            library_path: std::path::PathBuf::from(&pl.path),
-            device_id: device_id.clone(),
-            device_file,
-            desired_device_filename: format!("{safe}.{ext}"),
-            srcs,
-            dev_basenames,
-            dir,
-            differ,
-        });
-    }
-    out
-}
-
-/// Record/refresh the per-playlist baseline after a sync resolves it.
-fn update_playlist_baseline(
-    state: &Rc<RefCell<AppState>>,
-    item: &PlaylistSyncItem,
-    device_filename: &str,
-    entries_hash: &str,
-) {
-    if let Some(lib) = state.borrow().media_lib.as_ref() {
-        let _ = lib.upsert_playlist_baseline(&crate::media_library::PlaylistBaseline {
-            device_id: item.device_id.clone(),
-            library_playlist_id: item.library_playlist_id,
-            device_filename: device_filename.to_string(),
-            entries_hash: entries_hash.to_string(),
-            last_sync_at: Some(crate::timeutil::format_current_timestamp()),
-        });
-    }
+    crate::devices::plan::device_playlist_sync_plan(lib, dev, ext)
 }
 
 /// Push a library playlist to the device: copy any missing tracks (flat
@@ -10997,70 +10712,16 @@ fn apply_playlist_push(
     dev: &crate::devices::Device,
     item: &PlaylistSyncItem,
 ) -> (usize, bool) {
-    let io = crate::devices::io::for_device(dev);
-    // (device relpath, library source path) pairs, so the written file carries
-    // #EXTINF metadata from the library.
-    let mut entries: Vec<(String, String)> = Vec::new();
-    let mut copied = 0usize;
-    for src in &item.srcs {
-        let (rel, present) = device_plan_one(state, &dev.mount_path, &item.device_id, src);
-        if !present {
-            if io.copy_to_device(src, &rel).is_err() {
-                continue;
-            }
-            copied += 1;
-        }
-        device_record_pair(state, &item.device_id, src, &rel);
-        entries.push((
-            rel.to_string_lossy().replace('\\', "/"),
-            src.to_string_lossy().into_owned(),
-        ));
+    match state.borrow().media_lib.as_ref() {
+        Some(lib) => crate::devices::plan::apply_playlist_push(lib, dev, item),
+        None => (0, false),
     }
-    let dest = dev.mount_path.join(&item.desired_device_filename);
-    let body = state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .map(|l| l.build_device_m3u(&entries))
-        .unwrap_or_else(|| {
-            format!(
-                "#EXTM3U\n{}\n",
-                entries.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>().join("\n")
-            )
-        });
-    let ok = std::fs::write(&dest, body).is_ok();
-    // Library-side rename: remove the stale device file under the old name.
-    if let Some(old) = &item.device_file {
-        if old != &dest && old.exists() {
-            let _ = io.delete(old);
-        }
-    }
-    let basenames: Vec<String> = entries
-        .iter()
-        .map(|(e, _)| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
-        .collect();
-    update_playlist_baseline(
-        state,
-        item,
-        &item.desired_device_filename,
-        &crate::devices::sync::entries_hash(&basenames),
-    );
-    (copied, ok)
 }
 
 /// Prompt the user to resolve playlist conflicts one at a time (both sides
 /// changed). Each prompt shows how many entries differ; the user keeps the
 /// computer's copy (push), the device's copy (pull), or skips. After the last
 /// one, `done` runs (refresh + summary).
-/// One song whose tags changed on both the computer and the device since the
-/// last sync, with the differing fields, for the per-file conflict prompt.
-#[derive(Clone)]
-struct TagConflictItem {
-    pair: crate::media_library::SyncPair,
-    song: String,
-    diffs: Vec<crate::devices::sync::FieldDiff>,
-}
-
 /// Prompt the user to resolve per-file tag conflicts one at a time. Each prompt
 /// lists the differing fields (computer vs device); the user keeps the computer
 /// copy (library→device), the device copy (device→library), or skips. After the
@@ -11114,40 +10775,7 @@ fn build_tag_conflicts(
     dev: &crate::devices::Device,
     plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
 ) -> Vec<TagConflictItem> {
-    use crate::devices::sync::{self, SyncAction};
-    let mut out = Vec::new();
-    for (pair, action) in plan {
-        if *action != SyncAction::Conflict {
-            continue;
-        }
-        let lib_path = std::path::PathBuf::from(&pair.library_path);
-        let dev_path = dev.mount_path.join(&pair.device_relpath);
-        let lib_st = sync::read_tag_state(&lib_path);
-        let dev_st = sync::read_tag_state(&dev_path);
-        let diffs = sync::tag_field_diffs(&lib_st, &dev_st);
-        if diffs.is_empty() {
-            continue; // tag-hash differed but no comparable field did
-        }
-        // Prefer "Artist - Title"; fall back to the filename.
-        let song = if !lib_st.title.is_empty() {
-            if lib_st.artist.is_empty() {
-                lib_st.title.clone()
-            } else {
-                format!("{} - {}", lib_st.artist, lib_st.title)
-            }
-        } else {
-            lib_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
-        out.push(TagConflictItem {
-            pair: pair.clone(),
-            song,
-            diffs,
-        });
-    }
-    out
+    crate::devices::plan::build_tag_conflicts(dev, plan)
 }
 
 fn prompt_playlist_conflicts(
@@ -11198,40 +10826,10 @@ fn apply_playlist_pull(
     state: &Rc<RefCell<AppState>>,
     item: &PlaylistSyncItem,
 ) -> bool {
-    // Map device basenames → library track paths.
-    let by_name: std::collections::HashMap<String, String> = state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .and_then(|l| l.all_tracks().ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| (t.filename, t.path))
-        .collect();
-    let paths: Vec<String> = item
-        .dev_basenames
-        .iter()
-        .filter_map(|b| by_name.get(b).cloned())
-        .collect();
-    let ok = state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .map(|l| l.save_playlist_tracks_to_path(&item.library_path, &paths).is_ok())
-        .unwrap_or(false);
-    let dev_filename = item
-        .device_file
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| item.desired_device_filename.clone());
-    update_playlist_baseline(
-        state,
-        item,
-        &dev_filename,
-        &crate::devices::sync::entries_hash(&item.dev_basenames),
-    );
-    ok
+    match state.borrow().media_lib.as_ref() {
+        Some(lib) => crate::devices::plan::apply_playlist_pull(lib, item),
+        None => false,
+    }
 }
 
 /// Rewrite a device `.m3u`/`.m3u8`, dropping every track line whose filename
@@ -11241,76 +10839,14 @@ fn device_m3u_remove_basenames(
     path: &std::path::Path,
     remove: &std::collections::HashSet<String>,
 ) -> bool {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let mut out = String::new();
-    let mut changed = false;
-    // A removed track's `#EXTINF` line precedes its path, so buffer it and drop
-    // the pair together rather than leaving a dangling EXTINF.
-    let mut pending_extinf: Option<String> = None;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("#EXTINF") {
-            if let Some(e) = pending_extinf.take() {
-                out.push_str(&e);
-                out.push('\n');
-            }
-            pending_extinf = Some(line.to_string());
-            continue;
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            if let Some(e) = pending_extinf.take() {
-                out.push_str(&e);
-                out.push('\n');
-            }
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-        let base = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
-        if remove.contains(base) {
-            changed = true;
-            pending_extinf = None; // drop the entry's EXTINF too
-            continue;
-        }
-        if let Some(e) = pending_extinf.take() {
-            out.push_str(&e);
-            out.push('\n');
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    if let Some(e) = pending_extinf.take() {
-        out.push_str(&e);
-        out.push('\n');
-    }
-    if changed {
-        let _ = std::fs::write(path, out);
-    }
-    changed
+    crate::devices::plan::device_m3u_remove_basenames(path, remove)
 }
 
 /// Delete files from a device and remove them from every device playlist that
 /// referenced them. `paths` are absolute on-device paths. Returns the number of
 /// files that couldn't be deleted.
 fn device_delete_files(dev: &crate::devices::Device, paths: &[std::path::PathBuf]) -> usize {
-    let io = crate::devices::io::for_device(dev);
-    let mut failed = 0usize;
-    let mut basenames: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for p in paths {
-        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-            basenames.insert(name.to_string());
-        }
-        if io.delete(p).is_err() {
-            failed += 1;
-        }
-    }
-    // Drop the deleted files from every playlist on the device.
-    for pl in io.playlist_files() {
-        device_m3u_remove_basenames(&pl, &basenames);
-    }
-    failed
+    crate::devices::plan::device_delete_files(dev, paths)
 }
 
 fn open_media_library_window(
@@ -12150,8 +11686,10 @@ fn open_media_library_window(
             hint.set_text(""); // clear any stale copy status
             store.remove_all();
             // Device contents may have changed (copy/send/sync) — drop the
-            // cached overview counts so the cards recompute next time shown.
+            // cached overview counts so the cards recompute next time shown, and
+            // the cached MTP metadata so the next poll refreshes free space once.
             counts_cache.borrow_mut().remove(&dev.backend_id);
+            invalidate_mtp_meta(&dev.backend_id);
             let store2 = store.clone();
             let all_tracks2 = all_tracks.clone();
             let counts_lbl2 = counts_lbl.clone();
@@ -18109,6 +17647,9 @@ fn open_media_library_window(
             // MTP devices have no udisks2 block object — unmount through gvfs
             // (gio) on the main thread instead; the unmount itself is async.
             if backend.starts_with("mtp://") || backend.starts_with("gphoto2://") {
+                // Forget cached metadata so a later replug of the same URI
+                // re-reads the device rather than showing stale capacity.
+                invalidate_mtp_meta(&backend);
                 let monitor = gio::VolumeMonitor::get();
                 let mount = monitor
                     .mounts()

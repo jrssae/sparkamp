@@ -17,6 +17,8 @@ pub mod sync;
 // Per-backend filesystem IO (POSIX today; gio/MTP in a later phase).
 pub mod io;
 
+pub mod plan;
+
 // udisks2-backed detection is Linux-only (macOS uses DiskArbitration, added
 // in a later phase). The `zbus` dependency is itself Linux-gated.
 #[cfg(target_os = "linux")]
