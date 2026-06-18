@@ -76,6 +76,27 @@ impl DeviceIo for PosixIo {
     }
     fn playlist_files(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
+        // Device playlists are written at the storage root (so their relative
+        // `Music/<file>` entries resolve), which the music-scoped roots don't
+        // cover — shallow-scan the mount root for them too.
+        if self.music_only {
+            if let Ok(entries) = std::fs::read_dir(&self.mount) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    let is_m3u = p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| {
+                            let l = x.to_ascii_lowercase();
+                            l == "m3u" || l == "m3u8"
+                        })
+                        .unwrap_or(false);
+                    if is_m3u {
+                        out.push(p);
+                    }
+                }
+            }
+        }
         for root in self.scan_roots() {
             out.extend(super::browse::playlist_files_under(&root));
         }
