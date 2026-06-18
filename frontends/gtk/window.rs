@@ -10414,26 +10414,39 @@ fn canonical_lib_path(src: &std::path::Path) -> String {
 ///    spawn a `-N` duplicate of a file that's already there.
 /// 3. A *different* file occupying `Music/<filename>` → `-N` collision suffix.
 /// 4. Otherwise the free `Music/<filename>` slot.
-fn device_plan_one(
+/// The DB half of [`device_plan_one`]: the recorded sync-pair device relpath for
+/// `src` on this device, if any. Touches only the (main-thread) SQLite library;
+/// no filesystem IO, so the FS half can run on a worker thread.
+fn device_recorded_relpath(
     state: &Rc<RefCell<AppState>>,
-    mount: &std::path::Path,
     device_id: &str,
     src: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if device_id.is_empty() {
+        return None;
+    }
+    let lib_path = canonical_lib_path(src);
+    state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .and_then(|l| l.sync_pairs_for_library_path(&lib_path).ok())
+        .and_then(|ps| ps.into_iter().find(|p| p.device_id == device_id))
+        .map(|p| std::path::PathBuf::from(p.device_relpath))
+}
+
+/// The filesystem half of [`device_plan_one`]: given the recorded relpath (from
+/// [`device_recorded_relpath`]), decide the final relpath and whether the file
+/// is already present, using `metadata`/`exists` checks on the device. This is
+/// the part that can be slow over a gvfs/MTP FUSE mount, so callers run it on a
+/// worker thread.
+fn device_plan_fs(
+    mount: &std::path::Path,
+    src: &std::path::Path,
+    recorded: Option<std::path::PathBuf>,
 ) -> (std::path::PathBuf, bool) {
     use crate::devices::transfer;
-    let lib_path = canonical_lib_path(src);
-    let existing = if device_id.is_empty() {
-        None
-    } else {
-        state
-            .borrow()
-            .media_lib
-            .as_ref()
-            .and_then(|l| l.sync_pairs_for_library_path(&lib_path).ok())
-            .and_then(|ps| ps.into_iter().find(|p| p.device_id == device_id))
-    };
-    if let Some(p) = &existing {
-        let rel = std::path::PathBuf::from(&p.device_relpath);
+    if let Some(rel) = recorded {
         // Only honour the recorded slot if it still matches the flat layout
         // (Music/<file>, two components) and the file is actually present.
         let flat = rel.starts_with("Music") && rel.components().count() == 2;
@@ -10441,7 +10454,6 @@ fn device_plan_one(
             return (rel, true);
         }
     }
-
     // No usable pair: plan flat, deduping by name+size against the device.
     let base = transfer::device_flat_relpath(src);
     let dest = mount.join(&base);
@@ -10451,6 +10463,27 @@ fn device_plan_one(
         Ok(_) => (transfer::resolve_collision(mount, &base), false), // different file → suffix
         Err(_) => (base, false),                                    // free slot
     }
+}
+
+/// Decide where `src` goes on the device and whether it's already there.
+///
+/// Resolution order, all yielding the canonical flat `Music/<filename>` layout:
+/// 1. A recorded sync pair whose device file still exists *and* matches the
+///    current flat layout → reuse it (so editing metadata never duplicates).
+/// 2. An identical file (same name, same size) already at `Music/<filename>` →
+///    treat as present, so a lost/mismatched pair can't spawn a `-N` duplicate.
+/// 3. A *different* file occupying `Music/<filename>` → `-N` collision suffix.
+/// 4. Otherwise the free `Music/<filename>` slot.
+///
+/// Does filesystem IO; on a slow (MTP) device prefer the split
+/// [`device_recorded_relpath`] (main thread) + [`device_plan_fs`] (worker).
+fn device_plan_one(
+    state: &Rc<RefCell<AppState>>,
+    mount: &std::path::Path,
+    device_id: &str,
+    src: &std::path::Path,
+) -> (std::path::PathBuf, bool) {
+    device_plan_fs(mount, src, device_recorded_relpath(state, device_id, src))
 }
 
 /// Record (or refresh) the sync pair for a just-copied file with its REAL tag
@@ -10559,19 +10592,23 @@ fn prepare_playlist_send(
         return Err("No playable files in this playlist.".to_string());
     }
     let device_id = device_sync_id(dev);
-    // Free-space guard: sum sizes of files not already present.
-    let mut need = 0u64;
-    for src in &srcs {
-        if !device_plan_one(state, &dev.mount_path, &device_id, src).1 {
-            need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+    // Free-space guard — only when capacity is known (0 = unknown, e.g. MTP).
+    // Skipping it avoids a whole pass of slow per-file device checks on devices
+    // that can't report free space anyway.
+    if dev.free_bytes > 0 {
+        let mut need = 0u64;
+        for src in &srcs {
+            if !device_plan_one(state, &dev.mount_path, &device_id, src).1 {
+                need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+            }
         }
-    }
-    if dev.free_bytes > 0 && need > dev.free_bytes {
-        return Err(format!(
-            "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
-            need as f64 / 1e9,
-            dev.free_bytes as f64 / 1e9
-        ));
+        if need > dev.free_bytes {
+            return Err(format!(
+                "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                need as f64 / 1e9,
+                dev.free_bytes as f64 / 1e9
+            ));
+        }
     }
     let safe = safe_playlist_filename(playlist_name);
     let ext = state
@@ -12279,29 +12316,35 @@ fn open_media_library_window(
                         progress2.set_text(Some(&format!("{prog} · {fname}")));
                         progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                     }
-                    // Plan on the main thread (DB), copy on a worker thread.
-                    let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
-                    let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    if present {
-                        skipped += 1;
-                        // Ensure a pair exists for the already-present file so
-                        // sync tracks it and future dedup matches it.
-                        device_record_pair(&state2, &device_id, src, &rel);
-                        entries.push((rel_str, src.to_string_lossy().into_owned()));
-                        continue;
-                    }
+                    // DB lookup on the main thread; FS plan + copy on the worker
+                    // so a slow MTP FUSE op never blocks the UI.
+                    let recorded = device_recorded_relpath(&state2, &device_id, src);
                     let s = src.clone();
-                    let r = rel.clone();
+                    let m = mount.clone();
                     let dc = dev_for_reload.clone();
-                    let outcome = gio::spawn_blocking(move || {
-                        crate::devices::io::for_device(&dc).copy_to_device(&s, &r)
+                    let joined = gio::spawn_blocking(move || -> Result<(std::path::PathBuf, bool), ()> {
+                        let (rel, present) = device_plan_fs(&m, &s, recorded);
+                        if present {
+                            return Ok((rel, false)); // already there → skipped
+                        }
+                        match crate::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
+                            Ok(_) => Ok((rel, true)),
+                            Err(_) => Err(()),
+                        }
                     })
                     .await;
-                    match outcome {
-                        Ok(Ok(_)) => {
-                            copied += 1;
+                    match joined {
+                        Ok(Ok((rel, copied_now))) => {
+                            if copied_now {
+                                copied += 1;
+                            } else {
+                                skipped += 1;
+                            }
                             device_record_pair(&state2, &device_id, src, &rel);
-                            entries.push((rel_str, src.to_string_lossy().into_owned()));
+                            entries.push((
+                                rel.to_string_lossy().replace('\\', "/"),
+                                src.to_string_lossy().into_owned(),
+                            ));
                         }
                         _ => failed += 1,
                     }
@@ -12755,23 +12798,26 @@ fn open_media_library_window(
             if srcs.is_empty() {
                 return;
             }
-            // Free-space guard: sum sizes of files not already present.
-            let mut need = 0u64;
-            for src in &srcs {
-                if !device_plan_one(&state, &mount, &device_id, src).1 {
-                    need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+            // Free-space guard — only when capacity is known (skips a pass of
+            // slow per-file device checks on devices that can't report it, MTP).
+            if dev.free_bytes > 0 {
+                let mut need = 0u64;
+                for src in &srcs {
+                    if !device_plan_one(&state, &mount, &device_id, src).1 {
+                        need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+                    }
                 }
-            }
-            if dev.free_bytes > 0 && need > dev.free_bytes {
-                show_alert_parented(
-                    win_wk.upgrade().as_ref(),
-                    &format!(
-                        "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
-                        need as f64 / 1e9,
-                        dev.free_bytes as f64 / 1e9
-                    ),
-                );
-                return;
+                if need > dev.free_bytes {
+                    show_alert_parented(
+                        win_wk.upgrade().as_ref(),
+                        &format!(
+                            "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                            need as f64 / 1e9,
+                            dev.free_bytes as f64 / 1e9
+                        ),
+                    );
+                    return;
+                }
             }
 
             let backend = dev.backend_id.clone();
@@ -12832,24 +12878,30 @@ fn open_media_library_window(
                         progress2.set_text(Some(&format!("{prog} · {fname}")));
                         progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                     }
-                    let (rel, present) = device_plan_one(&state2, &mount, &device_id, src);
-                    if present {
-                        skipped += 1;
-                        // Ensure a pair exists for the already-present file so
-                        // sync tracks it and future dedup matches it.
-                        device_record_pair(&state2, &device_id, src, &rel);
-                        continue;
-                    }
+                    // DB lookup on the main thread; the FS plan + copy (slow over
+                    // MTP) run on the worker so the UI never blocks on FUSE.
+                    let recorded = device_recorded_relpath(&state2, &device_id, src);
                     let s = src.clone();
-                    let r = rel.clone();
+                    let m = mount.clone();
                     let dc = dev_for_reload.clone();
-                    let outcome = gio::spawn_blocking(move || {
-                        crate::devices::io::for_device(&dc).copy_to_device(&s, &r)
+                    let joined = gio::spawn_blocking(move || -> Result<(std::path::PathBuf, bool), ()> {
+                        let (rel, present) = device_plan_fs(&m, &s, recorded);
+                        if present {
+                            return Ok((rel, false)); // already there → skipped
+                        }
+                        match crate::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
+                            Ok(_) => Ok((rel, true)),
+                            Err(_) => Err(()),
+                        }
                     })
                     .await;
-                    match outcome {
-                        Ok(Ok(_)) => {
-                            copied += 1;
+                    match joined {
+                        Ok(Ok((rel, copied_now))) => {
+                            if copied_now {
+                                copied += 1;
+                            } else {
+                                skipped += 1;
+                            }
                             device_record_pair(&state2, &device_id, src, &rel);
                         }
                         _ => failed += 1,

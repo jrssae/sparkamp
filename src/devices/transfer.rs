@@ -88,7 +88,15 @@ pub fn copy_to_device(src: &Path, mount: &Path, relpath: &Path) -> std::io::Resu
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(src, &dest)?;
+    // Manual byte copy rather than std::fs::copy: the latter also copies the
+    // source's permissions (chmod), which MTP/gvfs rejects — making the copy
+    // report failure even though the bytes were written. A plain read→write
+    // never touches permissions and works on both POSIX and MTP devices.
+    use std::io::Write;
+    let mut reader = std::fs::File::open(src)?;
+    let mut writer = std::fs::File::create(&dest)?;
+    std::io::copy(&mut reader, &mut writer)?;
+    writer.flush()?;
     Ok(CopyOutcome::Copied)
 }
 
