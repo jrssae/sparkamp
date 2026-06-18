@@ -10234,6 +10234,54 @@ fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
     }
 }
 
+/// Resolve an MTP device's writable **storage root** under its gvfs FUSE mount.
+///
+/// The mtp:// mount root's children are storage volumes (e.g. "Internal shared
+/// storage", "SD card"), and Android rejects files written at the device root —
+/// they must live inside a storage. So the device's `mount_path` is set to a
+/// storage dir, keeping the flat `Music/<file>` layout valid. Prefers a storage
+/// that already has a `Music` folder, then one whose name looks "internal", else
+/// the first. Cached per device URI so the poll doesn't `read_dir` every tick;
+/// the cache self-heals if the path goes stale (replug).
+fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBuf {
+    thread_local! {
+        static CACHE: RefCell<std::collections::HashMap<String, std::path::PathBuf>> =
+            RefCell::new(std::collections::HashMap::new());
+    }
+    if let Some(p) = CACHE.with(|c| c.borrow().get(uri).cloned()) {
+        if p.exists() {
+            return p;
+        }
+    }
+    let mut chosen = fuse_root.to_path_buf();
+    if let Ok(entries) = std::fs::read_dir(fuse_root) {
+        let dirs: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.path())
+            .collect();
+        chosen = dirs
+            .iter()
+            .find(|d| d.join("Music").exists())
+            .or_else(|| {
+                dirs.iter().find(|d| {
+                    d.file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase().contains("internal"))
+                        .unwrap_or(false)
+                })
+            })
+            .or_else(|| dirs.first())
+            .cloned()
+            .unwrap_or_else(|| fuse_root.to_path_buf());
+    }
+    // Only cache a real storage — not the device-root fallback (which happens
+    // in charge-only mode), so switching the phone to file mode re-resolves.
+    if chosen != fuse_root {
+        CACHE.with(|c| c.borrow_mut().insert(uri.to_string(), chosen.clone()));
+    }
+    chosen
+}
+
 /// Detect MTP devices (Android phones in File-transfer mode) via gio's
 /// `VolumeMonitor`. These are surfaced by gvfs as `mtp://` mounts with a FUSE
 /// path under `/run/user/<uid>/gvfs/`. Produces core [`Device`] structs tagged
@@ -10256,9 +10304,12 @@ fn detect_mtp_devices() -> Vec<crate::devices::Device> {
             continue;
         }
         // Need a local FUSE path so std::fs (PosixIo) can read it for now.
-        let Some(mount_path) = root.path() else {
+        let Some(fuse_root) = root.path() else {
             continue;
         };
+        // Point at the writable storage root, not the device root (Android
+        // rejects files at the device root; storages hold Music/).
+        let mount_path = mtp_storage_root(&uri, &fuse_root);
         // Friendly name: the mount name, or its volume's name (what GNOME Files
         // shows, e.g. "Pixel 8"); fall back to a generic label.
         let mount_name = mount.name().to_string();
