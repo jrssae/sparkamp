@@ -27,6 +27,11 @@ finish-args:
   # System DBus access to udisks2 for external-device detection, free space,
   # and safe eject (Unmount + PowerOff). Narrow, media-manager-style grant.
   - --system-talk-name=org.freedesktop.UDisks2
+  # gvfs/MTP access for Android phones (file-transfer mode): the gvfs FUSE
+  # mounts live under xdg-run/gvfs, and the gio mount/volume APIs need to talk
+  # to the gvfs session services.
+  - --filesystem=xdg-run/gvfs
+  - --talk-name=org.gtk.vfs.*
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

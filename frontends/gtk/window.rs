@@ -5270,6 +5270,9 @@ pub fn build(
             // Stop the 33 ms visualizer timer before any gsk paint can run
             // against a freed surface.
             viz_shut.set(true);
+            // Stop new blocking device FUSE work from starting during teardown,
+            // so a slow MTP mount can't pin a worker thread and delay exit.
+            DEVICE_IO_SHUTDOWN.store(true, std::sync::atomic::Ordering::Relaxed);
             let _ = state.borrow().playlist.save_last();
 
             let mut cfg = state.borrow().config.clone();
@@ -10388,6 +10391,18 @@ fn enumerate_mtp_raw() -> Vec<MtpRaw> {
 /// exposes no readable storage volume (file transfer not authorized, or the
 /// storage hasn't appeared yet) — the detail view then shows a reconnect banner
 /// instead of empty lists.
+/// Set true once the main window starts closing. Worker-thread device code
+/// checks it before starting any blocking gvfs/MTP FUSE work (directory reads,
+/// capacity queries, tag scans): such a read can block in uninterruptible IO on
+/// a slow/wedged device, pinning the thread and delaying process exit and
+/// Ctrl-C. Not *starting* the read avoids that. (An already in-flight read can't
+/// be cancelled — that case is inherent to FUSE.)
+static DEVICE_IO_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn device_io_shutting_down() -> bool {
+    DEVICE_IO_SHUTDOWN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Cached MTP device metadata, filled by the one-time FUSE reads in
 /// [`mtp_raw_to_device`] the first time a device URI is seen. Steady-state
 /// polling reuses it and NEVER touches the gvfs mount: issuing a blocking,
@@ -10440,6 +10455,10 @@ fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
     // block the poll worker or hold the mount busy in the background.
     if let Some(m) = mtp_meta_cache().lock().unwrap().get(&raw.uri) {
         return Some(mtp_device_from_meta(&raw, m));
+    }
+    // Don't begin first-detect FUSE reads while shutting down.
+    if device_io_shutting_down() {
+        return None;
     }
     // Cache miss (first sight of this URI): do the one-time FUSE reads.
     // Accessibility gate: an unplugged phone's stale mount still lists in
@@ -11496,6 +11515,12 @@ fn open_media_library_window(
     let dev_store = gio::ListStore::new::<glib::BoxedAnyObject>();
     let dev_all_tracks: Rc<RefCell<Vec<crate::media_library::LibTrack>>> =
         Rc::new(RefCell::new(Vec::new()));
+    // Device file path → the library file it was copied from (its sync pair), for
+    // the device view's "Synced from" column so the user can see exactly which
+    // computer file each device file is kept in step with. Rebuilt per device by
+    // reload_device_store; read live by the column factory.
+    let dev_pair_map: Rc<RefCell<std::collections::HashMap<String, String>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
     let dev_sort_model = SortListModel::new(Some(dev_store.clone()), None::<gtk4::Sorter>);
     let dev_selection = MultiSelection::new(Some(dev_sort_model.clone()));
     let dev_col_view = ColumnView::new(Some(dev_selection.clone()));
@@ -11537,6 +11562,59 @@ fn open_media_library_window(
         dev_col_view.append_column(&col);
         col
     };
+
+    // "Synced from" column (device view only): the library file each device file
+    // was copied from. Lets the user confirm at a glance which computer file a
+    // sync keeps in step, instead of guessing among same-named files. Reads the
+    // live per-device pair map keyed by on-device path.
+    {
+        let pair_map = dev_pair_map.clone();
+        let factory = SignalListItemFactory::new();
+        factory.connect_setup(|_, obj| {
+            let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+            if li.child().is_some() {
+                return;
+            }
+            let lbl = Label::builder()
+                .halign(Align::Start)
+                .xalign(0.0)
+                .margin_start(6)
+                .margin_end(6)
+                .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+                .css_classes(["status-label"])
+                .build();
+            li.set_child(Some(&lbl));
+        });
+        factory.connect_bind(move |_, obj| {
+            let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                return;
+            };
+            let Some(item) = li.item() else { return };
+            let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() else {
+                return;
+            };
+            let path = boxed.borrow::<crate::media_library::LibTrack>().path.clone();
+            match pair_map.borrow().get(&path) {
+                Some(libp) => {
+                    let base = std::path::Path::new(libp)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(libp);
+                    lbl.set_text(&gtk_safe(base));
+                    lbl.set_tooltip_text(Some(&gtk_safe(libp)));
+                }
+                None => {
+                    lbl.set_text("—");
+                    lbl.set_tooltip_text(Some("Not synced from this computer"));
+                }
+            }
+        });
+        let col = ColumnViewColumn::new(Some("Synced from"), Some(factory));
+        col.set_fixed_width(220);
+        col.set_resizable(true);
+        dev_col_view.append_column(&col);
+    }
 
     let mut dev_named_cols: Vec<(String, ColumnViewColumn)> = Vec::new();
     // Buttons that already have a click handler wired (artwork "View"), so the
@@ -11681,10 +11759,12 @@ fn open_media_library_window(
         let state = state.clone();
         let counts_cache = device_counts.clone();
         let sel_backend = selected_dev_backend.clone();
+        let pair_map = dev_pair_map.clone();
         Rc::new(move |dev: crate::devices::Device| {
             counts_lbl.set_text("Reading device…");
             hint.set_text(""); // clear any stale copy status
             store.remove_all();
+            pair_map.borrow_mut().clear(); // drop the previous device's pairings
             // Device contents may have changed (copy/send/sync) — drop the
             // cached overview counts so the cards recompute next time shown, and
             // the cached MTP metadata so the next poll refreshes free space once.
@@ -11694,6 +11774,7 @@ fn open_media_library_window(
             let all_tracks2 = all_tracks.clone();
             let counts_lbl2 = counts_lbl.clone();
             let state2 = state.clone();
+            let pair_map2 = pair_map.clone();
             let mount = dev.mount_path.clone();
             // Guard against a slow scan landing after the user switched devices:
             // each scan is tagged with its device, and results are applied only
@@ -11712,6 +11793,9 @@ fn open_media_library_window(
             let io = crate::devices::io::for_device(&dev);
             glib::spawn_future_local(async move {
                 let (mut tracks, pl_count) = gio::spawn_blocking(move || {
+                    if device_io_shutting_down() {
+                        return (Vec::new(), 0);
+                    }
                     let tracks = io
                         .list_audio_files()
                         .iter()
@@ -11736,6 +11820,16 @@ fn open_media_library_window(
                     let s = state2.borrow();
                     if let Some(lib) = s.media_lib.as_ref() {
                         if let Ok(pairs) = lib.sync_pairs_for_device(&device_id) {
+                            // Populate the "Synced from" map: on-device path → the
+                            // library file it was copied from.
+                            let mut pm = std::collections::HashMap::new();
+                            for p in &pairs {
+                                pm.insert(
+                                    mount.join(&p.device_relpath).to_string_lossy().into_owned(),
+                                    p.library_path.clone(),
+                                );
+                            }
+                            *pair_map2.borrow_mut() = pm;
                             for t in tracks.iter_mut() {
                                 let tp = std::path::Path::new(&t.path);
                                 let Some(pair) = pairs.iter().find(|p| {
@@ -17206,6 +17300,9 @@ fn open_media_library_window(
                             let lbl = counts_lbl.clone();
                             glib::spawn_future_local(async move {
                                 let res = gio::spawn_blocking(move || {
+                                    if device_io_shutting_down() {
+                                        return (0, 0);
+                                    }
                                     let songs =
                                         crate::devices::browse::list_audio_files(&mount).len();
                                     let pls = crate::devices::browse::device_playlist_files(&mount)
@@ -17762,6 +17859,9 @@ fn open_media_library_window(
             glib::spawn_future_local(async move {
                 let dev_b = dev.clone();
                 let (plan, pl_plan) = gio::spawn_blocking(move || {
+                    if device_io_shutting_down() {
+                        return (Vec::new(), Vec::new());
+                    }
                     match crate::media_library::MediaLibrary::open_at(&db_path) {
                         Ok(lib) => (
                             device_sync_plan(&lib, &dev_b),
