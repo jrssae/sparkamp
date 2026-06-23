@@ -103,6 +103,11 @@ final class SparkampModel: ObservableObject {
     @Published var selectedDeviceBSD: String? = nil
     /// Song / playlist counts per device id, filled lazily for the overview.
     @Published var deviceCounts: [String: DeviceCounts] = [:]
+    /// BSD names of devices with an eject in flight — drives the "Ejecting…"
+    /// spinner and disables the button until DiskArbitration finishes.
+    @Published var ejectingDevices: Set<String> = []
+    /// Set when an eject fails (device busy); shown as an alert, then cleared.
+    @Published var ejectError: String? = nil
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
 

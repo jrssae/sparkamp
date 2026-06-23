@@ -59,4 +59,27 @@ extension SparkampModel {
         guard let ctx = ctx else { return }
         deviceCounts[dev.id] = DeviceService.counts(ctx: ctx, device: dev)
     }
+
+    /// Eject a device with in-flight feedback. Marks it ejecting (drives the
+    /// detail spinner), then on the DiskArbitration callback clears the flag and
+    /// either re-polls (success — the device drops off the list, and the detail
+    /// view auto-falls back to the overview) or surfaces an error (busy).
+    func ejectDevice(_ device: Device) {
+        let bsd = device.backendId
+        guard !bsd.isEmpty, !ejectingDevices.contains(bsd) else { return }
+        ejectingDevices.insert(bsd)
+        ejectError = nil
+        DeviceService.eject(bsdName: bsd) { ok in
+            Task { @MainActor in
+                self.ejectingDevices.remove(bsd)
+                if ok {
+                    self.pollDevices()
+                } else {
+                    let name = device.label.isEmpty ? "the device" : device.label
+                    self.ejectError =
+                        "Couldn't eject \(name). Close any apps using it and try again."
+                }
+            }
+        }
+    }
 }

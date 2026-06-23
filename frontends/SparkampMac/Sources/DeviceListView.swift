@@ -146,6 +146,7 @@ struct DeviceDetailPlaceholder: View {
     let counts: DeviceCounts?
     let theme: SkinTheme
     let vars: SkinVars
+    let isEjecting: Bool
     let onEject: () -> Void
 
     var body: some View {
@@ -162,7 +163,14 @@ struct DeviceDetailPlaceholder: View {
                         .foregroundStyle(theme.playlistDurationText)
                 }
                 Spacer()
-                if device.ejectable {
+                if isEjecting {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Ejecting…")
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.playlistDurationText)
+                    }
+                } else if device.ejectable {
                     Button { onEject() } label: {
                         Label("Eject", systemImage: "eject")
                     }

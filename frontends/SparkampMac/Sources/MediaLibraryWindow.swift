@@ -133,13 +133,12 @@ struct MediaLibraryView: View {
                             counts: model.deviceCounts[dev.id],
                             theme: theme,
                             vars: themeManager.currentVars,
-                            onEject: {
-                                let bsd = dev.backendId
-                                nav = .devicesOverview
-                                DeviceService.eject(bsdName: bsd) { _ in
-                                    Task { @MainActor in model.pollDevices() }
-                                }
-                            }
+                            isEjecting: model.ejectingDevices.contains(dev.backendId),
+                            // Stay on the detail view during eject so the
+                            // spinner is visible; when it succeeds the device
+                            // drops off the list and this case auto-falls back
+                            // to the overview.
+                            onEject: { model.ejectDevice(dev) }
                         )
                         .onAppear { model.refreshDeviceCounts() }
                     } else {
@@ -183,6 +182,15 @@ struct MediaLibraryView: View {
         // calling mlFetchTracks() directly preserves search & sort state.
         .onChange(of: model.mlReloadTrigger) { _, _ in reload() }
         .onChange(of: nav) { _, _ in selection.removeAll() }
+        // When the selected device disappears (eject completed, or unplugged
+        // while viewing it), return to the overview so nav + sidebar stay
+        // consistent rather than pointing at a gone device.
+        .onChange(of: model.devices) { _, devs in
+            if case let .device(bsd) = nav,
+               !devs.contains(where: { $0.backendId == bsd }) {
+                nav = .devicesOverview
+            }
+        }
         .onChange(of: columnCustomization) { _, v in
             if let d = try? JSONEncoder().encode(v) { columnCustomizationData = d }
         }
@@ -206,6 +214,14 @@ struct MediaLibraryView: View {
                 }
             }
             .padding(24).frame(width: 320)
+        }
+        .alert("Eject failed", isPresented: Binding(
+            get: { model.ejectError != nil },
+            set: { if !$0 { model.ejectError = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.ejectError = nil }
+        } message: {
+            Text(model.ejectError ?? "")
         }
     }
 
