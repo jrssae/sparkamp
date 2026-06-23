@@ -2,15 +2,24 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development or superpowers:executing-plans to implement task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
+**Status (2026-06-23):** Tasks 1–6 complete — core serde DTOs, the JSON
+device FFI, the bridge header, the Swift `DeviceService`, and the device
+sidebar group + overview with capacity bars all build and ship. Tasks 7–9
+(detail view, conflict sheet, deletion rule/entitlements) remain. Tasks 10–11
+(iOS/PTP recognition, Android-over-MTP) are new — see Scope and the tasks at
+the end.
+
 **Goal:** Bring the macOS SwiftUI frontend to parity with the GTK frontend's external-device support (this branch): detect removable volumes, browse them, copy library files onto them, two-way tag/rating/play-count sync with the both-changed conflict dialog, device playlists with playlist sync, capacity display, eject, and graceful recognition of non-syncable (iOS/PTP) devices.
 
-**Architecture:** The macOS app is SwiftUI talking to the Rust core through a C FFI (`frontends/macos/src/lib.rs` re-exports `sparkamp::ffi::*`; cbindgen emits `sparkamp_bridge.h`). All device *logic* already exists, platform-neutral, in `src/devices/` (`plan.rs`, `sync.rs`, `browse.rs`, `transfer.rs`, `io.rs`, `marker.rs`) — only `detect.rs` (udisks2) is Linux-only. So parity is **not** a logic rewrite: it is (1) a thin JSON-over-FFI device API in `src/ffi/devices.rs` that drives the existing core, (2) Swift-side volume enumeration + eject (DiskArbitration), and (3) the SwiftUI device UI mirroring `frontends/gtk/window.rs`.
+**Architecture:** The macOS app is SwiftUI talking to the Rust core through a C FFI (`frontends/macos/src/lib.rs` re-exports `sparkamp::ffi::*`). The C header is **hand-maintained** at `frontends/SparkampMac/SparkampCore/sparkamp_bridge.h` (cbindgen was removed — it doesn't parse Rust 2024 `#[unsafe(no_mangle)]`); `include/sparkamp.h` is stale and unused. All device *logic* already exists, platform-neutral, in `src/devices/` (`plan.rs`, `sync.rs`, `browse.rs`, `transfer.rs`, `io.rs`, `marker.rs`) — only `detect.rs` (udisks2) is Linux-only. So block-volume parity is **not** a logic rewrite: it is (1) a JSON-over-FFI device API in `src/ffi/devices.rs` driving the existing core, (2) Swift-side volume enumeration + eject (DiskArbitration), and (3) the SwiftUI device UI mirroring `frontends/gtk/window.rs`. Android (MTP) and iOS/PTP recognition are additive backends behind the same `DeviceIo` trait + `DeviceBackend` tag (Tasks 10–11).
 
 **Tech Stack:** Rust core + serde_json (already a dependency tree member via serde), C FFI, Swift/SwiftUI/AppKit, DiskArbitration.framework.
 
-**Scope boundaries (parity, not more):**
-- **In:** USB mass-storage sticks and SD-card readers (block volumes under `/Volumes`).
-- **Out (document, don't build):** **MTP/Android** — macOS has no native MTP mount (needs Android File Transfer / bundled libmtp); deferred exactly as on the GTK side's out-of-scope note. **iOS/iPad music sync** — impossible on every platform (iOS has no filesystem-reachable music store); on macOS an iPhone/iPad never mounts under `/Volumes`, so it simply won't appear via volume enumeration. The Unsupported-device recognition that shipped for GTK (commit `14db2a7`) has no mac trigger today; keep the core `DeviceBackend::Unsupported` path serde-ready so a future ImageCaptureCore detector can light it up, but build no mac UI for it now.
+**Scope boundaries:**
+- **In — block volumes (Tasks 1–9):** USB mass-storage sticks and SD-card readers (block volumes under `/Volumes`). Full parity: browse, copy, two-way sync, conflict dialog, playlists, capacity, eject, deletion rule.
+- **In — Android over MTP (Task 11):** macOS has no native MTP mount, so this is a bundled-`libmtp` backend (`MtpIo : DeviceIo`) with its own USB detector — the macOS analogue of the GTK side's gvfs/gio path. The platform-neutral sync/plan/transfer core is reused unchanged; only the IO primitive and detection differ. Higher-risk than block volumes (native C dep + USB entitlement + a known macOS IOKit claim issue) — see Task 11 for the design and fallbacks.
+- **In — iOS / PTP recognition only (Task 10):** an iPhone/iPad (or a camera/Android in PTP photo mode) is **never a music-sync target** — iOS has no filesystem-reachable music store (the Music app uses a proprietary signed DB), and Android in PTP mode exposes only the camera roll. These do not mount under `/Volumes`; they are detected via ImageCaptureCore (`ICDeviceBrowser`), classified `DeviceBackend::Unsupported`, and shown with an explanatory banner + disabled Sync — the macOS equivalent of the GTK recognition shipped in commit `14db2a7`.
+- **Explicitly removed:** "iOS music sync." It is impossible on every platform and is not a goal; the only iOS work is the recognition banner in Task 10.
 
 ---
 
@@ -211,13 +220,76 @@ Input element: `{ "mount_path","label","fs_type","bsd_name","total_bytes","free_
 - [ ] **Step 4: Build/verify on a Mac** — `xcodebuild -scheme SparkampMac build`; manual test with a real USB stick: detect → copy → edit a tag on both sides → sync → conflict sheet → eject.
 - [ ] **Step 5: Commit** `feat(macos): device deletion rule, entitlements, parity verified`.
 
+## Task 10: iOS / PTP "unsupported" recognition (macOS)
+
+Mirror the GTK recognition (commit `14db2a7`): an iPhone/iPad — or any camera /
+Android in PTP photo mode — is detected, shown with an honest banner, and never
+routed through a sync/write path. On macOS these never appear under `/Volumes`
+(so Tasks 5–6 miss them); they surface through ImageCaptureCore instead.
+
+The core already has everything: `DeviceBackend::Unsupported` and the `NullIo`
+backend (no-op list, erroring writes) shipped on this branch. This task is the
+macOS *detector* + *banner*, not new core logic.
+
+**Files:** Create `frontends/SparkampMac/Sources/UnsupportedDeviceWatcher.swift`. Modify `SparkampModel.swift` (+`SparkampModel+Devices.swift`), `MediaLibraryWindow.swift`, `DeviceListView.swift`, `project.pbxproj`, entitlements/Info.plist.
+
+- [ ] **Step 1: ImageCaptureCore detector.** Wrap `ICDeviceBrowser` (delegate for `deviceAdded`/`deviceRemoved`, `browsedDeviceTypeMask = [.camera]`). Each `ICCameraDevice` becomes a synthetic `Device` with `backend = .unsupported`, `fsVisible = false`, `readOnly = true`, zero capacity, `backendId = device.uuidString`, `mountPath = ""`, `label = device.name`. Distinguish Apple (name/USB vendor → iPhone/iPad) from generic PTP for the banner text, matching GTK's `is_apple_device_uri` / `unsupported_device_banner`.
+- [ ] **Step 2: Merge into the device list.** Publish these alongside the volume-derived devices (e.g. `model.unsupportedDevices`, concatenated into the sidebar group + overview). They share the `Device`/`DeviceBackend.unsupported` shape, so the existing rows/cards render them; selecting one shows the detail.
+- [ ] **Step 3: Banner in the detail view.** When `device.backend == .unsupported`, the detail view (Task 7's `DeviceDetailView`, or the Phase-6 placeholder until then) shows the explanatory banner ("This iPhone/iPad can't sync music…" / "PTP camera — photo transfer only"), hides files/playlists/capacity, and disables Sync/Scan/Copy. No `browse`/`syncPlan` calls are made for `.unsupported` devices.
+- [ ] **Step 4: Entitlements.** ImageCaptureCore needs the Hardened Runtime; under App Sandbox it needs a camera/Photos-class entitlement to see PTP devices (verify against the current `SparkampMac.entitlements`; if the app is unsandboxed, none needed). If the entitlement is undesirable, gate the detector behind a build flag and ship without iOS recognition rather than expand the sandbox.
+- [ ] **Step 5: Verify + commit.** `xcodebuild`; manual: plug an iPhone → it appears under Devices with the banner and Sync disabled, never errors. Commit `feat(macos): recognize iOS/PTP devices as non-syncable`.
+
+## Task 11: Android (MTP) device support on macOS
+
+**Goal:** real Android sync on macOS — browse, copy, two-way tag sync, playlists
+— not just recognition. macOS has no native MTP mount, so this is a bundled
+**libmtp** backend behind the existing `DeviceIo` trait, the macOS analogue of
+the GTK gvfs/gio path. The platform-neutral `plan.rs`/`sync.rs`/`transfer`
+logic is reused unchanged; only IO + detection are new.
+
+**Why libmtp (vs the alternatives):**
+- **libmtp + libusb** — mature, LGPL; recent Swift wrappers prove macOS
+  viability (e.g. `ctietze/swift-mtp`, `Neighbor-Z/SwiftMTP`). Maps directly
+  onto `DeviceIo` (enumerate storages, list folders/files, get/send/delete).
+  **Recommended.**
+- **mtp-ng** (from `whoozle/android-file-transfer-linux`) — a self-contained
+  MTP implementation with no libmtp/libptp dependency; fallback if libmtp's
+  macOS USB handling proves too fragile.
+- **Android File Transfer (Google) / macFUSE+jmtpfs** — rejected: AFT exposes
+  no stable filesystem path for another app to drive; macFUSE needs a
+  kernel-extension install (user-hostile, security prompts).
+
+**Known macOS risk (call out before starting):** libusb on macOS cannot
+`detach_kernel_driver()`, and macOS's `PTPCamera`/ImageCapture agent grabs MTP
+devices on connect. The app must claim the USB interface (or the device appears
+busy/empty). Standard mitigations: open the device promptly via libusb, handle
+the "device busy" path, and document that the macOS Photos/Image Capture auto-
+open may need to be dismissed. This is the single biggest uncertainty — spike it
+in Step 1 before committing to the full backend.
+
+**Files:** `frontends/macos/` build (link libmtp/libusb), new `src/devices/mtp_macos.rs` (cfg `target_os = "macos"`) implementing `DeviceIo` + a detector, `src/devices/io.rs` (`for_device` arm), `src/ffi/devices.rs` (fold MTP devices into `sparkamp_devices_refresh` or a sibling detector entry point), Swift `DeviceService` (call the MTP detector), entitlements (`com.apple.security.device.usb`).
+
+- [ ] **Step 1: Spike** — link libmtp + libusb (vendored or via a documented Homebrew/static path), enumerate a connected Android with `LIBMTP_Detect_Raw_Devices` + open it, and list one storage's root from a tiny Rust test/binary. Confirm the IOKit claim issue is surmountable on the target macOS version. If not, switch to mtp-ng before proceeding. Decide static-link vs bundled dylibs (`@rpath`) here.
+- [ ] **Step 2: `MtpIo : DeviceIo`** (`src/devices/mtp_macos.rs`, cfg macOS) — `list_audio_files`, `playlist_files`, `copy_to_device`, `delete` over libmtp objects, scoped to the device's `Music/` folder (mirror `PosixIo::music_scoped` to avoid walking 100+ GB). Keep the flat `Music/<file>` layout and root `.m3u8` so the existing relpath/m3u logic holds. Identity = the MTP serial (no marker dotfile — MTP stacks may hide dotfiles), as the android-mtp design (§1) specifies.
+- [ ] **Step 3: Detection** — an MTP scan separate from volume enumeration; produce `Device { backend: .mtp, fs_visible: <storage exposed?>, mount_path: <synthetic>, … }`. Surface it through the FFI so the Swift device list/overview/detail (Tasks 6–7) render it with no UI changes. `free_bytes`/`total_bytes` from libmtp storage info (skip the space guard if unavailable, per android-mtp §3).
+- [ ] **Step 4: Sync over MTP** — reuse `device_sync_plan`/`apply_sync_plan_dto`. The library→device tag write is delete-object + re-upload (MTP can't edit in place), exactly as `apply_tag_pair` already does for `DeviceBackend::Mtp` (shipped). Verify baselines refresh so a second sync is a no-op.
+- [ ] **Step 5: Entitlements + packaging** — `com.apple.security.device.usb` if sandboxed; bundle the dylibs (or static-link) and codesign them; verify the signed `.app` still finds libmtp at runtime.
+- [ ] **Step 6: Verify + commit** — `cargo test` (core, on Linux dev box or mac); `xcodebuild`; manual: plug an Android in File-Transfer mode → it appears under Devices, browse Music, copy a track, edit a tag both sides → sync → conflict sheet → eject (libmtp release). Commit `feat(macos): Android MTP device support via libmtp`.
+
+> **Sequencing:** Tasks 10–11 come after 7–9 (they render through the same
+> device detail UI). Task 10 is low-risk (system framework, banner only). Task 11
+> is a self-contained higher-risk phase — its Step 1 spike is a go/no-go gate; if
+> libmtp/mtp-ng can't clear the IOKit claim on the target OS, ship Task 10's
+> recognition for Android-in-PTP and defer MTP, rather than block the release.
+
 ---
 
 ## Verification
 
-- **Rust (this Linux dev box):** Tasks 1–3, 6 (FFI) — `distrobox enter dev-box -- sh -c 'cargo build && cargo test'`, zero warnings/failures (CLAUDE.md mandatory gate).
-- **Swift (engineer on a Mac):** Tasks 4–9 — `xcodebuild` + manual real-device run. The Linux box cannot compile the SwiftUI app or the staticlib for Apple targets.
+- **Rust core (Tasks 1–3):** `cargo build && cargo test`, zero warnings/failures (CLAUDE.md gate). Runs on macOS once the `vendor/` tree includes the (Linux-only) zbus dep — it's gitignored, so run `cargo vendor` once on a fresh checkout — or on a Linux dev box.
+- **Swift + staticlib (Tasks 4–11):** `xcodebuild -scheme SparkampMac build` on a Mac (the staticlib + SwiftUI app are Apple-only), plus the manual real-device runs noted per task.
+- **Android MTP (Task 11):** needs a real Android phone in File-Transfer mode on the target macOS version; the Step 1 spike gates the rest.
 
 ## Self-review notes (coverage vs GTK)
 
-Mapped each GTK device behavior to a task: detection→T5/6, overview+card-nav→T6, detail/badges→T7, capacity color→T6.4, files+synced-from→T7.3/T3.2, playlists→T7.4, copy→T7.5, sync+spinner→T7.6/T3, conflict dialog→T8, scan→T7.7, eject→T5.3/T7.8, no-fs banner→T7.2, deletion rule→T9.1. MTP/iOS explicitly out of scope with rationale (no mac mount). The GTK MTP-specific hardening (meta cache, FUSE shutdown guard) is intentionally **not** ported — there is no FUSE/gvfs layer on macOS, so its failure mode doesn't exist here.
+Mapped each GTK device behavior to a task: detection→T5/6, overview+card-nav→T6, detail/badges→T7, capacity color→T6.4, files+synced-from→T7.3/T3.2, playlists→T7.4, copy→T7.5, sync+spinner→T7.6/T3, conflict dialog→T8, scan→T7.7, eject→T5.3/T7.8, no-fs banner→T7.2, deletion rule→T9.1, iOS/PTP recognition→T10, Android MTP→T11. iOS music sync is removed entirely (impossible everywhere); iOS/PTP get recognition + banner only (T10). Android reaches parity via a libmtp backend (T11) rather than being deferred. The GTK MTP-specific hardening (meta cache, FUSE shutdown guard) is intentionally **not** ported — there is no FUSE/gvfs layer on macOS; libmtp's failure mode is the IOKit device-claim issue instead, addressed in T11's spike.
