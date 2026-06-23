@@ -237,9 +237,15 @@ enum DeviceService {
                         uuid = CFUUIDCreateString(kCFAllocatorDefault, cf) as String
                     }
                     // Media-level writability catches a write-locked SD card whose
-                    // volume still mounts read-write; OR'd with the volume flag.
-                    if let w = desc[kDADiskDescriptionMediaWritableKey as String] as? Bool {
+                    // volume still mounts read-write — but ONLY when the card
+                    // reader actually reports the adapter's write-protect notch
+                    // to the OS; many readers ignore it. CFBoolean bridges as
+                    // Bool or NSNumber depending on context, so try both.
+                    let mw = desc[kDADiskDescriptionMediaWritableKey as String]
+                    if let w = mw as? Bool {
                         mediaWritable = w
+                    } else if let n = mw as? NSNumber {
+                        mediaWritable = n.boolValue
                     }
                 }
             }

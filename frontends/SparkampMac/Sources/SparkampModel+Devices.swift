@@ -33,6 +33,12 @@ extension SparkampModel {
            !devices.contains(where: { $0.backendId == sel }) {
             selectedDeviceBSD = nil
         }
+
+        // Compute counts for any device not yet counted. Doing this here (not
+        // only in the view's onAppear) is what makes a poll-discovered device's
+        // "Counting…" flip to a real number — onAppear fires once, before the
+        // poll finds the device. The cache guard keeps this a no-op afterward.
+        refreshDeviceCounts()
     }
 
     /// Compute song / playlist counts for any connected device missing from the
