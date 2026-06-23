@@ -154,8 +154,9 @@ Add gvfs access (currently only `--system-talk-name=org.freedesktop.UDisks2` + `
 
 ## 8. Out of scope / platform notes
 
-- **macOS:** Android over USB has no native MTP mount (needs the separate Android File Transfer app). MTP on macOS would require bundling libmtp — deferred. The conflict dialog and the `Device` backend abstraction still land cross-platform; only MTP *detection/IO* is Linux-only for now.
-- **PTP cameras / gphoto2:** same gio mechanism, not a target.
+- **macOS:** Android over USB has no native MTP mount (needs the separate Android File Transfer app). MTP on macOS would require bundling libmtp — deferred. The conflict dialog and the `Device` backend abstraction land cross-platform; only MTP *detection/IO* is Linux-only for now. **macOS device-sync parity (USB/SD block volumes) is fully specced** in `docs/superpowers/plans/2026-06-23-macos-device-sync-parity.md` — a JSON-over-FFI device API driving the existing core, plus the SwiftUI device UI. The core sync/plan/IO logic is already platform-neutral (`src/devices/plan.rs`, `sync.rs`, `browse.rs`, `transfer.rs`, `io.rs`).
+- **iOS / iPad / iPhone:** music sync is impossible on every platform (no filesystem-reachable music store; the Music app uses a proprietary signed DB). On Linux these surface over gvfs as `gphoto2://` (read-only camera roll) + `afc://` (per-app sandboxes); the GTK frontend now recognizes them as `DeviceBackend::Unsupported` (`NullIo`) and shows an explanatory banner with Sync disabled instead of failing silently (shipped). On macOS an iPhone/iPad never mounts under `/Volumes`, so it won't appear via volume enumeration at all — no mac UI needed today; the `Unsupported` path stays serde-ready for a future ImageCaptureCore detector.
+- **PTP cameras / gphoto2:** same gio mechanism, classified `Unsupported` (photo-transfer mode), not a sync target.
 
 ## 9. Phasing
 
