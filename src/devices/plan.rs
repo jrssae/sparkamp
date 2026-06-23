@@ -354,7 +354,7 @@ pub(crate) fn apply_device_sync(
 
 /// One song whose tags changed on both the computer and the device since the
 /// last sync, with the differing fields, for the per-file conflict prompt.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TagConflictItem {
     pub(crate) pair: crate::media_library::SyncPair,
     pub(crate) song: String,
@@ -401,6 +401,141 @@ pub(crate) fn build_tag_conflicts(
         });
     }
     out
+}
+
+// ─────────────────────────── FFI plan DTOs ───────────────────────────
+
+/// One auto-resolved (single-side-changed) pair, projected for the JSON FFI so
+/// the Swift side can render it. `dev_path` is the device-relative path (the
+/// same key echoed back in [`ConflictChoice`]); `field_summary` is the
+/// comma-joined labels of the tag fields that differ.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub(crate) struct SyncPairDto {
+    pub(crate) lib_path: String,
+    pub(crate) dev_path: String,
+    pub(crate) field_summary: String,
+}
+
+/// A flat, JSON-able sync plan for the macOS FFI. The internal
+/// [`device_sync_plan`] keys actions to `SyncPair` rows; this projects them into
+/// the three buckets the UI shows — auto to-device, auto to-library, and
+/// both-changed conflicts that need the dialog.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub(crate) struct SyncPlanDto {
+    pub(crate) to_device: Vec<SyncPairDto>,
+    pub(crate) to_library: Vec<SyncPairDto>,
+    pub(crate) conflicts: Vec<TagConflictItem>,
+    /// File-body bytes a sync will copy. Nonzero only for MTP library→device
+    /// (delete + re-upload); POSIX tag writes are in-place, so 0 on macOS.
+    pub(crate) bytes_to_copy: u64,
+}
+
+/// Which side the user kept for a both-changed conflict.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum KeepSide {
+    Computer,
+    Device,
+}
+
+/// The user's resolution for one conflicting pair, echoed back from the UI.
+/// `dev_path` matches the conflict's `pair.device_relpath`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub(crate) struct ConflictChoice {
+    pub(crate) dev_path: String,
+    pub(crate) keep: KeepSide,
+}
+
+/// Comma-joined labels of the tag fields that differ between the two copies of
+/// a pair, for the UI's at-a-glance "what's syncing" hint.
+fn pair_field_summary(dev: &Device, pair: &crate::media_library::SyncPair) -> String {
+    use crate::devices::sync;
+    let lib_st = sync::read_tag_state(Path::new(&pair.library_path));
+    let dev_st = sync::read_tag_state(&dev.mount_path.join(&pair.device_relpath));
+    sync::tag_field_diffs(&lib_st, &dev_st)
+        .into_iter()
+        .map(|d| d.label)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Build the flat [`SyncPlanDto`] for a device by running the existing
+/// [`device_sync_plan`] + [`build_tag_conflicts`] and projecting the result —
+/// the decision logic is reused, not reimplemented.
+pub(crate) fn sync_plan_dto(lib: &MediaLibrary, dev: &Device) -> SyncPlanDto {
+    use crate::devices::sync::SyncAction;
+    use crate::devices::DeviceBackend;
+    let plan = device_sync_plan(lib, dev);
+    let (mut to_device, mut to_library) = (Vec::new(), Vec::new());
+    let mut bytes_to_copy = 0u64;
+    for (pair, action) in &plan {
+        let dto = SyncPairDto {
+            lib_path: pair.library_path.clone(),
+            dev_path: pair.device_relpath.clone(),
+            field_summary: pair_field_summary(dev, pair),
+        };
+        match action {
+            SyncAction::LibraryToDevice => {
+                if dev.backend == DeviceBackend::Mtp {
+                    bytes_to_copy += std::fs::metadata(&pair.library_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                }
+                to_device.push(dto);
+            }
+            SyncAction::DeviceToLibrary => to_library.push(dto),
+            _ => {}
+        }
+    }
+    let conflicts = build_tag_conflicts(dev, &plan);
+    SyncPlanDto {
+        to_device,
+        to_library,
+        conflicts,
+        bytes_to_copy,
+    }
+}
+
+/// Apply a sync plan from the FFI: auto pairs unconditionally, then each
+/// resolved conflict per the user's [`ConflictChoice`]. The live device state is
+/// re-derived (the passed `_plan` is advisory) so a stale UI snapshot can't
+/// misapply. Returns `(applied, skipped)`; skipped counts failed writes and
+/// unresolved conflicts.
+pub(crate) fn apply_sync_plan_dto(
+    lib: &MediaLibrary,
+    dev: &Device,
+    _plan: &SyncPlanDto,
+    choices: &[ConflictChoice],
+) -> (usize, usize) {
+    use crate::devices::sync::SyncAction;
+    let plan = device_sync_plan(lib, dev);
+    // Single-side-changed pairs apply unconditionally (conflicts are skipped
+    // inside apply_device_sync); `failed` folds into the skipped count.
+    let (mut applied, mut skipped) = apply_device_sync(lib, dev, &plan);
+    let choice: HashMap<&str, KeepSide> =
+        choices.iter().map(|c| (c.dev_path.as_str(), c.keep)).collect();
+    for (pair, action) in &plan {
+        if *action != SyncAction::Conflict {
+            continue;
+        }
+        match choice.get(pair.device_relpath.as_str()) {
+            Some(KeepSide::Computer) => {
+                if apply_tag_pair(lib, dev, pair, true) {
+                    applied += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            Some(KeepSide::Device) => {
+                if apply_tag_pair(lib, dev, pair, false) {
+                    applied += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            None => skipped += 1, // unresolved — leave for the next sync
+        }
+    }
+    (applied, skipped)
 }
 
 // ─────────────────────────── playlist sync ───────────────────────────
@@ -713,6 +848,80 @@ mod tests {
         let j = serde_json::to_string(&d).unwrap();
         let back: crate::devices::Device = serde_json::from_str(&j).unwrap();
         assert_eq!(d, back);
+    }
+
+    fn write_title(path: &Path, title: &str) {
+        use id3::TagLike;
+        std::fs::write(path, b"").unwrap();
+        let mut t = id3::Tag::new();
+        t.set_title(title);
+        t.write_to_path(path, id3::Version::Id3v24).unwrap();
+    }
+
+    fn test_device(mount: &Path) -> Device {
+        Device {
+            id: "TESTDEV".into(),
+            label: "Test".into(),
+            mount_path: mount.to_path_buf(),
+            fs_type: "vfat".into(),
+            total_bytes: 0,
+            free_bytes: 0,
+            read_only: false,
+            ejectable: true,
+            backend_id: String::new(),
+            backend: crate::devices::DeviceBackend::Udisks,
+            fs_visible: true,
+        }
+    }
+
+    #[test]
+    fn sync_plan_dto_routes_single_side_change_and_applies() {
+        use crate::devices::sync;
+
+        // In-memory library DB (kept alive via the NamedTempFile binding).
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let lib = MediaLibrary::open_at(db.path()).unwrap();
+
+        // Device mount with Music/song.mp3; separate library copy.
+        let devdir = tempfile::tempdir().unwrap();
+        let music = devdir.path().join("Music");
+        std::fs::create_dir_all(&music).unwrap();
+        let dev_file = music.join("song.mp3");
+        write_title(&dev_file, "Device");
+
+        let libdir = tempfile::tempdir().unwrap();
+        let lib_file = libdir.path().join("song.mp3");
+        write_title(&lib_file, "Computer"); // library side differs from baseline
+
+        let dev = test_device(devdir.path());
+
+        // Baseline = the device's current tags, so the device is "unchanged"
+        // and only the library side differs → LibraryToDevice.
+        let baseline = sync::tag_hash(&sync::read_tag_state(&dev_file));
+        lib.upsert_sync_pair(&crate::media_library::SyncPair {
+            device_id: "TESTDEV".into(),
+            device_relpath: "Music/song.mp3".into(),
+            library_path: canonical_lib_path(&lib_file),
+            baseline_tag_hash: baseline,
+            baseline_rating: 0,
+            baseline_playcount: 0,
+            last_sync_at: None,
+        })
+        .unwrap();
+
+        let dto = sync_plan_dto(&lib, &dev);
+        assert_eq!(dto.to_device.len(), 1, "library change should route to device");
+        assert!(dto.to_library.is_empty());
+        assert!(dto.conflicts.is_empty());
+        assert_eq!(dto.bytes_to_copy, 0, "POSIX tag write copies no file body");
+        assert!(dto.to_device[0].field_summary.contains("Title"));
+
+        // No conflicts, so no choices needed; the auto pair applies.
+        let (applied, skipped) = apply_sync_plan_dto(&lib, &dev, &dto, &[]);
+        assert_eq!((applied, skipped), (1, 0));
+
+        // The device file now carries the library's title.
+        assert_eq!(sync::read_tag_state(&dev_file).title, "Computer");
     }
 
     #[test]
