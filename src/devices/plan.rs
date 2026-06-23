@@ -13,6 +13,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::devices::Device;
 use crate::media_library::MediaLibrary;
 
@@ -352,7 +354,7 @@ pub(crate) fn apply_device_sync(
 
 /// One song whose tags changed on both the computer and the device since the
 /// last sync, with the differing fields, for the per-file conflict prompt.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct TagConflictItem {
     pub(crate) pair: crate::media_library::SyncPair,
     pub(crate) song: String,
@@ -404,7 +406,7 @@ pub(crate) fn build_tag_conflicts(
 // ─────────────────────────── playlist sync ───────────────────────────
 
 /// One library playlist's two-way sync decision against a device.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct PlaylistSyncItem {
     pub(crate) library_playlist_id: i64,
     pub(crate) library_name: String,
@@ -692,6 +694,26 @@ pub(crate) fn device_delete_files(dev: &Device, paths: &[PathBuf]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_json_round_trips() {
+        let d = crate::devices::Device {
+            id: "uuid-1".into(),
+            label: "Stick".into(),
+            mount_path: std::path::PathBuf::from("/Volumes/STICK"),
+            fs_type: "exfat".into(),
+            total_bytes: 1000,
+            free_bytes: 400,
+            read_only: false,
+            ejectable: true,
+            backend_id: "disk2s1".into(),
+            backend: crate::devices::DeviceBackend::Udisks,
+            fs_visible: true,
+        };
+        let j = serde_json::to_string(&d).unwrap();
+        let back: crate::devices::Device = serde_json::from_str(&j).unwrap();
+        assert_eq!(d, back);
+    }
 
     #[test]
     fn safe_playlist_filename_strips_hostile_chars_and_falls_back() {

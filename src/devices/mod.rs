@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 pub mod diagnostics;
 // Marker-file identity fallback is pure filesystem logic, shared by the Linux
 // and (future) macOS backends.
@@ -31,7 +33,7 @@ pub mod detect;
 /// `Mtp` devices are Android phones surfaced by gvfs as a FUSE mount, browsed
 /// and written through gio (added in a later phase). The backend decides which
 /// [`io::DeviceIo`] implementation drives a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum DeviceBackend {
     #[default]
     Udisks,
@@ -62,7 +64,7 @@ pub enum DeviceBackend {
 /// macOS backend both produce these. `id` is the stable identity used to
 /// pair files for sync — the filesystem UUID when available, otherwise a
 /// marker-file id written to the device.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     /// Stable identity (volume UUID, or marker-file id fallback).
     pub id: String,

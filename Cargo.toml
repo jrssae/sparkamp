@@ -37,6 +37,9 @@ crossterm = "0.28"
 
 # Config & playlist persistence
 serde = { version = "1", features = ["derive"] }
+# JSON marshaling for the device FFI (deep, variable-length device/sync DTOs
+# cross the Swift boundary as JSON rather than brittle #[repr(C)] arrays).
+serde_json = "1"
 toml = "0.8"
 
 # CLI argument parsing

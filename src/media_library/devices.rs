@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 
 use super::MediaLibrary;
 
@@ -23,7 +24,7 @@ pub struct DeviceRecord {
 }
 
 /// One file copied via Sparkamp between the library and a device.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SyncPair {
     pub device_id: String,
     /// Path on the device, relative to its mount root.

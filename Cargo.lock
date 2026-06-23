@@ -2025,6 +2025,7 @@ dependencies = [
  "rayon",
  "rusqlite",
  "serde",
+ "serde_json",
  "symphonia",
  "tempfile",
  "toml 0.8.23",

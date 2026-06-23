@@ -13,8 +13,10 @@
 
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 /// The syncable tag fields of one file.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagState {
     pub title: String,
     pub artist: String,
@@ -87,7 +89,7 @@ pub struct SideState {
 }
 
 /// What a sync should do for one pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncAction {
     /// No change on either side.
     None,
@@ -107,7 +109,7 @@ pub enum SyncAction {
 
 /// One tag field that differs between the computer and device copies of a song,
 /// for the conflict dialog. Only differing fields are produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldDiff {
     pub label: String,
     pub computer: String,
@@ -194,7 +196,7 @@ pub fn entries_hash(entries: &[String]) -> String {
 }
 
 /// Which way to sync one playlist between the library and a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlaylistSyncDir {
     /// In sync — nothing to do.
     None,
