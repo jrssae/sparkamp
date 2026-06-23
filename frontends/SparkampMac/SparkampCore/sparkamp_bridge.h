@@ -507,6 +507,10 @@ char *sparkamp_devices_refresh(SparkampCtx *ctx, const char *volumes_json);
     Free with sparkamp_free_string. */
 char *sparkamp_device_browse(SparkampCtx *ctx, const char *device_json);
 
+/** Song/playlist counts as {"songs":N,"playlists":M} — a directory walk only,
+    no tag reads (cheap; safe on the main thread). Free with sparkamp_free_string. */
+char *sparkamp_device_counts(SparkampCtx *ctx, const char *device_json);
+
 /** Two-way sync plan as JSON (SyncPlanDto). Free with sparkamp_free_string. */
 char *sparkamp_device_sync_plan(SparkampCtx *ctx, const char *device_json);
 

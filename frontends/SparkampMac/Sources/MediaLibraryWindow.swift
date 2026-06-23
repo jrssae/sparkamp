@@ -134,8 +134,11 @@ struct MediaLibraryView: View {
                             theme: theme,
                             vars: themeManager.currentVars,
                             onEject: {
-                                DeviceService.eject(bsdName: dev.backendId)
+                                let bsd = dev.backendId
                                 nav = .devicesOverview
+                                DeviceService.eject(bsdName: bsd) { _ in
+                                    Task { @MainActor in model.pollDevices() }
+                                }
                             }
                         )
                         .onAppear { model.refreshDeviceCounts() }

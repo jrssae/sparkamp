@@ -134,6 +134,12 @@ impl DeviceTrackDto {
 }
 
 #[derive(Serialize)]
+struct DeviceCountsDto {
+    songs: usize,
+    playlists: usize,
+}
+
+#[derive(Serialize)]
 struct ApplyResult {
     applied: usize,
     skipped: usize,
@@ -233,6 +239,24 @@ pub unsafe extern "C" fn sparkamp_device_browse(
         })
         .collect();
     json_out(&tracks)
+}
+
+/// Song / playlist counts for the overview — a directory walk only, NO tag
+/// reads (unlike `browse`) and no SQLite, so it's cheap and safe to call on the
+/// main thread for every connected device. Returns `{"songs":N,"playlists":M}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_counts(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+) -> *mut c_char {
+    let Some(dev) = json_in::<Device>(device_json) else {
+        return std::ptr::null_mut();
+    };
+    let io = crate::devices::io::for_device(&dev);
+    json_out(&DeviceCountsDto {
+        songs: io.list_audio_files().len(),
+        playlists: io.playlist_files().len(),
+    })
 }
 
 /// Compute the two-way sync plan for a device (JSON [`plan::SyncPlanDto`]).
@@ -483,6 +507,35 @@ mod tests {
         assert_eq!(devs[0].backend_id, "disk9s1");
         assert_eq!(devs[0].backend, crate::devices::DeviceBackend::Udisks);
         assert!(devs[0].fs_visible);
+    }
+
+    #[test]
+    fn device_counts_walks_without_reading_tags() {
+        // A temp dir as the "device": two audio files + one playlist.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Music")).unwrap();
+        std::fs::write(dir.path().join("Music/a.mp3"), b"x").unwrap();
+        std::fs::write(dir.path().join("Music/b.flac"), b"x").unwrap();
+        std::fs::write(dir.path().join("list.m3u8"), b"#EXTM3U\n").unwrap();
+
+        let dev = crate::devices::Device {
+            id: "T".into(),
+            label: "T".into(),
+            mount_path: dir.path().to_path_buf(),
+            fs_type: "vfat".into(),
+            total_bytes: 0,
+            free_bytes: 0,
+            read_only: false,
+            ejectable: true,
+            backend_id: String::new(),
+            backend: crate::devices::DeviceBackend::Udisks,
+            fs_visible: true,
+        };
+        let dj = CString::new(serde_json::to_string(&dev).unwrap()).unwrap();
+        let out = unsafe { take_string(sparkamp_device_counts(std::ptr::null_mut(), dj.as_ptr())) };
+        let counts: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(counts["songs"], 2);
+        assert_eq!(counts["playlists"], 1);
     }
 
     #[test]

@@ -211,13 +211,21 @@ enum DeviceService {
         for url in urls {
             guard let vals = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             let removable = (vals.volumeIsRemovable ?? false) || (vals.volumeIsEjectable ?? false)
-            let internalVol = vals.volumeIsInternal ?? false
-            // Only removable, non-internal volumes are "devices" — never the boot disk.
-            guard removable, !internalVol else { continue }
+            // Unknown "internal" defaults to true (skip): during a Finder eject
+            // the boot volume can momentarily report nil resource values, which
+            // a `?? false` would let through as a phantom "Macintosh HD" device.
+            let internalVol = vals.volumeIsInternal ?? true
+            // A real device is removable, not internal, AND mounted under
+            // /Volumes (the boot + system volumes mount at / and /System/...,
+            // and a /Volumes/Macintosh HD firmlink is internal). All three
+            // guards together exclude the boot disk in steady state and during
+            // mount/unmount transitions.
+            guard removable, !internalVol, url.path.hasPrefix("/Volumes/") else { continue }
 
             var fsType = ""
             var bsd = ""
             var uuid: String? = nil
+            var mediaWritable = true
             if let session = session,
                let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL) {
                 if let bsdC = DADiskGetBSDName(disk) { bsd = String(cString: bsdC) }
@@ -227,6 +235,11 @@ enum DeviceService {
                         // The value is a CFUUID; render it as a string.
                         let cf = raw as! CFUUID
                         uuid = CFUUIDCreateString(kCFAllocatorDefault, cf) as String
+                    }
+                    // Media-level writability catches a write-locked SD card whose
+                    // volume still mounts read-write; OR'd with the volume flag.
+                    if let w = desc[kDADiskDescriptionMediaWritableKey as String] as? Bool {
+                        mediaWritable = w
                     }
                 }
             }
@@ -238,7 +251,7 @@ enum DeviceService {
                 bsdName: bsd,
                 totalBytes: UInt64(vals.volumeTotalCapacity ?? 0),
                 freeBytes: UInt64(vals.volumeAvailableCapacity ?? 0),
-                readOnly: vals.volumeIsReadOnly ?? false,
+                readOnly: (vals.volumeIsReadOnly ?? false) || !mediaWritable,
                 ejectable: vals.volumeIsEjectable ?? false,
                 volumeUuid: uuid
             ))
@@ -246,23 +259,55 @@ enum DeviceService {
         return out
     }
 
-    /// Unmount and eject the volume with the given BSD name. Fire-and-forget on
-    /// a background queue; Phase 7 surfaces success/failure in the UI.
-    static func eject(bsdName: String) {
-        guard !bsdName.isEmpty else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let session = DASessionCreate(kCFAllocatorDefault) else { return }
-            DASessionScheduleWithRunLoop(
-                session, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
-            let disk = bsdName.withCString {
-                DADiskCreateFromBSDName(kCFAllocatorDefault, session, $0)
-            }
-            guard let disk = disk else { return }
-            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionWhole), nil, nil)
-            DADiskEject(disk, DADiskEjectOptions(kDADiskEjectOptionDefault), nil, nil)
-            // Spin the runloop briefly so DiskArbitration can process the request.
-            CFRunLoopRunInMode(.defaultMode, 2.0, false)
+    /// Holds the DA session + completion alive across the async unmount→eject
+    /// callbacks (passed through the C `context` pointer).
+    private final class EjectOp {
+        let session: DASession
+        let completion: (Bool) -> Void
+        init(session: DASession, completion: @escaping (Bool) -> Void) {
+            self.session = session
+            self.completion = completion
         }
+    }
+
+    /// Unmount every volume on the device, then eject it. `completion(true)` on
+    /// success, called on the main thread.
+    ///
+    /// Eject must act on the **whole disk** (DADiskEject on a partition object
+    /// fails), and the unmount uses the whole-disk option so every volume
+    /// detaches first — the previous version operated on the partition with nil
+    /// callbacks and never actually ejected. Callbacks are chained through a
+    /// retained `EjectOp` context; the session is driven by a dispatch queue
+    /// (no run-loop spin needed).
+    static func eject(bsdName: String, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard !bsdName.isEmpty, let session = DASessionCreate(kCFAllocatorDefault) else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+        DASessionSetDispatchQueue(session, DispatchQueue(label: "dev.sparkamp.eject"))
+        guard let volDisk = bsdName.withCString({
+            DADiskCreateFromBSDName(kCFAllocatorDefault, session, $0)
+        }) else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+        let wholeDisk = DADiskCopyWholeDisk(volDisk) ?? volDisk
+        let op = EjectOp(session: session, completion: completion)
+        let ctx = Unmanaged.passRetained(op).toOpaque()
+
+        DADiskUnmount(wholeDisk, DADiskUnmountOptions(kDADiskUnmountOptionWhole), { disk, dissenter, context in
+            guard let context = context else { return }
+            if dissenter != nil {
+                let op = Unmanaged<EjectOp>.fromOpaque(context).takeRetainedValue()
+                DispatchQueue.main.async { op.completion(false) }
+                return
+            }
+            DADiskEject(disk, DADiskEjectOptions(kDADiskEjectOptionDefault), { _, dissenter2, context in
+                guard let context = context else { return }
+                let op = Unmanaged<EjectOp>.fromOpaque(context).takeRetainedValue()
+                DispatchQueue.main.async { op.completion(dissenter2 == nil) }
+            }, context)
+        }, ctx)
     }
 
     // MARK: JSON FFI wrappers (main-thread; see THREADING note above)
@@ -277,6 +322,16 @@ enum DeviceService {
         guard let dj = deviceJSON(device) else { return [] }
         let out = dj.withCString { sparkamp_device_browse(ctx, $0) }
         return decodeJSON(takeString(out)) ?? []
+    }
+
+    /// Song / playlist counts — a directory walk only, no tag reads (unlike
+    /// `browse`), so it's cheap on the main thread.
+    static func counts(ctx: OpaquePointer, device: Device) -> DeviceCounts {
+        guard let dj = deviceJSON(device) else { return DeviceCounts(songs: 0, playlists: 0) }
+        let out = dj.withCString { sparkamp_device_counts(ctx, $0) }
+        struct Raw: Decodable { var songs: Int; var playlists: Int }
+        let raw: Raw? = decodeJSON(takeString(out))
+        return DeviceCounts(songs: raw?.songs ?? 0, playlists: raw?.playlists ?? 0)
     }
 
     static func syncPlan(ctx: OpaquePointer, device: Device) -> SyncPlan? {

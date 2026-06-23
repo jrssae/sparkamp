@@ -36,15 +36,14 @@ extension SparkampModel {
     }
 
     /// Compute song / playlist counts for any connected device missing from the
-    /// cache. Called when the overview appears or after a rescan — not from the
-    /// poll, since browse reads every file's tags and can be slow on a big
-    /// device. Cached by device id so it runs once per plug-in.
+    /// cache. Called when the overview/detail appears. Uses the count-only FFI
+    /// (a directory walk, no per-file tag reads), so it does NOT lock up the UI
+    /// the way a full `browse` would on a device with many files. Cached by
+    /// device id so it runs once per plug-in.
     func refreshDeviceCounts() {
         guard let ctx = ctx else { return }
         for dev in devices where deviceCounts[dev.id] == nil && dev.fsVisible {
-            let songs = DeviceService.browse(ctx: ctx, device: dev).count
-            let playlists = DeviceService.playlistPlan(ctx: ctx, device: dev).count
-            deviceCounts[dev.id] = DeviceCounts(songs: songs, playlists: playlists)
+            deviceCounts[dev.id] = DeviceService.counts(ctx: ctx, device: dev)
         }
     }
 
@@ -52,8 +51,6 @@ extension SparkampModel {
     /// contents).
     func refreshDeviceCounts(for dev: Device) {
         guard let ctx = ctx else { return }
-        let songs = DeviceService.browse(ctx: ctx, device: dev).count
-        let playlists = DeviceService.playlistPlan(ctx: ctx, device: dev).count
-        deviceCounts[dev.id] = DeviceCounts(songs: songs, playlists: playlists)
+        deviceCounts[dev.id] = DeviceService.counts(ctx: ctx, device: dev)
     }
 }
