@@ -507,6 +507,10 @@ pub enum PlaylistFormat {
 
 impl PlaylistFormat {
     /// File extension (without the leading dot).
+    // Called from the FFI layer (src/ffi/media_library.rs) and the GTK
+    // frontend; both are out of reach of the macOS bin target, so it reads as
+    // dead there.
+    #[allow(dead_code)]
     pub fn extension(self) -> &'static str {
         match self {
             PlaylistFormat::M3u => "m3u",

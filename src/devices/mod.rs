@@ -46,6 +46,12 @@ pub enum DeviceBackend {
     /// filesystem (the Music app uses a proprietary, signed media database).
     /// Driven by [`io::NullIo`]; the UI shows an explanatory banner instead of
     /// playlist/file lists and disables Sync.
+    //
+    // Constructed only by the GTK frontend's `mtp_raw_to_device` (Linux-gated),
+    // so the macOS bin target — which compiles neither GTK nor the FFI — never
+    // builds a value of this variant. Kept serde-ready for the future macOS
+    // ImageCaptureCore detector (see macos-device-sync-parity plan).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Unsupported,
 }
 
