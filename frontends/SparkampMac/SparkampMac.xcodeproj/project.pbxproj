@@ -19,6 +19,7 @@
 		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
 		AA5000000000000000000020 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
 		AA5000000000000000000021 /* TableSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000024 /* TableSupport.swift */; };
+		AA5000000000000000000031 /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000034 /* DeviceService.swift */; };
 		AA5000000000000000000030 /* SparkampModel+Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000033 /* SparkampModel+Keys.swift */; };
 		AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000032 /* SparkampModel+Dedupe.swift */; };
 		AA5000000000000000000028 /* SparkampModel+MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */; };
@@ -56,6 +57,7 @@
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000023 /* GraniteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraniteView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000024 /* TableSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableSupport.swift; sourceTree = "<group>"; };
+		AA4000000000000000000034 /* DeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceService.swift; sourceTree = "<group>"; };
 		AA4000000000000000000033 /* SparkampModel+Keys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Keys.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000032 /* SparkampModel+Dedupe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Dedupe.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+MediaLibrary.swift"; sourceTree = "<group>"; };
@@ -120,6 +122,7 @@
 				AA4000000000000000000013 /* VisualizerView.swift */,
 				AA4000000000000000000023 /* GraniteView.swift */,
 				AA4000000000000000000024 /* TableSupport.swift */,
+				AA4000000000000000000034 /* DeviceService.swift */,
 				AA4000000000000000000033 /* SparkampModel+Keys.swift */,
 				AA4000000000000000000032 /* SparkampModel+Dedupe.swift */,
 				AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */,
@@ -273,6 +276,7 @@
 				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
 				AA5000000000000000000020 /* GraniteView.swift in Sources */,
 				AA5000000000000000000021 /* TableSupport.swift in Sources */,
+				AA5000000000000000000031 /* DeviceService.swift in Sources */,
 				AA5000000000000000000030 /* SparkampModel+Keys.swift in Sources */,
 				AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */,
 				AA5000000000000000000028 /* SparkampModel+MediaLibrary.swift in Sources */,
