@@ -77,21 +77,41 @@ extension SparkampModel {
     }
 
     /// Copy library files onto the device under Music/<file>, recording sync
-    /// pairs, then refresh the file list + counts.
+    /// pairs, with live per-file progress. Each file is copied in its own
+    /// deferred main-thread step so SwiftUI repaints the progress bar between
+    /// files (a single batched FFI call would block the whole copy with no
+    /// visible movement). Refreshes the file list + counts when done.
     func copyToDevice(_ device: Device, paths: [String]) {
-        guard let ctx = ctx, !paths.isEmpty, !deviceBusy else { return }
+        guard ctx != nil, !paths.isEmpty, !deviceBusy else { return }
         deviceBusy = true
         deviceStatus = nil
+        copyProgress = CopyProgress(done: 0, total: paths.count, name: "")
+        copyNextFile(device, paths: paths, index: 0, copied: 0, skipped: 0)
+    }
+
+    private func copyNextFile(
+        _ device: Device, paths: [String], index: Int, copied: Int, skipped: Int
+    ) {
+        guard let ctx = ctx else { return }
+        if index >= paths.count {
+            loadDeviceTracks(device)
+            refreshDeviceCounts(for: device)
+            deviceBusy = false
+            copyProgress = nil
+            deviceStatus = "Copied \(copied)\(skipped > 0 ? " · skipped \(skipped)" : "")"
+            return
+        }
+        let path = paths[index]
+        copyProgress = CopyProgress(
+            done: index, total: paths.count,
+            name: URL(fileURLWithPath: path).lastPathComponent)
+        // Defer the (blocking) single-file copy a run-loop turn so the bar paints.
         DispatchQueue.main.async {
-            let r = DeviceService.copy(ctx: ctx, device: device, srcPaths: paths)
-            self.loadDeviceTracks(device)
-            self.refreshDeviceCounts(for: device)
-            self.deviceBusy = false
-            if let r = r {
-                self.deviceStatus = "Copied \(r.copied) · skipped \(r.skipped)"
-            } else {
-                self.deviceStatus = "Copy failed"
-            }
+            let r = DeviceService.copy(ctx: ctx, device: device, srcPaths: [path])
+            self.copyNextFile(
+                device, paths: paths, index: index + 1,
+                copied: copied + (r?.copied ?? 0),
+                skipped: skipped + (r?.skipped ?? 0))
         }
     }
 

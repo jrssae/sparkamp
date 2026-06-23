@@ -398,9 +398,11 @@ struct MediaLibraryView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 6)
             // Drop tracks (from the Files table or a playlist) onto a device
-            // row to copy them onto that device.
+            // row to copy them onto that device. Switch to the device's detail
+            // first so the copy progress bar is visible.
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 guard dev.fsVisible, !dev.readOnly else { return false }
+                nav = .device(bsd: dev.backendId)
                 TrackDragPayload.resolvePaths(from: providers) { paths in
                     guard !paths.isEmpty else { return }
                     model.copyToDevice(dev, paths: paths)

@@ -125,6 +125,14 @@ struct DeviceCounts: Equatable {
     var playlists: Int
 }
 
+/// Live progress of a copy-to-device operation ("done/total · filename"),
+/// driving the detail view's copy progress bar.
+struct CopyProgress: Equatable {
+    var done: Int
+    var total: Int
+    var name: String
+}
+
 // MARK: - Dedup types
 
 struct DedupTrackItem: Identifiable {

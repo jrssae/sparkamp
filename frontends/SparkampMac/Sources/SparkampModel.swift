@@ -116,6 +116,8 @@ final class SparkampModel: ObservableObject {
     @Published var deviceBusy: Bool = false
     /// One-line result of the last device op ("Copied 5 · skipped 1", etc.).
     @Published var deviceStatus: String? = nil
+    /// Live copy progress (done/total · filename) while a copy runs; nil when idle.
+    @Published var copyProgress: CopyProgress? = nil
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
 

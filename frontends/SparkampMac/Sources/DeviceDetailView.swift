@@ -29,6 +29,17 @@ struct DeviceDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            // Copy progress (while copying) or the last-op status line, mirroring
+            // the GTK layout where this sits directly under the header band.
+            if let cp = model.copyProgress {
+                copyProgressBar(cp)
+            } else if let s = model.deviceStatus {
+                Text(s)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
             Divider().background(theme.windowBorder)
             if device.fsVisible {
                 filesTable
@@ -56,45 +67,80 @@ struct DeviceDetailView: View {
 
     // MARK: Header
 
+    /// GTK-aligned header band: icon · (name + fs/path + unsupported badge) ·
+    /// (capacity bar + capacity text + counts, expanding middle) · read-only
+    /// badge · action buttons.
     @ViewBuilder
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "externaldrive.fill")
-                    .foregroundStyle(theme.vars.highlight)
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "externaldrive.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(theme.vars.highlight)
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(device.label.isEmpty ? "Untitled" : device.label)
                     .font(vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.playlistText)
-                if device.readOnly { badge("read-only", color: theme.playlistDurationText) }
-                if fsUnsupported { badge("⚠ Unsupported filesystem", color: .yellow) }
+                    .lineLimit(1)
+                Text("\(device.fsType.isEmpty ? "unknown" : device.fsType) · \(device.mountPath)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if fsUnsupported {
+                    Text("⚠ Unsupported filesystem")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.yellow)
+                }
+            }
+            .frame(minWidth: 140, alignment: .leading)
+
+            if device.fsVisible {
+                VStack(alignment: .leading, spacing: 3) {
+                    CapacityBar(freeFraction: device.freeFraction,
+                                accent: theme.vars.highlight,
+                                track: theme.windowBorder.opacity(0.4))
+                    Text(deviceCapacityText(device))
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
+                        .lineLimit(1)
+                    Text(countsLine)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+            } else {
                 Spacer()
-                actions
             }
 
-            Text("\(device.fsType.isEmpty ? "unknown" : device.fsType) · \(device.mountPath)")
+            if device.readOnly { badge("read-only", color: theme.playlistDurationText) }
+            actions
+        }
+        .padding(16)
+    }
+
+    /// "X songs · Y playlists" from the cached counts (or "Counting…").
+    private var countsLine: String {
+        guard let c = model.deviceCounts[device.id] else { return "Counting…" }
+        let songs = c.songs == 1 ? "1 song" : "\(c.songs) songs"
+        let pls = c.playlists == 1 ? "1 playlist" : "\(c.playlists) playlists"
+        return "\(songs) · \(pls)"
+    }
+
+    @ViewBuilder
+    private func copyProgressBar(_ cp: CopyProgress) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ProgressView(value: Double(cp.done), total: Double(max(cp.total, 1)))
+            Text("Copying \(min(cp.done + 1, cp.total))/\(cp.total) · \(cp.name)")
                 .font(.system(size: 11))
                 .foregroundStyle(theme.playlistDurationText)
                 .lineLimit(1)
                 .truncationMode(.middle)
-
-            if device.fsVisible {
-                CapacityBar(freeFraction: device.freeFraction,
-                            accent: theme.vars.highlight,
-                            track: theme.windowBorder.opacity(0.4))
-                    .frame(maxWidth: 360)
-                HStack(spacing: 12) {
-                    Text(deviceCapacityText(device))
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.playlistDurationText)
-                    if let s = model.deviceStatus {
-                        Text(s)
-                            .font(.system(size: 11))
-                            .foregroundStyle(theme.playlistDurationText)
-                    }
-                }
-            }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder
