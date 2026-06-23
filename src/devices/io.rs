@@ -148,6 +148,32 @@ fn music_scan_roots(mount: &Path) -> Vec<PathBuf> {
     roots
 }
 
+/// Inert backend for devices Sparkamp can't sync to (Apple iOS / PTP photo
+/// mounts). Lists nothing and refuses writes, so no code path can accidentally
+/// attempt a transfer to a read-only photo interface or a sandboxed iOS volume.
+pub struct NullIo;
+
+impl DeviceIo for NullIo {
+    fn list_audio_files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    fn playlist_files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    fn copy_to_device(&self, _src: &Path, _relpath: &Path) -> std::io::Result<CopyOutcome> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this device does not support music transfer",
+        ))
+    }
+    fn delete(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this device does not support file deletion",
+        ))
+    }
+}
+
 /// Build the IO backend handle for a device.
 pub fn for_device(dev: &Device) -> Box<dyn DeviceIo> {
     match dev.backend {
@@ -155,5 +181,29 @@ pub fn for_device(dev: &Device) -> Box<dyn DeviceIo> {
         // MTP falls back to POSIX over the gvfs FUSE path until the gio backend
         // lands, but scoped to the Music folders so scans actually finish.
         DeviceBackend::Mtp => Box::new(PosixIo::music_scoped(dev.mount_path.clone())),
+        // Apple iOS / PTP photo mounts: never writable as a music store.
+        DeviceBackend::Unsupported => Box::new(NullIo),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_io_lists_empty_and_refuses_writes() {
+        let io = NullIo;
+        assert!(io.list_audio_files().is_empty());
+        assert!(io.playlist_files().is_empty());
+        assert_eq!(
+            io.copy_to_device(Path::new("/x.mp3"), Path::new("Music/x.mp3"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            io.delete(Path::new("/x.mp3")).unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
     }
 }

@@ -10449,7 +10449,48 @@ fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> crate::devices::Device {
     }
 }
 
+/// Whether a gvfs URI belongs to an Apple device (iPad/iPhone). gphoto2 URIs
+/// for Apple hardware embed the vendor, e.g.
+/// `gphoto2://Apple_Inc._iPad_00008020.../`.
+fn is_apple_device_uri(uri: &str) -> bool {
+    uri.to_lowercase().contains("apple")
+}
+
+/// Banner text for a device Sparkamp can't sync to. Apple devices get the
+/// iOS-specific guidance; everything else on `gphoto2://` is a phone in
+/// photo-transfer (PTP) mode that should be switched to file-transfer/MTP.
+fn unsupported_device_banner(uri: &str) -> &'static str {
+    if is_apple_device_uri(uri) {
+        "⚠ iPad / iPhone detected. iOS doesn't allow third-party music transfer — \
+         use Apple Music or Finder to add songs. Sparkamp can't sync to this device."
+    } else {
+        "⚠ Device is in photo-transfer (PTP) mode. Switch it to File Transfer / MTP \
+         mode to sync music, then reconnect."
+    }
+}
+
 fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
+    // gphoto2:// mounts are photo-transfer (PTP) interfaces: read-only, camera
+    // roll only. Apple devices and Android-in-photo-mode both land here. They
+    // are surfaced so the user sees the device is detected, but tagged
+    // Unsupported (NullIo) and never offered as a sync target. Built directly,
+    // with no FUSE/capacity reads — there is nothing useful to read.
+    if raw.uri.starts_with("gphoto2://") {
+        use crate::devices::DeviceBackend;
+        return Some(crate::devices::Device {
+            id: raw.id.clone(),
+            label: raw.label.clone(),
+            mount_path: raw.fuse_root.clone(),
+            fs_type: if is_apple_device_uri(&raw.uri) { "ios" } else { "ptp" }.to_string(),
+            total_bytes: 0,
+            free_bytes: 0,
+            read_only: true,
+            ejectable: raw.ejectable,
+            backend_id: raw.uri.clone(),
+            backend: DeviceBackend::Unsupported,
+            fs_visible: false,
+        });
+    }
     // Cache hit → no FUSE IO at all. This is the steady-state path on every
     // 2 s poll once a device has been seen, so a slow/wedged mount can never
     // block the poll worker or hold the mount busy in the background.
@@ -17601,6 +17642,7 @@ fn open_media_library_window(
         let scan_btn = dev_scan.clone();
         // Sections hidden behind the "no filesystem" banner.
         let nofs_banner = dev_nofs_banner.clone();
+        let nofs_lbl_sel = dev_nofs_lbl.clone();
         let pl_header_sel = dev_pl_header.clone();
         let pl_scroll_sel = dev_pl_scroll.clone();
         let pl_actions_sel = dev_pl_actions.clone();
@@ -17660,6 +17702,8 @@ fn open_media_library_window(
                     } else {
                         warn.set_visible(false);
                     }
+                    let unsupported_dev =
+                        d.backend == crate::devices::DeviceBackend::Unsupported;
                     let used = if d.total_bytes > 0 {
                         1.0 - d.free_bytes as f64 / d.total_bytes as f64
                     } else {
@@ -17667,6 +17711,8 @@ fn open_media_library_window(
                     };
                     levelbar.set_value(used);
                     set_levelbar_fullness(&levelbar, used);
+                    // No capacity is knowable for a photo/iOS mount — hide the bar.
+                    levelbar.set_visible(!unsupported_dev);
                     // Eject is unavailable while a copy to this device is running.
                     let busy = transfers_sel.borrow().contains_key(&d.backend_id);
                     eject.set_sensitive(d.ejectable && !busy);
@@ -17674,7 +17720,24 @@ fn open_media_library_window(
                     scan_btn.set_sensitive(true);
                     *sel_backend.borrow_mut() = Some(d.backend_id.clone());
 
-                    if d.fs_visible {
+                    if unsupported_dev {
+                        // Apple iOS / PTP photo device: detected, but not a music
+                        // sync target. Explain why and disable Sync/Scan. Eject
+                        // stays available so the user can disconnect cleanly.
+                        warn.set_visible(false);
+                        capacity.set_text("Capacity unavailable");
+                        nofs_lbl_sel.set_text(unsupported_device_banner(&d.backend_id));
+                        nofs_banner.set_visible(true);
+                        pl_header_sel.set_visible(false);
+                        pl_scroll_sel.set_visible(false);
+                        pl_actions_sel.set_visible(false);
+                        tracks_scroll_sel.set_visible(false);
+                        file_actions_sel.set_visible(false);
+                        store_sel.remove_all();
+                        counts_sel.set_text("Not a music-sync device");
+                        sync_btn.set_sensitive(false);
+                        scan_btn.set_sensitive(false);
+                    } else if d.fs_visible {
                         // Normal device: show the lists, hide the banner.
                         nofs_banner.set_visible(false);
                         pl_header_sel.set_visible(true);
@@ -17695,6 +17758,11 @@ fn open_media_library_window(
                         // Connected but no readable filesystem: show the banner
                         // in place of empty lists. Eject stays available so the
                         // user can disconnect; Sync/Scan are pointless here.
+                        nofs_lbl_sel.set_text(
+                            "⚠ No visible filesystem on this device. Set the phone to \
+                             file-transfer mode and allow access, or reconnect it, then \
+                             press Scan.",
+                        );
                         nofs_banner.set_visible(true);
                         pl_header_sel.set_visible(false);
                         pl_scroll_sel.set_visible(false);

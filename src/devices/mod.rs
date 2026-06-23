@@ -39,6 +39,14 @@ pub enum DeviceBackend {
     /// `detect_mtp_devices`); IO currently falls back to `PosixIo` over the
     /// gvfs FUSE path until the gio backend lands.
     Mtp,
+    /// A connected device that is **not** a music-sync target: Apple iOS
+    /// devices (iPad/iPhone) and any device in photo-transfer (PTP) mode, both
+    /// surfaced by gvfs as `gphoto2://` mounts. PTP exposes only the camera roll
+    /// read-only, and iOS has no writable music store reachable over the
+    /// filesystem (the Music app uses a proprietary, signed media database).
+    /// Driven by [`io::NullIo`]; the UI shows an explanatory banner instead of
+    /// playlist/file lists and disables Sync.
+    Unsupported,
 }
 
 /// A connected external storage device (USB stick, SD card, or a player
