@@ -128,21 +128,10 @@ struct MediaLibraryView: View {
                     .onAppear { model.refreshDeviceCounts() }
                 case .device(let bsd):
                     if let dev = model.devices.first(where: { $0.backendId == bsd }) {
-                        DeviceDetailPlaceholder(
-                            device: dev,
-                            counts: model.deviceCounts[dev.id],
-                            theme: theme,
-                            vars: themeManager.currentVars,
-                            isEjecting: model.ejectingDevices.contains(dev.backendId),
-                            // Stay on the detail view during eject so the
-                            // spinner is visible; when it succeeds the device
-                            // drops off the list and this case auto-falls back
-                            // to the overview.
-                            onEject: { model.ejectDevice(dev) }
-                        )
-                        .onAppear { model.refreshDeviceCounts() }
+                        DeviceDetailView(device: dev, theme: theme)
                     } else {
-                        // Device unplugged while selected — fall back.
+                        // Device unplugged while selected — fall back (the nav
+                        // also resets via the onChange(of: model.devices) above).
                         DeviceOverview(
                             devices: model.devices,
                             counts: model.deviceCounts,
@@ -408,6 +397,16 @@ struct MediaLibraryView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 6)
+            // Drop tracks (from the Files table or a playlist) onto a device
+            // row to copy them onto that device.
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                guard dev.fsVisible, !dev.readOnly else { return false }
+                TrackDragPayload.resolvePaths(from: providers) { paths in
+                    guard !paths.isEmpty else { return }
+                    model.copyToDevice(dev, paths: paths)
+                }
+                return true
+            }
         }
     }
 

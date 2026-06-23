@@ -60,6 +60,85 @@ extension SparkampModel {
         deviceCounts[dev.id] = DeviceService.counts(ctx: ctx, device: dev)
     }
 
+    // MARK: Detail-view operations
+    //
+    // THREADING: browse/copy/sync touch the ctx's SQLite connection (not Send,
+    // shared with the tick), so they run on the main actor. To let SwiftUI
+    // paint the busy state first, the work is deferred one run-loop turn via
+    // DispatchQueue.main.async before the (blocking) FFI call. For a normal
+    // stick this is instant; a device with thousands of files will hitch.
+    // True off-main device IO needs a separate Rust DB connection (a later
+    // change), mirroring how the library scan already threads.
+
+    /// Load the device's audio files (with "synced from") into `deviceTracks`.
+    func loadDeviceTracks(_ device: Device) {
+        guard let ctx = ctx, device.fsVisible else { deviceTracks = []; return }
+        deviceTracks = DeviceService.browse(ctx: ctx, device: device)
+    }
+
+    /// Copy library files onto the device under Music/<file>, recording sync
+    /// pairs, then refresh the file list + counts.
+    func copyToDevice(_ device: Device, paths: [String]) {
+        guard let ctx = ctx, !paths.isEmpty, !deviceBusy else { return }
+        deviceBusy = true
+        deviceStatus = nil
+        DispatchQueue.main.async {
+            let r = DeviceService.copy(ctx: ctx, device: device, srcPaths: paths)
+            self.loadDeviceTracks(device)
+            self.refreshDeviceCounts(for: device)
+            self.deviceBusy = false
+            if let r = r {
+                self.deviceStatus = "Copied \(r.copied) · skipped \(r.skipped)"
+            } else {
+                self.deviceStatus = "Copy failed"
+            }
+        }
+    }
+
+    /// Two-way sync the device. Auto (single-side) changes apply immediately;
+    /// both-changed conflicts are skipped for now (the resolution sheet is the
+    /// next phase) and reported in the status line.
+    func syncDevice(_ device: Device) {
+        guard let ctx = ctx, !deviceBusy else { return }
+        deviceBusy = true
+        deviceStatus = nil
+        DispatchQueue.main.async {
+            guard let plan = DeviceService.syncPlan(ctx: ctx, device: device) else {
+                self.deviceBusy = false
+                self.deviceStatus = "Sync failed"
+                return
+            }
+            // Apply auto pairs with no conflict choices (conflicts are skipped
+            // inside the core until the conflict sheet lands).
+            let result = DeviceService.applySync(
+                ctx: ctx, device: device, plan: plan, choices: [])
+            self.loadDeviceTracks(device)
+            self.refreshDeviceCounts(for: device)
+            self.deviceBusy = false
+            let applied = result?.applied ?? 0
+            let conflicts = plan.conflicts.count
+            if conflicts > 0 {
+                self.deviceStatus =
+                    "Synced \(applied) · \(conflicts) conflict\(conflicts == 1 ? "" : "s") need resolving (coming soon)"
+            } else {
+                self.deviceStatus = "Synced \(applied) change\(applied == 1 ? "" : "s")"
+            }
+        }
+    }
+
+    /// Re-read the device's files from disk.
+    func scanDevice(_ device: Device) {
+        guard !deviceBusy else { return }
+        deviceBusy = true
+        deviceStatus = nil
+        DispatchQueue.main.async {
+            self.loadDeviceTracks(device)
+            self.refreshDeviceCounts(for: device)
+            self.deviceBusy = false
+            self.deviceStatus = "Scanned \(self.deviceTracks.count) file\(self.deviceTracks.count == 1 ? "" : "s")"
+        }
+    }
+
     /// Eject a device with in-flight feedback. Marks it ejecting (drives the
     /// detail spinner), then on the DiskArbitration callback clears the flag and
     /// either re-polls (success — the device drops off the list, and the detail

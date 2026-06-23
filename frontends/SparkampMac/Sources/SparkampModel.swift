@@ -108,6 +108,14 @@ final class SparkampModel: ObservableObject {
     @Published var ejectingDevices: Set<String> = []
     /// Set when an eject fails (device busy); shown as an alert, then cleared.
     @Published var ejectError: String? = nil
+    /// Audio files on the device currently shown in the detail view, with their
+    /// "synced from" library path. Loaded by `loadDeviceTracks`.
+    @Published var deviceTracks: [DeviceTrack] = []
+    /// True while a copy/sync/scan is running for the selected device — disables
+    /// the detail-view actions and shows their busy state.
+    @Published var deviceBusy: Bool = false
+    /// One-line result of the last device op ("Copied 5 · skipped 1", etc.).
+    @Published var deviceStatus: String? = nil
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
 
