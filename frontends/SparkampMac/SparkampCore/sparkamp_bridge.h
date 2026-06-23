@@ -490,4 +490,67 @@ void sparkamp_dedup_replace_playlist(SparkampCtx *ctx, const char **paths, int32
 /** Reveal path's containing folder in Finder. */
 void sparkamp_open_file_location(const char *path);
 
+// ---------------------------------------------------------------------------
+// Devices (external USB / SD storage)
+// ---------------------------------------------------------------------------
+//
+// JSON-over-FFI: each call takes/returns UTF-8 JSON; free returned strings with
+// sparkamp_free_string. Swift owns volume enumeration (DiskArbitration) + eject;
+// the core owns identity, the Device shape, and every sync decision. See
+// src/ffi/devices.rs for the JSON schemas (Codable structs on the Swift side).
+
+/** Swift's enumerated volumes (JSON array) in; canonical [Device] JSON out.
+    Free with sparkamp_free_string. */
+char *sparkamp_devices_refresh(SparkampCtx *ctx, const char *volumes_json);
+
+/** Device audio files as a JSON [DeviceTrack] (incl. "synced_from").
+    Free with sparkamp_free_string. */
+char *sparkamp_device_browse(SparkampCtx *ctx, const char *device_json);
+
+/** Two-way sync plan as JSON (SyncPlanDto). Free with sparkamp_free_string. */
+char *sparkamp_device_sync_plan(SparkampCtx *ctx, const char *device_json);
+
+/** Apply a sync plan + conflict choices. Returns {"applied":N,"skipped":M}.
+    Free with sparkamp_free_string. */
+char *sparkamp_device_apply_sync(SparkampCtx *ctx,
+                                 const char *device_json,
+                                 const char *plan_json,
+                                 const char *choices_json);
+
+/** Copy library files (JSON array of paths) to the device under Music/<file>.
+    Returns {"copied":N,"skipped":M,"bytes":B}. Free with sparkamp_free_string. */
+char *sparkamp_device_copy(SparkampCtx *ctx,
+                           const char *device_json,
+                           const char *src_paths_json);
+
+/** Device playlist sync plan (JSON array). Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_plan(SparkampCtx *ctx, const char *device_json);
+
+/** Apply device playlist sync. Returns {"pushed":N,"pulled":M,"skipped":K}.
+    Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_apply(SparkampCtx *ctx,
+                                     const char *device_json,
+                                     const char *items_json);
+
+/** Permanently delete files (JSON array of absolute on-device paths) from the
+    device and any device playlist. Returns the count that could NOT be deleted,
+    or -1 on bad input. DELETION RULE: show an explicit confirmation first. */
+int sparkamp_device_delete_files(SparkampCtx *ctx,
+                                 const char *device_json,
+                                 const char *paths_json);
+
+/** Embedded artwork bytes for one side of a conflict (side: 0 = computer,
+    1 = device); dev_relpath is the conflict's pair.device_relpath. Writes the
+    length to *len_out. Returns NULL when there's no artwork. Free the bytes
+    with sparkamp_tag_free_artwork. */
+uint8_t *sparkamp_device_conflict_artwork(SparkampCtx *ctx,
+                                          const char *device_json,
+                                          const char *dev_relpath,
+                                          int side,
+                                          int *len_out);
+
+/** Whether fs_type is not reliably writable (NTFS/exFAT) — drives the
+    unsupported-filesystem badge. */
+bool sparkamp_device_fs_unsupported(const char *fs_type);
+
 #endif /* sparkamp_bridge_h */

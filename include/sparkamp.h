@@ -1,11 +1,11 @@
 /*
  * sparkamp.h — C API for the Sparkamp macOS Swift bridge.
  *
- * Maintained by hand in sync with src/ffi.rs.
- * Update this file whenever a function is added to or removed from ffi.rs.
- *
- * Imported by frontends/SparkampMac/SparkampCore/sparkamp_bridge.h via the
- * Xcode bridging-header mechanism.
+ * STALE / NOT THE LIVE HEADER. The Xcode app uses the self-contained,
+ * hand-maintained frontends/SparkampMac/SparkampCore/sparkamp_bridge.h, which
+ * inlines the full API and does NOT include this file. This header predates the
+ * Media Library, deduplication, granite, and device APIs and is kept only as a
+ * historical minimal C surface. Add new FFI declarations to sparkamp_bridge.h.
  */
 
 #ifndef SPARKAMP_H
