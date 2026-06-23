@@ -117,6 +117,14 @@ struct MLPlaylistItem: Identifiable {
     var path: String = ""
 }
 
+// MARK: - Device types
+
+/// Cached song / playlist counts for a connected device, keyed by device id.
+struct DeviceCounts: Equatable {
+    var songs: Int
+    var playlists: Int
+}
+
 // MARK: - Dedup types
 
 struct DedupTrackItem: Identifiable {

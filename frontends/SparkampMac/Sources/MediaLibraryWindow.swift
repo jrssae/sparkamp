@@ -8,6 +8,8 @@ enum MLNavigation: Equatable {
     case files
     case playlists            // management view: list of saved playlists
     case playlist(id: Int64)  // track editor for a specific playlist
+    case devicesOverview      // grid of connected devices
+    case device(bsd: String)  // detail for one device (keyed by BSD name)
 }
 
 // MARK: - Media Library Window
@@ -72,6 +74,7 @@ struct MediaLibraryView: View {
                             sidebarSubRow(pl: pl)
                         }
                     }
+                    devicesSection
                 }
                 .padding(.vertical, 10)
             }
@@ -114,6 +117,38 @@ struct MediaLibraryView: View {
                     MLPlaylistEditor(playlistId: id, nav: $nav, theme: theme,
                                      columnMask: columnMask)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .devicesOverview:
+                    DeviceOverview(
+                        devices: model.devices,
+                        counts: model.deviceCounts,
+                        theme: theme,
+                        vars: themeManager.currentVars,
+                        onSelect: { dev in nav = .device(bsd: dev.backendId) }
+                    )
+                    .onAppear { model.refreshDeviceCounts() }
+                case .device(let bsd):
+                    if let dev = model.devices.first(where: { $0.backendId == bsd }) {
+                        DeviceDetailPlaceholder(
+                            device: dev,
+                            counts: model.deviceCounts[dev.id],
+                            theme: theme,
+                            vars: themeManager.currentVars,
+                            onEject: {
+                                DeviceService.eject(bsdName: dev.backendId)
+                                nav = .devicesOverview
+                            }
+                        )
+                        .onAppear { model.refreshDeviceCounts() }
+                    } else {
+                        // Device unplugged while selected — fall back.
+                        DeviceOverview(
+                            devices: model.devices,
+                            counts: model.deviceCounts,
+                            theme: theme,
+                            vars: themeManager.currentVars,
+                            onSelect: { dev in nav = .device(bsd: dev.backendId) }
+                        )
+                    }
                 }
             }
         }
@@ -121,6 +156,7 @@ struct MediaLibraryView: View {
         .preferredColorScheme(themeManager.preferredColorScheme)
         .onAppear {
             model.openMediaLibrary()
+            model.pollDevices()   // populate the Devices group immediately
             reload()
             if !columnCustomizationData.isEmpty,
                let decoded = try? JSONDecoder().decode(
@@ -295,6 +331,65 @@ struct MediaLibraryView: View {
             model.mlAppendPathsToPlaylist(playlistId: playlistId, paths: paths)
         }
         return true
+    }
+
+    // MARK: - Devices sidebar group
+
+    @ViewBuilder
+    private var devicesSection: some View {
+        let vars = themeManager.currentVars
+        let overviewSelected = (nav == .devicesOverview)
+        Button { nav = .devicesOverview } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "externaldrive").font(.system(size: 11))
+                Text("Devices")
+                    .font(vars.bodyFont.weight(overviewSelected ? .semibold : .regular))
+                Spacer()
+                if !model.devices.isEmpty {
+                    Text("\(model.devices.count)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.playlistDurationText)
+                }
+            }
+            .foregroundStyle(overviewSelected ? theme.playlistCurrentText : theme.playlistText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(overviewSelected ? theme.playlistCurrentBg : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+
+        ForEach(model.devices) { dev in
+            let selected = (nav == .device(bsd: dev.backendId))
+            Button { nav = .device(bsd: dev.backendId) } label: {
+                HStack(spacing: 4) {
+                    Spacer().frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(dev.label.isEmpty ? "Untitled" : dev.label)
+                            .font(vars.bodyFont.weight(selected ? .semibold : .regular))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        CapacityBar(freeFraction: dev.freeFraction,
+                                    accent: theme.vars.highlight,
+                                    track: theme.windowBorder.opacity(0.4),
+                                    height: 3)
+                    }
+                    Spacer()
+                }
+                .foregroundStyle(selected ? theme.playlistCurrentText : theme.playlistText)
+                .padding(.vertical, 4)
+                .padding(.trailing, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(selected ? theme.playlistCurrentBg : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 6)
+        }
     }
 
     // MARK: - Toolbar

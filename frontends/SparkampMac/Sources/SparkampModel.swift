@@ -94,6 +94,18 @@ final class SparkampModel: ObservableObject {
     /// Counts ticks while a scan is running; used to throttle intermediate reloads.
     private var mlScanTickCount: Int = 0
 
+    // ── Devices (external storage) ─────────────────────────────────────────
+    /// Connected removable devices, refreshed by the ~2 s poll while the Media
+    /// Library window is open. Keyed for selection by `backendId` (BSD name).
+    @Published var devices: [Device] = []
+    /// The device currently shown in the detail view (its BSD name), or nil for
+    /// the overview.
+    @Published var selectedDeviceBSD: String? = nil
+    /// Song / playlist counts per device id, filled lazily for the overview.
+    @Published var deviceCounts: [String: DeviceCounts] = [:]
+    /// Ticks counted only while the ML window is open; gates the 2 s device poll.
+    var deviceTickCount: Int = 0
+
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false
     @Published var dedupGroups: [DedupGroupItem] = []
@@ -266,6 +278,18 @@ final class SparkampModel: ObservableObject {
         // Keep vizMode in sync so views can observe it reactively.
         let newVizMode = Int(sparkamp_get_viz_mode(ctx))
         if newVizMode != vizMode { vizMode = newVizMode }
+
+        // Poll connected devices ~every 2 s while the ML window is open. The
+        // tick fires at 10 Hz, so every 20th tick. Detection only — counts are
+        // computed on demand for the overview (refreshDeviceCounts).
+        if mediaLibraryVisible {
+            deviceTickCount += 1
+            if deviceTickCount % 20 == 1 {
+                pollDevices()
+            }
+        } else if deviceTickCount != 0 {
+            deviceTickCount = 0
+        }
 
         // Poll media library scan progress (if running).
         if mlScanRunning {
