@@ -29,6 +29,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod dedupe;
+mod devices;
 mod eq;
 mod granite;
 mod id3;
