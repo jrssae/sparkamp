@@ -48,6 +48,8 @@ struct MLFilesTable: NSViewRepresentable {
     @Binding var columnCustomization: TableColumnCustomization<MLTrack>
     let theme: SkinTheme
     @ObservedObject var themeManager: ThemeManager
+    /// Used to build the shared "Send to Playlist" / "Send to Device" submenus.
+    @ObservedObject var model: SparkampModel
     let onEvent: (MLTableEvent) -> Void
     let onDropPaths: MLFilesDropHandler
 
@@ -552,9 +554,12 @@ struct MLFilesTable: NSViewRepresentable {
             }
             let menu = NSMenu()
             menu.autoenablesItems = false
-            menu.addItem(BlockMenuItem(title: "Add to Playlist", enabled: !ids.isEmpty) {
-                self.parent.onEvent(.addToPlaylist(ids))
-            })
+            // Shared "Send to Playlist" / "Send to Device" submenus over the
+            // selected rows' file paths.
+            let idSet = Set(ids)
+            let paths = tracks.filter { idSet.contains($0.id) }.map { $0.path }
+            menu.addItem(parent.model.sendToPlaylistMenuItem(paths: paths))
+            menu.addItem(parent.model.sendToDeviceMenuItem(paths: paths))
             menu.addItem(BlockMenuItem(title: "Replace Current Playlist", enabled: !ids.isEmpty) {
                 self.parent.onEvent(.replacePlaylist(ids))
             })

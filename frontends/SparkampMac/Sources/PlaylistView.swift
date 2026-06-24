@@ -543,28 +543,11 @@ struct PlaylistView: View {
             if let first = sorted.first { model.jumpTo(index: first) }
         })
 
-        // "Add to Playlist" submenu — one entry per saved ML playlist plus
-        // a quick path to seed a brand new playlist from the selection.
-        let addSubmenu = NSMenu()
-        addSubmenu.autoenablesItems = false
-        addSubmenu.addItem(BlockMenuItem(title: "New Playlist…",
-                                         enabled: !sorted.isEmpty) {
-            addToNewPlaylist(activeIndices: sorted)
-        })
-        if !model.mlSavedPlaylists.isEmpty {
-            addSubmenu.addItem(.separator())
-            for pl in model.mlSavedPlaylists {
-                let pid = pl.id
-                addSubmenu.addItem(BlockMenuItem(title: pl.name,
-                                                 enabled: !sorted.isEmpty) {
-                    appendActiveTracks(activeIndices: sorted, toPlaylistId: pid)
-                })
-            }
-        }
-        let addParent = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
-        addParent.submenu = addSubmenu
-        addParent.isEnabled = !sorted.isEmpty
-        menu.addItem(addParent)
+        // "Send to Playlist" / "Send to Device" submenus, shared with the
+        // files view and the saved-playlist editor.
+        let paths = sorted.compactMap { model.playlistTrackPath(index: $0) }
+        menu.addItem(model.sendToPlaylistMenuItem(paths: paths))
+        menu.addItem(model.sendToDeviceMenuItem(paths: paths))
 
         menu.addItem(BlockMenuItem(title: "Edit Tags…", enabled: sorted.count == 1) {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
@@ -583,32 +566,6 @@ struct PlaylistView: View {
         // Reverse-sorted so each removal doesn't shift later indices.
         for i in indices.sorted(by: >) { model.removeTrack(at: i) }
         selection.removeAll()
-    }
-
-    /// Append the selected active-playlist rows to the saved ML playlist
-    /// `toPlaylistId` by looking up each track id in the library by path.
-    /// Rows whose path isn't in the library are silently skipped (consistent
-    /// with the GTK active-playlist Add-to-Playlist behaviour).
-    private func appendActiveTracks(activeIndices: [Int], toPlaylistId pid: Int64) {
-        let paths = activeIndices.compactMap { model.playlistTrackPath(index: $0) }
-        guard !paths.isEmpty else { return }
-        model.mlAppendPathsToPlaylist(playlistId: pid, paths: paths)
-    }
-
-    /// Create a brand new saved playlist seeded with the selected active rows.
-    /// Opens the native Save panel so the user picks the filename + folder.
-    /// Default location is `mlDefaultSaveAsDir()` (first watched folder, else
-    /// `~/Music`) — avoids the previous behaviour of dumping new playlists
-    /// in Sparkamp's managed dir, which `add_playlist_file` then registered
-    /// as a watched folder, polluting the library.
-    private func addToNewPlaylist(activeIndices: [Int]) {
-        let paths = activeIndices.compactMap { model.playlistTrackPath(index: $0) }
-        guard !paths.isEmpty else { return }
-        runPlaylistSavePanel(model: model,
-                              defaultName: defaultTimestampedPlaylistName()) { stem, dir in
-            _ = model.mlSavePlaylistAs(name: stem, trackPaths: paths, directory: dir)
-            model.mlRefreshSavedPlaylists()
-        }
     }
 
     /// Save the entire active playlist to an M3U8 via the native Save panel.

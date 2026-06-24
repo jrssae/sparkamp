@@ -159,6 +159,12 @@ struct PlaylistApplyResult {
     skipped: usize,
 }
 
+#[derive(Serialize)]
+struct PlaylistSendResult {
+    copied: usize,
+    ok: bool,
+}
+
 // ─────────────────────────── entry points ───────────────────────────
 
 /// Swift passes a JSON array of enumerated volumes; the core returns a JSON
@@ -379,6 +385,23 @@ pub unsafe extern "C" fn sparkamp_device_playlist_apply(
         }
     }
     json_out(&PlaylistApplyResult { pushed, pulled, skipped })
+}
+
+/// Send one library playlist (by DB id) to the device as a unit: copy its
+/// missing track files under Music/<file> and write the device `.m3u`. Returns
+/// `{"copied":N,"ok":bool}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_send_playlist(
+    ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+    playlist_id: i64,
+) -> *mut c_char {
+    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+        return std::ptr::null_mut();
+    };
+    let ext = (*ctx).config.media_library.playlist_format.extension();
+    let (copied, ok) = plan::send_playlist_to_device(lib, &dev, playlist_id, ext);
+    json_out(&PlaylistSendResult { copied, ok })
 }
 
 /// Permanently delete the given files from the device (absolute on-device

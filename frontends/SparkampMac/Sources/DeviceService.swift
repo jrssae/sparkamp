@@ -382,6 +382,18 @@ enum DeviceService {
         return decodeJSON(takeString(out))
     }
 
+    /// Send one library playlist (by DB id) to the device — copy its tracks +
+    /// write the device .m3u. Returns (copied, ok).
+    static func sendPlaylist(
+        ctx: OpaquePointer, device: Device, playlistId: Int64
+    ) -> (copied: Int, ok: Bool) {
+        guard let dj = deviceJSON(device) else { return (0, false) }
+        let out = dj.withCString { sparkamp_device_send_playlist(ctx, $0, playlistId) }
+        struct Raw: Decodable { var copied: Int; var ok: Bool }
+        let raw: Raw? = decodeJSON(takeString(out))
+        return (raw?.copied ?? 0, raw?.ok ?? false)
+    }
+
     /// Permanently delete files from the device. Returns the count that could
     /// NOT be deleted, or -1 on bad input. The CALLER must confirm first.
     static func deleteFiles(ctx: OpaquePointer, device: Device, paths: [String]) -> Int {

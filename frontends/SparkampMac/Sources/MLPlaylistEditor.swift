@@ -259,9 +259,13 @@ struct MLPlaylistEditor: View {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        menu.addItem(BlockMenuItem(title: "Add to Playlist", enabled: !dbIds.isEmpty) {
-            model.mlAddToPlaylist(ids: dbIds)
-        })
+        // Shared "Send to Playlist" / "Send to Device" submenus over the
+        // clicked rows' file paths.
+        let paths = rowIds.compactMap { rid in
+            editingRows.first(where: { $0.id == rid })?.track.path
+        }
+        menu.addItem(model.sendToPlaylistMenuItem(paths: paths))
+        menu.addItem(model.sendToDeviceMenuItem(paths: paths))
         menu.addItem(BlockMenuItem(title: "Replace Current Playlist", enabled: !dbIds.isEmpty) {
             model.mlReplacePlaylistWith(ids: dbIds)
         })

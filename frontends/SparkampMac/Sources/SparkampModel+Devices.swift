@@ -146,6 +146,23 @@ extension SparkampModel {
         }
     }
 
+    /// Send a whole library playlist to the device (its tracks + the .m3u),
+    /// with busy feedback.
+    func sendPlaylistToDevice(_ device: Device, playlistId: Int64) {
+        guard let ctx = ctx, !deviceBusy else { return }
+        deviceBusy = true
+        deviceStatus = nil
+        DispatchQueue.main.async {
+            let r = DeviceService.sendPlaylist(ctx: ctx, device: device, playlistId: playlistId)
+            self.loadDeviceTracks(device)
+            self.refreshDeviceCounts(for: device)
+            self.deviceBusy = false
+            self.deviceStatus = r.ok
+                ? "Sent playlist · copied \(r.copied)"
+                : "Couldn't send playlist"
+        }
+    }
+
     /// Re-read the device's files from disk.
     func scanDevice(_ device: Device) {
         guard !deviceBusy else { return }

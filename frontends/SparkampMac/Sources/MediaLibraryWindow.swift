@@ -315,6 +315,11 @@ struct MediaLibraryView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
+        // Drag source: carries the playlist id so it can be dropped onto a
+        // device row to send the whole playlist (tracks + .m3u).
+        .onDrag {
+            NSItemProvider(object: "sparkamp.playlist:\(pl.id)" as NSString)
+        }
         // Drop target: file URLs dragged from the active playlist, the ML
         // files table, or another saved-playlist's editor land here and
         // append to this playlist's tracks via the same core path used by
@@ -397,15 +402,37 @@ struct MediaLibraryView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 6)
-            // Drop tracks (from the Files table or a playlist) onto a device
-            // row to copy them onto that device. Switch to the device's detail
-            // first so the copy progress bar is visible.
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            // Drop onto a device row to send music to it, switching to the
+            // device's detail first so progress is visible. Two payloads:
+            //   • track file URLs (from the Files table / a playlist) → copy.
+            //   • a saved-playlist drag ("sparkamp.playlist:<id>" plain text)
+            //     → send the whole playlist (tracks + .m3u).
+            // File URLs win when present, so a track drag is never misread.
+            .onDrop(of: [.fileURL, .plainText], isTargeted: nil) { providers in
                 guard dev.fsVisible, !dev.readOnly else { return false }
-                nav = .device(bsd: dev.backendId)
-                TrackDragPayload.resolvePaths(from: providers) { paths in
-                    guard !paths.isEmpty else { return }
-                    model.copyToDevice(dev, paths: paths)
+                let hasFileURL = providers.contains {
+                    $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                }
+                if hasFileURL {
+                    nav = .device(bsd: dev.backendId)
+                    TrackDragPayload.resolvePaths(from: providers) { paths in
+                        guard !paths.isEmpty else { return }
+                        model.copyToDevice(dev, paths: paths)
+                    }
+                    return true
+                }
+                guard let p = providers.first(where: {
+                    $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+                }) else { return false }
+                p.loadObject(ofClass: NSString.self) { obj, _ in
+                    guard let s = obj as? String,
+                          s.hasPrefix("sparkamp.playlist:"),
+                          let id = Int64(s.dropFirst("sparkamp.playlist:".count))
+                    else { return }
+                    DispatchQueue.main.async {
+                        nav = .device(bsd: dev.backendId)
+                        model.sendPlaylistToDevice(dev, playlistId: id)
+                    }
                 }
                 return true
             }
@@ -488,6 +515,7 @@ struct MediaLibraryView: View {
             columnCustomization: $columnCustomization,
             theme: theme,
             themeManager: themeManager,
+            model: model,
             onEvent: { event in
                 switch event {
                 case .sortChanged(let key, let ascending):

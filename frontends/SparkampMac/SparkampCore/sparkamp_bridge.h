@@ -536,6 +536,13 @@ char *sparkamp_device_playlist_apply(SparkampCtx *ctx,
                                      const char *device_json,
                                      const char *items_json);
 
+/** Send one library playlist (by DB id) to the device — copy its tracks under
+    Music/<file> and write the device .m3u. Returns {"copied":N,"ok":bool}.
+    Free with sparkamp_free_string. */
+char *sparkamp_device_send_playlist(SparkampCtx *ctx,
+                                    const char *device_json,
+                                    int64_t playlist_id);
+
 /** Permanently delete files (JSON array of absolute on-device paths) from the
     device and any device playlist. Returns the count that could NOT be deleted,
     or -1 on bad input. DELETION RULE: show an explicit confirmation first. */

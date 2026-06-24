@@ -647,6 +647,56 @@ pub(crate) fn device_playlist_sync_plan(
     out
 }
 
+/// Send one library playlist to a device as a unit: copy its (missing) track
+/// files under the flat layout and write the device `.m3u`, reusing
+/// [`apply_playlist_push`]. Unlike [`device_playlist_sync_plan`], this forces a
+/// push for a playlist that may never have been on the device. Returns
+/// `(files_copied, ok)`.
+pub(crate) fn send_playlist_to_device(
+    lib: &MediaLibrary,
+    dev: &Device,
+    playlist_id: i64,
+    ext: &str,
+) -> (usize, bool) {
+    let device_id = device_sync_id(dev);
+    if device_id.is_empty() || dev.read_only || device_fs_unsupported(&dev.fs_type) {
+        return (0, false);
+    }
+    let Ok(pl) = lib.playlist_by_id(playlist_id) else {
+        return (0, false);
+    };
+    let loaded = lib.load_playlist_tracks(&pl).unwrap_or_default();
+    let srcs: Vec<PathBuf> = loaded
+        .iter()
+        .map(|t| PathBuf::from(&t.path))
+        .filter(|p| p.exists())
+        .collect();
+    let safe = safe_playlist_filename(&pl.name);
+    // Reuse an existing device file (any extension variant) so a re-send
+    // overwrites rather than duplicates.
+    let device_file = [
+        format!("{safe}.{ext}"),
+        format!("{safe}.m3u8"),
+        format!("{safe}.m3u"),
+    ]
+    .iter()
+    .map(|n| dev.mount_path.join(n))
+    .find(|p| p.exists());
+    let item = PlaylistSyncItem {
+        library_playlist_id: pl.id,
+        library_name: pl.name.clone(),
+        library_path: PathBuf::from(&pl.path),
+        device_id,
+        device_file,
+        desired_device_filename: format!("{safe}.{ext}"),
+        srcs,
+        dev_basenames: Vec::new(),
+        dir: crate::devices::sync::PlaylistSyncDir::Push,
+        differ: 0,
+    };
+    apply_playlist_push(lib, dev, &item)
+}
+
 /// Record/refresh the per-playlist baseline after a sync resolves it.
 fn update_playlist_baseline(
     lib: &MediaLibrary,
