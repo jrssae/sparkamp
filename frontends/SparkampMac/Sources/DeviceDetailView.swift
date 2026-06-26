@@ -20,6 +20,13 @@ struct DeviceDetailView: View {
     @State private var sortOrder: [KeyPathComparator<DeviceTrack>] =
         [KeyPathComparator(\.title)]
     @State private var showingImporter = false
+    // Column show/hide + reorder/resize, persisted (the device file table's
+    // own config; the header right-click toggles columns natively).
+    @State private var columnCustomization = TableColumnCustomization<DeviceTrack>()
+    @AppStorage("sparkamp.dev.columnOrder") private var columnCustomizationData = Data()
+    // Delete-from-device confirmation.
+    @State private var pendingDeletePaths: [String] = []
+    @State private var showDeleteConfirm = false
 
     private var vars: SkinVars { themeManager.currentVars }
     private var isEjecting: Bool { model.ejectingDevices.contains(device.backendId) }
@@ -43,16 +50,27 @@ struct DeviceDetailView: View {
             Divider().background(theme.windowBorder)
             if device.fsVisible {
                 filesTable
+                filesBottomBar
             } else {
                 noFilesystemBanner
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.background)
-        .onAppear { model.loadDeviceTracks(device) }
+        .onAppear {
+            model.loadDeviceTracks(device)
+            if !columnCustomizationData.isEmpty,
+               let decoded = try? JSONDecoder().decode(
+                   TableColumnCustomization<DeviceTrack>.self, from: columnCustomizationData) {
+                columnCustomization = decoded
+            }
+        }
         .onChange(of: device.backendId) { _, _ in
             selection.removeAll()
             model.loadDeviceTracks(device)
+        }
+        .onChange(of: columnCustomization) { _, v in
+            if let d = try? JSONEncoder().encode(v) { columnCustomizationData = d }
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -63,6 +81,28 @@ struct DeviceDetailView: View {
                 model.copyToDevice(device, paths: urls.map { $0.path })
             }
         }
+        .confirmationDialog(
+            "Delete \(pendingDeletePaths.count) file\(pendingDeletePaths.count == 1 ? "" : "s") from the device?",
+            isPresented: $showDeleteConfirm, titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                model.deleteFromDevice(device, paths: pendingDeletePaths)
+                selection.removeAll()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The files are permanently deleted from the device and removed from every playlist on it. This can't be undone.")
+        }
+    }
+
+    private func requestDelete(_ paths: [String]) {
+        guard !paths.isEmpty, !device.readOnly else { return }
+        pendingDeletePaths = paths
+        showDeleteConfirm = true
+    }
+
+    private func paths(for ids: Set<String>) -> [String] {
+        model.deviceTracks.filter { ids.contains($0.path) }.map { $0.path }
     }
 
     // MARK: Header
@@ -195,22 +235,27 @@ struct DeviceDetailView: View {
         model.deviceTracks.sorted(using: sortOrder)
     }
 
+    /// The device files table. The full ML column set is present; the user
+    /// shows/hides/reorders columns via the native header right-click menu
+    /// (persisted in `columnCustomization`). Title/Artist/Album/Duration/Synced
+    /// from are visible by default; the rest start hidden.
     @ViewBuilder
     private var filesTable: some View {
-        Table(sortedTracks, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Title", value: \.title) { t in
-                Text(t.title.isEmpty ? URL(fileURLWithPath: t.path).lastPathComponent : t.title)
+        Table(sortedTracks, selection: $selection, sortOrder: $sortOrder,
+              columnCustomization: $columnCustomization) {
+            primaryColumns
+            extraColumns
+        }
+        .contextMenu(forSelectionType: DeviceTrack.ID.self) { ids in
+            if ids.count == 1, let p = ids.first {
+                Button("Edit / View ID3 Tags") { model.mlOpenTagEditorForPath(p) }
+                Button("View Album Art") { model.mlViewArtForPath(p) }
+                Divider()
             }
-            TableColumn("Artist", value: \.artist)
-            TableColumn("Album", value: \.album)
-            TableColumn("Duration") { t in
-                Text(formatDuration(t.lengthSecs)).foregroundStyle(theme.playlistDurationText)
+            Button("Delete from Device", role: .destructive) {
+                requestDelete(paths(for: ids))
             }
-            TableColumn("Synced from") { t in
-                Text(t.syncedFrom.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—")
-                    .foregroundStyle(theme.playlistDurationText)
-                    .help(t.syncedFrom ?? "Not synced from this computer")
-            }
+            .disabled(device.readOnly)
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard device.fsVisible, !device.readOnly, !fsUnsupported else { return false }
@@ -220,6 +265,91 @@ struct DeviceDetailView: View {
             }
             return true
         }
+    }
+
+    // Columns split into two builders so the type-checker stays fast and we
+    // clear SwiftUI's 10-column-per-builder limit (two builders here → 2 in the
+    // outer Table). Title/Artist/Album/Duration/Synced from default visible.
+    @TableColumnBuilder<DeviceTrack, KeyPathComparator<DeviceTrack>>
+    private var primaryColumns: some TableColumnContent<DeviceTrack, KeyPathComparator<DeviceTrack>> {
+        TableColumn("Title", value: \.title) { t in
+            Text(t.title.isEmpty ? URL(fileURLWithPath: t.path).lastPathComponent : t.title)
+        }
+        .customizationID("col-title")
+        TableColumn("Artist", value: \.artist).customizationID("col-artist")
+        TableColumn("Album", value: \.album).customizationID("col-album")
+        TableColumn("Album Artist", value: \.albumArtist)
+            .customizationID("col-albumartist").defaultVisibility(.hidden)
+        TableColumn("Genre", value: \.genre)
+            .customizationID("col-genre").defaultVisibility(.hidden)
+        TableColumn("Composer", value: \.composer)
+            .customizationID("col-composer").defaultVisibility(.hidden)
+        TableColumn("Year", value: \.year) { t in
+            Text(t.year > 0 ? String(t.year) : "")
+        }
+        .customizationID("col-year").defaultVisibility(.hidden)
+        TableColumn("Track #", value: \.trackNum) { t in
+            Text(t.trackNum > 0 ? String(t.trackNum) : "")
+        }
+        .customizationID("col-track").defaultVisibility(.hidden)
+    }
+
+    @TableColumnBuilder<DeviceTrack, KeyPathComparator<DeviceTrack>>
+    private var extraColumns: some TableColumnContent<DeviceTrack, KeyPathComparator<DeviceTrack>> {
+        TableColumn("Disc #", value: \.discNum) { t in
+            Text(t.discNum > 0 ? String(t.discNum) : "")
+        }
+        .customizationID("col-disc").defaultVisibility(.hidden)
+        TableColumn("BPM", value: \.bpm)
+            .customizationID("col-bpm").defaultVisibility(.hidden)
+        TableColumn("Comment", value: \.comment)
+            .customizationID("col-comment").defaultVisibility(.hidden)
+        TableColumn("Duration", value: \.lengthSecs) { t in
+            Text(formatDuration(t.lengthSecs)).foregroundStyle(theme.playlistDurationText)
+        }
+        .customizationID("col-duration")
+        TableColumn("Bitrate", value: \.bitrate) { t in
+            Text(t.bitrate > 0 ? "\(t.bitrate / 1000)k" : "")
+        }
+        .customizationID("col-bitrate").defaultVisibility(.hidden)
+        TableColumn("Play Count", value: \.playCount) { t in
+            Text(String(t.playCount))
+        }
+        .customizationID("col-playcount").defaultVisibility(.hidden)
+        TableColumn("Last Played", value: \.lastPlayed)
+            .customizationID("col-lastplayed").defaultVisibility(.hidden)
+        TableColumn("Synced from") { t in
+            Text(t.syncedFrom.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—")
+                .foregroundStyle(theme.playlistDurationText)
+                .help(t.syncedFrom ?? "Not synced from this computer")
+        }
+        .customizationID("col-syncedfrom")
+    }
+
+    @ViewBuilder
+    private var filesBottomBar: some View {
+        HStack(spacing: 12) {
+            Text("\(model.deviceTracks.count) files")
+                .font(.system(size: 11))
+                .foregroundStyle(theme.playlistDurationText)
+            if !selection.isEmpty {
+                Text("\(selection.count) selected")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+            Spacer()
+            Button(role: .destructive) {
+                requestDelete(paths(for: selection))
+            } label: {
+                Label("Delete from Device", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(selection.isEmpty || device.readOnly || actionsBusy)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(theme.background)
     }
 
     @ViewBuilder
