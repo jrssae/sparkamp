@@ -570,6 +570,14 @@ char *sparkamp_device_playlist_duplicate(SparkampCtx *ctx,
                                          const char *device_json,
                                          const char *relpath);
 
+/** Remove files (JSON array of on-device paths) from ONE device playlist's
+    .m3u — the files stay on the device. Returns {"ok":bool}. Free with
+    sparkamp_free_string. */
+char *sparkamp_device_playlist_remove_entries(SparkampCtx *ctx,
+                                              const char *device_json,
+                                              const char *relpath,
+                                              const char *paths_json);
+
 /** Delete a device playlist file (audio files stay). Returns {"ok":bool}.
     Free with sparkamp_free_string. */
 char *sparkamp_device_playlist_delete(SparkampCtx *ctx,

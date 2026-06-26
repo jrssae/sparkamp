@@ -448,6 +448,19 @@ enum DeviceService {
         return (decodeJSON(takeString(out)) as Raw?)?.ok ?? false
     }
 
+    /// Remove files from ONE device playlist's .m3u (files stay on disk).
+    @discardableResult
+    static func playlistRemoveEntries(
+        device: Device, relpath: String, paths: [String]
+    ) -> Bool {
+        guard let dj = deviceJSON(device), let pj = encodeJSON(paths) else { return false }
+        let out = dj.withCString { d in relpath.withCString { r in pj.withCString { p in
+            sparkamp_device_playlist_remove_entries(nil, d, r, p)
+        } } }
+        struct Raw: Decodable { var ok: Bool }
+        return (decodeJSON(takeString(out)) as Raw?)?.ok ?? false
+    }
+
     @discardableResult
     static func playlistDelete(device: Device, relpath: String) -> Bool {
         guard let dj = deviceJSON(device) else { return false }

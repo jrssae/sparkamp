@@ -24,8 +24,12 @@ struct DeviceDetailView: View {
     // own config; the header right-click toggles columns natively).
     @State private var columnCustomization = TableColumnCustomization<DeviceTrack>()
     @AppStorage("sparkamp.dev.columnOrder") private var columnCustomizationData = Data()
-    // Delete-from-device confirmation.
+    // Delete-from-device / remove-from-playlist confirmation. When a playlist
+    // chip is active the action is "Remove" (drops from that .m3u, files stay);
+    // on "All files" it's "Delete" (permanent). pendingRemoveRelpath non-nil
+    // selects Remove mode.
     @State private var pendingDeletePaths: [String] = []
+    @State private var pendingRemoveRelpath: String? = nil
     @State private var showDeleteConfirm = false
     // Device-playlist chips: nil = "All files"; else the selected playlist relpath.
     @State private var selectedPlaylistRelpath: String? = nil
@@ -96,16 +100,31 @@ struct DeviceDetailView: View {
             }
         }
         .confirmationDialog(
-            "Delete \(pendingDeletePaths.count) file\(pendingDeletePaths.count == 1 ? "" : "s") from the device?",
+            {
+                let n = pendingDeletePaths.count
+                let s = n == 1 ? "" : "s"
+                return pendingRemoveRelpath != nil
+                    ? "Remove \(n) file\(s) from this playlist?"
+                    : "Delete \(n) file\(s) from the device?"
+            }(),
             isPresented: $showDeleteConfirm, titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
-                model.deleteFromDevice(device, paths: pendingDeletePaths)
-                selection.removeAll()
+            if let rel = pendingRemoveRelpath {
+                Button("Remove", role: .destructive) {
+                    model.removeFromDevicePlaylist(device, relpath: rel, paths: pendingDeletePaths)
+                    selection.removeAll()
+                }
+            } else {
+                Button("Delete", role: .destructive) {
+                    model.deleteFromDevice(device, paths: pendingDeletePaths)
+                    selection.removeAll()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The files are permanently deleted from the device and removed from every playlist on it. This can't be undone.")
+            Text(pendingRemoveRelpath != nil
+                ? "The files stay on the device and in any other playlist."
+                : "The files are permanently deleted from the device and removed from every playlist on it. This can't be undone.")
         }
         .confirmationDialog(
             "Delete this playlist from the device?",
@@ -161,7 +180,13 @@ struct DeviceDetailView: View {
     private func requestDelete(_ paths: [String]) {
         guard !paths.isEmpty, !device.readOnly else { return }
         pendingDeletePaths = paths
+        pendingRemoveRelpath = selectedPlaylistRelpath  // nil ("All files") = delete
         showDeleteConfirm = true
+    }
+
+    /// Label for the file-view destructive action, which differs by mode.
+    private var deleteActionLabel: String {
+        selectedPlaylistRelpath == nil ? "Delete from Device" : "Remove from Playlist"
     }
 
     private func paths(for ids: Set<String>) -> [String] {
@@ -395,7 +420,7 @@ struct DeviceDetailView: View {
                 Button("View Album Art") { model.mlViewArtForPath(p) }
                 Divider()
             }
-            Button("Delete from Device", role: .destructive) {
+            Button(deleteActionLabel, role: .destructive) {
                 requestDelete(paths(for: ids))
             }
             .disabled(device.readOnly)
@@ -484,7 +509,8 @@ struct DeviceDetailView: View {
             Button(role: .destructive) {
                 requestDelete(paths(for: selection))
             } label: {
-                Label("Delete from Device", systemImage: "trash")
+                Label(deleteActionLabel,
+                      systemImage: selectedPlaylistRelpath == nil ? "trash" : "minus.circle")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)

@@ -228,6 +228,27 @@ extension SparkampModel {
         }
     }
 
+    /// Remove files from ONE device playlist's .m3u (the files stay on the
+    /// device) — the "Remove" action, distinct from "Delete". Reloads the
+    /// playlists (their entries changed) so the chip filter updates.
+    func removeFromDevicePlaylist(_ device: Device, relpath: String, paths: [String]) {
+        guard !paths.isEmpty, !deviceBusy else { return }
+        deviceBusy = true
+        deviceStatus = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = DeviceService.playlistRemoveEntries(
+                device: device, relpath: relpath, paths: paths)
+            let pls = DeviceService.devicePlaylists(device: device)
+            DispatchQueue.main.async {
+                self.devicePlaylists = pls
+                self.deviceBusy = false
+                self.deviceStatus = ok
+                    ? "Removed \(paths.count) from playlist"
+                    : "Couldn't remove from playlist"
+            }
+        }
+    }
+
     /// Permanently delete files from the device (caller confirmed), then refresh.
     func deleteFromDevice(_ device: Device, paths: [String]) {
         guard !paths.isEmpty, !deviceBusy else { return }

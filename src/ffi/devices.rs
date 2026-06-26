@@ -503,6 +503,18 @@ pub unsafe extern "C" fn sparkamp_device_playlist_rename(
         return json_out(&OkResult { ok: false });
     };
     let ok = plan::device_playlist_rename(&dev, &rel, &name, ext_for_format(playlist_format));
+    // Keep a linked library playlist's name in step (matches GTK): a library
+    // playlist whose safe filename equals the device file's stem is the "same"
+    // playlist, so rename it too. Looked up by the OLD path (the library copy
+    // still carries the old name at this point).
+    if ok {
+        let old_path = dev.mount_path.join(&rel);
+        if let Some(lib) = open_lib() {
+            if let Some((id, _)) = plan::linked_library_playlist(&lib, &old_path) {
+                let _ = lib.rename_playlist(id, name.trim());
+            }
+        }
+    }
     json_out(&OkResult { ok })
 }
 
@@ -517,6 +529,30 @@ pub unsafe extern "C" fn sparkamp_device_playlist_duplicate(
         return json_out(&OkResult { ok: false });
     };
     json_out(&OkResult { ok: plan::device_playlist_duplicate(&dev, &rel) })
+}
+
+/// Remove the given files from ONE device playlist's `.m3u` (the files stay on
+/// the device and in other playlists) — the "Remove" action, distinct from
+/// "Delete". Returns `{"ok":bool}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_playlist_remove_entries(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+    relpath: *const c_char,
+    paths_json: *const c_char,
+) -> *mut c_char {
+    let (Some(dev), Some(rel)) = (json_in::<Device>(device_json), cstr(relpath)) else {
+        return json_out(&OkResult { ok: false });
+    };
+    let paths: Vec<String> = json_in(paths_json).unwrap_or_default();
+    let basenames: std::collections::HashSet<String> = paths
+        .iter()
+        .filter_map(|p| {
+            Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned())
+        })
+        .collect();
+    let ok = plan::device_m3u_remove_basenames(&dev.mount_path.join(&rel), &basenames);
+    json_out(&OkResult { ok })
 }
 
 /// Delete a device playlist file (the audio files stay). Returns `{"ok":bool}`.
