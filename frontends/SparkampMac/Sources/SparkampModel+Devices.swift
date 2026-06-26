@@ -176,6 +176,58 @@ extension SparkampModel {
         }
     }
 
+    // MARK: Device playlists
+
+    /// Load the device's playlists into `devicePlaylists` (background).
+    func loadDevicePlaylists(_ device: Device) {
+        guard device.fsVisible else { devicePlaylists = []; return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pls = DeviceService.devicePlaylists(device: device)
+            DispatchQueue.main.async { self.devicePlaylists = pls }
+        }
+    }
+
+    func newDevicePlaylist(_ device: Device, name: String) {
+        runDevicePlaylistOp(device) { DeviceService.playlistNew(device: device, name: name, format: $0) }
+    }
+
+    func renameDevicePlaylist(_ device: Device, relpath: String, newName: String) {
+        runDevicePlaylistOp(device) {
+            DeviceService.playlistRename(device: device, relpath: relpath, newName: newName, format: $0)
+        }
+    }
+
+    func duplicateDevicePlaylist(_ device: Device, relpath: String) {
+        runDevicePlaylistOp(device) { _ in
+            DeviceService.playlistDuplicate(device: device, relpath: relpath)
+        }
+    }
+
+    func deleteDevicePlaylist(_ device: Device, relpath: String) {
+        runDevicePlaylistOp(device) { _ in
+            DeviceService.playlistDelete(device: device, relpath: relpath)
+        }
+    }
+
+    /// Run a device-playlist file op on the background queue (passing the
+    /// playlist format), then reload the playlist list + counts on the main
+    /// actor. `op` returns whether it succeeded.
+    private func runDevicePlaylistOp(_ device: Device, _ op: @escaping (Int32) -> Bool) {
+        guard !deviceBusy else { return }
+        let format = playlistFormat
+        deviceBusy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = op(format)
+            let pls = DeviceService.devicePlaylists(device: device)
+            DispatchQueue.main.async {
+                self.devicePlaylists = pls
+                self.refreshDeviceCounts(for: device)
+                self.deviceBusy = false
+                if !ok { self.deviceStatus = "Playlist operation failed" }
+            }
+        }
+    }
+
     /// Permanently delete files from the device (caller confirmed), then refresh.
     func deleteFromDevice(_ device: Device, paths: [String]) {
         guard !paths.isEmpty, !deviceBusy else { return }

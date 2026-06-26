@@ -697,6 +697,77 @@ pub(crate) fn send_playlist_to_device(
     apply_playlist_push(lib, dev, &item)
 }
 
+// ─────────────────────── device playlist file ops ───────────────────────
+//
+// Direct filesystem operations on the device's own `.m3u`/`.m3u8` files (no
+// library DB), used by the macOS device-playlists UI. Device playlists live at
+// the storage root so their relative `Music/<file>` entries resolve.
+
+/// Create an empty device playlist `<name>.<ext>` at the device root. Returns
+/// its device-relative path (the filename), or `None` on failure / read-only.
+pub(crate) fn device_playlist_create(dev: &Device, name: &str, ext: &str) -> Option<String> {
+    if dev.read_only {
+        return None;
+    }
+    let filename = format!("{}.{ext}", safe_playlist_filename(name));
+    let path = dev.mount_path.join(&filename);
+    if !path.exists() {
+        std::fs::write(&path, "#EXTM3U\n").ok()?;
+    }
+    Some(filename)
+}
+
+/// Rename a device playlist file (keeping its extension). Returns ok.
+pub(crate) fn device_playlist_rename(
+    dev: &Device,
+    relpath: &str,
+    new_name: &str,
+    ext: &str,
+) -> bool {
+    if dev.read_only {
+        return false;
+    }
+    let old = dev.mount_path.join(relpath);
+    let parent = old.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dev.mount_path.clone());
+    let new = parent.join(format!("{}.{ext}", safe_playlist_filename(new_name)));
+    if new == old {
+        return true;
+    }
+    std::fs::rename(&old, &new).is_ok()
+}
+
+/// Duplicate a device playlist to "<stem> copy[ N].<ext>". Returns ok.
+pub(crate) fn device_playlist_duplicate(dev: &Device, relpath: &str) -> bool {
+    if dev.read_only {
+        return false;
+    }
+    let src = dev.mount_path.join(relpath);
+    let Some(stem) = src.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+        return false;
+    };
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "m3u8".to_string());
+    let parent = src.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dev.mount_path.clone());
+    // Find a free "<stem> copy" / "<stem> copy 2" … name.
+    let mut candidate = parent.join(format!("{stem} copy.{ext}"));
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = parent.join(format!("{stem} copy {n}.{ext}"));
+        n += 1;
+    }
+    std::fs::copy(&src, &candidate).is_ok()
+}
+
+/// Delete a device playlist file (the `.m3u` only; the audio files stay).
+pub(crate) fn device_playlist_delete(dev: &Device, relpath: &str) -> bool {
+    if dev.read_only {
+        return false;
+    }
+    std::fs::remove_file(dev.mount_path.join(relpath)).is_ok()
+}
+
 /// Record/refresh the per-playlist baseline after a sync resolves it.
 fn update_playlist_baseline(
     lib: &MediaLibrary,

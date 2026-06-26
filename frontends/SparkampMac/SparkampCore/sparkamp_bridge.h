@@ -547,6 +547,35 @@ char *sparkamp_device_send_playlist(SparkampCtx *ctx,
                                     int64_t playlist_id,
                                     int playlist_format);
 
+/** The device's own playlists as JSON [{name, relpath, entries:[basename]}].
+    Free with sparkamp_free_string. */
+char *sparkamp_device_playlists(SparkampCtx *ctx, const char *device_json);
+
+/** Create an empty device playlist. playlist_format: 0 = m3u8, 1 = m3u.
+    Returns {"ok":bool,"relpath":string}. Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_new(SparkampCtx *ctx,
+                                   const char *device_json,
+                                   const char *name,
+                                   int playlist_format);
+
+/** Rename a device playlist file. Returns {"ok":bool}. Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_rename(SparkampCtx *ctx,
+                                      const char *device_json,
+                                      const char *relpath,
+                                      const char *new_name,
+                                      int playlist_format);
+
+/** Duplicate a device playlist to "<stem> copy". Returns {"ok":bool}. Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_duplicate(SparkampCtx *ctx,
+                                         const char *device_json,
+                                         const char *relpath);
+
+/** Delete a device playlist file (audio files stay). Returns {"ok":bool}.
+    Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_delete(SparkampCtx *ctx,
+                                      const char *device_json,
+                                      const char *relpath);
+
 /** Permanently delete files (JSON array of absolute on-device paths) from the
     device and any device playlist. Returns the count that could NOT be deleted,
     or -1 on bad input. DELETION RULE: show an explicit confirmation first. */

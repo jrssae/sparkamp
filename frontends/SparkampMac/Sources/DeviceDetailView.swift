@@ -27,6 +27,14 @@ struct DeviceDetailView: View {
     // Delete-from-device confirmation.
     @State private var pendingDeletePaths: [String] = []
     @State private var showDeleteConfirm = false
+    // Device-playlist chips: nil = "All files"; else the selected playlist relpath.
+    @State private var selectedPlaylistRelpath: String? = nil
+    @State private var showNewPlaylist = false
+    @State private var newPlaylistName = ""
+    @State private var showRenamePlaylist = false
+    @State private var renamePlaylistText = ""
+    @State private var renamePlaylistRelpath = ""
+    @State private var showDeletePlaylistConfirm = false
 
     private var vars: SkinVars { themeManager.currentVars }
     private var isEjecting: Bool { model.ejectingDevices.contains(device.backendId) }
@@ -47,6 +55,9 @@ struct DeviceDetailView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
             }
+            if device.fsVisible {
+                playlistChips
+            }
             Divider().background(theme.windowBorder)
             if device.fsVisible {
                 filesTable
@@ -59,6 +70,7 @@ struct DeviceDetailView: View {
         .background(theme.background)
         .onAppear {
             model.loadDeviceTracks(device)
+            model.loadDevicePlaylists(device)
             if !columnCustomizationData.isEmpty,
                let decoded = try? JSONDecoder().decode(
                    TableColumnCustomization<DeviceTrack>.self, from: columnCustomizationData) {
@@ -67,7 +79,9 @@ struct DeviceDetailView: View {
         }
         .onChange(of: device.backendId) { _, _ in
             selection.removeAll()
+            selectedPlaylistRelpath = nil
             model.loadDeviceTracks(device)
+            model.loadDevicePlaylists(device)
         }
         .onChange(of: columnCustomization) { _, v in
             if let d = try? JSONEncoder().encode(v) { columnCustomizationData = d }
@@ -93,6 +107,55 @@ struct DeviceDetailView: View {
         } message: {
             Text("The files are permanently deleted from the device and removed from every playlist on it. This can't be undone.")
         }
+        .confirmationDialog(
+            "Delete this playlist from the device?",
+            isPresented: $showDeletePlaylistConfirm, titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let rel = selectedPlaylistRelpath {
+                    model.deleteDevicePlaylist(device, relpath: rel)
+                    selectedPlaylistRelpath = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Only the playlist is removed; the audio files stay on the device.")
+        }
+        .sheet(isPresented: $showNewPlaylist) {
+            playlistNameSheet(title: "New Playlist", text: $newPlaylistName, confirm: "Create") {
+                model.newDevicePlaylist(device, name: newPlaylistName)
+            }
+        }
+        .sheet(isPresented: $showRenamePlaylist) {
+            playlistNameSheet(title: "Rename Playlist", text: $renamePlaylistText, confirm: "Rename") {
+                model.renameDevicePlaylist(
+                    device, relpath: renamePlaylistRelpath, newName: renamePlaylistText)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func playlistNameSheet(
+        title: String, text: Binding<String>, confirm: String, action: @escaping () -> Void
+    ) -> some View {
+        VStack(spacing: 16) {
+            Text(title).font(.headline)
+            TextField("Name", text: text)
+                .textFieldStyle(.roundedBorder).frame(width: 260)
+            HStack {
+                Button("Cancel") {
+                    showNewPlaylist = false; showRenamePlaylist = false
+                }
+                Spacer()
+                Button(confirm) {
+                    showNewPlaylist = false; showRenamePlaylist = false
+                    action()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24).frame(width: 320)
     }
 
     private func requestDelete(_ paths: [String]) {
@@ -229,10 +292,90 @@ struct DeviceDetailView: View {
             .foregroundStyle(color)
     }
 
+    // MARK: Device playlists (chips + filter)
+
+    @ViewBuilder
+    private var playlistChips: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    chip(label: "All files", selected: selectedPlaylistRelpath == nil) {
+                        selectedPlaylistRelpath = nil
+                    }
+                    ForEach(model.devicePlaylists) { pl in
+                        chip(label: pl.displayName,
+                             selected: selectedPlaylistRelpath == pl.relpath) {
+                            selectedPlaylistRelpath = pl.relpath
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 6)
+            // Playlist actions: + New always; Rename/Duplicate/Delete when a
+            // device playlist is selected.
+            Button { newPlaylistName = ""; showNewPlaylist = true } label: {
+                Label("New", systemImage: "plus")
+            }
+            .disabled(device.readOnly || actionsBusy)
+            if let rel = selectedPlaylistRelpath,
+               let pl = model.devicePlaylists.first(where: { $0.relpath == rel }) {
+                Button {
+                    renamePlaylistRelpath = rel
+                    renamePlaylistText = pl.displayName
+                    showRenamePlaylist = true
+                } label: { Image(systemName: "pencil") }
+                .help("Rename playlist")
+                .disabled(device.readOnly || actionsBusy)
+                Button { model.duplicateDevicePlaylist(device, relpath: rel) } label: {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .help("Duplicate playlist")
+                .disabled(device.readOnly || actionsBusy)
+                Button(role: .destructive) { showDeletePlaylistConfirm = true } label: {
+                    Image(systemName: "trash")
+                }
+                .help("Delete playlist")
+                .disabled(device.readOnly || actionsBusy)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func chip(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(selected ? theme.playlistCurrentBg : theme.windowBorder.opacity(0.25))
+                )
+                .foregroundStyle(selected ? theme.playlistCurrentText : theme.playlistText)
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: Files
 
+    /// Tracks shown in the table: all of them, or just the selected device
+    /// playlist's entries (matched by filename), then sorted.
     private var sortedTracks: [DeviceTrack] {
-        model.deviceTracks.sorted(using: sortOrder)
+        let base: [DeviceTrack]
+        if let rel = selectedPlaylistRelpath,
+           let pl = model.devicePlaylists.first(where: { $0.relpath == rel }) {
+            let names = Set(pl.entries)
+            base = model.deviceTracks.filter {
+                names.contains(URL(fileURLWithPath: $0.path).lastPathComponent)
+            }
+        } else {
+            base = model.deviceTracks
+        }
+        return base.sorted(using: sortOrder)
     }
 
     /// The device files table. The full ML column set is present; the user

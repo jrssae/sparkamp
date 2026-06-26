@@ -111,6 +111,8 @@ final class SparkampModel: ObservableObject {
     /// Audio files on the device currently shown in the detail view, with their
     /// "synced from" library path. Loaded by `loadDeviceTracks`.
     @Published var deviceTracks: [DeviceTrack] = []
+    /// Playlists on the device currently shown in the detail view.
+    @Published var devicePlaylists: [DevicePlaylist] = []
     /// True while a copy/sync/scan is running for the selected device — disables
     /// the detail-view actions and shows their busy state.
     @Published var deviceBusy: Bool = false

@@ -128,6 +128,17 @@ struct PlaylistSyncItem: Codable, Identifiable {
     var id: Int64 { libraryPlaylistId }
 }
 
+/// A playlist file on the device, with its entry basenames (for filtering the
+/// file list to that playlist without another FFI call).
+struct DevicePlaylist: Codable, Identifiable {
+    var name: String
+    var relpath: String
+    var entries: [String]
+    var id: String { relpath }
+    /// Display label without the .m3u/.m3u8 extension.
+    var displayName: String { (name as NSString).deletingPathExtension }
+}
+
 struct ApplyResult: Codable { var applied: Int; var skipped: Int }
 struct CopyResult: Codable { var copied: Int; var skipped: Int; var bytes: UInt64 }
 struct PlaylistApplyResult: Codable { var pushed: Int; var pulled: Int; var skipped: Int }
@@ -395,6 +406,56 @@ enum DeviceService {
         struct Raw: Decodable { var copied: Int; var ok: Bool }
         let raw: Raw? = decodeJSON(takeString(out))
         return (raw?.copied ?? 0, raw?.ok ?? false)
+    }
+
+    // MARK: Device playlists
+
+    static func devicePlaylists(device: Device) -> [DevicePlaylist] {
+        guard let dj = deviceJSON(device) else { return [] }
+        let out = dj.withCString { sparkamp_device_playlists(nil, $0) }
+        return decodeJSON(takeString(out)) ?? []
+    }
+
+    @discardableResult
+    static func playlistNew(device: Device, name: String, format: Int32) -> Bool {
+        guard let dj = deviceJSON(device) else { return false }
+        let out = dj.withCString { d in name.withCString { n in
+            sparkamp_device_playlist_new(nil, d, n, format)
+        } }
+        struct Raw: Decodable { var ok: Bool }
+        return (decodeJSON(takeString(out)) as Raw?)?.ok ?? false
+    }
+
+    @discardableResult
+    static func playlistRename(
+        device: Device, relpath: String, newName: String, format: Int32
+    ) -> Bool {
+        guard let dj = deviceJSON(device) else { return false }
+        let out = dj.withCString { d in relpath.withCString { r in newName.withCString { n in
+            sparkamp_device_playlist_rename(nil, d, r, n, format)
+        } } }
+        struct Raw: Decodable { var ok: Bool }
+        return (decodeJSON(takeString(out)) as Raw?)?.ok ?? false
+    }
+
+    @discardableResult
+    static func playlistDuplicate(device: Device, relpath: String) -> Bool {
+        guard let dj = deviceJSON(device) else { return false }
+        let out = dj.withCString { d in relpath.withCString { r in
+            sparkamp_device_playlist_duplicate(nil, d, r)
+        } }
+        struct Raw: Decodable { var ok: Bool }
+        return (decodeJSON(takeString(out)) as Raw?)?.ok ?? false
+    }
+
+    @discardableResult
+    static func playlistDelete(device: Device, relpath: String) -> Bool {
+        guard let dj = deviceJSON(device) else { return false }
+        let out = dj.withCString { d in relpath.withCString { r in
+            sparkamp_device_playlist_delete(nil, d, r)
+        } }
+        struct Raw: Decodable { var ok: Bool }
+        return (decodeJSON(takeString(out)) as Raw?)?.ok ?? false
     }
 
     /// Permanently delete files from the device. Returns the count that could

@@ -414,6 +414,124 @@ pub unsafe extern "C" fn sparkamp_device_send_playlist(
     json_out(&PlaylistSendResult { copied, ok })
 }
 
+// ─────────────────────────── device playlists ───────────────────────────
+
+#[derive(Serialize)]
+struct DevicePlaylistDto {
+    name: String,
+    relpath: String,
+    /// Entry basenames in order — lets the UI filter the file list to this
+    /// playlist without another round trip.
+    entries: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct OkResult {
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct PlaylistNewResult {
+    ok: bool,
+    relpath: String,
+}
+
+/// Read a non-null C string into an owned `String`.
+unsafe fn cstr(p: *const c_char) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned())
+}
+
+/// List the device's playlist files as JSON `[{name, relpath, entries}]`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_playlists(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+) -> *mut c_char {
+    let Some(dev) = json_in::<Device>(device_json) else {
+        return std::ptr::null_mut();
+    };
+    let io = crate::devices::io::for_device(&dev);
+    let out: Vec<DevicePlaylistDto> = io
+        .playlist_files()
+        .into_iter()
+        .filter_map(|p| {
+            let rel = p
+                .strip_prefix(&dev.mount_path)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let name = p.file_name()?.to_string_lossy().into_owned();
+            let entries = crate::devices::browse::playlist_entry_order(&p);
+            Some(DevicePlaylistDto { name, relpath: rel, entries })
+        })
+        .collect();
+    json_out(&out)
+}
+
+/// Create an empty device playlist. Returns `{"ok":bool,"relpath":string}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_playlist_new(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+    name: *const c_char,
+    playlist_format: c_int,
+) -> *mut c_char {
+    let (Some(dev), Some(name)) = (json_in::<Device>(device_json), cstr(name)) else {
+        return json_out(&PlaylistNewResult { ok: false, relpath: String::new() });
+    };
+    match plan::device_playlist_create(&dev, &name, ext_for_format(playlist_format)) {
+        Some(relpath) => json_out(&PlaylistNewResult { ok: true, relpath }),
+        None => json_out(&PlaylistNewResult { ok: false, relpath: String::new() }),
+    }
+}
+
+/// Rename a device playlist file. Returns `{"ok":bool}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_playlist_rename(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+    relpath: *const c_char,
+    new_name: *const c_char,
+    playlist_format: c_int,
+) -> *mut c_char {
+    let (Some(dev), Some(rel), Some(name)) =
+        (json_in::<Device>(device_json), cstr(relpath), cstr(new_name))
+    else {
+        return json_out(&OkResult { ok: false });
+    };
+    let ok = plan::device_playlist_rename(&dev, &rel, &name, ext_for_format(playlist_format));
+    json_out(&OkResult { ok })
+}
+
+/// Duplicate a device playlist to "<stem> copy". Returns `{"ok":bool}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_playlist_duplicate(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+    relpath: *const c_char,
+) -> *mut c_char {
+    let (Some(dev), Some(rel)) = (json_in::<Device>(device_json), cstr(relpath)) else {
+        return json_out(&OkResult { ok: false });
+    };
+    json_out(&OkResult { ok: plan::device_playlist_duplicate(&dev, &rel) })
+}
+
+/// Delete a device playlist file (the audio files stay). Returns `{"ok":bool}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_device_playlist_delete(
+    _ctx: *mut SparkampCtx,
+    device_json: *const c_char,
+    relpath: *const c_char,
+) -> *mut c_char {
+    let (Some(dev), Some(rel)) = (json_in::<Device>(device_json), cstr(relpath)) else {
+        return json_out(&OkResult { ok: false });
+    };
+    json_out(&OkResult { ok: plan::device_playlist_delete(&dev, &rel) })
+}
+
 /// Permanently delete the given files from the device (absolute on-device
 /// paths) and drop them from any device playlist. Returns the count that
 /// could NOT be deleted, or -1 on bad input.
