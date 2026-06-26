@@ -160,13 +160,28 @@ extension SkinVars {
         let first = fontFamily.split(separator: ",").first.map(String.init) ?? fontFamily
         return first.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
     }
+    /// Resolve the skin's font: a real `.custom` face only when that family is
+    /// actually installed, otherwise the SYSTEM font at the same size.
+    ///
+    /// Skins name web fonts (e.g. "Inter, system-ui, …") that usually aren't on
+    /// the Mac. `Font.custom("Inter")` then silently falls back to the system
+    /// font but keeps an "Inter" descriptor, and applying `.weight()` to that
+    /// descriptor makes CoreText log "Unable to update Font Descriptor's
+    /// weight" on every render. Using `.system` when the family is absent lets
+    /// `.weight()` resolve cleanly and silences the flood.
+    func resolvedFont(_ size: CGFloat) -> Font {
+        if NSFont(name: primaryFontFamily, size: size) != nil {
+            return .custom(primaryFontFamily, size: size)
+        }
+        return .system(size: size)
+    }
     /// Body font (family + standard size). Inherited as the SwiftUI default.
     var bodyFont: Font {
-        .custom(primaryFontFamily, size: fontSize)
+        resolvedFont(fontSize)
     }
     /// Marquee title font (family + marquee size, bold).
     var marqueeFont: Font {
-        .custom(primaryFontFamily, size: fontSizeMarquee).weight(.bold)
+        resolvedFont(fontSizeMarquee).weight(.bold)
     }
     /// Large display font for the time index — always monospaced regardless of family.
     var largeMonospaceFont: Font {

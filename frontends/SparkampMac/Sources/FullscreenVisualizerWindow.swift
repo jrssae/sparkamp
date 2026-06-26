@@ -138,7 +138,7 @@ struct FullscreenVisualizerView: View {
                 VStack {
                     Spacer()
                     Text(toastMessage)
-                        .font(.custom(vars.primaryFontFamily, size: 16).weight(.semibold))
+                        .font(vars.resolvedFont(16).weight(.semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
