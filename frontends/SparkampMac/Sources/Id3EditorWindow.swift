@@ -127,6 +127,25 @@ struct Id3EditorView: View {
             .padding(.vertical, 8)
             .background(theme.background)
 
+            // ── File path (non-editable, selectable for copy) ─────────────────
+            // Shows the full path so you can confirm exactly which file you're
+            // viewing/editing — mirrors the GTK editor's selectable path field.
+            if !filePath.isEmpty {
+                HStack(spacing: 6) {
+                    Text("Path")
+                        .font(vars.bodyFont.weight(.semibold))
+                        .foregroundStyle(theme.playlistDurationText)
+                    SelectableText(
+                        text: filePath,
+                        font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+                        color: NSColor(theme.titleText))
+                    .help(filePath)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(theme.background)
+            }
+
             Divider().background(theme.windowBorder)
 
             // ── Main content ──────────────────────────────────────────────────
@@ -341,6 +360,40 @@ struct Id3EditorView: View {
 
     private func writeField(tag: OpaquePointer, frameId: String, value: String) {
         frameId.withCString { fId in value.withCString { val in sparkamp_tag_set(tag, fId, val) } }
+    }
+}
+
+// MARK: - Selectable (non-editable) text
+
+/// A non-editable but selectable single-line label, so a long file path can be
+/// copied in full even when the display truncates it (a truncated SwiftUI
+/// `Text` only copies the visible portion; NSTextField copies the whole
+/// stringValue). Matches the GTK editor's selectable path field.
+private struct SelectableText: NSViewRepresentable {
+    let text: String
+    var font: NSFont = .systemFont(ofSize: 11)
+    var color: NSColor = .labelColor
+
+    func makeNSView(context: Context) -> NSTextField {
+        let tf = NSTextField(labelWithString: text)
+        tf.isSelectable = true
+        tf.isEditable = false
+        tf.isBordered = false
+        tf.drawsBackground = false
+        tf.lineBreakMode = .byTruncatingMiddle
+        tf.cell?.usesSingleLineMode = true
+        tf.font = font
+        tf.textColor = color
+        // Take the available width; allow truncation rather than forcing growth.
+        tf.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tf.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return tf
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        nsView.stringValue = text
+        nsView.font = font
+        nsView.textColor = color
     }
 }
 
