@@ -47,12 +47,21 @@ unsafe fn json_in<T: for<'de> Deserialize<'de>>(p: *const c_char) -> Option<T> {
     serde_json::from_str(s).ok()
 }
 
-/// Borrow the open media library, or `None` if `sparkamp_ml_open` hasn't run.
-unsafe fn lib_of<'a>(ctx: *const SparkampCtx) -> Option<&'a MediaLibrary> {
-    if ctx.is_null() {
-        return None;
-    }
-    (*ctx).media_library.as_ref()
+/// Open a fresh, short-lived media-library connection for one device op.
+///
+/// Device ops deliberately do NOT borrow `ctx.media_library` (the main-thread
+/// connection used by the tick): a separate connection lets these calls run on
+/// a Swift background queue without sharing the non-`Send` `ctx`. SQLite WAL +
+/// the 5 s busy timeout (set in `MediaLibrary::open`) make the two connections
+/// safe against each other. `ctx` is therefore unused by every op below.
+fn open_lib() -> Option<MediaLibrary> {
+    MediaLibrary::open().ok()
+}
+
+/// Map the playlist-format code (0 = m3u8, 1 = m3u) to its extension. Passed in
+/// from Swift so device ops never read `ctx.config` off the main thread.
+fn ext_for_format(format: c_int) -> &'static str {
+    if format == 1 { "m3u" } else { "m3u8" }
 }
 
 // ─────────────────────────── wire types ───────────────────────────
@@ -213,14 +222,14 @@ pub unsafe extern "C" fn sparkamp_devices_refresh(
 /// the library path it was synced from (if any).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_browse(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
 ) -> *mut c_char {
     let Some(dev) = json_in::<Device>(device_json) else {
         return std::ptr::null_mut();
     };
     // Map device-relative path → library path for the "Synced from" column.
-    let synced: std::collections::HashMap<String, String> = lib_of(ctx)
+    let synced: std::collections::HashMap<String, String> = open_lib()
         .and_then(|lib| {
             let id = plan::device_sync_id(&dev);
             lib.sync_pairs_for_device(&id).ok()
@@ -268,32 +277,32 @@ pub unsafe extern "C" fn sparkamp_device_counts(
 /// Compute the two-way sync plan for a device (JSON [`plan::SyncPlanDto`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_sync_plan(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
 ) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
-    json_out(&plan::sync_plan_dto(lib, &dev))
+    json_out(&plan::sync_plan_dto(&lib, &dev))
 }
 
 /// Apply a sync plan plus the user's conflict choices. Returns
 /// `{"applied":N,"skipped":M}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_apply_sync(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
     plan_json: *const c_char,
     choices_json: *const c_char,
 ) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
     let Some(p) = json_in::<plan::SyncPlanDto>(plan_json) else {
         return std::ptr::null_mut();
     };
     let choices: Vec<plan::ConflictChoice> = json_in(choices_json).unwrap_or_default();
-    let (applied, skipped) = plan::apply_sync_plan_dto(lib, &dev, &p, &choices);
+    let (applied, skipped) = plan::apply_sync_plan_dto(&lib, &dev, &p, &choices);
     json_out(&ApplyResult { applied, skipped })
 }
 
@@ -301,11 +310,11 @@ pub unsafe extern "C" fn sparkamp_device_apply_sync(
 /// layout, recording sync pairs. Returns `{"copied":N,"skipped":M,"bytes":B}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_copy(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
     src_paths_json: *const c_char,
 ) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
     let srcs: Vec<String> = json_in(src_paths_json).unwrap_or_default();
@@ -318,17 +327,17 @@ pub unsafe extern "C" fn sparkamp_device_copy(
             skipped += 1;
             continue;
         }
-        let (rel, present) = plan::device_plan_one(lib, &dev.mount_path, &device_id, &src);
+        let (rel, present) = plan::device_plan_one(&lib, &dev.mount_path, &device_id, &src);
         if present {
             // Already on the device; still (re)record the pair so it syncs.
-            plan::record_pair(lib, &device_id, &src, &rel);
+            plan::record_pair(&lib, &device_id, &src, &rel);
             skipped += 1;
             continue;
         }
         match io.copy_to_device(&src, &rel) {
             Ok(_) => {
                 bytes += std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
-                plan::record_pair(lib, &device_id, &src, &rel);
+                plan::record_pair(&lib, &device_id, &src, &rel);
                 copied += 1;
             }
             Err(_) => skipped += 1,
@@ -340,34 +349,34 @@ pub unsafe extern "C" fn sparkamp_device_copy(
 /// Plan playlist sync: JSON array of the device's per-playlist sync items.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_playlist_plan(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
+    playlist_format: c_int,
 ) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
-    let ext = (*ctx).config.media_library.playlist_format.extension();
-    json_out(&plan::device_playlist_sync_plan(lib, &dev, ext))
+    json_out(&plan::device_playlist_sync_plan(&lib, &dev, ext_for_format(playlist_format)))
 }
 
 /// Apply playlist sync. The live plan is re-derived (the call is advisory); each
 /// non-conflict item is pushed or pulled. Returns `{pushed, pulled, skipped}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_playlist_apply(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
-    _items_json: *const c_char,
+    playlist_format: c_int,
 ) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
     use crate::devices::sync::PlaylistSyncDir;
-    let ext = (*ctx).config.media_library.playlist_format.extension();
+    let ext = ext_for_format(playlist_format);
     let (mut pushed, mut pulled, mut skipped) = (0usize, 0usize, 0usize);
-    for item in plan::device_playlist_sync_plan(lib, &dev, ext) {
+    for item in plan::device_playlist_sync_plan(&lib, &dev, ext) {
         match item.dir {
             PlaylistSyncDir::Push => {
-                let (_, ok) = plan::apply_playlist_push(lib, &dev, &item);
+                let (_, ok) = plan::apply_playlist_push(&lib, &dev, &item);
                 if ok {
                     pushed += 1;
                 } else {
@@ -375,7 +384,7 @@ pub unsafe extern "C" fn sparkamp_device_playlist_apply(
                 }
             }
             PlaylistSyncDir::Pull => {
-                if plan::apply_playlist_pull(lib, &item) {
+                if plan::apply_playlist_pull(&lib, &item) {
                     pulled += 1;
                 } else {
                     skipped += 1;
@@ -392,15 +401,16 @@ pub unsafe extern "C" fn sparkamp_device_playlist_apply(
 /// `{"copied":N,"ok":bool}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_send_playlist(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
     playlist_id: i64,
+    playlist_format: c_int,
 ) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
-    let ext = (*ctx).config.media_library.playlist_format.extension();
-    let (copied, ok) = plan::send_playlist_to_device(lib, &dev, playlist_id, ext);
+    let (copied, ok) =
+        plan::send_playlist_to_device(&lib, &dev, playlist_id, ext_for_format(playlist_format));
     json_out(&PlaylistSendResult { copied, ok })
 }
 
@@ -431,7 +441,7 @@ pub unsafe extern "C" fn sparkamp_device_delete_files(
 /// `sparkamp_tag_free_artwork`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_conflict_artwork(
-    ctx: *mut SparkampCtx,
+    _ctx: *mut SparkampCtx,
     device_json: *const c_char,
     dev_relpath: *const c_char,
     side: c_int,
@@ -440,7 +450,7 @@ pub unsafe extern "C" fn sparkamp_device_conflict_artwork(
     if !len_out.is_null() {
         *len_out = 0;
     }
-    let (Some(lib), Some(dev)) = (lib_of(ctx), json_in::<Device>(device_json)) else {
+    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
         return std::ptr::null_mut();
     };
     let Some(rel) = (if dev_relpath.is_null() {

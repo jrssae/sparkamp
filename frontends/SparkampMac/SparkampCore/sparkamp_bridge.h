@@ -527,21 +527,25 @@ char *sparkamp_device_copy(SparkampCtx *ctx,
                            const char *device_json,
                            const char *src_paths_json);
 
-/** Device playlist sync plan (JSON array). Free with sparkamp_free_string. */
-char *sparkamp_device_playlist_plan(SparkampCtx *ctx, const char *device_json);
+/** Device playlist sync plan (JSON array). playlist_format: 0 = m3u8, 1 = m3u.
+    Free with sparkamp_free_string. */
+char *sparkamp_device_playlist_plan(SparkampCtx *ctx,
+                                    const char *device_json,
+                                    int playlist_format);
 
 /** Apply device playlist sync. Returns {"pushed":N,"pulled":M,"skipped":K}.
-    Free with sparkamp_free_string. */
+    playlist_format: 0 = m3u8, 1 = m3u. Free with sparkamp_free_string. */
 char *sparkamp_device_playlist_apply(SparkampCtx *ctx,
                                      const char *device_json,
-                                     const char *items_json);
+                                     int playlist_format);
 
 /** Send one library playlist (by DB id) to the device — copy its tracks under
-    Music/<file> and write the device .m3u. Returns {"copied":N,"ok":bool}.
-    Free with sparkamp_free_string. */
+    Music/<file> and write the device .m3u. playlist_format: 0 = m3u8, 1 = m3u.
+    Returns {"copied":N,"ok":bool}. Free with sparkamp_free_string. */
 char *sparkamp_device_send_playlist(SparkampCtx *ctx,
                                     const char *device_json,
-                                    int64_t playlist_id);
+                                    int64_t playlist_id,
+                                    int playlist_format);
 
 /** Permanently delete files (JSON array of absolute on-device paths) from the
     device and any device playlist. Returns the count that could NOT be deleted,

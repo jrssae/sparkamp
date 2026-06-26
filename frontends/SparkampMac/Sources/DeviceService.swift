@@ -151,11 +151,12 @@ struct VolumeInfo: Encodable {
 /// AppKit/DiskArbitration (no core involvement); the JSON wrappers drive
 /// `src/ffi/devices.rs`.
 ///
-/// THREADING: the JSON wrappers touch `ctx.media_library` (a SQLite connection
-/// that is not `Send`) and the main-thread tick uses the same `ctx`, so every
-/// wrapper here runs synchronously on the caller's thread and callers invoke
-/// them on the main actor — matching all other synchronous FFI in this app.
-/// Volume enumeration and eject take no `ctx` and run on a background queue.
+/// THREADING: every wrapper here is `ctx`-free — the core opens its own
+/// short-lived DB connection per call (open_lib in src/ffi/devices.rs), kept
+/// safe against the main-thread tick's connection by SQLite WAL + busy timeout.
+/// So `SparkampModel+Devices` runs the heavy ops (browse/copy/sync/scan/send)
+/// on a background queue and hops to the main actor only to publish results;
+/// nothing here captures the non-Sendable `ctx`.
 enum DeviceService {
 
     private static let decoder: JSONDecoder = {
@@ -316,79 +317,81 @@ enum DeviceService {
         }, ctx)
     }
 
-    // MARK: JSON FFI wrappers (main-thread; see THREADING note above)
+    // MARK: JSON FFI wrappers
+    //
+    // These device ops are `ctx`-free: the core opens its own short-lived DB
+    // connection per call (see open_lib in src/ffi/devices.rs), so we pass a
+    // nil ctx and the model can run them on a background queue without sharing
+    // the non-Sendable ctx pointer. The playlist ops take the playlist format
+    // (0 = m3u8, 1 = m3u) the model read on the main thread.
 
-    static func refresh(ctx: OpaquePointer, volumes: [VolumeInfo]) -> [Device] {
+    static func refresh(volumes: [VolumeInfo]) -> [Device] {
         guard let json = encodeJSON(volumes) else { return [] }
-        let out = json.withCString { sparkamp_devices_refresh(ctx, $0) }
+        let out = json.withCString { sparkamp_devices_refresh(nil, $0) }
         return decodeJSON(takeString(out)) ?? []
     }
 
-    static func browse(ctx: OpaquePointer, device: Device) -> [DeviceTrack] {
+    static func browse(device: Device) -> [DeviceTrack] {
         guard let dj = deviceJSON(device) else { return [] }
-        let out = dj.withCString { sparkamp_device_browse(ctx, $0) }
+        let out = dj.withCString { sparkamp_device_browse(nil, $0) }
         return decodeJSON(takeString(out)) ?? []
     }
 
     /// Song / playlist counts — a directory walk only, no tag reads (unlike
-    /// `browse`), so it's cheap on the main thread.
-    static func counts(ctx: OpaquePointer, device: Device) -> DeviceCounts {
+    /// `browse`).
+    static func counts(device: Device) -> DeviceCounts {
         guard let dj = deviceJSON(device) else { return DeviceCounts(songs: 0, playlists: 0) }
-        let out = dj.withCString { sparkamp_device_counts(ctx, $0) }
+        let out = dj.withCString { sparkamp_device_counts(nil, $0) }
         struct Raw: Decodable { var songs: Int; var playlists: Int }
         let raw: Raw? = decodeJSON(takeString(out))
         return DeviceCounts(songs: raw?.songs ?? 0, playlists: raw?.playlists ?? 0)
     }
 
-    static func syncPlan(ctx: OpaquePointer, device: Device) -> SyncPlan? {
+    static func syncPlan(device: Device) -> SyncPlan? {
         guard let dj = deviceJSON(device) else { return nil }
-        let out = dj.withCString { sparkamp_device_sync_plan(ctx, $0) }
+        let out = dj.withCString { sparkamp_device_sync_plan(nil, $0) }
         return decodeJSON(takeString(out))
     }
 
     static func applySync(
-        ctx: OpaquePointer, device: Device, plan: SyncPlan, choices: [ConflictChoice]
+        device: Device, plan: SyncPlan, choices: [ConflictChoice]
     ) -> ApplyResult? {
         guard let dj = deviceJSON(device),
               let pj = encodeJSON(plan),
               let cj = encodeJSON(choices) else { return nil }
         let out = dj.withCString { d in pj.withCString { p in cj.withCString { c in
-            sparkamp_device_apply_sync(ctx, d, p, c)
+            sparkamp_device_apply_sync(nil, d, p, c)
         } } }
         return decodeJSON(takeString(out))
     }
 
-    static func copy(ctx: OpaquePointer, device: Device, srcPaths: [String]) -> CopyResult? {
+    static func copy(device: Device, srcPaths: [String]) -> CopyResult? {
         guard let dj = deviceJSON(device), let sj = encodeJSON(srcPaths) else { return nil }
         let out = dj.withCString { d in sj.withCString { s in
-            sparkamp_device_copy(ctx, d, s)
+            sparkamp_device_copy(nil, d, s)
         } }
         return decodeJSON(takeString(out))
     }
 
-    static func playlistPlan(ctx: OpaquePointer, device: Device) -> [PlaylistSyncItem] {
+    static func playlistPlan(device: Device, format: Int32) -> [PlaylistSyncItem] {
         guard let dj = deviceJSON(device) else { return [] }
-        let out = dj.withCString { sparkamp_device_playlist_plan(ctx, $0) }
+        let out = dj.withCString { sparkamp_device_playlist_plan(nil, $0, format) }
         return decodeJSON(takeString(out)) ?? []
     }
 
-    static func playlistApply(
-        ctx: OpaquePointer, device: Device, items: [PlaylistSyncItem]
-    ) -> PlaylistApplyResult? {
-        guard let dj = deviceJSON(device), let ij = encodeJSON(items) else { return nil }
-        let out = dj.withCString { d in ij.withCString { i in
-            sparkamp_device_playlist_apply(ctx, d, i)
-        } }
+    static func playlistApply(device: Device, format: Int32) -> PlaylistApplyResult? {
+        guard let dj = deviceJSON(device) else { return nil }
+        let out = dj.withCString { sparkamp_device_playlist_apply(nil, $0, format) }
         return decodeJSON(takeString(out))
     }
 
     /// Send one library playlist (by DB id) to the device — copy its tracks +
     /// write the device .m3u. Returns (copied, ok).
     static func sendPlaylist(
-        ctx: OpaquePointer, device: Device, playlistId: Int64
+        device: Device, playlistId: Int64, format: Int32
     ) -> (copied: Int, ok: Bool) {
         guard let dj = deviceJSON(device) else { return (0, false) }
-        let out = dj.withCString { sparkamp_device_send_playlist(ctx, $0, playlistId) }
+        let out = dj.withCString { sparkamp_device_send_playlist(nil, $0, playlistId, format) }
         struct Raw: Decodable { var copied: Int; var ok: Bool }
         let raw: Raw? = decodeJSON(takeString(out))
         return (raw?.copied ?? 0, raw?.ok ?? false)
@@ -396,21 +399,21 @@ enum DeviceService {
 
     /// Permanently delete files from the device. Returns the count that could
     /// NOT be deleted, or -1 on bad input. The CALLER must confirm first.
-    static func deleteFiles(ctx: OpaquePointer, device: Device, paths: [String]) -> Int {
+    static func deleteFiles(device: Device, paths: [String]) -> Int {
         guard let dj = deviceJSON(device), let pj = encodeJSON(paths) else { return -1 }
         return Int(dj.withCString { d in pj.withCString { p in
-            sparkamp_device_delete_files(ctx, d, p)
+            sparkamp_device_delete_files(nil, d, p)
         } })
     }
 
     /// Embedded artwork for one side of a conflict (side: 0 = computer, 1 = device).
     static func conflictArtwork(
-        ctx: OpaquePointer, device: Device, devRelpath: String, side: Int
+        device: Device, devRelpath: String, side: Int
     ) -> NSImage? {
         guard let dj = deviceJSON(device) else { return nil }
         var len: Int32 = 0
         let ptr = dj.withCString { d in devRelpath.withCString { r in
-            sparkamp_device_conflict_artwork(ctx, d, r, Int32(side), &len)
+            sparkamp_device_conflict_artwork(nil, d, r, Int32(side), &len)
         } }
         guard let ptr = ptr, len > 0 else { return nil }
         defer { sparkamp_tag_free_artwork(ptr, len) }
