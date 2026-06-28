@@ -85,14 +85,17 @@ struct Id3EditorView: View {
     var body: some View {
         let vars = themeManager.currentVars
         return VStack(spacing: 0) {
-            // ── Header ────────────────────────────────────────────────────────
+            // ── Header: full path + filename (non-editable, selectable) ───────
+            // One entry only — the full path (which ends in the filename), so
+            // you can confirm the exact file and copy it. Matches the GTK
+            // editor, which shows a single read-only path field (no separate
+            // filename field).
             HStack(spacing: 8) {
-                Text(filePath.isEmpty ? "No file" : URL(fileURLWithPath: filePath).lastPathComponent)
-                    .font(vars.bodyFont.weight(.semibold))
-                    .foregroundStyle(theme.titleText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                SelectableText(
+                    text: filePath.isEmpty ? "No file" : filePath,
+                    font: .monospacedSystemFont(ofSize: vars.fontSize, weight: .regular),
+                    color: NSColor(theme.titleText))
+                .help(filePath)
 
                 if fileMissing {
                     Text("File not found")
@@ -126,25 +129,6 @@ struct Id3EditorView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(theme.background)
-
-            // ── File path (non-editable, selectable for copy) ─────────────────
-            // Shows the full path so you can confirm exactly which file you're
-            // viewing/editing — mirrors the GTK editor's selectable path field.
-            if !filePath.isEmpty {
-                HStack(spacing: 6) {
-                    Text("Path")
-                        .font(vars.bodyFont.weight(.semibold))
-                        .foregroundStyle(theme.playlistDurationText)
-                    SelectableText(
-                        text: filePath,
-                        font: .monospacedSystemFont(ofSize: 11, weight: .regular),
-                        color: NSColor(theme.titleText))
-                    .help(filePath)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-                .background(theme.background)
-            }
 
             Divider().background(theme.windowBorder)
 
