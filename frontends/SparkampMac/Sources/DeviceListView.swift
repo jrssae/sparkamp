@@ -90,34 +90,46 @@ struct DeviceOverview: View {
 
     @ViewBuilder
     private func card(_ dev: Device) -> some View {
+        let unsupported = dev.backend == .unsupported
         Button { onSelect(dev) } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
-                    Image(systemName: "externaldrive.fill")
+                    Image(systemName: unsupported
+                          ? (dev.fsType == "ios" ? "iphone" : "camera")
+                          : "externaldrive.fill")
                         .foregroundStyle(theme.vars.highlight)
                     Text(dev.label.isEmpty ? "Untitled" : dev.label)
                         .font(vars.bodyFont.weight(.semibold))
                         .foregroundStyle(theme.playlistText)
                         .lineLimit(1)
                     Spacer()
-                    if dev.readOnly {
+                    if dev.readOnly && !unsupported {
                         Text("read-only")
                             .font(.system(size: 10))
                             .foregroundStyle(theme.playlistDurationText)
                     }
                 }
 
-                CapacityBar(freeFraction: dev.freeFraction,
-                            accent: theme.vars.highlight,
-                            track: theme.windowBorder.opacity(0.4))
+                if unsupported {
+                    Text(dev.fsType == "ios"
+                         ? "iPhone / iPad — music sync isn't supported"
+                         : "PTP camera — photo transfer only")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    CapacityBar(freeFraction: dev.freeFraction,
+                                accent: theme.vars.highlight,
+                                track: theme.windowBorder.opacity(0.4))
 
-                Text(deviceCapacityText(dev))
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.playlistDurationText)
+                    Text(deviceCapacityText(dev))
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
 
-                Text(countsLine(dev))
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.playlistDurationText)
+                    Text(countsLine(dev))
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
+                }
             }
             .padding(12)
             .background(

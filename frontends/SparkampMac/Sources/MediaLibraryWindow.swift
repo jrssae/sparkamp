@@ -119,7 +119,7 @@ struct MediaLibraryView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .devicesOverview:
                     DeviceOverview(
-                        devices: model.devices,
+                        devices: model.allDevices,
                         counts: model.deviceCounts,
                         theme: theme,
                         vars: themeManager.currentVars,
@@ -127,13 +127,13 @@ struct MediaLibraryView: View {
                     )
                     .onAppear { model.refreshDeviceCounts() }
                 case .device(let bsd):
-                    if let dev = model.devices.first(where: { $0.backendId == bsd }) {
+                    if let dev = model.allDevices.first(where: { $0.backendId == bsd }) {
                         DeviceDetailView(device: dev, theme: theme)
                     } else {
                         // Device unplugged while selected — fall back (the nav
-                        // also resets via the onChange(of: model.devices) above).
+                        // also resets via the onChange(of: model.allDevices) above).
                         DeviceOverview(
-                            devices: model.devices,
+                            devices: model.allDevices,
                             counts: model.deviceCounts,
                             theme: theme,
                             vars: themeManager.currentVars,
@@ -148,6 +148,7 @@ struct MediaLibraryView: View {
         .onAppear {
             model.openMediaLibrary()
             model.pollDevices()   // populate the Devices group immediately
+            model.startUnsupportedWatch()  // begin iOS/PTP recognition
             reload()
             if !columnCustomizationData.isEmpty,
                let decoded = try? JSONDecoder().decode(
@@ -174,7 +175,7 @@ struct MediaLibraryView: View {
         // When the selected device disappears (eject completed, or unplugged
         // while viewing it), return to the overview so nav + sidebar stay
         // consistent rather than pointing at a gone device.
-        .onChange(of: model.devices) { _, devs in
+        .onChange(of: model.allDevices) { _, devs in
             if case let .device(bsd) = nav,
                !devs.contains(where: { $0.backendId == bsd }) {
                 nav = .devicesOverview
@@ -183,7 +184,10 @@ struct MediaLibraryView: View {
         .onChange(of: columnCustomization) { _, v in
             if let d = try? JSONEncoder().encode(v) { columnCustomizationData = d }
         }
-        .onDisappear { model.mediaLibraryVisible = false }
+        .onDisappear {
+            model.mediaLibraryVisible = false
+            model.stopUnsupportedWatch()
+        }
         .sheet(isPresented: $showingRenamePlaylist) {
             VStack(spacing: 16) {
                 Text("Rename Playlist").font(.headline)
@@ -358,8 +362,8 @@ struct MediaLibraryView: View {
                 Text("Devices")
                     .font(vars.bodyFont.weight(overviewSelected ? .semibold : .regular))
                 Spacer()
-                if !model.devices.isEmpty {
-                    Text("\(model.devices.count)")
+                if !model.allDevices.isEmpty {
+                    Text("\(model.allDevices.count)")
                         .font(.system(size: 10))
                         .foregroundStyle(theme.playlistDurationText)
                 }
@@ -375,7 +379,7 @@ struct MediaLibraryView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
 
-        ForEach(model.devices) { dev in
+        ForEach(model.allDevices) { dev in
             let selected = (nav == .device(bsd: dev.backendId))
             Button { nav = .device(bsd: dev.backendId) } label: {
                 HStack(spacing: 4) {
@@ -385,10 +389,17 @@ struct MediaLibraryView: View {
                             .font(vars.bodyFont.weight(selected ? .semibold : .regular))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                        CapacityBar(freeFraction: dev.freeFraction,
-                                    accent: theme.vars.highlight,
-                                    track: theme.windowBorder.opacity(0.4),
-                                    height: 3)
+                        if dev.backend == .unsupported {
+                            // No storage to show a capacity bar for; label the kind.
+                            Text(dev.fsType == "ios" ? "iPhone / iPad" : "PTP camera")
+                                .font(.system(size: 10))
+                                .foregroundStyle(theme.playlistDurationText)
+                        } else {
+                            CapacityBar(freeFraction: dev.freeFraction,
+                                        accent: theme.vars.highlight,
+                                        track: theme.windowBorder.opacity(0.4),
+                                        height: 3)
+                        }
                     }
                     Spacer()
                 }

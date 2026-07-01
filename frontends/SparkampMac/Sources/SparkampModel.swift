@@ -130,6 +130,22 @@ final class SparkampModel: ObservableObject {
     /// it targets is kept alongside so the resolved choices apply to it.
     @Published var pendingSyncPlan: SyncPlan? = nil
     @Published var pendingSyncDevice: Device? = nil
+    /// iOS/PTP devices recognized via ImageCaptureCore (never mount under
+    /// /Volumes). They carry `backend == .unsupported` and are shown with a
+    /// "can't sync music" banner. Kept separate from `devices` (which the 2 s
+    /// volume poll rebuilds) and merged for the UI via `allDevices`.
+    @Published var unsupportedDevices: [Device] = []
+    /// All devices shown under the Devices group: mounted volumes + the
+    /// IC-recognized iOS/PTP devices.
+    var allDevices: [Device] { devices + unsupportedDevices }
+    /// ImageCaptureCore watcher; created on first use, started while the Media
+    /// Library window is open. Publishes into `unsupportedDevices` on the main
+    /// thread.
+    lazy var unsupportedWatcher: UnsupportedDeviceWatcher = {
+        let w = UnsupportedDeviceWatcher()
+        w.onChange = { [weak self] list in self?.unsupportedDevices = list }
+        return w
+    }()
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
 

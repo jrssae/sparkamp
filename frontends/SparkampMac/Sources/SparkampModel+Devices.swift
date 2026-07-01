@@ -32,11 +32,17 @@ extension SparkampModel {
             deviceCounts = deviceCounts.filter { liveIds.contains($0.key) }
         }
         if let sel = selectedDeviceBSD,
-           !devices.contains(where: { $0.backendId == sel }) {
+           !allDevices.contains(where: { $0.backendId == sel }) {
             selectedDeviceBSD = nil
         }
         refreshDeviceCounts()
     }
+
+    /// Start/stop the ImageCaptureCore watcher for iOS/PTP devices. Tied to the
+    /// Media Library window's lifetime (that's the only place the Devices group
+    /// is shown), and kept on the main thread so its callbacks publish safely.
+    func startUnsupportedWatch() { unsupportedWatcher.start() }
+    func stopUnsupportedWatch()  { unsupportedWatcher.stop() }
 
     /// Count songs/playlists for any not-yet-counted device. The count-only FFI
     /// is a directory walk (no tag reads, no SQLite), cheap enough for the main

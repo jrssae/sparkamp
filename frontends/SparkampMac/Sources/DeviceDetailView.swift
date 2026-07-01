@@ -65,6 +65,8 @@ struct DeviceDetailView: View {
             if device.fsVisible {
                 filesTable
                 filesBottomBar
+            } else if device.backend == .unsupported {
+                unsupportedBanner
             } else {
                 noFilesystemBanner
             }
@@ -226,7 +228,9 @@ struct DeviceDetailView: View {
                     .font(vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.playlistText)
                     .lineLimit(1)
-                Text("\(device.fsType.isEmpty ? "unknown" : device.fsType) · \(device.mountPath)")
+                Text(device.backend == .unsupported
+                     ? (device.fsType == "ios" ? "iPhone / iPad" : "PTP camera")
+                     : "\(device.fsType.isEmpty ? "unknown" : device.fsType) · \(device.mountPath)")
                     .font(.system(size: 11))
                     .foregroundStyle(theme.playlistDurationText)
                     .lineLimit(1)
@@ -552,6 +556,31 @@ struct DeviceDetailView: View {
                 .foregroundStyle(theme.playlistDurationText)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+
+    /// Banner for an ImageCaptureCore-recognized iOS/PTP device. These can't be
+    /// music-sync targets, so this explains why rather than showing empty lists.
+    private var unsupportedBanner: some View {
+        let isApple = device.fsType == "ios"
+        return VStack(spacing: 8) {
+            Image(systemName: isApple ? "iphone.slash" : "camera")
+                .font(.system(size: 32))
+                .foregroundStyle(theme.playlistDurationText)
+            Text(isApple ? "Music sync isn't supported for iPhone or iPad"
+                         : "Photo-transfer device")
+                .font(vars.bodyFont.weight(.semibold))
+                .foregroundStyle(theme.playlistText)
+                .multilineTextAlignment(.center)
+            Text(isApple
+                 ? "Apple stores music in a proprietary, signed database with no file access, so no app — on macOS or Linux — can copy music onto it. Use Apple's Music app or a cloud service instead."
+                 : "This device is connected in PTP (photo) mode and exposes only its camera roll, not a music folder. There's nothing here to sync.")
+                .font(vars.bodyFont)
+                .foregroundStyle(theme.playlistDurationText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
