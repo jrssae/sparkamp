@@ -214,10 +214,10 @@ Input element: `{ "mount_path","label","fs_type","bsd_name","total_bytes","free_
 
 **Files:** Modify the ML file/device Swift views, `SparkampMac.entitlements`, `Info.plist`, `project.pbxproj`.
 
-- [ ] **Step 1: Deletion** — a "Delete from device" action exists ONLY in the device files view (and ML file view), behind an explicit confirmation alert, calling `sparkamp_device_delete_files`. Removing a track from a device playlist edits only the `.m3u` (never deletes the file) (parity item 13, CLAUDE.md Deletion Rule).
-- [ ] **Step 2: Entitlements** — if the app is sandboxed, add removable-volume read/write (`com.apple.security.files.user-selected.read-write`, and a security-scoped bookmark flow for `/Volumes/...`, or disable App Sandbox if the app already ships unsandboxed — check the current `SparkampMac.entitlements`). DiskArbitration needs no special entitlement for unmount of user volumes.
-- [ ] **Step 3: Parity sweep** — walk the 13-item checklist above against the running app; fix gaps.
-- [ ] **Step 4: Build/verify on a Mac** — `xcodebuild -scheme SparkampMac build`; manual test with a real USB stick: detect → copy → edit a tag on both sides → sync → conflict sheet → eject.
+- [x] **Step 1: Deletion** — verified compliant, no code change. Device files view has "Delete from Device" (permanent, confirmation dialog, `sparkamp_device_delete_files`); playlist mode is "Remove from Playlist" (edits the `.m3u` only). The ML file view is DB-only "Remove from Library" (no disk delete) — matching GTK (window.rs:7914 "No files will be deleted from your disk"; disk delete only in the device view at window.rs:12861).
+- [x] **Step 2: Entitlements** — none needed. The app is **unsandboxed** (no `*.entitlements`, no `ENABLE_APP_SANDBOX`, ad-hoc "Sign to Run Locally"), so removable-volume RW, DiskArbitration eject, and (Task 10) ImageCaptureCore all work without entitlements.
+- [x] **Step 3: Parity sweep** — all 13 items present (detection, overview+card-nav, detail badges, capacity color, files+synced-from, playlists, copy, sync+spinner, conflict sheet, scan, eject-disabled-while-busy, no-fs banner, deletion rule). One micro-gap fixed: added the explanatory tooltip to the unsupported-fs badge. Note: GTK has no pre-copy space guard (`bytes_needed` is test-only; copy handlers copy directly), so macOS matches — capacity color is the warning.
+- [x] **Step 4: Build** — `xcodebuild -scheme SparkampMac build` succeeds, zero warnings. Manual real-USB run is the user's device test.
 - [ ] **Step 5: Commit** `feat(macos): device deletion rule, entitlements, parity verified`.
 
 ## Task 10: iOS / PTP "unsupported" recognition (macOS)

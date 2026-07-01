@@ -235,6 +235,7 @@ struct DeviceDetailView: View {
                     Text("⚠ Unsupported filesystem")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.yellow)
+                        .help("\(device.fsType) can't be written reliably from macOS, so copying and sync are disabled. Reformat the device as FAT32 (MS-DOS) or use a different drive.")
                 }
             }
             .frame(minWidth: 140, alignment: .leading)
