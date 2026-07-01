@@ -96,7 +96,7 @@ struct SparkampMacApp: App {
         // ── Playlist (independent floating window) ───────────────────────────
         // model.playlistVisible == false at cold start, so this window is NOT
         // opened automatically; PlayerWindow opens it via openWindow(id:).
-        WindowGroup("Playlist", id: "playlist") {
+        Window("Playlist", id: "playlist") {
             PlaylistView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -107,7 +107,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 480, height: 360)
 
         // ── Keyboard shortcuts (small fixed reference window) ─────────────────
-        WindowGroup("Keyboard Shortcuts", id: "shortcuts") {
+        Window("Keyboard Shortcuts", id: "shortcuts") {
             KeyboardShortcutsView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -119,7 +119,7 @@ struct SparkampMacApp: App {
         // ── Fullscreen visualizer ─────────────────────────────────────────────
         // Opened programmatically from PlayerWindow when model.fullscreenVizVisible
         // becomes true.  The view itself calls toggleFullScreen via WindowAccessor.
-        WindowGroup("Visualizer", id: "fullscreen-viz") {
+        Window("Visualizer", id: "fullscreen-viz") {
             FullscreenVisualizerView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -130,7 +130,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 800, height: 600)
 
         // ── Jump to Track ─────────────────────────────────────────────────────
-        WindowGroup("Jump to Track", id: "jump-to-track") {
+        Window("Jump to Track", id: "jump-to-track") {
             JumpToTrackView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -140,7 +140,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 480, height: 360)
 
         // ── Equalizer ─────────────────────────────────────────────────────────
-        WindowGroup("Equalizer", id: "equalizer") {
+        Window("Equalizer", id: "equalizer") {
             EqualizerView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -150,7 +150,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 480, height: 320)
 
         // ── Settings ──────────────────────────────────────────────────────────
-        WindowGroup("Settings", id: "settings") {
+        Window("Settings", id: "settings") {
             SettingsView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -160,7 +160,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 480, height: 500)
 
         // ── ID3 Tag Editor ────────────────────────────────────────────────────
-        WindowGroup("Tag Editor", id: "id3-editor") {
+        Window("Tag Editor", id: "id3-editor") {
             Id3EditorView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -170,7 +170,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 560, height: 500)
 
         // ── Artwork zoom window ───────────────────────────────────────────────
-        WindowGroup("Artwork", id: "artwork") {
+        Window("Artwork", id: "artwork") {
             ArtworkView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -180,7 +180,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 512, height: 512)
 
         // ── Media Library ─────────────────────────────────────────────────────
-        WindowGroup("Media Library", id: "media-library") {
+        Window("Media Library", id: "media-library") {
             MediaLibraryView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
@@ -190,7 +190,7 @@ struct SparkampMacApp: App {
         .defaultSize(width: 800, height: 520)
 
         // ── Deduplicator ──────────────────────────────────────────────────────
-        WindowGroup("Find Duplicates", id: "deduplicator") {
+        Window("Find Duplicates", id: "deduplicator") {
             DeduplicatorView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
