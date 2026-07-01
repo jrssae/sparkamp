@@ -91,10 +91,18 @@ struct Id3EditorView: View {
             // editor, which shows a single read-only path field (no separate
             // filename field).
             HStack(spacing: 8) {
-                SelectableText(
-                    text: filePath.isEmpty ? "No file" : filePath,
-                    font: .monospacedSystemFont(ofSize: vars.fontSize, weight: .regular),
-                    color: NSColor(theme.titleText))
+                // Full path, single line, selectable/copyable. Scrolls
+                // horizontally (no scroller) when too long so it never overlaps
+                // the badge/Customize button. Matches the GTK selectable path.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(filePath.isEmpty ? "No file" : filePath)
+                        .font(.system(size: vars.fontSize, design: .monospaced))
+                        .foregroundStyle(theme.titleText)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .help(filePath)
 
                 if fileMissing {
@@ -228,7 +236,9 @@ struct Id3EditorView: View {
             model.id3DirectPath = ""
             model.id3EditorVisible = false
         }
-        .onChange(of: model.id3TrackIndex) { _, _ in loadTag() }
+        // Reload whenever a new open is requested (playlist index OR direct
+        // path), so an already-open editor switches to the newly picked file.
+        .onChange(of: model.id3Request) { _, _ in loadTag() }
         .sheet(isPresented: $showCustomize) {
             CustomizeFieldsSheet(configs: fieldConfigs) { updated in
                 saveConfigs(updated)
@@ -344,40 +354,6 @@ struct Id3EditorView: View {
 
     private func writeField(tag: OpaquePointer, frameId: String, value: String) {
         frameId.withCString { fId in value.withCString { val in sparkamp_tag_set(tag, fId, val) } }
-    }
-}
-
-// MARK: - Selectable (non-editable) text
-
-/// A non-editable but selectable single-line label, so a long file path can be
-/// copied in full even when the display truncates it (a truncated SwiftUI
-/// `Text` only copies the visible portion; NSTextField copies the whole
-/// stringValue). Matches the GTK editor's selectable path field.
-private struct SelectableText: NSViewRepresentable {
-    let text: String
-    var font: NSFont = .systemFont(ofSize: 11)
-    var color: NSColor = .labelColor
-
-    func makeNSView(context: Context) -> NSTextField {
-        let tf = NSTextField(labelWithString: text)
-        tf.isSelectable = true
-        tf.isEditable = false
-        tf.isBordered = false
-        tf.drawsBackground = false
-        tf.lineBreakMode = .byTruncatingMiddle
-        tf.cell?.usesSingleLineMode = true
-        tf.font = font
-        tf.textColor = color
-        // Take the available width; allow truncation rather than forcing growth.
-        tf.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        tf.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return tf
-    }
-
-    func updateNSView(_ nsView: NSTextField, context: Context) {
-        nsView.stringValue = text
-        nsView.font = font
-        nsView.textColor = color
     }
 }
 

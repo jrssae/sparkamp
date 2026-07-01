@@ -86,8 +86,7 @@ extension SparkampModel {
             return false
         case "u": equalizerVisible.toggle(); saveState(); return true
         case "d":
-            id3TrackIndex = -1  // current track
-            id3EditorVisible = true
+            openId3Editor()  // current track
             return true
         case "\u{1B}":  // Escape — close fullscreen if open
             if fullscreenVizVisible { closeFullscreenViz(); return true }

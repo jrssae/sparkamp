@@ -61,6 +61,11 @@ final class SparkampModel: ObservableObject {
     @Published var id3TrackIndex: Int = -1
     /// When set, the ID3 editor opens this file path directly (bypasses playlist index).
     @Published var id3DirectPath: String = ""
+    /// Bumped on every ID3-editor open request. The editor reloads its file on
+    /// each change and the window manager raises the (single) editor window, so
+    /// picking a different file while the editor is already open updates it and
+    /// brings it to the front instead of doing nothing.
+    @Published var id3Request: Int = 0
     /// Artwork image currently shown in the ID3 editor (shared with the artwork zoom window).
     @Published var artworkImage: NSImage? = nil
     /// When true, the artwork zoom window is open.

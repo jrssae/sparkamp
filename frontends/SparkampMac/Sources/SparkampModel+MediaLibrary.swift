@@ -246,8 +246,10 @@ extension SparkampModel {
     }
 
     func mlOpenTagEditorForPath(_ path: String) {
+        id3TrackIndex = -1          // direct-path mode; drop any stale playlist index
         id3DirectPath = path
         id3EditorVisible = true
+        id3Request &+= 1
     }
 
     // MARK: ML Playlist CRUD

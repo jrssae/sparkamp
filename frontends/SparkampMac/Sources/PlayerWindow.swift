@@ -366,7 +366,11 @@ private struct WindowManagerModifier: ViewModifier {
             .onChange(of: model.jumpToTrackVisible)       { _, v in v ? openWindow(id: "jump-to-track")     : dismissWindow(id: "jump-to-track") }
             .onChange(of: model.equalizerVisible)         { _, v in v ? openWindow(id: "equalizer")         : dismissWindow(id: "equalizer") }
             .onChange(of: model.settingsVisible)          { _, v in v ? openWindow(id: "settings")          : dismissWindow(id: "settings") }
-            .onChange(of: model.id3EditorVisible)         { _, v in v ? openWindow(id: "id3-editor")        : dismissWindow(id: "id3-editor") }
+            .onChange(of: model.id3EditorVisible)         { _, v in if !v { dismissWindow(id: "id3-editor") } }
+            // Open request bumps on every "edit tags" action; openWindow on a
+            // unique Window raises the existing editor (or creates it) — so a
+            // second file selection reuses + fronts the window.
+            .onChange(of: model.id3Request)               { _, _ in openWindow(id: "id3-editor") }
             .onChange(of: model.artworkWindowVisible)     { _, v in v ? openWindow(id: "artwork")           : dismissWindow(id: "artwork") }
             .onChange(of: model.mediaLibraryVisible)      { _, v in v ? openWindow(id: "media-library")     : dismissWindow(id: "media-library") }
             .onChange(of: model.dedupVisible)             { _, v in v ? openWindow(id: "deduplicator")      : dismissWindow(id: "deduplicator") }

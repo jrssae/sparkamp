@@ -97,8 +97,10 @@ extension SparkampModel {
     }
 
     func openId3Editor(trackIndex: Int = -1) {
+        id3DirectPath = ""          // playlist-index mode; drop any stale direct path
         id3TrackIndex = trackIndex
         id3EditorVisible = true
+        id3Request &+= 1
     }
 
     /// Hold a no-display-sleep assertion exactly while the fullscreen
