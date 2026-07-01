@@ -108,9 +108,10 @@ extension SparkampModel {
         }
     }
 
-    /// Two-way sync the device. Auto (single-side) changes apply immediately;
-    /// both-changed conflicts are skipped for now (the resolution sheet is a
-    /// later phase) and reported in the status line.
+    /// Two-way sync the device. Fetches the plan off-thread; if it has no
+    /// both-changed conflicts the auto changes apply immediately, otherwise the
+    /// plan is stashed and the conflict-resolution sheet is presented (the apply
+    /// then happens in `resolveSyncConflicts`).
     func syncDevice(_ device: Device) {
         guard !deviceBusy else { return }
         deviceBusy = true
@@ -123,16 +124,49 @@ extension SparkampModel {
                 }
                 return
             }
-            let result = DeviceService.applySync(device: device, plan: plan, choices: [])
+            if plan.conflicts.isEmpty {
+                let result = DeviceService.applySync(device: device, plan: plan, choices: [])
+                let tracks = device.fsVisible ? DeviceService.browse(device: device) : []
+                let applied = result?.applied ?? 0
+                DispatchQueue.main.async {
+                    self.deviceTracks = tracks
+                    self.refreshDeviceCounts(for: device)
+                    self.deviceBusy = false
+                    self.deviceStatus = "Synced \(applied) change\(applied == 1 ? "" : "s")"
+                }
+            } else {
+                // Hand off to the sheet; nothing is applied until the user acts.
+                DispatchQueue.main.async {
+                    self.deviceBusy = false
+                    self.pendingSyncDevice = device
+                    self.pendingSyncPlan = plan
+                }
+            }
+        }
+    }
+
+    /// Apply the pending two-way sync after the conflict sheet closes. `choices`
+    /// carries the user's per-song picks; an empty array (Cancel) still applies
+    /// the auto pairs and skips the conflicts. Clears the pending plan, then
+    /// refreshes the file list + counts.
+    func resolveSyncConflicts(choices: [ConflictChoice]) {
+        guard let device = pendingSyncDevice, let plan = pendingSyncPlan else { return }
+        pendingSyncPlan = nil
+        pendingSyncDevice = nil
+        guard !deviceBusy else { return }
+        deviceBusy = true
+        deviceStatus = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = DeviceService.applySync(device: device, plan: plan, choices: choices)
             let tracks = device.fsVisible ? DeviceService.browse(device: device) : []
             let applied = result?.applied ?? 0
-            let conflicts = plan.conflicts.count
+            let skipped = result?.skipped ?? 0
             DispatchQueue.main.async {
                 self.deviceTracks = tracks
                 self.refreshDeviceCounts(for: device)
                 self.deviceBusy = false
-                self.deviceStatus = conflicts > 0
-                    ? "Synced \(applied) · \(conflicts) conflict\(conflicts == 1 ? "" : "s") need resolving (coming soon)"
+                self.deviceStatus = skipped > 0
+                    ? "Synced \(applied) · skipped \(skipped)"
                     : "Synced \(applied) change\(applied == 1 ? "" : "s")"
             }
         }

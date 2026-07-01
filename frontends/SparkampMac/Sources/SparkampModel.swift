@@ -125,6 +125,11 @@ final class SparkampModel: ObservableObject {
     @Published var deviceStatus: String? = nil
     /// Live copy progress (done/total · filename) while a copy runs; nil when idle.
     @Published var copyProgress: CopyProgress? = nil
+    /// A two-way sync whose plan came back with both-changed conflicts, waiting
+    /// on the user. Non-nil presents the conflict-resolution sheet; the device
+    /// it targets is kept alongside so the resolved choices apply to it.
+    @Published var pendingSyncPlan: SyncPlan? = nil
+    @Published var pendingSyncDevice: Device? = nil
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
 

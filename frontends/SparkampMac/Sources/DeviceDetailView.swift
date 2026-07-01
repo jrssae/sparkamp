@@ -6,9 +6,8 @@ import UniformTypeIdentifiers
 /// Scan / Eject actions. Copy-to-device also accepts files dropped from the
 /// Media Library Files table onto this view or the device's sidebar row.
 ///
-/// Deferred to later phases: the conflict-resolution sheet (Sync currently
-/// applies auto changes and reports conflicts in the status line), device
-/// playlists, and delete-from-device.
+/// Sync applies single-side changes automatically; both-changed songs raise the
+/// `DeviceConflictSheet` for per-song resolution.
 struct DeviceDetailView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
@@ -149,6 +148,23 @@ struct DeviceDetailView: View {
             playlistNameSheet(title: "Rename Playlist", text: $renamePlaylistText, confirm: "Rename") {
                 model.renameDevicePlaylist(
                     device, relpath: renamePlaylistRelpath, newName: renamePlaylistText)
+            }
+        }
+        // Two-way sync conflict resolution. Presented when a sync plan returns
+        // both-changed songs; dismissing without a button choice is treated as
+        // Cancel (auto pairs still apply, conflicts skipped).
+        .sheet(isPresented: Binding(
+            get: { model.pendingSyncPlan != nil },
+            set: { presented in
+                if !presented, model.pendingSyncPlan != nil {
+                    model.resolveSyncConflicts(choices: [])
+                }
+            }
+        )) {
+            if let plan = model.pendingSyncPlan, let dev = model.pendingSyncDevice {
+                DeviceConflictSheet(device: dev, plan: plan)
+                    .environmentObject(model)
+                    .environmentObject(themeManager)
             }
         }
     }

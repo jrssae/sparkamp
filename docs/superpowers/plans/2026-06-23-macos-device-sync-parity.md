@@ -205,10 +205,10 @@ Input element: `{ "mount_path","label","fs_type","bsd_name","total_bytes","free_
 
 **Files:** Create `DeviceConflictSheet.swift`. Modify `project.pbxproj`. Design source: `docs/android-mtp-device-support.md` §6.
 
-- [ ] **Step 1: Sheet** listing each `ConflictItem` (song title) with a per-song picker defaulting **unset**: "Keep computer" / "Keep device". Below each, a two-column field diff ("On this computer" / "On <device>") rendering only differing fields; `Artwork` rows show thumbnails fetched via `sparkamp_device_conflict_artwork` (free the bytes after building `NSImage`).
-- [ ] **Step 2: Bulk** "Keep all computer" / "Keep all device" buttons; "Apply choices" disabled until every conflict has a choice (or a bulk button used); "Cancel" applies nothing for conflicts (auto pairs from the same run already applied — report skipped count).
-- [ ] **Step 3: Apply** — encode `[ConflictChoice]`, call `sparkamp_device_apply_sync` with the plan + choices; refresh on completion.
-- [ ] **Step 4: Commit** `feat(macos): two-way sync conflict resolution sheet`.
+- [x] **Step 1: Sheet** listing each `ConflictItem` (song title) with a per-song picker defaulting **unset**: "Keep computer" / "Keep device". Below each, a two-column field diff ("On this computer" / "On <device>") rendering only differing fields; `Artwork` rows show thumbnails fetched via `sparkamp_device_conflict_artwork` (free the bytes after building `NSImage`).
+- [x] **Step 2: Bulk** "Keep all computer" / "Keep all device" buttons; "Apply choices" disabled until every conflict has a choice (or a bulk button used); "Cancel" applies nothing for conflicts (auto pairs from the same run already applied — report skipped count).
+- [x] **Step 3: Apply** — encode `[ConflictChoice]`, call `sparkamp_device_apply_sync` with the plan + choices; refresh on completion.
+- [ ] **Step 4: Commit** `feat(macos): two-way sync conflict resolution sheet` (after user test).
 
 ## Task 9: Deletion rule + entitlements + parity sweep
 

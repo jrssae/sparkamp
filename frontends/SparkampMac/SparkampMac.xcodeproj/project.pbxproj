@@ -23,6 +23,7 @@
 		AA5000000000000000000033 /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000036 /* DeviceListView.swift */; };
 		AA5000000000000000000034 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000037 /* DeviceDetailView.swift */; };
 		AA5000000000000000000035 /* DeviceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000038 /* DeviceMenu.swift */; };
+		AA5000000000000000000036 /* DeviceConflictSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000039 /* DeviceConflictSheet.swift */; };
 		AA5000000000000000000032 /* SparkampModel+Devices.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000035 /* SparkampModel+Devices.swift */; };
 		AA5000000000000000000030 /* SparkampModel+Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000033 /* SparkampModel+Keys.swift */; };
 		AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000032 /* SparkampModel+Dedupe.swift */; };
@@ -65,6 +66,7 @@
 		AA4000000000000000000036 /* DeviceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000037 /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000038 /* DeviceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMenu.swift; sourceTree = "<group>"; };
+		AA4000000000000000000039 /* DeviceConflictSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceConflictSheet.swift; sourceTree = "<group>"; };
 		AA4000000000000000000035 /* SparkampModel+Devices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Devices.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000033 /* SparkampModel+Keys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Keys.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000032 /* SparkampModel+Dedupe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Dedupe.swift"; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 				AA4000000000000000000036 /* DeviceListView.swift */,
 				AA4000000000000000000037 /* DeviceDetailView.swift */,
 				AA4000000000000000000038 /* DeviceMenu.swift */,
+				AA4000000000000000000039 /* DeviceConflictSheet.swift */,
 				AA4000000000000000000035 /* SparkampModel+Devices.swift */,
 				AA4000000000000000000033 /* SparkampModel+Keys.swift */,
 				AA4000000000000000000032 /* SparkampModel+Dedupe.swift */,
@@ -292,6 +295,7 @@
 				AA5000000000000000000033 /* DeviceListView.swift in Sources */,
 				AA5000000000000000000034 /* DeviceDetailView.swift in Sources */,
 				AA5000000000000000000035 /* DeviceMenu.swift in Sources */,
+				AA5000000000000000000036 /* DeviceConflictSheet.swift in Sources */,
 				AA5000000000000000000032 /* SparkampModel+Devices.swift in Sources */,
 				AA5000000000000000000030 /* SparkampModel+Keys.swift in Sources */,
 				AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */,
