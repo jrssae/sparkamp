@@ -161,6 +161,15 @@ final class SparkampModel: ObservableObject {
     @Published var ejectingDiscs: Set<String> = []
     /// One-line result of the last disc op ("Added 8 disc tracks", …).
     @Published var discStatus: String? = nil
+    /// gnudb matches awaiting the user's pick (sheet shown while non-nil;
+    /// empty array = "no match" handled inline, never presented).
+    @Published var discMatches: [DiscMatch]? = nil
+    /// True while a gnudb query/read runs in the background.
+    @Published var discIdentifying: Bool = false
+    /// Per-disc tag sets keyed by freedb disc ID — from a gnudb match and/or
+    /// hand edits. Overlaid onto `discTracks` titles and consumed by rip
+    /// (Phase 3) and submission (Phase 4).
+    @Published var discTagSets: [String: DiscTagSet] = [:]
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false

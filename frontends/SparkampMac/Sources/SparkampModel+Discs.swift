@@ -23,7 +23,8 @@ extension SparkampModel {
     }
 
     /// Load the playlist-ready track entries for one drive's disc into
-    /// `discTracks` (background; empty when no audio disc).
+    /// `discTracks` (background; empty when no audio disc), then overlay any
+    /// stored tag-set titles for this disc.
     func loadDiscTracks(_ drive: OpticalDrive) {
         discBusy = true
         DispatchQueue.global(qos: .userInitiated).async {
@@ -31,6 +32,118 @@ extension SparkampModel {
             DispatchQueue.main.async {
                 self.discTracks = entries
                 self.discBusy = false
+                self.applyDiscTagTitles(drive)
+            }
+        }
+    }
+
+    /// The freedb id of the drive's loaded disc, or nil without an audio disc.
+    func discIdFor(_ drive: OpticalDrive) -> String? {
+        drive.toc.flatMap { DiscService.discId(toc: $0) }
+    }
+
+    /// Overlay the stored tag set's titles onto `discTracks` ("Track N" stays
+    /// wherever a title is missing/empty).
+    func applyDiscTagTitles(_ drive: OpticalDrive) {
+        guard let id = discIdFor(drive), let tags = discTagSets[id] else { return }
+        discTracks = discTracks.map { entry in
+            var e = entry
+            let i = entry.number - 1
+            if i >= 0 && i < tags.titles.count && !tags.titles[i].isEmpty {
+                e.title = tags.titles[i]
+            }
+            return e
+        }
+    }
+
+    /// Store an edited tag set for the drive's disc and refresh the titles.
+    func saveDiscTags(_ drive: OpticalDrive, tags: DiscTagSet) {
+        guard let id = discIdFor(drive) else { return }
+        discTagSets[id] = tags
+        applyDiscTagTitles(drive)
+        discStatus = "Tags saved for this disc"
+    }
+
+    /// The current (or blank) tag set for the drive's disc, sized to its
+    /// track count — what the editor sheet starts from.
+    func discTagsForEditing(_ drive: OpticalDrive) -> DiscTagSet {
+        let count = drive.toc?.tracks.count ?? discTracks.count
+        var tags = discIdFor(drive).flatMap { discTagSets[$0] } ?? DiscTagSet()
+        // Prefill from the visible entries so an editor without a match still
+        // shows "Track N" placeholders sized correctly.
+        if tags.titles.count < count {
+            let existing = tags.titles
+            tags.titles = (0..<count).map { i in
+                i < existing.count && !existing[i].isEmpty
+                    ? existing[i]
+                    : (discTracks.first(where: { $0.number == i + 1 })?.title ?? "")
+            }
+        }
+        return tags
+    }
+
+    /// Ask gnudb to identify the drive's disc. No match → status line; one
+    /// exact match → applied immediately; several → `discMatches` sheet.
+    func identifyDisc(_ drive: OpticalDrive) {
+        guard let toc = drive.toc, !discIdentifying, let ctx = ctx else { return }
+        let emailPtr = sparkamp_get_gnudb_email(ctx)
+        let email = emailPtr.map { String(cString: $0) } ?? "sparkamp@fastmail.com"
+        sparkamp_free_string(emailPtr)
+        discIdentifying = true
+        discStatus = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = DiscService.gnudbQuery(toc: toc, email: email)
+            DispatchQueue.main.async {
+                switch result {
+                case .failure(let err):
+                    self.discIdentifying = false
+                    self.discStatus = err.message
+                case .success(let matches) where matches.isEmpty:
+                    self.discIdentifying = false
+                    self.discStatus = "No gnudb match — use Edit Tags to fill titles in"
+                case .success(let matches):
+                    let exact = matches.filter { $0.exact }
+                    if exact.count == 1, matches.count == 1 {
+                        self.fetchDiscEntry(drive, match: exact[0], email: email)
+                    } else {
+                        self.discIdentifying = false
+                        self.discMatches = matches
+                    }
+                }
+            }
+        }
+    }
+
+    /// User picked a match from the sheet (or the single exact match).
+    func chooseDiscMatch(_ drive: OpticalDrive, match: DiscMatch) {
+        guard let ctx = ctx else { return }
+        let emailPtr = sparkamp_get_gnudb_email(ctx)
+        let email = emailPtr.map { String(cString: $0) } ?? "sparkamp@fastmail.com"
+        sparkamp_free_string(emailPtr)
+        discMatches = nil
+        fetchDiscEntry(drive, match: match, email: email)
+    }
+
+    private func fetchDiscEntry(_ drive: OpticalDrive, match: DiscMatch, email: String) {
+        discIdentifying = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = DiscService.gnudbRead(
+                category: match.category, discid: match.discid, email: email)
+            DispatchQueue.main.async {
+                self.discIdentifying = false
+                switch result {
+                case .failure(let err):
+                    self.discStatus = err.message
+                case .success(let entry):
+                    let tags = DiscTagSet(
+                        artist: entry.artist,
+                        album: entry.album,
+                        year: entry.year,
+                        genre: entry.genre,
+                        titles: entry.trackTitles)
+                    self.saveDiscTags(drive, tags: tags)
+                    self.discStatus = "\(entry.artist) — \(entry.album)"
+                }
             }
         }
     }

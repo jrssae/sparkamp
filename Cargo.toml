@@ -45,6 +45,11 @@ toml = "0.8"
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
 
+# gnudb (CDDB) HTTP client — the endpoints are plain http://, so the
+# default TLS-free feature set suffices; deliberately tiny to keep the
+# Flatpak vendor tree lean (no reqwest/openssl pull-in).
+minreq = "2"
+
 # Duration probing (reads container headers without decoding audio)
 symphonia = "0.5"
 

@@ -269,6 +269,10 @@ bool    sparkamp_get_autoplay_on_add(SparkampCtx *ctx);
 void    sparkamp_set_autoplay_on_add(SparkampCtx *ctx, bool value);
 int     sparkamp_get_ml_rescan_interval(SparkampCtx *ctx);
 void    sparkamp_set_ml_rescan_interval(SparkampCtx *ctx, int mins);
+/* gnudb hello/submission email. Getter returns a heap string — free with
+   sparkamp_free_string. Setter ignores empty values. */
+char   *sparkamp_get_gnudb_email(SparkampCtx *ctx);
+void    sparkamp_set_gnudb_email(SparkampCtx *ctx, const char *email);
 
 // ---------------------------------------------------------------------------
 // Playlist path
@@ -627,5 +631,20 @@ char *sparkamp_disc_list_drives(SparkampCtx *ctx);
     audio disc. Takes an OpticalDrive JSON from sparkamp_disc_list_drives.
     Free with sparkamp_free_string. */
 char *sparkamp_disc_track_entries(SparkampCtx *ctx, const char *drive_json);
+
+/** freedb disc ID (8 hex) for a DiscToc JSON — the per-disc key for tag
+    overrides. Pure math. Free with sparkamp_free_string; NULL on bad input. */
+char *sparkamp_disc_id(SparkampCtx *ctx, const char *toc_json);
+
+/** gnudb query: DiscToc JSON + hello email in; {"ok":[DiscMatch…]} or
+    {"error":"…"} out. Blocking network (10 s timeout) — background queue
+    only. Free with sparkamp_free_string. */
+char *sparkamp_gnudb_query(SparkampCtx *ctx, const char *toc_json,
+                           const char *email);
+
+/** gnudb read of one match: {"ok":XmcdEntry} or {"error":"…"}. Blocking
+    network — background queue only. Free with sparkamp_free_string. */
+char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
+                          const char *discid, const char *email);
 
 #endif /* sparkamp_bridge_h */

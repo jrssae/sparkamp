@@ -145,11 +145,13 @@ pub(super) fn draw_media_library(
             sep(),
             hint("a", "add disc"),
             sep(),
+            hint("m", "identify"),
+            sep(),
+            hint("e", "tags"),
+            sep(),
             hint("←→", "drive"),
             sep(),
             hint("r", "rescan"),
-            sep(),
-            hint("i", "help"),
         ])
     } else {
         Line::from(vec![
@@ -173,6 +175,114 @@ pub(super) fn draw_media_library(
         ])
     };
     frame.render_widget(Paragraph::new(hint_line), pane[2]);
+
+    // Disc overlays paint last, centered atop everything else.
+    if let Some((matches, selected)) = &state.gnudb_matches {
+        draw_gnudb_matches(frame, matches, *selected, inner);
+    }
+    if let Some(ed) = &state.tag_edit {
+        draw_disc_tag_editor(frame, ed, inner);
+    }
+}
+
+/// Centered overlay listing gnudb matches: ↑/↓ select, Enter fetch, Esc close.
+fn draw_gnudb_matches(
+    frame: &mut Frame,
+    matches: &[crate::disc::gnudb::DiscMatch],
+    selected: usize,
+    area: Rect,
+) {
+    let w = area.width.saturating_sub(8).min(70).max(30);
+    let h = (matches.len() as u16 + 4).min(area.height.saturating_sub(2)).max(6);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .title(Span::styled(
+            " gnudb matches — Enter: use · Esc: cancel ",
+            Style::default().fg(C_ACCENT),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let items: Vec<ListItem> = matches
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let tag = if m.exact { "exact " } else { "close " };
+            let style = if i == selected {
+                Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Span::styled(
+                format!("{tag}[{}] {}", m.category, m.title),
+                style,
+            ))
+        })
+        .collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(List::new(items), inner, &mut list_state);
+}
+
+/// Centered overlay editing the disc's tag set. Rows 0–3 = disc fields,
+/// 4+ = per-track titles; `editing` shows a cursor bar on the value.
+fn draw_disc_tag_editor(frame: &mut Frame, ed: &DiscTagEditState, area: Rect) {
+    let w = area.width.saturating_sub(6).min(76).max(40);
+    let rows = 4 + ed.titles.len() as u16;
+    let h = (rows + 4).min(area.height.saturating_sub(2)).max(8);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let title = if ed.editing {
+        " Disc tags — Enter/Esc: done editing "
+    } else {
+        " Disc tags — Enter: edit · ↑↓: move · Esc: save + close "
+    };
+    let block = Block::default()
+        .title(Span::styled(title, Style::default().fg(C_ACCENT)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let field = |label: &str, value: &str, row: usize| -> ListItem<'static> {
+        let sel = row == ed.selected;
+        let cursor = if sel && ed.editing { "|" } else { "" };
+        let style = if sel {
+            Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+        } else {
+            Style::default().fg(C_TEXT)
+        };
+        ListItem::new(Span::styled(
+            format!("{label:<9} {value}{cursor}"),
+            style,
+        ))
+    };
+
+    let mut items: Vec<ListItem> = vec![
+        field("Artist", &ed.artist, 0),
+        field("Album", &ed.album, 1),
+        field("Year", &ed.year, 2),
+        field("Genre", &ed.genre, 3),
+    ];
+    for (i, t) in ed.titles.iter().enumerate() {
+        items.push(field(&format!("Track {:>2}", i + 1), t, i + 4));
+    }
+    let mut list_state = ListState::default();
+    list_state.select(Some(ed.selected));
+    frame.render_stateful_widget(List::new(items), inner, &mut list_state);
 }
 
 /// Width (chars) for each column ID in the Files tab.

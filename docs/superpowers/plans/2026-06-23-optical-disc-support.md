@@ -99,15 +99,15 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 }
 ```
 
-  - [ ] Failing test first with a **known vector** (e.g. a 3-track disc with published discid); run, verify fail; implement; verify pass. Include the `cddb query` argument string builder `discid ntrks off1..offn nsecs` and test it too.
+  - [x] Failing test first (todo!() stub, 4 tests verified failing), then implemented: hand-computed 3-track vector, the real 8-track test disc (`6f067d08`), empty-TOC edge, and the `cddb query` arg builder. **Algorithm confirmed by gnudb itself**: the server echoes the disc ID it computes from our offsets/nsecs — it matches ours exactly.
 
-- [ ] **Task 2.2 — gnudb HTTP client.** `query(toc, email) -> Vec<DiscMatch>` and `read(category, discid, email) -> XmcdEntry`.
+- [x] **Task 2.2 — gnudb HTTP client** (`src/disc/gnudb.rs`, via `minreq` — tiny, TLS-free, vendored). `hello_param` splits the email at the last `@` (unit-tested); URLs carry `proto=6`; response parsing covers 200 / 210 / 211 / 202-as-empty / 403; network failures are typed `Offline` vs `Protocol`. Live-verified against gnudb.gnudb.org in both directions (query → 202 for this unlisted disc; read of a missing entry → 401 surfaced as a protocol error). Config gained `disc.gnudb_email` (default sparkamp@fastmail.com, editable in mac Settings) + `gnudb_submit_mode_test`.
   - **Handshake:** the CDDB `hello` is **four `+`-separated fields — `username+hostname+clientname+version`** — so split the configured email at `@`: `sparkamp@fastmail.com` → `hello=sparkamp+fastmail.com+Sparkamp+<pkg_version>`. Do **not** put the whole address in one field. `clientname` must be descriptive ("Sparkamp"); `version` from `env!("CARGO_PKG_VERSION")`. Always send `proto=6` (UTF-8). URL-encode: spaces→`+`, other specials→`%XX`.
   - GET `http://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+<discid>+<ntrks>+<off1>+…+<offn>+<nsecs>&hello=sparkamp+fastmail.com+Sparkamp+<version>&proto=6`. Handle response codes **200** (exact), **211** (inexact list), **202** (none), **403** (corrupt). `read` → `cmd=cddb+read+<category>+<discid>` (same hello+proto). Timeouts + offline → typed error, surfaced as "couldn't reach gnudb".
   - Add a helper `fn hello_param(email: &str) -> String` that splits on the last `@` (fallback: whole string as username, `localhost` as host if no `@`); unit-test it.
-- [ ] **Task 2.3 — xmcd parse/build.** Parse `DISCID, DTITLE (artist / album), DYEAR, DGENRE, TTITLEn, EXTD, EXTT`. Build the same format for submission. Unit-test round-trip on a captured xmcd sample.
-- [ ] **Task 2.4 — tag override UI.** On match, prefill a per-track editor (reuse `id3_editor::TagFields`). **User can edit every field even with no match** (blank template: artist/album/year/genre + per-track title). These overrides drive both rip tagging (Phase 3) and submission (Phase 4).
-- [ ] **Commit** `feat(disc): gnudb query/read/parse + per-track tag override`.
+- [x] **Task 2.3 — xmcd parse/build** (`src/disc/xmcd.rs`). Parses DISCID/DTITLE/DYEAR/DGENRE/TTITLEn/EXTD/EXTTn with wrapped-line continuation and the self-titled no-separator case; `build` emits the submission format incl. the offsets/length comment header. Round-trip tested.
+- [x] **Task 2.4 — tag override UI** (mac + TUI; GTK = Linux box). Overrides are per-disc tag sets keyed by freedb id, editable **with or without a match**, overlaid onto the track titles and consumed by rip (P3) / submission (P4). macOS: Identify button (auto-applies a single exact match; sheet picker otherwise) + Edit Tags sheet (disc fields + per-track titles), artist—album shown in the drive header. TUI: `m` identify (background thread + tick-drained channel — the UI never blocks on the network), match overlay (↑↓/Enter/Esc), `e` tag editor overlay (rows = disc fields + titles; Enter edits, Esc saves).
+- [x] **Commit** `feat(disc): gnudb query/read/parse + per-track tag override`.
 
 ## Phase 3 — Rip to MP3
 

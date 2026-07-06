@@ -43,6 +43,34 @@ pub struct Config {
     /// Media library scanning and database settings.
     #[serde(default)]
     pub media_library: MediaLibraryConfig,
+    /// Optical-disc settings (gnudb identification; rip/burn in later phases).
+    #[serde(default)]
+    pub disc: DiscConfig,
+}
+
+// ---------------------------------------------------------------------------
+// DiscConfig
+// ---------------------------------------------------------------------------
+
+/// Optical-disc settings: the gnudb identity now, rip options in Phase 3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscConfig {
+    /// Email used as the CDDB `hello` identity (split into username+hostname)
+    /// and as the submission `User-Email` header. Editable in Settings.
+    pub gnudb_email: String,
+    /// Submit to gnudb in "test" mode until a real submission is verified
+    /// end-to-end; the UI offers a real submit only once this is false.
+    pub gnudb_submit_mode_test: bool,
+}
+
+impl Default for DiscConfig {
+    fn default() -> Self {
+        DiscConfig {
+            gnudb_email: "sparkamp@fastmail.com".to_string(),
+            gnudb_submit_mode_test: true,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +740,7 @@ impl Default for Config {
             behavior: BehaviorConfig::default(),
             equalizer: EqConfig::default(),
             media_library: MediaLibraryConfig::default(),
+            disc: DiscConfig::default(),
         }
     }
 }

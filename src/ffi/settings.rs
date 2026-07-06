@@ -102,6 +102,35 @@ pub unsafe extern "C" fn sparkamp_set_playlist_format(ctx: *mut SparkampCtx, val
     };
 }
 
+/// The configured gnudb hello/submission email. Heap C string — free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_gnudb_email(ctx: *const SparkampCtx) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    CString::new(ctx.config.disc.gnudb_email.clone())
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Set the gnudb email (ignored when empty after trimming).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_gnudb_email(ctx: *mut SparkampCtx, email: *const c_char) {
+    if ctx.is_null() || email.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let s = std::ffi::CStr::from_ptr(email)
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    if !s.is_empty() {
+        ctx.config.disc.gnudb_email = s;
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_autoplay_on_add(ctx: *const SparkampCtx) -> bool {
     if ctx.is_null() {

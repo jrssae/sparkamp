@@ -89,8 +89,8 @@ mod imports {
     };
     pub(super) use crate::config::PlaylistAddBehavior;
     pub(super) use super::super::{
-        id3_genre_matches, App, EqState, Id3EditorState, MediaLibraryState,
-        MediaLibraryTab, Mode, SettingsState,
+        id3_genre_matches, App, DiscTagEditState, EqState, Id3EditorState,
+        MediaLibraryState, MediaLibraryTab, Mode, SettingsState,
     };
     pub(super) use crate::config::VisualizerMode;
     pub(super) use super::{

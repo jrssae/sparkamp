@@ -172,6 +172,41 @@ pub struct MediaLibraryState {
     pub disc_entries: Vec<crate::disc::DiscTrackEntry>,
     /// Highlighted track row in the Discs tab track list.
     pub selected_disc_track: usize,
+    /// gnudb match list awaiting a pick (overlay atop the Discs tab):
+    /// the proposed matches and the highlighted row.
+    pub gnudb_matches: Option<(Vec<crate::disc::gnudb::DiscMatch>, usize)>,
+    /// Per-disc tag editor overlay state, when open.
+    pub tag_edit: Option<DiscTagEditState>,
+}
+
+/// State of the disc tag-override editor overlay (Discs tab, `e`).
+///
+/// A flat field list: rows 0–3 are Artist / Album / Year / Genre, rows 4+
+/// are the per-track titles. `editing` routes typed characters into the
+/// selected row's value; Enter toggles editing, Esc closes (editing → stop
+/// editing; otherwise save + close).
+pub struct DiscTagEditState {
+    /// freedb id of the disc being edited — the `disc_tags` key.
+    pub discid: String,
+    pub artist: String,
+    pub album: String,
+    pub year: String,
+    pub genre: String,
+    /// One title per track (index 0 = track 1).
+    pub titles: Vec<String>,
+    /// Selected row: 0..=3 disc fields, 4.. = titles.
+    pub selected: usize,
+    pub editing: bool,
+}
+
+/// Result of a background gnudb lookup, delivered to the tick loop.
+pub enum DiscLookupMsg {
+    /// Several candidates — the user picks from the overlay.
+    Matches(Vec<crate::disc::gnudb::DiscMatch>),
+    /// A fetched + parsed entry for the disc with this freedb id.
+    Entry(String, crate::disc::xmcd::XmcdEntry),
+    /// Lookup failed or found nothing (user-facing message).
+    Failed(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +340,11 @@ pub struct App {
     pub media_lib: Option<crate::media_library::MediaLibrary>,
     /// Active background scan channels, present while a scan is running.
     scan_channels: Option<ScanChannels>,
+    /// Tag sets per disc (freedb id → entry): gnudb matches and hand edits.
+    /// Overlaid onto the Discs tab titles; feeds rip/submission phases.
+    pub disc_tags: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    /// Receiver for an in-flight background gnudb lookup, drained by tick().
+    disc_lookup: Option<mpsc::Receiver<DiscLookupMsg>>,
 }
 
 impl App {
@@ -384,6 +424,8 @@ impl App {
             broken_tx,
             media_lib,
             scan_channels: None,
+            disc_tags: std::collections::HashMap::new(),
+            disc_lookup: None,
         })
     }
 
@@ -683,7 +725,18 @@ impl App {
             self.advance_to_next_playable();
         }
 
-        // 4. Auto-clear transient status messages after STATUS_TICKS ticks.
+        // 4. Deliver background gnudb lookup results (Discs tab).
+        let mut lookup_msgs = Vec::new();
+        if let Some(rx) = &self.disc_lookup {
+            while let Ok(msg) = rx.try_recv() {
+                lookup_msgs.push(msg);
+            }
+        }
+        for msg in lookup_msgs {
+            self.handle_disc_lookup(msg);
+        }
+
+        // 5. Auto-clear transient status messages after STATUS_TICKS ticks.
         if self.status_ticks > 0 {
             self.status_ticks -= 1;
             if self.status_ticks == 0 {

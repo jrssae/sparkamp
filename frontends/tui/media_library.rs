@@ -47,6 +47,8 @@ impl App {
             selected_drive: 0,
             disc_entries: Vec::new(),
             selected_disc_track: 0,
+            gnudb_matches: None,
+            tag_edit: None,
         });
     }
 
@@ -108,6 +110,20 @@ impl App {
             Mode::MediaLibrary(s) => (s.search_active, s.add_input.is_some(), s.tab.clone()),
             _ => return,
         };
+
+        // Disc overlays capture all keys while open.
+        let (matches_open, tag_edit_open) = match &self.mode {
+            Mode::MediaLibrary(s) => (s.gnudb_matches.is_some(), s.tag_edit.is_some()),
+            _ => (false, false),
+        };
+        if matches_open {
+            self.handle_gnudb_matches_key(code);
+            return;
+        }
+        if tag_edit_open {
+            self.handle_disc_tag_edit_key(code);
+            return;
+        }
 
         // --- Add-to-ML path input mode ---
         if add_active {
@@ -418,12 +434,277 @@ impl App {
                 self.refresh_ml_drives();
             }
 
+            // m — Discs tab: identify the loaded disc on gnudb (background).
+            KeyCode::Char('m') | KeyCode::Char('M') if tab == MediaLibraryTab::Discs => {
+                self.spawn_disc_lookup();
+            }
+
+            // e — Discs tab: open the per-disc tag editor (works with or
+            // without a gnudb match).
+            KeyCode::Char('e') | KeyCode::Char('E') if tab == MediaLibraryTab::Discs => {
+                self.open_disc_tag_editor();
+            }
+
             // i — open the Help overlay scrolled to the Media Library section.
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.mode = Mode::Help { scroll: 34 };
             }
 
             _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Discs tab: gnudb identification + tag override
+    // -----------------------------------------------------------------------
+
+    /// The selected drive's TOC and freedb id, when an audio disc is loaded.
+    fn selected_disc_identity(&self) -> Option<(crate::disc::DiscToc, String)> {
+        let Mode::MediaLibrary(s) = &self.mode else {
+            return None;
+        };
+        let toc = s.drives.get(s.selected_drive)?.toc.clone()?;
+        let id = crate::disc::discid::freedb_discid(&toc);
+        Some((toc, id))
+    }
+
+    /// Kick off a background gnudb query for the selected drive's disc.
+    /// Results arrive through `disc_lookup` in the tick loop, so the UI never
+    /// blocks on the network (10 s timeout inside the client).
+    pub(super) fn spawn_disc_lookup(&mut self) {
+        if self.disc_lookup.is_some() {
+            self.set_status("gnudb lookup already running…");
+            return;
+        }
+        let Some((toc, discid)) = self.selected_disc_identity() else {
+            self.set_status("No audio disc to identify");
+            return;
+        };
+        let email = self.config.disc.gnudb_email.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.disc_lookup = Some(rx);
+        self.set_status("Asking gnudb…");
+        std::thread::spawn(move || {
+            use crate::disc::{gnudb, xmcd};
+            let msg = match gnudb::query(&toc, &email) {
+                Err(e) => super::DiscLookupMsg::Failed(e.to_string()),
+                Ok(matches) if matches.is_empty() => super::DiscLookupMsg::Failed(
+                    "No gnudb match — press e to fill tags in manually".to_string(),
+                ),
+                Ok(matches) if matches.len() == 1 && matches[0].exact => {
+                    match gnudb::read(&matches[0].category, &matches[0].discid, &email) {
+                        Ok(text) => match xmcd::parse(&text) {
+                            Some(entry) => super::DiscLookupMsg::Entry(discid, entry),
+                            None => super::DiscLookupMsg::Failed(
+                                "gnudb entry was unreadable".to_string(),
+                            ),
+                        },
+                        Err(e) => super::DiscLookupMsg::Failed(e.to_string()),
+                    }
+                }
+                Ok(matches) => super::DiscLookupMsg::Matches(matches),
+            };
+            // Receiver dropped = user closed the library; nothing to do.
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// Fetch one picked match in the background (same channel as the query).
+    fn spawn_disc_read(&mut self, category: String, matched_id: String) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            return;
+        };
+        let email = self.config.disc.gnudb_email.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.disc_lookup = Some(rx);
+        self.set_status("Fetching entry…");
+        std::thread::spawn(move || {
+            use crate::disc::{gnudb, xmcd};
+            let msg = match gnudb::read(&category, &matched_id, &email) {
+                Ok(text) => match xmcd::parse(&text) {
+                    Some(entry) => super::DiscLookupMsg::Entry(discid, entry),
+                    None => {
+                        super::DiscLookupMsg::Failed("gnudb entry was unreadable".to_string())
+                    }
+                },
+                Err(e) => super::DiscLookupMsg::Failed(e.to_string()),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// Apply a background lookup result (called from the tick loop).
+    pub(super) fn handle_disc_lookup(&mut self, msg: super::DiscLookupMsg) {
+        match msg {
+            super::DiscLookupMsg::Failed(text) => {
+                self.disc_lookup = None;
+                self.set_status(text);
+            }
+            super::DiscLookupMsg::Matches(list) => {
+                self.disc_lookup = None;
+                if let Mode::MediaLibrary(s) = &mut self.mode {
+                    if s.tab == MediaLibraryTab::Discs {
+                        s.gnudb_matches = Some((list, 0));
+                    }
+                }
+            }
+            super::DiscLookupMsg::Entry(discid, entry) => {
+                self.disc_lookup = None;
+                let label = format!("{} — {}", entry.artist, entry.album);
+                self.disc_tags.insert(discid, entry);
+                self.apply_disc_tags_to_entries();
+                self.set_status(label);
+            }
+        }
+    }
+
+    /// Overlay the stored tag set's titles onto the visible disc entries
+    /// ("Track N" stays wherever a title is missing).
+    pub(super) fn apply_disc_tags_to_entries(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            return;
+        };
+        let Some(entry) = self.disc_tags.get(&discid) else {
+            return;
+        };
+        let titles = entry.track_titles.clone();
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            for e in &mut s.disc_entries {
+                let i = e.number as usize - 1;
+                if let Some(t) = titles.get(i) {
+                    if !t.is_empty() {
+                        e.title = t.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keys while the gnudb match overlay is open: ↑/↓ select, Enter fetch,
+    /// Esc dismiss.
+    fn handle_gnudb_matches_key(&mut self, code: KeyCode) {
+        let mut chosen: Option<(String, String)> = None;
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let Some((list, selected)) = &mut s.gnudb_matches else {
+                return;
+            };
+            match code {
+                KeyCode::Esc => s.gnudb_matches = None,
+                KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if *selected + 1 < list.len() {
+                        *selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(m) = list.get(*selected) {
+                        chosen = Some((m.category.clone(), m.discid.clone()));
+                    }
+                    s.gnudb_matches = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some((category, discid)) = chosen {
+            self.spawn_disc_read(category, discid);
+        }
+    }
+
+    /// Open the tag editor prefilled from the stored tag set (or the visible
+    /// "Track N" titles when the disc has no tags yet).
+    fn open_disc_tag_editor(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            self.set_status("No audio disc loaded");
+            return;
+        };
+        let stored = self.disc_tags.get(&discid).cloned();
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let count = s.disc_entries.len();
+            let mut titles: Vec<String> = (0..count)
+                .map(|i| {
+                    stored
+                        .as_ref()
+                        .and_then(|e| e.track_titles.get(i).cloned())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| {
+                            s.disc_entries
+                                .get(i)
+                                .map(|e| e.title.clone())
+                                .unwrap_or_default()
+                        })
+                })
+                .collect();
+            if titles.is_empty() {
+                titles = vec![String::new()];
+            }
+            s.tag_edit = Some(super::DiscTagEditState {
+                discid,
+                artist: stored.as_ref().map(|e| e.artist.clone()).unwrap_or_default(),
+                album: stored.as_ref().map(|e| e.album.clone()).unwrap_or_default(),
+                year: stored.as_ref().map(|e| e.year.clone()).unwrap_or_default(),
+                genre: stored.as_ref().map(|e| e.genre.clone()).unwrap_or_default(),
+                titles,
+                selected: 0,
+                editing: false,
+            });
+        }
+    }
+
+    /// Keys while the tag editor overlay is open. Not editing: ↑/↓ move,
+    /// Enter edits the row, Esc saves + closes. Editing: chars/Backspace
+    /// change the value, Enter/Esc stop editing.
+    fn handle_disc_tag_edit_key(&mut self, code: KeyCode) {
+        let mut save: Option<super::DiscTagEditState> = None;
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let Some(ed) = &mut s.tag_edit else { return };
+            let rows = 4 + ed.titles.len();
+            if ed.editing {
+                let value: &mut String = match ed.selected {
+                    0 => &mut ed.artist,
+                    1 => &mut ed.album,
+                    2 => &mut ed.year,
+                    3 => &mut ed.genre,
+                    i => &mut ed.titles[i - 4],
+                };
+                match code {
+                    KeyCode::Enter | KeyCode::Esc => ed.editing = false,
+                    KeyCode::Backspace => {
+                        value.pop();
+                    }
+                    KeyCode::Char(ch) => value.push(ch),
+                    _ => {}
+                }
+            } else {
+                match code {
+                    KeyCode::Esc => {
+                        // Save-and-close.
+                        save = s.tag_edit.take();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => ed.selected = ed.selected.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if ed.selected + 1 < rows {
+                            ed.selected += 1;
+                        }
+                    }
+                    KeyCode::Enter => ed.editing = true,
+                    _ => {}
+                }
+            }
+        }
+        if let Some(ed) = save {
+            let entry = crate::disc::xmcd::XmcdEntry {
+                discid: ed.discid.clone(),
+                artist: ed.artist,
+                album: ed.album,
+                year: ed.year,
+                genre: ed.genre,
+                track_titles: ed.titles,
+                extd: String::new(),
+                extt: Vec::new(),
+            };
+            self.disc_tags.insert(ed.discid, entry);
+            self.apply_disc_tags_to_entries();
+            self.set_status("Disc tags saved");
         }
     }
 
@@ -448,7 +729,8 @@ impl App {
         ));
     }
 
-    /// Rebuild `disc_entries` for the currently selected drive.
+    /// Rebuild `disc_entries` for the currently selected drive, then overlay
+    /// any stored tag-set titles for that disc.
     pub(super) fn reload_ml_disc_entries(&mut self) {
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.disc_entries = s
@@ -458,6 +740,7 @@ impl App {
                 .unwrap_or_default();
             s.selected_disc_track = 0;
         }
+        self.apply_disc_tags_to_entries();
     }
 
     /// Append disc-track entries to the current playlist with their TOC

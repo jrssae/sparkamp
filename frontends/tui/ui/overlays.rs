@@ -284,13 +284,17 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             key("  Tab"),
-            Span::raw("    Switch Files / Playlists tab"),
+            Span::raw("    Switch Files / Playlists / Discs tab"),
         ]),
         Line::from(vec![
             key("  Enter"),
             Span::raw("   Add selected to playlist & play"),
         ]),
         Line::from(vec![key("  /  Ctrl+f"), Span::raw(" Activate search")]),
+        Line::from(vec![
+            key("  m e r"),
+            Span::raw("  Discs tab: identify on gnudb / edit tags / rescan"),
+        ]),
         Line::from(vec![key("  Esc"), Span::raw("    Close media library")]),
         Line::from(""),
         sep("── View / Other ──────────────────────────────────────"),

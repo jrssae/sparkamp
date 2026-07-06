@@ -1485,6 +1485,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minreq"
+version = "2.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
+
+[[package]]
 name = "mio"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2020,6 +2026,7 @@ dependencies = [
  "gtk4",
  "id3",
  "libc",
+ "minreq",
  "rand",
  "ratatui",
  "rayon",

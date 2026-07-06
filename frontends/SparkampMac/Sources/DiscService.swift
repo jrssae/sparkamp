@@ -77,6 +77,52 @@ struct DiscTrackEntry: Codable, Identifiable, Equatable {
     }
 }
 
+// MARK: - gnudb models
+
+/// One disc gnudb proposed for our TOC (`DiscMatch` in Rust).
+struct DiscMatch: Codable, Identifiable, Equatable {
+    var category: String
+    var discid: String
+    var title: String
+    var exact: Bool
+    var id: String { "\(category)/\(discid)" }
+}
+
+/// A parsed gnudb entry (`XmcdEntry` in Rust).
+struct XmcdEntry: Codable, Equatable {
+    var discid: String
+    var artist: String
+    var album: String
+    var year: String
+    var genre: String
+    var trackTitles: [String]
+    var extd: String
+    var extt: [String]
+}
+
+/// `{"ok":…}` / `{"error":…}` wrapper the gnudb FFI returns.
+private struct GnudbResult<T: Codable>: Codable {
+    var ok: T?
+    var error: String?
+}
+
+/// User-facing gnudb failure ("couldn't reach gnudb: …").
+struct GnudbFailure: Error {
+    let message: String
+}
+
+/// The user's tag set for one disc — a gnudb match, hand edits, or both.
+/// Keyed by freedb disc ID in the model; feeds display titles now and rip
+/// tagging / submission in Phases 3–4.
+struct DiscTagSet: Codable, Equatable {
+    var artist: String = ""
+    var album: String = ""
+    var year: String = ""
+    var genre: String = ""
+    /// Track titles in track order (index 0 = track 1).
+    var titles: [String] = []
+}
+
 // MARK: - Disc FFI service
 
 /// Thin wrapper over the `sparkamp_disc_*` JSON FFI. All calls are ctx-free
@@ -125,6 +171,46 @@ enum DiscService {
               let entries = try? decoder().decode([DiscTrackEntry].self, from: data)
         else { return [] }
         return entries
+    }
+
+    /// The freedb disc ID for a TOC — the per-disc key for tag overrides.
+    static func discId(toc: DiscToc) -> String? {
+        guard let payload = try? encoder().encode(toc),
+              let json = String(data: payload, encoding: .utf8) else { return nil }
+        let out = json.withCString { sparkamp_disc_id(nil, $0) }
+        return takeString(out)
+    }
+
+    /// Ask gnudb which discs match this TOC. Blocking network (10 s timeout)
+    /// — background queue only. Returns matches or a user-facing error string.
+    static func gnudbQuery(toc: DiscToc, email: String) -> Result<[DiscMatch], GnudbFailure> {
+        guard let payload = try? encoder().encode(toc),
+              let tocJSON = String(data: payload, encoding: .utf8)
+        else { return .failure(GnudbFailure(message: "bad TOC")) }
+        let out = tocJSON.withCString { t in
+            email.withCString { e in sparkamp_gnudb_query(nil, t, e) }
+        }
+        return decodeGnudb(takeString(out))
+    }
+
+    /// Fetch + parse one matched entry. Blocking network — background only.
+    static func gnudbRead(
+        category: String, discid: String, email: String
+    ) -> Result<XmcdEntry, GnudbFailure> {
+        let out = category.withCString { c in
+            discid.withCString { d in
+                email.withCString { e in sparkamp_gnudb_read(nil, c, d, e) }
+            }
+        }
+        return decodeGnudb(takeString(out))
+    }
+
+    private static func decodeGnudb<T: Codable>(_ json: String?) -> Result<T, GnudbFailure> {
+        guard let json = json, let data = json.data(using: .utf8),
+              let wrapped = try? decoder().decode(GnudbResult<T>.self, from: data)
+        else { return .failure(GnudbFailure(message: "unreadable gnudb reply")) }
+        if let ok = wrapped.ok { return .success(ok) }
+        return .failure(GnudbFailure(message: wrapped.error ?? "unknown gnudb error"))
     }
 
     /// Eject the disc in the given drutil drive (macOS). Runs `drutil eject`

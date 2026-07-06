@@ -587,6 +587,9 @@ private struct MediaLibraryPane: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
 
+    /// gnudb identity, loaded from config on appear and written back on edit.
+    @State private var gnudbEmail: String = ""
+
     var body: some View {
         let vars = themeManager.currentVars
         return Form {
@@ -648,6 +651,20 @@ private struct MediaLibraryPane: View {
                 }
             }
 
+            // ── Discs ──────────────────────────────────────────────────────
+            Section("Discs") {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("gnudb email", text: $gnudbEmail)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .onSubmit { saveGnudbEmail() }
+                    Text("Identifies Sparkamp to gnudb.org when looking up and submitting disc metadata.")
+                        .font(vars.bodyFont)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+
             // ── Tools ──────────────────────────────────────────────────────
             Section("Tools") {
                 HStack {
@@ -671,6 +688,17 @@ private struct MediaLibraryPane: View {
         .onAppear {
             // Ensure folder list is fresh when the pane is shown.
             if model.mlIsOpen { model.mlRefreshFolders() }
+            if let ctx = model.ctx {
+                let p = sparkamp_get_gnudb_email(ctx)
+                gnudbEmail = p.map { String(cString: $0) } ?? ""
+                sparkamp_free_string(p)
+            }
         }
+        .onDisappear { saveGnudbEmail() }
+    }
+
+    private func saveGnudbEmail() {
+        guard let ctx = model.ctx else { return }
+        gnudbEmail.withCString { sparkamp_set_gnudb_email(ctx, $0) }
     }
 }

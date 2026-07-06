@@ -13,7 +13,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod detect;
+pub mod discid;
+pub mod gnudb;
 pub mod toc;
+pub mod xmcd;
 
 /// One track's position on the disc. `start_frame` is the **CDDB-absolute**
 /// frame (75 frames = 1 s), i.e. LBA **+ 150** (the 2-second lead-in pregap).

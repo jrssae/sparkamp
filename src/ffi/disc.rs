@@ -59,6 +59,96 @@ pub unsafe extern "C" fn sparkamp_disc_track_entries(
     json_out(&toc::track_entries(&drive))
 }
 
+/// Result wrapper for the gnudb calls: exactly one of `ok`/`error` is set, so
+/// Swift can branch without exceptions. `ok` carries call-specific JSON.
+#[derive(serde::Serialize)]
+struct GnudbResult<T: serde::Serialize> {
+    ok: Option<T>,
+    error: Option<String>,
+}
+
+fn gnudb_out<T: serde::Serialize>(r: Result<T, crate::disc::gnudb::GnudbError>) -> *mut c_char {
+    match r {
+        Ok(v) => json_out(&GnudbResult {
+            ok: Some(v),
+            error: None,
+        }),
+        Err(e) => json_out(&GnudbResult::<T> {
+            ok: None,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+unsafe fn cstr(p: *const c_char) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    std::ffi::CStr::from_ptr(p)
+        .to_str()
+        .ok()
+        .map(|s| s.to_string())
+}
+
+/// The freedb disc ID (8 hex chars) for a `DiscToc` JSON — the stable key the
+/// frontends use for per-disc tag overrides. Pure math; safe anywhere. Free
+/// with `sparkamp_free_string`; null on bad input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_id(
+    _ctx: *mut SparkampCtx,
+    toc_json: *const c_char,
+) -> *mut c_char {
+    let Some(disc_toc): Option<crate::disc::DiscToc> = json_in(toc_json) else {
+        return std::ptr::null_mut();
+    };
+    std::ffi::CString::new(crate::disc::discid::freedb_discid(&disc_toc))
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Ask gnudb which discs match a TOC. Takes the `DiscToc` JSON (from an
+/// `OpticalDrive.toc`) and the configured email; returns
+/// `{"ok":[DiscMatch…]}` or `{"error":"…"}`. Blocking network call (10 s
+/// timeout) — background queue only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_gnudb_query(
+    _ctx: *mut SparkampCtx,
+    toc_json: *const c_char,
+    email: *const c_char,
+) -> *mut c_char {
+    let (Some(disc_toc), Some(email)): (Option<crate::disc::DiscToc>, _) =
+        (json_in(toc_json), cstr(email))
+    else {
+        return gnudb_out::<Vec<crate::disc::gnudb::DiscMatch>>(Err(
+            crate::disc::gnudb::GnudbError::Protocol("bad arguments".into()),
+        ));
+    };
+    gnudb_out(crate::disc::gnudb::query(&disc_toc, &email))
+}
+
+/// Fetch one matched entry and parse it: returns `{"ok":XmcdEntry}` or
+/// `{"error":"…"}`. Blocking network call — background queue only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_gnudb_read(
+    _ctx: *mut SparkampCtx,
+    category: *const c_char,
+    discid: *const c_char,
+    email: *const c_char,
+) -> *mut c_char {
+    let (Some(category), Some(discid), Some(email)) = (cstr(category), cstr(discid), cstr(email))
+    else {
+        return gnudb_out::<crate::disc::xmcd::XmcdEntry>(Err(
+            crate::disc::gnudb::GnudbError::Protocol("bad arguments".into()),
+        ));
+    };
+    let entry = crate::disc::gnudb::read(&category, &discid, &email).and_then(|text| {
+        crate::disc::xmcd::parse(&text).ok_or_else(|| {
+            crate::disc::gnudb::GnudbError::Protocol("unparseable xmcd entry".into())
+        })
+    });
+    gnudb_out(entry)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
