@@ -98,6 +98,29 @@ struct XmcdEntry: Codable, Equatable {
     var trackTitles: [String]
     var extd: String
     var extt: [String]
+    /// Entry revision from the matched record; a submission updating it must
+    /// send revision + 1.
+    var revision: Int
+}
+
+/// The fixed CDDB category set — submissions must use one of these.
+let gnudbCategories = [
+    "blues", "classical", "country", "data", "folk", "jazz",
+    "misc", "newage", "reggae", "rock", "soundtrack",
+]
+
+/// Best-effort genre → CDDB category (mirrors the Rust suggest_category).
+func suggestGnudbCategory(for genre: String) -> String {
+    let g = genre.lowercased()
+    let pairs: [(String, String)] = [
+        ("blues", "blues"), ("classic", "classical"), ("country", "country"),
+        ("folk", "folk"), ("jazz", "jazz"), ("new age", "newage"),
+        ("newage", "newage"), ("reggae", "reggae"),
+        ("soundtrack", "soundtrack"), ("rock", "rock"), ("metal", "rock"),
+        ("punk", "rock"),
+    ]
+    for (needle, cat) in pairs where g.contains(needle) { return cat }
+    return "misc"
 }
 
 /// `{"ok":…}` / `{"error":…}` wrapper the gnudb FFI returns.
@@ -200,6 +223,29 @@ enum DiscService {
         let out = category.withCString { c in
             discid.withCString { d in
                 email.withCString { e in sparkamp_gnudb_read(nil, c, d, e) }
+            }
+        }
+        return decodeGnudb(takeString(out))
+    }
+
+    /// Validate + POST an entry to gnudb. `entry.revision` must already be
+    /// the value to write (matched + 1 for updates, 0 for a new disc).
+    /// Blocking network — background only.
+    static func gnudbSubmit(
+        toc: DiscToc, entry: XmcdEntry, category: String, email: String, testMode: Bool
+    ) -> Result<String, GnudbFailure> {
+        guard let tocData = try? encoder().encode(toc),
+              let tocJSON = String(data: tocData, encoding: .utf8),
+              let entryData = try? encoder().encode(entry),
+              let entryJSON = String(data: entryData, encoding: .utf8)
+        else { return .failure(GnudbFailure(message: "bad submit payload")) }
+        let out = tocJSON.withCString { t in
+            entryJSON.withCString { en in
+                category.withCString { c in
+                    email.withCString { em in
+                        sparkamp_gnudb_submit(nil, t, en, c, em, testMode)
+                    }
+                }
             }
         }
         return decodeGnudb(takeString(out))

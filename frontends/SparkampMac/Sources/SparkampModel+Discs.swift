@@ -135,6 +135,10 @@ extension SparkampModel {
                 case .failure(let err):
                     self.discStatus = err.message
                 case .success(let entry):
+                    // Keep the untouched match as the submission baseline.
+                    if let id = self.discIdFor(drive) {
+                        self.discOfficial[id] = entry
+                    }
                     let tags = DiscTagSet(
                         artist: entry.artist,
                         album: entry.album,
@@ -143,6 +147,61 @@ extension SparkampModel {
                         titles: entry.trackTitles)
                     self.saveDiscTags(drive, tags: tags)
                     self.discStatus = "\(entry.artist) — \(entry.album)"
+                }
+            }
+        }
+    }
+
+    /// Whether the drive's disc has anything worth submitting to gnudb:
+    /// always true for a disc gnudb doesn't know; for a matched disc, true
+    /// only once the user's tags differ from the official entry.
+    func discSubmittable(_ drive: OpticalDrive) -> Bool {
+        guard drive.media.isAudioCd, let id = discIdFor(drive) else { return false }
+        guard let official = discOfficial[id] else { return true }
+        guard let tags = discTagSets[id] else { return false }
+        let officialTags = DiscTagSet(
+            artist: official.artist,
+            album: official.album,
+            year: official.year,
+            genre: official.genre,
+            titles: official.trackTitles)
+        return tags != officialTags
+    }
+
+    /// Validate + POST the disc's tags to gnudb with the chosen category.
+    /// Revision: official match + 1, or 0 for a new disc. Honors the
+    /// test-mode setting (validated but not published) until it's turned off.
+    func submitDisc(_ drive: OpticalDrive, category: String) {
+        guard let toc = drive.toc, let id = discIdFor(drive),
+              let tags = discTagSets[id], let ctx = ctx, !discSubmitting else { return }
+        let emailPtr = sparkamp_get_gnudb_email(ctx)
+        let email = emailPtr.map { String(cString: $0) } ?? "sparkamp@fastmail.com"
+        sparkamp_free_string(emailPtr)
+        let testMode = sparkamp_get_gnudb_submit_test(ctx)
+        let entry = XmcdEntry(
+            discid: id,
+            artist: tags.artist,
+            album: tags.album,
+            year: tags.year,
+            genre: tags.genre,
+            trackTitles: tags.titles,
+            extd: "",
+            extt: [],
+            revision: discOfficial[id].map { $0.revision + 1 } ?? 0)
+        discSubmitting = true
+        discStatus = testMode ? "Submitting to gnudb (test mode)…" : "Submitting to gnudb…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = DiscService.gnudbSubmit(
+                toc: toc, entry: entry, category: category, email: email, testMode: testMode)
+            DispatchQueue.main.async {
+                self.discSubmitting = false
+                switch result {
+                case .failure(let err):
+                    self.discStatus = err.message
+                case .success(let msg):
+                    self.discStatus = testMode
+                        ? "gnudb: \(msg) (test mode — not published)"
+                        : "gnudb: \(msg)"
                 }
             }
         }

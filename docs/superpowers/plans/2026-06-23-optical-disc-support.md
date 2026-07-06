@@ -123,11 +123,12 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 
 **Files:** Modify `src/disc/gnudb.rs`, `src/ffi/disc.rs`, Settings UI.
 
-- [ ] **Category selection.** gnudb submissions require one of a **fixed** category set (`blues, classical, country, data, folk, jazz, misc, newage, reggae, rock, soundtrack`) — not free-text ID3 genre. Show a dropdown at submit time, prefilled by a best-effort map from the matched/ID3 genre, **defaulting to `misc`**. Pass the chosen category as the `Category` header + `sparkamp_gnudb_submit` argument.
-- [ ] **Build xmcd** from the current (matched or user-overridden) tags via `xmcd.rs` (Phase 2.3). Enforce gnudb validation: non-empty disc artist/title, **every** track titled (reject "Track N" defaults), correct DISCID, revision 0 for new / incremented for update.
-- [ ] **POST submit.cgi** with headers `Category, Discid, User-Email: <gnudb_email>, Submit-Mode: <test|submit>, Charset: UTF-8, Content-Length, X-Cddbd-Note`. Default to **test** mode (`gnudb_submit_mode_test`) until a real round-trip is confirmed; handle **200** ok, **500/501** header/validation errors surfaced to the user.
-- [ ] **Register the app** — one-time human action: email `info@gnudb.org` announcing client "Sparkamp" + contact (`sparkamp@fastmail.com`). Note in the plan; not a code step.
-- [ ] **Commit** `feat(disc): submit disc metadata to gnudb`.
+- [x] **Category selection.** Fixed set in `gnudb::CATEGORIES`; `suggest_category` maps free-text genre (rock/metal/punk→rock, etc., default `misc`), unit-tested. mac: category Picker in the submit sheet, prefilled. TUI: category overlay (`u`), preselected.
+- [x] **Build xmcd** — `xmcd::build` (Phase 2.3) + `validate_for_submit` (non-empty artist/album, every track genuinely titled — "Track N" placeholders rejected with the offending track numbers), DISCID derived from the TOC, revision = matched entry + 1 (parse now captures `# Revision:`) or 0 for a new disc. The untouched match is kept per disc (`discOfficial` / `disc_official`) as the baseline.
+- [x] **POST submit.cgi** with Category/Discid/User-Email/Submit-Mode/Charset/X-Cddbd-Note headers via minreq; 200 parsed as acceptance, anything else surfaced verbatim (500/501 covered by tests). Test mode honored from `gnudb_submit_mode_test` (mac Settings toggle added); test-mode results are labeled "not published".
+- [x] **UI (deviating per user request):** the mac drive view's redundant Scan button is **replaced** by "Submit to gnudb", shown only when the disc is unmatched (always) or the tags differ from the official match (`discSubmittable`). TUI: `u` in the Discs tab.
+- [ ] **Register the app** — one-time human action: email `info@gnudb.org` announcing client "Sparkamp" + contact (`sparkamp@fastmail.com`). Not a code step — still pending.
+- [x] **Commit** `feat(disc): submit disc metadata to gnudb`.
 
 ## Phase 5 — Burn audio CD
 

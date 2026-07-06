@@ -131,6 +131,25 @@ pub unsafe extern "C" fn sparkamp_set_gnudb_email(ctx: *mut SparkampCtx, email: 
     }
 }
 
+/// Whether gnudb submissions run in test mode (validated, not published).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_gnudb_submit_test(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    let ctx = &*ctx;
+    ctx.config.disc.gnudb_submit_mode_test
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_gnudb_submit_test(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.disc.gnudb_submit_mode_test = value;
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_autoplay_on_add(ctx: *const SparkampCtx) -> bool {
     if ctx.is_null() {

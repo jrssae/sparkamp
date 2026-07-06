@@ -273,6 +273,10 @@ void    sparkamp_set_ml_rescan_interval(SparkampCtx *ctx, int mins);
    sparkamp_free_string. Setter ignores empty values. */
 char   *sparkamp_get_gnudb_email(SparkampCtx *ctx);
 void    sparkamp_set_gnudb_email(SparkampCtx *ctx, const char *email);
+/* gnudb submissions run in test mode (validated, not published) until this
+   is turned off. */
+bool    sparkamp_get_gnudb_submit_test(SparkampCtx *ctx);
+void    sparkamp_set_gnudb_submit_test(SparkampCtx *ctx, bool value);
 
 // ---------------------------------------------------------------------------
 // Playlist path
@@ -646,5 +650,14 @@ char *sparkamp_gnudb_query(SparkampCtx *ctx, const char *toc_json,
     network — background queue only. Free with sparkamp_free_string. */
 char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
                           const char *discid, const char *email);
+
+/** Validate + POST a disc entry to gnudb. entry_json's `revision` is written
+    into the xmcd (matched revision + 1 for an update, 0 for a new disc).
+    Returns {"ok":"<server message>"} or {"error":"…"} (validation failures
+    included). Blocking network — background queue only. Free with
+    sparkamp_free_string. */
+char *sparkamp_gnudb_submit(SparkampCtx *ctx, const char *toc_json,
+                            const char *entry_json, const char *category,
+                            const char *email, bool test_mode);
 
 #endif /* sparkamp_bridge_h */

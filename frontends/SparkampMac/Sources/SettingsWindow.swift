@@ -589,6 +589,8 @@ private struct MediaLibraryPane: View {
 
     /// gnudb identity, loaded from config on appear and written back on edit.
     @State private var gnudbEmail: String = ""
+    /// gnudb submissions stay in test mode (validated, unpublished) until off.
+    @State private var gnudbSubmitTest: Bool = true
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -663,6 +665,17 @@ private struct MediaLibraryPane: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Submit in test mode", isOn: $gnudbSubmitTest)
+                        .onChange(of: gnudbSubmitTest) { _, v in
+                            if let ctx = model.ctx { sparkamp_set_gnudb_submit_test(ctx, v) }
+                        }
+                    Text("gnudb validates test submissions without publishing them. Turn off once a real submission is confirmed working.")
+                        .font(vars.bodyFont)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
             }
 
             // ── Tools ──────────────────────────────────────────────────────
@@ -692,6 +705,7 @@ private struct MediaLibraryPane: View {
                 let p = sparkamp_get_gnudb_email(ctx)
                 gnudbEmail = p.map { String(cString: $0) } ?? ""
                 sparkamp_free_string(p)
+                gnudbSubmitTest = sparkamp_get_gnudb_submit_test(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }

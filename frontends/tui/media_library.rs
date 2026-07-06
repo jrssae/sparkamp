@@ -49,6 +49,7 @@ impl App {
             selected_disc_track: 0,
             gnudb_matches: None,
             tag_edit: None,
+            submit_category: None,
         });
     }
 
@@ -112,9 +113,13 @@ impl App {
         };
 
         // Disc overlays capture all keys while open.
-        let (matches_open, tag_edit_open) = match &self.mode {
-            Mode::MediaLibrary(s) => (s.gnudb_matches.is_some(), s.tag_edit.is_some()),
-            _ => (false, false),
+        let (matches_open, tag_edit_open, submit_open) = match &self.mode {
+            Mode::MediaLibrary(s) => (
+                s.gnudb_matches.is_some(),
+                s.tag_edit.is_some(),
+                s.submit_category.is_some(),
+            ),
+            _ => (false, false, false),
         };
         if matches_open {
             self.handle_gnudb_matches_key(code);
@@ -122,6 +127,10 @@ impl App {
         }
         if tag_edit_open {
             self.handle_disc_tag_edit_key(code);
+            return;
+        }
+        if submit_open {
+            self.handle_submit_category_key(code);
             return;
         }
 
@@ -445,6 +454,12 @@ impl App {
                 self.open_disc_tag_editor();
             }
 
+            // u — Discs tab: submit the disc's tags to gnudb (category picker
+            // first; honors the test-mode config until verified end-to-end).
+            KeyCode::Char('u') | KeyCode::Char('U') if tab == MediaLibraryTab::Discs => {
+                self.open_submit_category_picker();
+            }
+
             // i — open the Help overlay scrolled to the Media Library section.
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.mode = Mode::Help { scroll: 34 };
@@ -551,11 +566,115 @@ impl App {
             super::DiscLookupMsg::Entry(discid, entry) => {
                 self.disc_lookup = None;
                 let label = format!("{} — {}", entry.artist, entry.album);
+                // Keep the untouched match as the submission baseline.
+                self.disc_official.insert(discid.clone(), entry.clone());
                 self.disc_tags.insert(discid, entry);
                 self.apply_disc_tags_to_entries();
                 self.set_status(label);
             }
+            super::DiscLookupMsg::Submitted(msg) => {
+                self.disc_lookup = None;
+                self.set_status(format!("gnudb: {msg}"));
+            }
         }
+    }
+
+    /// Open the submission category picker, preselecting the best-effort
+    /// genre→category suggestion. Requires an edited/matched tag set.
+    fn open_submit_category_picker(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            self.set_status("No audio disc loaded");
+            return;
+        };
+        let Some(entry) = self.disc_tags.get(&discid) else {
+            self.set_status("No tags yet — press m to identify or e to edit first");
+            return;
+        };
+        let suggested = crate::disc::gnudb::suggest_category(&entry.genre);
+        let idx = crate::disc::gnudb::CATEGORIES
+            .iter()
+            .position(|c| *c == suggested)
+            .unwrap_or(0);
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.submit_category = Some(idx);
+        }
+    }
+
+    /// Keys in the category picker: ↑/↓ select, Enter submit, Esc cancel.
+    fn handle_submit_category_key(&mut self, code: KeyCode) {
+        let mut submit_with: Option<&'static str> = None;
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let Some(selected) = &mut s.submit_category else {
+                return;
+            };
+            match code {
+                KeyCode::Esc => s.submit_category = None,
+                KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if *selected + 1 < crate::disc::gnudb::CATEGORIES.len() {
+                        *selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    submit_with = Some(crate::disc::gnudb::CATEGORIES[*selected]);
+                    s.submit_category = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(category) = submit_with {
+            self.spawn_disc_submit(category);
+        }
+    }
+
+    /// Validate and POST the disc's tags to gnudb on a background thread.
+    /// The revision comes from the official match (old + 1) or 0 for a disc
+    /// gnudb doesn't know yet.
+    fn spawn_disc_submit(&mut self, category: &'static str) {
+        if self.disc_lookup.is_some() {
+            self.set_status("gnudb request already running…");
+            return;
+        }
+        let Some((toc, discid)) = self.selected_disc_identity() else {
+            return;
+        };
+        let Some(mut entry) = self.disc_tags.get(&discid).cloned() else {
+            return;
+        };
+        entry.revision = self
+            .disc_official
+            .get(&discid)
+            .map(|o| o.revision + 1)
+            .unwrap_or(0);
+        // Fast local validation for immediate feedback (the server would
+        // reject these anyway, after a round-trip).
+        if let Err(reason) = crate::disc::xmcd::validate_for_submit(&entry, &toc) {
+            self.set_status(reason);
+            return;
+        }
+        let email = self.config.disc.gnudb_email.clone();
+        let test_mode = self.config.disc.gnudb_submit_mode_test;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.disc_lookup = Some(rx);
+        self.set_status(if test_mode {
+            "Submitting to gnudb (test mode)…"
+        } else {
+            "Submitting to gnudb…"
+        });
+        std::thread::spawn(move || {
+            use crate::disc::{discid as discid_mod, gnudb, xmcd};
+            let body = xmcd::build(&entry, &toc, entry.revision);
+            let id = discid_mod::freedb_discid(&toc);
+            let msg = match gnudb::submit(&body, category, &id, &email, test_mode) {
+                Ok(server_msg) => super::DiscLookupMsg::Submitted(if test_mode {
+                    format!("{server_msg} (test mode — not published)")
+                } else {
+                    server_msg
+                }),
+                Err(e) => super::DiscLookupMsg::Failed(e.to_string()),
+            };
+            let _ = tx.send(msg);
+        });
     }
 
     /// Overlay the stored tag set's titles onto the visible disc entries
@@ -692,6 +811,13 @@ impl App {
             }
         }
         if let Some(ed) = save {
+            // Keep the matched entry's revision (an update must submit old+1;
+            // the submit path derives that from the official copy).
+            let revision = self
+                .disc_tags
+                .get(&ed.discid)
+                .map(|e| e.revision)
+                .unwrap_or(0);
             let entry = crate::disc::xmcd::XmcdEntry {
                 discid: ed.discid.clone(),
                 artist: ed.artist,
@@ -701,6 +827,7 @@ impl App {
                 track_titles: ed.titles,
                 extd: String::new(),
                 extt: Vec::new(),
+                revision,
             };
             self.disc_tags.insert(ed.discid, entry);
             self.apply_disc_tags_to_entries();

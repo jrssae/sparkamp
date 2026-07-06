@@ -19,7 +19,50 @@ use super::{discid, DiscToc};
 use serde::{Deserialize, Serialize};
 
 const BASE_URL: &str = "http://gnudb.gnudb.org/~cddb/cddb.cgi";
+const SUBMIT_URL: &str = "http://gnudb.gnudb.org/~cddb/submit.cgi";
 const TIMEOUT_SECS: u64 = 10;
+
+/// The fixed CDDB category set — submissions must use one of these, not the
+/// free-text ID3 genre.
+pub const CATEGORIES: [&str; 11] = [
+    "blues",
+    "classical",
+    "country",
+    "data",
+    "folk",
+    "jazz",
+    "misc",
+    "newage",
+    "reggae",
+    "rock",
+    "soundtrack",
+];
+
+/// Best-effort map from a free-text genre to a CDDB category, defaulting to
+/// `misc` — prefills the category picker at submit time.
+pub fn suggest_category(genre: &str) -> &'static str {
+    let g = genre.to_ascii_lowercase();
+    let pairs: [(&str, &str); 12] = [
+        ("blues", "blues"),
+        ("classic", "classical"),
+        ("country", "country"),
+        ("folk", "folk"),
+        ("jazz", "jazz"),
+        ("new age", "newage"),
+        ("newage", "newage"),
+        ("reggae", "reggae"),
+        ("soundtrack", "soundtrack"),
+        ("rock", "rock"),
+        ("metal", "rock"),
+        ("punk", "rock"),
+    ];
+    for (needle, cat) in pairs {
+        if g.contains(needle) {
+            return cat;
+        }
+    }
+    "misc"
+}
 
 /// One disc the server proposed for our TOC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +213,52 @@ pub fn read(category: &str, discid: &str, email: &str) -> Result<String, GnudbEr
     parse_read_response(&http_get(&read_url(category, discid, email))?)
 }
 
+/// Parse a `submit.cgi` response body: "200 …" is acceptance (the server's
+/// message is returned for the status line), anything else is the failure
+/// reason (500/501 = header/validation errors).
+pub(crate) fn parse_submit_response(body: &str) -> Result<String, GnudbError> {
+    let first = body.lines().next().unwrap_or("").trim_end();
+    if first.starts_with("200") {
+        Ok(first.trim_start_matches("200").trim().to_string())
+    } else {
+        Err(GnudbError::Protocol(first.to_string()))
+    }
+}
+
+/// POST an xmcd entry to gnudb. `test_mode` sends `Submit-Mode: test` — the
+/// server validates without publishing (the default until a real round-trip
+/// is verified; toggled in Settings).
+pub fn submit(
+    xmcd_body: &str,
+    category: &str,
+    discid: &str,
+    email: &str,
+    test_mode: bool,
+) -> Result<String, GnudbError> {
+    let resp = minreq::post(SUBMIT_URL)
+        .with_timeout(TIMEOUT_SECS)
+        .with_header("Category", category)
+        .with_header("Discid", discid)
+        .with_header("User-Email", email)
+        .with_header("Submit-Mode", if test_mode { "test" } else { "submit" })
+        .with_header("Charset", "UTF-8")
+        .with_header("X-Cddbd-Note", "Sparkamp disc submission")
+        .with_header("Content-Type", "text/plain; charset=UTF-8")
+        .with_body(xmcd_body)
+        .send()
+        .map_err(|e| GnudbError::Offline(e.to_string()))?;
+    if resp.status_code != 200 {
+        return Err(GnudbError::Protocol(format!(
+            "HTTP {} {}",
+            resp.status_code, resp.reason_phrase
+        )));
+    }
+    let body = resp
+        .as_str()
+        .map_err(|e| GnudbError::Protocol(e.to_string()))?;
+    parse_submit_response(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +350,27 @@ mod tests {
         assert!(xmcd.starts_with("# xmcd"));
         assert!(xmcd.ends_with("DTITLE=Artist / Album"));
         assert!(!xmcd.contains("210 "));
+    }
+
+    #[test]
+    fn category_suggestion_maps_and_defaults() {
+        assert_eq!(suggest_category("Progressive Rock"), "rock");
+        assert_eq!(suggest_category("Heavy Metal"), "rock");
+        assert_eq!(suggest_category("Classical"), "classical");
+        assert_eq!(suggest_category("New Age"), "newage");
+        assert_eq!(suggest_category("Electronic"), "misc");
+        assert_eq!(suggest_category(""), "misc");
+        assert!(CATEGORIES.contains(&suggest_category("anything")));
+    }
+
+    #[test]
+    fn submit_response_parses_ok_and_errors() {
+        assert_eq!(
+            parse_submit_response("200 OK, submission has been sent.\n").unwrap(),
+            "OK, submission has been sent."
+        );
+        assert!(parse_submit_response("500 Missing required header\n").is_err());
+        assert!(parse_submit_response("501 Invalid DISCID\n").is_err());
     }
 
     /// Live query against gnudb with the real test disc's TOC — run with

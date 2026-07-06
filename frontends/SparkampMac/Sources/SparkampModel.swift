@@ -170,6 +170,11 @@ final class SparkampModel: ObservableObject {
     /// hand edits. Overlaid onto `discTracks` titles and consumed by rip
     /// (Phase 3) and submission (Phase 4).
     @Published var discTagSets: [String: DiscTagSet] = [:]
+    /// The untouched gnudb match per disc — baseline for "worth submitting?"
+    /// and the source of the revision an update must increment.
+    @Published var discOfficial: [String: XmcdEntry] = [:]
+    /// True while a submission is in flight.
+    @Published var discSubmitting: Bool = false
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false

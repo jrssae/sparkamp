@@ -149,6 +149,8 @@ pub(super) fn draw_media_library(
             sep(),
             hint("e", "tags"),
             sep(),
+            hint("u", "submit"),
+            sep(),
             hint("←→", "drive"),
             sep(),
             hint("r", "rescan"),
@@ -183,6 +185,48 @@ pub(super) fn draw_media_library(
     if let Some(ed) = &state.tag_edit {
         draw_disc_tag_editor(frame, ed, inner);
     }
+    if let Some(selected) = state.submit_category {
+        draw_submit_category(frame, selected, inner);
+    }
+}
+
+/// Centered overlay picking the CDDB submission category (fixed set).
+fn draw_submit_category(frame: &mut Frame, selected: usize, area: Rect) {
+    let cats = crate::disc::gnudb::CATEGORIES;
+    let w = 44u16.min(area.width.saturating_sub(4));
+    let h = (cats.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .title(Span::styled(
+            " Submit — category · Enter: send · Esc: cancel ",
+            Style::default().fg(C_ACCENT),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let items: Vec<ListItem> = cats
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let style = if i == selected {
+                Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Span::styled(format!("  {c}"), style))
+        })
+        .collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(List::new(items), inner, &mut list_state);
 }
 
 /// Centered overlay listing gnudb matches: ↑/↓ select, Enter fetch, Esc close.

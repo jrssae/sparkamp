@@ -14,6 +14,8 @@ struct DiscDriveView: View {
     @State private var selection: Set<Int> = []
     @State private var showTagEditor = false
     @State private var editTags = DiscTagSet()
+    @State private var showSubmit = false
+    @State private var submitCategory = "misc"
 
     private var vars: SkinVars { themeManager.currentVars }
     private var isEjecting: Bool { model.ejectingDiscs.contains(drive.id) }
@@ -62,6 +64,44 @@ struct DiscDriveView: View {
         .sheet(isPresented: $showTagEditor) {
             tagEditorSheet
         }
+        .sheet(isPresented: $showSubmit) {
+            submitSheet
+        }
+    }
+
+    // MARK: gnudb submission
+
+    private var submitSheet: some View {
+        let testMode = model.ctx.map { sparkamp_get_gnudb_submit_test($0) } ?? true
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Submit to gnudb")
+                .font(.headline)
+            Text("Sends this disc's TOC and tags to gnudb.org so other players can identify it. gnudb requires one of its fixed categories.")
+                .font(vars.bodyFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Category", selection: $submitCategory) {
+                ForEach(gnudbCategories, id: \.self) { Text($0).tag($0) }
+            }
+            if testMode {
+                Label("Test mode: gnudb validates the entry but doesn't publish it. Turn this off in Settings → Media Library once a submission is confirmed.",
+                      systemImage: "info.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showSubmit = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(testMode ? "Submit (test)" : "Submit") {
+                    showSubmit = false
+                    model.submitDisc(drive, category: submitCategory)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 
     // MARK: gnudb match picker
@@ -208,15 +248,22 @@ struct DiscDriveView: View {
                     }
                     .disabled(model.discTracks.isEmpty)
                     .help("Set artist/album and per-track titles (used for display and ripping)")
-                }
 
-                Button {
-                    model.pollDiscDrives()
-                    model.loadDiscTracks(drive)
-                } label: {
-                    Label("Scan", systemImage: "arrow.clockwise")
+                    // Shown for a disc gnudb doesn't know, or once the tags
+                    // differ from the official match — the path for feeding
+                    // corrections back upstream.
+                    if model.discSubmittable(drive) {
+                        Button {
+                            let tags = model.discTagsForEditing(drive)
+                            submitCategory = suggestGnudbCategory(for: tags.genre)
+                            showSubmit = true
+                        } label: {
+                            Label("Submit to gnudb", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(model.discSubmitting)
+                        .help("Send this disc's tags to gnudb.org so other players can identify it")
+                    }
                 }
-                .disabled(model.discBusy)
 
                 if isEjecting {
                     HStack(spacing: 6) {

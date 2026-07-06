@@ -149,6 +149,44 @@ pub unsafe extern "C" fn sparkamp_gnudb_read(
     gnudb_out(entry)
 }
 
+/// Validate + build + POST a disc entry to gnudb. Takes the `DiscToc` JSON,
+/// the `XmcdEntry` JSON (its `revision` field is written into the xmcd — pass
+/// the matched entry's revision + 1 for an update, 0 for a new disc), the
+/// chosen CDDB category, the hello email, and the test-mode flag. Returns
+/// `{"ok":"<server message>"}` or `{"error":"…"}` (validation failures
+/// included). Blocking network — background queue only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_gnudb_submit(
+    _ctx: *mut SparkampCtx,
+    toc_json: *const c_char,
+    entry_json: *const c_char,
+    category: *const c_char,
+    email: *const c_char,
+    test_mode: bool,
+) -> *mut c_char {
+    use crate::disc::{discid, gnudb, xmcd};
+    let (Some(disc_toc), Some(entry), Some(category), Some(email)): (
+        Option<crate::disc::DiscToc>,
+        Option<xmcd::XmcdEntry>,
+        _,
+        _,
+    ) = (
+        json_in(toc_json),
+        json_in(entry_json),
+        cstr(category),
+        cstr(email),
+    )
+    else {
+        return gnudb_out::<String>(Err(gnudb::GnudbError::Protocol("bad arguments".into())));
+    };
+    if let Err(reason) = xmcd::validate_for_submit(&entry, &disc_toc) {
+        return gnudb_out::<String>(Err(gnudb::GnudbError::Protocol(reason)));
+    }
+    let body = xmcd::build(&entry, &disc_toc, entry.revision);
+    let id = discid::freedb_discid(&disc_toc);
+    gnudb_out(gnudb::submit(&body, &category, &id, &email, test_mode))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

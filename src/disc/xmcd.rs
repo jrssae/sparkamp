@@ -23,6 +23,11 @@ pub struct XmcdEntry {
     pub extd: String,
     /// Per-track extended data, same indexing as `track_titles`.
     pub extt: Vec<String>,
+    /// The entry's revision from the `# Revision:` header comment (0 when
+    /// absent). A submission updating an existing entry must send the old
+    /// revision + 1 or the server rejects it as stale.
+    #[serde(default)]
+    pub revision: u32,
 }
 
 /// Parse an xmcd body (as returned by `cddb read`, header/terminator already
@@ -37,10 +42,17 @@ pub fn parse(text: &str) -> Option<XmcdEntry> {
     let mut extd = String::new();
     let mut titles: Vec<(u32, String)> = Vec::new();
     let mut extts: Vec<(u32, String)> = Vec::new();
+    let mut revision: u32 = 0;
 
     for raw in text.lines() {
         let line = raw.trim_end();
         if line.starts_with('#') || line.is_empty() {
+            // The revision lives in a comment: "# Revision: 3".
+            if let Some(rest) = line.trim_start_matches('#').trim().strip_prefix("Revision:") {
+                if let Ok(r) = rest.trim().parse() {
+                    revision = r;
+                }
+            }
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -87,7 +99,37 @@ pub fn parse(text: &str) -> Option<XmcdEntry> {
         track_titles: to_dense(titles),
         extd,
         extt: to_dense(extts),
+        revision,
     })
+}
+
+/// Check an entry against gnudb's submission rules: disc artist + album set,
+/// **every** track genuinely titled (the "Track N" placeholders don't count).
+/// Returns the user-facing reason when not submittable.
+pub fn validate_for_submit(entry: &XmcdEntry, disc_toc: &DiscToc) -> Result<(), String> {
+    if entry.artist.trim().is_empty() {
+        return Err("Disc artist is empty".to_string());
+    }
+    if entry.album.trim().is_empty() {
+        return Err("Album title is empty".to_string());
+    }
+    let n = disc_toc.tracks.len();
+    let mut untitled: Vec<String> = Vec::new();
+    for i in 0..n {
+        let title = entry.track_titles.get(i).map(String::as_str).unwrap_or("");
+        let placeholder = format!("Track {}", i + 1);
+        if title.trim().is_empty() || title.trim() == placeholder {
+            untitled.push((i + 1).to_string());
+        }
+    }
+    if !untitled.is_empty() {
+        return Err(format!(
+            "Track{} {} still untitled",
+            if untitled.len() == 1 { "" } else { "s" },
+            untitled.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn append_indexed(store: &mut Vec<(u32, String)>, n: u32, value: &str) {
@@ -223,6 +265,32 @@ PLAYORDER=";
     }
 
     #[test]
+    fn parses_revision_comment() {
+        let e = parse("# Revision: 7\nDISCID=00000003\nDTITLE=A / B\n").expect("entry");
+        assert_eq!(e.revision, 7);
+        // Absent → 0.
+        let e = parse("DISCID=00000003\nDTITLE=A / B\n").expect("entry");
+        assert_eq!(e.revision, 0);
+    }
+
+    #[test]
+    fn validate_rejects_placeholders_and_blanks() {
+        let toc = sample_toc();
+        let mut e = XmcdEntry {
+            artist: "A".into(),
+            album: "B".into(),
+            track_titles: vec!["One".into(), "Track 2".into(), String::new()],
+            ..XmcdEntry::default()
+        };
+        let err = validate_for_submit(&e, &toc).unwrap_err();
+        assert!(err.contains("2, 3"), "{err}");
+        e.track_titles = vec!["One".into(), "Two".into(), "Three".into()];
+        assert!(validate_for_submit(&e, &toc).is_ok());
+        e.artist.clear();
+        assert!(validate_for_submit(&e, &toc).is_err());
+    }
+
+    #[test]
     fn build_parse_round_trip() {
         let entry = XmcdEntry {
             discid: String::new(), // build derives it from the TOC
@@ -233,6 +301,7 @@ PLAYORDER=";
             track_titles: vec!["One".into(), "Two".into(), "Three".into()],
             extd: "notes".into(),
             extt: vec![String::new(), String::new(), String::new()],
+            revision: 0,
         };
         // Offsets 150/15150/30150 → start seconds 2/202/402, digit sums
         // 2+4+6 = 12 = 0x0c; total 598 = 0x256 → discid 0c025603.

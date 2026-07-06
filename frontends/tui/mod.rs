@@ -177,6 +177,9 @@ pub struct MediaLibraryState {
     pub gnudb_matches: Option<(Vec<crate::disc::gnudb::DiscMatch>, usize)>,
     /// Per-disc tag editor overlay state, when open.
     pub tag_edit: Option<DiscTagEditState>,
+    /// Category picker for a gnudb submission: highlighted index into
+    /// [`crate::disc::gnudb::CATEGORIES`], when the overlay is open.
+    pub submit_category: Option<usize>,
 }
 
 /// State of the disc tag-override editor overlay (Discs tab, `e`).
@@ -205,7 +208,9 @@ pub enum DiscLookupMsg {
     Matches(Vec<crate::disc::gnudb::DiscMatch>),
     /// A fetched + parsed entry for the disc with this freedb id.
     Entry(String, crate::disc::xmcd::XmcdEntry),
-    /// Lookup failed or found nothing (user-facing message).
+    /// A submission was accepted (server's message).
+    Submitted(String),
+    /// Lookup/submission failed (user-facing message).
     Failed(String),
 }
 
@@ -343,6 +348,10 @@ pub struct App {
     /// Tag sets per disc (freedb id → entry): gnudb matches and hand edits.
     /// Overlaid onto the Discs tab titles; feeds rip/submission phases.
     pub disc_tags: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    /// The untouched gnudb match per disc — the baseline for "has the user
+    /// changed anything worth submitting", and the source of the revision an
+    /// update submission must increment.
+    pub disc_official: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
     /// Receiver for an in-flight background gnudb lookup, drained by tick().
     disc_lookup: Option<mpsc::Receiver<DiscLookupMsg>>,
 }
@@ -425,6 +434,7 @@ impl App {
             media_lib,
             scan_channels: None,
             disc_tags: std::collections::HashMap::new(),
+            disc_official: std::collections::HashMap::new(),
             disc_lookup: None,
         })
     }
