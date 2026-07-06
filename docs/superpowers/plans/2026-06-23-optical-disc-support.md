@@ -164,7 +164,9 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 
 ## FFI surface (`src/ffi/disc.rs`) — JSON-over-FFI, mac parity
 
-Mirrors the device-sync FFI conventions (`#[no_mangle] pub unsafe extern "C"`, JSON `*mut c_char` freed with `sparkamp_free_string`, long ops via `sparkamp_tick` + mpsc + a dirty/progress counter). Swift enumerates the optical device via IOKit and feeds TOC/track/media info in; core owns discid, gnudb, tags, and the rip pipeline; Swift owns DiscRecording burning.
+Mirrors the device-sync FFI conventions (`#[unsafe(no_mangle)] pub extern "C"` — Rust 2024, JSON `*mut c_char` freed with `sparkamp_free_string`, long ops via `sparkamp_tick` + mpsc + a dirty/progress counter). Swift enumerates the optical device via IOKit and feeds TOC/track/media info in; core owns discid, gnudb, tags, and the rip pipeline; Swift owns DiscRecording burning.
+
+**Header is hand-maintained.** cbindgen was removed (it can't parse Rust 2024 `#[unsafe(no_mangle)]`), so these `sparkamp_disc_*` signatures must be added **by hand** to `frontends/SparkampMac/SparkampCore/sparkamp_bridge.h` — there is no regeneration step. Match the existing declaration style in that header.
 
 - `sparkamp_disc_list_drives(ctx) -> json` (array of `OpticalDrive` — every drive present)
 - `sparkamp_disc_track_uris(ctx, drive_id, toc_json) -> json` (playlist URIs scoped to the drive)
