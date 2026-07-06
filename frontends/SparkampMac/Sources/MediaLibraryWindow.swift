@@ -10,6 +10,7 @@ enum MLNavigation: Equatable {
     case playlist(id: Int64)  // track editor for a specific playlist
     case devicesOverview      // grid of connected devices
     case device(bsd: String)  // detail for one device (keyed by BSD name)
+    case discDrive(id: String) // detail for one optical drive (drutil index)
 }
 
 // MARK: - Media Library Window
@@ -75,6 +76,7 @@ struct MediaLibraryView: View {
                         }
                     }
                     devicesSection
+                    discsSection
                 }
                 .padding(.vertical, 10)
             }
@@ -126,6 +128,14 @@ struct MediaLibraryView: View {
                         onSelect: { dev in nav = .device(bsd: dev.backendId) }
                     )
                     .onAppear { model.refreshDeviceCounts() }
+                case .discDrive(let id):
+                    if let drive = model.discDrives.first(where: { $0.id == id }) {
+                        DiscDriveView(drive: drive, theme: theme)
+                    } else {
+                        // Drive vanished (USB unplugged) — the onChange below
+                        // resets nav; render the files tab meanwhile.
+                        filesTab
+                    }
                 case .device(let bsd):
                     if let dev = model.allDevices.first(where: { $0.backendId == bsd }) {
                         DeviceDetailView(device: dev, theme: theme)
@@ -148,6 +158,7 @@ struct MediaLibraryView: View {
         .onAppear {
             model.openMediaLibrary()
             model.pollDevices()   // populate the Devices group immediately
+            model.pollDiscDrives()  // and the Disc Drives group (background)
             model.startUnsupportedWatch()  // begin iOS/PTP recognition
             reload()
             if !columnCustomizationData.isEmpty,
@@ -179,6 +190,13 @@ struct MediaLibraryView: View {
             if case let .device(bsd) = nav,
                !devs.contains(where: { $0.backendId == bsd }) {
                 nav = .devicesOverview
+            }
+        }
+        // Selected optical drive unplugged — return to the files tab.
+        .onChange(of: model.discDrives) { _, drives in
+            if case let .discDrive(id) = nav,
+               !drives.contains(where: { $0.id == id }) {
+                nav = .files
             }
         }
         .onChange(of: columnCustomization) { _, v in
@@ -348,6 +366,60 @@ struct MediaLibraryView: View {
             model.mlAppendPathsToPlaylist(playlistId: playlistId, paths: paths)
         }
         return true
+    }
+
+    // MARK: - Disc Drives sidebar group
+
+    /// One row per physical optical drive (never collapsed to "the drive"),
+    /// mirroring how the Devices group lists every volume. Hidden entirely
+    /// when no drive is connected.
+    @ViewBuilder
+    private var discsSection: some View {
+        let vars = themeManager.currentVars
+        if !model.discDrives.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "opticaldiscdrive").font(.system(size: 11))
+                Text("Disc Drives")
+                    .font(vars.bodyFont)
+                Spacer()
+                Text("\(model.discDrives.count)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+            .foregroundStyle(theme.playlistText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 6)
+
+            ForEach(model.discDrives) { drive in
+                let selected = (nav == .discDrive(id: drive.id))
+                Button { nav = .discDrive(id: drive.id) } label: {
+                    HStack(spacing: 4) {
+                        Spacer().frame(width: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(drive.label)
+                                .font(vars.bodyFont.weight(selected ? .semibold : .regular))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Text(drive.mediaSummary)
+                                .font(.system(size: 10))
+                                .foregroundStyle(theme.playlistDurationText)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                    }
+                    .foregroundStyle(selected ? theme.playlistCurrentText : theme.playlistText)
+                    .padding(.vertical, 4)
+                    .padding(.trailing, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(selected ? theme.playlistCurrentBg : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 6)
+            }
+        }
     }
 
     // MARK: - Devices sidebar group

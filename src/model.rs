@@ -222,6 +222,12 @@ impl Track {
     /// `from_path`), so no base-URI resolution is needed.
     pub fn uri(&self) -> String {
         let path_str = self.path.display().to_string();
+        // Disc tracks store a ready-made URI (`cdda://3?device=/dev/sr0`)
+        // instead of a file path — pass it through untouched: the engine
+        // understands the scheme, and file-URI escaping would corrupt it.
+        if path_str.starts_with("cdda://") {
+            return path_str;
+        }
         // Encode in this specific order: % must come first so that literal
         // percent signs in filenames are encoded before we add any new ones.
         let encoded = path_str

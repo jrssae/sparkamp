@@ -62,6 +62,45 @@ pub unsafe extern "C" fn sparkamp_playlist_add_fast(
     }
 }
 
+/// Add a playlist entry with a caller-supplied title and known duration —
+/// used for disc tracks, whose display name ("Track N" or a gnudb title) and
+/// duration come from the TOC rather than tags on the file. `path` may be a
+/// plain file path (macOS mounted AIFF) or a `cdda://` pseudo-URI (Linux);
+/// no tag read or duration probe is performed.
+///
+/// Returns the 0-based playlist index of the new entry, or -1 on bad input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_add_entry(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+    title: *const c_char,
+    duration_secs: c_int,
+) -> c_int {
+    if ctx.is_null() || path.is_null() || title.is_null() {
+        return -1;
+    }
+    let ctx = &mut *ctx;
+    let path = CStr::from_ptr(path).to_string_lossy().into_owned();
+    let title = CStr::from_ptr(title).to_string_lossy().into_owned();
+    if path.is_empty() || title.is_empty() {
+        return -1;
+    }
+    let track = Track {
+        path: std::path::PathBuf::from(path),
+        title,
+        artist: String::new(),
+        album_artist: String::new(),
+        album: String::new(),
+        duration: (duration_secs > 0)
+            .then(|| std::time::Duration::from_secs(duration_secs as u64)),
+        broken: false,
+        read_only: true, // disc media is never writable in place
+    };
+    let idx = ctx.playlist.tracks.len() as c_int;
+    ctx.playlist.add(track);
+    idx
+}
+
 /// Remove all tracks from the playlist.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_playlist_clear(ctx: *mut SparkampCtx) {

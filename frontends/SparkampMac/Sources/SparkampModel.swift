@@ -149,6 +149,19 @@ final class SparkampModel: ObservableObject {
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
 
+    // ── Optical discs ────────────────────────────────────────────────────────
+    /// Every optical drive with its loaded-media state (audio-CD TOC included).
+    /// Polled ~every 10 s while the ML window is open (subprocess-backed).
+    @Published var discDrives: [OpticalDrive] = []
+    /// Tracks of the disc shown in the drive detail view.
+    @Published var discTracks: [DiscTrackEntry] = []
+    /// True while a disc drive enumeration/track load runs in the background.
+    @Published var discBusy: Bool = false
+    /// Drive ids with an eject in flight.
+    @Published var ejectingDiscs: Set<String> = []
+    /// One-line result of the last disc op ("Added 8 disc tracks", …).
+    @Published var discStatus: String? = nil
+
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false
     @Published var dedupGroups: [DedupGroupItem] = []
@@ -329,6 +342,12 @@ final class SparkampModel: ObservableObject {
             deviceTickCount += 1
             if deviceTickCount % 20 == 1 {
                 pollDevices()
+            }
+            // Optical drives every ~10 s: detection shells out to drutil, so
+            // it's polled an order of magnitude slower than volumes (and runs
+            // on a background queue either way).
+            if deviceTickCount % 100 == 1 {
+                pollDiscDrives()
             }
         } else if deviceTickCount != 0 {
             deviceTickCount = 0

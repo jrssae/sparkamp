@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_sys;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
@@ -124,6 +124,11 @@ pub struct Player {
     has_spectrum: bool,
     /// Granite plasma renderer state (lazy-allocated on first use).
     granite: Option<crate::granite::Granite>,
+    /// Device node for the next `cdda://` load (e.g. `/dev/sr0`), consumed by
+    /// the `source-setup` handler. Carried out-of-band because the GStreamer
+    /// cdda URI has no device syntax: `load()` strips the `?device=` suffix
+    /// off the pseudo-URI and stashes it here.
+    cdda_device: Arc<Mutex<Option<String>>>,
     /// Fake position for testing (overrides real position when set).
     #[cfg(test)]
     fake_position: Option<Duration>,
@@ -341,6 +346,26 @@ impl Player {
             }
         }
 
+        // Route the target drive to CD-audio sources. The cdda URI carries no
+        // device, so `load()` stashes it here and this handler applies it to
+        // the source uridecodebin creates (cdiocddasrc on Linux — anything
+        // exposing a "device" property).
+        let cdda_device: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        {
+            let cdda_device = cdda_device.clone();
+            decodebin.connect("source-setup", false, move |values| {
+                let Some(dev) = cdda_device.lock().ok().and_then(|d| d.clone()) else {
+                    return None;
+                };
+                if let Ok(source) = values[1].get::<gst::Element>() {
+                    if source.find_property("device").is_some() {
+                        source.set_property("device", &dev);
+                    }
+                }
+                None
+            });
+        }
+
         Ok(Player {
             pipeline,
             decodebin,
@@ -356,6 +381,7 @@ impl Player {
             waveform_data,
             has_spectrum,
             granite: None,
+            cdda_device,
             #[cfg(test)]
             fake_position: None,
         })
@@ -463,8 +489,28 @@ impl Player {
         // clean.
         self.pipeline.set_state(gst::State::Null)?;
 
+        // CD-audio pseudo-URIs carry the target drive as a query suffix
+        // (`cdda://3?device=/dev/sr0`) because the GStreamer cdda scheme has
+        // no device syntax. Strip it and hand the device to the source-setup
+        // handler; plain URIs clear any stale device.
+        let uri = if let Some(rest) = uri.strip_prefix("cdda://") {
+            let (track, device) = match rest.split_once("?device=") {
+                Some((t, d)) => (t, Some(d.to_string())),
+                None => (rest, None),
+            };
+            if let Ok(mut slot) = self.cdda_device.lock() {
+                *slot = device;
+            }
+            format!("cdda://{track}")
+        } else {
+            if let Ok(mut slot) = self.cdda_device.lock() {
+                *slot = None;
+            }
+            uri.to_string()
+        };
+
         // Set the URI on the decodebin element
-        self.decodebin.set_property("uri", uri);
+        self.decodebin.set_property("uri", &uri);
 
         // Clear stale waveform samples from the previous track so the new
         // track starts with a blank canvas rather than a ghost of old audio.

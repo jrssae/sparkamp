@@ -40,6 +40,13 @@ impl App {
             sort_col,
             sort_desc,
             add_input: None,
+            // Drives are detected lazily on first entry to the Discs tab —
+            // detection shells out (drutil / cd-info) and must not slow down
+            // opening the library.
+            drives: Vec::new(),
+            selected_drive: 0,
+            disc_entries: Vec::new(),
+            selected_disc_track: 0,
         });
     }
 
@@ -173,16 +180,25 @@ impl App {
                 self.mode = Mode::Normal;
             }
 
-            // Tab: switch between Files and Playlists.
+            // Tab: cycle Files → Playlists → Discs.
             KeyCode::Tab => {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
+                let entered_discs = if let Mode::MediaLibrary(s) = &mut self.mode {
                     s.tab = match s.tab {
                         MediaLibraryTab::Files => MediaLibraryTab::Playlists,
-                        MediaLibraryTab::Playlists => MediaLibraryTab::Files,
+                        MediaLibraryTab::Playlists => MediaLibraryTab::Discs,
+                        MediaLibraryTab::Discs => MediaLibraryTab::Files,
                     };
                     s.selected_track = 0;
                     s.selected_playlist = 0;
                     s.playlist_preview = None;
+                    s.tab == MediaLibraryTab::Discs && s.drives.is_empty()
+                } else {
+                    false
+                };
+                // First visit: detect drives (subprocess-backed, so only on
+                // entry / explicit refresh, never per-frame).
+                if entered_discs {
+                    self.refresh_ml_drives();
                 }
             }
 
@@ -207,6 +223,9 @@ impl App {
                             s.selected_playlist = prev;
                             s.playlist_preview = None; // refreshed on Enter
                         }
+                        MediaLibraryTab::Discs => {
+                            s.selected_disc_track = s.selected_disc_track.saturating_sub(1);
+                        }
                     }
                 }
             }
@@ -225,6 +244,11 @@ impl App {
                                 s.selected_playlist += 1;
                             }
                             s.playlist_preview = None;
+                        }
+                        MediaLibraryTab::Discs => {
+                            if s.selected_disc_track + 1 < s.disc_entries.len() {
+                                s.selected_disc_track += 1;
+                            }
                         }
                     }
                 }
@@ -284,21 +308,60 @@ impl App {
                             }
                         }
                     }
+                    MediaLibraryTab::Discs => {
+                        // Add the selected disc track to the current playlist.
+                        let entry = if let Mode::MediaLibrary(s) = &self.mode {
+                            s.disc_entries.get(s.selected_disc_track).cloned()
+                        } else {
+                            None
+                        };
+                        if let Some(e) = entry {
+                            self.add_disc_entries(&[e]);
+                        }
+                    }
                 }
             }
 
-            // ← / → — scroll the visible columns left or right.
+            // ← / → — scroll the Files columns; in the Discs tab they switch
+            // between drives instead (one row per physical drive).
             KeyCode::Left => {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    s.col_offset = s.col_offset.saturating_sub(1);
+                let switch = if let Mode::MediaLibrary(s) = &mut self.mode {
+                    if s.tab == MediaLibraryTab::Discs {
+                        let prev = s.selected_drive;
+                        s.selected_drive = s.selected_drive.saturating_sub(1);
+                        s.selected_drive != prev
+                    } else {
+                        s.col_offset = s.col_offset.saturating_sub(1);
+                        false
+                    }
+                } else {
+                    false
+                };
+                if switch {
+                    self.reload_ml_disc_entries();
                 }
             }
             KeyCode::Right => {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    let max = s.visible_columns.len().saturating_sub(1);
-                    if s.col_offset < max {
-                        s.col_offset += 1;
+                let switch = if let Mode::MediaLibrary(s) = &mut self.mode {
+                    if s.tab == MediaLibraryTab::Discs {
+                        if s.selected_drive + 1 < s.drives.len() {
+                            s.selected_drive += 1;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        let max = s.visible_columns.len().saturating_sub(1);
+                        if s.col_offset < max {
+                            s.col_offset += 1;
+                        }
+                        false
                     }
+                } else {
+                    false
+                };
+                if switch {
+                    self.reload_ml_disc_entries();
                 }
             }
 
@@ -332,11 +395,27 @@ impl App {
                 self.refresh_ml_sort();
             }
 
-            // a — prompt for a folder or file path to add to the media library.
+            // a — Files/Playlists: prompt for a path to add to the library.
+            //     Discs: add the whole disc to the current playlist.
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
+                if tab == MediaLibraryTab::Discs {
+                    let entries = if let Mode::MediaLibrary(s) = &self.mode {
+                        s.disc_entries.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    if !entries.is_empty() {
+                        self.add_disc_entries(&entries);
+                    }
+                } else if let Mode::MediaLibrary(s) = &mut self.mode {
                     s.add_input = Some(String::new());
                 }
+            }
+
+            // r — Discs tab: re-detect drives and reload the track list
+            // (disc swapped, drive plugged/unplugged).
+            KeyCode::Char('r') | KeyCode::Char('R') if tab == MediaLibraryTab::Discs => {
+                self.refresh_ml_drives();
             }
 
             // i — open the Help overlay scrolled to the Media Library section.
@@ -346,6 +425,77 @@ impl App {
 
             _ => {}
         }
+    }
+
+    /// Re-detect optical drives (subprocess-backed — only on Discs-tab entry
+    /// or an explicit `r`), clamp the drive selection, and reload the track
+    /// entries of the selected drive.
+    pub(super) fn refresh_ml_drives(&mut self) {
+        let drives = crate::disc::detect::list_drives();
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.selected_drive = s.selected_drive.min(drives.len().saturating_sub(1));
+            s.drives = drives;
+        }
+        self.reload_ml_disc_entries();
+        let n = if let Mode::MediaLibrary(s) = &self.mode {
+            s.drives.len()
+        } else {
+            0
+        };
+        self.set_status(format!(
+            "{n} optical drive{} found",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Rebuild `disc_entries` for the currently selected drive.
+    pub(super) fn reload_ml_disc_entries(&mut self) {
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.disc_entries = s
+                .drives
+                .get(s.selected_drive)
+                .map(crate::disc::toc::track_entries)
+                .unwrap_or_default();
+            s.selected_disc_track = 0;
+        }
+    }
+
+    /// Append disc-track entries to the current playlist with their TOC
+    /// titles and durations. No tag scan or duration probe: the titles come
+    /// from the TOC ("Track N" until gnudb — Phase 2), the durations are
+    /// exact, and Linux `cdda://` pseudo-paths aren't probeable files anyway.
+    /// Honors the same add-behavior config as the Files tab.
+    pub(super) fn add_disc_entries(&mut self, entries: &[crate::disc::DiscTrackEntry]) {
+        if entries.is_empty() {
+            return;
+        }
+        let was_empty = self.playlist.is_empty();
+        if self.config.behavior.playlist_add_behavior == crate::config::PlaylistAddBehavior::Replace
+        {
+            self.playlist.tracks.clear();
+            self.playlist.current_index = 0;
+            self.shuffle_state.reset();
+        }
+        for e in entries {
+            self.playlist.add(crate::model::Track {
+                path: std::path::PathBuf::from(&e.path),
+                title: e.title.clone(),
+                artist: String::new(),
+                album_artist: String::new(),
+                album: String::new(),
+                duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
+                broken: false,
+                read_only: true, // disc media is never writable in place
+            });
+        }
+        if self.config.behavior.autoplay_on_add && was_empty {
+            self.play_current();
+        }
+        self.set_status(format!(
+            "Added {} disc track{} to playlist",
+            entries.len(),
+            if entries.len() == 1 { "" } else { "s" }
+        ));
     }
 
     /// Add a folder or file path to the media library (called from 'a' key in ML).

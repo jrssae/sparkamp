@@ -61,6 +61,7 @@ pub(super) fn draw_media_library(
     let sidebar_items: Vec<ListItem> = [
         ("Files", MediaLibraryTab::Files),
         ("Playlists", MediaLibraryTab::Playlists),
+        ("Discs", MediaLibraryTab::Discs),
     ]
     .iter()
     .map(|(label, tab)| {
@@ -119,6 +120,7 @@ pub(super) fn draw_media_library(
     match state.tab {
         MediaLibraryTab::Files => draw_ml_files(frame, state, pane[1]),
         MediaLibraryTab::Playlists => draw_ml_playlists(frame, state, pane[1]),
+        MediaLibraryTab::Discs => draw_ml_discs(frame, state, pane[1]),
     }
 
     // Hint / toast bar — show a status message if one is pending, show a
@@ -133,6 +135,22 @@ pub(super) fn draw_media_library(
         ])
     } else if state.search_active {
         Line::from(hint("Esc", "exit search"))
+    } else if state.tab == MediaLibraryTab::Discs {
+        Line::from(vec![
+            hint("Esc", "close"),
+            sep(),
+            hint("Tab", "tab"),
+            sep(),
+            hint("Enter", "add track"),
+            sep(),
+            hint("a", "add disc"),
+            sep(),
+            hint("←→", "drive"),
+            sep(),
+            hint("r", "rescan"),
+            sep(),
+            hint("i", "help"),
+        ])
     } else {
         Line::from(vec![
             hint("Esc", "close"),
@@ -415,6 +433,109 @@ pub(super) fn draw_ml_playlists(frame: &mut Frame, state: &MediaLibraryState, ar
             frame.render_widget(List::new(items), right);
         }
     }
+}
+
+/// Render the Discs tab: drive rows on top (one per physical drive, like the
+/// external-device list), the selected drive's audio-disc track list below.
+pub(super) fn draw_ml_discs(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+    if area.height < 2 {
+        return;
+    }
+
+    if state.drives.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No optical drives found.  Connect a drive and press r to rescan.",
+                Style::default().fg(C_DIM),
+            )),
+            area,
+        );
+        return;
+    }
+
+    // Drive rows: capped so the track list keeps most of the space.
+    let drives_h = (state.drives.len() as u16).min(4);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(drives_h),
+            Constraint::Length(1), // separator/header line
+            Constraint::Min(1),    // track list
+        ])
+        .split(area);
+
+    let drive_items: Vec<ListItem> = state
+        .drives
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let marker = if i == state.selected_drive { "▶ " } else { "  " };
+            let style = if i == state.selected_drive {
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Span::styled(
+                format!("{marker}{} — {}", d.label, d.media_summary()),
+                style,
+            ))
+        })
+        .collect();
+    frame.render_widget(List::new(drive_items), rows[0]);
+
+    // Track list of the selected drive.
+    let drive = state.drives.get(state.selected_drive);
+    if state.disc_entries.is_empty() {
+        let msg = match drive {
+            Some(d) if d.media.present && !d.media.is_audio_cd => {
+                "Not an audio CD.  Data-disc files appear when the volume mounts; burning arrives in a later phase."
+            }
+            Some(_) => "No disc loaded.  Insert an audio CD and press r.",
+            None => "",
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::default().fg(C_DIM))),
+            rows[2],
+        );
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("{:>4}  {:<40} {:>6}", "#", "Title", "Len"),
+            Style::default().fg(C_DIM),
+        )),
+        rows[1],
+    );
+
+    let items: Vec<ListItem> = state
+        .disc_entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let style = if i == state.selected_disc_track {
+                Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(Span::styled(
+                format!(
+                    "{:>4}  {:<40} {:>3}:{:02}",
+                    e.number,
+                    ml_truncate(&e.title, 40),
+                    e.duration_secs / 60,
+                    e.duration_secs % 60
+                ),
+                style,
+            ))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected_disc_track));
+    let list =
+        List::new(items).highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+    frame.render_stateful_widget(list, rows[2], &mut list_state);
 }
 
 /// Truncate a string to at most `max_chars` characters, appending `…` when cut.

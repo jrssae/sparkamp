@@ -30,6 +30,7 @@
 
 mod dedupe;
 mod devices;
+mod disc;
 mod eq;
 mod granite;
 mod id3;

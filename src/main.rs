@@ -21,6 +21,7 @@ mod controller;
 #[cfg(target_os = "linux")]
 mod crash_log;
 mod dedupe;
+mod disc;
 mod duration_cache;
 mod duration_probe;
 mod engine;

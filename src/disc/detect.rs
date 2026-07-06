@@ -1,0 +1,660 @@
+//! Optical-drive detection.
+//!
+//! Public entry: [`list_drives`] — one [`OpticalDrive`] per physical drive.
+//!
+//! Platform glue is thin and cfg-gated; every output parser is a plain
+//! `&str → struct` function compiled on all platforms so the whole module is
+//! unit-testable anywhere (the Linux `cd-info` parser is tested on macOS and
+//! vice versa).
+//!
+//! - **macOS:** `drutil list` enumerates drives, `drutil status -drive N`
+//!   probes the loaded media, and an audio CD's TOC comes from the mounted
+//!   volume's `.TOC.plist` (converted with `plutil -convert xml1`). The
+//!   plist's "Start Block" values are already CDDB-absolute (track 1 = 150).
+//! - **Linux:** `/sys/block/sr*` enumerates drives (vendor+model from sysfs),
+//!   `cd-info` (libcdio) reads the TOC. cd-info reports post-pregap LSNs, so
+//!   **+150** is added here to make them CDDB-absolute.
+
+use super::{DiscToc, MediaInfo, MediaKind, OpticalDrive, TocTrack};
+
+/// Enumerate every optical drive with its loaded-media state.
+///
+/// Runs small subprocesses (`drutil`/`plutil` on macOS, `cd-info` on Linux) —
+/// call it off the UI thread and throttle polling (a few seconds is plenty).
+pub fn list_drives() -> Vec<OpticalDrive> {
+    platform::list_drives()
+}
+
+// ---------------------------------------------------------------------------
+// macOS `.TOC.plist` (shared parser — the plist is what macOS mounts, but the
+// parser itself is platform-neutral text handling)
+// ---------------------------------------------------------------------------
+
+/// Parse the XML form of a mounted audio CD's `.TOC.plist` (as produced by
+/// `plutil -convert xml1 -o -`).
+///
+/// Strategy: a sequential scan tracking the last seen `<key>`; any `</dict>`
+/// that closed a dict containing both "Point" and "Start Block" was a track.
+/// The session dict itself has neither, so nesting needn't be modelled.
+/// "Leadout Block" is taken first-wins, i.e. from session 1 — right for audio
+/// CDs (and for CD-Extra, whose audio session is first; the data session's
+/// tracks are dropped by the `is_audio` filter downstream).
+pub(crate) fn parse_toc_plist(xml: &str) -> Option<DiscToc> {
+    let mut last_key = String::new();
+    let mut cur_point: Option<u32> = None;
+    let mut cur_start: Option<u32> = None;
+    let mut cur_is_data = false;
+    let mut leadout: Option<u32> = None;
+    let mut tracks: Vec<TocTrack> = Vec::new();
+
+    for raw in xml.lines() {
+        let line = raw.trim();
+        if let Some(k) = line
+            .strip_prefix("<key>")
+            .and_then(|r| r.strip_suffix("</key>"))
+        {
+            last_key = k.to_string();
+        } else if let Some(v) = line
+            .strip_prefix("<integer>")
+            .and_then(|r| r.strip_suffix("</integer>"))
+        {
+            let v: u32 = v.parse().ok()?;
+            match last_key.as_str() {
+                "Point" => cur_point = Some(v),
+                "Start Block" => cur_start = Some(v),
+                "Leadout Block" => leadout = leadout.or(Some(v)),
+                _ => {}
+            }
+        } else if line == "<true/>" {
+            if last_key == "Data" {
+                cur_is_data = true;
+            }
+        } else if line == "<false/>" {
+            if last_key == "Data" {
+                cur_is_data = false;
+            }
+        } else if line == "</dict>" {
+            if let (Some(p), Some(s)) = (cur_point, cur_start) {
+                // Points 1–99 are real tracks (0xA0+ session markers never
+                // appear in the Track Array, but stay defensive).
+                if (1..=99).contains(&p) {
+                    tracks.push(TocTrack {
+                        number: p as u8,
+                        start_frame: s,
+                        is_audio: !cur_is_data,
+                    });
+                }
+            }
+            cur_point = None;
+            cur_start = None;
+            cur_is_data = false;
+        }
+    }
+
+    tracks.sort_by_key(|t| t.number);
+    match (tracks.is_empty(), leadout) {
+        (false, Some(leadout_frame)) => Some(DiscToc {
+            tracks,
+            leadout_frame,
+        }),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// macOS `drutil` output parsers (platform-neutral text handling)
+// ---------------------------------------------------------------------------
+
+/// One row of `drutil list`: the drive index drutil uses for `-drive N`, and
+/// the human label (vendor + product).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DrutilDriveRow {
+    pub index: u32,
+    pub label: String,
+}
+
+/// Parse `drutil list`. Column positions come from the header line, so the
+/// label is sliced between "Vendor" and "Rev" no matter how wide the fields
+/// print:
+/// ```text
+///    Vendor   Product           Rev   Bus       SupportLevel
+/// 1  MATSHITA DVD-RAM UJ8C2     1.00  USB       Unsupported
+/// ```
+pub(crate) fn parse_drutil_list(out: &str) -> Vec<DrutilDriveRow> {
+    let Some(header) = out.lines().find(|l| l.contains("Vendor")) else {
+        return Vec::new();
+    };
+    let Some(vendor_col) = header.find("Vendor") else {
+        return Vec::new();
+    };
+    let rev_col = header.find("Rev").unwrap_or(header.len());
+
+    out.lines()
+        .filter_map(|line| {
+            let index: u32 = line.split_whitespace().next()?.parse().ok()?;
+            let end = rev_col.min(line.len());
+            let start = vendor_col.min(end);
+            let label = line.get(start..end)?.trim().to_string();
+            if label.is_empty() {
+                return None;
+            }
+            Some(DrutilDriveRow { index, label })
+        })
+        .collect()
+}
+
+/// Media facts pulled from `drutil status -drive N`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DrutilStatus {
+    /// The "Type:" value ("CD-ROM", "CD-R", "DVD-RAM", "No Media Inserted"…).
+    pub media_type: String,
+    /// "Tracks:" value when media is present.
+    pub tracks: Option<u32>,
+    /// "Space Used:" blocks value.
+    pub used_blocks: Option<u64>,
+    /// "Space Free:" blocks value.
+    pub free_blocks: Option<u64>,
+    /// Whole "Writability:" line value (tokens like "appendable, blank…").
+    pub writability: String,
+}
+
+pub(crate) fn parse_drutil_status(out: &str) -> DrutilStatus {
+    let mut st = DrutilStatus::default();
+    for raw in out.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix("Type:") {
+            // The Type line also carries "Name: /dev/diskN" further right.
+            let rest = rest.split("Name:").next().unwrap_or(rest);
+            st.media_type = rest.trim().to_string();
+            // "Sessions: 1  Tracks: 8" shares a line in some layouts; Tracks
+            // is parsed generically below either way.
+        }
+        if let Some(pos) = line.find("Tracks:") {
+            st.tracks = line[pos + "Tracks:".len()..]
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok());
+        }
+        for (prefix, slot) in [
+            ("Space Free:", &mut st.free_blocks),
+            ("Space Used:", &mut st.used_blocks),
+        ] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                // "…  27:41:41         blocks:   124616 / 255.21MB / …"
+                if let Some(bpos) = rest.find("blocks:") {
+                    *slot = rest[bpos + "blocks:".len()..]
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse().ok());
+                }
+            }
+        }
+        if let Some(rest) = line.strip_prefix("Writability:") {
+            st.writability = rest.trim().to_string();
+        }
+    }
+    st
+}
+
+/// Map a `drutil` media type + writability into [`MediaInfo`]. Order matters:
+/// "CD-ROM" must not match the "CD-R" prefix.
+pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
+    let ty = st.media_type.as_str();
+    let present = !ty.is_empty() && !ty.contains("No Media");
+    if !present {
+        return MediaInfo::none();
+    }
+    let kind = if ty.contains("CD-ROM") {
+        MediaKind::Unknown // pressed disc
+    } else if ty.contains("CD-RW") {
+        MediaKind::CdRw
+    } else if ty.contains("CD-R") {
+        MediaKind::CdR
+    } else if ty.contains("DVD-RAM") {
+        MediaKind::DvdRam
+    } else if ty.contains("DVD-RW") || ty.contains("DVD+RW") {
+        MediaKind::DvdRw
+    } else if ty.contains("DVD-R") || ty.contains("DVD+R") {
+        MediaKind::DvdR
+    } else {
+        MediaKind::Unknown
+    };
+    let is_blank =
+        st.writability.contains("blank") || (st.used_blocks == Some(0) && st.free_blocks.unwrap_or(0) > 0);
+    let rewritable = matches!(kind, MediaKind::CdRw | MediaKind::DvdRw | MediaKind::DvdRam)
+        || st.writability.contains("overwritable")
+        || st.writability.contains("erasable");
+    // 2048-byte data blocks — close enough for capacity display; the burn
+    // phases refine per-media accounting.
+    MediaInfo {
+        present,
+        is_audio_cd: false, // decided by TOC-volume matching, not drutil
+        is_blank,
+        rewritable,
+        kind,
+        free_bytes: st.free_blocks.unwrap_or(0) * 2048,
+        capacity_bytes: (st.free_blocks.unwrap_or(0) + st.used_blocks.unwrap_or(0)) * 2048,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linux `cd-info` output parser (platform-neutral text handling)
+// ---------------------------------------------------------------------------
+
+/// Parse `cd-info` track-list output into a TOC. cd-info prints post-pregap
+/// LSNs, so +150 converts to CDDB-absolute frames:
+/// ```text
+/// CD-ROM Track List (1 - 8)
+///   #: MSF       LSN    Type   Green? Copy? Channels Premphasis?
+///   1: 00:02:00  000000 audio  false  no    2        no
+/// 170: 27:43:41  124616 leadout
+/// ```
+// Only the Linux platform glue calls this; it stays compiled (and tested)
+// everywhere so the parser can't rot unnoticed on the other platforms.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn parse_cd_info(out: &str) -> Option<DiscToc> {
+    let mut tracks: Vec<TocTrack> = Vec::new();
+    let mut leadout: Option<u32> = None;
+
+    for line in out.lines() {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if toks.len() < 4 {
+            continue;
+        }
+        let Some(numtok) = toks[0].strip_suffix(':') else {
+            continue;
+        };
+        let Ok(number) = numtok.parse::<u32>() else {
+            continue;
+        };
+        let Some(kind) = toks.get(3) else { continue };
+        let Ok(lsn) = toks[2].parse::<u32>() else {
+            continue;
+        };
+        match *kind {
+            "audio" | "data" if (1..=99).contains(&number) => tracks.push(TocTrack {
+                number: number as u8,
+                start_frame: lsn + 150,
+                is_audio: *kind == "audio",
+            }),
+            "leadout" => leadout = Some(lsn + 150),
+            _ => {}
+        }
+    }
+
+    tracks.sort_by_key(|t| t.number);
+    match (tracks.is_empty(), leadout) {
+        (false, Some(leadout_frame)) => Some(DiscToc {
+            tracks,
+            leadout_frame,
+        }),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subprocess helper (both platforms)
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn run(cmd: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(cmd).args(args).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// macOS platform glue
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    pub fn list_drives() -> Vec<OpticalDrive> {
+        let rows = run("drutil", &["list"])
+            .map(|o| parse_drutil_list(&o))
+            .unwrap_or_default();
+        if rows.is_empty() {
+            return Vec::new();
+        }
+
+        // Mounted audio-CD volumes (a `.TOC.plist` marks one), parsed once
+        // and claimed by matching drives below.
+        let mut volumes = audio_volumes();
+
+        rows.into_iter()
+            .map(|row| {
+                let status = run("drutil", &["status", "-drive", &row.index.to_string()])
+                    .map(|o| parse_drutil_status(&o))
+                    .unwrap_or_default();
+                let mut media = media_from_drutil(&status);
+
+                // Claim the mounted volume whose TOC matches this drive's
+                // media (track count, then used-block sanity), or the first
+                // unclaimed one as a fallback — exact per-drive attribution
+                // only matters with two audio CDs in at once.
+                let mut toc = None;
+                let mut mount_path = None;
+                if media.present {
+                    let claim = volumes
+                        .iter()
+                        .position(|(_, t)| {
+                            status.tracks == Some(t.tracks.len() as u32)
+                                && status
+                                    .used_blocks
+                                    .map(|u| u == (t.leadout_frame as u64).saturating_sub(150))
+                                    .unwrap_or(true)
+                        })
+                        .or(if volumes.is_empty() { None } else { Some(0) });
+                    if let Some(i) = claim {
+                        let (path, parsed) = volumes.remove(i);
+                        media.is_audio_cd = parsed.tracks.iter().any(|t| t.is_audio);
+                        toc = Some(parsed);
+                        mount_path = Some(path);
+                    }
+                }
+
+                OpticalDrive {
+                    id: row.index.to_string(),
+                    label: row.label,
+                    media,
+                    toc,
+                    mount_path,
+                }
+            })
+            .collect()
+    }
+
+    /// Every mounted volume containing a `.TOC.plist` (audio CDs), with its
+    /// parsed TOC.
+    fn audio_volumes() -> Vec<(PathBuf, DiscToc)> {
+        std::fs::read_dir("/Volumes")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let vol = e.path();
+                let plist = vol.join(".TOC.plist");
+                if !plist.exists() {
+                    return None;
+                }
+                let toc = toc_from_plist(&plist)?;
+                Some((vol, toc))
+            })
+            .collect()
+    }
+
+    fn toc_from_plist(plist: &Path) -> Option<DiscToc> {
+        // The plist is binary and contains a raw <data> blob, so JSON
+        // conversion fails; XML always works and the parser scans it.
+        let xml = run(
+            "plutil",
+            &["-convert", "xml1", "-o", "-", &plist.display().to_string()],
+        )?;
+        parse_toc_plist(&xml)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linux platform glue
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::*;
+
+    pub fn list_drives() -> Vec<OpticalDrive> {
+        let mut drives: Vec<OpticalDrive> = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/sys/block") else {
+            return drives;
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let rest = name.strip_prefix("sr")?;
+                rest.parse::<u32>().ok()?;
+                Some(name)
+            })
+            .collect();
+        names.sort();
+
+        for name in names {
+            let node = format!("/dev/{name}");
+            let label = sysfs_label(&name).unwrap_or_else(|| node.clone());
+
+            // cd-info exits non-zero with no medium; treat any parsed TOC as
+            // media present. Finer media typing (blank/RW) lands with the
+            // burn phases.
+            let toc = run("cd-info", &["--no-header", &node]).and_then(|o| parse_cd_info(&o));
+            let media = match &toc {
+                Some(t) => MediaInfo {
+                    present: true,
+                    is_audio_cd: t.tracks.iter().any(|tr| tr.is_audio),
+                    ..MediaInfo::none()
+                },
+                None => MediaInfo::none(),
+            };
+
+            drives.push(OpticalDrive {
+                id: node,
+                label,
+                media,
+                toc,
+                mount_path: None,
+            });
+        }
+        drives
+    }
+
+    /// "VENDOR MODEL" from sysfs, e.g. "/sys/block/sr0/device/{vendor,model}".
+    fn sysfs_label(name: &str) -> Option<String> {
+        let base = format!("/sys/block/{name}/device");
+        let vendor = std::fs::read_to_string(format!("{base}/vendor")).ok()?;
+        let model = std::fs::read_to_string(format!("{base}/model")).ok()?;
+        let label = format!("{} {}", vendor.trim(), model.trim());
+        let label = label.trim().to_string();
+        if label.is_empty() { None } else { Some(label) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Any other platform: no optical support.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod platform {
+    use super::OpticalDrive;
+    pub fn list_drives() -> Vec<OpticalDrive> {
+        Vec::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — all parsers, on every platform.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Trimmed capture of a real 8-track disc's `.TOC.plist` (xml1 form),
+    /// tracks 4–7 elided.
+    const TOC_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>Format 0x02 TOC Data</key>
+	<data>
+	AJEBAQEQAKAAAAAAAQAAARAAoQ==
+	</data>
+	<key>Sessions</key>
+	<array>
+		<dict>
+			<key>First Track</key>
+			<integer>1</integer>
+			<key>Last Track</key>
+			<integer>8</integer>
+			<key>Leadout Block</key>
+			<integer>124766</integer>
+			<key>Session Number</key>
+			<integer>1</integer>
+			<key>Session Type</key>
+			<integer>0</integer>
+			<key>Track Array</key>
+			<array>
+				<dict>
+					<key>Data</key>
+					<false/>
+					<key>Point</key>
+					<integer>1</integer>
+					<key>Session Number</key>
+					<integer>1</integer>
+					<key>Start Block</key>
+					<integer>150</integer>
+				</dict>
+				<dict>
+					<key>Data</key>
+					<false/>
+					<key>Point</key>
+					<integer>2</integer>
+					<key>Session Number</key>
+					<integer>1</integer>
+					<key>Start Block</key>
+					<integer>13834</integer>
+				</dict>
+				<dict>
+					<key>Data</key>
+					<true/>
+					<key>Point</key>
+					<integer>3</integer>
+					<key>Session Number</key>
+					<integer>1</integer>
+					<key>Start Block</key>
+					<integer>30216</integer>
+				</dict>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>"#;
+
+    #[test]
+    fn toc_plist_parses_tracks_leadout_and_data_flag() {
+        let toc = parse_toc_plist(TOC_XML).expect("toc");
+        assert_eq!(toc.leadout_frame, 124766);
+        assert_eq!(toc.tracks.len(), 3);
+        assert_eq!(toc.tracks[0].number, 1);
+        assert_eq!(toc.tracks[0].start_frame, 150); // already CDDB-absolute
+        assert!(toc.tracks[0].is_audio);
+        assert_eq!(toc.tracks[1].start_frame, 13834);
+        assert!(!toc.tracks[2].is_audio); // Data=true track
+    }
+
+    #[test]
+    fn toc_plist_rejects_empty() {
+        assert!(parse_toc_plist("<plist></plist>").is_none());
+    }
+
+    #[test]
+    fn drutil_list_slices_label_by_header_columns() {
+        let out = "   Vendor   Product           Rev   Bus       SupportLevel\n\
+                   1  MATSHITA DVD-RAM UJ8C2     1.00  USB       Unsupported\n";
+        let rows = parse_drutil_list(out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].index, 1);
+        assert_eq!(rows[0].label, "MATSHITA DVD-RAM UJ8C2");
+    }
+
+    #[test]
+    fn drutil_status_parses_audio_cd() {
+        let out = "\
+ Vendor   Product           Rev \n\
+ MATSHITA DVD-RAM UJ8C2     1.00\n\
+\n\
+           Type: CD-ROM               Name: /dev/disk13\n\
+       Sessions: 1                  Tracks: 8 \n\
+   Overwritable:   00:00:00         blocks:        0 /   0.00MB /   0.00MiB\n\
+     Space Free:   00:00:00         blocks:        0 /   0.00MB /   0.00MiB\n\
+     Space Used:   27:41:41         blocks:   124616 / 255.21MB / 243.39MiB\n\
+    Writability: \n";
+        let st = parse_drutil_status(out);
+        assert_eq!(st.media_type, "CD-ROM");
+        assert_eq!(st.tracks, Some(8));
+        assert_eq!(st.used_blocks, Some(124616));
+        assert_eq!(st.free_blocks, Some(0));
+        assert_eq!(st.writability, "");
+
+        let media = media_from_drutil(&st);
+        assert!(media.present);
+        assert!(!media.is_blank);
+        assert!(!media.rewritable);
+        assert_eq!(media.kind, MediaKind::Unknown); // pressed CD-ROM
+    }
+
+    #[test]
+    fn drutil_status_no_media() {
+        let st = parse_drutil_status("           Type: No Media Inserted\n");
+        assert_eq!(st.media_type, "No Media Inserted");
+        assert!(!media_from_drutil(&st).present);
+    }
+
+    #[test]
+    fn drutil_blank_cdr_is_blank_not_rewritable() {
+        let out = "\
+           Type: CD-R                 Name: /dev/disk13\n\
+     Space Free:   79:59:74         blocks:   359999 / 737.28MB / 703.12MiB\n\
+     Space Used:   00:00:00         blocks:        0 /   0.00MB /   0.00MiB\n\
+    Writability: appendable, blank, overwritable\n";
+        let st = parse_drutil_status(out);
+        let media = media_from_drutil(&st);
+        assert!(media.present);
+        assert!(media.is_blank);
+        assert_eq!(media.kind, MediaKind::CdR);
+        assert_eq!(media.capacity_bytes, 359999 * 2048);
+    }
+
+    #[test]
+    fn cd_info_parses_tracks_and_adds_pregap() {
+        let out = "\
+CD-ROM Track List (1 - 8)\n\
+  #: MSF       LSN    Type   Green? Copy? Channels Premphasis?\n\
+  1: 00:02:00  000000 audio  false  no    2        no\n\
+  2: 03:04:34  013684 audio  false  no    2        no\n\
+170: 27:43:41  124616 leadout\n";
+        let toc = parse_cd_info(out).expect("toc");
+        assert_eq!(toc.tracks.len(), 2);
+        assert_eq!(toc.tracks[0].start_frame, 150); // 0 + 150
+        assert_eq!(toc.tracks[1].start_frame, 13834); // 13684 + 150
+        assert_eq!(toc.leadout_frame, 124766); // 124616 + 150
+        assert!(toc.tracks[0].is_audio);
+    }
+
+    #[test]
+    fn cd_info_no_disc_is_none() {
+        assert!(parse_cd_info("++ WARN: error in ioctl: No medium found\n").is_none());
+    }
+
+    /// Manual live probe of the machine's real drives — run with
+    /// `cargo test --lib live_list_drives -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_list_drives() {
+        for d in list_drives() {
+            println!("{} [{}] — {}", d.label, d.id, d.media_summary());
+            println!("  media: {:?}", d.media);
+            if let Some(m) = &d.mount_path {
+                println!("  mount: {}", m.display());
+            }
+            if let Some(t) = &d.toc {
+                for e in crate::disc::toc::track_entries(&d) {
+                    println!(
+                        "  {:2}. {} ({} s) -> {}",
+                        e.number, e.title, e.duration_secs, e.path
+                    );
+                }
+                println!("  leadout: {}", t.leadout_frame);
+            }
+        }
+    }
+}

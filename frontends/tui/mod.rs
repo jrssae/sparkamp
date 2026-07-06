@@ -129,6 +129,8 @@ pub enum MediaLibraryTab {
     Files,
     /// Show playlists and a track preview panel.
     Playlists,
+    /// Optical drives: one row per drive, with the loaded disc's track list.
+    Discs,
 }
 
 /// All state required by the full-screen media library view.
@@ -161,6 +163,15 @@ pub struct MediaLibraryState {
     pub sort_desc: bool,
     /// When `Some(input)`, the user is typing a folder/file path to add to the ML.
     pub add_input: Option<String>,
+    /// Optical drives, refreshed when the Discs tab is entered (subprocess-
+    /// backed detection — not polled every frame).
+    pub drives: Vec<crate::disc::OpticalDrive>,
+    /// Highlighted drive row in the Discs tab.
+    pub selected_drive: usize,
+    /// Playlist-ready entries of the selected drive's audio disc.
+    pub disc_entries: Vec<crate::disc::DiscTrackEntry>,
+    /// Highlighted track row in the Discs tab track list.
+    pub selected_disc_track: usize,
 }
 
 // ---------------------------------------------------------------------------

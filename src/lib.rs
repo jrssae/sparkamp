@@ -5,6 +5,7 @@ pub mod controller;
 #[cfg(target_os = "linux")]
 pub mod crash_log;
 pub mod dedupe;
+pub mod disc;
 pub mod duration_cache;
 pub mod duration_probe;
 pub mod engine;
