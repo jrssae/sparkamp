@@ -119,7 +119,17 @@ struct SparkampMacApp: App {
         // ── Fullscreen visualizer ─────────────────────────────────────────────
         // Opened programmatically from PlayerWindow when model.fullscreenVizVisible
         // becomes true.  The view itself calls toggleFullScreen via WindowAccessor.
-        Window("Visualizer", id: "fullscreen-viz") {
+        //
+        // Intentionally a WindowGroup, not a unique Window: the fullscreen entry
+        // depends on WindowAccessor.viewDidMoveToWindow firing on each open (it
+        // grabs the fresh NSWindow and calls toggleFullScreen). A unique Window
+        // reuses its instance, so on reopen that hook doesn't re-fire and the
+        // window never enters fullscreen — which also blackens Granite, because
+        // the mini view yields to fullscreen (single-driver rule) while the
+        // fullscreen view never becomes visible enough to render. This window is
+        // transient (always dismissed on Esc), so the duplicate-instance problem
+        // that made the other windows unique doesn't apply here.
+        WindowGroup("Visualizer", id: "fullscreen-viz") {
             FullscreenVisualizerView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
