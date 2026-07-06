@@ -73,15 +73,6 @@ struct DiscDriveView: View {
             HStack(spacing: 8) {
                 if model.discBusy { ProgressView().controlSize(.small) }
 
-                if drive.media.isAudioCd {
-                    Button {
-                        model.addDiscTracks(model.discTracks)
-                    } label: {
-                        Label("Add Disc", systemImage: "plus")
-                    }
-                    .disabled(model.discTracks.isEmpty || model.discBusy)
-                }
-
                 Button {
                     model.pollDiscDrives()
                     model.loadDiscTracks(drive)
