@@ -164,10 +164,12 @@ pub fn build(entry: &XmcdEntry, disc_toc: &DiscToc, revision: u32) -> String {
     for t in &disc_toc.tracks {
         out.push_str(&format!("#\t{}\n", t.start_frame));
     }
+    // The howto's required comment set: offsets, length, revision, and BOTH
+    // "Processed by" and "Submitted via" lines.
     out.push_str(&format!(
-        "#\n# Disc length: {} seconds\n#\n# Revision: {revision}\n# Submitted via: Sparkamp {}\n#\n",
+        "#\n# Disc length: {} seconds\n#\n# Revision: {revision}\n# Processed by: Sparkamp {ver}\n# Submitted via: Sparkamp {ver}\n#\n",
         disc_toc.leadout_frame / 75,
-        env!("CARGO_PKG_VERSION"),
+        ver = env!("CARGO_PKG_VERSION"),
     ));
     out.push_str(&format!("DISCID={}\n", discid::freedb_discid(disc_toc)));
     out.push_str(&format!("DTITLE={} / {}\n", entry.artist, entry.album));
@@ -307,6 +309,9 @@ PLAYORDER=";
         // 2+4+6 = 12 = 0x0c; total 598 = 0x256 → discid 0c025603.
         let text = build(&entry, &sample_toc(), 0);
         assert!(text.contains("# Disc length: 600 seconds"));
+        assert!(text.contains("# Revision: 0"));
+        assert!(text.contains("# Processed by: Sparkamp "));
+        assert!(text.contains("# Submitted via: Sparkamp "));
         assert!(text.contains("DISCID=0c025603"));
 
         let parsed = parse(&text).expect("round-trip parse");
