@@ -234,14 +234,28 @@ enum DeviceService {
             // mount/unmount transitions.
             guard removable, !internalVol, url.path.hasPrefix("/Volumes/") else { continue }
 
+            // Optical discs belong to the Media Library's "Disc Drives"
+            // section, not the sync-device list. An audio CD mounts with a
+            // .TOC.plist marker; data CD/DVD/BD volumes are caught below by
+            // their DiskArbitration media kind (IOCDMedia/IODVDMedia/…).
+            if FileManager.default.fileExists(atPath: url.path + "/.TOC.plist") {
+                continue
+            }
+
             var fsType = ""
             var bsd = ""
             var uuid: String? = nil
             var mediaWritable = true
+            var isOptical = false
             if let session = session,
                let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL) {
                 if let bsdC = DADiskGetBSDName(disk) { bsd = String(cString: bsdC) }
                 if let desc = DADiskCopyDescription(disk) as? [String: Any] {
+                    if let mediaKind = desc[kDADiskDescriptionMediaKindKey as String] as? String,
+                       mediaKind.contains("CDMedia") || mediaKind.contains("DVDMedia")
+                        || mediaKind.contains("BDMedia") {
+                        isOptical = true
+                    }
                     fsType = desc[kDADiskDescriptionVolumeKindKey as String] as? String ?? ""
                     if let raw = desc[kDADiskDescriptionVolumeUUIDKey as String] {
                         // The value is a CFUUID; render it as a string.
@@ -261,6 +275,7 @@ enum DeviceService {
                     }
                 }
             }
+            if isOptical { continue }
 
             out.append(VolumeInfo(
                 mountPath: url.path,

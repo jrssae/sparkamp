@@ -35,12 +35,22 @@ extension SparkampModel {
         }
     }
 
-    /// Append disc tracks to the active playlist with their TOC titles and
+    /// Add disc tracks to the active playlist with their TOC titles and
     /// durations ("Track N" until gnudb supplies real names — Phase 2). No
     /// metadata scan or duration probe: the AIFFs carry no tags and the
     /// durations are already exact.
+    ///
+    /// Mirrors `mlDoubleClickTracks` semantics: honors the replace/append
+    /// add-behavior setting, and autoplay-on-add starts the first new track
+    /// when the playlist was replaced or was empty (never interrupts a track
+    /// already playing).
     func addDiscTracks(_ entries: [DiscTrackEntry]) {
         guard let ctx = ctx, !entries.isEmpty else { return }
+        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        let autoplay = sparkamp_get_autoplay_on_add(ctx)
+        if shouldReplace { clearPlaylist() }
+        let indexBefore = Int(sparkamp_playlist_len(ctx))
+        let wasEmpty = indexBefore == 0
         for e in entries {
             e.path.withCString { p in
                 e.title.withCString { t in
@@ -48,7 +58,12 @@ extension SparkampModel {
                 }
             }
         }
+        if autoplay && wasEmpty {
+            sparkamp_playlist_jump(ctx, Int32(indexBefore))
+            sparkamp_play(ctx)
+        }
         refreshPlaylist()
+        refreshCurrentTrackInfo()
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
     }
 
