@@ -180,6 +180,9 @@ pub struct MediaLibraryState {
     /// Category picker for a gnudb submission: highlighted index into
     /// [`crate::disc::gnudb::CATEGORIES`], when the overlay is open.
     pub submit_category: Option<usize>,
+    /// First-submission email capture: the input buffer while the overlay is
+    /// open (gnudb requires the submitter's own address; config ships blank).
+    pub submit_email: Option<String>,
 }
 
 /// State of the disc tag-override editor overlay (Discs tab, `e`).

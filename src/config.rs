@@ -56,8 +56,11 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscConfig {
-    /// Email used as the CDDB `hello` identity (split into username+hostname)
-    /// and as the submission `User-Email` header. Editable in Settings.
+    /// The user's email, used as the CDDB `hello` identity (split into
+    /// username+hostname) and as the submission `User-Email` header.
+    /// Deliberately blank by default — the gnudb howto forbids submitting
+    /// with a default address, so the first submission prompts for it.
+    /// Lookups work without it (an anonymous hello is sent).
     pub gnudb_email: String,
     /// Submit to gnudb in "test" mode until a real submission is verified
     /// end-to-end; the UI offers a real submit only once this is false.
@@ -67,7 +70,7 @@ pub struct DiscConfig {
 impl Default for DiscConfig {
     fn default() -> Self {
         DiscConfig {
-            gnudb_email: "sparkamp@fastmail.com".to_string(),
+            gnudb_email: String::new(),
             gnudb_submit_mode_test: true,
         }
     }

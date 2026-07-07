@@ -656,11 +656,11 @@ private struct MediaLibraryPane: View {
             // ── Discs ──────────────────────────────────────────────────────
             Section("Discs") {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("gnudb email", text: $gnudbEmail)
+                    TextField("you@example.com", text: $gnudbEmail)
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                         .onSubmit { saveGnudbEmail() }
-                    Text("Identifies Sparkamp to gnudb.org when looking up and submitting disc metadata.")
+                    Text("Your address, sent with gnudb disc submissions (gnudb requires a personal one — Sparkamp asks on the first submission if this is blank). Lookups work without it.")
                         .font(vars.bodyFont)
                         .foregroundStyle(.secondary)
                 }

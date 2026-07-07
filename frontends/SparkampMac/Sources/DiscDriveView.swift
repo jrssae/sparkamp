@@ -16,6 +16,10 @@ struct DiscDriveView: View {
     @State private var editTags = DiscTagSet()
     @State private var showSubmit = false
     @State private var submitCategory = "misc"
+    // First-submission email capture (gnudb requires a personal address; the
+    // config ships blank on purpose).
+    @State private var showEmailPrompt = false
+    @State private var emailInput = ""
 
     private var vars: SkinVars { themeManager.currentVars }
     private var isEjecting: Bool { model.ejectingDiscs.contains(drive.id) }
@@ -67,9 +71,60 @@ struct DiscDriveView: View {
         .sheet(isPresented: $showSubmit) {
             submitSheet
         }
+        .sheet(isPresented: $showEmailPrompt) {
+            emailPromptSheet
+        }
     }
 
     // MARK: gnudb submission
+
+    private func currentGnudbEmail() -> String {
+        guard let ctx = model.ctx else { return "" }
+        let p = sparkamp_get_gnudb_email(ctx)
+        defer { sparkamp_free_string(p) }
+        return p.map { String(cString: $0) } ?? ""
+    }
+
+    /// Rough shape check — gnudb just needs a real, deliverable-looking
+    /// address; full RFC validation is pointless here.
+    private var emailLooksValid: Bool {
+        let e = emailInput.trimmingCharacters(in: .whitespaces)
+        guard let at = e.firstIndex(of: "@"), at != e.startIndex else { return false }
+        return e[e.index(after: at)...].contains(".")
+    }
+
+    private var emailPromptSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Your email for gnudb")
+                .font(.headline)
+            Text("gnudb requires each submission to carry the submitter's own email address (never an app-wide default). It's sent only with submissions and can be changed later in Settings → Media Library.")
+                .font(vars.bodyFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("you@example.com", text: $emailInput)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .onSubmit { saveEmailAndContinue() }
+            HStack {
+                Spacer()
+                Button("Cancel") { showEmailPrompt = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save & Continue") { saveEmailAndContinue() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!emailLooksValid)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func saveEmailAndContinue() {
+        guard emailLooksValid, let ctx = model.ctx else { return }
+        emailInput.trimmingCharacters(in: .whitespaces)
+            .withCString { sparkamp_set_gnudb_email(ctx, $0) }
+        showEmailPrompt = false
+        showSubmit = true
+    }
 
     private var submitSheet: some View {
         let testMode = model.ctx.map { sparkamp_get_gnudb_submit_test($0) } ?? true
@@ -256,7 +311,14 @@ struct DiscDriveView: View {
                         Button {
                             let tags = model.discTagsForEditing(drive)
                             submitCategory = suggestGnudbCategory(for: tags.genre)
-                            showSubmit = true
+                            // gnudb requires a personal address — capture it
+                            // once before the first submission.
+                            if currentGnudbEmail().isEmpty {
+                                emailInput = ""
+                                showEmailPrompt = true
+                            } else {
+                                showSubmit = true
+                            }
                         } label: {
                             Label("Submit to gnudb", systemImage: "square.and.arrow.up")
                         }

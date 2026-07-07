@@ -179,6 +179,12 @@ pub unsafe extern "C" fn sparkamp_gnudb_submit(
     else {
         return gnudb_out::<String>(Err(gnudb::GnudbError::Protocol("bad arguments".into())));
     };
+    // Submissions require the user's real address (howto: never a default).
+    if gnudb::is_unset_email(&email) {
+        return gnudb_out::<String>(Err(gnudb::GnudbError::Protocol(
+            "Set your email before submitting (gnudb requires a personal address)".into(),
+        )));
+    }
     if let Err(reason) = xmcd::validate_for_submit(&entry, &disc_toc) {
         return gnudb_out::<String>(Err(gnudb::GnudbError::Protocol(reason)));
     }

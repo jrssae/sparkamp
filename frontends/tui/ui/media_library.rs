@@ -188,6 +188,43 @@ pub(super) fn draw_media_library(
     if let Some(selected) = state.submit_category {
         draw_submit_category(frame, selected, inner);
     }
+    if let Some(buf) = &state.submit_email {
+        draw_submit_email(frame, buf, inner);
+    }
+}
+
+/// First-submission email prompt (gnudb requires the submitter's own
+/// address; the config ships blank on purpose).
+fn draw_submit_email(frame: &mut Frame, buf: &str, area: Rect) {
+    let w = 56u16.min(area.width.saturating_sub(4));
+    let h = 5u16.min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .title(Span::styled(
+            " Your email for gnudb — Enter: save · Esc: cancel ",
+            Style::default().fg(C_ACCENT),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    let lines = vec![
+        Line::from(Span::styled(
+            "Sent only with submissions (never a default).",
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            format!("Email: {buf}|"),
+            Style::default().fg(C_TEXT),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Centered overlay picking the CDDB submission category (fixed set).

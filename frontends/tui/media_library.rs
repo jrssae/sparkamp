@@ -50,6 +50,7 @@ impl App {
             gnudb_matches: None,
             tag_edit: None,
             submit_category: None,
+            submit_email: None,
         });
     }
 
@@ -113,13 +114,14 @@ impl App {
         };
 
         // Disc overlays capture all keys while open.
-        let (matches_open, tag_edit_open, submit_open) = match &self.mode {
+        let (matches_open, tag_edit_open, submit_open, email_open) = match &self.mode {
             Mode::MediaLibrary(s) => (
                 s.gnudb_matches.is_some(),
                 s.tag_edit.is_some(),
                 s.submit_category.is_some(),
+                s.submit_email.is_some(),
             ),
-            _ => (false, false, false),
+            _ => (false, false, false, false),
         };
         if matches_open {
             self.handle_gnudb_matches_key(code);
@@ -127,6 +129,10 @@ impl App {
         }
         if tag_edit_open {
             self.handle_disc_tag_edit_key(code);
+            return;
+        }
+        if email_open {
+            self.handle_submit_email_key(code);
             return;
         }
         if submit_open {
@@ -580,7 +586,9 @@ impl App {
     }
 
     /// Open the submission category picker, preselecting the best-effort
-    /// genre→category suggestion. Requires an edited/matched tag set.
+    /// genre→category suggestion. Requires an edited/matched tag set, and —
+    /// per the gnudb howto — the user's own email, captured here the first
+    /// time (the config ships blank on purpose).
     fn open_submit_category_picker(&mut self) {
         let Some((_, discid)) = self.selected_disc_identity() else {
             self.set_status("No audio disc loaded");
@@ -590,6 +598,12 @@ impl App {
             self.set_status("No tags yet — press m to identify or e to edit first");
             return;
         };
+        if crate::disc::gnudb::is_unset_email(&self.config.disc.gnudb_email) {
+            if let Mode::MediaLibrary(s) = &mut self.mode {
+                s.submit_email = Some(String::new());
+            }
+            return;
+        }
         let suggested = crate::disc::gnudb::suggest_category(&entry.genre);
         let idx = crate::disc::gnudb::CATEGORIES
             .iter()
@@ -597,6 +611,41 @@ impl App {
             .unwrap_or(0);
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.submit_category = Some(idx);
+        }
+    }
+
+    /// Keys in the first-submission email prompt: type/Backspace edit,
+    /// Enter saves (rough shape check) and continues to the category picker,
+    /// Esc cancels the submission.
+    fn handle_submit_email_key(&mut self, code: KeyCode) {
+        let mut saved: Option<String> = None;
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let Some(buf) = &mut s.submit_email else { return };
+            match code {
+                KeyCode::Esc => s.submit_email = None,
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Enter => {
+                    let e = buf.trim().to_string();
+                    // Rough shape check: something@something.something.
+                    let valid = e
+                        .split_once('@')
+                        .map(|(u, h)| !u.is_empty() && h.contains('.'))
+                        .unwrap_or(false);
+                    if valid {
+                        saved = Some(e);
+                        s.submit_email = None;
+                    }
+                }
+                KeyCode::Char(ch) => buf.push(ch),
+                _ => {}
+            }
+        }
+        if let Some(email) = saved {
+            self.config.disc.gnudb_email = email;
+            // Straight on to the category picker now that we're submittable.
+            self.open_submit_category_picker();
         }
     }
 

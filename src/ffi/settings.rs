@@ -102,15 +102,23 @@ pub unsafe extern "C" fn sparkamp_set_playlist_format(ctx: *mut SparkampCtx, val
     };
 }
 
-/// The configured gnudb hello/submission email. Heap C string — free with
-/// `sparkamp_free_string`.
+/// The configured gnudb submission email, or "" when effectively unset
+/// (blank, or the retired app-wide default an older config may carry) — the
+/// frontends prompt for a real address before the first submission. Heap C
+/// string — free with `sparkamp_free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_gnudb_email(ctx: *const SparkampCtx) -> *mut c_char {
     if ctx.is_null() {
         return std::ptr::null_mut();
     }
     let ctx = &*ctx;
-    CString::new(ctx.config.disc.gnudb_email.clone())
+    let email = &ctx.config.disc.gnudb_email;
+    let out = if crate::disc::gnudb::is_unset_email(email) {
+        ""
+    } else {
+        email.as_str()
+    };
+    CString::new(out)
         .map(|c| c.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }

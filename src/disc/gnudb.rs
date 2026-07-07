@@ -98,13 +98,27 @@ impl std::fmt::Display for GnudbError {
 
 // ─────────────────────────── request building ───────────────────────────
 
+/// Whether the configured gnudb email is effectively unset: blank, or the
+/// retired app-wide default that older configs may still carry (the howto
+/// forbids submitting with a default address, so it counts as unset).
+pub fn is_unset_email(email: &str) -> bool {
+    let e = email.trim();
+    e.is_empty() || e == "sparkamp@fastmail.com"
+}
+
 /// The CDDB `hello` value from the configured email:
-/// `sparkamp@fastmail.com` → `sparkamp+fastmail.com+Sparkamp+<version>`.
-/// No `@` → the whole string as username with `localhost` as host.
+/// `jane@example.org` → `jane+example.org+Sparkamp+<version>`.
+/// An unset email sends an anonymous identity (lookups don't require a
+/// personal address — only submissions do); a value without `@` uses the
+/// whole string as username with `localhost` as host.
 pub(crate) fn hello_param(email: &str) -> String {
-    let (user, host) = match email.rsplit_once('@') {
-        Some((u, h)) if !u.is_empty() && !h.is_empty() => (u, h),
-        _ => (email, "localhost"),
+    let (user, host) = if is_unset_email(email) {
+        ("anonymous", "localhost")
+    } else {
+        match email.rsplit_once('@') {
+            Some((u, h)) if !u.is_empty() && !h.is_empty() => (u, h),
+            _ => (email, "localhost"),
+        }
     };
     format!("{user}+{host}+Sparkamp+{}", env!("CARGO_PKG_VERSION"))
 }
@@ -281,8 +295,8 @@ mod tests {
 
     #[test]
     fn hello_splits_email_at_last_at() {
-        let h = hello_param("sparkamp@fastmail.com");
-        assert!(h.starts_with("sparkamp+fastmail.com+Sparkamp+"));
+        let h = hello_param("jane@example.org");
+        assert!(h.starts_with("jane+example.org+Sparkamp+"));
         // Weird-but-legal quoted local part with an @ inside: split at LAST @.
         let h = hello_param("a@b@example.org");
         assert!(h.starts_with("a@b+example.org+Sparkamp+"));
@@ -294,12 +308,23 @@ mod tests {
     }
 
     #[test]
+    fn unset_email_is_anonymous_hello() {
+        assert!(is_unset_email(""));
+        assert!(is_unset_email("  "));
+        assert!(is_unset_email("sparkamp@fastmail.com")); // retired default
+        assert!(!is_unset_email("jane@example.org"));
+        assert!(hello_param("").starts_with("anonymous+localhost+Sparkamp+"));
+        assert!(hello_param("sparkamp@fastmail.com")
+            .starts_with("anonymous+localhost+Sparkamp+"));
+    }
+
+    #[test]
     fn query_url_shape() {
-        let url = query_url(&sample_toc(), "sparkamp@fastmail.com");
+        let url = query_url(&sample_toc(), "jane@example.org");
         assert!(url.starts_with(
             "http://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+6f067d08+8+150+"
         ));
-        assert!(url.contains("+110977+1663&hello=sparkamp+fastmail.com+Sparkamp+"));
+        assert!(url.contains("+110977+1663&hello=jane+example.org+Sparkamp+"));
         assert!(url.ends_with("&proto=6"));
     }
 

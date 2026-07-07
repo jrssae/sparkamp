@@ -87,7 +87,7 @@ extension SparkampModel {
     func identifyDisc(_ drive: OpticalDrive) {
         guard let toc = drive.toc, !discIdentifying, let ctx = ctx else { return }
         let emailPtr = sparkamp_get_gnudb_email(ctx)
-        let email = emailPtr.map { String(cString: $0) } ?? "sparkamp@fastmail.com"
+        let email = emailPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(emailPtr)
         discIdentifying = true
         discStatus = nil
@@ -118,7 +118,7 @@ extension SparkampModel {
     func chooseDiscMatch(_ drive: OpticalDrive, match: DiscMatch) {
         guard let ctx = ctx else { return }
         let emailPtr = sparkamp_get_gnudb_email(ctx)
-        let email = emailPtr.map { String(cString: $0) } ?? "sparkamp@fastmail.com"
+        let email = emailPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(emailPtr)
         discMatches = nil
         fetchDiscEntry(drive, match: match, email: email)
@@ -175,7 +175,7 @@ extension SparkampModel {
         guard let toc = drive.toc, let id = discIdFor(drive),
               let tags = discTagSets[id], let ctx = ctx, !discSubmitting else { return }
         let emailPtr = sparkamp_get_gnudb_email(ctx)
-        let email = emailPtr.map { String(cString: $0) } ?? "sparkamp@fastmail.com"
+        let email = emailPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(emailPtr)
         let testMode = sparkamp_get_gnudb_submit_test(ctx)
         let entry = XmcdEntry(
