@@ -91,7 +91,11 @@ extension SparkampModel {
         sparkamp_free_string(emailPtr)
         discIdentifying = true
         discStatus = nil
-        DispatchQueue.global(qos: .userInitiated).async {
+        // .utility, not .userInitiated: minreq blocks the calling thread on a
+        // Default-QoS Rust worker, so any higher QoS here is a priority
+        // inversion (Thread Performance Checker flags it). Utility is also
+        // the intended class for network fetches with visible progress.
+        DispatchQueue.global(qos: .utility).async {
             let result = DiscService.gnudbQuery(toc: toc, email: email)
             DispatchQueue.main.async {
                 switch result {
@@ -126,7 +130,8 @@ extension SparkampModel {
 
     private func fetchDiscEntry(_ drive: OpticalDrive, match: DiscMatch, email: String) {
         discIdentifying = true
-        DispatchQueue.global(qos: .userInitiated).async {
+        // .utility — same inversion note as identifyDisc.
+        DispatchQueue.global(qos: .utility).async {
             let result = DiscService.gnudbRead(
                 category: match.category, discid: match.discid, email: email)
             DispatchQueue.main.async {
@@ -190,7 +195,8 @@ extension SparkampModel {
             revision: discOfficial[id].map { $0.revision + 1 } ?? 0)
         discSubmitting = true
         discStatus = testMode ? "Submitting to gnudb (test mode)…" : "Submitting to gnudb…"
-        DispatchQueue.global(qos: .userInitiated).async {
+        // .utility — same inversion note as identifyDisc.
+        DispatchQueue.global(qos: .utility).async {
             let result = DiscService.gnudbSubmit(
                 toc: toc, entry: entry, category: category, email: email, testMode: testMode)
             DispatchQueue.main.async {
