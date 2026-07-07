@@ -213,7 +213,7 @@ impl App {
 
             // Tab: cycle Files → Playlists → Discs.
             KeyCode::Tab => {
-                let entered_discs = if let Mode::MediaLibrary(s) = &mut self.mode {
+                let (now_discs, need_detect) = if let Mode::MediaLibrary(s) = &mut self.mode {
                     s.tab = match s.tab {
                         MediaLibraryTab::Files => MediaLibraryTab::Playlists,
                         MediaLibraryTab::Playlists => MediaLibraryTab::Discs,
@@ -222,14 +222,24 @@ impl App {
                     s.selected_track = 0;
                     s.selected_playlist = 0;
                     s.playlist_preview = None;
-                    s.tab == MediaLibraryTab::Discs && s.drives.is_empty()
+                    let discs = s.tab == MediaLibraryTab::Discs;
+                    (discs, discs && s.drives.is_empty())
                 } else {
-                    false
+                    (false, false)
                 };
                 // First visit: detect drives (subprocess-backed, so only on
                 // entry / explicit refresh, never per-frame).
-                if entered_discs {
+                if need_detect {
                     self.refresh_ml_drives();
+                }
+                // A lookup that finished while this tab wasn't showing parked
+                // its matches — reopen the picker now.
+                if now_discs {
+                    if let Some(list) = self.pending_disc_matches.take() {
+                        if let Mode::MediaLibrary(s) = &mut self.mode {
+                            s.gnudb_matches = Some((list, 0));
+                        }
+                    }
                 }
             }
 
@@ -563,10 +573,24 @@ impl App {
             }
             super::DiscLookupMsg::Matches(list) => {
                 self.disc_lookup = None;
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    if s.tab == MediaLibraryTab::Discs {
+                let showing_discs = matches!(
+                    &self.mode,
+                    Mode::MediaLibrary(s) if s.tab == MediaLibraryTab::Discs
+                );
+                if showing_discs {
+                    if let Mode::MediaLibrary(s) = &mut self.mode {
                         s.gnudb_matches = Some((list, 0));
                     }
+                } else {
+                    // The user left the Discs tab (or the library) while the
+                    // lookup ran — never drop the result. Park it and say so;
+                    // the picker reopens on the next Discs-tab visit.
+                    let n = list.len();
+                    self.pending_disc_matches = Some(list);
+                    self.set_status(format!(
+                        "gnudb: {n} candidate{} found — open the Discs tab to choose",
+                        if n == 1 { "" } else { "s" }
+                    ));
                 }
             }
             super::DiscLookupMsg::Entry(discid, entry) => {

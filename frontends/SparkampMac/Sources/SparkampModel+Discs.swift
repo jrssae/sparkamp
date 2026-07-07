@@ -111,7 +111,13 @@ extension SparkampModel {
                         self.fetchDiscEntry(drive, match: exact[0], email: email)
                     } else {
                         self.discIdentifying = false
+                        // Tag the matches with their drive: the lookup keeps
+                        // running if the window closed or the user navigated
+                        // away, and the picker re-presents on that drive only.
+                        self.discMatchesDriveId = drive.id
                         self.discMatches = matches
+                        self.discStatus =
+                            "\(matches.count) gnudb candidates — pick one"
                     }
                 }
             }
@@ -125,6 +131,7 @@ extension SparkampModel {
         let email = emailPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(emailPtr)
         discMatches = nil
+        discMatchesDriveId = nil
         fetchDiscEntry(drive, match: match, email: email)
     }
 

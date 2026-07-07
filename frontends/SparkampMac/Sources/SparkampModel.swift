@@ -164,6 +164,10 @@ final class SparkampModel: ObservableObject {
     /// gnudb matches awaiting the user's pick (sheet shown while non-nil;
     /// empty array = "no match" handled inline, never presented).
     @Published var discMatches: [DiscMatch]? = nil
+    /// Which drive the pending matches belong to. Lookups keep running when
+    /// the window closes or the user navigates away; the sheet re-presents
+    /// only on that drive's view, never on an unrelated one.
+    @Published var discMatchesDriveId: String? = nil
     /// True while a gnudb query/read runs in the background.
     @Published var discIdentifying: Bool = false
     /// Per-disc tag sets keyed by freedb disc ID — from a gnudb match and/or

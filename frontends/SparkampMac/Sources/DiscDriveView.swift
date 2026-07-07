@@ -58,10 +58,17 @@ struct DiscDriveView: View {
             selection.removeAll()
             model.loadDiscTracks(drive)
         }
-        // gnudb offered several matches — let the user pick.
+        // gnudb offered several matches — let the user pick. Presented only
+        // on the drive the lookup was for (results survive window close /
+        // navigation and re-present here, never on an unrelated drive).
         .sheet(isPresented: Binding(
-            get: { model.discMatches != nil },
-            set: { if !$0 { model.discMatches = nil } }
+            get: { model.discMatches != nil && model.discMatchesDriveId == drive.id },
+            set: { presented in
+                if !presented {
+                    model.discMatches = nil
+                    model.discMatchesDriveId = nil
+                }
+            }
         )) {
             matchSheet
         }

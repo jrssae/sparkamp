@@ -357,6 +357,10 @@ pub struct App {
     pub disc_official: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
     /// Receiver for an in-flight background gnudb lookup, drained by tick().
     disc_lookup: Option<mpsc::Receiver<DiscLookupMsg>>,
+    /// Match list that arrived while the media library (or its Discs tab)
+    /// wasn't showing — lookups keep running in the background, and the
+    /// picker re-opens from here on the next Discs-tab visit.
+    pub pending_disc_matches: Option<Vec<crate::disc::gnudb::DiscMatch>>,
 }
 
 impl App {
@@ -439,6 +443,7 @@ impl App {
             disc_tags: std::collections::HashMap::new(),
             disc_official: std::collections::HashMap::new(),
             disc_lookup: None,
+            pending_disc_matches: None,
         })
     }
 
