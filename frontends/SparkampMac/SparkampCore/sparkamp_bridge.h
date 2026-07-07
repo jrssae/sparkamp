@@ -288,6 +288,12 @@ void    sparkamp_set_gnudb_email(SparkampCtx *ctx, const char *email);
    is turned off. */
 bool    sparkamp_get_gnudb_submit_test(SparkampCtx *ctx);
 void    sparkamp_set_gnudb_submit_test(SparkampCtx *ctx, bool value);
+/* Rip destination ("" = unset; free with sparkamp_free_string) + MP3 preset
+   (0 = VBR V0, 1 = VBR V2 default, 2 = 320 CBR). */
+char   *sparkamp_get_rip_dest(SparkampCtx *ctx);
+void    sparkamp_set_rip_dest(SparkampCtx *ctx, const char *dir);
+int     sparkamp_get_rip_quality(SparkampCtx *ctx);
+void    sparkamp_set_rip_quality(SparkampCtx *ctx, int preset);
 
 // ---------------------------------------------------------------------------
 // Playlist path
@@ -661,6 +667,13 @@ char *sparkamp_gnudb_query(SparkampCtx *ctx, const char *toc_json,
     network — background queue only. Free with sparkamp_free_string. */
 char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
                           const char *discid, const char *email);
+
+/** Rip ONE track to a tagged MP3 (job JSON: source/dest_root/quality/tag
+    values — see RipJobIn in src/ffi/disc.rs). Blocks for the whole encode
+    (optical reads run at drive speed) — worker thread only; loop per track
+    for progress/cancel. {"ok":"<written path>"} or {"error":"…"}. Free with
+    sparkamp_free_string. */
+char *sparkamp_disc_rip_track(SparkampCtx *ctx, const char *job_json);
 
 /** Stored tag record for a disc from the on-disk cache (disc_tags.toml):
     {"user":XmcdEntry|null,"official":XmcdEntry|null}. File IO — background

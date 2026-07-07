@@ -183,6 +183,33 @@ pub struct MediaLibraryState {
     /// First-submission email capture: the input buffer while the overlay is
     /// open (gnudb requires the submitter's own address; config ships blank).
     pub submit_email: Option<String>,
+    /// Rip setup overlay, when open.
+    pub rip: Option<RipSetupState>,
+}
+
+/// State of the rip-setup overlay (Discs tab, `g`).
+pub struct RipSetupState {
+    /// One flag per disc track, same order as `disc_entries`.
+    pub selected: Vec<bool>,
+    /// Highlighted track row.
+    pub cursor: usize,
+    /// Destination root; `editing_dest` routes typed characters here.
+    pub dest: String,
+    pub editing_dest: bool,
+    /// MP3 preset: 0 = VBR V0, 1 = VBR V2, 2 = 320 CBR.
+    pub quality: u8,
+}
+
+/// Progress/result of a background rip, delivered to the tick loop.
+pub enum RipMsg {
+    /// About to rip track `index+1` of `total` named `title`.
+    Progress(usize, usize, String),
+    /// The run finished (all tracks, a failure list, or cancelled).
+    Done {
+        ripped: Vec<String>,
+        failed: usize,
+        cancelled: bool,
+    },
 }
 
 /// State of the disc tag-override editor overlay (Discs tab, `e`).
@@ -361,6 +388,12 @@ pub struct App {
     /// wasn't showing — lookups keep running in the background, and the
     /// picker re-opens from here on the next Discs-tab visit.
     pub pending_disc_matches: Option<Vec<crate::disc::gnudb::DiscMatch>>,
+    /// Receiver for an in-flight background rip, drained by tick().
+    disc_rip: Option<mpsc::Receiver<RipMsg>>,
+    /// Cancel flag for the running rip (stops after the current track).
+    rip_cancel: Option<Arc<AtomicBool>>,
+    /// Rip progress for the status/hint line: (index, total, title).
+    pub rip_progress: Option<(usize, usize, String)>,
 }
 
 impl App {
@@ -458,6 +491,9 @@ impl App {
             disc_official,
             disc_lookup: None,
             pending_disc_matches: None,
+            disc_rip: None,
+            rip_cancel: None,
+            rip_progress: None,
         })
     }
 
@@ -766,6 +802,17 @@ impl App {
         }
         for msg in lookup_msgs {
             self.handle_disc_lookup(msg);
+        }
+
+        // 4b. Deliver background rip progress/results.
+        let mut rip_msgs = Vec::new();
+        if let Some(rx) = &self.disc_rip {
+            while let Ok(msg) = rx.try_recv() {
+                rip_msgs.push(msg);
+            }
+        }
+        for msg in rip_msgs {
+            self.handle_rip_msg(msg);
         }
 
         // 5. Auto-clear transient status messages after STATUS_TICKS ticks.

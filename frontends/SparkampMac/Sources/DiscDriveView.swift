@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Detail page for one optical drive: header (drive label + loaded-media
@@ -16,6 +17,11 @@ struct DiscDriveView: View {
     @State private var editTags = DiscTagSet()
     @State private var showSubmit = false
     @State private var submitCategory = "misc"
+    // Rip sheet state: which tracks, where to, what quality.
+    @State private var showRip = false
+    @State private var ripSelection: Set<Int> = []
+    @State private var ripDest = ""
+    @State private var ripQuality = 1
     // First-submission email capture (gnudb requires a personal address; the
     // config ships blank on purpose).
     @State private var showEmailPrompt = false
@@ -31,7 +37,28 @@ struct DiscDriveView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let s = model.discStatus {
+            if let rp = model.ripProgress {
+                // Rip in flight: per-track progress + stop-after-this-track.
+                VStack(alignment: .leading, spacing: 3) {
+                    ProgressView(value: Double(rp.done), total: Double(max(rp.total, 1)))
+                    HStack {
+                        Text("Ripping \(min(rp.done + 1, rp.total))/\(rp.total) · \(rp.name)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.playlistDurationText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button(model.ripCancelRequested ? "Stopping…" : "Cancel") {
+                            model.ripCancelRequested = true
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                        .disabled(model.ripCancelRequested)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            } else if let s = model.discStatus {
                 Text(s)
                     .font(.system(size: 11))
                     .foregroundStyle(theme.playlistDurationText)
@@ -80,6 +107,110 @@ struct DiscDriveView: View {
         }
         .sheet(isPresented: $showEmailPrompt) {
             emailPromptSheet
+        }
+        .sheet(isPresented: $showRip) {
+            ripSheet
+        }
+    }
+
+    // MARK: Rip
+
+    /// Prefill the rip sheet: tracks from the table selection (or all),
+    /// destination from config → first watched folder → ~/Music, quality
+    /// from config.
+    private func openRipSheet() {
+        ripSelection = selection.isEmpty
+            ? Set(model.discTracks.map(\.number))
+            : selection
+        if let ctx = model.ctx {
+            let p = sparkamp_get_rip_dest(ctx)
+            ripDest = p.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(p)
+            ripQuality = Int(sparkamp_get_rip_quality(ctx))
+        }
+        if ripDest.isEmpty {
+            ripDest = model.mlFolders.first
+                ?? (NSHomeDirectory() + "/Music")
+        }
+        showRip = true
+    }
+
+    private var ripSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rip to MP3")
+                .font(.headline)
+            Text("Encodes the chosen tracks as \(["V0 (~245 kbps)", "V2 (~190 kbps)", "320 kbps CBR"][min(ripQuality, 2)]) MP3s under Artist/Album, tagged from the disc's tags, then adds them to the Media Library.")
+                .font(vars.bodyFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Track picker.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(model.discTracks) { e in
+                        Toggle(isOn: Binding(
+                            get: { ripSelection.contains(e.number) },
+                            set: { on in
+                                if on { ripSelection.insert(e.number) }
+                                else { ripSelection.remove(e.number) }
+                            }
+                        )) {
+                            Text("\(e.number). \(e.title)")
+                                .font(vars.bodyFont)
+                                .lineLimit(1)
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                }
+            }
+            .frame(maxHeight: 180)
+
+            HStack(spacing: 8) {
+                Text("Into:")
+                Text(ripDest)
+                    .font(vars.bodyFont)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+                Button("Choose…") { chooseRipDest() }
+            }
+
+            Picker("Quality", selection: $ripQuality) {
+                Text("VBR V0 (~245 kbps)").tag(0)
+                Text("VBR V2 (~190 kbps)").tag(1)
+                Text("320 kbps CBR").tag(2)
+            }
+
+            HStack {
+                Text("\(ripSelection.count) of \(model.discTracks.count) tracks")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") { showRip = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rip") {
+                    showRip = false
+                    let entries = model.discTracks.filter { ripSelection.contains($0.number) }
+                    model.ripDiscTracks(
+                        drive, entries: entries, destRoot: ripDest, quality: ripQuality)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(ripSelection.isEmpty || ripDest.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func chooseRipDest() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: ripDest, isDirectory: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            ripDest = url.path
         }
     }
 
@@ -301,6 +432,12 @@ struct DiscDriveView: View {
                     }
                     .disabled(model.discIdentifying)
                     .help("Look this disc up on gnudb.org")
+
+                    Button { openRipSheet() } label: {
+                        Label("Rip…", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(model.discTracks.isEmpty || model.ripProgress != nil)
+                    .help("Encode tracks to tagged MP3s and add them to the library")
 
                     Button {
                         editTags = model.discTagsForEditing(drive)

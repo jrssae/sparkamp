@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub mod detect;
 pub mod discid;
 pub mod gnudb;
+pub mod rip;
 pub mod tagstore;
 pub mod toc;
 pub mod xmcd;

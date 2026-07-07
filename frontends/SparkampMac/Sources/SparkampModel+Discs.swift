@@ -331,6 +331,74 @@ extension SparkampModel {
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
     }
 
+    // MARK: Rip
+
+    /// Rip the given tracks to `destRoot` sequentially on a worker thread,
+    /// with per-track progress; cancel stops after the current track. Each
+    /// finished file is auto-imported into the Media Library at the end.
+    func ripDiscTracks(
+        _ drive: OpticalDrive, entries: [DiscTrackEntry], destRoot: String, quality: Int
+    ) {
+        guard !entries.isEmpty, ripProgress == nil else { return }
+        let tags = discIdFor(drive).flatMap { discTagSets[$0] }
+        let total = drive.toc?.tracks.count ?? entries.count
+        ripCancelRequested = false
+        ripProgress = CopyProgress(done: 0, total: entries.count, name: entries[0].title)
+        discStatus = nil
+
+        // Remember the destination for next time.
+        if let ctx = ctx {
+            destRoot.withCString { sparkamp_set_rip_dest(ctx, $0) }
+            sparkamp_set_rip_quality(ctx, Int32(quality))
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            var ripped: [String] = []
+            var failures: [String] = []
+            for (i, entry) in entries.enumerated() {
+                if DispatchQueue.main.sync(execute: { self.ripCancelRequested }) {
+                    break
+                }
+                DispatchQueue.main.async {
+                    self.ripProgress = CopyProgress(
+                        done: i, total: entries.count, name: entry.title)
+                }
+                let job = DiscService.RipJob(
+                    source: .init(kind: "file", path: entry.path),
+                    destRoot: destRoot,
+                    quality: quality,
+                    discArtist: tags?.artist ?? "",
+                    album: tags?.album ?? "",
+                    year: tags?.year ?? "",
+                    genre: tags?.genre ?? "",
+                    number: entry.number,
+                    total: total,
+                    title: entry.title)
+                switch DiscService.ripTrack(job: job) {
+                case .success(let path): ripped.append(path)
+                case .failure(let err): failures.append("\(entry.number): \(err.message)")
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.ripProgress = nil
+                // Import the new files so they appear in the library now.
+                if !ripped.isEmpty {
+                    _ = self.mlAddFilesToLibrary(paths: ripped)
+                }
+                let cancelled = self.ripCancelRequested
+                self.ripCancelRequested = false
+                var parts: [String] = []
+                parts.append("Ripped \(ripped.count) track\(ripped.count == 1 ? "" : "s")")
+                if cancelled { parts.append("cancelled") }
+                if !failures.isEmpty {
+                    parts.append("failed: \(failures.joined(separator: "; "))")
+                }
+                self.discStatus = parts.joined(separator: " · ")
+            }
+        }
+    }
+
     /// Eject the disc in a drive, with in-flight feedback; on success the
     /// next poll drops the mounted volume (and the detail view empties).
     func ejectDisc(_ drive: OpticalDrive) {

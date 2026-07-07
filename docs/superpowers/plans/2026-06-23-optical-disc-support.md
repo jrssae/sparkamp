@@ -113,11 +113,11 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 
 **Files:** Create `src/disc/rip.rs`; modify `src/ffi/disc.rs` (async rip + progress via `sparkamp_tick`), Settings UI. Test: `src/disc/rip.rs` (pipeline-string builder + path/tag mapping; the actual GStreamer run is a manual/integration check).
 
-- [ ] **Rip pipeline (GStreamer, shared).** Per track: source differs by platform — Linux `cdiocddasrc track=N device=<drive_id>` (the selected `OpticalDrive.id`), macOS `filesrc location=<aiff> ! decodebin` — then shared `audioconvert ! lamemp3enc quality=<cfg> ! filesink`. After encode, write tags with `id3_editor::write_tag_fields` from the Phase-2 overrides (title/artist/album/album-artist/year/genre/track#/total). Prefer post-encode tag write over `id3v2mux` so one code path owns tags.
-- [ ] **Destination + naming.** Organize `Artist/Album/NN - Title.mp3` under `rip_dest_dir`; dialog **starts at the first watched folder**, prompts before the first rip, remembers the choice.
-- [ ] **Auto-import.** After rip, add the files to the Media Library (reuse the existing import/scan path) so they appear immediately.
-- [ ] **Progress + cancel.** Per-track and overall progress via the tick/mpsc mechanism (mirrors metadata scanning). Cancel stops after the current track.
-- [ ] **Commit** `feat(disc): rip audio CD to tagged MP3 with auto-import`.
+- [x] **Rip pipeline (GStreamer, shared)** — `src/disc/rip.rs`: per-track `parse::launch` pipeline (mac `filesrc <aiff> ! decodebin`, Linux `cdiocddasrc track=N device=…`; shared `audioconvert ! lamemp3enc ! filesink`), post-encode tags via `id3_editor::write_tag_fields` (one tag path, incl. sampler "Artist / Title" split into artist + album_artist). Stall watchdog on **pipeline position**, not bus traffic (a healthy encode posts no messages for minutes at optical speed). **Live-verified**: real CD track → 3 MB tagged MP3 in 65 s, ID3 asserted (`cargo test --lib live_rip -- --ignored`). Quality presets 0=V0/1=V2 default/2=320 CBR (`rip_mp3_quality`; deviation from the plan's raw-VBR u8, matches the dropdown).
+- [x] **Destination + naming** — `dest_path`: sanitized `Artist/Album/NN - Title.mp3`; dialog defaults `rip_dest_dir` → first watched folder → ~/Music, choice remembered (config setters via FFI on mac, direct on TUI).
+- [x] **Auto-import** — finished files go through `add_files_to_library` on both frontends.
+- [x] **Progress + cancel** — mac: per-track progress bar in the drive view + Cancel (stops after the current track), rip loop on a worker queue. TUI: rip overlay (`g`; Space/a select, q quality, d dest, Enter) with progress in the hint bar and `c` to cancel; background thread + tick-drained channel.
+- [x] **Commit** `feat(disc): rip audio CD to tagged MP3 with auto-import`.
 
 ## Phase 4 — Submit to gnudb
 

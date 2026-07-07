@@ -149,6 +149,66 @@ pub unsafe extern "C" fn sparkamp_gnudb_read(
     gnudb_out(entry)
 }
 
+/// One rip job (JSON in): source + destination root + encoding preset +
+/// the tag values for this track. The core owns path building (sanitized
+/// `Artist/Album/NN - Title.mp3`) and post-encode tagging.
+#[derive(serde::Deserialize)]
+struct RipJobIn {
+    source: crate::disc::rip::RipSource,
+    dest_root: String,
+    /// 0 = VBR V0, 1 = VBR V2, 2 = 320 CBR (config preset ids).
+    quality: u8,
+    disc_artist: String,
+    album: String,
+    year: String,
+    genre: String,
+    number: u8,
+    total: u8,
+    /// Raw track title (may carry the sampler "Artist / Title" form).
+    title: String,
+}
+
+/// Rip ONE track to a tagged MP3. Blocking for the whole encode (an optical
+/// read runs at drive speed — minutes) — call on a worker thread and loop
+/// per track for progress/cancel. Returns `{"ok":"<written path>"}` or
+/// `{"error":"…"}`. Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_track(
+    _ctx: *mut SparkampCtx,
+    job_json: *const c_char,
+) -> *mut c_char {
+    use crate::disc::rip;
+    let Some(job): Option<RipJobIn> = json_in(job_json) else {
+        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
+            "bad rip job".into(),
+        )));
+    };
+    let tags = rip::tag_fields_for_track(
+        &job.disc_artist,
+        &job.album,
+        &job.year,
+        &job.genre,
+        job.number,
+        job.total,
+        &job.title,
+    );
+    // Directory layout keys on the album-level artist; the filename uses the
+    // split per-track title (sampler "Artist / Title" would otherwise leave
+    // an underscored separator in the name).
+    let out = rip::dest_path(
+        std::path::Path::new(&job.dest_root),
+        &job.disc_artist,
+        &job.album,
+        job.number,
+        &tags.title,
+    );
+    let quality = rip::Mp3Quality::from_config(job.quality);
+    match rip::rip_track(&job.source, &out, quality, &tags) {
+        Ok(()) => gnudb_out(Ok(out.display().to_string())),
+        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
+    }
+}
+
 /// The stored tag record for a disc: `{"user":XmcdEntry|null,
 /// "official":XmcdEntry|null}` from the on-disk per-disc cache
 /// (`disc_tags.toml`). File IO — background queue preferred. Free with

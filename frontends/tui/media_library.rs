@@ -51,6 +51,7 @@ impl App {
             tag_edit: None,
             submit_category: None,
             submit_email: None,
+            rip: None,
         });
     }
 
@@ -114,15 +115,20 @@ impl App {
         };
 
         // Disc overlays capture all keys while open.
-        let (matches_open, tag_edit_open, submit_open, email_open) = match &self.mode {
+        let (matches_open, tag_edit_open, submit_open, email_open, rip_open) = match &self.mode {
             Mode::MediaLibrary(s) => (
                 s.gnudb_matches.is_some(),
                 s.tag_edit.is_some(),
                 s.submit_category.is_some(),
                 s.submit_email.is_some(),
+                s.rip.is_some(),
             ),
-            _ => (false, false, false, false),
+            _ => (false, false, false, false, false),
         };
+        if rip_open {
+            self.handle_rip_setup_key(code);
+            return;
+        }
         if matches_open {
             self.handle_gnudb_matches_key(code);
             return;
@@ -474,6 +480,20 @@ impl App {
             // first; honors the test-mode config until verified end-to-end).
             KeyCode::Char('u') | KeyCode::Char('U') if tab == MediaLibraryTab::Discs => {
                 self.open_submit_category_picker();
+            }
+
+            // g — Discs tab: rip setup ("grab"); c cancels a running rip
+            // after the current track.
+            KeyCode::Char('g') | KeyCode::Char('G') if tab == MediaLibraryTab::Discs => {
+                self.open_rip_setup();
+            }
+            KeyCode::Char('c') | KeyCode::Char('C')
+                if tab == MediaLibraryTab::Discs && self.rip_progress.is_some() =>
+            {
+                if let Some(flag) = &self.rip_cancel {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.set_status("Stopping after the current track…");
+                }
             }
 
             // i — open the Help overlay scrolled to the Media Library section.
@@ -965,6 +985,235 @@ impl App {
                 track.title = title.clone();
                 track.artist = artist.clone();
                 track.album = disc_album.clone();
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Discs tab: rip to MP3
+    // -----------------------------------------------------------------------
+
+    /// Open the rip-setup overlay: all tracks preselected, destination from
+    /// config → first watched folder → ~/Music, quality from config.
+    fn open_rip_setup(&mut self) {
+        if self.rip_progress.is_some() {
+            self.set_status("A rip is already running (c cancels it)");
+            return;
+        }
+        let dest = self
+            .config
+            .disc
+            .rip_dest_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .or_else(|| {
+                self.media_lib
+                    .as_ref()
+                    .and_then(|l| l.list_folders().ok())
+                    .and_then(|f| f.into_iter().next().map(|(_, p)| p))
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/Music",
+                    std::env::var("HOME").unwrap_or_else(|_| ".".into())
+                )
+            });
+        let quality = self.config.disc.rip_mp3_quality;
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            if s.disc_entries.is_empty() {
+                self.set_status("No audio disc loaded");
+                return;
+            }
+            s.rip = Some(super::RipSetupState {
+                selected: vec![true; s.disc_entries.len()],
+                cursor: 0,
+                dest,
+                editing_dest: false,
+                quality,
+            });
+        }
+    }
+
+    /// Keys in the rip overlay. Browsing: ↑/↓ move, Space toggle, a all/none,
+    /// q cycle quality, d edit destination, Enter start, Esc cancel.
+    /// Editing the destination: chars/Backspace, Enter/Esc done.
+    fn handle_rip_setup_key(&mut self, code: KeyCode) {
+        let mut start = false;
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let Some(rip) = &mut s.rip else { return };
+            if rip.editing_dest {
+                match code {
+                    KeyCode::Enter | KeyCode::Esc => rip.editing_dest = false,
+                    KeyCode::Backspace => {
+                        rip.dest.pop();
+                    }
+                    KeyCode::Char(ch) => rip.dest.push(ch),
+                    _ => {}
+                }
+                return;
+            }
+            match code {
+                KeyCode::Esc => s.rip = None,
+                KeyCode::Up | KeyCode::Char('k') => rip.cursor = rip.cursor.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if rip.cursor + 1 < rip.selected.len() {
+                        rip.cursor += 1;
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    if let Some(v) = rip.selected.get_mut(rip.cursor) {
+                        *v = !*v;
+                    }
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    let all = rip.selected.iter().all(|v| *v);
+                    rip.selected.iter_mut().for_each(|v| *v = !all);
+                }
+                KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    rip.quality = (rip.quality + 1) % 3;
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => rip.editing_dest = true,
+                KeyCode::Enter => start = true,
+                _ => {}
+            }
+        }
+        if start {
+            self.spawn_rip();
+        }
+    }
+
+    /// Kick the selected tracks off on a rip thread; progress arrives via
+    /// `disc_rip` in the tick loop and cancel stops after the current track.
+    fn spawn_rip(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            return;
+        };
+        let tags = self.disc_tags.get(&discid).cloned().unwrap_or_default();
+
+        let (entries, dest, quality) = {
+            let Mode::MediaLibrary(s) = &mut self.mode else {
+                return;
+            };
+            let Some(rip) = s.rip.take() else { return };
+            let entries: Vec<crate::disc::DiscTrackEntry> = s
+                .disc_entries
+                .iter()
+                .zip(&rip.selected)
+                .filter(|(_, sel)| **sel)
+                .map(|(e, _)| e.clone())
+                .collect();
+            if entries.is_empty() || rip.dest.trim().is_empty() {
+                self.set_status("Nothing selected to rip");
+                return;
+            }
+            (entries, rip.dest.trim().to_string(), rip.quality)
+        };
+
+        // Remember the choices for next time (persisted on quit).
+        self.config.disc.rip_dest_dir = Some(std::path::PathBuf::from(&dest));
+        self.config.disc.rip_mp3_quality = quality;
+
+        let total_on_disc = {
+            let Mode::MediaLibrary(s) = &self.mode else {
+                return;
+            };
+            s.disc_entries.len() as u8
+        };
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.rip_cancel = Some(cancel.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.disc_rip = Some(rx);
+        self.rip_progress = Some((0, entries.len(), entries[0].title.clone()));
+
+        std::thread::spawn(move || {
+            use crate::disc::rip;
+            let quality = rip::Mp3Quality::from_config(quality);
+            let dest_root = std::path::PathBuf::from(&dest);
+            let mut ripped = Vec::new();
+            let mut failed = 0;
+            let mut cancelled = false;
+            let n = entries.len();
+            for (i, entry) in entries.into_iter().enumerate() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
+                let _ = tx.send(super::RipMsg::Progress(i, n, entry.title.clone()));
+                // Linux entries are cdda://N?device=…; macOS entries are the
+                // mounted AIFF path.
+                let source = if let Some(rest) = entry.path.strip_prefix("cdda://") {
+                    let (track, device) = match rest.split_once("?device=") {
+                        Some((t, d)) => (t.parse().unwrap_or(entry.number as u8), d.to_string()),
+                        None => (entry.number as u8, String::new()),
+                    };
+                    rip::RipSource::Cdda { device, track }
+                } else {
+                    rip::RipSource::File {
+                        path: std::path::PathBuf::from(&entry.path),
+                    }
+                };
+                let track_tags = rip::tag_fields_for_track(
+                    &tags.artist,
+                    &tags.album,
+                    &tags.year,
+                    &tags.genre,
+                    entry.number as u8,
+                    total_on_disc,
+                    &entry.title,
+                );
+                let out = rip::dest_path(
+                    &dest_root,
+                    &tags.artist,
+                    &tags.album,
+                    entry.number as u8,
+                    &track_tags.title,
+                );
+                match rip::rip_track(&source, &out, quality, &track_tags) {
+                    Ok(()) => ripped.push(out.display().to_string()),
+                    Err(_) => failed += 1,
+                }
+            }
+            let _ = tx.send(super::RipMsg::Done {
+                ripped,
+                failed,
+                cancelled,
+            });
+        });
+    }
+
+    /// Apply a rip progress/result message (called from the tick loop).
+    pub(super) fn handle_rip_msg(&mut self, msg: super::RipMsg) {
+        match msg {
+            super::RipMsg::Progress(i, n, title) => {
+                self.rip_progress = Some((i, n, title));
+            }
+            super::RipMsg::Done {
+                ripped,
+                failed,
+                cancelled,
+            } => {
+                self.disc_rip = None;
+                self.rip_cancel = None;
+                self.rip_progress = None;
+                // Import the fresh files so the library sees them now.
+                if !ripped.is_empty() {
+                    if let Some(lib) = &self.media_lib {
+                        let _ = lib.add_files_to_library(&ripped);
+                    }
+                }
+                let mut msg = format!(
+                    "Ripped {} track{}",
+                    ripped.len(),
+                    if ripped.len() == 1 { "" } else { "s" }
+                );
+                if cancelled {
+                    msg.push_str(" · cancelled");
+                }
+                if failed > 0 {
+                    msg.push_str(&format!(" · {failed} failed"));
+                }
+                self.set_status(msg);
             }
         }
     }

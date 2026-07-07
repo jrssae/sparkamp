@@ -65,6 +65,12 @@ pub struct DiscConfig {
     /// Submit to gnudb in "test" mode until a real submission is verified
     /// end-to-end; the UI offers a real submit only once this is false.
     pub gnudb_submit_mode_test: bool,
+    /// Last chosen rip destination; when unset the rip dialog starts at the
+    /// Media Library's first watched folder and prompts before the first rip.
+    pub rip_dest_dir: Option<PathBuf>,
+    /// MP3 encoding preset: 0 = VBR V0 (~245 kbps), 1 = VBR V2 (~190 kbps,
+    /// default), 2 = 320 kbps CBR.
+    pub rip_mp3_quality: u8,
 }
 
 impl Default for DiscConfig {
@@ -72,6 +78,8 @@ impl Default for DiscConfig {
         DiscConfig {
             gnudb_email: String::new(),
             gnudb_submit_mode_test: true,
+            rip_dest_dir: None,
+            rip_mp3_quality: 1,
         }
     }
 }

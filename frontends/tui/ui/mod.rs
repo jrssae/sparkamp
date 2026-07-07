@@ -90,7 +90,7 @@ mod imports {
     pub(super) use crate::config::PlaylistAddBehavior;
     pub(super) use super::super::{
         id3_genre_matches, App, DiscTagEditState, EqState, Id3EditorState,
-        MediaLibraryState, MediaLibraryTab, Mode, SettingsState,
+        MediaLibraryState, MediaLibraryTab, Mode, RipSetupState, SettingsState,
     };
     pub(super) use crate::config::VisualizerMode;
     pub(super) use super::{
@@ -146,7 +146,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Settings(state) => draw_settings_overlay(frame, app, state, area),
         Mode::Equalizer(state) => draw_eq_overlay(frame, app, state, area),
         Mode::MediaLibrary(state) => {
-            draw_media_library(frame, state, app.status_message.as_deref(), area)
+            draw_media_library(
+                frame,
+                state,
+                app.status_message.as_deref(),
+                app.rip_progress.as_ref(),
+                area,
+            )
         }
         Mode::Normal => {}
     }

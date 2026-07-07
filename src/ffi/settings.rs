@@ -158,6 +158,63 @@ pub unsafe extern "C" fn sparkamp_set_gnudb_submit_test(ctx: *mut SparkampCtx, v
     ctx.config.disc.gnudb_submit_mode_test = value;
 }
 
+/// Last chosen rip destination directory ("" when unset — the UI then
+/// defaults to the first watched folder and prompts before the first rip).
+/// Heap C string — free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rip_dest(ctx: *const SparkampCtx) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let s = ctx
+        .config
+        .disc
+        .rip_dest_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    CString::new(s)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rip_dest(ctx: *mut SparkampCtx, dir: *const c_char) {
+    if ctx.is_null() || dir.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let s = std::ffi::CStr::from_ptr(dir).to_string_lossy().trim().to_string();
+    ctx.config.disc.rip_dest_dir = if s.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(s))
+    };
+}
+
+/// MP3 rip preset: 0 = VBR V0, 1 = VBR V2 (default), 2 = 320 CBR.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rip_quality(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 1;
+    }
+    (&*ctx).config.disc.rip_mp3_quality as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rip_quality(ctx: *mut SparkampCtx, preset: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.disc.rip_mp3_quality = match preset {
+        0 => 0,
+        2 => 2,
+        _ => 1,
+    };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_autoplay_on_add(ctx: *const SparkampCtx) -> bool {
     if ctx.is_null() {

@@ -179,6 +179,10 @@ final class SparkampModel: ObservableObject {
     @Published var discOfficial: [String: XmcdEntry] = [:]
     /// True while a submission is in flight.
     @Published var discSubmitting: Bool = false
+    /// Live rip progress (done/total · current title); nil when idle.
+    @Published var ripProgress: CopyProgress? = nil
+    /// Set to stop the rip after the track currently encoding.
+    var ripCancelRequested: Bool = false
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false

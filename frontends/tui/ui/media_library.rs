@@ -24,6 +24,7 @@ pub(super) fn draw_media_library(
     frame: &mut Frame,
     state: &MediaLibraryState,
     toast: Option<&str>,
+    rip_progress: Option<&(usize, usize, String)>,
     area: Rect,
 ) {
     // Erase the player/playlist underneath so there are no legibility issues.
@@ -123,9 +124,14 @@ pub(super) fn draw_media_library(
         MediaLibraryTab::Discs => draw_ml_discs(frame, state, pane[1]),
     }
 
-    // Hint / toast bar — show a status message if one is pending, show a
-    // minimal "Esc: exit search" hint while typing, otherwise display all hints.
-    let hint_line = if let Some(msg) = toast {
+    // Hint / toast bar — a running rip's progress wins, then status
+    // messages, then the per-tab key hints.
+    let hint_line = if let Some((i, n, title)) = rip_progress {
+        Line::from(Span::styled(
+            format!("Ripping {}/{} · {} — c: cancel", i + 1, n, title),
+            Style::default().fg(C_PLAYING),
+        ))
+    } else if let Some(msg) = toast {
         Line::from(Span::styled(msg, Style::default().fg(C_PLAYING)))
     } else if state.add_input.is_some() {
         Line::from(vec![
@@ -191,6 +197,73 @@ pub(super) fn draw_media_library(
     if let Some(buf) = &state.submit_email {
         draw_submit_email(frame, buf, inner);
     }
+    if let Some(rip) = &state.rip {
+        draw_rip_setup(frame, rip, state, inner);
+    }
+}
+
+/// Rip-setup overlay: track checkboxes, destination, quality preset.
+fn draw_rip_setup(frame: &mut Frame, rip: &RipSetupState, state: &MediaLibraryState, area: Rect) {
+    let w = area.width.saturating_sub(6).min(72).max(44);
+    let rows = rip.selected.len() as u16 + 6;
+    let h = rows.min(area.height.saturating_sub(2)).max(9);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let title = if rip.editing_dest {
+        " Rip — type destination · Enter: done "
+    } else {
+        " Rip — Space: track · a: all · q: quality · d: dest · Enter: start · Esc "
+    };
+    let block = Block::default()
+        .title(Span::styled(title, Style::default().fg(C_ACCENT)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_ACCENT));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let quality_label = match rip.quality {
+        0 => "VBR V0 (~245 kbps)",
+        2 => "320 kbps CBR",
+        _ => "VBR V2 (~190 kbps)",
+    };
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(
+                "Into: {}{}",
+                rip.dest,
+                if rip.editing_dest { "|" } else { "" }
+            ),
+            Style::default().fg(if rip.editing_dest { C_WARN } else { C_TEXT }),
+        )),
+        Line::from(Span::styled(
+            format!("Quality: {quality_label}   (Artist/Album/NN - Title.mp3, added to library)"),
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(""),
+    ];
+    for (i, sel) in rip.selected.iter().enumerate() {
+        let entry_title = state
+            .disc_entries
+            .get(i)
+            .map(|e| e.title.as_str())
+            .unwrap_or("?");
+        let marker = if *sel { "[x]" } else { "[ ]" };
+        let style = if i == rip.cursor && !rip.editing_dest {
+            Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+        } else {
+            Style::default().fg(C_TEXT)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker} {:>2}. {}", i + 1, ml_truncate(entry_title, 56)),
+            style,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// First-submission email prompt (gnudb requires the submitter's own

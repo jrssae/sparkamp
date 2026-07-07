@@ -294,6 +294,35 @@ enum DiscService {
         return .failure(GnudbFailure(message: wrapped.error ?? "unknown gnudb error"))
     }
 
+    /// One rip job for `sparkamp_disc_rip_track` (mirrors RipJobIn).
+    struct RipJob: Codable {
+        struct Source: Codable {
+            var kind: String   // "file" on macOS
+            var path: String
+        }
+        var source: Source
+        var destRoot: String
+        var quality: Int      // 0 = V0, 1 = V2, 2 = 320 CBR
+        var discArtist: String
+        var album: String
+        var year: String
+        var genre: String
+        var number: Int
+        var total: Int
+        var title: String
+    }
+
+    /// Rip one track to a tagged MP3. Blocks for the whole encode (optical
+    /// reads run at drive speed — a minute or more per track): worker thread
+    /// only. Returns the written path or a failure message.
+    static func ripTrack(job: RipJob) -> Result<String, GnudbFailure> {
+        guard let data = try? encoder().encode(job),
+              let json = String(data: data, encoding: .utf8)
+        else { return .failure(GnudbFailure(message: "bad rip job")) }
+        let out = json.withCString { sparkamp_disc_rip_track(nil, $0) }
+        return decodeGnudb(takeString(out))
+    }
+
     /// Eject the disc in the given drutil drive (macOS). Runs `drutil eject`
     /// off-thread; `completion(success)` on the main queue.
     static func eject(driveId: String, completion: @escaping (Bool) -> Void) {
