@@ -419,15 +419,23 @@ impl App {
 
         match write_tag_fields(&path, &fields) {
             Ok(()) => {
-                // Refresh the in-memory track so the playlist shows updated metadata.
-                for track in &mut self.playlist.tracks {
-                    if track.path == path {
-                        if let Ok(fresh) = Track::from_path(&path) {
-                            track.title = fresh.title;
-                            track.artist = fresh.artist;
+                // Refresh EVERY in-memory playlist row holding this file (it
+                // can be listed more than once) with the full tag set, so the
+                // playlist reflects the edit immediately.
+                if let Ok(fresh) = Track::from_path(&path) {
+                    for track in &mut self.playlist.tracks {
+                        if track.path == path {
+                            track.title = fresh.title.clone();
+                            track.artist = fresh.artist.clone();
+                            track.album_artist = fresh.album_artist.clone();
+                            track.album = fresh.album.clone();
                         }
-                        break;
                     }
+                }
+                // And push the new tags into the media-library DB so its
+                // views agree without waiting for the next folder rescan.
+                if let Some(lib) = &self.media_lib {
+                    let _ = lib.rescan_track(&path.display().to_string());
                 }
                 self.mode = Mode::Normal;
                 self.set_status("Tags saved");

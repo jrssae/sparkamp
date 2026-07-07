@@ -598,8 +598,10 @@ impl App {
                 let label = format!("{} — {}", entry.artist, entry.album);
                 // Keep the untouched match as the submission baseline.
                 self.disc_official.insert(discid.clone(), entry.clone());
-                self.disc_tags.insert(discid, entry);
+                self.disc_tags.insert(discid.clone(), entry);
+                self.persist_disc_tags(&discid);
                 self.apply_disc_tags_to_entries();
+                self.propagate_disc_tags_to_playlist();
                 self.set_status(label);
             }
             super::DiscLookupMsg::Submitted(msg) => {
@@ -902,9 +904,68 @@ impl App {
                 extt: Vec::new(),
                 revision,
             };
-            self.disc_tags.insert(ed.discid, entry);
+            let discid = ed.discid;
+            self.disc_tags.insert(discid.clone(), entry);
+            self.persist_disc_tags(&discid);
             self.apply_disc_tags_to_entries();
+            self.propagate_disc_tags_to_playlist();
             self.set_status("Disc tags saved");
+        }
+    }
+
+    /// Write one disc's current tags (+ official baseline) to the on-disk
+    /// cache so they survive restarts.
+    fn persist_disc_tags(&self, discid: &str) {
+        let Some(user) = self.disc_tags.get(discid) else {
+            return;
+        };
+        let mut store = crate::disc::tagstore::DiscTagStore::load();
+        store.set(
+            discid,
+            user.clone(),
+            self.disc_official.get(discid).cloned(),
+        );
+    }
+
+    /// Push the current tag set into every already-added active-playlist row
+    /// for the selected disc — tag edits must show up there immediately, not
+    /// only on future adds. Disc entries and playlist rows share exact path
+    /// strings, so matching is by path.
+    fn propagate_disc_tags_to_playlist(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            return;
+        };
+        let (disc_artist, disc_album) = self
+            .disc_tags
+            .get(&discid)
+            .map(|t| (t.artist.clone(), t.album.clone()))
+            .unwrap_or_default();
+        // (path, title, artist) per entry, with the sampler "Artist / Title"
+        // split — same rules as add_disc_entries.
+        let updates: Vec<(String, String, String)> =
+            if let Mode::MediaLibrary(s) = &self.mode {
+                s.disc_entries
+                    .iter()
+                    .map(|e| {
+                        let (artist, title) = match e.title.split_once(" / ") {
+                            Some((a, t)) => (a.to_string(), t.to_string()),
+                            None => (disc_artist.clone(), e.title.clone()),
+                        };
+                        (e.path.clone(), title, artist)
+                    })
+                    .collect()
+            } else {
+                return;
+            };
+        for track in &mut self.playlist.tracks {
+            let track_path = track.path.display().to_string();
+            if let Some((_, title, artist)) =
+                updates.iter().find(|(p, _, _)| *p == track_path)
+            {
+                track.title = title.clone();
+                track.artist = artist.clone();
+                track.album = disc_album.clone();
+            }
         }
     }
 
@@ -943,15 +1004,23 @@ impl App {
         self.apply_disc_tags_to_entries();
     }
 
-    /// Append disc-track entries to the current playlist with their TOC
-    /// titles and durations. No tag scan or duration probe: the titles come
-    /// from the TOC ("Track N" until gnudb — Phase 2), the durations are
-    /// exact, and Linux `cdda://` pseudo-paths aren't probeable files anyway.
-    /// Honors the same add-behavior config as the Files tab.
+    /// Append disc-track entries to the current playlist with their tags:
+    /// title from the entry (already overlaid with the disc's tag set),
+    /// artist/album from the disc-level tags so the playlist shows
+    /// "Artist - Title" like every other entry; the xmcd sampler convention
+    /// ("Artist / Title" inside the track title) yields a per-track artist.
+    /// No tag scan or duration probe: durations are exact from the TOC, and
+    /// Linux `cdda://` pseudo-paths aren't probeable files anyway. Honors the
+    /// same add-behavior config as the Files tab.
     pub(super) fn add_disc_entries(&mut self, entries: &[crate::disc::DiscTrackEntry]) {
         if entries.is_empty() {
             return;
         }
+        let (disc_artist, disc_album) = self
+            .selected_disc_identity()
+            .and_then(|(_, id)| self.disc_tags.get(&id))
+            .map(|t| (t.artist.clone(), t.album.clone()))
+            .unwrap_or_default();
         let was_empty = self.playlist.is_empty();
         if self.config.behavior.playlist_add_behavior == crate::config::PlaylistAddBehavior::Replace
         {
@@ -960,12 +1029,17 @@ impl App {
             self.shuffle_state.reset();
         }
         for e in entries {
+            // Sampler discs put the per-track artist in the title.
+            let (artist, title) = match e.title.split_once(" / ") {
+                Some((a, t)) => (a.to_string(), t.to_string()),
+                None => (disc_artist.clone(), e.title.clone()),
+            };
             self.playlist.add(crate::model::Track {
                 path: std::path::PathBuf::from(&e.path),
-                title: e.title.clone(),
-                artist: String::new(),
+                title,
+                artist,
                 album_artist: String::new(),
-                album: String::new(),
+                album: disc_album.clone(),
                 duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
                 broken: false,
                 read_only: true, // disc media is never writable in place

@@ -149,6 +149,55 @@ pub unsafe extern "C" fn sparkamp_gnudb_read(
     gnudb_out(entry)
 }
 
+/// The stored tag record for a disc: `{"user":XmcdEntry|null,
+/// "official":XmcdEntry|null}` from the on-disk per-disc cache
+/// (`disc_tags.toml`). File IO — background queue preferred. Free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_tags_get(
+    _ctx: *mut SparkampCtx,
+    discid: *const c_char,
+) -> *mut c_char {
+    #[derive(serde::Serialize)]
+    struct Out<'a> {
+        user: Option<&'a crate::disc::xmcd::XmcdEntry>,
+        official: Option<&'a crate::disc::xmcd::XmcdEntry>,
+    }
+    let Some(discid) = cstr(discid) else {
+        return json_out(&Out {
+            user: None,
+            official: None,
+        });
+    };
+    let store = crate::disc::tagstore::DiscTagStore::load();
+    let rec = store.get(&discid);
+    json_out(&Out {
+        user: rec.map(|r| &r.user),
+        official: rec.and_then(|r| r.official.as_ref()),
+    })
+}
+
+/// Persist a disc's tag record (user tags + optional official baseline) to
+/// the on-disk cache so it survives restarts. `official_json` may be null.
+/// File IO — background queue preferred. Returns false on bad input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_tags_set(
+    _ctx: *mut SparkampCtx,
+    discid: *const c_char,
+    user_json: *const c_char,
+    official_json: *const c_char,
+) -> bool {
+    let (Some(discid), Some(user)): (_, Option<crate::disc::xmcd::XmcdEntry>) =
+        (cstr(discid), json_in(user_json))
+    else {
+        return false;
+    };
+    let official: Option<crate::disc::xmcd::XmcdEntry> = json_in(official_json);
+    let mut store = crate::disc::tagstore::DiscTagStore::load();
+    store.set(&discid, user, official);
+    true
+}
+
 /// Validate + build + POST a disc entry to gnudb. Takes the `DiscToc` JSON,
 /// the `XmcdEntry` JSON (its `revision` field is written into the xmcd — pass
 /// the matched entry's revision + 1 for an update, 0 for a new disc), the

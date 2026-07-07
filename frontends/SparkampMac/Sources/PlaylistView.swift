@@ -203,7 +203,12 @@ struct ActivePlaylistTable: NSViewRepresentable {
         guard let table = scroll.documentView as? SparkampTableView else { return }
         context.coordinator.parent = self
         let newItems = model.playlistItems
-        let itemsChanged = newItems.map(\.id) != context.coordinator.items.map(\.id)
+        // Full-content comparison, not just row ids: a tag edit (e.g. from
+        // the Media Library's ID3 editor) changes titles without changing
+        // ids, and must trigger a real reload — the visible-cell repaint
+        // below is only for the cheap marker-moved case. With nothing
+        // playing there are no follow-up publishes to mask a missed reload.
+        let itemsChanged = newItems != context.coordinator.items
         context.coordinator.items = newItems
         if itemsChanged {
             table.reloadData()

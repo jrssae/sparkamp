@@ -374,6 +374,20 @@ impl App {
         // values to the playlist so tracks that were probed before show their
         // duration right away without waiting for GStreamer.
         let duration_cache = DurationCache::load();
+
+        // Restore the per-disc tag cache (gnudb matches + user edits) saved
+        // by previous sessions, split into the two working maps.
+        let disc_store = crate::disc::tagstore::DiscTagStore::load();
+        let disc_tags: std::collections::HashMap<_, _> = disc_store
+            .discs
+            .iter()
+            .map(|(id, r)| (id.clone(), r.user.clone()))
+            .collect();
+        let disc_official: std::collections::HashMap<_, _> = disc_store
+            .discs
+            .into_iter()
+            .filter_map(|(id, r)| r.official.map(|o| (id, o)))
+            .collect();
         for track in &mut playlist.tracks {
             if track.duration.is_none() {
                 if let Some(dur) = duration_cache.get(&track.path) {
@@ -440,8 +454,8 @@ impl App {
             broken_tx,
             media_lib,
             scan_channels: None,
-            disc_tags: std::collections::HashMap::new(),
-            disc_official: std::collections::HashMap::new(),
+            disc_tags,
+            disc_official,
             disc_lookup: None,
             pending_disc_matches: None,
         })

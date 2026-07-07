@@ -42,10 +42,21 @@ void    sparkamp_playlist_add(SparkampCtx *ctx, const char *path);
 /** Fast add — uses filename as placeholder; call scan_metadata + probe_duration after.
  *  Returns the new track's playlist index, or -1 on failure. */
 int32_t sparkamp_playlist_add_fast(SparkampCtx *ctx, const char *path);
-/** Add an entry with a caller-supplied title + duration (disc tracks: no tag
- *  read/probe). Returns the new index, or -1 on bad input. */
+/** Add an entry with caller-supplied title/artist/album + duration (disc
+ *  tracks: no tag read/probe; artist/album may be NULL or empty). Returns the
+ *  new index, or -1 on bad input. */
 int32_t sparkamp_playlist_add_entry(SparkampCtx *ctx, const char *path,
-                                    const char *title, int32_t duration_secs);
+                                    const char *title, const char *artist,
+                                    const char *album, int32_t duration_secs);
+/** Update title/artist/album of every entry with this exact path (disc-tag
+ *  edits propagate into already-added rows). Returns rows updated. */
+int32_t sparkamp_playlist_update_entry_meta(SparkampCtx *ctx, const char *path,
+                                            const char *title, const char *artist,
+                                            const char *album);
+/** Synchronously re-read the file's tags into every playlist row holding it
+ *  (canonical path comparison — an ML path matches its playlist rows even if
+ *  spelled differently). Returns rows updated; refresh the view after. */
+int32_t sparkamp_playlist_rescan_path(SparkampCtx *ctx, const char *path);
 void    sparkamp_playlist_clear(SparkampCtx *ctx);
 void    sparkamp_playlist_remove(SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_move(SparkampCtx *ctx, int32_t from, int32_t to);
@@ -650,6 +661,16 @@ char *sparkamp_gnudb_query(SparkampCtx *ctx, const char *toc_json,
     network — background queue only. Free with sparkamp_free_string. */
 char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
                           const char *discid, const char *email);
+
+/** Stored tag record for a disc from the on-disk cache (disc_tags.toml):
+    {"user":XmcdEntry|null,"official":XmcdEntry|null}. File IO — background
+    queue preferred. Free with sparkamp_free_string. */
+char *sparkamp_disc_tags_get(SparkampCtx *ctx, const char *discid);
+
+/** Persist a disc's tag record (user + optional official baseline; NULL ok)
+    so it survives restarts. Returns false on bad input. */
+bool sparkamp_disc_tags_set(SparkampCtx *ctx, const char *discid,
+                            const char *user_json, const char *official_json);
 
 /** Validate + POST a disc entry to gnudb. entry_json's `revision` is written
     into the xmcd (matched revision + 1 for an update, 0 for a new disc).

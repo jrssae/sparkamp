@@ -380,7 +380,7 @@ struct DiscDriveView: View {
         .contextMenu(forSelectionType: Int.self) { ids in
             Button("Add to Playlist") { addSelected(ids) }
                 .disabled(ids.isEmpty)
-            Button("Add Whole Disc") { model.addDiscTracks(model.discTracks) }
+            Button("Add Whole Disc") { model.addDiscTracks(drive, entries: model.discTracks) }
         } primaryAction: { ids in
             // Double-click adds the clicked/selected tracks.
             addSelected(ids)
@@ -395,7 +395,7 @@ struct DiscDriveView: View {
             Spacer()
             Button("Add Selected") { addSelected(selection) }
                 .disabled(selection.isEmpty)
-            Button("Add All") { model.addDiscTracks(model.discTracks) }
+            Button("Add All") { model.addDiscTracks(drive, entries: model.discTracks) }
                 .disabled(model.discTracks.isEmpty)
         }
         .buttonStyle(.bordered)
@@ -406,7 +406,7 @@ struct DiscDriveView: View {
 
     private func addSelected(_ ids: Set<Int>) {
         let entries = model.discTracks.filter { ids.contains($0.number) }
-        model.addDiscTracks(entries)
+        model.addDiscTracks(drive, entries: entries)
     }
 
     // MARK: Non-audio banner

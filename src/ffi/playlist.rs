@@ -62,11 +62,12 @@ pub unsafe extern "C" fn sparkamp_playlist_add_fast(
     }
 }
 
-/// Add a playlist entry with a caller-supplied title and known duration —
-/// used for disc tracks, whose display name ("Track N" or a gnudb title) and
+/// Add a playlist entry with caller-supplied metadata and a known duration —
+/// used for disc tracks, whose display data ("Track N" or gnudb tags) and
 /// duration come from the TOC rather than tags on the file. `path` may be a
 /// plain file path (macOS mounted AIFF) or a `cdda://` pseudo-URI (Linux);
-/// no tag read or duration probe is performed.
+/// no tag read or duration probe is performed. `artist`/`album` may be null
+/// or empty (the playlist then shows the bare title).
 ///
 /// Returns the 0-based playlist index of the new entry, or -1 on bad input.
 #[unsafe(no_mangle)]
@@ -74,6 +75,8 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
     ctx: *mut SparkampCtx,
     path: *const c_char,
     title: *const c_char,
+    artist: *const c_char,
+    album: *const c_char,
     duration_secs: c_int,
 ) -> c_int {
     if ctx.is_null() || path.is_null() || title.is_null() {
@@ -82,15 +85,22 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
     let ctx = &mut *ctx;
     let path = CStr::from_ptr(path).to_string_lossy().into_owned();
     let title = CStr::from_ptr(title).to_string_lossy().into_owned();
+    let opt = |p: *const c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    };
     if path.is_empty() || title.is_empty() {
         return -1;
     }
     let track = Track {
         path: std::path::PathBuf::from(path),
         title,
-        artist: String::new(),
+        artist: opt(artist),
         album_artist: String::new(),
-        album: String::new(),
+        album: opt(album),
         duration: (duration_secs > 0)
             .then(|| std::time::Duration::from_secs(duration_secs as u64)),
         broken: false,
@@ -99,6 +109,104 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
     let idx = ctx.playlist.tracks.len() as c_int;
     ctx.playlist.add(track);
     idx
+}
+
+/// Synchronously re-read tags for every playlist row holding `path` and
+/// update those rows in place. Paths are compared canonically (both sides
+/// canonicalized), so callers holding a differently-spelled path to the same
+/// file (Media Library row vs playlist row) still match. The file was
+/// typically just written by the tag editor, so one synchronous read is
+/// cheap and the caller can refresh its view immediately after.
+///
+/// Returns how many rows were updated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_rescan_path(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) -> c_int {
+    if ctx.is_null() || path.is_null() {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let raw = CStr::from_ptr(path).to_string_lossy();
+    rescan_rows_by_path(&mut ctx.playlist.tracks, &raw) as c_int
+}
+
+/// The path-matching + tag-refresh core of `sparkamp_playlist_rescan_path`,
+/// separated so it's directly unit-testable against real temp files.
+fn rescan_rows_by_path(tracks: &mut [Track], raw: &str) -> usize {
+    if raw.is_empty() {
+        return 0;
+    }
+    let target = Path::new(raw)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(raw));
+
+    let mut fresh: Option<Track> = None;
+    let mut updated = 0;
+    for track in tracks {
+        let row = track
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| track.path.clone());
+        if row != target {
+            continue;
+        }
+        if fresh.is_none() {
+            fresh = Track::from_path(&target).ok();
+        }
+        let Some(f) = &fresh else { break };
+        track.title = f.title.clone();
+        track.artist = f.artist.clone();
+        track.album_artist = f.album_artist.clone();
+        track.album = f.album.clone();
+        updated += 1;
+    }
+    updated
+}
+
+/// Update the display metadata of every playlist entry whose path equals
+/// `path` — used when a disc's tags are edited so already-added rows change
+/// immediately (disc entries share exact path strings with the drive view).
+/// Empty/null `artist`/`album` clear those fields; `title` must be non-empty.
+///
+/// Returns how many rows were updated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_update_entry_meta(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+    title: *const c_char,
+    artist: *const c_char,
+    album: *const c_char,
+) -> c_int {
+    if ctx.is_null() || path.is_null() || title.is_null() {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let path = CStr::from_ptr(path).to_string_lossy().into_owned();
+    let title = CStr::from_ptr(title).to_string_lossy().into_owned();
+    let opt = |p: *const c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    };
+    if path.is_empty() || title.is_empty() {
+        return 0;
+    }
+    let artist = opt(artist);
+    let album = opt(album);
+    let mut updated = 0;
+    for track in &mut ctx.playlist.tracks {
+        if track.path.display().to_string() == path {
+            track.title = title.clone();
+            track.artist = artist.clone();
+            track.album = album.clone();
+            updated += 1;
+        }
+    }
+    updated
 }
 
 /// Remove all tracks from the playlist.
@@ -372,3 +480,54 @@ pub unsafe extern "C" fn sparkamp_playlist_get_path(
     CString::new(path_str).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rescan must match rows canonically: an ML-spelled path (extra
+    /// "./" segment here; symlinks in real life) still hits the playlist
+    /// row, updates ALL duplicates, and re-reads tags from the file.
+    #[test]
+    fn rescan_rows_matches_canonically_and_updates_duplicates() {
+        let dir = std::env::temp_dir().join(format!("sparkamp-rescan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("song.mp3");
+        std::fs::write(&file, b"not really audio").unwrap();
+        let canonical = file.canonicalize().unwrap();
+
+        let make_row = || Track {
+            path: canonical.clone(),
+            title: "Stale".into(),
+            artist: "Stale Artist".into(),
+            album_artist: String::new(),
+            album: "Stale Album".into(),
+            duration: None,
+            broken: false,
+            read_only: false,
+        };
+        let mut tracks = vec![make_row(), make_row()];
+
+        // Differently-spelled path to the same file.
+        let alt = format!("{}/./song.mp3", dir.display());
+        let updated = rescan_rows_by_path(&mut tracks, &alt);
+        assert_eq!(updated, 2);
+        // No readable tags in the fake file → title falls back to the stem,
+        // artist/album reset — proving the rows were rewritten from the file.
+        assert_eq!(tracks[0].title, "song");
+        assert!(tracks[0].artist.is_empty());
+        assert_eq!(tracks[1].title, "song");
+
+        // Non-matching path touches nothing.
+        let other = dir.join("other.mp3");
+        std::fs::write(&other, b"x").unwrap();
+        tracks[0].title = "Keep".into();
+        assert_eq!(
+            rescan_rows_by_path(&mut tracks, &other.display().to_string()),
+            0
+        );
+        assert_eq!(tracks[0].title, "Keep");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

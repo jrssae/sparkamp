@@ -320,9 +320,18 @@ struct Id3EditorView: View {
         switch result {
         case 0:
             saveStatus = "Saved ✓"
-            if let ctx = model.ctx {
-                let idx = model.id3TrackIndex >= 0 ? model.id3TrackIndex : model.currentIndex
-                if idx >= 0 { sparkamp_scan_metadata(ctx, Int32(idx)) }
+            // Synchronously refresh every playlist row holding this file —
+            // matched canonically in the core, so it works no matter where
+            // the editor was opened from (playlist index, Media Library
+            // path, duplicates included) — then repaint the playlist now.
+            if let ctx = model.ctx, !filePath.isEmpty {
+                _ = filePath.withCString {
+                    sparkamp_playlist_rescan_path(ctx, $0)
+                }
+                // Refresh unconditionally — cheap, and never leaves the view
+                // stale if the row count and the update count disagree.
+                model.refreshPlaylist()
+                model.refreshCurrentTrackInfo()
             }
             // Push the new tags through to the library DB so the Media
             // Library window's Files view reflects them immediately.  The

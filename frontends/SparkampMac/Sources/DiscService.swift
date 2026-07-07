@@ -228,6 +228,41 @@ enum DiscService {
         return decodeGnudb(takeString(out))
     }
 
+    /// The persisted tag record for a disc from the on-disk cache
+    /// (disc_tags.toml). File IO — background preferred.
+    static func tagsGet(discid: String) -> (user: XmcdEntry?, official: XmcdEntry?) {
+        struct Record: Codable {
+            var user: XmcdEntry?
+            var official: XmcdEntry?
+        }
+        let out = discid.withCString { sparkamp_disc_tags_get(nil, $0) }
+        guard let json = takeString(out),
+              let data = json.data(using: .utf8),
+              let rec = try? decoder().decode(Record.self, from: data)
+        else { return (nil, nil) }
+        return (rec.user, rec.official)
+    }
+
+    /// Persist a disc's tag record so it survives restarts. File IO —
+    /// background preferred.
+    @discardableResult
+    static func tagsSet(discid: String, user: XmcdEntry, official: XmcdEntry?) -> Bool {
+        guard let userData = try? encoder().encode(user),
+              let userJSON = String(data: userData, encoding: .utf8)
+        else { return false }
+        let officialJSON = official
+            .flatMap { try? encoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+        return discid.withCString { d in
+            userJSON.withCString { u in
+                if let oj = officialJSON {
+                    return oj.withCString { o in sparkamp_disc_tags_set(nil, d, u, o) }
+                }
+                return sparkamp_disc_tags_set(nil, d, u, nil)
+            }
+        }
+    }
+
     /// Validate + POST an entry to gnudb. `entry.revision` must already be
     /// the value to write (matched + 1 for updates, 0 for a new disc).
     /// Blocking network — background only.

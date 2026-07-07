@@ -23,15 +23,31 @@ extension SparkampModel {
     }
 
     /// Load the playlist-ready track entries for one drive's disc into
-    /// `discTracks` (background; empty when no audio disc), then overlay any
-    /// stored tag-set titles for this disc.
+    /// `discTracks` (background; empty when no audio disc), restore the
+    /// disc's persisted tag record on first sight (the on-disk cache is what
+    /// makes names survive an app restart), then overlay the titles.
     func loadDiscTracks(_ drive: OpticalDrive) {
         discBusy = true
         DispatchQueue.global(qos: .userInitiated).async {
             let entries = DiscService.trackEntries(drive: drive)
+            // Same background block: discId is pure math, tagsGet is file IO.
+            let discId = drive.toc.flatMap { DiscService.discId(toc: $0) }
+            let stored = discId.map { DiscService.tagsGet(discid: $0) }
             DispatchQueue.main.async {
                 self.discTracks = entries
                 self.discBusy = false
+                if let id = discId, self.discTagSets[id] == nil,
+                   let user = stored?.user {
+                    self.discTagSets[id] = DiscTagSet(
+                        artist: user.artist,
+                        album: user.album,
+                        year: user.year,
+                        genre: user.genre,
+                        titles: user.trackTitles)
+                    if let official = stored?.official {
+                        self.discOfficial[id] = official
+                    }
+                }
                 self.applyDiscTagTitles(drive)
             }
         }
@@ -56,12 +72,66 @@ extension SparkampModel {
         }
     }
 
-    /// Store an edited tag set for the drive's disc and refresh the titles.
+    /// Final playlist metadata for one disc entry under a tag set: the
+    /// overlaid title (xmcd sampler "Artist / Title" split into a per-track
+    /// artist), the disc artist as fallback, and the album. One source of
+    /// truth for adding rows AND propagating edits into existing ones.
+    private func discEntryMeta(
+        _ entry: DiscTrackEntry, tags: DiscTagSet?
+    ) -> (title: String, artist: String, album: String) {
+        var title = entry.title
+        var artist = tags?.artist ?? ""
+        if let range = title.range(of: " / ") {
+            artist = String(title[..<range.lowerBound])
+            title = String(title[range.upperBound...])
+        }
+        return (title, artist, tags?.album ?? "")
+    }
+
+    /// Store an edited tag set for the drive's disc, refresh the titles,
+    /// persist the record (survives restarts), and push the new metadata
+    /// into every already-added active-playlist row for this disc.
     func saveDiscTags(_ drive: OpticalDrive, tags: DiscTagSet) {
         guard let id = discIdFor(drive) else { return }
         discTagSets[id] = tags
         applyDiscTagTitles(drive)
         discStatus = "Tags saved for this disc"
+
+        // Immediate propagation: disc entries and playlist rows share exact
+        // path strings, so update matching rows in place.
+        if let ctx = ctx, !discTracks.isEmpty {
+            var touched = 0
+            for entry in discTracks {
+                let meta = discEntryMeta(entry, tags: tags)
+                touched += Int(entry.path.withCString { p in
+                    meta.title.withCString { t in
+                        meta.artist.withCString { a in
+                            meta.album.withCString { al in
+                                sparkamp_playlist_update_entry_meta(ctx, p, t, a, al)
+                            }
+                        }
+                    }
+                })
+            }
+            if touched > 0 {
+                refreshPlaylist()
+                refreshCurrentTrackInfo()
+            }
+        }
+        let user = XmcdEntry(
+            discid: id,
+            artist: tags.artist,
+            album: tags.album,
+            year: tags.year,
+            genre: tags.genre,
+            trackTitles: tags.titles,
+            extd: "",
+            extt: [],
+            revision: 0)
+        let official = discOfficial[id]
+        DispatchQueue.global(qos: .utility).async {
+            DiscService.tagsSet(discid: id, user: user, official: official)
+        }
     }
 
     /// The current (or blank) tag set for the drive's disc, sized to its
@@ -220,26 +290,35 @@ extension SparkampModel {
         }
     }
 
-    /// Add disc tracks to the active playlist with their TOC titles and
-    /// durations ("Track N" until gnudb supplies real names — Phase 2). No
-    /// metadata scan or duration probe: the AIFFs carry no tags and the
-    /// durations are already exact.
+    /// Add disc tracks to the active playlist with their tags: title from the
+    /// entry (already overlaid with the disc's tag set), artist/album from
+    /// the disc-level tags so the playlist shows "Artist - Title" like every
+    /// other entry. A title in the xmcd sampler convention ("Artist / Title")
+    /// splits into a per-track artist. No metadata scan or duration probe:
+    /// the AIFFs carry no tags and the durations are already exact.
     ///
     /// Mirrors `mlDoubleClickTracks` semantics: honors the replace/append
     /// add-behavior setting, and autoplay-on-add starts the first new track
     /// when the playlist was replaced or was empty (never interrupts a track
     /// already playing).
-    func addDiscTracks(_ entries: [DiscTrackEntry]) {
+    func addDiscTracks(_ drive: OpticalDrive, entries: [DiscTrackEntry]) {
         guard let ctx = ctx, !entries.isEmpty else { return }
+        let tags = discIdFor(drive).flatMap { discTagSets[$0] }
         let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
         let autoplay = sparkamp_get_autoplay_on_add(ctx)
         if shouldReplace { clearPlaylist() }
         let indexBefore = Int(sparkamp_playlist_len(ctx))
         let wasEmpty = indexBefore == 0
         for e in entries {
+            let meta = discEntryMeta(e, tags: tags)
             e.path.withCString { p in
-                e.title.withCString { t in
-                    _ = sparkamp_playlist_add_entry(ctx, p, t, Int32(e.durationSecs))
+                meta.title.withCString { t in
+                    meta.artist.withCString { a in
+                        meta.album.withCString { al in
+                            _ = sparkamp_playlist_add_entry(
+                                ctx, p, t, a, al, Int32(e.durationSecs))
+                        }
+                    }
                 }
             }
         }

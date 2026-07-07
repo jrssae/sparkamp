@@ -160,7 +160,7 @@ struct DedupGroupItem: Identifiable {
 
 // MARK: - Data types
 
-struct PlaylistItem: Identifiable {
+struct PlaylistItem: Identifiable, Equatable {
     let id: Int          // the playlist index
     let title: String
     let artist: String
