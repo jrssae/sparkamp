@@ -129,8 +129,9 @@ pub fn rip_track(
 }
 
 /// Build, play, and drain a pipeline until EOS or error. GStreamer must
-/// already be initialized (both frontends do it at startup).
-fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
+/// already be initialized (both frontends do it at startup). Shared with the
+/// burn module's Red Book WAV preparation.
+pub(crate) fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
     use gstreamer as gst;
     use gstreamer::prelude::*;
 

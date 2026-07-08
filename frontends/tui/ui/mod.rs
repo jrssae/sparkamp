@@ -89,8 +89,9 @@ mod imports {
     };
     pub(super) use crate::config::PlaylistAddBehavior;
     pub(super) use super::super::{
-        id3_genre_matches, App, DiscTagEditState, EqState, Id3EditorState,
-        MediaLibraryState, MediaLibraryTab, Mode, RipSetupState, SettingsState,
+        id3_genre_matches, App, BurnSetupState, DiscTagEditState, EqState,
+        Id3EditorState, MediaLibraryState, MediaLibraryTab, Mode, RipSetupState,
+        SettingsState,
     };
     pub(super) use crate::config::VisualizerMode;
     pub(super) use super::{
@@ -151,6 +152,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 state,
                 app.status_message.as_deref(),
                 app.rip_progress.as_ref(),
+                app.burn_phase.as_deref(),
+                &app.burn_list,
                 area,
             )
         }

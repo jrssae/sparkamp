@@ -4,7 +4,7 @@
 
 **Goal:** Winamp-parity optical-disc support across **all three Sparkamp frontends — GTK (`sparkamp --ui`), TUI (`sparkamp`), and SparkampMac**: play audio CDs, identify discs via gnudb.org, override/prefill ID3 tags and submit corrections upstream, rip to tagged MP3, and burn audio CDs and data (MP3) CD/DVDs — with graceful handling of drive/disc failures.
 
-**Architecture:** A shared Rust core owns everything platform-neutral — the freedb/CDDB **disc-ID math**, the **gnudb HTTP client** (query / read / submit), the **tag-override model** (reusing `src/id3_editor.rs` + `src/tags.rs`), and the **GStreamer rip/encode pipeline** (GStreamer already ships on both platforms). A thin **platform device layer** does only what must be native: raw disc/TOC access and burning. Linux uses GStreamer `cdiocddasrc` for read/rip, `cd-info` (libcdio) to probe drive/media, and libburnia CLIs — `xorriso` (data ISO9660/UDF) and `cdrskin` (audio CD + blanking) — for burning. macOS uses the auto-mounted AIFF volume + CoreAudio for read and **DiscRecording.framework** for all burning/blanking. The **GTK and TUI frontends call the core directly** (same crate, in-process — exactly as they already call `crate::devices` / `crate::media_library`); **SparkampMac** calls it through the same **JSON-over-FFI** style used by the device-sync work (`src/ffi/`), with long-running rip/burn progress delivered through the existing `sparkamp_tick` + mpsc callback mechanism. All disc *logic* is shared core, so the three frontends differ only in presentation.
+**Architecture:** A shared Rust core owns everything platform-neutral — the freedb/CDDB **disc-ID math**, the **gnudb HTTP client** (query / read / submit), the **tag-override model** (reusing `src/id3_editor.rs` + `src/tags.rs`), and the **GStreamer rip/encode pipeline** (GStreamer already ships on both platforms). A thin **platform device layer** does only what must be native: raw disc/TOC access and burning. Linux uses GStreamer `cdiocddasrc` for read/rip, `cd-info` (libcdio) to probe drive/media, and libburnia CLIs — `xorriso` (data ISO9660/UDF) and `cdrskin` (audio CD + blanking) — for burning. macOS uses the auto-mounted AIFF volume for read and — **as-built deviation, see the Phase 5 note** — Apple's `drutil` CLI (a wrapper over DiscRecording) for burning/blanking instead of linking DiscRecording.framework. The **GTK and TUI frontends call the core directly** (same crate, in-process — exactly as they already call `crate::devices` / `crate::media_library`); **SparkampMac** calls it through the same **JSON-over-FFI** style used by the device-sync work (`src/ffi/`), with long-running rip/burn progress delivered through the existing `sparkamp_tick` + mpsc callback mechanism. All disc *logic* is shared core, so the three frontends differ only in presentation.
 
 **Tech Stack:** Rust core, GStreamer (`cdiocddasrc`, `lamemp3enc`), a **light blocking HTTP client** (`ureq` or `minreq` — gnudb endpoints are plain `http://`, so avoid `reqwest`'s TLS/openssl pull-in that would bloat the Flatpak `cargo vendor` tree), serde_json; Linux: libcdio-utils (`cd-info`), libburnia (`xorriso`, `cdrskin`); macOS: DiscRecording.framework, IOKit/DiskArbitration, CoreAudio.
 
@@ -25,10 +25,11 @@
 
 All new fields use `#[serde(default)]` + a `Default` impl (CLAUDE.md).
 
-- [ ] `gnudb_email: String` — **default `"sparkamp@fastmail.com"`**, editable in Settings; used as the CDDB `hello` user id and the submission `User-Email` header. A Settings text field exposes it on all three frontends (GTK, TUI, mac).
-- [ ] `gnudb_submit_mode_test: bool` — default `true` until a real submission is verified end-to-end, then the UI offers "submit".
-- [ ] `rip_dest_dir: Option<PathBuf>` — last chosen rip destination; when unset, the rip dialog **starts at the Media Library's first watched folder** but still prompts before the first rip.
-- [ ] `rip_mp3_quality: u8` — LAME VBR quality (default 2 ≈ V2 ~190 kbps); Settings dropdown (V0/V2/320 CBR).
+- [x] `gnudb_email: String` — **default CHANGED to blank** (the gnudb howto forbids submitting with an app-wide default; the retired `sparkamp@fastmail.com` value in old configs is treated as unset — `gnudb::is_unset_email`). Lookups work without it via an anonymous `hello`; the **first submission prompts for it in a modal** (mac sheet / TUI overlay — GTK needs the same dialog). Editable in Settings (mac shipped; GTK/TUI Settings fields still open).
+- [x] `gnudb_submit_mode_test: bool` — default `true`; mac Settings has the toggle; submissions in test mode are labeled "not published".
+- [x] `rip_dest_dir: Option<PathBuf>` — implemented; dialog defaults config → first watched folder → ~/Music, remembers the choice.
+- [x] `rip_mp3_quality: u8` — **preset id, not raw VBR:** 0 = V0, 1 = V2 (default), 2 = 320 CBR (matches the dropdown; `Mp3Quality::from_config`).
+- [x] `burn_verify: bool` — default `true`; keeps drutil's post-burn verification (off adds `-noverify`). mac Settings toggle shipped; Linux tools have no switch (Opus follow-up: readback check).
 
 ---
 
@@ -134,32 +135,82 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 
 **Files:** Create `src/disc/burn.rs` (Linux subprocess orchestration), `src/disc/burnlist.rs` (the dedicated Burn list model); modify `src/ffi/disc.rs`, all three frontends (GTK/TUI/mac Burn list UI). macOS burning is implemented Swift-side over DiscRecording, driven by the same Burn list.
 
-- [ ] **Burn list model** — a dedicated queue (Winamp-style), separate from the active playlist: add/remove/reorder library tracks; running total vs 74/80-min CD capacity with an over-capacity warning.
-- [ ] **Confirm before erasing.** Blanking a non-empty rewritable disc (CD-RW/DVD-RW/DVD-RAM) destroys its contents — require an explicit confirmation dialog first (mirrors the CLAUDE.md Deletion-Rule spirit for user data). Applies to both audio (this phase) and data (Phase 6) RW burns; never auto-blank a disc that already has content without the prompt.
-- [ ] **Prepare audio.** Transcode each burn-list track to Red Book PCM (44.1 kHz/16-bit/stereo WAV) via GStreamer into a temp dir.
-- [ ] **Linux burn.** Target the selected drive's node (`OpticalDrive.id`, e.g. `/dev/sr0`). Blank first if rewritable and not empty (`cdrskin dev=<drive_id> blank=fast`), then `cdrskin dev=<drive_id> -audio -pad speed=<n> track01.wav …` (DAO). Parse progress/percent from stderr; map non-zero exit to a typed error. Subprocess is killable for cancel/timeout.
-- [ ] **macOS burn.** Swift `DRBurn` + `DRAudioTrack` per WAV/AIFF; DiscRecording handles blanking + progress via `DRBurnStatus` notifications.
+> **Blind-implementation note (2026-07-07, Fable):** Phases 5–6 were implemented
+> WITHOUT blank media on hand. Everything not needing a blank disc is unit- or
+> live-tested below ("Internal tests"); everything needing one is enumerated for
+> the follow-up worker ("Hardware tests — Opus") with expected results.
+> **Design deviation from this plan, on purpose:** the macOS burn path shells out
+> to Apple's own `drutil burn` / `drutil erase` (a CLI over DiscRecording)
+> instead of linking DiscRecording.framework from Swift. Rationale: one
+> subprocess-orchestration code path in core for both OSes (drutil ↔ cdrskin/
+> xorriso), pure-function command builders that ARE unit-testable blind, and no
+> risk of misusing a large ObjC API that cannot be exercised without media. If
+> hardware testing shows drutil's progress/error reporting is too coarse, moving
+> to DiscRecording later is contained (swap `burn.rs`'s mac arms; the FFI and
+> UIs don't change).
+
+- [x] **Burn list model** (`src/disc/burnlist.rs`) — dedicated queue, separate from the active playlist: add (dedup)/remove/move-up/down, running audio seconds vs a media capacity, data bytes total. Unit-tested.
+- [x] **Confirm before erasing.** Both frontends prompt before any burn onto a non-blank rewritable disc; write-once non-blank media is refused outright. Never auto-blank.
+- [x] **Prepare audio.** `burn::prepare_wav` — GStreamer `decodebin ! audioconvert ! audioresample ! capsfilter 44.1 kHz/S16LE/stereo ! wavenc` per track into a temp dir. **Live-tested without media** (see Internal tests: rip output → WAV, header verified).
+- [x] **Linux burn (written blind, compile-checked on the dev box later).** `cdrskin dev=<node> blank=as_needed -audio -pad -dao <wavs…>`; erase = `cdrskin dev=<node> blank=fast`. Killable subprocess; non-zero exit → typed error with stderr tail.
+- [x] **macOS burn (deviation above).** Audio: stage WAVs into a temp folder → `drutil burn -audio -noverify -drive <index> <folder>`; erase = `drutil erase quick -drive <index>`. Same subprocess runner as Linux.
 - [ ] **Commit** `feat(disc): burn audio CD from a dedicated burn list`.
+
+**Internal tests (no blank media — implemented and passing now):**
+- `cargo test --lib burnlist` — queue ops, dedup, reorder bounds, audio-seconds and byte totals, over-capacity detection.
+- `cargo test --lib disc::burn` — command builders byte-for-byte (`cdrskin` audio/erase, `xorriso` data, `drutil` audio/data/erase), WAV staging name order (`01.wav…`), capacity math (blank CD-R 359 999 blocks ≈ 79:59), erase-decision matrix (blank → no erase; RW+content → erase-after-confirm; write-once+content → refuse).
+- `cargo test --lib live_prepare_wav -- --ignored --nocapture` — real transcode of any library file to Red Book WAV; asserts RIFF header: PCM, 2 ch, 44 100 Hz, 16-bit.
+- `cargo build` zero warnings, `xcodebuild` succeeds; TUI burn overlay opens with no media and shows the "insert a blank disc" state.
+
+**Hardware tests (Opus, blank media required):**
+1. **Audio CD-R:** add 3+ library tracks to the burn list (ML Files → right-click → Add to Burn List / TUI `b`), insert blank CD-R, drive view → Burn Audio CD → expect prepare progress per track, then burn phase, success status; disc plays in the Sparkamp Discs tab (TOC track count matches) and in Music.app. Verify gap/order correctness.
+2. **Over-capacity:** queue >80 min, expect the burn button blocked with the over-capacity message BEFORE any disc write.
+3. **CD-RW with content:** burn once, then burn a different list → expect the erase confirmation (cancel leaves the disc untouched; confirm erases and burns).
+4. **Write-once with content:** insert the burned CD-R again → audio burn must be refused with a clear message, no drutil/cdrskin invocation.
+5. **Cancel mid-burn:** cancel during the burn phase → subprocess killed, status reports cancellation, disc reported as likely unusable (expected for write-once).
+6. **drutil output audit:** capture `drutil burn` stdout/stderr from a real burn; if percent lines exist, wire them into the progress parser (`parse_drutil_burn_progress` stub notes the format to look for); if not, keep the indeterminate spinner.
 
 ## Phase 6 — Burn data (MP3) disc, write-once + rewritable
 
 **Files:** Modify `src/disc/burn.rs`, `src/ffi/disc.rs`, all three frontends (GTK, TUI, mac).
 
-- [ ] **Data burn list** — reuse the Burn-list model in "data" mode: arbitrary files/folders of MP3s; show bytes vs media capacity (CD ~700 MB, DVD ~4.7 GB, DVD-RAM per media).
-- [ ] **Linux burn.** Target the selected drive's node (`OpticalDrive.id`). `xorriso` builds ISO9660+Joliet+UDF and burns: `xorriso -outdev <drive_id> -blank as_needed -joliet on -add <files> -commit`. **Write-once** (CD-R/DVD-R/DVD+R): multisession append when not closed, else new session. **Rewritable** (CD-RW/DVD-RW/DVD-RAM): `-blank as_needed` (fast blank) then write; DVD-RAM may also be written as a mounted UDF filesystem (random access) — prefer xorriso for uniformity but detect DVD-RAM so blanking isn't forced when appending. Progress/error via stderr parse + exit code.
-- [ ] **macOS burn.** Swift `DRBurn` + `DRFolder`/`DRFilesystemTrack` (ISO9660/Joliet/UDF); DiscRecording auto-detects write-once vs RW and handles blanking + append.
+- [x] **Data burn list** — the same burn-list model in "data" mode: any files (MP3s from the library via the same add paths); shows total bytes vs the media's free bytes.
+- [x] **Linux burn (written blind, dev-box verify later).** `xorriso -outdev <node> -blank as_needed -joliet on -map <staged dir> / -commit`. Files are staged (symlinked/copied) into one temp dir so the disc root is flat and predictable. Rewritable → `-blank as_needed`; write-once with content → refused in v1 (multisession append is listed as an Opus follow-up below rather than shipped untested).
+- [x] **macOS burn (deviation above).** Stage into a temp folder → `drutil burn -drive <index> <folder>` (drutil produces an ISO9660/Joliet layout via DiscRecording).
+- [x] **MP3-CD companion playlist.** Every data burn writes `playlist.m3u8` (or `.m3u`, following the app-wide playlist-format setting) at the disc root listing the files in burn order — unit-tested.
+- [x] **Verify toggle.** `disc.burn_verify` (default ON) keeps drutil's post-burn verification; off adds `-noverify`. Exposed in mac Settings → Media Library → Discs. cdrskin/xorriso have no equivalent switch — a Linux readback check is an Opus follow-up.
 - [ ] **Commit** `feat(disc): burn data MP3 discs (write-once + rewritable)`.
+
+**Internal tests (no blank media — implemented and passing now):** covered by the `disc::burn` builder tests above (xorriso/drutil data args, staging layout, byte totals, refuse/erase matrix for data mode).
+
+**Hardware tests (Opus, blank media required):**
+1. **Data CD-R:** queue a dozen MP3s → Burn Data → after eject/reinsert, the volume mounts with exactly those files at the root; they play from the Devices/Finder path.
+2. **Data DVD-RAM / CD-RW rewrite:** burn, then burn a different set → erase confirmation → new content only.
+3. **Over-capacity:** queue > free bytes → blocked pre-burn.
+4. **Write-once append (deferred feature):** current build must REFUSE a second data burn to a non-blank CD-R with a clear message. If append is wanted, implement `xorriso -dev` (not `-outdev`) growisofs-style appends + `drutil` equivalent, then test: two sequential burns → both sessions' files visible after remount.
+5. **Cancel mid-burn** and **drutil output audit** as in Phase 5.
 
 ## Phase 7 — Graceful failure handling (woven through, hardened here)
 
 **Files:** `src/disc/*`, `src/ffi/disc.rs`, all three frontends (GTK, TUI, mac).
 
-- [ ] **Drive disconnect** — the detection poll notices the device vanished → invalidate the loaded-disc session, hide/disable disc actions, show a banner ("Drive disconnected — reconnect and reload"). Any in-flight subprocess op errors out (child dies with the device); the app never wedges. On mac, DiskArbitration disappearance drives the same.
-- [ ] **Disc read error / scratch** — `cdiocddasrc`/decode read failure surfaces as a GStreamer bus error (existing handling); ripping offers **retry / skip track / abort**, and reports which tracks failed. Playback of a bad track marks it broken like any unreadable file.
-- [ ] **Blank/append/capacity errors** — over-capacity is blocked pre-burn with a clear message; a burn failure (bad media, buffer underrun, write error) is parsed from the tool's exit/stderr and shown, leaving a partially written disc reported (not a silent hang).
-- [ ] **Timeouts** — every subprocess op has a watchdog; exceeding it kills the child and reports a timeout.
-- [ ] **No-drive / unsupported-media** — clean messaging when no optical drive exists or the media type can't be used for the requested op (e.g. asking to burn an audio CD to DVD-RAM in a CD-incapable drive).
+- [ ] **Drive disconnect** — the detection poll notices the device vanished → invalidate the loaded-disc session, hide/disable disc actions, show a banner ("Drive disconnected — reconnect and reload"). Any in-flight subprocess op errors out (child dies with the device); the app never wedges. On mac, DiskArbitration disappearance drives the same. *Already partially in place: mac nav falls back when a drive disappears; TUI shows "No optical drives found" after `r`.*
+- [ ] **Disc read error / scratch** — `cdiocddasrc`/decode read failure surfaces as a GStreamer bus error (existing handling); ripping offers **retry / skip track / abort**, and reports which tracks failed. Playback of a bad track marks it broken like any unreadable file. *Already partially in place: a failed rip track is counted and reported; retry/skip UI is the remaining piece.*
+- [ ] **Blank/append/capacity errors** — over-capacity is blocked pre-burn (shipped in Phases 5–6); a burn failure is parsed from the tool's exit/stderr tail and shown (shipped); verify the messages read sensibly against real failures.
+- [ ] **Timeouts** — rip already has the 30 s position watchdog; add a coarse wall-clock watchdog to the burn/erase subprocess runner (suggested: kill + report after 30 min without exit).
+- [ ] **No-drive / unsupported-media** — clean messaging when no optical drive exists or the media can't serve the request (shipped: non-blank write-once refusals, "insert a blank disc" states; verify wording in the flesh).
 - [ ] **Commit** `feat(disc): graceful drive/disc/burn error handling`.
+
+**Internal tests (runnable without media, for Opus to add while hardening):**
+- Unit-test the stderr-tail error extraction and (if drutil emits one) the burn progress parser against captured fixtures.
+- Unit-test the subprocess watchdog with a `sleep`-style child (kill fires, error surfaces).
+- Simulated disconnect: TUI/mac behavior when `list_drives` goes empty mid-session (drop the drive from the fixture path) — nav resets, no panic.
+
+**Hardware tests (Opus):**
+1. Pull the USB drive mid-rip → rip errors out with the stall/read error, app stays responsive, banner appears on the next poll.
+2. Pull the USB drive mid-burn → subprocess dies, error surfaced, no wedge.
+3. Scratched/dirty disc rip → failed tracks counted, others complete.
+4. Eject from Finder while the Discs tab is open → rows update to "No disc" within a poll.
 
 ---
 
@@ -194,6 +245,169 @@ Terminal-appropriate UX for each feature (do these as a TUI task in every phase 
 - [ ] **Errors (Phase 7).** Drive-disconnect / read-scratch / burn-failure surfaced as overlay messages from the same typed core errors; no thumbnails needed (disc flows have no artwork diff — that was device-sync only).
 
 **Terminal limitations (acceptable):** no image thumbnails (N/A here), progress as text bars, everything modal via `overlays.rs`. No capability is dropped — only visuals simplify.
+
+## Default audio-CD player integration (auto-open on insert)
+
+**Goal:** inserting an audio CD launches (or foregrounds) Sparkamp with the
+Media Library window open and navigated to the drive that received the disc —
+i.e. Sparkamp can be the system's audio-CD handler.
+
+**Shared in-app behavior (macOS shipped 2026-07-07; GTK to implement):**
+- Setting `disc.auto_show_inserted_audio_cd` (default **on**): while the app
+  runs, the disc poll watches for a drive transitioning to "audio CD loaded";
+  on that transition it opens the Media Library window (if closed) and
+  navigates to that drive's detail view.
+- The insertion check runs on every poll from app start — NOT only while the
+  ML window is open (macOS moved the disc poll out of the ML-visible gate for
+  this; ~10 s cadence, background queue).
+- Cold-launch caveat, accepted by design: the first poll after launch treats
+  an already-loaded audio CD as "inserted" — so a launch triggered by the OS
+  handler navigates correctly, and a manual launch with a CD already in the
+  drive also jumps to it. Users who dislike that turn the setting off.
+
+**macOS — registering as the handler (user action, one time):** the OS-side
+launcher is the digihub service: System Settings → **CDs & DVDs** (the pane
+appears while an optical drive is attached) → "When you insert a music CD" →
+**Open other application…** → Sparkamp.app. Sparkamp's Settings → Media
+Library → Discs has an "Open CDs & DVDs Settings…" button plus the
+instructions. (The underlying preference is the `com.apple.digihub` domain,
+key `com.apple.digihub.cd.music.appeared`; Sparkamp deliberately does NOT
+write it programmatically — the action codes are undocumented and silently
+rewriting system handler prefs is hostile. The Settings pane is the supported
+path.)
+
+**GTK/Linux — registering as the handler (Opus):**
+- Advertise the x-content type in the desktop entry: add
+  `x-content/audio-cdda;` to a `MimeType=` line in
+  `packaging/dev.sparkamp.Sparkamp.desktop` (this is what GNOME's Settings →
+  Removable Media lists under "CD audio"; the user picks Sparkamp there).
+- Handle the launch: GNOME activates the handler with the disc's location
+  (gio passes the `cdda://` mount/URI as an argument, or activates via
+  D-Bus). Accept and ignore an unrecognized `cdda://…`/device argument
+  gracefully, then rely on the same shared behavior: startup disc poll sees
+  the audio CD → open the ML window → navigate to that drive.
+- The in-app transition watcher covers insertions while running (GNOME may
+  also autostart the handler only on user click depending on the "Removable
+  Media" prompt setting — both paths end at the same navigation).
+- Flatpak note: x-content association works from inside the sandbox via the
+  exported .desktop; drive polling already requires the optical device
+  permissions from Phase 1.
+
+---
+
+## GTK implementation notes (read before starting — decisions made during the macOS/TUI build)
+
+Everything below was built and user-approved on macOS/TUI during 2026-07-06/07;
+GTK must mirror the *behavior* (presentation is GTK's own). Reference
+implementations: `frontends/SparkampMac/Sources/DiscDriveView.swift`,
+`MediaLibraryWindow.swift` (discsSection), `SparkampModel+Discs.swift`, and
+`frontends/tui/media_library.rs`. The core is shared — GTK calls `crate::disc`
+directly, in-process, like the TUI does.
+
+**Navigation & views (Phase 1 additions):**
+- **Disc Drives overview page**: the sidebar "Disc Drives" group header is
+  clickable and opens a card grid (one card per drive) in the style of the
+  Devices overview — card = disc icon + drive label + media state ("Audio CD
+  (8 tracks)" / "Blank CD-R" / "Data disc" / "No disc") + a detail line
+  (audio: "MM:SS of audio" from the TOC; blank: "700 MB writable"; data:
+  free-of-total; empty: an insert hint). Clicking a card opens the drive
+  detail. Empty state: "No disc drives connected".
+- **Unplug fallback**: if the drive being viewed disappears, navigate to the
+  discs overview (not the files view) — parity with device disappearance.
+- **Iconography**: a disc glyph with the media format badged on it — CD, DVD,
+  CD-R, CD-RW, DVD-R, DVD-RW, DVD-RAM. Pressed discs report no writable kind:
+  badge CD vs DVD by capacity (>1 GB = DVD). Empty tray = bare drive glyph,
+  no badge. Sidebar rows stay icon-free (user preference) — plain label +
+  media-state line.
+- **Devices/Discs separation**: optical media must NOT appear in the Devices
+  (removable volume) list — a mounted audio CD or data disc belongs to Disc
+  Drives only. (mac filters by DiskArbitration media kind + the `.TOC.plist`
+  marker; GTK/udisks needs the equivalent optical exclusion.) Known deferred
+  question: DVD-RAM could arguably be exempted to act as a random-access
+  sync device; refused for now.
+
+**Playlist integration (Phase 1/2 behaviors):**
+- Disc adds go through `sparkamp_playlist_add_entry`-equivalent semantics:
+  title/artist/album + exact TOC duration, NO tag scan or duration probe.
+  Playlist rows read "Artist - Title" like every other entry.
+- The xmcd **sampler convention**: a track title containing " / " splits into
+  per-track artist + title (disc artist becomes album_artist for rip tagging;
+  the split title names ripped files). One shared rule across add, edit
+  propagation, and rip — see `discEntryMeta` (Swift) / `add_disc_entries`
+  (TUI) / `tag_fields_for_track` (core).
+- Adds honor the replace/append add-behavior setting and autoplay-on-add
+  (start the first new track only when the playlist was replaced or empty —
+  never interrupt playback). Same semantics as the ML double-click path.
+
+**Tag persistence + sync (built after the plan was written):**
+- Per-disc tags persist in `~/.config/sparkamp/disc_tags.toml`
+  (`crate::disc::tagstore`): the user's tag set AND the untouched gnudb match
+  ("official") per freedb id. GTK must restore on drive view (names survive
+  app restarts) and write through on match receipt / editor save.
+- **Editing disc tags updates already-added active-playlist rows
+  immediately** (path-keyed; `sparkamp_playlist_update_entry_meta`
+  equivalent) — not just future adds.
+- General expectation that also applies to the file ID3 editor: saves update
+  every matching playlist row (canonical path match, duplicates included)
+  AND the ML DB row at once; and playlist rows must repaint on metadata-only
+  changes even when nothing is playing (a mac NSTableView diff bug hid this —
+  make sure GTK's list rebinds on content change, not just row count).
+
+**gnudb flow details:**
+- Identify: single exact match auto-applies; multiple matches open a picker;
+  zero matches → honest status pointing at the tag editor. Lookups run in
+  the background and never block the UI; results survive leaving the view —
+  a match list arriving while the view is closed is parked and re-presented
+  on the next visit, tied to the drive it was for.
+- Submit: the action is visible only when the disc is unknown to gnudb
+  (always) or the user's tags differ from the official baseline (compare
+  against tagstore's `official`). Category picker from the fixed 11-set,
+  prefilled by `gnudb::suggest_category`. Validation before network:
+  artist+album non-empty, every track genuinely titled ("Track N"
+  placeholders rejected with the track numbers listed). Revision = official
+  + 1 for updates, 0 for new. Blank email → capture modal first (see
+  Settings section). Test-mode results labeled "(test mode — not
+  published)".
+
+**Rip flow details (beyond the Phase 3 bullets):**
+- Rip dialog: tracks preselected from the current selection (else all),
+  destination + quality remembered. **Unwatched-destination policy is
+  warn-only** (user decision): a destination outside every watched folder
+  shows a warning ("files will rip here but won't appear in the library"),
+  rips anyway, and the completion status reports honestly ("not in library
+  (destination isn't a watched folder)" / "only N added"). Never auto-add
+  watch folders.
+- Import stamps `last_scanned` (core fix) — freshly ripped rows must NOT
+  show the "not yet scanned" clock indicator.
+
+**Burn flow details (beyond the Phase 5/6 bullets):**
+- Burn list is fed from the ML files view (context-menu "Add to Burn List"
+  on GTK, like mac; TUI uses `b`). Dedup by path; reorder supported.
+- The burn UI lives on the drive detail view whenever non-audio media is
+  loaded (blank OR rewritable-with-content OR data disc): queue list with
+  remove, audio-minutes and data-bytes capacity meters that BLOCK the burn
+  when over, Burn Audio CD / Burn Data Disc actions, erase-confirmation
+  dialog for RW-with-content, refusal message for write-once-with-content.
+- Progress phases shown to the user: Starting… → Erasing… (RW) →
+  "Preparing i/N · <track>" (audio prepare, per track) → "Burning… (this
+  takes a while)" → status line result (success with counts, or the burn
+  tool's stderr tail). Cancel works between prepare tracks and kills the
+  burn/erase subprocess. Burning runs entirely off the UI thread and
+  survives the window/view being closed and reopened.
+- Verification has NO distinct phase yet (it happens inside the tool during
+  "Burning…"); a verify failure surfaces as a burn failure. The Opus drutil
+  stdout audit may enable real percent + a "Verifying…" phase; GTK/Linux
+  has no tool-level verify — candidate readback check is an open follow-up.
+- Data burns write the companion playlist (`playlist.m3u8`/`.m3u` per the
+  app-wide format setting) at the disc root, files staged flat with name
+  dedup ("song (2).mp3").
+
+**Threading conventions:** every disc subprocess/network/GStreamer call off
+the UI thread (`gio::spawn_blocking` on GTK); detection is subprocess-backed,
+so poll lazily (mac: ~10 s while the window is open; TUI: on tab entry +
+explicit rescan) — never per-frame.
+
+---
 
 ## Verification
 

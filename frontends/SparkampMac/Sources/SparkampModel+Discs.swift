@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 // MARK: - Optical-disc operations
 //
@@ -9,17 +10,46 @@ import Foundation
 
 extension SparkampModel {
 
-    /// Re-enumerate optical drives (background) and publish changes. Also
-    /// clears a stale drive selection the same way pollDevices does.
+    /// Re-enumerate optical drives (background) and publish changes. When a
+    /// drive transitions to "audio CD loaded" and the auto-open setting is on,
+    /// bring the Media Library to that drive (default-CD-handler flow).
     func pollDiscDrives() {
         DispatchQueue.global(qos: .utility).async {
             let drives = DiscService.listDrives()
             DispatchQueue.main.async {
+                // A drive counts as freshly inserted when it holds an audio CD
+                // now but didn't in the prior snapshot. On the first poll the
+                // prior list is empty, so a disc present at launch also counts
+                // (accepted — an already-loaded CD reads as freshly inserted).
+                let wasAudio: (String) -> Bool = { id in
+                    self.discDrives.first(where: { $0.id == id })?.media.isAudioCd ?? false
+                }
+                let inserted = drives.first(where: { $0.media.isAudioCd && !wasAudio($0.id) })
+
                 if drives != self.discDrives {
                     self.discDrives = drives
                 }
+
+                if let drive = inserted, self.autoShowInsertedCd {
+                    self.autoOpenLibrary(to: drive.id)
+                }
             }
         }
+    }
+
+    /// Whether inserting an audio CD should auto-open the library (default true).
+    private var autoShowInsertedCd: Bool {
+        guard let ctx = ctx else { return true }
+        return sparkamp_get_auto_show_inserted_cd(ctx)
+    }
+
+    /// Foreground the Media Library and request navigation to a drive. The nav
+    /// request is set first so an already-open library reacts via its onChange;
+    /// opening the window (if closed) lets its onAppear consume the request.
+    func autoOpenLibrary(to driveId: String) {
+        requestedDiscNav = driveId
+        openMediaLibrary()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Load the playlist-ready track entries for one drive's disc into
@@ -56,6 +86,31 @@ extension SparkampModel {
     /// The freedb id of the drive's loaded disc, or nil without an audio disc.
     func discIdFor(_ drive: OpticalDrive) -> String? {
         drive.toc.flatMap { DiscService.discId(toc: $0) }
+    }
+
+    /// The configured gnudb email ("" when unset) — one accessor for the
+    /// identify/choose/submit paths.
+    func gnudbEmail() -> String {
+        guard let ctx = ctx else { return "" }
+        let p = sparkamp_get_gnudb_email(ctx)
+        defer { sparkamp_free_string(p) }
+        return p.map { String(cString: $0) } ?? ""
+    }
+
+    /// Fresh staging directory for a burn run (removed by the caller).
+    nonisolated private func burnStagingDir() -> String {
+        NSTemporaryDirectory() + "sparkamp-burn-\(ProcessInfo.processInfo.processIdentifier)"
+    }
+
+    /// Shared erase step for both burn modes: runs on the worker thread,
+    /// publishes the phase, and reports the failure message if any.
+    nonisolated private func eraseStepIfNeeded(_ drive: OpticalDrive, _ eraseFirst: Bool) -> String? {
+        guard eraseFirst else { return nil }
+        DispatchQueue.main.async { self.burnPhase = "Erasing…" }
+        if case .failure(let err) = DiscService.eraseDisc(drive: drive) {
+            return err.message
+        }
+        return nil
     }
 
     /// Overlay the stored tag set's titles onto `discTracks` ("Track N" stays
@@ -155,10 +210,8 @@ extension SparkampModel {
     /// Ask gnudb to identify the drive's disc. No match → status line; one
     /// exact match → applied immediately; several → `discMatches` sheet.
     func identifyDisc(_ drive: OpticalDrive) {
-        guard let toc = drive.toc, !discIdentifying, let ctx = ctx else { return }
-        let emailPtr = sparkamp_get_gnudb_email(ctx)
-        let email = emailPtr.map { String(cString: $0) } ?? ""
-        sparkamp_free_string(emailPtr)
+        guard let toc = drive.toc, !discIdentifying, ctx != nil else { return }
+        let email = gnudbEmail()
         discIdentifying = true
         discStatus = nil
         // .utility, not .userInitiated: minreq blocks the calling thread on a
@@ -196,10 +249,8 @@ extension SparkampModel {
 
     /// User picked a match from the sheet (or the single exact match).
     func chooseDiscMatch(_ drive: OpticalDrive, match: DiscMatch) {
-        guard let ctx = ctx else { return }
-        let emailPtr = sparkamp_get_gnudb_email(ctx)
-        let email = emailPtr.map { String(cString: $0) } ?? ""
-        sparkamp_free_string(emailPtr)
+        guard ctx != nil else { return }
+        let email = gnudbEmail()
         discMatches = nil
         discMatchesDriveId = nil
         fetchDiscEntry(drive, match: match, email: email)
@@ -256,9 +307,7 @@ extension SparkampModel {
     func submitDisc(_ drive: OpticalDrive, category: String) {
         guard let toc = drive.toc, let id = discIdFor(drive),
               let tags = discTagSets[id], let ctx = ctx, !discSubmitting else { return }
-        let emailPtr = sparkamp_get_gnudb_email(ctx)
-        let email = emailPtr.map { String(cString: $0) } ?? ""
-        sparkamp_free_string(emailPtr)
+        let email = gnudbEmail()
         let testMode = sparkamp_get_gnudb_submit_test(ctx)
         let entry = XmcdEntry(
             discid: id,
@@ -383,20 +432,174 @@ extension SparkampModel {
             DispatchQueue.main.async {
                 self.ripProgress = nil
                 // Import the new files so they appear in the library now.
+                // Import only registers files under watched folders, so say
+                // so honestly when some (or all) stayed outside the library.
+                var imported = 0
                 if !ripped.isEmpty {
-                    _ = self.mlAddFilesToLibrary(paths: ripped)
+                    imported = self.mlAddFilesToLibrary(paths: ripped)
                 }
                 let cancelled = self.ripCancelRequested
                 self.ripCancelRequested = false
                 var parts: [String] = []
                 parts.append("Ripped \(ripped.count) track\(ripped.count == 1 ? "" : "s")")
                 if cancelled { parts.append("cancelled") }
+                if !ripped.isEmpty && imported == 0 {
+                    parts.append("not in library (destination isn't a watched folder)")
+                } else if imported < ripped.count {
+                    parts.append("only \(imported) added to the library")
+                }
                 if !failures.isEmpty {
                     parts.append("failed: \(failures.joined(separator: "; "))")
                 }
                 self.discStatus = parts.joined(separator: " · ")
             }
         }
+    }
+
+    // MARK: Burn list + burning (blind-implemented; hardware pass = Opus)
+
+    /// Queue files for burning (dedup by path). Size/duration read here so
+    /// the capacity meters work without touching the files again.
+    func addToBurnList(paths: [String], displays: [String: String], durations: [String: Int]) {
+        var added = 0
+        for p in paths where !burnList.contains(where: { $0.path == p }) {
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: p)[.size] as? UInt64)
+                .flatMap { $0 } ?? 0
+            burnList.append(BurnEntry(
+                path: p,
+                display: displays[p] ?? URL(fileURLWithPath: p).lastPathComponent,
+                durationSecs: durations[p],
+                bytes: bytes))
+            added += 1
+        }
+        discStatus = added > 0
+            ? "Added \(added) to the burn list (\(burnList.count) queued)"
+            : "Already on the burn list"
+    }
+
+    func removeFromBurnList(at offsets: IndexSet) {
+        burnList.remove(atOffsets: offsets)
+    }
+
+    var burnListTotalSecs: Int {
+        burnList.reduce(0) { $0 + ($1.durationSecs ?? 0) }
+    }
+
+    var burnListTotalBytes: UInt64 {
+        burnList.reduce(0) { $0 + $1.bytes }
+    }
+
+    /// Burn the queue as an audio CD: erase first when the user confirmed it
+    /// (RW with content), transcode each entry to a Red Book WAV with
+    /// per-track progress, then hand the whole set to the burner. Cancel
+    /// stops between tracks during prepare and kills the subprocess during
+    /// the erase/burn phases.
+    func burnAudio(_ drive: OpticalDrive, eraseFirst: Bool) {
+        guard !burnList.isEmpty, burnPhase == nil, let ctx = ctx else { return }
+        let entries = burnList
+        let verify = sparkamp_get_burn_verify(ctx)
+        burnCancelRequested = false
+        burnPhase = "Starting…"
+        discStatus = nil
+        DispatchQueue.global(qos: .utility).async {
+            let staged = self.burnStagingDir()
+            defer { try? FileManager.default.removeItem(atPath: staged) }
+
+            if let eraseError = self.eraseStepIfNeeded(drive, eraseFirst) {
+                DispatchQueue.main.async {
+                    self.burnPhase = nil
+                    self.discStatus = "Erase failed: \(eraseError)"
+                }
+                return
+            }
+
+            var wavs: [String] = []
+            for (i, entry) in entries.enumerated() {
+                if DispatchQueue.main.sync(execute: { self.burnCancelRequested }) {
+                    DispatchQueue.main.async {
+                        self.burnPhase = nil
+                        self.discStatus = "Burn cancelled before writing"
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.burnPhase = "Preparing \(i + 1)/\(entries.count) · \(entry.display)"
+                }
+                let out = staged + "/" + String(format: "%02d.wav", i + 1)
+                switch DiscService.prepareWav(src: entry.path, out: out) {
+                case .success(let p): wavs.append(p)
+                case .failure(let err):
+                    DispatchQueue.main.async {
+                        self.burnPhase = nil
+                        self.discStatus = "Prepare failed (\(entry.display)): \(err.message)"
+                    }
+                    return
+                }
+            }
+
+            DispatchQueue.main.async { self.burnPhase = "Burning… (this takes a while)" }
+            let result = DiscService.burnAudio(
+                drive: drive, stagedDir: staged, wavs: wavs, verify: verify)
+            DispatchQueue.main.async {
+                self.burnPhase = nil
+                switch result {
+                case .success:
+                    self.discStatus = "Audio CD burned (\(entries.count) tracks)"
+                    self.burnList.removeAll()
+                    self.pollDiscDrives()
+                case .failure(let err):
+                    self.discStatus = "Burn failed: \(err.message)"
+                }
+            }
+        }
+    }
+
+    /// Burn the queue as a data disc (files at the disc root; staging +
+    /// name-dedup happen in the core).
+    func burnData(_ drive: OpticalDrive, eraseFirst: Bool) {
+        guard !burnList.isEmpty, burnPhase == nil, let ctx = ctx else { return }
+        let files = burnList.map(\.path)
+        let verify = sparkamp_get_burn_verify(ctx)
+        // The MP3-CD companion playlist follows the app-wide format setting.
+        let playlistFormat = sparkamp_get_playlist_format(ctx)
+        burnCancelRequested = false
+        burnPhase = "Starting…"
+        discStatus = nil
+        DispatchQueue.global(qos: .utility).async {
+            let staged = self.burnStagingDir()
+            defer { try? FileManager.default.removeItem(atPath: staged) }
+
+            if let eraseError = self.eraseStepIfNeeded(drive, eraseFirst) {
+                DispatchQueue.main.async {
+                    self.burnPhase = nil
+                    self.discStatus = "Erase failed: \(eraseError)"
+                }
+                return
+            }
+
+            DispatchQueue.main.async { self.burnPhase = "Burning… (this takes a while)" }
+            let result = DiscService.burnData(
+                drive: drive, stagedDir: staged, files: files,
+                playlistFormat: playlistFormat, verify: verify)
+            DispatchQueue.main.async {
+                self.burnPhase = nil
+                switch result {
+                case .success:
+                    self.discStatus = "Data disc burned (\(files.count) files)"
+                    self.burnList.removeAll()
+                    self.pollDiscDrives()
+                case .failure(let err):
+                    self.discStatus = "Burn failed: \(err.message)"
+                }
+            }
+        }
+    }
+
+    /// Cancel whatever burn stage is running: sets the between-tracks flag
+    /// for the prepare loop AND kills any live erase/burn subprocess.
+    func cancelBurn() {
+        burnCancelRequested = true
+        DiscService.burnCancel()
     }
 
     /// Eject the disc in a drive, with in-flight feedback; on success the

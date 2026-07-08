@@ -18,6 +18,8 @@ enum MLTableEvent {
     case removeTracks([Int64])
     case doubleClick([Int64])
     case viewArt(Int64)
+    /// Queue the selected rows on the Burn list (disc burning).
+    case addToBurnList([Int64])
 }
 
 // MARK: - ML files table (AppKit NSTableView wrapper)
@@ -560,6 +562,9 @@ struct MLFilesTable: NSViewRepresentable {
             let paths = tracks.filter { idSet.contains($0.id) }.map { $0.path }
             menu.addItem(parent.model.sendToPlaylistMenuItem(paths: paths))
             menu.addItem(parent.model.sendToDeviceMenuItem(paths: paths))
+            menu.addItem(BlockMenuItem(title: "Add to Burn List", enabled: !ids.isEmpty) {
+                self.parent.onEvent(.addToBurnList(ids))
+            })
             menu.addItem(BlockMenuItem(title: "Replace Current Playlist", enabled: !ids.isEmpty) {
                 self.parent.onEvent(.replacePlaylist(ids))
             })

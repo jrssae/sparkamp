@@ -52,6 +52,7 @@ impl App {
             submit_category: None,
             submit_email: None,
             rip: None,
+            burn: None,
         });
     }
 
@@ -115,18 +116,24 @@ impl App {
         };
 
         // Disc overlays capture all keys while open.
-        let (matches_open, tag_edit_open, submit_open, email_open, rip_open) = match &self.mode {
-            Mode::MediaLibrary(s) => (
-                s.gnudb_matches.is_some(),
-                s.tag_edit.is_some(),
-                s.submit_category.is_some(),
-                s.submit_email.is_some(),
-                s.rip.is_some(),
-            ),
-            _ => (false, false, false, false, false),
-        };
+        let (matches_open, tag_edit_open, submit_open, email_open, rip_open, burn_open) =
+            match &self.mode {
+                Mode::MediaLibrary(s) => (
+                    s.gnudb_matches.is_some(),
+                    s.tag_edit.is_some(),
+                    s.submit_category.is_some(),
+                    s.submit_email.is_some(),
+                    s.rip.is_some(),
+                    s.burn.is_some(),
+                ),
+                _ => (false, false, false, false, false, false),
+            };
         if rip_open {
             self.handle_rip_setup_key(code);
+            return;
+        }
+        if burn_open {
+            self.handle_burn_setup_key(code);
             return;
         }
         if matches_open {
@@ -483,17 +490,34 @@ impl App {
             }
 
             // g — Discs tab: rip setup ("grab"); c cancels a running rip
-            // after the current track.
+            // after the current track (or a running burn).
             KeyCode::Char('g') | KeyCode::Char('G') if tab == MediaLibraryTab::Discs => {
                 self.open_rip_setup();
             }
             KeyCode::Char('c') | KeyCode::Char('C')
-                if tab == MediaLibraryTab::Discs && self.rip_progress.is_some() =>
+                if tab == MediaLibraryTab::Discs
+                    && (self.rip_progress.is_some() || self.burn_phase.is_some()) =>
             {
                 if let Some(flag) = &self.rip_cancel {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     self.set_status("Stopping after the current track…");
                 }
+                if self.burn_phase.is_some() {
+                    if let Some(flag) = &self.burn_prep_cancel {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    crate::disc::burn::request_cancel();
+                    self.set_status("Cancelling burn…");
+                }
+            }
+
+            // b — Files tab: queue the highlighted track on the Burn list.
+            //     Discs tab: open the burn overlay.
+            KeyCode::Char('b') if tab == MediaLibraryTab::Files => {
+                self.add_selected_ml_track_to_burn_list();
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') if tab == MediaLibraryTab::Discs => {
+                self.open_burn_setup();
             }
 
             // i — open the Help overlay scrolled to the Media Library section.
@@ -1019,6 +1043,7 @@ impl App {
                 )
             });
         let quality = self.config.disc.rip_mp3_quality;
+        let dest_watched = self.rip_dest_is_watched(&dest);
         if let Mode::MediaLibrary(s) = &mut self.mode {
             if s.disc_entries.is_empty() {
                 self.set_status("No audio disc loaded");
@@ -1029,9 +1054,20 @@ impl App {
                 cursor: 0,
                 dest,
                 editing_dest: false,
+                dest_watched,
                 quality,
             });
         }
+    }
+
+    /// Whether a rip destination sits under a watched folder (the import
+    /// step skips files outside every watched folder — library policy).
+    fn rip_dest_is_watched(&self, dest: &str) -> bool {
+        self.media_lib
+            .as_ref()
+            .and_then(|l| l.list_folders().ok())
+            .map(|folders| folders.iter().any(|(_, f)| dest.starts_with(f.as_str())))
+            .unwrap_or(false)
     }
 
     /// Keys in the rip overlay. Browsing: ↑/↓ move, Space toggle, a all/none,
@@ -1039,6 +1075,11 @@ impl App {
     /// Editing the destination: chars/Backspace, Enter/Esc done.
     fn handle_rip_setup_key(&mut self, code: KeyCode) {
         let mut start = false;
+        let mut close = false;
+        // Set while editing the destination: the unwatched-folder warning is
+        // re-checked after the mutable borrow on the overlay state ends.
+        let mut recheck_dest: Option<String> = None;
+
         if let Mode::MediaLibrary(s) = &mut self.mode {
             let Some(rip) = &mut s.rip else { return };
             if rip.editing_dest {
@@ -1050,32 +1091,51 @@ impl App {
                     KeyCode::Char(ch) => rip.dest.push(ch),
                     _ => {}
                 }
-                return;
-            }
-            match code {
-                KeyCode::Esc => s.rip = None,
-                KeyCode::Up | KeyCode::Char('k') => rip.cursor = rip.cursor.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if rip.cursor + 1 < rip.selected.len() {
-                        rip.cursor += 1;
+                recheck_dest = Some(rip.dest.clone());
+            } else {
+                match code {
+                    KeyCode::Esc => close = true,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        rip.cursor = rip.cursor.saturating_sub(1);
                     }
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(v) = rip.selected.get_mut(rip.cursor) {
-                        *v = !*v;
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if rip.cursor + 1 < rip.selected.len() {
+                            rip.cursor += 1;
+                        }
                     }
+                    KeyCode::Char(' ') => {
+                        if let Some(v) = rip.selected.get_mut(rip.cursor) {
+                            *v = !*v;
+                        }
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        let all = rip.selected.iter().all(|v| *v);
+                        rip.selected.iter_mut().for_each(|v| *v = !all);
+                    }
+                    KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        rip.quality = (rip.quality + 1) % 3;
+                    }
+                    KeyCode::Char('d') | KeyCode::Char('D') => rip.editing_dest = true,
+                    KeyCode::Enter => start = true,
+                    _ => {}
                 }
-                KeyCode::Char('a') | KeyCode::Char('A') => {
-                    let all = rip.selected.iter().all(|v| *v);
-                    rip.selected.iter_mut().for_each(|v| *v = !all);
-                }
-                KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    rip.quality = (rip.quality + 1) % 3;
-                }
-                KeyCode::Char('d') | KeyCode::Char('D') => rip.editing_dest = true,
-                KeyCode::Enter => start = true,
-                _ => {}
             }
+        }
+
+        if close {
+            if let Mode::MediaLibrary(s) = &mut self.mode {
+                s.rip = None;
+            }
+            return;
+        }
+        if let Some(dest) = recheck_dest {
+            let watched = self.rip_dest_is_watched(&dest);
+            if let Mode::MediaLibrary(s) = &mut self.mode {
+                if let Some(rip) = &mut s.rip {
+                    rip.dest_watched = watched;
+                }
+            }
+            return;
         }
         if start {
             self.spawn_rip();
@@ -1196,10 +1256,13 @@ impl App {
                 self.disc_rip = None;
                 self.rip_cancel = None;
                 self.rip_progress = None;
-                // Import the fresh files so the library sees them now.
+                // Import the fresh files so the library sees them now. The
+                // import only registers files under watched folders — report
+                // honestly when some (or all) stayed outside the library.
+                let mut imported = 0;
                 if !ripped.is_empty() {
                     if let Some(lib) = &self.media_lib {
-                        let _ = lib.add_files_to_library(&ripped);
+                        imported = lib.add_files_to_library(&ripped).unwrap_or(0);
                     }
                 }
                 let mut msg = format!(
@@ -1210,10 +1273,277 @@ impl App {
                 if cancelled {
                     msg.push_str(" · cancelled");
                 }
+                if !ripped.is_empty() && imported == 0 {
+                    msg.push_str(" · not in library (destination isn't a watched folder)");
+                } else if imported < ripped.len() {
+                    msg.push_str(&format!(" · only {imported} added to the library"));
+                }
                 if failed > 0 {
                     msg.push_str(&format!(" · {failed} failed"));
                 }
                 self.set_status(msg);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Discs tab: burn (blind-implemented; hardware pass = Opus)
+    // -----------------------------------------------------------------------
+
+    /// Files tab `b`: queue the highlighted library track on the Burn list.
+    fn add_selected_ml_track_to_burn_list(&mut self) {
+        let track = if let Mode::MediaLibrary(s) = &self.mode {
+            s.tracks.get(s.selected_track).cloned()
+        } else {
+            None
+        };
+        let Some(t) = track else { return };
+        let display = match &t.artist {
+            Some(a) if !a.is_empty() => format!(
+                "{} - {}",
+                a,
+                t.title.clone().unwrap_or_else(|| t.filename.clone())
+            ),
+            _ => t.title.clone().unwrap_or_else(|| t.filename.clone()),
+        };
+        let bytes = std::fs::metadata(&t.path).map(|m| m.len()).unwrap_or(0);
+        let added = self.burn_list.add(crate::disc::burnlist::BurnItem {
+            path: std::path::PathBuf::from(&t.path),
+            display,
+            duration_secs: t.length_secs.map(|s| s as u32),
+            bytes,
+        });
+        self.set_status(if added {
+            format!("Queued for burning ({} on the list)", self.burn_list.len())
+        } else {
+            "Already on the burn list".to_string()
+        });
+    }
+
+    /// Discs tab `b`: open the burn overlay for the selected drive's media.
+    fn open_burn_setup(&mut self) {
+        if self.burn_phase.is_some() {
+            self.set_status("A burn is already running (c cancels it)");
+            return;
+        }
+        if self.burn_list.is_empty() {
+            self.set_status("Burn list is empty — queue tracks with b in the Files tab");
+            return;
+        }
+        let drive = if let Mode::MediaLibrary(s) = &self.mode {
+            s.drives.get(s.selected_drive).cloned()
+        } else {
+            None
+        };
+        let Some(drive) = drive else {
+            self.set_status("No drive selected");
+            return;
+        };
+        if crate::disc::burn::erase_decision(&drive) == crate::disc::burn::EraseDecision::Refuse {
+            self.set_status(
+                "This disc can't be written — insert a blank or rewritable disc",
+            );
+            return;
+        }
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.burn = Some(super::BurnSetupState {
+                cursor: 0,
+                audio: true,
+                confirm_erase: false,
+            });
+        }
+    }
+
+    /// Keys in the burn overlay: ↑/↓ move, x remove, t toggle audio/data,
+    /// Enter start (or confirm the erase prompt with y), Esc close.
+    fn handle_burn_setup_key(&mut self, code: KeyCode) {
+        let mut start: Option<bool> = None; // Some(audio_mode) when confirmed
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            let Some(burn) = &mut s.burn else { return };
+            if burn.confirm_erase {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        start = Some(burn.audio);
+                        s.burn = None;
+                    }
+                    _ => {
+                        // Anything else backs out of the destructive step.
+                        burn.confirm_erase = false;
+                    }
+                }
+            } else {
+                match code {
+                    KeyCode::Esc => s.burn = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        burn.cursor = burn.cursor.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if burn.cursor + 1 < self.burn_list.len() {
+                            burn.cursor += 1;
+                        }
+                    }
+                    KeyCode::Char('x') | KeyCode::Char('X') => {
+                        self.burn_list.remove(burn.cursor);
+                        if burn.cursor >= self.burn_list.len() && burn.cursor > 0 {
+                            burn.cursor -= 1;
+                        }
+                        if self.burn_list.is_empty() {
+                            s.burn = None;
+                        }
+                    }
+                    // [ / ] — move the highlighted row up/down (burn order =
+                    // track order on the disc).
+                    KeyCode::Char('[') => {
+                        self.burn_list.move_up(burn.cursor);
+                        burn.cursor = burn.cursor.saturating_sub(1);
+                    }
+                    KeyCode::Char(']') => {
+                        if burn.cursor + 1 < self.burn_list.len() {
+                            self.burn_list.move_down(burn.cursor);
+                            burn.cursor += 1;
+                        }
+                    }
+                    KeyCode::Char('t') | KeyCode::Char('T') => burn.audio = !burn.audio,
+                    KeyCode::Enter => {
+                        // Erase-needed media asks for the explicit yes first.
+                        let needs_confirm = s
+                            .drives
+                            .get(s.selected_drive)
+                            .map(|d| {
+                                crate::disc::burn::erase_decision(d)
+                                    == crate::disc::burn::EraseDecision::EraseAfterConfirm
+                            })
+                            .unwrap_or(false);
+                        if needs_confirm {
+                            burn.confirm_erase = true;
+                        } else {
+                            start = Some(burn.audio);
+                            s.burn = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(audio) = start {
+            self.spawn_burn(audio);
+        }
+    }
+
+    /// Run the whole burn on a worker thread: optional erase, per-track WAV
+    /// preparation (audio mode), then the burn tool. Progress arrives via
+    /// `disc_burn` in the tick loop.
+    fn spawn_burn(&mut self, audio: bool) {
+        let drive = if let Mode::MediaLibrary(s) = &self.mode {
+            s.drives.get(s.selected_drive).cloned()
+        } else {
+            None
+        };
+        let Some(drive) = drive else { return };
+
+        // Capacity guard before anything touches the disc.
+        if audio {
+            let cap = crate::disc::burn::audio_capacity_secs(&drive);
+            if self.burn_list.over_audio_capacity(cap) {
+                self.set_status(format!(
+                    "Over audio capacity ({} s of {} s) — remove tracks first",
+                    self.burn_list.total_secs(),
+                    cap
+                ));
+                return;
+            }
+        } else if drive.media.free_bytes > 0
+            && self.burn_list.over_data_capacity(drive.media.free_bytes)
+        {
+            self.set_status("Over the disc's free space — remove files first");
+            return;
+        }
+
+        let erase_first = crate::disc::burn::erase_decision(&drive)
+            == crate::disc::burn::EraseDecision::EraseAfterConfirm;
+        let verify = self.config.disc.burn_verify;
+        // The MP3-CD companion playlist follows the app-wide format setting.
+        let use_m3u = matches!(
+            self.config.media_library.playlist_format,
+            crate::config::PlaylistFormat::M3u
+        );
+        let items = self.burn_list.items.clone();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.burn_prep_cancel = Some(cancel.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.disc_burn = Some(rx);
+        self.burn_phase = Some("Starting…".to_string());
+
+        std::thread::spawn(move || {
+            use crate::disc::burn;
+            let staged = std::env::temp_dir().join(format!(
+                "sparkamp-burn-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&staged);
+
+            let result = (|| -> Result<String, String> {
+                if erase_first {
+                    let _ = tx.send(super::BurnMsg::Phase("Erasing…".to_string()));
+                    burn::erase(&drive)?;
+                }
+                if audio {
+                    let mut wavs = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err("cancelled".to_string());
+                        }
+                        let _ = tx.send(super::BurnMsg::Phase(format!(
+                            "Preparing {}/{} · {}",
+                            i + 1,
+                            items.len(),
+                            item.display
+                        )));
+                        let out = staged.join(burn::staged_wav_name(i));
+                        burn::prepare_wav(&item.path, &out)?;
+                        wavs.push(out);
+                    }
+                    let _ = tx.send(super::BurnMsg::Phase(
+                        "Burning… (this takes a while)".to_string(),
+                    ));
+                    burn::burn_audio(&drive, &staged, &wavs, verify)?;
+                    Ok(format!("Audio CD burned ({} tracks)", items.len()))
+                } else {
+                    let files: Vec<std::path::PathBuf> =
+                        items.iter().map(|i| i.path.clone()).collect();
+                    let _ = tx.send(super::BurnMsg::Phase(
+                        "Burning… (this takes a while)".to_string(),
+                    ));
+                    let staged_files = burn::stage_data_files(&files, &staged)?;
+                    burn::write_data_playlist(&staged, &staged_files, use_m3u)?;
+                    burn::burn_data(&drive, &staged, verify)?;
+                    Ok(format!(
+                        "Data disc burned ({} files + playlist)",
+                        items.len()
+                    ))
+                }
+            })();
+
+            let _ = std::fs::remove_dir_all(&staged);
+            let _ = tx.send(super::BurnMsg::Done(result));
+        });
+    }
+
+    /// Apply a burn progress/result message (called from the tick loop).
+    pub(super) fn handle_burn_msg(&mut self, msg: super::BurnMsg) {
+        match msg {
+            super::BurnMsg::Phase(text) => self.burn_phase = Some(text),
+            super::BurnMsg::Done(result) => {
+                self.disc_burn = None;
+                self.burn_prep_cancel = None;
+                self.burn_phase = None;
+                match result {
+                    Ok(summary) => {
+                        self.burn_list.clear();
+                        self.set_status(summary);
+                    }
+                    Err(e) => self.set_status(format!("Burn failed: {e}")),
+                }
             }
         }
     }

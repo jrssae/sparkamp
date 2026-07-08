@@ -591,6 +591,10 @@ private struct MediaLibraryPane: View {
     @State private var gnudbEmail: String = ""
     /// gnudb submissions stay in test mode (validated, unpublished) until off.
     @State private var gnudbSubmitTest: Bool = true
+    /// Verify discs after burning where the tool supports it (default on).
+    @State private var burnVerify: Bool = true
+    /// Auto-open the library to a drive when it receives an audio CD (default on).
+    @State private var autoShowInsertedCd: Bool = true
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -676,6 +680,31 @@ private struct MediaLibraryPane: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Verify discs after burning", isOn: $burnVerify)
+                        .onChange(of: burnVerify) { _, v in
+                            if let ctx = model.ctx { sparkamp_set_burn_verify(ctx, v) }
+                        }
+                    Text("Reads the disc back after a burn to catch bad media. Slower; turn off to trade safety for speed.")
+                        .font(vars.bodyFont)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Open the library when an audio CD is inserted", isOn: $autoShowInsertedCd)
+                        .onChange(of: autoShowInsertedCd) { _, v in
+                            if let ctx = model.ctx { sparkamp_set_auto_show_inserted_cd(ctx, v) }
+                        }
+                    Text("Shows the Media Library at the drive that received the disc. To have macOS launch Sparkamp automatically on insert, set it as the handler in System Settings.")
+                        .font(vars.bodyFont)
+                        .foregroundStyle(.secondary)
+                    Button("Open CDs & DVDs Settings…") { openCdDvdSettings() }
+                        .buttonStyle(.bordered)
+                        .padding(.top, 2)
+                }
+                .padding(.vertical, 2)
             }
 
             // ── Tools ──────────────────────────────────────────────────────
@@ -706,6 +735,8 @@ private struct MediaLibraryPane: View {
                 gnudbEmail = p.map { String(cString: $0) } ?? ""
                 sparkamp_free_string(p)
                 gnudbSubmitTest = sparkamp_get_gnudb_submit_test(ctx)
+                burnVerify = sparkamp_get_burn_verify(ctx)
+                autoShowInsertedCd = sparkamp_get_auto_show_inserted_cd(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }
@@ -714,5 +745,18 @@ private struct MediaLibraryPane: View {
     private func saveGnudbEmail() {
         guard let ctx = model.ctx else { return }
         gnudbEmail.withCString { sparkamp_set_gnudb_email(ctx, $0) }
+    }
+
+    /// Open the macOS "CDs & DVDs" pane, where the "When you insert a music CD"
+    /// action lives. We never write that preference programmatically (it's in
+    /// Apple's protected `com.apple.digihub` domain) — the user points it at
+    /// Sparkamp.app once here.
+    private func openCdDvdSettings() {
+        let pane = URL(fileURLWithPath: "/System/Library/PreferencePanes/DigiHubDiscs.prefPane")
+        if FileManager.default.fileExists(atPath: pane.path) {
+            NSWorkspace.shared.open(pane)
+        } else if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.DigiHubDiscs") {
+            NSWorkspace.shared.open(url)
+        }
     }
 }

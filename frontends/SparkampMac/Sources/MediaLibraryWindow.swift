@@ -10,6 +10,7 @@ enum MLNavigation: Equatable {
     case playlist(id: Int64)  // track editor for a specific playlist
     case devicesOverview      // grid of connected devices
     case device(bsd: String)  // detail for one device (keyed by BSD name)
+    case discsOverview        // grid of optical drives
     case discDrive(id: String) // detail for one optical drive (drutil index)
 }
 
@@ -128,13 +129,25 @@ struct MediaLibraryView: View {
                         onSelect: { dev in nav = .device(bsd: dev.backendId) }
                     )
                     .onAppear { model.refreshDeviceCounts() }
+                case .discsOverview:
+                    DiscOverview(
+                        drives: model.discDrives,
+                        theme: theme,
+                        vars: themeManager.currentVars,
+                        onSelect: { drive in nav = .discDrive(id: drive.id) }
+                    )
                 case .discDrive(let id):
                     if let drive = model.discDrives.first(where: { $0.id == id }) {
                         DiscDriveView(drive: drive, theme: theme)
                     } else {
                         // Drive vanished (USB unplugged) — the onChange below
-                        // resets nav; render the files tab meanwhile.
-                        filesTab
+                        // resets nav; render the overview meanwhile.
+                        DiscOverview(
+                            drives: model.discDrives,
+                            theme: theme,
+                            vars: themeManager.currentVars,
+                            onSelect: { drive in nav = .discDrive(id: drive.id) }
+                        )
                     }
                 case .device(let bsd):
                     if let dev = model.allDevices.first(where: { $0.backendId == bsd }) {
@@ -161,6 +174,13 @@ struct MediaLibraryView: View {
             model.pollDiscDrives()  // and the Disc Drives group (background)
             model.startUnsupportedWatch()  // begin iOS/PTP recognition
             reload()
+            // Honor a pending auto-open request (audio CD inserted while the
+            // window was closed): the onChange below can't fire for a value set
+            // before this view mounted, so consume it here on first appearance.
+            if let id = model.requestedDiscNav {
+                nav = .discDrive(id: id)
+                model.requestedDiscNav = nil
+            }
             if !columnCustomizationData.isEmpty,
                let decoded = try? JSONDecoder().decode(
                    TableColumnCustomization<MLTrack>.self,
@@ -192,11 +212,19 @@ struct MediaLibraryView: View {
                 nav = .devicesOverview
             }
         }
-        // Selected optical drive unplugged — return to the files tab.
+        // Selected optical drive unplugged — return to the drives overview.
         .onChange(of: model.discDrives) { _, drives in
             if case let .discDrive(id) = nav,
                !drives.contains(where: { $0.id == id }) {
-                nav = .files
+                nav = .discsOverview
+            }
+        }
+        // Auto-open request from an inserted audio CD (window already open):
+        // navigate to that drive, then clear the request.
+        .onChange(of: model.requestedDiscNav) { _, id in
+            if let id {
+                nav = .discDrive(id: id)
+                model.requestedDiscNav = nil
             }
         }
         .onChange(of: columnCustomization) { _, v in
@@ -377,18 +405,26 @@ struct MediaLibraryView: View {
     private var discsSection: some View {
         let vars = themeManager.currentVars
         if !model.discDrives.isEmpty {
-            HStack(spacing: 6) {
-                Image(systemName: "opticaldiscdrive").font(.system(size: 11))
-                Text("Disc Drives")
-                    .font(vars.bodyFont)
-                Spacer()
-                Text("\(model.discDrives.count)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(theme.playlistDurationText)
+            let overviewSelected = (nav == .discsOverview)
+            Button { nav = .discsOverview } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "opticaldiscdrive").font(.system(size: 11))
+                    Text("Disc Drives")
+                        .font(vars.bodyFont.weight(overviewSelected ? .semibold : .regular))
+                    Spacer()
+                    Text("\(model.discDrives.count)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.playlistDurationText)
+                }
+                .foregroundStyle(overviewSelected ? theme.playlistCurrentText : theme.playlistText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(overviewSelected ? theme.playlistCurrentBg : Color.clear)
+                )
             }
-            .foregroundStyle(theme.playlistText)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .buttonStyle(.plain)
             .padding(.horizontal, 6)
 
             ForEach(model.discDrives) { drive in
@@ -620,6 +656,17 @@ struct MediaLibraryView: View {
                     if let t = model.mlTracks.first(where: { $0.id == id }) {
                         model.mlViewArtForPath(t.path)
                     }
+                case .addToBurnList(let ids):
+                    let rows = model.mlTracks.filter { ids.contains($0.id) }
+                    var displays: [String: String] = [:]
+                    var durations: [String: Int] = [:]
+                    for t in rows {
+                        displays[t.path] = t.artist.isEmpty
+                            ? t.title : "\(t.artist) - \(t.title)"
+                        if t.lengthSecs > 0 { durations[t.path] = Int(t.lengthSecs) }
+                    }
+                    model.addToBurnList(
+                        paths: rows.map(\.path), displays: displays, durations: durations)
                 }
             },
             onDropPaths: { paths in

@@ -1,6 +1,146 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Disc media icon
+
+/// A disc glyph with the loaded media's format badged on it ("CD", "CD-R",
+/// "DVD-RW"…); the bare drive glyph when the tray is empty. Shared by the
+/// drive detail header and the Disc Drives overview cards — visually
+/// distinct from the removable-device (externaldrive) icon.
+struct DiscMediaIcon: View {
+    let drive: OpticalDrive
+    let size: CGFloat
+    let theme: SkinTheme
+
+    /// Short format label; nil with an empty tray. Pressed discs don't
+    /// report a writable kind, so CD vs DVD falls back to a capacity
+    /// heuristic (>1 GB = DVD).
+    private var badge: String? {
+        guard drive.media.present else { return nil }
+        if drive.media.isAudioCd { return "CD" }
+        switch drive.media.kind {
+        case .unknown:
+            return drive.media.capacityBytes > 1_000_000_000 ? "DVD" : "CD"
+        default:
+            return drive.media.kind.displayName
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: drive.media.present ? "opticaldisc.fill" : "opticaldiscdrive")
+                .font(.system(size: size))
+                .foregroundStyle(theme.vars.highlight)
+            if let badge = badge {
+                Text(badge)
+                    .font(.system(size: max(6, size * 0.23), weight: .bold))
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(theme.background))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(theme.vars.highlight, lineWidth: 0.5)
+                    )
+                    .foregroundStyle(theme.vars.highlight)
+                    .offset(x: 5, y: 4)
+            }
+        }
+    }
+}
+
+// MARK: - Disc Drives overview (grid of drive cards)
+
+/// Overview page for the "Disc Drives" sidebar group, in the style of the
+/// Devices overview: one card per physical drive; tapping a card opens that
+/// drive's detail view.
+struct DiscOverview: View {
+    let drives: [OpticalDrive]
+    let theme: SkinTheme
+    let vars: SkinVars
+    let onSelect: (OpticalDrive) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 240), spacing: 16)]
+
+    var body: some View {
+        ScrollView {
+            if drives.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "opticaldiscdrive")
+                        .font(.system(size: 36))
+                        .foregroundStyle(theme.playlistDurationText)
+                    Text("No disc drives connected")
+                        .font(vars.bodyFont.weight(.semibold))
+                        .foregroundStyle(theme.playlistText)
+                    Text("Connect an optical drive to play, rip, or burn discs.")
+                        .font(vars.bodyFont)
+                        .foregroundStyle(theme.playlistDurationText)
+                }
+                .frame(maxWidth: .infinity, minHeight: 240)
+                .padding(40)
+            } else {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(drives) { drive in
+                        card(drive)
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.background)
+    }
+
+    /// "45:12 of audio" for an audio CD; free/total for other media; a hint
+    /// when the tray is empty.
+    private func detailLine(_ drive: OpticalDrive) -> String {
+        if drive.media.isAudioCd, let toc = drive.toc {
+            let first = toc.tracks.first?.startFrame ?? 0
+            let secs = Int(toc.leadoutFrame > first ? (toc.leadoutFrame - first) / 75 : 0)
+            return String(format: "%d:%02d of audio", secs / 60, secs % 60)
+        }
+        if drive.media.present, drive.media.capacityBytes > 0 {
+            let f = ByteCountFormatter()
+            f.countStyle = .file
+            let free = f.string(fromByteCount: Int64(drive.media.freeBytes))
+            let total = f.string(fromByteCount: Int64(drive.media.capacityBytes))
+            return drive.media.isBlank ? "\(total) writable" : "\(free) free of \(total)"
+        }
+        return drive.media.present ? "—" : "Insert a disc to play, rip, or burn"
+    }
+
+    @ViewBuilder
+    private func card(_ drive: OpticalDrive) -> some View {
+        Button { onSelect(drive) } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    DiscMediaIcon(drive: drive, size: 22, theme: theme)
+                    Text(drive.label)
+                        .font(vars.bodyFont.weight(.semibold))
+                        .foregroundStyle(theme.playlistText)
+                        .lineLimit(1)
+                    Spacer()
+                }
+
+                Text(drive.mediaSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+
+                Text(detailLine(drive))
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 8).fill(theme.playlistCurrentBg.opacity(0.5))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8).stroke(theme.windowBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Detail page for one optical drive: header (drive label + loaded-media
 /// state + actions) and, for an audio CD, the track list with add-to-playlist
 /// actions. Blank/data/no-disc states show an explanatory banner instead —
@@ -65,10 +205,28 @@ struct DiscDriveView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
             }
+            if let phase = model.burnPhase {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(phase)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Cancel") { model.cancelBurn() }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
             Divider().background(theme.windowBorder)
             if drive.media.isAudioCd {
                 trackTable
                 bottomBar
+            } else if drive.media.present {
+                burnPanel
             } else {
                 banner
             }
@@ -115,10 +273,18 @@ struct DiscDriveView: View {
 
     // MARK: Rip
 
+    /// Whether the chosen destination sits under a watched folder — outside
+    /// one, the import step skips the files (library policy: importing never
+    /// creates new watch folders), so the sheet warns.
+    private var ripDestWatched: Bool {
+        model.mlFolders.contains { ripDest.hasPrefix($0) }
+    }
+
     /// Prefill the rip sheet: tracks from the table selection (or all),
     /// destination from config → first watched folder → ~/Music, quality
     /// from config.
     private func openRipSheet() {
+        if model.mlIsOpen { model.mlRefreshFolders() }
         ripSelection = selection.isEmpty
             ? Set(model.discTracks.map(\.number))
             : selection
@@ -173,6 +339,12 @@ struct DiscDriveView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(.secondary)
                 Button("Choose…") { chooseRipDest() }
+            }
+            if !ripDestWatched {
+                Label("Not a watched folder — the files will rip here but won't appear in the Media Library.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.yellow)
             }
 
             Picker("Quality", selection: $ripQuality) {
@@ -396,9 +568,7 @@ struct DiscDriveView: View {
     @ViewBuilder
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "opticaldiscdrive.fill")
-                .font(.system(size: 30))
-                .foregroundStyle(theme.vars.highlight)
+            DiscMediaIcon(drive: drive, size: 30, theme: theme)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(drive.label)
@@ -546,21 +716,143 @@ struct DiscDriveView: View {
         model.addDiscTracks(drive, entries: entries)
     }
 
+    // MARK: Burn panel (blank / rewritable / data media)
+
+    @State private var showEraseConfirm = false
+    /// Which burn runs after the erase confirmation: true = audio.
+    @State private var pendingBurnAudio = true
+
+    private var burnPanel: some View {
+        let decision = DiscService.eraseDecision(drive: drive)
+        let capacitySecs = DiscService.audioCapacitySecs(drive: drive)
+        let totalSecs = model.burnListTotalSecs
+        let totalBytes = model.burnListTotalBytes
+        let freeBytes = drive.media.freeBytes
+        let overAudio = totalSecs > capacitySecs
+        let overData = freeBytes > 0 && totalBytes > freeBytes
+        let fmt = ByteCountFormatter()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Burn List")
+                .font(vars.bodyFont.weight(.semibold))
+                .foregroundStyle(theme.playlistText)
+
+            if model.burnList.isEmpty {
+                Text("Queue tracks from the Media Library Files view: right-click → Add to Burn List.")
+                    .font(vars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+            } else {
+                List {
+                    ForEach(model.burnList) { e in
+                        HStack {
+                            Text(e.display)
+                                .font(vars.bodyFont)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            if let d = e.durationSecs {
+                                Text(String(format: "%d:%02d", d / 60, d % 60))
+                                    .font(vars.bodyFont.monospacedDigit())
+                                    .foregroundStyle(theme.playlistDurationText)
+                            }
+                        }
+                    }
+                    .onDelete { model.removeFromBurnList(at: $0) }
+                }
+                .frame(minHeight: 120, maxHeight: 220)
+                .scrollContentBackground(.hidden)
+                .background(theme.lcdBackground)
+
+                HStack(spacing: 16) {
+                    Text(String(format: "Audio: %d:%02d of %d:%02d",
+                                totalSecs / 60, totalSecs % 60,
+                                capacitySecs / 60, capacitySecs % 60))
+                        .foregroundStyle(overAudio ? Color.red : theme.playlistDurationText)
+                    Text("Data: \(fmt.string(fromByteCount: Int64(totalBytes)))\(freeBytes > 0 ? " of \(fmt.string(fromByteCount: Int64(freeBytes)))" : "")")
+                        .foregroundStyle(overData ? Color.red : theme.playlistDurationText)
+                }
+                .font(.system(size: 11))
+            }
+
+            switch decision {
+            case 2:
+                Label("This disc already has content and can't be rewritten — insert a blank or rewritable disc.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.yellow)
+            case 1:
+                Label("The disc has content; burning will erase it first (you'll be asked to confirm).",
+                      systemImage: "info.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+            default:
+                EmptyView()
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    if decision == 1 {
+                        pendingBurnAudio = true
+                        showEraseConfirm = true
+                    } else {
+                        model.burnAudio(drive, eraseFirst: false)
+                    }
+                } label: {
+                    Label("Burn Audio CD", systemImage: "opticaldisc")
+                }
+                .disabled(model.burnList.isEmpty || decision == 2 || overAudio
+                          || model.burnPhase != nil)
+                .help(overAudio ? "Over the disc's audio capacity — remove tracks first" : "")
+
+                Button {
+                    if decision == 1 {
+                        pendingBurnAudio = false
+                        showEraseConfirm = true
+                    } else {
+                        model.burnData(drive, eraseFirst: false)
+                    }
+                } label: {
+                    Label("Burn Data Disc", systemImage: "doc.on.doc")
+                }
+                .disabled(model.burnList.isEmpty || decision == 2 || overData
+                          || model.burnPhase != nil)
+                .help(overData ? "Over the disc's free space — remove files first" : "")
+
+                Spacer()
+
+                Button("Clear List") { model.burnList.removeAll() }
+                    .disabled(model.burnList.isEmpty || model.burnPhase != nil)
+            }
+            .buttonStyle(.bordered)
+
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .confirmationDialog(
+            "Erase this disc and burn?",
+            isPresented: $showEraseConfirm, titleVisibility: .visible
+        ) {
+            Button("Erase & Burn", role: .destructive) {
+                if pendingBurnAudio {
+                    model.burnAudio(drive, eraseFirst: true)
+                } else {
+                    model.burnData(drive, eraseFirst: true)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Everything currently on the disc is destroyed first. This can't be undone.")
+        }
+    }
+
     // MARK: Non-audio banner
 
     private var banner: some View {
-        let (icon, title, detail): (String, String, String) = {
-            if !drive.media.present {
-                return ("opticaldisc", "No disc",
-                        "Insert an audio CD to play or rip its tracks.")
-            }
-            if drive.media.isBlank {
-                return ("opticaldisc", "Blank \(drive.media.kind.displayName)",
-                        "Burning arrives in a later phase.")
-            }
-            return ("opticaldisc", "Data disc",
-                    "This disc holds data, not CD audio. Audio files on it appear under Devices when the volume mounts.")
-        }()
+        let (icon, title, detail) = (
+            "opticaldisc", "No disc",
+            "Insert an audio CD to play or rip, or a blank disc to burn."
+        )
         return VStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 32))

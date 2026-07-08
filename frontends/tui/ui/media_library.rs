@@ -25,6 +25,8 @@ pub(super) fn draw_media_library(
     state: &MediaLibraryState,
     toast: Option<&str>,
     rip_progress: Option<&(usize, usize, String)>,
+    burn_phase: Option<&str>,
+    burn_list: &crate::disc::burnlist::BurnList,
     area: Rect,
 ) {
     // Erase the player/playlist underneath so there are no legibility issues.
@@ -124,9 +126,14 @@ pub(super) fn draw_media_library(
         MediaLibraryTab::Discs => draw_ml_discs(frame, state, pane[1]),
     }
 
-    // Hint / toast bar — a running rip's progress wins, then status
+    // Hint / toast bar — a running burn/rip's progress wins, then status
     // messages, then the per-tab key hints.
-    let hint_line = if let Some((i, n, title)) = rip_progress {
+    let hint_line = if let Some(phase) = burn_phase {
+        Line::from(Span::styled(
+            format!("{phase} — c: cancel"),
+            Style::default().fg(C_PLAYING),
+        ))
+    } else if let Some((i, n, title)) = rip_progress {
         Line::from(Span::styled(
             format!("Ripping {}/{} · {} — c: cancel", i + 1, n, title),
             Style::default().fg(C_PLAYING),
@@ -156,6 +163,10 @@ pub(super) fn draw_media_library(
             hint("e", "tags"),
             sep(),
             hint("u", "submit"),
+            sep(),
+            hint("g", "rip"),
+            sep(),
+            hint("b", "burn"),
             sep(),
             hint("←→", "drive"),
             sep(),
@@ -200,6 +211,76 @@ pub(super) fn draw_media_library(
     if let Some(rip) = &state.rip {
         draw_rip_setup(frame, rip, state, inner);
     }
+    if let Some(burn) = &state.burn {
+        draw_burn_setup(frame, burn, burn_list, inner);
+    }
+}
+
+/// Burn overlay: the queued list with capacity totals, audio/data mode, and
+/// the erase confirmation prompt when the media needs wiping first.
+fn draw_burn_setup(
+    frame: &mut Frame,
+    burn: &BurnSetupState,
+    list: &crate::disc::burnlist::BurnList,
+    area: Rect,
+) {
+    let w = area.width.saturating_sub(6).min(72).max(44);
+    let rows = list.len() as u16 + 5;
+    let h = rows.min(area.height.saturating_sub(2)).max(8);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let title = if burn.confirm_erase {
+        " ERASE DISC? contents are destroyed — y: erase & burn · other: back "
+    } else {
+        " Burn — t: audio/data · x: remove · [ ]: reorder · Enter: start · Esc "
+    };
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            Style::default().fg(if burn.confirm_erase { C_WARN } else { C_ACCENT }),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if burn.confirm_erase { C_WARN } else { C_ACCENT }));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let secs = list.total_secs();
+    let mb = list.total_bytes() / 1_000_000;
+    let mode = if burn.audio {
+        format!(
+            "Mode: AUDIO CD — {}:{:02} queued{}",
+            secs / 60,
+            secs % 60,
+            if list.has_unknown_durations() {
+                " (some durations unknown)"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!("Mode: DATA DISC — {mb} MB queued")
+    };
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(mode, Style::default().fg(C_TEXT))),
+        Line::from(""),
+    ];
+    for (i, item) in list.items.iter().enumerate() {
+        let style = if i == burn.cursor {
+            Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+        } else {
+            Style::default().fg(C_TEXT)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{:>2}. {}", i + 1, ml_truncate(&item.display, 60)),
+            style,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Rip-setup overlay: track checkboxes, destination, quality preset.
@@ -244,7 +325,14 @@ fn draw_rip_setup(frame: &mut Frame, rip: &RipSetupState, state: &MediaLibrarySt
             format!("Quality: {quality_label}   (Artist/Album/NN - Title.mp3, added to library)"),
             Style::default().fg(C_DIM),
         )),
-        Line::from(""),
+        if rip.dest_watched {
+            Line::from("")
+        } else {
+            Line::from(Span::styled(
+                "⚠ Not a watched folder — files rip here but won't appear in the library.",
+                Style::default().fg(C_WARN),
+            ))
+        },
     ];
     for (i, sel) in rip.selected.iter().enumerate() {
         let entry_title = state

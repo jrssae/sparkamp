@@ -636,6 +636,11 @@ impl MediaLibrary {
                 tags.artwork_path,
             ],
         )?;
+        // This WAS a full scan (tags + duration read above), so stamp it.
+        // Without the stamp, freshly imported rows (ripped CDs, drag-imports)
+        // keep a NULL last_scanned and wear the "not yet scanned" clock icon
+        // until some later folder rescan happens to touch them.
+        self.update_last_scanned(path)?;
         Ok(())
     }
 

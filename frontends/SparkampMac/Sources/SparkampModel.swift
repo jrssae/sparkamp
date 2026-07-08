@@ -148,11 +148,20 @@ final class SparkampModel: ObservableObject {
     }()
     /// Ticks counted only while the ML window is open; gates the 2 s device poll.
     var deviceTickCount: Int = 0
+    /// Always-incrementing tick counter for the optical-drive poll. Unlike the
+    /// device poll it runs from app start (independent of the ML window) so an
+    /// inserted audio CD can auto-open the library when Sparkamp is the default
+    /// CD handler.
+    var discPollTickCount: Int = 0
 
     // ── Optical discs ────────────────────────────────────────────────────────
     /// Every optical drive with its loaded-media state (audio-CD TOC included).
-    /// Polled ~every 10 s while the ML window is open (subprocess-backed).
+    /// Polled ~every 10 s from app start (subprocess-backed).
     @Published var discDrives: [OpticalDrive] = []
+    /// Set by the poll when a drive transitions to "audio CD loaded" and the
+    /// auto-open setting is on; the Media Library view consumes it to navigate
+    /// to that drive, then clears it back to nil.
+    @Published var requestedDiscNav: String? = nil
     /// Tracks of the disc shown in the drive detail view.
     @Published var discTracks: [DiscTrackEntry] = []
     /// True while a disc drive enumeration/track load runs in the background.
@@ -183,6 +192,14 @@ final class SparkampModel: ObservableObject {
     @Published var ripProgress: CopyProgress? = nil
     /// Set to stop the rip after the track currently encoding.
     var ripCancelRequested: Bool = false
+    /// The Burn list — a dedicated queue separate from the active playlist
+    /// (Winamp-style). Fed from the ML Files context menu.
+    @Published var burnList: [BurnEntry] = []
+    /// Phase text while a burn runs ("Preparing 2/5 …", "Burning…"); nil idle.
+    @Published var burnPhase: String? = nil
+    /// Set to stop the prepare loop between tracks (the burn itself is
+    /// cancelled through the core's subprocess kill).
+    var burnCancelRequested: Bool = false
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false
@@ -357,19 +374,23 @@ final class SparkampModel: ObservableObject {
         let newVizMode = Int(sparkamp_get_viz_mode(ctx))
         if newVizMode != vizMode { vizMode = newVizMode }
 
-        // Poll connected devices ~every 2 s while the ML window is open. The
-        // tick fires at 10 Hz, so every 20th tick. Detection only — counts are
-        // computed on demand for the overview (refreshDeviceCounts).
+        // Poll optical drives ~every 10 s from app start, regardless of the ML
+        // window. Detection shells out to drutil on a background queue, so it's
+        // polled an order of magnitude slower than volumes. Running unconditionally
+        // lets an inserted audio CD auto-open the library (default-handler flow);
+        // the first tick polls immediately so a disc present at launch is seen.
+        discPollTickCount += 1
+        if discPollTickCount % 100 == 1 {
+            pollDiscDrives()
+        }
+
+        // Poll connected USB/volume devices ~every 2 s while the ML window is
+        // open. The tick fires at 10 Hz, so every 20th tick. Detection only —
+        // counts are computed on demand for the overview (refreshDeviceCounts).
         if mediaLibraryVisible {
             deviceTickCount += 1
             if deviceTickCount % 20 == 1 {
                 pollDevices()
-            }
-            // Optical drives every ~10 s: detection shells out to drutil, so
-            // it's polled an order of magnitude slower than volumes (and runs
-            // on a background queue either way).
-            if deviceTickCount % 100 == 1 {
-                pollDiscDrives()
             }
         } else if deviceTickCount != 0 {
             deviceTickCount = 0

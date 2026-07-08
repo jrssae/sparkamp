@@ -10,7 +10,7 @@
 //! gnudb, rip, and burn entry points here.
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_int};
 
 use crate::disc::{detect, toc, OpticalDrive};
 
@@ -207,6 +207,147 @@ pub unsafe extern "C" fn sparkamp_disc_rip_track(
         Ok(()) => gnudb_out(Ok(out.display().to_string())),
         Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
     }
+}
+
+// ─────────────────────────── burning (Phases 5–6) ───────────────────────────
+//
+// Blind-implemented (no blank media on the dev box) — the command builders
+// and the WAV preparation are unit/live-tested; the disc-write itself is
+// verified by the follow-up hardware pass (see the plan's Opus test matrix).
+// All blocking; worker threads only. Cancel via sparkamp_disc_burn_cancel.
+
+/// What must happen before burning onto the loaded media:
+/// 0 = blank, burn now · 1 = rewritable with content, erase after an explicit
+/// user confirmation · 2 = refuse (write-once with content / no media).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_erase_decision(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+) -> c_int {
+    let Some(drive): Option<OpticalDrive> = json_in(drive_json) else {
+        return 2;
+    };
+    match crate::disc::burn::erase_decision(&drive) {
+        crate::disc::burn::EraseDecision::None => 0,
+        crate::disc::burn::EraseDecision::EraseAfterConfirm => 1,
+        crate::disc::burn::EraseDecision::Refuse => 2,
+    }
+}
+
+/// Audio capacity of the loaded media in seconds (free frames / 75; falls
+/// back to the 80-minute standard when free blocks are unreported).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_audio_capacity_secs(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+) -> c_int {
+    let Some(drive): Option<OpticalDrive> = json_in(drive_json) else {
+        return crate::disc::burn::AUDIO_CD_CAPACITY_SECS as c_int;
+    };
+    crate::disc::burn::audio_capacity_secs(&drive) as c_int
+}
+
+/// Transcode one file to a Red Book WAV (44.1 kHz/16-bit/stereo) at
+/// `out_path` — the per-track pre-burn step. Blocking; loop on a worker
+/// thread for progress/cancel-between-tracks. `{"ok":"<out>"}` / error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_prepare_wav(
+    _ctx: *mut SparkampCtx,
+    src_path: *const c_char,
+    out_path: *const c_char,
+) -> *mut c_char {
+    let (Some(src), Some(out)) = (cstr(src_path), cstr(out_path)) else {
+        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
+            "bad arguments".into(),
+        )));
+    };
+    match crate::disc::burn::prepare_wav(std::path::Path::new(&src), std::path::Path::new(&out)) {
+        Ok(()) => gnudb_out(Ok(out)),
+        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
+    }
+}
+
+/// Erase the loaded rewritable disc. The caller MUST have shown the explicit
+/// confirmation first (erase_decision == 1). Blocking.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_erase(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+) -> *mut c_char {
+    let Some(drive): Option<OpticalDrive> = json_in(drive_json) else {
+        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
+            "bad arguments".into(),
+        )));
+    };
+    match crate::disc::burn::erase(&drive) {
+        Ok(()) => gnudb_out(Ok("erased".to_string())),
+        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
+    }
+}
+
+/// Burn prepared WAVs (JSON array of paths, in track order, staged under
+/// `staged_dir`) as an audio CD. `verify` = post-burn verification where the
+/// tool supports it. Blocking for the whole burn.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_burn_audio(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+    staged_dir: *const c_char,
+    wavs_json: *const c_char,
+    verify: bool,
+) -> *mut c_char {
+    let (Some(drive), Some(dir), Some(wavs)): (Option<OpticalDrive>, _, Option<Vec<String>>) =
+        (json_in(drive_json), cstr(staged_dir), json_in(wavs_json))
+    else {
+        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
+            "bad arguments".into(),
+        )));
+    };
+    let wavs: Vec<std::path::PathBuf> = wavs.into_iter().map(std::path::PathBuf::from).collect();
+    match crate::disc::burn::burn_audio(&drive, std::path::Path::new(&dir), &wavs, verify) {
+        Ok(()) => gnudb_out(Ok("burned".to_string())),
+        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
+    }
+}
+
+/// Stage the given files (JSON array of paths) into `staged_dir`, write the
+/// MP3-CD companion playlist (`playlist.m3u8`, or `.m3u` when
+/// `playlist_format` == 1 — the app-wide setting), and burn as a data disc.
+/// Blocking for the whole burn.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_burn_data(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+    staged_dir: *const c_char,
+    files_json: *const c_char,
+    playlist_format: c_int,
+    verify: bool,
+) -> *mut c_char {
+    let (Some(drive), Some(dir), Some(files)): (Option<OpticalDrive>, _, Option<Vec<String>>) =
+        (json_in(drive_json), cstr(staged_dir), json_in(files_json))
+    else {
+        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
+            "bad arguments".into(),
+        )));
+    };
+    let files: Vec<std::path::PathBuf> = files.into_iter().map(std::path::PathBuf::from).collect();
+    let dir = std::path::PathBuf::from(&dir);
+    let result = crate::disc::burn::stage_data_files(&files, &dir)
+        .and_then(|staged| {
+            crate::disc::burn::write_data_playlist(&dir, &staged, playlist_format == 1)
+                .map(|_| ())
+        })
+        .and_then(|_| crate::disc::burn::burn_data(&drive, &dir, verify));
+    match result {
+        Ok(()) => gnudb_out(Ok("burned".to_string())),
+        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
+    }
+}
+
+/// Kill the in-flight burn/erase subprocess (one runs at a time).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_burn_cancel(_ctx: *mut SparkampCtx) {
+    crate::disc::burn::request_cancel();
 }
 
 /// The stored tag record for a disc: `{"user":XmcdEntry|null,

@@ -292,8 +292,12 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![key("  /  Ctrl+f"), Span::raw(" Activate search")]),
         Line::from(vec![
-            key("  m e r"),
-            Span::raw("  Discs tab: identify on gnudb / edit tags / rescan"),
+            key("  m e u"),
+            Span::raw("  Discs tab: identify on gnudb / edit tags / submit"),
+        ]),
+        Line::from(vec![
+            key("  g b r"),
+            Span::raw("  Discs tab: rip to MP3 / burn (audio+data) / rescan"),
         ]),
         Line::from(vec![key("  Esc"), Span::raw("    Close media library")]),
         Line::from(""),

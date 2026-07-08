@@ -71,6 +71,15 @@ pub struct DiscConfig {
     /// MP3 encoding preset: 0 = VBR V0 (~245 kbps), 1 = VBR V2 (~190 kbps,
     /// default), 2 = 320 kbps CBR.
     pub rip_mp3_quality: u8,
+    /// Verify discs after burning where the tool supports it (drutil on
+    /// macOS; the Linux tools' verification is a hardware-pass follow-up).
+    /// On by default — turning it off trades safety for speed.
+    pub burn_verify: bool,
+    /// When Sparkamp is the system's default audio-CD handler, auto-open the
+    /// Media Library to the drive that just received a disc. On by default;
+    /// the OS-level default-app registration is a separate, manual opt-in
+    /// (macOS: System Settings → CDs & DVDs; GTK: the `.desktop` handler).
+    pub auto_show_inserted_audio_cd: bool,
 }
 
 impl Default for DiscConfig {
@@ -80,6 +89,8 @@ impl Default for DiscConfig {
             gnudb_submit_mode_test: true,
             rip_dest_dir: None,
             rip_mp3_quality: 1,
+            burn_verify: true,
+            auto_show_inserted_audio_cd: true,
         }
     }
 }

@@ -185,6 +185,27 @@ pub struct MediaLibraryState {
     pub submit_email: Option<String>,
     /// Rip setup overlay, when open.
     pub rip: Option<RipSetupState>,
+    /// Burn overlay, when open.
+    pub burn: Option<BurnSetupState>,
+}
+
+/// State of the burn overlay (Discs tab, `b`).
+pub struct BurnSetupState {
+    /// Highlighted burn-list row.
+    pub cursor: usize,
+    /// true = audio CD, false = data disc.
+    pub audio: bool,
+    /// Set when the loaded disc needs an erase: the overlay shows the
+    /// destroy-contents prompt and only `y` proceeds.
+    pub confirm_erase: bool,
+}
+
+/// Progress/result of a background burn, delivered to the tick loop.
+pub enum BurnMsg {
+    /// Human-readable phase ("Preparing 2/5 · …", "Burning…").
+    Phase(String),
+    /// Finished: Ok(summary) or Err(reason).
+    Done(Result<String, String>),
 }
 
 /// State of the rip-setup overlay (Discs tab, `g`).
@@ -196,6 +217,9 @@ pub struct RipSetupState {
     /// Destination root; `editing_dest` routes typed characters here.
     pub dest: String,
     pub editing_dest: bool,
+    /// False when `dest` is outside every watched folder — the rip still
+    /// works but the import step will skip the files, so the overlay warns.
+    pub dest_watched: bool,
     /// MP3 preset: 0 = VBR V0, 1 = VBR V2, 2 = 320 CBR.
     pub quality: u8,
 }
@@ -394,6 +418,16 @@ pub struct App {
     rip_cancel: Option<Arc<AtomicBool>>,
     /// Rip progress for the status/hint line: (index, total, title).
     pub rip_progress: Option<(usize, usize, String)>,
+    /// The Burn list — a dedicated queue separate from the active playlist,
+    /// fed from the Files tab (`b`).
+    pub burn_list: crate::disc::burnlist::BurnList,
+    /// Receiver for an in-flight background burn, drained by tick().
+    disc_burn: Option<mpsc::Receiver<BurnMsg>>,
+    /// Cancel flag for the burn's prepare loop (the erase/burn subprocess is
+    /// killed through `disc::burn::request_cancel`).
+    burn_prep_cancel: Option<Arc<AtomicBool>>,
+    /// Burn phase for the hint line ("Preparing 2/5 · …", "Burning…").
+    pub burn_phase: Option<String>,
 }
 
 impl App {
@@ -494,6 +528,10 @@ impl App {
             disc_rip: None,
             rip_cancel: None,
             rip_progress: None,
+            burn_list: crate::disc::burnlist::BurnList::default(),
+            disc_burn: None,
+            burn_prep_cancel: None,
+            burn_phase: None,
         })
     }
 
@@ -813,6 +851,17 @@ impl App {
         }
         for msg in rip_msgs {
             self.handle_rip_msg(msg);
+        }
+
+        // 4c. Deliver background burn progress/results.
+        let mut burn_msgs = Vec::new();
+        if let Some(rx) = &self.disc_burn {
+            while let Ok(msg) = rx.try_recv() {
+                burn_msgs.push(msg);
+            }
+        }
+        for msg in burn_msgs {
+            self.handle_burn_msg(msg);
         }
 
         // 5. Auto-clear transient status messages after STATUS_TICKS ticks.

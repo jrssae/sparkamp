@@ -134,6 +134,16 @@ struct GnudbFailure: Error {
     let message: String
 }
 
+/// One Burn-list row (mirrors the core BurnItem; lives Swift-side because
+/// the queue is frontend state).
+struct BurnEntry: Identifiable, Equatable {
+    var path: String
+    var display: String
+    var durationSecs: Int?
+    var bytes: UInt64
+    var id: String { path }
+}
+
 /// The user's tag set for one disc — a gnudb match, hand edits, or both.
 /// Keyed by freedb disc ID in the model; feeds display titles now and rip
 /// tagging / submission in Phases 3–4.
@@ -172,6 +182,12 @@ enum DiscService {
         return String(cString: p)
     }
 
+    /// Encode any payload to the snake_case JSON the Rust side expects —
+    /// the one place the encoder round-trip lives.
+    private static func jsonString<T: Encodable>(_ value: T) -> String? {
+        (try? encoder().encode(value)).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
     /// Every optical drive with its loaded-media state. Subprocess-backed —
     /// never call on the main thread.
     static func listDrives() -> [OpticalDrive] {
@@ -185,9 +201,7 @@ enum DiscService {
     /// Playlist-ready entries for the drive's audio tracks (empty when the
     /// drive holds no audio disc). Reads the mounted volume — background only.
     static func trackEntries(drive: OpticalDrive) -> [DiscTrackEntry] {
-        guard let payload = try? encoder().encode(drive),
-              let driveJSON = String(data: payload, encoding: .utf8)
-        else { return [] }
+        guard let driveJSON = jsonString(drive) else { return [] }
         let out = driveJSON.withCString { sparkamp_disc_track_entries(nil, $0) }
         guard let json = takeString(out),
               let data = json.data(using: .utf8),
@@ -198,8 +212,7 @@ enum DiscService {
 
     /// The freedb disc ID for a TOC — the per-disc key for tag overrides.
     static func discId(toc: DiscToc) -> String? {
-        guard let payload = try? encoder().encode(toc),
-              let json = String(data: payload, encoding: .utf8) else { return nil }
+        guard let json = jsonString(toc) else { return nil }
         let out = json.withCString { sparkamp_disc_id(nil, $0) }
         return takeString(out)
     }
@@ -207,8 +220,7 @@ enum DiscService {
     /// Ask gnudb which discs match this TOC. Blocking network (10 s timeout)
     /// — background queue only. Returns matches or a user-facing error string.
     static func gnudbQuery(toc: DiscToc, email: String) -> Result<[DiscMatch], GnudbFailure> {
-        guard let payload = try? encoder().encode(toc),
-              let tocJSON = String(data: payload, encoding: .utf8)
+        guard let tocJSON = jsonString(toc)
         else { return .failure(GnudbFailure(message: "bad TOC")) }
         let out = tocJSON.withCString { t in
             email.withCString { e in sparkamp_gnudb_query(nil, t, e) }
@@ -247,12 +259,8 @@ enum DiscService {
     /// background preferred.
     @discardableResult
     static func tagsSet(discid: String, user: XmcdEntry, official: XmcdEntry?) -> Bool {
-        guard let userData = try? encoder().encode(user),
-              let userJSON = String(data: userData, encoding: .utf8)
-        else { return false }
-        let officialJSON = official
-            .flatMap { try? encoder().encode($0) }
-            .flatMap { String(data: $0, encoding: .utf8) }
+        guard let userJSON = jsonString(user) else { return false }
+        let officialJSON = official.flatMap { jsonString($0) }
         return discid.withCString { d in
             userJSON.withCString { u in
                 if let oj = officialJSON {
@@ -269,10 +277,7 @@ enum DiscService {
     static func gnudbSubmit(
         toc: DiscToc, entry: XmcdEntry, category: String, email: String, testMode: Bool
     ) -> Result<String, GnudbFailure> {
-        guard let tocData = try? encoder().encode(toc),
-              let tocJSON = String(data: tocData, encoding: .utf8),
-              let entryData = try? encoder().encode(entry),
-              let entryJSON = String(data: entryData, encoding: .utf8)
+        guard let tocJSON = jsonString(toc), let entryJSON = jsonString(entry)
         else { return .failure(GnudbFailure(message: "bad submit payload")) }
         let out = tocJSON.withCString { t in
             entryJSON.withCString { en in
@@ -316,11 +321,83 @@ enum DiscService {
     /// reads run at drive speed — a minute or more per track): worker thread
     /// only. Returns the written path or a failure message.
     static func ripTrack(job: RipJob) -> Result<String, GnudbFailure> {
-        guard let data = try? encoder().encode(job),
-              let json = String(data: data, encoding: .utf8)
+        guard let json = jsonString(job)
         else { return .failure(GnudbFailure(message: "bad rip job")) }
         let out = json.withCString { sparkamp_disc_rip_track(nil, $0) }
         return decodeGnudb(takeString(out))
+    }
+
+    // MARK: Burning (blind-implemented; hardware pass pending — see plan)
+
+    /// 0 = blank (burn now), 1 = RW with content (erase after explicit
+    /// confirmation), 2 = refuse (write-once with content / no media).
+    static func eraseDecision(drive: OpticalDrive) -> Int {
+        guard let json = jsonString(drive) else { return 2 }
+        return Int(json.withCString { sparkamp_disc_erase_decision(nil, $0) })
+    }
+
+    /// Audio capacity of the loaded media in seconds.
+    static func audioCapacitySecs(drive: OpticalDrive) -> Int {
+        guard let json = jsonString(drive) else { return 4800 }
+        return Int(json.withCString { sparkamp_disc_audio_capacity_secs(nil, $0) })
+    }
+
+    /// Transcode one file to a Red Book WAV (pre-burn step). Blocking —
+    /// worker thread; loop per track.
+    static func prepareWav(src: String, out: String) -> Result<String, GnudbFailure> {
+        let ptr = src.withCString { s in
+            out.withCString { o in sparkamp_disc_prepare_wav(nil, s, o) }
+        }
+        return decodeGnudb(takeString(ptr))
+    }
+
+    /// Erase the loaded rewritable disc — only after explicit confirmation.
+    static func eraseDisc(drive: OpticalDrive) -> Result<String, GnudbFailure> {
+        guard let json = jsonString(drive)
+        else { return .failure(GnudbFailure(message: "bad drive")) }
+        let ptr = json.withCString { sparkamp_disc_erase(nil, $0) }
+        return decodeGnudb(takeString(ptr))
+    }
+
+    /// Burn prepared WAVs (track order) as an audio CD. Blocking whole burn.
+    static func burnAudio(
+        drive: OpticalDrive, stagedDir: String, wavs: [String], verify: Bool
+    ) -> Result<String, GnudbFailure> {
+        guard let driveJSON = jsonString(drive),
+              let wavsJSON = jsonString(wavs)
+        else { return .failure(GnudbFailure(message: "bad burn payload")) }
+        let ptr = driveJSON.withCString { d in
+            stagedDir.withCString { s in
+                wavsJSON.withCString { w in
+                    sparkamp_disc_burn_audio(nil, d, s, w, verify)
+                }
+            }
+        }
+        return decodeGnudb(takeString(ptr))
+    }
+
+    /// Stage files, write the MP3-CD companion playlist, and burn as a data
+    /// disc. Blocking whole burn.
+    static func burnData(
+        drive: OpticalDrive, stagedDir: String, files: [String],
+        playlistFormat: Int32, verify: Bool
+    ) -> Result<String, GnudbFailure> {
+        guard let driveJSON = jsonString(drive),
+              let filesJSON = jsonString(files)
+        else { return .failure(GnudbFailure(message: "bad burn payload")) }
+        let ptr = driveJSON.withCString { d in
+            stagedDir.withCString { s in
+                filesJSON.withCString { f in
+                    sparkamp_disc_burn_data(nil, d, s, f, playlistFormat, verify)
+                }
+            }
+        }
+        return decodeGnudb(takeString(ptr))
+    }
+
+    /// Kill the in-flight burn/erase subprocess.
+    static func burnCancel() {
+        sparkamp_disc_burn_cancel(nil)
     }
 
     /// Eject the disc in the given drutil drive (macOS). Runs `drutil eject`

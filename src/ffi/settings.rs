@@ -202,6 +202,44 @@ pub unsafe extern "C" fn sparkamp_get_rip_quality(ctx: *const SparkampCtx) -> c_
     (&*ctx).config.disc.rip_mp3_quality as c_int
 }
 
+/// Verify discs after burning where the tool supports it (default true).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_burn_verify(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    (&*ctx).config.disc.burn_verify
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_burn_verify(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.disc.burn_verify = value;
+}
+
+/// Auto-open the Media Library to a drive when it receives an audio CD
+/// (default true). Only takes effect once the app is running — OS-level
+/// default-handler registration is a separate manual step.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_auto_show_inserted_cd(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    (&*ctx).config.disc.auto_show_inserted_audio_cd
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_auto_show_inserted_cd(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.disc.auto_show_inserted_audio_cd = value;
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_rip_quality(ctx: *mut SparkampCtx, preset: c_int) {
     if ctx.is_null() {

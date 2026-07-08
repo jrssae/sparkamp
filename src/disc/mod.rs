@@ -1,17 +1,46 @@
 //! Optical-disc (CD/DVD) support — shared core.
 //!
-//! Owns everything platform-neutral about disc handling: the TOC data model,
-//! duration math, and (later phases) the freedb disc-ID, gnudb client, rip
-//! pipeline, and burn orchestration. Platform code is confined to
-//! [`detect`]: Linux reads drives via `/sys` + `cd-info`, macOS via `drutil`
-//! and the auto-mounted audio-CD volume's `.TOC.plist`. Both produce the same
-//! [`OpticalDrive`] shape, so the GTK/TUI frontends (direct calls) and
-//! SparkampMac (JSON-over-FFI) render discs identically.
+//! ## Module map (start here)
+//!
+//! | Module      | Owns                                                        | Platform code? |
+//! |-------------|-------------------------------------------------------------|----------------|
+//! | [`detect`]  | Drive/media/TOC discovery → [`OpticalDrive`]                | glue only: macOS `drutil`+`plutil`, Linux sysfs+`cd-info`; every parser is a plain `&str` fn tested on all OSes |
+//! | [`toc`]     | Duration math + playlist entries (AIFF paths / `cdda://`)  | tiny cfg split in `track_entries` |
+//! | [`discid`]  | freedb disc ID + `cddb query` args (pure)                  | none |
+//! | [`gnudb`]   | CDDB query/read/submit over HTTP (`minreq`)                | none |
+//! | [`xmcd`]    | Entry parse/build + submission validation                  | none |
+//! | [`tagstore`]| Per-disc tag cache on disk (`disc_tags.toml`)              | none |
+//! | [`rip`]     | Track → tagged MP3 (GStreamer pipeline per track)          | source arm differs (AIFF vs `cdda`) |
+//! | [`burnlist`]| The Burn queue model + capacity math (pure)                | none |
+//! | [`burn`]    | WAV prepare, burn/erase command builders + runner          | command-level split: `drutil` (mac) vs `cdrskin`/`xorriso` (Linux) |
+//!
+//! The FFI for all of it lives in `src/ffi/disc.rs` (JSON in/out, ctx-free —
+//! callable from any thread; long ops are blocking by design and the
+//! frontends loop on worker threads). Frontends: `frontends/tui/media_library.rs`
+//! (direct calls) and `frontends/SparkampMac/Sources/Disc*.swift` (FFI).
+//!
+//! Useful test commands:
+//! - `cargo test --lib disc` — every parser/builder/model test.
+//! - `cargo test --lib live_list_drives -- --ignored --nocapture` — real drive.
+//! - `cargo test --lib live_gnudb -- --ignored --nocapture` — real gnudb.
+//! - `cargo test --lib live_rip -- --ignored --nocapture` — real rip.
+//! - `cargo test --lib live_prepare_wav -- --ignored --nocapture` — Red Book WAV.
+//!
+//! Burning was blind-implemented (no blank media) — the hardware test matrix
+//! lives in `docs/superpowers/plans/2026-06-23-optical-disc-support.md`,
+//! Phases 5–7.
+//!
+//! Platform boundaries: Linux reads drives via `/sys` + `cd-info`, macOS via
+//! `drutil` and the auto-mounted audio-CD volume's `.TOC.plist`. Both produce
+//! the same [`OpticalDrive`] shape, so the GTK/TUI frontends (direct calls)
+//! and SparkampMac (JSON-over-FFI) render discs identically.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod burn;
+pub mod burnlist;
 pub mod detect;
 pub mod discid;
 pub mod gnudb;

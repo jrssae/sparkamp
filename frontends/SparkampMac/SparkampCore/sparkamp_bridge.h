@@ -294,6 +294,14 @@ char   *sparkamp_get_rip_dest(SparkampCtx *ctx);
 void    sparkamp_set_rip_dest(SparkampCtx *ctx, const char *dir);
 int     sparkamp_get_rip_quality(SparkampCtx *ctx);
 void    sparkamp_set_rip_quality(SparkampCtx *ctx, int preset);
+/* Post-burn disc verification where the tool supports it (default true). */
+bool    sparkamp_get_burn_verify(SparkampCtx *ctx);
+void    sparkamp_set_burn_verify(SparkampCtx *ctx, bool value);
+/* Auto-open the Media Library to a drive that just received an audio CD
+ * (default true). Effective only while running; OS default-handler
+ * registration is a separate manual step. */
+bool    sparkamp_get_auto_show_inserted_cd(SparkampCtx *ctx);
+void    sparkamp_set_auto_show_inserted_cd(SparkampCtx *ctx, bool value);
 
 // ---------------------------------------------------------------------------
 // Playlist path
@@ -674,6 +682,41 @@ char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
     for progress/cancel. {"ok":"<written path>"} or {"error":"…"}. Free with
     sparkamp_free_string. */
 char *sparkamp_disc_rip_track(SparkampCtx *ctx, const char *job_json);
+
+/* ── Burning (blind-implemented; hardware pass pending — see plan) ─────────
+   All blocking: worker threads only. One burn/erase runs at a time;
+   sparkamp_disc_burn_cancel kills it. JSON results {"ok":…}/{"error":…},
+   free with sparkamp_free_string. */
+
+/** 0 = blank (burn now) · 1 = RW with content (erase after explicit user
+    confirmation) · 2 = refuse (write-once with content / no media). */
+int sparkamp_disc_erase_decision(SparkampCtx *ctx, const char *drive_json);
+
+/** Audio capacity of the loaded media in seconds (free frames / 75; falls
+    back to the 80-minute standard when unreported). */
+int sparkamp_disc_audio_capacity_secs(SparkampCtx *ctx, const char *drive_json);
+
+/** Transcode one file to a Red Book WAV (pre-burn step; loop per track). */
+char *sparkamp_disc_prepare_wav(SparkampCtx *ctx, const char *src_path,
+                                const char *out_path);
+
+/** Erase the loaded rewritable disc — ONLY after the explicit confirmation. */
+char *sparkamp_disc_erase(SparkampCtx *ctx, const char *drive_json);
+
+/** Burn prepared WAVs (JSON array, track order) as an audio CD. verify =
+    post-burn verification where the tool supports it. */
+char *sparkamp_disc_burn_audio(SparkampCtx *ctx, const char *drive_json,
+                               const char *staged_dir, const char *wavs_json,
+                               bool verify);
+
+/** Stage files (JSON array) into staged_dir, write the MP3-CD companion
+    playlist (m3u8; playlist_format == 1 → m3u), and burn as a data disc. */
+char *sparkamp_disc_burn_data(SparkampCtx *ctx, const char *drive_json,
+                              const char *staged_dir, const char *files_json,
+                              int playlist_format, bool verify);
+
+/** Kill the in-flight burn/erase subprocess. */
+void sparkamp_disc_burn_cancel(SparkampCtx *ctx);
 
 /** Stored tag record for a disc from the on-disk cache (disc_tags.toml):
     {"user":XmcdEntry|null,"official":XmcdEntry|null}. File IO — background
