@@ -13041,6 +13041,79 @@ fn open_media_library_window(
         dev_tracks_scroll.add_controller(dt);
     }
 
+    // ── Right-click context menu on device files: View / Edit ID3 ────────────
+    // Mirrors the active-playlist menu. The ID3 editor also shows/edits album
+    // art, so this one item covers viewing artwork too. Operates on the current
+    // selection (like the Play / Enqueue / Delete buttons in this view); the
+    // editor binds one file, so the item appears only for a single selection.
+    // Gesture + action group live on the ScrolledWindow, not the ColumnView, to
+    // dodge the GTK4 bug where a PopoverMenu parented on the view misses hover.
+    {
+        let ctx_click = GestureClick::new();
+        ctx_click.set_button(3); // right mouse button
+
+        let dev_file_action_group = gio::SimpleActionGroup::new();
+        dev_tracks_scroll.insert_action_group("dev-file", Some(&dev_file_action_group));
+
+        let action_id3 = gio::SimpleAction::new("edit-id3", None);
+        {
+            let state_id3 = state.clone();
+            let win_id3 = win.downgrade();
+            let sel_tracks = selected_device_tracks.clone();
+            let reload_store = reload_device_store.clone();
+            let current_devices_id3 = current_devices.clone();
+            let sel_backend_id3 = selected_dev_backend.clone();
+            action_id3.connect_activate(move |_, _| {
+                let tracks = sel_tracks();
+                let [track] = tracks.as_slice() else { return };
+                let path = std::path::PathBuf::from(&track.path);
+                // Re-read the edited device file's row so new tags show.
+                let reload = reload_store.clone();
+                let devices = current_devices_id3.clone();
+                let backend = sel_backend_id3.clone();
+                let rebuild_cb: Rc<dyn Fn()> = Rc::new(move || {
+                    let Some(b) = backend.borrow().clone() else { return };
+                    if let Some(dev) =
+                        devices.borrow().iter().find(|d| d.backend_id == b).cloned()
+                    {
+                        reload(dev);
+                    }
+                });
+                open_id3_editor_window(
+                    win_id3.upgrade().as_ref(),
+                    path,
+                    state_id3.clone(),
+                    rebuild_cb,
+                    None,
+                );
+            });
+        }
+        dev_file_action_group.add_action(&action_id3);
+
+        let sel_menu = selected_device_tracks.clone();
+        let scroll_menu = dev_tracks_scroll.clone();
+        ctx_click.connect_pressed(move |gest, _, x, y| {
+            // Only a single-file selection is editable (the editor binds one file).
+            if sel_menu().len() != 1 {
+                return;
+            }
+            let menu = gio::Menu::new();
+            menu.append_item(&gio::MenuItem::new(
+                Some("🎵 View / Edit ID3"),
+                Some("dev-file.edit-id3"),
+            ));
+            let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+            popover.set_parent(&scroll_menu);
+            // Unparent on close so a right-click doesn't leak a popover per use.
+            popover.connect_closed(|p| p.unparent());
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+            gest.set_state(gtk4::EventSequenceState::Claimed);
+        });
+        dev_tracks_scroll.add_controller(ctx_click);
+    }
+
     dev_page.append(&dev_detail);
 
     let _vsep_unused = (); // replaced by Paned divider
