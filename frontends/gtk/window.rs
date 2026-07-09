@@ -11288,6 +11288,9 @@ fn open_media_library_window(
     let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
         Rc::new(RefCell::new(Vec::new()));
+    // True until the first drive poll finishes, so the overview shows a
+    // "Detecting…" hint instead of a premature "No disc drives connected".
+    let disc_detecting = Rc::new(Cell::new(true));
     {
         let hdr = GtkBox::new(Orientation::Horizontal, 0);
         let lbl = Label::builder()
@@ -17958,19 +17961,36 @@ fn open_media_library_window(
         let drives = current_drives.clone();
         let list = disc_overview_list.clone();
         let sidebar_ov = sidebar.clone();
+        let detecting = disc_detecting.clone();
         Rc::new(move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
             let ds = drives.borrow();
             if ds.is_empty() {
-                let empty = Label::builder()
-                    .label("No disc drives connected")
-                    .halign(Align::Start)
-                    .xalign(0.0)
-                    .build();
-                empty.add_css_class("dim-label");
-                list.append(&empty);
+                if detecting.get() {
+                    // Still running the first poll: show a working indicator.
+                    let row = GtkBox::new(Orientation::Horizontal, 8);
+                    let spinner = gtk4::Spinner::new();
+                    spinner.start();
+                    let lbl = Label::builder()
+                        .label("Detecting disc drives…")
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .build();
+                    lbl.add_css_class("dim-label");
+                    row.append(&spinner);
+                    row.append(&lbl);
+                    list.append(&row);
+                } else {
+                    let empty = Label::builder()
+                        .label("No disc drives connected")
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .build();
+                    empty.add_css_class("dim-label");
+                    list.append(&empty);
+                }
                 return;
             }
             for d in ds.iter() {
@@ -18023,6 +18043,7 @@ fn open_media_library_window(
         let selected_disc_id = selected_disc_id.clone();
         let rebuild_overview = rebuild_disc_overview.clone();
         let state = state.clone();
+        let disc_detecting = disc_detecting.clone();
         let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
             if in_flight.get() {
@@ -18051,10 +18072,14 @@ fn open_media_library_window(
             let current_drives = current_drives.clone();
             let selected_disc_id = selected_disc_id.clone();
             let rebuild_overview = rebuild_overview.clone();
+            let disc_detecting = disc_detecting.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
                 let result = gio::spawn_blocking(crate::disc::detect::list_drives).await;
                 in_flight.set(false);
+                // First poll finished — the overview can now show a real
+                // empty state rather than the "Detecting…" hint.
+                disc_detecting.set(false);
                 let Ok(drives) = result else { return };
                 let want: Vec<String> =
                     drives.iter().map(|d| format!("disc:{}", d.id)).collect();

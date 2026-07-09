@@ -52,6 +52,16 @@ pub fn is_audio_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a track path is a Linux disc pseudo-URI (`cdda://N?device=…`)
+/// rather than a real file. Disc media is always read-only and has no file to
+/// stat, so callers use this to keep the read-only lock indicator across a
+/// reload (permission checks would otherwise report the missing "file" as
+/// writable). macOS disc tracks are real AIFF files on a read-only mount and
+/// don't need this.
+pub fn is_disc_uri(path: &Path) -> bool {
+    path.to_string_lossy().starts_with("cdda://")
+}
+
 // ---------------------------------------------------------------------------
 // Track
 // ---------------------------------------------------------------------------
@@ -545,7 +555,10 @@ impl Playlist {
             track.artist = sanitize(&track.artist);
             track.album_artist = sanitize(&track.album_artist);
             track.album = sanitize(&track.album);
-            track.read_only = crate::media_library::is_read_only(&track.path);
+            // Disc tracks (cdda://) have no file to stat but live on read-only
+            // media — keep the lock indicator across reloads.
+            track.read_only =
+                is_disc_uri(&track.path) || crate::media_library::is_read_only(&track.path);
         }
         Ok(playlist)
     }
@@ -967,6 +980,24 @@ impl WaveformBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_disc_uri_matches_cdda_paths_only() {
+        assert!(is_disc_uri(Path::new("cdda://3?device=/dev/sr0")));
+        assert!(is_disc_uri(Path::new("cdda://1")));
+        assert!(!is_disc_uri(Path::new("/home/u/music/song.mp3")));
+        // A real file whose name merely contains "cdda" is not a disc URI.
+        assert!(!is_disc_uri(Path::new("/music/cdda-rip.flac")));
+    }
+
+    #[test]
+    fn reloaded_disc_track_stays_read_only() {
+        // Mirrors Playlist::load's per-track read_only recompute: a cdda:// disc
+        // path has no file to stat, so is_disc_uri must keep it read-only.
+        let disc = Path::new("cdda://5?device=/dev/sr0");
+        let read_only = is_disc_uri(disc) || crate::media_library::is_read_only(disc);
+        assert!(read_only, "disc tracks must reload as read-only");
+    }
 
     #[test]
     fn track_from_libtrack_copies_all_fields() {
