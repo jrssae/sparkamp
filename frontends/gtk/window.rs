@@ -10230,6 +10230,19 @@ fn disc_overview_detail_line(d: &crate::disc::OpticalDrive) -> Option<String> {
     None
 }
 
+/// The audio TOC + freedb disc id of the drive currently shown in the disc
+/// detail view, when it holds an audio disc. `None` for no selection / no disc.
+fn selected_disc_discid(
+    selected_disc_id: &Rc<RefCell<Option<String>>>,
+    current_drives: &Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
+) -> Option<(crate::disc::DiscToc, String)> {
+    let id = selected_disc_id.borrow().clone()?;
+    let drives = current_drives.borrow();
+    let toc = drives.iter().find(|d| d.id == id)?.toc.clone()?;
+    let discid = crate::disc::discid::freedb_discid(&toc);
+    Some((toc, discid))
+}
+
 /// Leading status glyphs for a device label: ⚠ for an unsupported filesystem,
 /// 🔒 for read-only (matching the read-only file convention).
 fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
@@ -11288,6 +11301,26 @@ fn open_media_library_window(
     let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
         Rc::new(RefCell::new(Vec::new()));
+    // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
+    // user's current set (drives titles/artist/album, and rip/submit later);
+    // `disc_official` keeps the untouched gnudb match as the submission
+    // baseline. Both are seeded from the shared on-disk store so names survive
+    // restarts. `pending_disc_matches` parks a multi-match result (discid +
+    // candidates) when the user leaves the view before choosing.
+    let disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let disc_official: Rc<
+        RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>,
+    > = Rc::new(RefCell::new(std::collections::HashMap::new()));
+    {
+        let store = crate::disc::tagstore::DiscTagStore::load();
+        for (id, rec) in store.discs {
+            disc_tags.borrow_mut().insert(id.clone(), rec.user);
+            if let Some(o) = rec.official {
+                disc_official.borrow_mut().insert(id, o);
+            }
+        }
+    }
     // True until the first drive poll finishes, so the overview shows a
     // "Detecting…" hint instead of a premature "No disc drives connected".
     let disc_detecting = Rc::new(Cell::new(true));
@@ -13246,6 +13279,15 @@ fn open_media_library_window(
         .build();
     disc_media_lbl.add_css_class("dim-label");
     disc_detail.append(&disc_media_lbl);
+    // "Artist — Album" once the disc has gnudb/edited tags (hidden otherwise).
+    let disc_tag_lbl = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    disc_tag_lbl.add_css_class("ml-section-header");
+    disc_tag_lbl.set_visible(false);
+    disc_detail.append(&disc_tag_lbl);
     // Banner shown for non-audio media (no disc / blank / data).
     let disc_banner = Label::builder()
         .halign(Align::Start)
@@ -13269,16 +13311,28 @@ fn open_media_library_window(
         .child(&disc_track_list)
         .build();
     disc_detail.append(&disc_tracks_scroll);
-    // Add actions.
+    // Add + identify/tag actions.
     let disc_add_sel = Button::with_label("Add Selected");
     let disc_add_all = Button::with_label("Add All");
-    for b in [&disc_add_sel, &disc_add_all] {
+    let disc_identify = Button::with_label("Identify");
+    let disc_edit_tags = Button::with_label("Edit Tags");
+    for b in [&disc_add_sel, &disc_add_all, &disc_identify, &disc_edit_tags] {
         b.add_css_class("pl-btn");
     }
     let disc_actions = GtkBox::new(Orientation::Horizontal, 6);
     disc_actions.append(&disc_add_sel);
     disc_actions.append(&disc_add_all);
+    disc_actions.append(&disc_identify);
+    disc_actions.append(&disc_edit_tags);
     disc_detail.append(&disc_actions);
+    // Transient status for gnudb lookups ("Asking gnudb…", match/err results).
+    let disc_status_lbl = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    disc_status_lbl.add_css_class("dim-label");
+    disc_detail.append(&disc_status_lbl);
     disc_page.append(&disc_detail);
 
     // ── Content stack ─────────────────────────────────────────────────────
@@ -17863,6 +17917,9 @@ fn open_media_library_window(
     let add_disc_entries: Rc<dyn Fn(&[crate::disc::DiscTrackEntry])> = {
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
+        let disc_tags = disc_tags.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
         Rc::new(move |entries: &[crate::disc::DiscTrackEntry]| {
             if entries.is_empty() {
                 return;
@@ -17870,6 +17927,17 @@ fn open_media_library_window(
             use crate::config::PlaylistAddBehavior;
             let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
+            // Disc-level artist/album for the currently shown drive (empty until
+            // identified/edited); used for the non-sampler title case.
+            let (disc_artist, disc_album) =
+                selected_disc_discid(&selected_disc_id, &current_drives)
+                    .and_then(|(_, id)| {
+                        disc_tags
+                            .borrow()
+                            .get(&id)
+                            .map(|t| (t.artist.clone(), t.album.clone()))
+                    })
+                    .unwrap_or_default();
             if behavior == PlaylistAddBehavior::Replace {
                 let _ = state.borrow_mut().player.stop();
                 let mut s = state.borrow_mut();
@@ -17884,14 +17952,14 @@ fn open_media_library_window(
                 // Sampler discs put the per-track artist in the title.
                 let (artist, title) = match e.title.split_once(" / ") {
                     Some((a, t)) => (a.to_string(), t.to_string()),
-                    None => (String::new(), e.title.clone()),
+                    None => (disc_artist.clone(), e.title.clone()),
                 };
                 state.borrow_mut().playlist.tracks.push(crate::model::Track {
                     path: std::path::PathBuf::from(&e.path),
                     title,
                     artist,
                     album_artist: String::new(),
-                    album: String::new(),
+                    album: disc_album.clone(),
                     duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
                     broken: false,
                     read_only: true, // disc media is never writable in place
@@ -17910,30 +17978,58 @@ fn open_media_library_window(
     let populate_disc_detail: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
         let title = disc_title.clone();
         let media_lbl = disc_media_lbl.clone();
+        let tag_lbl = disc_tag_lbl.clone();
         let banner = disc_banner.clone();
         let track_list = disc_track_list.clone();
         let tracks_scroll = disc_tracks_scroll.clone();
         let actions = disc_actions.clone();
         let entries_store = current_disc_entries.clone();
+        let disc_tags = disc_tags.clone();
         Rc::new(move |drive: &crate::disc::OpticalDrive| {
             title.set_text(&gtk_safe(&drive.label));
             media_lbl.set_text(&drive.media_summary());
             while let Some(child) = track_list.first_child() {
                 track_list.remove(&child);
             }
-            let entries = crate::disc::toc::track_entries(drive);
+            let mut entries = crate::disc::toc::track_entries(drive);
+            // Overlay stored gnudb/edited titles + surface "Artist — Album".
+            let discid = drive.toc.as_ref().map(crate::disc::discid::freedb_discid);
+            let mut header: Option<String> = None;
+            if let Some(id) = &discid {
+                if let Some(tags) = disc_tags.borrow().get(id) {
+                    for e in &mut entries {
+                        if let Some(t) = tags.track_titles.get(e.number as usize - 1) {
+                            if !t.is_empty() {
+                                e.title = t.clone();
+                            }
+                        }
+                    }
+                    if !tags.artist.is_empty() || !tags.album.is_empty() {
+                        header = Some(format!("{} — {}", tags.artist, tags.album));
+                    }
+                }
+            }
+            match &header {
+                Some(h) => {
+                    tag_lbl.set_text(&gtk_safe(h));
+                    tag_lbl.set_visible(true);
+                }
+                None => tag_lbl.set_visible(false),
+            }
             if drive.media.is_audio_cd && !entries.is_empty() {
                 banner.set_visible(false);
                 tracks_scroll.set_visible(true);
                 actions.set_visible(true);
                 for e in &entries {
+                    let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
+                    // Show the real title once known; otherwise the placeholder.
+                    let disp = if e.title == format!("Track {}", e.number) {
+                        format!("Track {} — {}:{:02}", e.number, m, s)
+                    } else {
+                        format!("{}. {} — {}:{:02}", e.number, e.title.replace(" / ", " - "), m, s)
+                    };
                     let row_lbl = Label::builder()
-                        .label(&format!(
-                            "Track {} — {}:{:02}",
-                            e.number,
-                            e.duration_secs / 60,
-                            e.duration_secs % 60
-                        ))
+                        .label(&gtk_safe(&disp))
                         .halign(Align::Start)
                         .xalign(0.0)
                         .margin_start(8)
@@ -17948,6 +18044,7 @@ fn open_media_library_window(
             } else {
                 tracks_scroll.set_visible(false);
                 actions.set_visible(false);
+                tag_lbl.set_visible(false);
                 let msg = if !drive.media.present {
                     "No disc in the drive. Insert an audio CD to play its tracks."
                 } else if drive.media.is_blank {
@@ -17959,6 +18056,78 @@ fn open_media_library_window(
                 banner.set_visible(true);
             }
             *entries_store.borrow_mut() = entries;
+        })
+    };
+
+    // Store a disc's tags (user set + optional official baseline), persist to
+    // the shared store, refresh the detail if it's showing that disc, and push
+    // the new titles/artist/album into already-added playlist rows.
+    #[allow(clippy::type_complexity)]
+    let commit_disc_tags: Rc<
+        dyn Fn(String, crate::disc::xmcd::XmcdEntry, Option<crate::disc::xmcd::XmcdEntry>),
+    > = {
+        let disc_tags = disc_tags.clone();
+        let disc_official = disc_official.clone();
+        let state = state.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let populate = populate_disc_detail.clone();
+        let entries_store = current_disc_entries.clone();
+        let rebuild = rebuild_playlist.clone();
+        Rc::new(move |discid: String, user: crate::disc::xmcd::XmcdEntry, official| {
+            disc_tags.borrow_mut().insert(discid.clone(), user.clone());
+            if let Some(o) = official {
+                disc_official.borrow_mut().insert(discid.clone(), o);
+            }
+            // Persist (user set + the untouched official baseline for submit).
+            {
+                let mut store = crate::disc::tagstore::DiscTagStore::load();
+                let off = disc_official.borrow().get(&discid).cloned();
+                store.set(&discid, user, off);
+                store.save();
+            }
+            // Only refresh/propagate when the committed disc is on screen.
+            let showing = selected_disc_discid(&selected_disc_id, &current_drives)
+                .map(|(_, id)| id == discid)
+                .unwrap_or(false);
+            if !showing {
+                return;
+            }
+            if let Some(id) = selected_disc_id.borrow().clone() {
+                if let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned() {
+                    populate(&drive);
+                }
+            }
+            // Path-keyed propagation to already-added playlist rows, using the
+            // same sampler " / " split as add_disc_entries.
+            let (disc_artist, disc_album) = disc_tags
+                .borrow()
+                .get(&discid)
+                .map(|t| (t.artist.clone(), t.album.clone()))
+                .unwrap_or_default();
+            let updates: Vec<(String, String, String)> = entries_store
+                .borrow()
+                .iter()
+                .map(|e| {
+                    let (artist, title) = match e.title.split_once(" / ") {
+                        Some((a, t)) => (a.to_string(), t.to_string()),
+                        None => (disc_artist.clone(), e.title.clone()),
+                    };
+                    (e.path.clone(), title, artist)
+                })
+                .collect();
+            {
+                let mut s = state.borrow_mut();
+                for track in &mut s.playlist.tracks {
+                    let tp = track.path.display().to_string();
+                    if let Some((_, title, artist)) = updates.iter().find(|(p, _, _)| *p == tp) {
+                        track.title = title.clone();
+                        track.artist = artist.clone();
+                        track.album = disc_album.clone();
+                    }
+                }
+            }
+            rebuild();
         })
     };
 
@@ -18243,6 +18412,274 @@ fn open_media_library_window(
             if let Some(e) = entries.borrow().get(row.index() as usize).cloned() {
                 add(&[e]);
             }
+        });
+    }
+
+    // ── gnudb identify + tag override (Phase 2) ─────────────────────────────
+    // Fetch one chosen match in the background, parse its xmcd, and commit it as
+    // both the user tags and the official (submission-baseline) copy.
+    let apply_disc_match: Rc<dyn Fn(String, String, String)> = {
+        let state = state.clone();
+        let commit = commit_disc_tags.clone();
+        let status = disc_status_lbl.clone();
+        Rc::new(move |discid: String, category: String, matched_id: String| {
+            let email = state.borrow().config.disc.gnudb_email.clone();
+            status.set_text("Fetching entry…");
+            let commit = commit.clone();
+            let status = status.clone();
+            glib::spawn_future_local(async move {
+                let res = gio::spawn_blocking(move || {
+                    match crate::disc::gnudb::read(&category, &matched_id, &email) {
+                        Ok(text) => crate::disc::xmcd::parse(&text)
+                            .ok_or_else(|| "gnudb entry was unreadable".to_string()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                })
+                .await;
+                match res {
+                    Ok(Ok(entry)) => {
+                        let label = format!("{} — {}", entry.artist, entry.album);
+                        commit(discid, entry.clone(), Some(entry));
+                        status.set_text(&gtk_safe(&label));
+                    }
+                    Ok(Err(msg)) => status.set_text(&gtk_safe(&msg)),
+                    Err(_) => status.set_text("gnudb lookup failed"),
+                }
+            });
+        })
+    };
+
+    // Modal picker for an inexact/multi-candidate match list.
+    let open_match_picker: Rc<dyn Fn(String, Vec<crate::disc::gnudb::DiscMatch>)> = {
+        let apply = apply_disc_match.clone();
+        let win_wk = win.downgrade();
+        Rc::new(move |discid: String, matches: Vec<crate::disc::gnudb::DiscMatch>| {
+            let dialog = gtk4::Window::builder()
+                .title("Choose a gnudb match")
+                .modal(true)
+                .default_width(440)
+                .default_height(320)
+                .build();
+            if let Some(w) = win_wk.upgrade() {
+                dialog.set_transient_for(Some(&w));
+            }
+            let vbox = GtkBox::new(Orientation::Vertical, 8);
+            vbox.set_margin_top(12);
+            vbox.set_margin_bottom(12);
+            vbox.set_margin_start(12);
+            vbox.set_margin_end(12);
+            let list = gtk4::ListBox::new();
+            list.set_selection_mode(gtk4::SelectionMode::Single);
+            for m in &matches {
+                let text = format!("{}{}", m.title, if m.exact { "  (exact)" } else { "" });
+                let lbl = Label::builder()
+                    .label(&gtk_safe(&text))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(4)
+                    .margin_bottom(4)
+                    .build();
+                let row = ListBoxRow::new();
+                row.set_child(Some(&lbl));
+                list.append(&row);
+            }
+            list.select_row(list.row_at_index(0).as_ref());
+            let scroll = ScrolledWindow::builder().vexpand(true).child(&list).build();
+            vbox.append(&scroll);
+            let btns = GtkBox::new(Orientation::Horizontal, 6);
+            btns.set_halign(Align::End);
+            let cancel = Button::with_label("Cancel");
+            let ok = Button::with_label("Use This");
+            ok.add_css_class("suggested-action");
+            btns.append(&cancel);
+            btns.append(&ok);
+            vbox.append(&btns);
+            dialog.set_child(Some(&vbox));
+            let d = dialog.clone();
+            cancel.connect_clicked(move |_| d.close());
+            let d = dialog.clone();
+            let apply = apply.clone();
+            ok.connect_clicked(move |_| {
+                let idx = list.selected_row().map(|r| r.index()).unwrap_or(-1);
+                if idx >= 0 {
+                    if let Some(m) = matches.get(idx as usize) {
+                        apply(discid.clone(), m.category.clone(), m.discid.clone());
+                    }
+                }
+                d.close();
+            });
+            dialog.present();
+        })
+    };
+
+    // Identify: background gnudb query. Single exact match auto-applies; several
+    // open the picker; none points the user at Edit Tags. Never blocks the UI.
+    {
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let state = state.clone();
+        let status = disc_status_lbl.clone();
+        let apply = apply_disc_match.clone();
+        let picker = open_match_picker.clone();
+        let identify_btn = disc_identify.clone();
+        disc_identify.connect_clicked(move |_| {
+            let Some((toc, discid)) = selected_disc_discid(&selected_disc_id, &current_drives)
+            else {
+                status.set_text("No audio disc to identify");
+                return;
+            };
+            let email = state.borrow().config.disc.gnudb_email.clone();
+            status.set_text("Asking gnudb…");
+            identify_btn.set_sensitive(false);
+            let status = status.clone();
+            let apply = apply.clone();
+            let picker = picker.clone();
+            let identify_btn2 = identify_btn.clone();
+            glib::spawn_future_local(async move {
+                let res =
+                    gio::spawn_blocking(move || crate::disc::gnudb::query(&toc, &email)).await;
+                identify_btn2.set_sensitive(true);
+                match res {
+                    Ok(Ok(matches)) if matches.is_empty() => {
+                        status.set_text("No gnudb match — use Edit Tags to fill them in.");
+                    }
+                    Ok(Ok(matches)) if matches.len() == 1 && matches[0].exact => {
+                        let m = &matches[0];
+                        apply(discid, m.category.clone(), m.discid.clone());
+                    }
+                    Ok(Ok(matches)) => picker(discid, matches),
+                    Ok(Err(e)) => status.set_text(&gtk_safe(&e.to_string())),
+                    Err(_) => status.set_text("gnudb lookup failed"),
+                }
+            });
+        });
+    }
+
+    // Edit Tags: modal editor for disc fields + per-track titles, editable with
+    // or without a match. Save commits, persists, overlays, and propagates.
+    {
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let disc_tags = disc_tags.clone();
+        let entries_store = current_disc_entries.clone();
+        let commit = commit_disc_tags.clone();
+        let status = disc_status_lbl.clone();
+        let win_wk = win.downgrade();
+        disc_edit_tags.connect_clicked(move |_| {
+            let Some((_, discid)) = selected_disc_discid(&selected_disc_id, &current_drives) else {
+                status.set_text("No audio disc loaded");
+                return;
+            };
+            let stored = disc_tags.borrow().get(&discid).cloned();
+            let entries = entries_store.borrow().clone();
+            let dialog = gtk4::Window::builder()
+                .title("Edit Disc Tags")
+                .modal(true)
+                .default_width(460)
+                .default_height(500)
+                .build();
+            if let Some(w) = win_wk.upgrade() {
+                dialog.set_transient_for(Some(&w));
+            }
+            let outer = GtkBox::new(Orientation::Vertical, 8);
+            outer.set_margin_top(12);
+            outer.set_margin_bottom(12);
+            outer.set_margin_start(12);
+            outer.set_margin_end(12);
+            let mk_field = |label: &str, val: &str| -> (GtkBox, Entry) {
+                let row = GtkBox::new(Orientation::Horizontal, 8);
+                let l = Label::builder()
+                    .label(label)
+                    .width_chars(7)
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                let e = Entry::new();
+                e.set_hexpand(true);
+                e.set_text(&gtk_safe(val));
+                row.append(&l);
+                row.append(&e);
+                (row, e)
+            };
+            let (artist_row, artist_e) =
+                mk_field("Artist", stored.as_ref().map(|s| s.artist.as_str()).unwrap_or(""));
+            let (album_row, album_e) =
+                mk_field("Album", stored.as_ref().map(|s| s.album.as_str()).unwrap_or(""));
+            let (year_row, year_e) =
+                mk_field("Year", stored.as_ref().map(|s| s.year.as_str()).unwrap_or(""));
+            let (genre_row, genre_e) =
+                mk_field("Genre", stored.as_ref().map(|s| s.genre.as_str()).unwrap_or(""));
+            outer.append(&artist_row);
+            outer.append(&album_row);
+            outer.append(&year_row);
+            outer.append(&genre_row);
+            let sep = Label::builder()
+                .label("Track titles (use \"Artist / Title\" for compilations)")
+                .halign(Align::Start)
+                .xalign(0.0)
+                .build();
+            sep.add_css_class("dim-label");
+            outer.append(&sep);
+            let title_box = GtkBox::new(Orientation::Vertical, 4);
+            let mut title_entries: Vec<Entry> = Vec::new();
+            for e in &entries {
+                let idx = e.number as usize - 1;
+                let init = stored
+                    .as_ref()
+                    .and_then(|s| s.track_titles.get(idx).cloned())
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| {
+                        if e.title == format!("Track {}", e.number) {
+                            String::new()
+                        } else {
+                            e.title.clone()
+                        }
+                    });
+                let row = GtkBox::new(Orientation::Horizontal, 8);
+                let l = Label::builder()
+                    .label(&format!("{}.", e.number))
+                    .width_chars(3)
+                    .halign(Align::Start)
+                    .build();
+                let ent = Entry::new();
+                ent.set_hexpand(true);
+                ent.set_text(&gtk_safe(&init));
+                row.append(&l);
+                row.append(&ent);
+                title_box.append(&row);
+                title_entries.push(ent);
+            }
+            let scroll = ScrolledWindow::builder().vexpand(true).child(&title_box).build();
+            outer.append(&scroll);
+            let btns = GtkBox::new(Orientation::Horizontal, 6);
+            btns.set_halign(Align::End);
+            let cancel = Button::with_label("Cancel");
+            let save = Button::with_label("Save");
+            save.add_css_class("suggested-action");
+            btns.append(&cancel);
+            btns.append(&save);
+            outer.append(&btns);
+            dialog.set_child(Some(&outer));
+            let d = dialog.clone();
+            cancel.connect_clicked(move |_| d.close());
+            let d = dialog.clone();
+            let commit = commit.clone();
+            save.connect_clicked(move |_| {
+                // Base on the stored entry so extd/extt/revision survive edits.
+                let mut entry = stored.clone().unwrap_or_default();
+                entry.discid = discid.clone();
+                entry.artist = artist_e.text().to_string();
+                entry.album = album_e.text().to_string();
+                entry.year = year_e.text().to_string();
+                entry.genre = genre_e.text().to_string();
+                entry.track_titles =
+                    title_entries.iter().map(|e| e.text().to_string()).collect();
+                commit(discid.clone(), entry, None);
+                d.close();
+            });
+            dialog.present();
         });
     }
 
