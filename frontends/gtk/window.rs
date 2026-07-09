@@ -11291,6 +11291,11 @@ fn open_media_library_window(
     // True until the first drive poll finishes, so the overview shows a
     // "Detecting…" hint instead of a premature "No disc drives connected".
     let disc_detecting = Rc::new(Cell::new(true));
+    // Spinner shown in the sidebar header while that first poll runs; stopped
+    // and hidden by refresh_discs once detection completes.
+    let disc_detect_spinner = gtk4::Spinner::new();
+    disc_detect_spinner.set_margin_end(8);
+    disc_detect_spinner.start();
     {
         let hdr = GtkBox::new(Orientation::Horizontal, 0);
         let lbl = Label::builder()
@@ -11307,6 +11312,7 @@ fn open_media_library_window(
             .margin_end(8)
             .build();
         hdr.append(&lbl);
+        hdr.append(&disc_detect_spinner);
         hdr.append(&chev);
         let row = ListBoxRow::new();
         row.set_widget_name("discs");
@@ -18044,6 +18050,7 @@ fn open_media_library_window(
         let rebuild_overview = rebuild_disc_overview.clone();
         let state = state.clone();
         let disc_detecting = disc_detecting.clone();
+        let disc_detect_spinner = disc_detect_spinner.clone();
         let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
             if in_flight.get() {
@@ -18073,13 +18080,16 @@ fn open_media_library_window(
             let selected_disc_id = selected_disc_id.clone();
             let rebuild_overview = rebuild_overview.clone();
             let disc_detecting = disc_detecting.clone();
+            let disc_detect_spinner = disc_detect_spinner.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
                 let result = gio::spawn_blocking(crate::disc::detect::list_drives).await;
                 in_flight.set(false);
-                // First poll finished — the overview can now show a real
-                // empty state rather than the "Detecting…" hint.
+                // First poll finished — drop the "Detecting…" hint + sidebar
+                // spinner and show the real state.
                 disc_detecting.set(false);
+                disc_detect_spinner.stop();
+                disc_detect_spinner.set_visible(false);
                 let Ok(drives) = result else { return };
                 let want: Vec<String> =
                     drives.iter().map(|d| format!("disc:{}", d.id)).collect();
