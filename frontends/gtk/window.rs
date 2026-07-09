@@ -18331,6 +18331,9 @@ fn open_media_library_window(
                         .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
                         .unwrap_or(false);
                 if playing_disc {
+                    // Not detecting right now — clear any spinner a show/map set.
+                    disc_detect_spinner.stop();
+                    disc_detect_spinner.set_visible(false);
                     return;
                 }
             }
@@ -18816,6 +18819,19 @@ fn open_media_library_window(
             }
             refresh();
             glib::ControlFlow::Continue
+        });
+    }
+    // Re-detect every time the window is shown (this ML window uses
+    // hide-on-close, so it's reused across opens). Spinning the header spinner
+    // here means the "detecting…" indicator is actually visible when the user
+    // opens the Media Library, not only during the one-off build at startup.
+    {
+        let refresh = refresh_discs.clone();
+        let spinner = disc_detect_spinner.clone();
+        win.connect_map(move |_| {
+            spinner.set_visible(true);
+            spinner.start();
+            refresh();
         });
     }
 
