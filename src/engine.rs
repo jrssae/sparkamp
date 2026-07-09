@@ -924,3 +924,31 @@ impl Drop for Player {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
+
+#[cfg(test)]
+mod live_cdda_tests {
+    use super::*;
+
+    /// Live diagnosis: play a real CD track through the full Player pipeline and
+    /// log the bus events + position each 250 ms. Run:
+    /// `cargo test --lib live_play_cdda -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_play_cdda() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        p.load("cdda://1?device=/dev/sr0").unwrap();
+        p.play().unwrap();
+        for i in 0..24 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let ev = p.poll_bus();
+            eprintln!(
+                "t={i:2} ev={:?} pos={:?} dur={:?} state={:?}",
+                ev,
+                p.position(),
+                p.duration(),
+                p.state()
+            );
+        }
+    }
+}

@@ -13249,6 +13249,9 @@ fn open_media_library_window(
     // Audio-track list: multi-select rows "Track N — MM:SS".
     let disc_track_list = gtk4::ListBox::new();
     disc_track_list.set_selection_mode(gtk4::SelectionMode::Multiple);
+    // Single click only selects (for Add Selected); a double-click activates a
+    // row to add just that track — matching the established double-click add.
+    disc_track_list.set_activate_on_single_click(false);
     disc_track_list.add_css_class("ml-col-view");
     let disc_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
@@ -18019,10 +18022,27 @@ fn open_media_library_window(
         let current_drives = current_drives.clone();
         let selected_disc_id = selected_disc_id.clone();
         let rebuild_overview = rebuild_disc_overview.clone();
+        let state = state.clone();
         let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
             if in_flight.get() {
                 return;
+            }
+            // Never run cd-info on a drive we're actively playing from: it seeks
+            // the same head cdiocddasrc is reading, stalling playback (the device
+            // only allows one reader). Skip while a cdda:// track is loaded and
+            // the player isn't stopped; polling resumes once playback ends.
+            {
+                let s = state.borrow();
+                let playing_disc = !matches!(s.player.state(), PlayerState::Stopped)
+                    && s
+                        .playlist
+                        .current()
+                        .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
+                        .unwrap_or(false);
+                if playing_disc {
+                    return;
+                }
             }
             in_flight.set(true);
             let sidebar = sidebar.clone();
