@@ -10197,6 +10197,39 @@ fn device_fs_unsupported(fs_type: &str) -> bool {
     crate::devices::plan::device_fs_unsupported(fs_type)
 }
 
+/// Whether a udisks volume is optical media (a mounted data CD/DVD). These
+/// belong to the Disc Drives group, not the removable-Devices list, so the
+/// device poll filters them out. `iso9660`/`udf` are the optical data
+/// filesystems; audio CDs have no filesystem and never reach the device list.
+fn is_optical_fs(fs_type: &str) -> bool {
+    matches!(fs_type.to_ascii_lowercase().as_str(), "iso9660" | "udf")
+}
+
+/// Overview-card detail line for one optical drive: total audio time for an
+/// audio CD, writable size for a blank disc, or used-of-total for a data disc.
+/// `None` when nothing meaningful is known (e.g. an empty tray, or capacities
+/// the Phase-1 probe doesn't fill yet).
+fn disc_overview_detail_line(d: &crate::disc::OpticalDrive) -> Option<String> {
+    if d.media.is_audio_cd {
+        let toc = d.toc.as_ref()?;
+        let first = toc.tracks.first().map(|t| t.start_frame / 75).unwrap_or(0);
+        let total = (toc.leadout_frame / 75).saturating_sub(first);
+        return Some(format!("{}:{:02} of audio", total / 60, total % 60));
+    }
+    if d.media.is_blank && d.media.capacity_bytes > 0 {
+        return Some(format!("{:.0} MB writable", d.media.capacity_bytes as f64 / 1e6));
+    }
+    if d.media.present && !d.media.is_blank && d.media.capacity_bytes > 0 {
+        let used = d.media.capacity_bytes.saturating_sub(d.media.free_bytes);
+        return Some(format!(
+            "{:.1} GB of {:.1} GB used",
+            used as f64 / 1e9,
+            d.media.capacity_bytes as f64 / 1e9,
+        ));
+    }
+    None
+}
+
 /// Leading status glyphs for a device label: ⚠ for an unsupported filesystem,
 /// 🔒 for read-only (matching the read-only file convention).
 fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
@@ -11242,6 +11275,58 @@ fn open_media_library_window(
             sidebar.append(&row);
             pl_sub_rows.borrow_mut().push(row);
         }
+    }
+
+    // ── "Disc Drives" header row (optical drives via crate::disc) ─────────
+    // Sits just above Devices. Disc sub-rows are inserted between this header
+    // and the Devices header; device rows keep appending to the sidebar end, so
+    // the two groups stay separate. Phase 1: detection + audio-CD playback.
+    let discs_expanded = Rc::new(Cell::new(true));
+    let disc_sub_rows: Rc<RefCell<Vec<ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
+    let current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    {
+        let hdr = GtkBox::new(Orientation::Horizontal, 0);
+        let lbl = Label::builder()
+            .label("Disc Drives")
+            .halign(Align::Start)
+            .xalign(0.0)
+            .hexpand(true)
+            .margin_start(10)
+            .margin_top(7)
+            .margin_bottom(7)
+            .build();
+        let chev = Label::builder()
+            .label(if discs_expanded.get() { "▾" } else { "▸" })
+            .margin_end(8)
+            .build();
+        hdr.append(&lbl);
+        hdr.append(&chev);
+        let row = ListBoxRow::new();
+        row.set_widget_name("discs");
+        row.set_child(Some(&hdr));
+        sidebar.append(&row);
+
+        let gesture = GestureClick::new();
+        let exp = discs_expanded.clone();
+        let subs = disc_sub_rows.clone();
+        let chev2 = chev.clone();
+        gesture.connect_released(move |g, _n, x, _y| {
+            let w = g.widget().map(|w| w.width()).unwrap_or(0) as f64;
+            if x < w - 24.0 {
+                return; // left of the chevron = navigation, handled elsewhere
+            }
+            let v = !exp.get();
+            exp.set(v);
+            chev2.set_text(if v { "▾" } else { "▸" });
+            for r in subs.borrow().iter() {
+                r.set_visible(v);
+            }
+        });
+        row.add_controller(gesture);
     }
 
     // ── "Devices" header row (external USB/SD storage via udisks2) ────────
@@ -13118,12 +13203,79 @@ fn open_media_library_window(
 
     let _vsep_unused = (); // replaced by Paned divider
 
+    // ── "Disc Drives" content page (optical drives; Phase 1: play) ────────
+    // Overview (one card per drive) + detail (audio track list + add actions).
+    let disc_page = GtkBox::new(Orientation::Vertical, 8);
+    disc_page.set_margin_top(8);
+    disc_page.set_margin_start(8);
+    disc_page.set_margin_end(8);
+
+    // Overview: shown when the Disc Drives header is selected.
+    let disc_overview = GtkBox::new(Orientation::Vertical, 6);
+    let disc_overview_title = Label::builder()
+        .label("Disc Drives")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .build();
+    disc_overview_title.add_css_class("ml-section-header");
+    disc_overview.append(&disc_overview_title);
+    let disc_overview_list = GtkBox::new(Orientation::Vertical, 12);
+    disc_overview_list.set_margin_top(6);
+    disc_overview.append(&disc_overview_list);
+    disc_page.append(&disc_overview);
+
+    // Detail: the selected drive (hidden until one is picked).
+    let disc_detail = GtkBox::new(Orientation::Vertical, 8);
+    disc_detail.set_visible(false);
+    let disc_title = Label::builder().halign(Align::Start).xalign(0.0).build();
+    disc_title.add_css_class("ml-section-header");
+    disc_detail.append(&disc_title);
+    let disc_media_lbl = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    disc_media_lbl.add_css_class("dim-label");
+    disc_detail.append(&disc_media_lbl);
+    // Banner shown for non-audio media (no disc / blank / data).
+    let disc_banner = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    disc_banner.add_css_class("broken");
+    disc_banner.set_visible(false);
+    disc_detail.append(&disc_banner);
+    // Audio-track list: multi-select rows "Track N — MM:SS".
+    let disc_track_list = gtk4::ListBox::new();
+    disc_track_list.set_selection_mode(gtk4::SelectionMode::Multiple);
+    disc_track_list.add_css_class("ml-col-view");
+    let disc_tracks_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Automatic)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .vexpand(true)
+        .child(&disc_track_list)
+        .build();
+    disc_detail.append(&disc_tracks_scroll);
+    // Add actions.
+    let disc_add_sel = Button::with_label("Add Selected");
+    let disc_add_all = Button::with_label("Add All");
+    for b in [&disc_add_sel, &disc_add_all] {
+        b.add_css_class("pl-btn");
+    }
+    let disc_actions = GtkBox::new(Orientation::Horizontal, 6);
+    disc_actions.append(&disc_add_sel);
+    disc_actions.append(&disc_add_all);
+    disc_detail.append(&disc_actions);
+    disc_page.append(&disc_detail);
+
     // ── Content stack ─────────────────────────────────────────────────────
     let stack = Stack::new();
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     stack.set_transition_type(StackTransitionType::None);
     stack.add_named(&dev_page, Some("devices"));
+    stack.add_named(&disc_page, Some("discs"));
 
     // Holders so close_request can save Files-tab state (col_view and all_cols are
     // defined inside the Files block scope below).
@@ -17529,6 +17681,9 @@ fn open_media_library_window(
                         banner.set_visible(false);
                         // Merge MTP devices, then re-sort by label.
                         let mut devs = devs;
+                        // Mounted optical data discs belong to Disc Drives, not
+                        // the removable-Devices list — drop them here.
+                        devs.retain(|d| !is_optical_fs(&d.fs_type));
                         devs.extend(mtp);
                         devs.sort_by(|a, b| {
                             a.label
@@ -17686,6 +17841,368 @@ fn open_media_library_window(
     {
         let refresh = refresh_devices.clone();
         dev_banner_retry.connect_clicked(move |_| refresh());
+    }
+
+    // ── Disc Drives: playlist adds, detail population, overview, poll ────────
+    // Turn DiscTrackEntry values into active-playlist rows, honoring the same
+    // add-behavior + autoplay rules as the ML double-click path. Phase 1 has no
+    // gnudb tags yet, so titles are "Track N" and artist/album stay empty (the
+    // " / " sampler split still applies to future matched discs).
+    let add_disc_entries: Rc<dyn Fn(&[crate::disc::DiscTrackEntry])> = {
+        let state = state.clone();
+        let rebuild = rebuild_playlist.clone();
+        Rc::new(move |entries: &[crate::disc::DiscTrackEntry]| {
+            if entries.is_empty() {
+                return;
+            }
+            use crate::config::PlaylistAddBehavior;
+            let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+            let autoplay = state.borrow().config.behavior.autoplay_on_add;
+            if behavior == PlaylistAddBehavior::Replace {
+                let _ = state.borrow_mut().player.stop();
+                let mut s = state.borrow_mut();
+                s.playlist.tracks.clear();
+                s.playlist.current_index = 0;
+                s.last_duration = None;
+                s.pending_seek = None;
+                s.mute_pending = None;
+            }
+            let insert_start = state.borrow().playlist.len();
+            for e in entries {
+                // Sampler discs put the per-track artist in the title.
+                let (artist, title) = match e.title.split_once(" / ") {
+                    Some((a, t)) => (a.to_string(), t.to_string()),
+                    None => (String::new(), e.title.clone()),
+                };
+                state.borrow_mut().playlist.tracks.push(crate::model::Track {
+                    path: std::path::PathBuf::from(&e.path),
+                    title,
+                    artist,
+                    album_artist: String::new(),
+                    album: String::new(),
+                    duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
+                    broken: false,
+                    read_only: true, // disc media is never writable in place
+                });
+            }
+            rebuild();
+            if autoplay && (behavior == PlaylistAddBehavior::Replace || insert_start == 0) {
+                state.borrow_mut().playlist.jump_to(insert_start);
+                state.borrow_mut().play_current();
+            }
+        })
+    };
+
+    // Fill the drive detail view for one drive: header, media state, and either
+    // the audio-track list or a banner for no-disc/blank/data media.
+    let populate_disc_detail: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
+        let title = disc_title.clone();
+        let media_lbl = disc_media_lbl.clone();
+        let banner = disc_banner.clone();
+        let track_list = disc_track_list.clone();
+        let tracks_scroll = disc_tracks_scroll.clone();
+        let actions = disc_actions.clone();
+        let entries_store = current_disc_entries.clone();
+        Rc::new(move |drive: &crate::disc::OpticalDrive| {
+            title.set_text(&gtk_safe(&drive.label));
+            media_lbl.set_text(&drive.media_summary());
+            while let Some(child) = track_list.first_child() {
+                track_list.remove(&child);
+            }
+            let entries = crate::disc::toc::track_entries(drive);
+            if drive.media.is_audio_cd && !entries.is_empty() {
+                banner.set_visible(false);
+                tracks_scroll.set_visible(true);
+                actions.set_visible(true);
+                for e in &entries {
+                    let row_lbl = Label::builder()
+                        .label(&format!(
+                            "Track {} — {}:{:02}",
+                            e.number,
+                            e.duration_secs / 60,
+                            e.duration_secs % 60
+                        ))
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .margin_start(8)
+                        .margin_end(8)
+                        .margin_top(4)
+                        .margin_bottom(4)
+                        .build();
+                    let row = ListBoxRow::new();
+                    row.set_child(Some(&row_lbl));
+                    track_list.append(&row);
+                }
+            } else {
+                tracks_scroll.set_visible(false);
+                actions.set_visible(false);
+                let msg = if !drive.media.present {
+                    "No disc in the drive. Insert an audio CD to play its tracks."
+                } else if drive.media.is_blank {
+                    "Blank disc. Burning arrives in a later phase."
+                } else {
+                    "Data disc — no audio tracks to play."
+                };
+                banner.set_text(msg);
+                banner.set_visible(true);
+            }
+            *entries_store.borrow_mut() = entries;
+        })
+    };
+
+    // Overview cards (one per drive); clicking a card opens that drive's detail.
+    let rebuild_disc_overview: Rc<dyn Fn()> = {
+        let drives = current_drives.clone();
+        let list = disc_overview_list.clone();
+        let sidebar_ov = sidebar.clone();
+        Rc::new(move || {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            let ds = drives.borrow();
+            if ds.is_empty() {
+                let empty = Label::builder()
+                    .label("No disc drives connected")
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                empty.add_css_class("dim-label");
+                list.append(&empty);
+                return;
+            }
+            for d in ds.iter() {
+                let card = GtkBox::new(Orientation::Vertical, 4);
+                card.set_margin_top(4);
+                card.set_margin_bottom(4);
+                let name = Label::builder()
+                    .label(&gtk_safe(&d.label))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                let state_lbl = Label::builder()
+                    .label(&d.media_summary())
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                state_lbl.add_css_class("dim-label");
+                card.append(&name);
+                card.append(&state_lbl);
+                if let Some(detail) = disc_overview_detail_line(d) {
+                    let dl = Label::builder()
+                        .label(&detail)
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .build();
+                    dl.add_css_class("dim-label");
+                    card.append(&dl);
+                }
+                let gesture = GestureClick::new();
+                let sidebar_c = sidebar_ov.clone();
+                let target = format!("disc:{}", d.id);
+                gesture.connect_released(move |_, _, _, _| {
+                    if let Some(r) = find_row_by_name(&sidebar_c, &target) {
+                        sidebar_c.select_row(Some(&r));
+                    }
+                });
+                card.add_controller(gesture);
+                list.append(&card);
+            }
+        })
+    };
+
+    // Poll every optical drive off the UI thread (detection shells out to
+    // cd-info). Diff the sidebar rows in place, keeping selection stable.
+    let refresh_discs: Rc<dyn Fn()> = {
+        let sidebar = sidebar.clone();
+        let disc_sub_rows = disc_sub_rows.clone();
+        let discs_expanded = discs_expanded.clone();
+        let current_drives = current_drives.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let rebuild_overview = rebuild_disc_overview.clone();
+        let in_flight = Rc::new(Cell::new(false));
+        Rc::new(move || {
+            if in_flight.get() {
+                return;
+            }
+            in_flight.set(true);
+            let sidebar = sidebar.clone();
+            let disc_sub_rows = disc_sub_rows.clone();
+            let discs_expanded = discs_expanded.clone();
+            let current_drives = current_drives.clone();
+            let selected_disc_id = selected_disc_id.clone();
+            let rebuild_overview = rebuild_overview.clone();
+            let in_flight = in_flight.clone();
+            glib::spawn_future_local(async move {
+                let result = gio::spawn_blocking(crate::disc::detect::list_drives).await;
+                in_flight.set(false);
+                let Ok(drives) = result else { return };
+                let want: Vec<String> =
+                    drives.iter().map(|d| format!("disc:{}", d.id)).collect();
+                // Remove rows for drives that went away.
+                disc_sub_rows.borrow_mut().retain(|r| {
+                    let keep = want.contains(&r.widget_name().to_string());
+                    if !keep {
+                        sidebar.remove(r);
+                    }
+                    keep
+                });
+                let expanded = discs_expanded.get();
+                for d in &drives {
+                    let name = format!("disc:{}", d.id);
+                    let label_text = if d.label.is_empty() {
+                        d.id.clone()
+                    } else {
+                        d.label.clone()
+                    };
+                    let summary = d.media_summary();
+                    let existing = disc_sub_rows
+                        .borrow()
+                        .iter()
+                        .find(|r| r.widget_name().as_str() == name)
+                        .cloned();
+                    match existing {
+                        Some(row) => {
+                            // Keep the media-state line current (disc in/out).
+                            if let Some(bx) =
+                                row.child().and_then(|c| c.downcast::<GtkBox>().ok())
+                            {
+                                if let Some(lbl) =
+                                    bx.last_child().and_then(|c| c.downcast::<Label>().ok())
+                                {
+                                    lbl.set_text(&summary);
+                                }
+                            }
+                        }
+                        None => {
+                            let bx = GtkBox::new(Orientation::Vertical, 2);
+                            bx.set_margin_start(24);
+                            bx.set_margin_end(8);
+                            bx.set_margin_top(4);
+                            bx.set_margin_bottom(4);
+                            let lbl = Label::builder()
+                                .label(&gtk_safe(&label_text))
+                                .halign(Align::Start)
+                                .xalign(0.0)
+                                .build();
+                            let state_lbl = Label::builder()
+                                .label(&summary)
+                                .halign(Align::Start)
+                                .xalign(0.0)
+                                .build();
+                            state_lbl.add_css_class("dim-label");
+                            bx.append(&lbl);
+                            bx.append(&state_lbl);
+                            let row = ListBoxRow::new();
+                            row.set_widget_name(&name);
+                            row.set_child(Some(&bx));
+                            row.set_visible(expanded);
+                            // Insert between the Disc Drives and Devices headers
+                            // so disc rows stay grouped above the device rows.
+                            let at = find_row_by_name(&sidebar, "devices")
+                                .map(|r| r.index())
+                                .unwrap_or(-1);
+                            sidebar.insert(&row, at);
+                            disc_sub_rows.borrow_mut().push(row);
+                        }
+                    }
+                }
+                // Unplug fallback: if the drive being viewed disappeared, return
+                // to the discs overview.
+                if let Some(sel) = selected_disc_id.borrow().clone() {
+                    if !drives.iter().any(|d| d.id == sel) {
+                        if let Some(r) = find_row_by_name(&sidebar, "discs") {
+                            sidebar.select_row(Some(&r));
+                        }
+                    }
+                }
+                *current_drives.borrow_mut() = drives;
+                rebuild_overview();
+            });
+        })
+    };
+
+    // Selecting a drive (or the Disc Drives header) shows the discs page.
+    {
+        let stack_ref = stack.clone();
+        let drives = current_drives.clone();
+        let overview = disc_overview.clone();
+        let detail = disc_detail.clone();
+        let populate = populate_disc_detail.clone();
+        let rebuild_overview = rebuild_disc_overview.clone();
+        let sel_id = selected_disc_id.clone();
+        let exp = discs_expanded.clone();
+        sidebar.connect_row_selected(move |_, opt_row| {
+            let Some(row) = opt_row else { return };
+            let name = row.widget_name().to_string();
+            if name == "discs" {
+                stack_ref.set_visible_child_name("discs");
+                rebuild_overview();
+                overview.set_visible(true);
+                detail.set_visible(false);
+                *sel_id.borrow_mut() = None;
+                if !exp.get() {
+                    exp.set(true);
+                }
+            } else if let Some(id) = name.strip_prefix("disc:") {
+                stack_ref.set_visible_child_name("discs");
+                if let Some(d) = drives.borrow().iter().find(|d| d.id == id) {
+                    overview.set_visible(false);
+                    detail.set_visible(true);
+                    populate(d);
+                    *sel_id.borrow_mut() = Some(id.to_string());
+                }
+            }
+        });
+    }
+
+    // Add actions: selected tracks, all tracks, or a double-clicked row.
+    {
+        let entries = current_disc_entries.clone();
+        let track_list = disc_track_list.clone();
+        let add = add_disc_entries.clone();
+        disc_add_sel.connect_clicked(move |_| {
+            let sel = track_list.selected_rows();
+            if sel.is_empty() {
+                return;
+            }
+            let all = entries.borrow();
+            let picked: Vec<crate::disc::DiscTrackEntry> = sel
+                .iter()
+                .filter_map(|r| all.get(r.index() as usize).cloned())
+                .collect();
+            add(&picked);
+        });
+    }
+    {
+        let entries = current_disc_entries.clone();
+        let add = add_disc_entries.clone();
+        disc_add_all.connect_clicked(move |_| {
+            let all = entries.borrow().clone();
+            add(&all);
+        });
+    }
+    {
+        let entries = current_disc_entries.clone();
+        let add = add_disc_entries.clone();
+        disc_track_list.connect_row_activated(move |_, row| {
+            if let Some(e) = entries.borrow().get(row.index() as usize).cloned() {
+                add(&[e]);
+            }
+        });
+    }
+
+    // Initial scan + lazy 10 s poll (stops once the window/sidebar is gone).
+    refresh_discs();
+    {
+        let refresh = refresh_discs.clone();
+        let sidebar_weak = sidebar.downgrade();
+        glib::timeout_add_local(std::time::Duration::from_secs(10), move || {
+            if sidebar_weak.upgrade().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            refresh();
+            glib::ControlFlow::Continue
+        });
     }
 
     // Selecting a device (or the Devices header) shows the devices page.
