@@ -5287,22 +5287,22 @@ pub fn build(
                 cfg.window.playlist_height = playlist_win.height();
             }
             cfg.window.ml_visible = state.borrow().ml_window.is_some();
-            // Save ML window size before destroying it.
+            // Record ML window size for next launch.
             if let Some(ref ml_win) = state.borrow().ml_window {
                 cfg.window.ml_width = ml_win.width();
                 cfg.window.ml_height = ml_win.height();
-                ml_win.destroy();
             }
             let _ = cfg.save();
-            playlist_win.destroy();
 
-            // If any background operations (rescan, add folder) are still in flight,
-            // force the main loop to exit. The background threads keep running but
-            // the UI is gone so they have no effect.
-            if state.borrow().pending_bg_ops.get() > 0 {
-                if let Some(app) = w.application() {
-                    app.quit();
-                }
+            // Quit through the GApplication rather than destroying the other
+            // ApplicationWindows (playlist_win / ml_win) by hand: a manual
+            // `.destroy()` from inside this close-request handler re-enters GTK's
+            // window teardown and segfaults (GtkApplication mutates its window
+            // list mid signal-emission). `app.quit()` closes every window and
+            // unwinds the main loop cleanly, and still guarantees the process
+            // exits even though those windows use hide-on-close.
+            if let Some(app) = w.application() {
+                app.quit();
             }
             glib::Propagation::Proceed
         }
@@ -6654,6 +6654,71 @@ fn open_id3_editor_window(
 /// `css_provider` is updated live when the user switches skins in the
 /// Appearance tab.
 #[allow(deprecated)]
+/// Modal asking for the gnudb/CDDB email, prefilled from config. On Save it
+/// stores + persists the address and runs `on_done` (e.g. retry the lookup);
+/// Cancel just closes. Used when a disc action needs an email that's unset.
+fn prompt_gnudb_email(
+    parent: Option<&gtk4::Window>,
+    state: Rc<RefCell<AppState>>,
+    on_done: Rc<dyn Fn()>,
+) {
+    let dialog = gtk4::Window::builder()
+        .title("gnudb email")
+        .modal(true)
+        .default_width(380)
+        .build();
+    if let Some(p) = parent {
+        dialog.set_transient_for(Some(p));
+    }
+    let vbox = GtkBox::new(Orientation::Vertical, 8);
+    vbox.set_margin_top(12);
+    vbox.set_margin_bottom(12);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+    let info = Label::builder()
+        .label(
+            "gnudb needs an email address for its lookup/submission handshake. \
+             It's stored locally and used only to talk to gnudb.",
+        )
+        .wrap(true)
+        .halign(Align::Start)
+        .xalign(0.0)
+        .build();
+    let entry = Entry::new();
+    entry.set_placeholder_text(Some("you@example.com"));
+    entry.set_text(&gtk_safe(&state.borrow().config.disc.gnudb_email));
+    let btns = GtkBox::new(Orientation::Horizontal, 6);
+    btns.set_halign(Align::End);
+    let cancel = Button::with_label("Cancel");
+    let save = Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    btns.append(&cancel);
+    btns.append(&save);
+    vbox.append(&info);
+    vbox.append(&entry);
+    vbox.append(&btns);
+    dialog.set_child(Some(&vbox));
+    let d = dialog.clone();
+    cancel.connect_clicked(move |_| d.close());
+    {
+        let save = save.clone();
+        entry.connect_activate(move |_| {
+            save.activate();
+        });
+    }
+    let d = dialog.clone();
+    save.connect_clicked(move |_| {
+        {
+            let mut s = state.borrow_mut();
+            s.config.disc.gnudb_email = entry.text().to_string();
+            let _ = s.config.save();
+        }
+        on_done();
+        d.close();
+    });
+    dialog.present();
+}
+
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -7020,6 +7085,30 @@ fn open_settings_window(
             });
         }
         grid.attach(&dd_add, 1, 1, 1, 1);
+
+        // Row 2: gnudb email — used for the CDDB/gnudb handshake on disc
+        // identify and (later) submission. Stored locally only.
+        let lbl_email = Label::new(Some("gnudb email"));
+        lbl_email.set_halign(Align::Start);
+        lbl_email.set_tooltip_text(Some(
+            "Your email for the gnudb/CDDB handshake — needed to identify and \
+             submit disc metadata. Stored locally and used only to talk to gnudb.",
+        ));
+        grid.attach(&lbl_email, 0, 2, 1, 1);
+
+        let email_entry = gtk4::Entry::new();
+        email_entry.set_hexpand(true);
+        email_entry.set_placeholder_text(Some("you@example.com"));
+        email_entry.set_text(&gtk_safe(&state.borrow().config.disc.gnudb_email));
+        {
+            let state_rc = state.clone();
+            email_entry.connect_changed(move |e| {
+                let mut s = state_rc.borrow_mut();
+                s.config.disc.gnudb_email = e.text().to_string();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&email_entry, 1, 2, 1, 1);
 
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -11328,6 +11417,10 @@ fn open_media_library_window(
     // and hidden by refresh_discs once detection completes.
     let disc_detect_spinner = gtk4::Spinner::new();
     disc_detect_spinner.set_margin_end(8);
+    // An unsized spinner in a tight header slot can render 0×0 (invisible);
+    // give it an explicit size and center it so it clearly shows while spinning.
+    disc_detect_spinner.set_size_request(16, 16);
+    disc_detect_spinner.set_valign(Align::Center);
     disc_detect_spinner.start();
     {
         let hdr = GtkBox::new(Orientation::Horizontal, 0);
@@ -18514,9 +18607,10 @@ fn open_media_library_window(
         })
     };
 
-    // Identify: background gnudb query. Single exact match auto-applies; several
-    // open the picker; none points the user at Edit Tags. Never blocks the UI.
-    {
+    // The actual gnudb query, factored out so the email prompt can retry it.
+    // Single exact match auto-applies; several open the picker; none points the
+    // user at Edit Tags. Never blocks the UI.
+    let run_identify: Rc<dyn Fn()> = {
         let selected_disc_id = selected_disc_id.clone();
         let current_drives = current_drives.clone();
         let state = state.clone();
@@ -18524,7 +18618,7 @@ fn open_media_library_window(
         let apply = apply_disc_match.clone();
         let picker = open_match_picker.clone();
         let identify_btn = disc_identify.clone();
-        disc_identify.connect_clicked(move |_| {
+        Rc::new(move || {
             let Some((toc, discid)) = selected_disc_discid(&selected_disc_id, &current_drives)
             else {
                 status.set_text("No audio disc to identify");
@@ -18554,6 +18648,34 @@ fn open_media_library_window(
                     Err(_) => status.set_text("gnudb lookup failed"),
                 }
             });
+        })
+    };
+
+    // Identify button: gnudb needs an email for its handshake, so collect one
+    // (stored in Settings) before the first lookup when it's unset.
+    {
+        let state = state.clone();
+        let status = disc_status_lbl.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let run_identify = run_identify.clone();
+        let win_wk = win.downgrade();
+        disc_identify.connect_clicked(move |_| {
+            if selected_disc_discid(&selected_disc_id, &current_drives).is_none() {
+                status.set_text("No audio disc to identify");
+                return;
+            }
+            let email = state.borrow().config.disc.gnudb_email.clone();
+            if crate::disc::gnudb::is_unset_email(&email) {
+                // Prompt, store, then run the lookup with the entered address.
+                prompt_gnudb_email(
+                    win_wk.upgrade().as_ref(),
+                    state.clone(),
+                    run_identify.clone(),
+                );
+            } else {
+                run_identify();
+            }
         });
     }
 
