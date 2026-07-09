@@ -11416,29 +11416,34 @@ fn open_media_library_window(
     // Spinner shown in the sidebar header while that first poll runs; stopped
     // and hidden by refresh_discs once detection completes.
     let disc_detect_spinner = gtk4::Spinner::new();
-    disc_detect_spinner.set_margin_end(8);
-    // An unsized spinner in a tight header slot can render 0×0 (invisible);
-    // give it an explicit size and center it so it clearly shows while spinning.
+    // Sits immediately after the "Disc Drives" label (not far-right, where a wide
+    // sidebar would push it off-screen). An unsized spinner in a header slot can
+    // render 0×0, so give it an explicit size and center it vertically.
+    disc_detect_spinner.set_margin_start(6);
     disc_detect_spinner.set_size_request(16, 16);
     disc_detect_spinner.set_valign(Align::Center);
     disc_detect_spinner.start();
     {
         let hdr = GtkBox::new(Orientation::Horizontal, 0);
+        // Label takes only its text width (no hexpand) so the spinner can follow
+        // it directly; a hexpanding spacer then keeps the chevron right-aligned.
         let lbl = Label::builder()
             .label("Disc Drives")
             .halign(Align::Start)
             .xalign(0.0)
-            .hexpand(true)
             .margin_start(10)
             .margin_top(7)
             .margin_bottom(7)
             .build();
+        let spacer = Label::new(None);
+        spacer.set_hexpand(true);
         let chev = Label::builder()
             .label(if discs_expanded.get() { "▾" } else { "▸" })
             .margin_end(8)
             .build();
         hdr.append(&lbl);
         hdr.append(&disc_detect_spinner);
+        hdr.append(&spacer);
         hdr.append(&chev);
         let row = ListBoxRow::new();
         row.set_widget_name("discs");
