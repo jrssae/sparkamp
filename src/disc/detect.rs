@@ -39,6 +39,9 @@ pub fn list_drives() -> Vec<OpticalDrive> {
 /// "Leadout Block" is taken first-wins, i.e. from session 1 — right for audio
 /// CDs (and for CD-Extra, whose audio session is first; the data session's
 /// tracks are dropped by the `is_audio` filter downstream).
+// macOS-only (called from the `drutil`/plist detector); exercised by the
+// cross-platform tests below, so kept compiled everywhere but allowed-dead off macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_toc_plist(xml: &str) -> Option<DiscToc> {
     let mut last_key = String::new();
     let mut cur_point: Option<u32> = None;
@@ -108,6 +111,7 @@ pub(crate) fn parse_toc_plist(xml: &str) -> Option<DiscToc> {
 /// One row of `drutil list`: the drive index drutil uses for `-drive N`, and
 /// the human label (vendor + product).
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) struct DrutilDriveRow {
     pub index: u32,
     pub label: String,
@@ -120,6 +124,7 @@ pub(crate) struct DrutilDriveRow {
 ///    Vendor   Product           Rev   Bus       SupportLevel
 /// 1  MATSHITA DVD-RAM UJ8C2     1.00  USB       Unsupported
 /// ```
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_drutil_list(out: &str) -> Vec<DrutilDriveRow> {
     let Some(header) = out.lines().find(|l| l.contains("Vendor")) else {
         return Vec::new();
@@ -145,6 +150,7 @@ pub(crate) fn parse_drutil_list(out: &str) -> Vec<DrutilDriveRow> {
 
 /// Media facts pulled from `drutil status -drive N`.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) struct DrutilStatus {
     /// The "Type:" value ("CD-ROM", "CD-R", "DVD-RAM", "No Media Inserted"…).
     pub media_type: String,
@@ -158,6 +164,7 @@ pub(crate) struct DrutilStatus {
     pub writability: String,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_drutil_status(out: &str) -> DrutilStatus {
     let mut st = DrutilStatus::default();
     for raw in out.lines() {
@@ -198,6 +205,7 @@ pub(crate) fn parse_drutil_status(out: &str) -> DrutilStatus {
 
 /// Map a `drutil` media type + writability into [`MediaInfo`]. Order matters:
 /// "CD-ROM" must not match the "CD-R" prefix.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
     let ty = st.media_type.as_str();
     let present = !ty.is_empty() && !ty.contains("No Media");

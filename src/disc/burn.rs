@@ -145,6 +145,9 @@ pub fn xorriso_data_args(device: &str, staged_dir: &Path) -> Vec<String> {
 /// `drive_index` is the drutil enumeration index (`OpticalDrive::id`).
 /// `verify` keeps drutil's default post-burn verification; false adds
 /// `-noverify` (faster, less safe).
+// macOS-only (`drutil` call sites are cfg'd to macOS); exercised by the
+// cross-platform tests below, so compiled everywhere but allowed-dead off macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn drutil_audio_args(drive_index: &str, staged_dir: &Path, verify: bool) -> Vec<String> {
     let mut args = vec![
         "burn".to_string(),
@@ -161,6 +164,7 @@ pub fn drutil_audio_args(drive_index: &str, staged_dir: &Path, verify: bool) -> 
 }
 
 /// drutil (macOS): burn a folder as a data disc (ISO9660/Joliet layout).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn drutil_data_args(drive_index: &str, staged_dir: &Path, verify: bool) -> Vec<String> {
     let mut args = vec![
         "burn".to_string(),
@@ -176,6 +180,7 @@ pub fn drutil_data_args(drive_index: &str, staged_dir: &Path, verify: bool) -> V
 }
 
 /// drutil (macOS): quick-erase a rewritable disc.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn drutil_erase_args(drive_index: &str) -> Vec<String> {
     vec![
         "erase".to_string(),
