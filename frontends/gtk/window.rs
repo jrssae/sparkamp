@@ -6791,15 +6791,36 @@ fn prompt_gnudb_email(
     let entry = Entry::new();
     entry.set_placeholder_text(Some("you@example.com"));
     entry.set_text(&gtk_safe(&state.borrow().config.disc.gnudb_email));
+    // Save stays disabled until the address has a deliverable shape
+    // (x@y.z — the shared core rule); the hint explains why.
+    let hint = Label::builder()
+        .label("Enter a valid address (you@example.com).")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    hint.add_css_class("dim-label");
     let btns = GtkBox::new(Orientation::Horizontal, 6);
     btns.set_halign(Align::End);
     let cancel = Button::with_label("Cancel");
     let save = Button::with_label("Save");
     save.add_css_class("suggested-action");
+    save.set_sensitive(crate::disc::gnudb::is_valid_email(&entry.text()));
+    hint.set_visible(!crate::disc::gnudb::is_valid_email(&entry.text()));
+    {
+        let save = save.clone();
+        let hint = hint.clone();
+        entry.connect_changed(move |e| {
+            let ok = crate::disc::gnudb::is_valid_email(&e.text());
+            save.set_sensitive(ok);
+            hint.set_visible(!ok);
+        });
+    }
     btns.append(&cancel);
     btns.append(&save);
     vbox.append(&info);
     vbox.append(&entry);
+    vbox.append(&hint);
     vbox.append(&btns);
     dialog.set_child(Some(&vbox));
     let d = dialog.clone();
@@ -6812,9 +6833,15 @@ fn prompt_gnudb_email(
     }
     let d = dialog.clone();
     save.connect_clicked(move |_| {
+        let email = entry.text().trim().to_string();
+        // Defense in depth — the button is insensitive on an invalid
+        // address, but never persist one either way.
+        if !crate::disc::gnudb::is_valid_email(&email) {
+            return;
+        }
         {
             let mut s = state.borrow_mut();
-            s.config.disc.gnudb_email = entry.text().to_string();
+            s.config.disc.gnudb_email = email;
             let _ = s.config.save();
         }
         on_done();

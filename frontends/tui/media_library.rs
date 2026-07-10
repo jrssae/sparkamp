@@ -668,7 +668,9 @@ impl App {
             self.set_status("No tags yet — press m to identify or e to edit first");
             return;
         };
-        if crate::disc::gnudb::is_unset_email(&self.config.disc.gnudb_email) {
+        if crate::disc::gnudb::is_unset_email(&self.config.disc.gnudb_email)
+            || !crate::disc::gnudb::is_valid_email(&self.config.disc.gnudb_email)
+        {
             if let Mode::MediaLibrary(s) = &mut self.mode {
                 s.submit_email = Some(String::new());
             }
@@ -698,12 +700,8 @@ impl App {
                 }
                 KeyCode::Enter => {
                     let e = buf.trim().to_string();
-                    // Rough shape check: something@something.something.
-                    let valid = e
-                        .split_once('@')
-                        .map(|(u, h)| !u.is_empty() && h.contains('.'))
-                        .unwrap_or(false);
-                    if valid {
+                    // Shared shape rule: x@y.z (see gnudb::is_valid_email).
+                    if crate::disc::gnudb::is_valid_email(&e) {
                         saved = Some(e);
                         s.submit_email = None;
                     }

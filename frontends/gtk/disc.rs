@@ -427,9 +427,12 @@ pub(super) fn connect_submit(
             return;
         }
         // gnudb requires a personal address (the config ships blank on
-        // purpose) — capture it once before the first submission.
+        // purpose) — capture it before submitting, and re-prompt when the
+        // stored value doesn't look like a real address.
         let email = state.borrow().config.disc.gnudb_email.clone();
-        if crate::disc::gnudb::is_unset_email(&email) {
+        if crate::disc::gnudb::is_unset_email(&email)
+            || !crate::disc::gnudb::is_valid_email(&email)
+        {
             super::prompt_gnudb_email(
                 win_wk.upgrade().as_ref(),
                 state.clone(),

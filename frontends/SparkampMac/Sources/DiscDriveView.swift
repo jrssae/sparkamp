@@ -410,12 +410,10 @@ struct DiscDriveView: View {
         return p.map { String(cString: $0) } ?? ""
     }
 
-    /// Rough shape check — gnudb just needs a real, deliverable-looking
-    /// address; full RFC validation is pointless here.
+    /// Deliverable-shape check — the core's shared rule (x@y.z), so every
+    /// frontend enforces the same thing.
     private var emailLooksValid: Bool {
-        let e = emailInput.trimmingCharacters(in: .whitespaces)
-        guard let at = e.firstIndex(of: "@"), at != e.startIndex else { return false }
-        return e[e.index(after: at)...].contains(".")
+        emailInput.withCString { sparkamp_gnudb_email_valid(nil, $0) }
     }
 
     private var emailPromptSheet: some View {
@@ -657,7 +655,9 @@ struct DiscDriveView: View {
                             submitCategory = suggestGnudbCategory(for: tags.genre)
                             // gnudb requires a personal address — capture it
                             // once before the first submission.
-                            if currentGnudbEmail().isEmpty {
+                            if !currentGnudbEmail().withCString({
+                                sparkamp_gnudb_email_valid(nil, $0)
+                            }) {
                                 emailInput = ""
                                 showEmailPrompt = true
                             } else {

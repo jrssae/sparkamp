@@ -684,6 +684,11 @@ char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
     (e.g. "rock", default "misc"). Free with sparkamp_free_string. */
 char *sparkamp_gnudb_suggest_category(SparkampCtx *ctx, const char *genre);
 
+/** Whether an email is acceptable for a gnudb submission: deliverable
+    shape (x@y.z) and not the unset/retired app-wide default. Every
+    frontend's prompt gates on this. */
+bool sparkamp_gnudb_email_valid(SparkampCtx *ctx, const char *email);
+
 /** Rip ONE track to a tagged MP3 (job JSON: source/dest_root/quality/tag
     values — see RipJobIn in src/ffi/disc.rs). Blocks for the whole encode
     (optical reads run at drive speed) — worker thread only; loop per track

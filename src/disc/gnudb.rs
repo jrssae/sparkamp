@@ -106,6 +106,24 @@ pub fn is_unset_email(email: &str) -> bool {
     e.is_empty() || e == "sparkamp@fastmail.com"
 }
 
+/// Minimal deliverable-shape check every frontend's email prompt enforces:
+/// at least one character, one `@`, at least one character, a `.`, and at
+/// least one character — i.e. `x@y.z`. Full RFC validation is pointless
+/// here; gnudb just needs a real-looking address.
+pub fn is_valid_email(email: &str) -> bool {
+    let e = email.trim();
+    let Some((local, host)) = e.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || host.contains('@') {
+        return false;
+    }
+    // The host needs an interior dot: at least one character on each side.
+    host.find('.')
+        .map(|i| i > 0 && i + 1 < host.len())
+        .unwrap_or(false)
+}
+
 /// The CDDB `hello` value from the configured email:
 /// `jane@example.org` → `jane+example.org+Sparkamp+<version>`.
 /// An unset email sends an anonymous identity (lookups don't require a
@@ -313,6 +331,19 @@ mod tests {
         assert!(is_unset_email("  "));
         assert!(is_unset_email("sparkamp@fastmail.com")); // retired default
         assert!(!is_unset_email("jane@example.org"));
+    }
+
+    #[test]
+    fn email_shape_validation() {
+        assert!(is_valid_email("jane@example.org"));
+        assert!(is_valid_email("  a@b.c  "));
+        assert!(!is_valid_email(""));
+        assert!(!is_valid_email("no-at-sign.com"));
+        assert!(!is_valid_email("@example.org")); // empty local part
+        assert!(!is_valid_email("jane@example")); // no dot in host
+        assert!(!is_valid_email("jane@.org")); // nothing before the dot
+        assert!(!is_valid_email("jane@example.")); // nothing after the dot
+        assert!(!is_valid_email("jane@ex@ample.org")); // two @
         assert!(hello_param("").starts_with("anonymous+localhost+Sparkamp+"));
         assert!(hello_param("sparkamp@fastmail.com")
             .starts_with("anonymous+localhost+Sparkamp+"));

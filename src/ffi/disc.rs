@@ -63,6 +63,21 @@ pub unsafe extern "C" fn sparkamp_disc_list_drives(_ctx: *mut SparkampCtx) -> *m
     json_out(&drives)
 }
 
+/// Whether an email is acceptable for a gnudb submission: deliverable shape
+/// (x@y.z — `gnudb::is_valid_email`) AND not the unset/retired app-wide
+/// default (`gnudb::is_unset_email`). The frontends' prompts gate on this.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_gnudb_email_valid(
+    _ctx: *mut SparkampCtx,
+    email: *const c_char,
+) -> bool {
+    cstr(email)
+        .map(|e| {
+            !crate::disc::gnudb::is_unset_email(&e) && crate::disc::gnudb::is_valid_email(&e)
+        })
+        .unwrap_or(false)
+}
+
 /// Best-effort map from a free-text genre to a fixed CDDB category (the same
 /// `gnudb::suggest_category` the GTK/TUI frontends call), for prefilling the
 /// submit sheet's category picker. Free with `sparkamp_free_string`.
