@@ -27,10 +27,10 @@ pub fn list_drives() -> Vec<OpticalDrive> {
 
 /// [`list_drives`] for repeated polling: pass the previous poll's result and
 /// an unchanged loaded disc is NOT re-probed. On Linux the full probe
-/// (`cd-info` reading the TOC) physically spins the drive up, so a periodic
-/// poll must go through here — the cheap kernel status ioctl answers
-/// "same disc still loaded?" without any medium access. On macOS this is
-/// [`list_drives`] (drutil's status query doesn't spin the disc).
+/// physically touches the drive, so a periodic poll must go through here —
+/// the cheap kernel status ioctl answers "same disc still loaded?" without
+/// any medium access. On macOS this is [`list_drives`] (drutil's status
+/// query doesn't spin the disc).
 pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
     #[cfg(target_os = "linux")]
     {
@@ -41,6 +41,19 @@ pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
         let _ = prev;
         platform::list_drives()
     }
+}
+
+/// [`list_drives_cached`] over one process-wide cache, serialized: every
+/// poller (the auto-open watcher, the Media Library poll) shares the same
+/// previous-state snapshot, so a newly inserted disc is probed exactly once
+/// no matter how many pollers fire — concurrent callers block briefly and
+/// reuse the fresh result instead of contending for the drive.
+pub fn list_drives_shared() -> Vec<OpticalDrive> {
+    static SHARED: std::sync::Mutex<Vec<OpticalDrive>> = std::sync::Mutex::new(Vec::new());
+    let mut cache = SHARED.lock().unwrap();
+    let drives = list_drives_cached(&cache);
+    *cache = drives.clone();
+    drives
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +356,34 @@ const CDSL_CURRENT: i32 = i32::MAX;
 /// `CDS_DISC_OK` — a readable disc is loaded.
 const CDS_DISC_OK: i32 = 4;
 
+/// Assemble a [`DiscToc`] from raw TOC entries as the `CDROMREADTOCENTRY`
+/// ioctl reports them: `(track number, ctrl nibble, LBA)` per track plus the
+/// lead-out LBA. Adds the +150 pregap (LBA → CDDB-absolute frame) and maps
+/// the ctrl "data track" bit (0x04) to `is_audio`. Pure — the ioctl glue
+/// only collects the tuples.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn toc_from_entries(entries: &[(u8, u8, i32)], leadout_lba: i32) -> Option<DiscToc> {
+    if entries.is_empty() || leadout_lba <= 0 {
+        return None;
+    }
+    let tracks: Vec<TocTrack> = entries
+        .iter()
+        .filter(|(_, _, lba)| *lba >= 0)
+        .map(|(number, ctrl, lba)| TocTrack {
+            number: *number,
+            start_frame: *lba as u32 + 150,
+            is_audio: ctrl & 0x04 == 0,
+        })
+        .collect();
+    if tracks.is_empty() {
+        return None;
+    }
+    Some(DiscToc {
+        tracks,
+        leadout_frame: leadout_lba as u32 + 150,
+    })
+}
+
 /// What a poll should do for one drive, decided from the no-spin status
 /// ioctl + the previous poll's entry. Pure so the matrix is unit-testable.
 #[derive(Debug, PartialEq, Eq)]
@@ -567,12 +608,15 @@ mod platform {
         drives
     }
 
-    /// Full probe of one drive: `cd-info` reads the TOC (this spins the
-    /// disc). cd-info exits non-zero with no medium; treat any parsed TOC
-    /// as media present. Finer media typing (blank/RW) lands with the burn
-    /// phases.
+    /// Full probe of one drive. The TOC comes from the `CDROMREADTOC*`
+    /// ioctls — the drive caches the TOC when the disc loads, so this
+    /// answers in milliseconds, where `cd-info` also reads MCN + CD-TEXT
+    /// (tens of seconds of medium seeks on some discs). cd-info stays as
+    /// the fallback when the ioctls fail. Finer media typing (blank/RW)
+    /// lands with the burn phases.
     fn probe_drive(node: String, label: String) -> OpticalDrive {
-        let toc = run("cd-info", &["--no-header", &node]).and_then(|o| parse_cd_info(&o));
+        let toc = read_toc_ioctl(&node)
+            .or_else(|| run("cd-info", &["--no-header", &node]).and_then(|o| parse_cd_info(&o)));
         let media = match &toc {
             Some(t) => MediaInfo {
                 present: true,
@@ -588,6 +632,72 @@ mod platform {
             toc,
             mount_path: None,
         }
+    }
+
+    /// Read the loaded disc's TOC through the kernel (`CDROMREADTOCHDR` +
+    /// one `CDROMREADTOCENTRY` per track + lead-out, LBA format). No medium
+    /// seeks — the drive already holds the TOC. `None` when there's no
+    /// readable disc or an ioctl fails.
+    fn read_toc_ioctl(node: &str) -> Option<DiscToc> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        const CDROMREADTOCHDR: i32 = 0x5305;
+        const CDROMREADTOCENTRY: i32 = 0x5306;
+        const CDROM_LEADOUT: u8 = 0xAA;
+        const CDROM_LBA: u8 = 0x01;
+
+        /// `struct cdrom_tochdr`.
+        #[repr(C)]
+        #[derive(Default)]
+        struct TocHdr {
+            trk0: u8,
+            trk1: u8,
+        }
+        /// `struct cdrom_tocentry` (adr/ctrl share one byte: adr low
+        /// nibble, ctrl high — little-endian GCC bitfield order).
+        #[repr(C)]
+        #[derive(Default)]
+        struct TocEntry {
+            track: u8,
+            adr_ctrl: u8,
+            format: u8,
+            lba: i32,
+            datamode: u8,
+        }
+
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(node)
+            .ok()?;
+        let fd = f.as_raw_fd();
+
+        let mut hdr = TocHdr::default();
+        if unsafe { libc::ioctl(fd, CDROMREADTOCHDR as libc::c_ulong, &mut hdr) } < 0 {
+            return None;
+        }
+        if hdr.trk0 == 0 || hdr.trk1 < hdr.trk0 {
+            return None;
+        }
+
+        let read_entry = |track: u8| -> Option<(u8, u8, i32)> {
+            let mut e = TocEntry {
+                track,
+                format: CDROM_LBA,
+                ..TocEntry::default()
+            };
+            if unsafe { libc::ioctl(fd, CDROMREADTOCENTRY as libc::c_ulong, &mut e) } < 0 {
+                return None;
+            }
+            Some((track, e.adr_ctrl >> 4, e.lba))
+        };
+
+        let mut entries = Vec::with_capacity((hdr.trk1 - hdr.trk0 + 1) as usize);
+        for t in hdr.trk0..=hdr.trk1 {
+            entries.push(read_entry(t)?);
+        }
+        let (_, _, leadout_lba) = read_entry(CDROM_LEADOUT)?;
+        super::toc_from_entries(&entries, leadout_lba)
     }
 
     /// `CDROM_DRIVE_STATUS` for a device node — answered by the drive
@@ -735,6 +845,49 @@ mod tests {
         assert!(toc.tracks[0].is_audio);
         assert_eq!(toc.tracks[1].start_frame, 13834);
         assert!(!toc.tracks[2].is_audio); // Data=true track
+    }
+
+    #[test]
+    fn toc_from_entries_adds_pregap_and_audio_flag() {
+        // Track 1 audio at LBA 0, track 2 data (ctrl bit 0x04) at LBA 7500.
+        let toc = toc_from_entries(&[(1, 0x0, 0), (2, 0x4, 7500)], 15000).unwrap();
+        assert_eq!(toc.tracks.len(), 2);
+        assert_eq!(toc.tracks[0].start_frame, 150);
+        assert!(toc.tracks[0].is_audio);
+        assert_eq!(toc.tracks[1].start_frame, 7650);
+        assert!(!toc.tracks[1].is_audio);
+        assert_eq!(toc.leadout_frame, 15150);
+
+        assert!(toc_from_entries(&[], 15000).is_none());
+        assert!(toc_from_entries(&[(1, 0, 0)], 0).is_none());
+        // Negative LBAs (ioctl quirk) are dropped, not wrapped.
+        assert!(toc_from_entries(&[(1, 0, -1)], 15000).is_none());
+    }
+
+    /// Live: the ioctl TOC must match what cd-info parses (same disc), and
+    /// must answer fast. `cargo test --lib live_ioctl_toc -- --ignored`.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn live_ioctl_toc_matches_cd_info() {
+        let started = std::time::Instant::now();
+        let drives = list_drives();
+        let elapsed = started.elapsed();
+        let Some(d) = drives.iter().find(|d| d.media.present) else {
+            println!("no disc loaded — skipping");
+            return;
+        };
+        let toc = d.toc.as_ref().expect("loaded disc has a TOC");
+        println!(
+            "ioctl probe: {} tracks, discid {}, total {:.2?}",
+            toc.tracks.len(),
+            crate::disc::discid::freedb_discid(toc),
+            elapsed
+        );
+        let cd_info = run("cd-info", &["--no-header", &d.id])
+            .and_then(|o| parse_cd_info(&o))
+            .expect("cd-info parses the same disc");
+        assert_eq!(toc, &cd_info, "ioctl TOC must equal cd-info's");
     }
 
     #[test]

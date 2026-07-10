@@ -5166,12 +5166,9 @@ pub fn build(
             let prev = prev.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
-                let snapshot = prev.borrow().clone();
-                let drives = gio::spawn_blocking(move || {
-                    crate::disc::detect::list_drives_cached(&snapshot)
-                })
-                .await
-                .unwrap_or_default();
+                let drives = gio::spawn_blocking(crate::disc::detect::list_drives_shared)
+                    .await
+                    .unwrap_or_default();
                 in_flight.set(false);
                 let inserted: Option<String> = drives
                     .iter()
@@ -5211,7 +5208,9 @@ pub fn build(
             });
         });
         tick();
-        glib::timeout_add_local(Duration::from_secs(10), move || {
+        // 2 s: each unchanged tick costs one status ioctl (~ms, no medium
+        // access) — insertion reacts about as fast as the file manager.
+        glib::timeout_add_local(Duration::from_secs(2), move || {
             tick();
             ControlFlow::Continue
         });
@@ -18674,15 +18673,12 @@ fn open_media_library_window(
             let state = state.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
-                // Cached poll: an unchanged loaded disc is answered by the
-                // kernel status ioctl and NOT re-probed — the full cd-info
-                // probe spins the drive, and a 10 s poll doing that keeps
-                // the disc spinning forever.
-                let prev = current_drives.borrow().clone();
-                let result = gio::spawn_blocking(move || {
-                    crate::disc::detect::list_drives_cached(&prev)
-                })
-                .await;
+                // Shared cached poll: an unchanged loaded disc is answered by
+                // the kernel status ioctl and NOT re-probed (probing touches
+                // the drive), and the cache is shared with the insertion
+                // watcher so a new disc is probed exactly once.
+                let result =
+                    gio::spawn_blocking(crate::disc::detect::list_drives_shared).await;
                 in_flight.set(false);
                 // First poll finished — drop the "Detecting…" hint + sidebar
                 // spinner and show the real state.
@@ -19221,12 +19217,14 @@ fn open_media_library_window(
     // own cadence.
     state.borrow_mut().disc_refresh_callback = Some(refresh_discs.clone());
 
-    // Initial scan + lazy 10 s poll (stops once the window/sidebar is gone).
+    // Initial scan + 2 s poll (stops once the window/sidebar is gone). Cheap:
+    // unchanged ticks are one status ioctl through the shared cache; only an
+    // actual media change probes the drive.
     refresh_discs();
     {
         let refresh = refresh_discs.clone();
         let sidebar_weak = sidebar.downgrade();
-        glib::timeout_add_local(std::time::Duration::from_secs(10), move || {
+        glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
             if sidebar_weak.upgrade().is_none() {
                 return glib::ControlFlow::Break;
             }
