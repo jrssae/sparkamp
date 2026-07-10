@@ -18486,6 +18486,7 @@ fn open_media_library_window(
         let current_drives = current_drives.clone();
         let selected_disc_id = selected_disc_id.clone();
         let rebuild_overview = rebuild_disc_overview.clone();
+        let populate_detail = populate_disc_detail.clone();
         let state = state.clone();
         let disc_detecting = disc_detecting.clone();
         let disc_detect_spinner = disc_detect_spinner.clone();
@@ -18521,6 +18522,7 @@ fn open_media_library_window(
             let current_drives = current_drives.clone();
             let selected_disc_id = selected_disc_id.clone();
             let rebuild_overview = rebuild_overview.clone();
+            let populate_detail = populate_detail.clone();
             let disc_detecting = disc_detecting.clone();
             let disc_detect_spinner = disc_detect_spinner.clone();
             let in_flight = in_flight.clone();
@@ -18612,8 +18614,28 @@ fn open_media_library_window(
                         }
                     }
                 }
+                // If the drive being viewed changed state (disc ejected,
+                // inserted, or swapped), repopulate the open detail view —
+                // otherwise it keeps showing the previous disc's tracks.
+                // Unchanged drives skip this so the 10 s poll never disturbs
+                // the user's row selection.
+                let detail_update: Option<crate::disc::OpticalDrive> = selected_disc_id
+                    .borrow()
+                    .clone()
+                    .and_then(|sel| {
+                        let new_d = drives.iter().find(|d| d.id == sel).cloned()?;
+                        let old_d = current_drives
+                            .borrow()
+                            .iter()
+                            .find(|d| d.id == sel)
+                            .cloned();
+                        (old_d.as_ref() != Some(&new_d)).then_some(new_d)
+                    });
                 *current_drives.borrow_mut() = drives;
                 rebuild_overview();
+                if let Some(d) = detail_update {
+                    populate_detail(&d);
+                }
             });
         })
     };
