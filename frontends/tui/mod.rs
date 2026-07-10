@@ -226,8 +226,8 @@ pub struct RipSetupState {
 
 /// Progress/result of a background rip, delivered to the tick loop.
 pub enum RipMsg {
-    /// About to rip track `index+1` of `total` named `title`.
-    Progress(usize, usize, String),
+    /// Track `index+1` of `total` named `title` is `frac` (0.0–1.0) done.
+    Progress(usize, usize, String, f64),
     /// The run finished (all tracks, failures, or cancelled).
     Done(crate::disc::rip::RipOutcome),
 }
@@ -413,7 +413,7 @@ pub struct App {
     /// Cancel flag for the running rip (stops after the current track).
     rip_cancel: Option<Arc<AtomicBool>>,
     /// Rip progress for the status/hint line: (index, total, title).
-    pub rip_progress: Option<(usize, usize, String)>,
+    pub rip_progress: Option<(usize, usize, String, f64)>,
     /// The Burn list — a dedicated queue separate from the active playlist,
     /// fed from the Files tab (`b`).
     pub burn_list: crate::disc::burnlist::BurnList,
@@ -911,12 +911,15 @@ pub fn id3_genre_matches(query: &str) -> Vec<&'static str> {
         return vec![];
     }
     let q = query.to_lowercase();
-    ID3V1_GENRES
+    let mut matches: Vec<&'static str> = ID3V1_GENRES
         .iter()
         .filter(|g| g.to_lowercase().starts_with(&q))
         .copied()
-        .take(6)
-        .collect()
+        .collect();
+    // Alphabetical, not ID3v1 declaration order — same as the GTK dropdown.
+    matches.sort_unstable_by_key(|g| g.to_ascii_lowercase());
+    matches.truncate(6);
+    matches
 }
 
 // ---------------------------------------------------------------------------

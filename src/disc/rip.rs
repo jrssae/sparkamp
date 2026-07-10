@@ -112,18 +112,31 @@ pub fn pipeline_desc(source: &RipSource, quality: Mp3Quality, out: &Path) -> Str
 /// Rip one track: run the pipeline to EOS (blocking — call on a worker
 /// thread), then write the tags onto the fresh MP3. Creates the destination
 /// directories. On any error the partial output file is removed.
+#[allow(dead_code)] // the frontends go through run_job; the FFI (lib only) rips per track
 pub fn rip_track(
     source: &RipSource,
     out: &Path,
     quality: Mp3Quality,
     tags: &TagFields,
 ) -> Result<(), String> {
+    rip_track_observed(source, out, quality, tags, |_| {})
+}
+
+/// [`rip_track`], reporting the pipeline position (seconds into the track)
+/// as the encode advances — the within-track progress feed for [`run_job`].
+pub fn rip_track_observed(
+    source: &RipSource,
+    out: &Path,
+    quality: Mp3Quality,
+    tags: &TagFields,
+    on_position: impl FnMut(f64),
+) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
 
     let desc = pipeline_desc(source, quality, out);
-    run_pipeline_to_eos(&desc).inspect_err(|_| {
+    run_pipeline_observed(&desc, on_position).inspect_err(|_| {
         let _ = std::fs::remove_file(out);
     })?;
 
@@ -135,6 +148,16 @@ pub fn rip_track(
 /// already be initialized (both frontends do it at startup). Shared with the
 /// burn module's Red Book WAV preparation.
 pub(crate) fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
+    run_pipeline_observed(desc, |_| {})
+}
+
+/// [`run_pipeline_to_eos`] with a position feed: `on_position` gets the
+/// pipeline position in seconds roughly twice a second while the pipeline
+/// runs (nothing on the EOS/error path).
+pub(crate) fn run_pipeline_observed(
+    desc: &str,
+    mut on_position: impl FnMut(f64),
+) -> Result<(), String> {
     use gstreamer as gst;
     use gstreamer::prelude::*;
 
@@ -147,11 +170,12 @@ pub(crate) fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
     // Watchdog on PIPELINE POSITION, not bus traffic: a healthy encode posts
     // no bus messages at all between the start and EOS (a slow optical read
     // can run minutes in silence), so only a position that stops advancing
-    // means a wedged drive.
+    // means a wedged drive. The 500 ms pop timeout doubles as the position
+    // sampling cadence for `on_position`.
     let mut last_pos: Option<gst::ClockTime> = None;
     let mut last_advance = std::time::Instant::now();
     let result = loop {
-        match bus.timed_pop(gst::ClockTime::from_seconds(2)) {
+        match bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
             Some(msg) => match msg.view() {
                 gst::MessageView::Eos(_) => break Ok(()),
                 gst::MessageView::Error(e) => {
@@ -165,6 +189,9 @@ pub(crate) fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
             },
             None => {
                 let pos = pipeline.query_position::<gst::ClockTime>();
+                if let Some(p) = pos {
+                    on_position(p.seconds_f64());
+                }
                 if pos != last_pos {
                     last_pos = pos;
                     last_advance = std::time::Instant::now();
@@ -239,7 +266,8 @@ pub struct RipOutcome {
 impl RipOutcome {
     /// The one-line result every frontend shows, given how many of the ripped
     /// files the library import actually registered (import only accepts
-    /// files under watched folders).
+    /// files under watched folders). Failures include their reason — a bare
+    /// count told the user nothing when e.g. the destination was read-only.
     pub fn status_message(&self, imported: usize) -> String {
         let mut msg = format!(
             "Ripped {} track{}",
@@ -255,17 +283,47 @@ impl RipOutcome {
             msg.push_str(&format!(" · only {imported} added to the library"));
         }
         if !self.failures.is_empty() {
-            msg.push_str(&format!(" · {} failed", self.failures.len()));
+            msg.push_str(&format!(
+                " · {} failed — {}",
+                self.failures.len(),
+                truncate_reason(&self.failures.join("; "), 160)
+            ));
         }
         msg
     }
 }
 
+/// Cap a failure blob for a one-line status (full reasons stay in the
+/// outcome for anyone who wants to log them).
+fn truncate_reason(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// Verify the rip destination is actually writable before any drive work:
+/// create it (and parents) if needed, then probe with a real file create.
+/// Returns the human-readable reason when it isn't.
+fn check_dest_writable(dest_root: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest_root)
+        .map_err(|e| format!("can't create {}: {e}", dest_root.display()))?;
+    let probe = dest_root.join(format!(".sparkamp-write-test-{}", std::process::id()));
+    std::fs::File::create(&probe)
+        .map_err(|e| format!("{} isn't writable: {e}", dest_root.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
 /// Rip a whole selection, blocking — call on a worker thread. Reports
-/// "starting track i of n" through `progress` before each track, checks
-/// `cancel` between tracks (a cancel stops after the current track), and
-/// derives each track's source, tags, and destination from the entry + the
-/// disc's tag set. This is the one job runner shared by the frontends.
+/// progress through the callback as `(track index, track count, title,
+/// within-track fraction 0.0–1.0)` — at each track start and then as the
+/// pipeline position advances, so the UI bar moves *within* a track (a
+/// one-track rip used to sit at 0% for the whole encode). Checks `cancel`
+/// between tracks (a cancel stops after the current track) and derives each
+/// track's source, tags, and destination from the entry + the disc's tag
+/// set. This is the one job runner shared by the frontends.
 pub fn run_job(
     entries: &[crate::disc::DiscTrackEntry],
     dest_root: &Path,
@@ -273,16 +331,22 @@ pub fn run_job(
     tags: &crate::disc::xmcd::XmcdEntry,
     total_on_disc: u8,
     cancel: &AtomicBool,
-    mut progress: impl FnMut(usize, usize, &str),
+    mut progress: impl FnMut(usize, usize, &str, f64),
 ) -> RipOutcome {
     let mut outcome = RipOutcome::default();
+    // A read-only destination would fail every track with the same reason —
+    // catch it before touching the drive and report it once, clearly.
+    if let Err(reason) = check_dest_writable(dest_root) {
+        outcome.failures.push(reason);
+        return outcome;
+    }
     let n = entries.len();
     for (i, entry) in entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             outcome.cancelled = true;
             break;
         }
-        progress(i, n, &entry.title);
+        progress(i, n, &entry.title, 0.0);
         let source = source_for_entry(entry);
         let track_tags = tag_fields_for_track(
             &tags.artist,
@@ -300,7 +364,11 @@ pub fn run_job(
             entry.number,
             &track_tags.title,
         );
-        match rip_track(&source, &out, quality, &track_tags) {
+        let dur = entry.duration_secs.max(1) as f64;
+        let result = rip_track_observed(&source, &out, quality, &track_tags, |pos_secs| {
+            progress(i, n, &entry.title, (pos_secs / dur).clamp(0.0, 1.0));
+        });
+        match result {
             Ok(()) => outcome.ripped.push(out.display().to_string()),
             Err(e) => outcome.failures.push(format!("{}: {e}", entry.number)),
         }
@@ -467,7 +535,7 @@ mod tests {
         o.failures.push("4: stalled".into());
         assert_eq!(
             o.status_message(2),
-            "Ripped 2 tracks · cancelled · 1 failed"
+            "Ripped 2 tracks · cancelled · 1 failed — 4: stalled"
         );
         let one = RipOutcome {
             ripped: vec!["a.mp3".into()],
@@ -492,16 +560,65 @@ mod tests {
         let mut calls = 0;
         let outcome = run_job(
             &entries,
-            Path::new("/tmp"),
+            &std::env::temp_dir(),
             Mp3Quality::VbrV2,
             &crate::disc::xmcd::XmcdEntry::default(),
             1,
             &cancel,
-            |_, _, _| calls += 1,
+            |_, _, _, _| calls += 1,
         );
         assert!(outcome.cancelled);
         assert!(outcome.ripped.is_empty() && outcome.failures.is_empty());
         assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn run_job_fails_fast_on_unwritable_dest() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("sparkamp-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let entries = vec![crate::disc::DiscTrackEntry {
+            number: 1,
+            path: "cdda://1?device=/dev/sr0".into(),
+            title: "Track 1".into(),
+            duration_secs: 100,
+        }];
+        let cancel = AtomicBool::new(false);
+        let mut calls = 0;
+        // A subdirectory of the read-only dir: create_dir_all must fail.
+        let outcome = run_job(
+            &entries,
+            &base.join("rips"),
+            Mp3Quality::VbrV2,
+            &crate::disc::xmcd::XmcdEntry::default(),
+            1,
+            &cancel,
+            |_, _, _, _| calls += 1,
+        );
+        assert_eq!(calls, 0, "must fail before any drive work");
+        assert!(outcome.ripped.is_empty());
+        assert_eq!(outcome.failures.len(), 1);
+        assert!(
+            outcome.failures[0].contains("can't create"),
+            "{:?}",
+            outcome.failures
+        );
+        // And the shared status line carries the reason.
+        assert!(outcome.status_message(0).contains("failed — can't create"));
+
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reason_truncation() {
+        assert_eq!(truncate_reason("short", 160), "short");
+        let long = "x".repeat(200);
+        let cut = truncate_reason(&long, 160);
+        assert_eq!(cut.chars().count(), 161);
+        assert!(cut.ends_with('…'));
     }
 
     #[test]

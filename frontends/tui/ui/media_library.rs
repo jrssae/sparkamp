@@ -24,7 +24,7 @@ pub(super) fn draw_media_library(
     frame: &mut Frame,
     state: &MediaLibraryState,
     toast: Option<&str>,
-    rip_progress: Option<&(usize, usize, String)>,
+    rip_progress: Option<&(usize, usize, String, f64)>,
     burn_phase: Option<&str>,
     burn_list: &crate::disc::burnlist::BurnList,
     area: Rect,
@@ -133,9 +133,15 @@ pub(super) fn draw_media_library(
             format!("{phase} — c: cancel"),
             Style::default().fg(C_PLAYING),
         ))
-    } else if let Some((i, n, title)) = rip_progress {
+    } else if let Some((i, n, title, frac)) = rip_progress {
         Line::from(Span::styled(
-            format!("Ripping {}/{} · {} — c: cancel", i + 1, n, title),
+            format!(
+                "Ripping {}/{} · {} ({:.0}%) — c: cancel",
+                i + 1,
+                n,
+                title,
+                frac * 100.0
+            ),
             Style::default().fg(C_PLAYING),
         ))
     } else if let Some(msg) = toast {

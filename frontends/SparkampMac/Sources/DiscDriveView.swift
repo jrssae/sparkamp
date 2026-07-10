@@ -153,6 +153,7 @@ struct DiscDriveView: View {
     let theme: SkinTheme
 
     @State private var selection: Set<Int> = []
+    @State private var searchText = ""
     @State private var showTagEditor = false
     @State private var editTags = DiscTagSet()
     @State private var showSubmit = false
@@ -223,6 +224,7 @@ struct DiscDriveView: View {
             }
             Divider().background(theme.windowBorder)
             if drive.media.isAudioCd {
+                searchBar
                 trackTable
                 bottomBar
             } else if drive.media.present {
@@ -236,6 +238,7 @@ struct DiscDriveView: View {
         .onAppear { model.loadDiscTracks(drive) }
         .onChange(of: drive.id) { _, _ in
             selection.removeAll()
+            searchText = ""
             model.loadDiscTracks(drive)
         }
         // Disc swapped/ejected under us — reload the entries.
@@ -660,8 +663,44 @@ struct DiscDriveView: View {
 
     // MARK: Track table
 
+    /// The disc's tracks matching the per-view search (all of them while the
+    /// query is empty). Add All / Add Whole Disc stay unfiltered on purpose.
+    private var filteredTracks: [DiscTrackEntry] {
+        searchText.isEmpty
+            ? model.discTracks
+            : model.discTracks.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    /// Per-view search over just this disc's track list — same styling as the
+    /// Files view search field.
+    private var searchBar: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(theme.playlistDurationText)
+                .font(.system(size: 11))
+            TextField("Search this disc…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(vars.bodyFont)
+                .foregroundStyle(theme.playlistText)
+            if !searchText.isEmpty {
+                Button { searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(theme.playlistDurationText)
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(theme.lcdBackground.opacity(0.8))
+        .cornerRadius(6)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.windowBorder, lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+
     private var trackTable: some View {
-        Table(model.discTracks, selection: $selection) {
+        Table(filteredTracks, selection: $selection) {
             TableColumn("#") { e in
                 Text("\(e.number)")
                     .font(vars.bodyFont)

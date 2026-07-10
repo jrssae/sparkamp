@@ -829,7 +829,9 @@ fn format_last_played(iso_timestamp: &str) -> String {
 #[allow(deprecated)]
 fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
     // First item clears the genre; a custom (non-ID3v1) value gets its own
-    // item so the dropdown reflects what's actually in the tag.
+    // item so the dropdown reflects what's actually in the tag. The genre
+    // list itself is shown alphabetically (ID3v1 declaration order is
+    // meaningless to a human scanning the dropdown).
     const UNDEFINED: &str = "(undefined)";
     let mut items: Vec<&str> = Vec::with_capacity(crate::id3_editor::ID3V1_GENRES.len() + 2);
     items.push(UNDEFINED);
@@ -838,7 +840,9 @@ fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
     {
         items.push(initial_value);
     }
-    items.extend_from_slice(crate::id3_editor::ID3V1_GENRES);
+    let mut genres: Vec<&str> = crate::id3_editor::ID3V1_GENRES.to_vec();
+    genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
+    items.extend_from_slice(&genres);
     let dd = DropDown::from_strings(&items);
 
     // Hidden value carrier — the save handler reads this entry, so the
@@ -10301,6 +10305,43 @@ fn is_optical_fs(fs_type: &str) -> bool {
     matches!(fs_type.to_ascii_lowercase().as_str(), "iso9660" | "udf")
 }
 
+/// Case-insensitive substring match of a per-view search query against a
+/// track's visible text fields — the in-memory counterpart of the Files
+/// view's DB-backed search, used by the playlist-editor and device views.
+/// `q` must already be lowercased; an empty query matches everything.
+fn lib_track_matches_query(t: &crate::media_library::LibTrack, q: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    let has = |s: &Option<String>| s.as_deref().map(|v| v.to_lowercase().contains(q)).unwrap_or(false);
+    has(&t.title)
+        || has(&t.artist)
+        || has(&t.album)
+        || has(&t.genre)
+        || t.filename.to_lowercase().contains(q)
+}
+
+/// A search entry + ✕ clear button row, styled like the Files view's search
+/// bar. Returns `(row, entry)`; the caller wires `connect_changed`.
+fn make_view_search_row(placeholder: &str) -> (GtkBox, Entry) {
+    let entry = Entry::new();
+    entry.set_placeholder_text(Some(placeholder));
+    entry.set_hexpand(true);
+    let clear = Button::with_label("✕");
+    clear.add_css_class("pl-btn");
+    {
+        let e = entry.clone();
+        clear.connect_clicked(move |_| e.set_text(""));
+    }
+    let row = GtkBox::new(Orientation::Horizontal, 4);
+    row.set_margin_top(4);
+    row.set_margin_start(4);
+    row.set_margin_end(4);
+    row.append(&entry);
+    row.append(&clear);
+    (row, entry)
+}
+
 /// Leading status glyphs for a device label: ⚠ for an unsupported filesystem,
 /// 🔒 for read-only (matching the read-only file convention).
 fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
@@ -11761,7 +11802,35 @@ fn open_media_library_window(
     // reload_device_store; read live by the column factory.
     let dev_pair_map: Rc<RefCell<std::collections::HashMap<String, String>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let dev_sort_model = SortListModel::new(Some(dev_store.clone()), None::<gtk4::Sorter>);
+    // Per-view search over whatever the store currently shows (all files or
+    // one playlist): store → filter → sort → selection, so every fill site
+    // stays filter-oblivious and copy/delete still act on the selection.
+    let dev_search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let dev_filter = gtk4::CustomFilter::new({
+        let q = dev_search_query.clone();
+        move |obj| {
+            let Some(boxed) = obj.downcast_ref::<glib::BoxedAnyObject>() else {
+                return true;
+            };
+            lib_track_matches_query(&boxed.borrow::<crate::media_library::LibTrack>(), &q.borrow())
+        }
+    });
+    let dev_filter_model =
+        gtk4::FilterListModel::new(Some(dev_store.clone()), Some(dev_filter.clone()));
+    // Search filters just this device view's rows (all-files or the shown
+    // playlist). Created here so reload_device_store can clear it when a
+    // different device opens; packed above the track table below.
+    let (dev_search_row, dev_search_entry) =
+        make_view_search_row("Search this device — artist, title, album…");
+    {
+        let q = dev_search_query.clone();
+        let filter = dev_filter.clone();
+        dev_search_entry.connect_changed(move |e| {
+            *q.borrow_mut() = e.text().to_lowercase();
+            filter.changed(gtk4::FilterChange::Different);
+        });
+    }
+    let dev_sort_model = SortListModel::new(Some(dev_filter_model), None::<gtk4::Sorter>);
     let dev_selection = MultiSelection::new(Some(dev_sort_model.clone()));
     let dev_col_view = ColumnView::new(Some(dev_selection.clone()));
     dev_col_view.add_css_class("ml-col-view");
@@ -12000,9 +12069,12 @@ fn open_media_library_window(
         let counts_cache = device_counts.clone();
         let sel_backend = selected_dev_backend.clone();
         let pair_map = dev_pair_map.clone();
+        let search = dev_search_entry.clone();
         Rc::new(move |dev: crate::devices::Device| {
             counts_lbl.set_text("Reading device…");
             hint.set_text(""); // clear any stale copy status
+            // A previous device's search query must not filter this one.
+            search.set_text("");
             store.remove_all();
             pair_map.borrow_mut().clear(); // drop the previous device's pairings
             // Device contents may have changed (copy/send/sync) — drop the
@@ -12926,6 +12998,8 @@ fn open_media_library_window(
     };
     *copy_files_holder.borrow_mut() = Some(copy_files_run.clone());
 
+    dev_detail.append(&dev_search_row);
+
     let dev_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Automatic)
@@ -13376,6 +13450,40 @@ fn open_media_library_window(
     // row to add just that track — matching the established double-click add.
     disc_track_list.set_activate_on_single_click(false);
     disc_track_list.add_css_class("ml-col-view");
+    // Search filters just this disc's tracks. The filter hides rows without
+    // reindexing them, so row.index() keeps mapping onto the entries store
+    // (Add Selected, double-click add, rip preselection all stay correct).
+    let disc_search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let (disc_search_row, disc_search_entry) =
+        make_view_search_row("Search this disc — track title…");
+    {
+        let q = disc_search_query.clone();
+        let entries_store = current_disc_entries.clone();
+        disc_track_list.set_filter_func(move |row| {
+            let q = q.borrow();
+            if q.is_empty() {
+                return true;
+            }
+            let idx = row.index();
+            if idx < 0 {
+                return true;
+            }
+            entries_store
+                .borrow()
+                .get(idx as usize)
+                .map(|e| e.title.to_lowercase().contains(q.as_str()))
+                .unwrap_or(true)
+        });
+    }
+    {
+        let q = disc_search_query.clone();
+        let list = disc_track_list.clone();
+        disc_search_entry.connect_changed(move |e| {
+            *q.borrow_mut() = e.text().to_lowercase();
+            list.invalidate_filter();
+        });
+    }
+    disc_detail.append(&disc_search_row);
     let disc_tracks_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Automatic)
         .vscrollbar_policy(PolicyType::Automatic)
@@ -13383,18 +13491,22 @@ fn open_media_library_window(
         .child(&disc_track_list)
         .build();
     disc_detail.append(&disc_tracks_scroll);
-    // Add + identify/tag/rip actions.
+    // Add + identify/rip/tag/eject actions. Order matches the macOS drive
+    // header (Identify · Rip… · Edit Tags · … · Eject last), with the GTK-only
+    // Add buttons in front.
     let disc_add_sel = Button::with_label("Add Selected");
     let disc_add_all = Button::with_label("Add All");
     let disc_identify = Button::with_label("Identify");
-    let disc_edit_tags = Button::with_label("Edit Tags");
     let disc_rip = Button::with_label("Rip…");
+    let disc_edit_tags = Button::with_label("Edit Tags");
+    let disc_eject = Button::with_label("Eject");
     for b in [
         &disc_add_sel,
         &disc_add_all,
         &disc_identify,
-        &disc_edit_tags,
         &disc_rip,
+        &disc_edit_tags,
+        &disc_eject,
     ] {
         b.add_css_class("pl-btn");
     }
@@ -13402,8 +13514,9 @@ fn open_media_library_window(
     disc_actions.append(&disc_add_sel);
     disc_actions.append(&disc_add_all);
     disc_actions.append(&disc_identify);
-    disc_actions.append(&disc_edit_tags);
     disc_actions.append(&disc_rip);
+    disc_actions.append(&disc_edit_tags);
+    disc_actions.append(&disc_eject);
     disc_detail.append(&disc_actions);
     // Rip progress row (hidden unless a rip is running): a bar + Cancel.
     let disc_rip_box = GtkBox::new(Orientation::Horizontal, 6);
@@ -14911,8 +15024,38 @@ fn open_media_library_window(
     // produce a display-only sort.  `editing_tracks` (the canonical play
     // order) is never reordered by sort — Save always writes that order.
     let edit_store: gio::ListStore = gio::ListStore::new::<glib::BoxedAnyObject>();
+    // Per-view search over this playlist's rows: store → filter → sort →
+    // selection. Rows keep their canonical_idx, so delete/context actions
+    // stay correct under a filter; drag-reorder is refused while one is
+    // active (display order no longer maps onto play order).
+    let pl_edit_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let edit_filter = gtk4::CustomFilter::new({
+        let q = pl_edit_query.clone();
+        move |obj| {
+            let Some(boxed) = obj.downcast_ref::<glib::BoxedAnyObject>() else {
+                return true;
+            };
+            lib_track_matches_query(&boxed.borrow::<EditorEntry>().track, &q.borrow())
+        }
+    });
+    let edit_filter_model =
+        gtk4::FilterListModel::new(Some(edit_store.clone()), Some(edit_filter.clone()));
+    // Search filters just this playlist's rows (drag-reorder pauses while a
+    // query is active — see the drop handler). Created here so
+    // load_pl_by_id can clear it when a different playlist opens; packed
+    // into the pl-edit page below.
+    let (pl_search_row, pl_search_entry) =
+        make_view_search_row("Search this playlist — artist, title, album…");
+    {
+        let q = pl_edit_query.clone();
+        let filter = edit_filter.clone();
+        pl_search_entry.connect_changed(move |e| {
+            *q.borrow_mut() = e.text().to_lowercase();
+            filter.changed(gtk4::FilterChange::Different);
+        });
+    }
     let edit_sort_model = gtk4::SortListModel::new(
-        Some(edit_store.clone()),
+        Some(edit_filter_model),
         None::<gtk4::Sorter>,
     );
     let edit_multi_sel: gtk4::MultiSelection =
@@ -15875,8 +16018,11 @@ fn open_media_library_window(
         let ep_id      = editing_pl_id.clone();
         let apply_cols = apply_editor_columns.clone();
         let err_lbl    = edit_error_label.clone();
+        let search     = pl_search_entry.clone();
         Rc::new(move |id: i64| {
             ep_id.set(id);
+            // A previous playlist's search query must not filter this one.
+            search.set_text("");
             // Re-apply files-view column state so customizations made
             // while the editor was elsewhere take effect immediately.
             apply_cols();
@@ -16400,6 +16546,8 @@ fn open_media_library_window(
         edit_vbox.append(&edit_path_label);
         edit_vbox.append(&edit_error_label);
 
+        edit_vbox.append(&pl_search_row);
+
         let track_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Automatic)
             .vscrollbar_policy(PolicyType::Automatic)
@@ -16480,6 +16628,7 @@ fn open_media_library_window(
             let rebuild_drop = rebuild_track_list.clone();
             let _posmap_drop = position_map.clone();
             let ra_drop     = reorder_allowed.clone();
+            let query_drop  = pl_edit_query.clone();
             let tl_drop     = track_list.clone();
             let dragsel_drop = drag_selection.clone();
             dt.connect_drop(move |_, value, x, y| {
@@ -16506,8 +16655,10 @@ fn open_media_library_window(
                 if is_internal_reorder {
                     // Pure reorder.  Refuse silently when the current sort
                     // doesn't make reorder semantically sensible — avoids
-                    // appending duplicates at the bottom in that case.
-                    if !ra_drop.get() {
+                    // appending duplicates at the bottom in that case.  A
+                    // live search filter breaks the display↔play-order
+                    // mapping the same way, so it refuses too.
+                    if !ra_drop.get() || !query_drop.borrow().is_empty() {
                         dragsel_drop.borrow_mut().clear();
                         return true;
                     }
@@ -18071,9 +18222,28 @@ fn open_media_library_window(
         let track_list = disc_track_list.clone();
         let tracks_scroll = disc_tracks_scroll.clone();
         let actions = disc_actions.clone();
+        // Audio-only actions hide on non-audio media; Eject shows whenever a
+        // disc is present (mac parity).
+        let audio_btns = [
+            disc_add_sel.clone(),
+            disc_add_all.clone(),
+            disc_identify.clone(),
+            disc_rip.clone(),
+            disc_edit_tags.clone(),
+        ];
+        let eject_btn = disc_eject.clone();
         let entries_store = current_disc_entries.clone();
         let disc_tags = disc_tags.clone();
+        let search_row = disc_search_row.clone();
+        let search_entry = disc_search_entry.clone();
+        // Which drive the detail last showed — a switch clears the search
+        // (the 10 s poll repopulates the SAME drive and must not).
+        let last_drive: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         Rc::new(move |drive: &crate::disc::OpticalDrive| {
+            if last_drive.borrow().as_deref() != Some(drive.id.as_str()) {
+                *last_drive.borrow_mut() = Some(drive.id.clone());
+                search_entry.set_text("");
+            }
             title.set_text(&gtk_safe(&drive.label));
             media_lbl.set_text(&drive.media_summary());
             while let Some(child) = track_list.first_child() {
@@ -18106,8 +18276,13 @@ fn open_media_library_window(
             }
             if drive.media.is_audio_cd && !entries.is_empty() {
                 banner.set_visible(false);
+                search_row.set_visible(true);
                 tracks_scroll.set_visible(true);
                 actions.set_visible(true);
+                for b in &audio_btns {
+                    b.set_visible(true);
+                }
+                eject_btn.set_visible(true);
                 for e in &entries {
                     let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
                     // Show the real title once known; otherwise the placeholder.
@@ -18130,8 +18305,15 @@ fn open_media_library_window(
                     track_list.append(&row);
                 }
             } else {
+                search_row.set_visible(false);
                 tracks_scroll.set_visible(false);
-                actions.set_visible(false);
+                // A loaded non-audio disc still gets Eject; the audio actions
+                // make no sense for it.
+                actions.set_visible(drive.media.present);
+                for b in &audio_btns {
+                    b.set_visible(false);
+                }
+                eject_btn.set_visible(drive.media.present);
                 tag_lbl.set_visible(false);
                 let msg = if !drive.media.present {
                     "No disc in the drive. Insert an audio CD to play its tracks."
@@ -18144,6 +18326,8 @@ fn open_media_library_window(
                 banner.set_visible(true);
             }
             *entries_store.borrow_mut() = entries;
+            // Fresh rows + fresh entries: re-run the search filter over them.
+            track_list.invalidate_filter();
         })
     };
 
@@ -18821,6 +19005,16 @@ fn open_media_library_window(
         disc_tags.clone(),
         selected_disc_id.clone(),
         current_drives.clone(),
+    );
+
+    // Eject: blocking subprocess off the UI thread, then re-poll the drives.
+    disc::connect_eject(
+        &disc_eject,
+        state.clone(),
+        rip_active.clone(),
+        disc_status_lbl.clone(),
+        selected_disc_id.clone(),
+        refresh_discs.clone(),
     );
 
     // Initial scan + lazy 10 s poll (stops once the window/sidebar is gone).

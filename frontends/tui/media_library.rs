@@ -1179,7 +1179,7 @@ impl App {
         self.rip_cancel = Some(cancel.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         self.disc_rip = Some(rx);
-        self.rip_progress = Some((0, entries.len(), entries[0].title.clone()));
+        self.rip_progress = Some((0, entries.len(), entries[0].title.clone(), 0.0));
 
         std::thread::spawn(move || {
             use crate::disc::rip;
@@ -1190,8 +1190,8 @@ impl App {
                 &tags,
                 total_on_disc,
                 &cancel,
-                |i, n, title| {
-                    let _ = tx.send(super::RipMsg::Progress(i, n, title.to_string()));
+                |i, n, title, frac| {
+                    let _ = tx.send(super::RipMsg::Progress(i, n, title.to_string(), frac));
                 },
             );
             let _ = tx.send(super::RipMsg::Done(outcome));
@@ -1201,8 +1201,8 @@ impl App {
     /// Apply a rip progress/result message (called from the tick loop).
     pub(super) fn handle_rip_msg(&mut self, msg: super::RipMsg) {
         match msg {
-            super::RipMsg::Progress(i, n, title) => {
-                self.rip_progress = Some((i, n, title));
+            super::RipMsg::Progress(i, n, title, frac) => {
+                self.rip_progress = Some((i, n, title, frac));
             }
             super::RipMsg::Done(outcome) => {
                 self.disc_rip = None;

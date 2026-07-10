@@ -310,6 +310,39 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Eject the disc in a drive. Blocking (the tray takes a moment) — call off
+/// the UI thread. `drive_id` is the same id `list_drives` reports: Linux the
+/// device node (`eject /dev/srX`), macOS the drutil index
+/// (`drutil eject -drive N`). The caller must not be reading the drive
+/// (playback/rip) — the OS refuses to eject a busy device.
+pub fn eject(drive_id: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let (cmd, args): (&str, Vec<&str>) = ("drutil", vec!["eject", "-drive", drive_id]);
+    #[cfg(target_os = "linux")]
+    let (cmd, args): (&str, Vec<&str>) = ("eject", vec![drive_id]);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return Err(format!("eject not supported on this platform ({drive_id})"));
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let out = std::process::Command::new(cmd)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("couldn't run {cmd}: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err = err.trim();
+            Err(if err.is_empty() {
+                format!("{cmd} failed ({})", out.status)
+            } else {
+                err.to_string()
+            })
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // macOS platform glue
 // ---------------------------------------------------------------------------

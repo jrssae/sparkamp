@@ -17,8 +17,8 @@ use crate::disc::rip::RipOutcome;
 
 /// Progress messages from the rip worker thread to the GTK poller.
 enum DiscRipMsg {
-    /// (index of the track starting, total, its title).
-    Progress(usize, usize, String),
+    /// (track index, total, its title, within-track fraction 0.0–1.0).
+    Progress(usize, usize, String, f64),
     /// Finished (or cancelled).
     Done(RipOutcome),
 }
@@ -115,8 +115,8 @@ fn start_rip(
             &tags,
             total,
             &cancel,
-            |i, n, title| {
-                let _ = tx.send(DiscRipMsg::Progress(i, n, title.to_string()));
+            |i, n, title, frac| {
+                let _ = tx.send(DiscRipMsg::Progress(i, n, title.to_string(), frac));
             },
         );
         let _ = tx.send(DiscRipMsg::Done(outcome));
@@ -128,14 +128,21 @@ fn start_rip(
         let mut done: Option<RipOutcome> = None;
         loop {
             match rx.try_recv() {
-                Ok(DiscRipMsg::Progress(i, n, title)) => {
-                    let frac = if n > 0 { i as f64 / n as f64 } else { 0.0 };
-                    ui.rip_bar.set_fraction(frac);
+                Ok(DiscRipMsg::Progress(i, n, title, track_frac)) => {
+                    // Overall fraction: finished tracks + progress within the
+                    // current one, so the bar moves during a single track too.
+                    let overall = if n > 0 {
+                        (i as f64 + track_frac) / n as f64
+                    } else {
+                        0.0
+                    };
+                    ui.rip_bar.set_fraction(overall.clamp(0.0, 1.0));
                     ui.rip_bar.set_text(Some(&gtk_safe(&format!(
-                        "Ripping {}/{} · {}",
+                        "Ripping {}/{} · {} ({:.0}%)",
                         i + 1,
                         n,
-                        title
+                        title,
+                        track_frac * 100.0
                     ))));
                 }
                 Ok(DiscRipMsg::Done(outcome)) => {
@@ -167,6 +174,66 @@ fn start_rip(
             return glib::ControlFlow::Break;
         }
         glib::ControlFlow::Continue
+    });
+}
+
+/// Wire the Eject button: refuses while the drive is being read (playback of
+/// a cdda:// track from this drive, or a running rip — the OS would refuse
+/// anyway, with a worse message), then runs the blocking eject off the UI
+/// thread and refreshes the drive list on success.
+pub(super) fn connect_eject(
+    eject_btn: &Button,
+    state: Rc<RefCell<AppState>>,
+    rip_active: Rc<Cell<bool>>,
+    status: Label,
+    selected_disc_id: Rc<RefCell<Option<String>>>,
+    refresh_discs: Rc<dyn Fn()>,
+) {
+    eject_btn.connect_clicked(move |btn| {
+        let Some(id) = selected_disc_id.borrow().clone() else {
+            return;
+        };
+        if rip_active.get() {
+            status.set_text("Can't eject during a rip.");
+            return;
+        }
+        // Playing a cdda:// track from THIS drive holds the device open.
+        {
+            let s = state.borrow();
+            let playing_this_drive = !matches!(
+                s.player.state(),
+                crate::engine::PlayerState::Stopped
+            ) && s
+                .playlist
+                .current()
+                .map(|t| t.path.to_string_lossy())
+                .and_then(|p| {
+                    crate::disc::parse_cdda_uri(&p).map(|(_, dev)| dev == Some(id.as_str()))
+                })
+                .unwrap_or(false);
+            if playing_this_drive {
+                status.set_text("Stop disc playback before ejecting.");
+                return;
+            }
+        }
+        btn.set_sensitive(false);
+        status.set_text("Ejecting…");
+        let btn = btn.clone();
+        let status = status.clone();
+        let refresh = refresh_discs.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || crate::disc::detect::eject(&id))
+                .await
+                .unwrap_or_else(|_| Err("eject task failed".into()));
+            btn.set_sensitive(true);
+            match result {
+                Ok(()) => {
+                    status.set_text("");
+                    refresh();
+                }
+                Err(e) => status.set_text(&gtk_safe(&format!("Couldn't eject: {e}"))),
+            }
+        });
     });
 }
 

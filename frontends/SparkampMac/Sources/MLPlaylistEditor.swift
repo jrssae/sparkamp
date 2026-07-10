@@ -27,6 +27,7 @@ struct MLPlaylistEditor: View {
     @State private var editorSortAscending: Bool = true
     @State private var savedTrackIds: [Int64]   = []
     @State private var trackSelection: Set<Int> = []
+    @State private var searchText = ""
     @State private var nextRowId: Int = 0
     @State private var showingRename  = false
     @State private var renameText     = ""
@@ -63,6 +64,31 @@ struct MLPlaylistEditor: View {
 
                 Divider().background(theme.windowBorder)
             }
+
+            // ── Per-view search: filters just this playlist's rows ────────────
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(theme.playlistDurationText)
+                    .font(.system(size: 11))
+                TextField("Search this playlist…", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(theme.vars.bodyFont)
+                    .foregroundStyle(theme.playlistText)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(theme.playlistDurationText)
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(4)
+            .background(theme.lcdBackground.opacity(0.8))
+            .cornerRadius(6)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.windowBorder, lineWidth: 1))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
 
             // ── Track list ─────────────────────────────────────────────────────
             MLEditorTable(
@@ -323,14 +349,29 @@ struct MLPlaylistEditor: View {
     /// `#` column restores the original play order without any state
     /// reconstruction.
     private var sortedRows: [MLEditingRow] {
+        let base: [MLEditingRow]
         if editorSortKey == "position" {
-            return editorSortAscending ? editingRows : Array(editingRows.reversed())
+            base = editorSortAscending ? editingRows : Array(editingRows.reversed())
+        } else if let cmp = MLFilesTable.keyPathComparator(forSortKey: editorSortKey,
+                                                           ascending: editorSortAscending) {
+            base = editingRows.sorted {
+                cmp.compare($0.track, $1.track) == .orderedAscending
+            }
+        } else {
+            base = editingRows
         }
-        guard let cmp = MLFilesTable.keyPathComparator(forSortKey: editorSortKey,
-                                                       ascending: editorSortAscending)
-        else { return editingRows }
-        return editingRows.sorted {
-            cmp.compare($0.track, $1.track) == .orderedAscending
+        guard !searchText.isEmpty else { return base }
+        // Per-view search over just this playlist's rows. Row ids stay
+        // stable, so selection/delete/context actions work on a filtered
+        // view; drag-reorder is refused while filtering (offsets would
+        // apply to the wrong rows — see reorderEditorRows).
+        return base.filter { row in
+            let t = row.track
+            return t.title.localizedCaseInsensitiveContains(searchText)
+                || t.artist.localizedCaseInsensitiveContains(searchText)
+                || t.album.localizedCaseInsensitiveContains(searchText)
+                || t.genre.localizedCaseInsensitiveContains(searchText)
+                || t.filename.localizedCaseInsensitiveContains(searchText)
         }
     }
 
@@ -362,6 +403,9 @@ struct MLPlaylistEditor: View {
     /// Change lives in `editingRows`; user clicks Save to commit the
     /// new play order to the .m3u8 file on disk.
     private func reorderEditorRows(from: IndexSet, to: Int) {
+        // The offsets come from the DISPLAYED rows; with a search filter
+        // active they don't map onto editingRows — refuse the move.
+        guard searchText.isEmpty else { return }
         editingRows.move(fromOffsets: from, toOffset: to)
         // Selection ids are stable across the move (row identity preserved),
         // so trackSelection doesn't need to be touched.
@@ -379,6 +423,8 @@ struct MLPlaylistEditor: View {
         }
         savedTrackIds = tracks.map(\.id)
         trackSelection.removeAll()
+        // A previous playlist's search query must not filter this one.
+        searchText = ""
     }
 
     /// Append `tracks` to the editor, skipping any whose DB id is already

@@ -16,6 +16,7 @@ struct DeviceDetailView: View {
     let theme: SkinTheme
 
     @State private var selection: Set<String> = []
+    @State private var searchText = ""
     @State private var sortOrder: [KeyPathComparator<DeviceTrack>] =
         [KeyPathComparator(\.title)]
     @State private var showingImporter = false
@@ -63,6 +64,7 @@ struct DeviceDetailView: View {
             }
             Divider().background(theme.windowBorder)
             if device.fsVisible {
+                deviceSearchBar
                 filesTable
                 filesBottomBar
             } else if device.backend == .unsupported {
@@ -85,6 +87,7 @@ struct DeviceDetailView: View {
         .onChange(of: device.backendId) { _, _ in
             selection.removeAll()
             selectedPlaylistRelpath = nil
+            searchText = ""
             model.loadDeviceTracks(device)
             model.loadDevicePlaylists(device)
         }
@@ -409,9 +412,10 @@ struct DeviceDetailView: View {
     // MARK: Files
 
     /// Tracks shown in the table: all of them, or just the selected device
-    /// playlist's entries (matched by filename), then sorted.
+    /// playlist's entries (matched by filename), then the per-view search
+    /// filter, then sorted.
     private var sortedTracks: [DeviceTrack] {
-        let base: [DeviceTrack]
+        var base: [DeviceTrack]
         if let rel = selectedPlaylistRelpath,
            let pl = model.devicePlaylists.first(where: { $0.relpath == rel }) {
             let names = Set(pl.entries)
@@ -421,7 +425,45 @@ struct DeviceDetailView: View {
         } else {
             base = model.deviceTracks
         }
+        if !searchText.isEmpty {
+            base = base.filter { t in
+                t.title.localizedCaseInsensitiveContains(searchText)
+                    || t.artist.localizedCaseInsensitiveContains(searchText)
+                    || t.album.localizedCaseInsensitiveContains(searchText)
+                    || t.genre.localizedCaseInsensitiveContains(searchText)
+                    || URL(fileURLWithPath: t.path).lastPathComponent
+                        .localizedCaseInsensitiveContains(searchText)
+            }
+        }
         return base.sorted(using: sortOrder)
+    }
+
+    /// Per-view search over just this device's shown rows (all files or the
+    /// selected device playlist) — same styling as the Files view search.
+    private var deviceSearchBar: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(theme.playlistDurationText)
+                .font(.system(size: 11))
+            TextField("Search this device…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(theme.vars.bodyFont)
+                .foregroundStyle(theme.playlistText)
+            if !searchText.isEmpty {
+                Button { searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(theme.playlistDurationText)
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(theme.lcdBackground.opacity(0.8))
+        .cornerRadius(6)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.windowBorder, lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 
     /// The device files table. The full ML column set is present; the user
