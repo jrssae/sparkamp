@@ -246,7 +246,6 @@ pub(super) fn connect_rip_ui(
     rip_btn: &Button,
     cancel_btn: &Button,
     win: &gtk4::Window,
-    track_list: &gtk4::ListBox,
     entries_store: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>>,
     disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
     selected_disc_id: Rc<RefCell<Option<String>>>,
@@ -265,7 +264,6 @@ pub(super) fn connect_rip_ui(
     }
 
     // Rip button: dialog to pick tracks / destination / quality, then rip.
-    let track_list = track_list.clone();
     let win_wk = win.downgrade();
     rip_btn.connect_clicked(move |_| {
         let status = &ui.status;
@@ -296,12 +294,6 @@ pub(super) fn connect_rip_ui(
         if entries.is_empty() {
             return;
         }
-        // Preselect the highlighted track rows, else all tracks.
-        let selected_idx: std::collections::HashSet<usize> = track_list
-            .selected_rows()
-            .iter()
-            .map(|r| r.index() as usize)
-            .collect();
         let watched = watched_folders(&ui.state);
         let dest_default = crate::disc::rip::default_dest(
             ui.state.borrow().config.disc.rip_dest_dir.as_deref(),
@@ -324,16 +316,35 @@ pub(super) fn connect_rip_ui(
         outer.set_margin_start(12);
         outer.set_margin_end(12);
 
-        outer.append(
-            &Label::builder()
-                .label("Tracks to rip")
-                .halign(Align::Start)
-                .xalign(0.0)
-                .build(),
-        );
+        // Header row: label + Select All / Deselect All. Every track starts
+        // selected — ripping the whole disc is the common case.
+        let tracks_hdr = GtkBox::new(Orientation::Horizontal, 6);
+        let tracks_lbl = Label::builder()
+            .label("Tracks to rip")
+            .halign(Align::Start)
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        let select_all = Button::with_label("Select All");
+        let deselect_all = Button::with_label("Deselect All");
+        for b in [&select_all, &deselect_all] {
+            b.add_css_class("pl-btn");
+        }
+        tracks_hdr.append(&tracks_lbl);
+        tracks_hdr.append(&select_all);
+        tracks_hdr.append(&deselect_all);
+        outer.append(&tracks_hdr);
         let list = gtk4::ListBox::new();
         list.set_selection_mode(gtk4::SelectionMode::Multiple);
-        for (i, e) in entries.iter().enumerate() {
+        {
+            let l = list.clone();
+            select_all.connect_clicked(move |_| l.select_all());
+        }
+        {
+            let l = list.clone();
+            deselect_all.connect_clicked(move |_| l.unselect_all());
+        }
+        for e in entries.iter() {
             let lbl = Label::builder()
                 .label(&gtk_safe(&format!(
                     "{}. {}",
@@ -350,9 +361,7 @@ pub(super) fn connect_rip_ui(
             let row = ListBoxRow::new();
             row.set_child(Some(&lbl));
             list.append(&row);
-            if selected_idx.is_empty() || selected_idx.contains(&i) {
-                list.select_row(Some(&row));
-            }
+            list.select_row(Some(&row));
         }
         let list_scroll = ScrolledWindow::builder().vexpand(true).child(&list).build();
         outer.append(&list_scroll);

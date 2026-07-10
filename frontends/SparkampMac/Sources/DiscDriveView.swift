@@ -288,9 +288,9 @@ struct DiscDriveView: View {
     /// from config.
     private func openRipSheet() {
         if model.mlIsOpen { model.mlRefreshFolders() }
-        ripSelection = selection.isEmpty
-            ? Set(model.discTracks.map(\.number))
-            : selection
+        // Every track starts selected — ripping the whole disc is the common
+        // case; Select All / Deselect All in the sheet handle the rest.
+        ripSelection = Set(model.discTracks.map(\.number))
         if let ctx = model.ctx {
             let p = sparkamp_get_rip_dest(ctx)
             ripDest = p.map { String(cString: $0) } ?? ""
@@ -360,6 +360,14 @@ struct DiscDriveView: View {
                 Text("\(ripSelection.count) of \(model.discTracks.count) tracks")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                Button("Select All") {
+                    ripSelection = Set(model.discTracks.map(\.number))
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                Button("Deselect All") { ripSelection.removeAll() }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
                 Spacer()
                 Button("Cancel") { showRip = false }
                     .keyboardShortcut(.cancelAction)

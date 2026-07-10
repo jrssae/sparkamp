@@ -19022,7 +19022,6 @@ fn open_media_library_window(
         &disc_rip,
         &disc_rip_cancel,
         &win,
-        &disc_track_list,
         current_disc_entries.clone(),
         disc_tags.clone(),
         selected_disc_id.clone(),
