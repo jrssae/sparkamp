@@ -177,6 +177,54 @@ fn start_rip(
     });
 }
 
+/// The media-format badge for a drive card: writable kinds by name; pressed
+/// discs (no writable kind reported) split CD vs DVD by capacity; `None`
+/// for an empty tray (bare drive glyph, no badge). Mirrors the macOS
+/// `DiscDriveIcon` badge rules.
+pub(super) fn media_badge(d: &crate::disc::OpticalDrive) -> Option<&'static str> {
+    use crate::disc::MediaKind;
+    if !d.media.present {
+        return None;
+    }
+    Some(match d.media.kind {
+        MediaKind::CdR => "CD-R",
+        MediaKind::CdRw => "CD-RW",
+        MediaKind::DvdR => "DVD-R",
+        MediaKind::DvdRw => "DVD-RW",
+        MediaKind::DvdRam => "DVD-RAM",
+        MediaKind::Unknown => {
+            if d.media.capacity_bytes > 1_000_000_000 {
+                "DVD"
+            } else {
+                "CD"
+            }
+        }
+    })
+}
+
+/// Overview-card icon: a disc glyph when media is loaded (media-optical),
+/// a bare drive when the tray is empty, with the media-format badge overlaid
+/// bottom-right.
+pub(super) fn disc_card_icon(d: &crate::disc::OpticalDrive) -> gtk4::Overlay {
+    let icon = gtk4::Image::from_icon_name(if d.media.present {
+        "media-optical"
+    } else {
+        "drive-optical"
+    });
+    icon.set_pixel_size(40);
+    let overlay = gtk4::Overlay::new();
+    overlay.set_child(Some(&icon));
+    if let Some(badge) = media_badge(d) {
+        let lbl = Label::new(None);
+        lbl.set_markup(&format!("<small><b>{badge}</b></small>"));
+        lbl.set_halign(gtk4::Align::End);
+        lbl.set_valign(gtk4::Align::End);
+        lbl.add_css_class("dim-label");
+        overlay.add_overlay(&lbl);
+    }
+    overlay
+}
+
 /// Whether the Submit-to-gnudb action applies: the disc is unknown to gnudb
 /// (no official baseline) or the user's tags differ from the official match.
 /// Same field set the macOS `discSubmittable` compares.
@@ -293,6 +341,13 @@ pub(super) fn connect_submit(
                     .build(),
             );
             let cat_dd = gtk4::DropDown::from_strings(&crate::disc::gnudb::CATEGORIES);
+            // Typeahead over the fixed CDDB category set.
+            cat_dd.set_expression(Some(&gtk4::PropertyExpression::new(
+                gtk4::StringObject::static_type(),
+                None::<gtk4::Expression>,
+                "string",
+            )));
+            cat_dd.set_enable_search(true);
             let suggested = crate::disc::gnudb::suggest_category(&entry.genre);
             let idx = crate::disc::gnudb::CATEGORIES
                 .iter()
@@ -692,4 +747,39 @@ pub(super) fn connect_rip_ui(
         });
         dialog.present();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::disc::{MediaInfo, MediaKind, OpticalDrive};
+
+    fn drive(present: bool, kind: MediaKind, capacity: u64) -> OpticalDrive {
+        OpticalDrive {
+            id: "/dev/sr0".into(),
+            label: "TEST".into(),
+            media: MediaInfo {
+                present,
+                kind,
+                capacity_bytes: capacity,
+                ..MediaInfo::none()
+            },
+            toc: None,
+            mount_path: None,
+        }
+    }
+
+    #[test]
+    fn media_badge_rules() {
+        assert_eq!(media_badge(&drive(false, MediaKind::Unknown, 0)), None);
+        assert_eq!(media_badge(&drive(true, MediaKind::CdR, 0)), Some("CD-R"));
+        assert_eq!(media_badge(&drive(true, MediaKind::DvdRam, 0)), Some("DVD-RAM"));
+        // Pressed discs: split CD/DVD by capacity; an audio CD (capacity
+        // unknown = 0) reads CD.
+        assert_eq!(media_badge(&drive(true, MediaKind::Unknown, 0)), Some("CD"));
+        assert_eq!(
+            media_badge(&drive(true, MediaKind::Unknown, 4_700_000_000)),
+            Some("DVD")
+        );
+    }
 }

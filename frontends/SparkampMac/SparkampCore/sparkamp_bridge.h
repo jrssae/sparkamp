@@ -688,8 +688,40 @@ char *sparkamp_gnudb_suggest_category(SparkampCtx *ctx, const char *genre);
     values — see RipJobIn in src/ffi/disc.rs). Blocks for the whole encode
     (optical reads run at drive speed) — worker thread only; loop per track
     for progress/cancel. {"ok":"<written path>"} or {"error":"…"}. Free with
-    sparkamp_free_string. */
+    sparkamp_free_string. Prefer the job API below — it adds the destination
+    write pre-flight and within-track progress. */
 char *sparkamp_disc_rip_track(SparkampCtx *ctx, const char *job_json);
+
+/** Start ripping a whole selection on a core worker thread (job JSON:
+    {entries:[DiscTrackEntry…], dest_root, quality, tags:XmcdEntry,
+    total_on_disc} — see RipRunIn). Runs the same core loop as GTK/TUI:
+    destination write pre-flight, per-track tags, cancel between tracks.
+    Returns 0 started, -1 bad JSON, -2 a rip is already running. */
+int sparkamp_disc_rip_job_start(SparkampCtx *ctx, const char *job_json);
+
+/** Poll the rip job from a UI timer: JSON {running, track_index,
+    track_count, title, frac (0–1 within the current track),
+    done:{ripped:[paths], failures:[strings], cancelled}|null}. `done`
+    non-null means finished (import the paths, then show
+    sparkamp_disc_rip_result_message). Free with sparkamp_free_string. */
+char *sparkamp_disc_rip_job_poll(SparkampCtx *ctx);
+
+/** Stop the running rip job after the current track. */
+void sparkamp_disc_rip_job_cancel(SparkampCtx *ctx);
+
+/** The shared one-line rip result ("Ripped N tracks · …") for a job's
+    `done` JSON + how many files the library import registered. Free with
+    sparkamp_free_string. */
+char *sparkamp_disc_rip_result_message(SparkampCtx *ctx, const char *done_json,
+                                       int imported);
+
+/** Fixed CDDB category set as a JSON string array (submit picker items).
+    Free with sparkamp_free_string. */
+char *sparkamp_gnudb_categories(SparkampCtx *ctx);
+
+/** Every ID3v1 genre, alphabetically sorted, as a JSON string array (genre
+    typeahead items). Free with sparkamp_free_string. */
+char *sparkamp_id3_genres(SparkampCtx *ctx);
 
 /* ── Burning (blind-implemented; hardware pass pending — see plan) ─────────
    All blocking: worker threads only. One burn/erase runs at a time;

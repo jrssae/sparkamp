@@ -382,18 +382,28 @@ extension SparkampModel {
 
     // MARK: Rip
 
-    /// Rip the given tracks to `destRoot` sequentially on a worker thread,
-    /// with per-track progress; cancel stops after the current track. Each
-    /// finished file is auto-imported into the Media Library at the end.
+    /// Rip the given tracks through the core's job runner (the same loop
+    /// GTK/TUI use): destination write pre-flight (a read-only folder fails
+    /// once, clearly, before touching the drive), per-track tagging, cancel
+    /// between tracks, and within-track progress (`ripTrackFrac`). Finished
+    /// files are auto-imported; the result line is the shared core message.
     func ripDiscTracks(
         _ drive: OpticalDrive, entries: [DiscTrackEntry], destRoot: String, quality: Int
     ) {
         guard !entries.isEmpty, ripProgress == nil else { return }
-        let tags = discIdFor(drive).flatMap { discTagSets[$0] }
+        let discid = discIdFor(drive) ?? ""
+        let tagSet = discTagSets[discid]
+        let tags = XmcdEntry(
+            discid: discid,
+            artist: tagSet?.artist ?? "",
+            album: tagSet?.album ?? "",
+            year: tagSet?.year ?? "",
+            genre: tagSet?.genre ?? "",
+            trackTitles: tagSet?.titles ?? [],
+            extd: "",
+            extt: [],
+            revision: 0)
         let total = drive.toc?.tracks.count ?? entries.count
-        ripCancelRequested = false
-        ripProgress = CopyProgress(done: 0, total: entries.count, name: entries[0].title)
-        discStatus = nil
 
         // Remember the destination for next time.
         if let ctx = ctx {
@@ -401,57 +411,49 @@ extension SparkampModel {
             sparkamp_set_rip_quality(ctx, Int32(quality))
         }
 
-        DispatchQueue.global(qos: .utility).async {
-            var ripped: [String] = []
-            var failures: [String] = []
-            for (i, entry) in entries.enumerated() {
-                if DispatchQueue.main.sync(execute: { self.ripCancelRequested }) {
-                    break
-                }
-                DispatchQueue.main.async {
-                    self.ripProgress = CopyProgress(
-                        done: i, total: entries.count, name: entry.title)
-                }
-                let job = DiscService.RipJob(
-                    source: .init(kind: "file", path: entry.path),
-                    destRoot: destRoot,
-                    quality: quality,
-                    discArtist: tags?.artist ?? "",
-                    album: tags?.album ?? "",
-                    year: tags?.year ?? "",
-                    genre: tags?.genre ?? "",
-                    number: entry.number,
-                    total: total,
-                    title: entry.title)
-                switch DiscService.ripTrack(job: job) {
-                case .success(let path): ripped.append(path)
-                case .failure(let err): failures.append("\(entry.number): \(err.message)")
-                }
-            }
+        let job = DiscService.RipRunJob(
+            entries: entries,
+            destRoot: destRoot,
+            quality: quality,
+            tags: tags,
+            totalOnDisc: total)
+        guard DiscService.ripJobStart(job: job) else {
+            discStatus = "Couldn't start the rip (is another rip running?)"
+            return
+        }
+        ripCancelRequested = false
+        ripTrackFrac = 0
+        ripProgress = CopyProgress(done: 0, total: entries.count, name: entries[0].title)
+        discStatus = nil
 
-            DispatchQueue.main.async {
+        // Poll the core job from the main run loop; `done` ends the timer.
+        var cancelSent = false
+        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            if self.ripCancelRequested && !cancelSent {
+                DiscService.ripJobCancel()
+                cancelSent = true
+            }
+            guard let st = DiscService.ripJobPoll() else { return }
+            if let done = st.done {
+                timer.invalidate()
                 self.ripProgress = nil
-                // Import the new files so they appear in the library now.
-                // Import only registers files under watched folders, so say
-                // so honestly when some (or all) stayed outside the library.
-                var imported = 0
-                if !ripped.isEmpty {
-                    imported = self.mlAddFilesToLibrary(paths: ripped)
-                }
-                let cancelled = self.ripCancelRequested
+                self.ripTrackFrac = 0
                 self.ripCancelRequested = false
-                var parts: [String] = []
-                parts.append("Ripped \(ripped.count) track\(ripped.count == 1 ? "" : "s")")
-                if cancelled { parts.append("cancelled") }
-                if !ripped.isEmpty && imported == 0 {
-                    parts.append("not in library (destination isn't a watched folder)")
-                } else if imported < ripped.count {
-                    parts.append("only \(imported) added to the library")
+                // Import only registers files under watched folders; the
+                // shared message reports honestly either way.
+                var imported = 0
+                if !done.ripped.isEmpty {
+                    imported = self.mlAddFilesToLibrary(paths: done.ripped)
                 }
-                if !failures.isEmpty {
-                    parts.append("failed: \(failures.joined(separator: "; "))")
-                }
-                self.discStatus = parts.joined(separator: " · ")
+                self.discStatus = DiscService.ripResultMessage(done: done, imported: imported)
+            } else if st.running {
+                self.ripProgress = CopyProgress(
+                    done: st.trackIndex, total: st.trackCount, name: st.title)
+                self.ripTrackFrac = st.frac
             }
         }
     }

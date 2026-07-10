@@ -51,9 +51,19 @@ struct OpticalDrive: Codable, Identifiable, Equatable {
     var media: DiscMediaInfo
     var toc: DiscToc?
     var mountPath: String?
+    /// Core's one wording for the loaded-media state, decoded from the FFI
+    /// payload's `media_summary` — the same string GTK/TUI show.
+    var mediaSummaryCore: String?
 
-    /// One-line loaded-media state — mirrors the Rust `media_summary()`.
+    private enum CodingKeys: String, CodingKey {
+        case id, label, media, toc, mountPath
+        case mediaSummaryCore = "mediaSummary"
+    }
+
+    /// One-line loaded-media state: the core's wording, with a local
+    /// fallback only for payloads that predate the field.
     var mediaSummary: String {
+        if let s = mediaSummaryCore, !s.isEmpty { return s }
         if !media.present { return "No disc" }
         if media.isAudioCd {
             let n = toc?.tracks.count ?? 0
@@ -103,24 +113,17 @@ struct XmcdEntry: Codable, Equatable {
     var revision: Int
 }
 
-/// The fixed CDDB category set — submissions must use one of these.
-let gnudbCategories = [
-    "blues", "classical", "country", "data", "folk", "jazz",
-    "misc", "newage", "reggae", "rock", "soundtrack",
-]
+/// The fixed CDDB category set — submissions must use one of these. Fetched
+/// once from the core (`gnudb::CATEGORIES`), so it can't drift.
+let gnudbCategories: [String] = DiscService.categories()
 
-/// Best-effort genre → CDDB category (mirrors the Rust suggest_category).
+/// Every ID3v1 genre, alphabetically sorted — the genre typeahead items.
+/// Fetched once from the core (`ID3V1_GENRES`).
+let id3GenreList: [String] = DiscService.id3Genres()
+
+/// Best-effort genre → CDDB category — the core's `gnudb::suggest_category`.
 func suggestGnudbCategory(for genre: String) -> String {
-    let g = genre.lowercased()
-    let pairs: [(String, String)] = [
-        ("blues", "blues"), ("classic", "classical"), ("country", "country"),
-        ("folk", "folk"), ("jazz", "jazz"), ("new age", "newage"),
-        ("newage", "newage"), ("reggae", "reggae"),
-        ("soundtrack", "soundtrack"), ("rock", "rock"), ("metal", "rock"),
-        ("punk", "rock"),
-    ]
-    for (needle, cat) in pairs where g.contains(needle) { return cat }
-    return "misc"
+    DiscService.suggestCategory(genre)
 }
 
 /// `{"ok":…}` / `{"error":…}` wrapper the gnudb FFI returns.
@@ -299,33 +302,94 @@ enum DiscService {
         return .failure(GnudbFailure(message: wrapped.error ?? "unknown gnudb error"))
     }
 
-    /// One rip job for `sparkamp_disc_rip_track` (mirrors RipJobIn).
-    struct RipJob: Codable {
-        struct Source: Codable {
-            var kind: String   // "file" on macOS
-            var path: String
+    /// Fixed CDDB categories from the core. Falls back to the known set if
+    /// the FFI somehow fails (never expected).
+    static func categories() -> [String] {
+        guard let json = takeString(sparkamp_gnudb_categories(nil)),
+              let data = json.data(using: .utf8),
+              let cats = try? JSONDecoder().decode([String].self, from: data),
+              !cats.isEmpty
+        else {
+            return ["blues", "classical", "country", "data", "folk", "jazz",
+                    "misc", "newage", "reggae", "rock", "soundtrack"]
         }
-        var source: Source
-        var destRoot: String
-        var quality: Int      // 0 = V0, 1 = V2, 2 = 320 CBR
-        var discArtist: String
-        var album: String
-        var year: String
-        var genre: String
-        var number: Int
-        var total: Int
-        var title: String
+        return cats
     }
 
-    /// Rip one track to a tagged MP3. Blocks for the whole encode (optical
-    /// reads run at drive speed — a minute or more per track): worker thread
-    /// only. Returns the written path or a failure message.
-    static func ripTrack(job: RipJob) -> Result<String, GnudbFailure> {
-        guard let json = jsonString(job)
-        else { return .failure(GnudbFailure(message: "bad rip job")) }
-        let out = json.withCString { sparkamp_disc_rip_track(nil, $0) }
-        return decodeGnudb(takeString(out))
+    /// Alphabetical ID3v1 genre list from the core (typeahead items).
+    static func id3Genres() -> [String] {
+        guard let json = takeString(sparkamp_id3_genres(nil)),
+              let data = json.data(using: .utf8),
+              let genres = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return genres
     }
+
+    /// Core `gnudb::suggest_category` — free-text genre → fixed category.
+    static func suggestCategory(_ genre: String) -> String {
+        genre.withCString {
+            takeString(sparkamp_gnudb_suggest_category(nil, $0)) ?? "misc"
+        }
+    }
+
+    // MARK: Rip job (core loop: pre-flight, per-track tags, cancel, frac)
+
+    /// A whole rip selection (`RipRunIn` in Rust).
+    struct RipRunJob: Codable {
+        var entries: [DiscTrackEntry]
+        var destRoot: String
+        var quality: Int
+        var tags: XmcdEntry
+        var totalOnDisc: Int
+    }
+
+    /// A finished job's results (`RipJobDone` in Rust).
+    struct RipJobDone: Codable {
+        var ripped: [String]
+        var failures: [String]
+        var cancelled: Bool
+    }
+
+    /// Poll snapshot (`RipJobStatus` in Rust).
+    struct RipJobStatus: Codable {
+        var running: Bool
+        var trackIndex: Int
+        var trackCount: Int
+        var title: String
+        /// 0–1 within the current track.
+        var frac: Double
+        var done: RipJobDone?
+    }
+
+    /// Start the core rip worker. False when the JSON failed or a rip is
+    /// already running.
+    static func ripJobStart(job: RipRunJob) -> Bool {
+        guard let json = jsonString(job) else { return false }
+        return json.withCString { sparkamp_disc_rip_job_start(nil, $0) == 0 }
+    }
+
+    /// Poll the running/just-finished job (call from a main-thread timer).
+    static func ripJobPoll() -> RipJobStatus? {
+        guard let json = takeString(sparkamp_disc_rip_job_poll(nil)),
+              let data = json.data(using: .utf8)
+        else { return nil }
+        return try? decoder().decode(RipJobStatus.self, from: data)
+    }
+
+    /// Stop the running job after the current track.
+    static func ripJobCancel() {
+        sparkamp_disc_rip_job_cancel(nil)
+    }
+
+    /// The shared one-line rip result for a finished job.
+    static func ripResultMessage(done: RipJobDone, imported: Int) -> String {
+        guard let json = jsonString(done) else { return "Rip finished" }
+        return json.withCString {
+            takeString(sparkamp_disc_rip_result_message(nil, $0, Int32(imported)))
+                ?? "Rip finished"
+        }
+    }
+
 
     // MARK: Burning (blind-implemented; hardware pass pending — see plan)
 

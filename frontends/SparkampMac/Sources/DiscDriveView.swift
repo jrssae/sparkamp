@@ -181,9 +181,13 @@ struct DiscDriveView: View {
             if let rp = model.ripProgress {
                 // Rip in flight: per-track progress + stop-after-this-track.
                 VStack(alignment: .leading, spacing: 3) {
-                    ProgressView(value: Double(rp.done), total: Double(max(rp.total, 1)))
+                    // Finished tracks + progress within the current one, so
+                    // the bar moves during a single track too.
+                    ProgressView(
+                        value: min(Double(rp.done) + model.ripTrackFrac, Double(rp.total)),
+                        total: Double(max(rp.total, 1)))
                     HStack {
-                        Text("Ripping \(min(rp.done + 1, rp.total))/\(rp.total) · \(rp.name)")
+                        Text("Ripping \(min(rp.done + 1, rp.total))/\(rp.total) · \(rp.name) (\(Int(model.ripTrackFrac * 100))%)")
                             .font(.system(size: 11))
                             .foregroundStyle(theme.playlistDurationText)
                             .lineLimit(1)
@@ -456,8 +460,22 @@ struct DiscDriveView: View {
                 .font(vars.bodyFont)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Picker("Category", selection: $submitCategory) {
-                ForEach(gnudbCategories, id: \.self) { Text($0).tag($0) }
+            // Typeahead over the fixed category set; Submit stays disabled
+            // until the text is one of them.
+            HStack(alignment: .top, spacing: 8) {
+                Text("Category")
+                    .font(vars.bodyFont)
+                TypeaheadTextField(
+                    placeholder: "misc",
+                    text: $submitCategory,
+                    items: gnudbCategories,
+                    font: vars.bodyFont)
+            }
+            if !gnudbCategories.contains(submitCategory) {
+                Label("Pick one of gnudb's categories: \(gnudbCategories.joined(separator: ", "))",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.yellow)
             }
             if testMode {
                 Label("Test mode: gnudb validates the entry but doesn't publish it. Turn this off in Settings → Media Library once a submission is confirmed.",
@@ -474,6 +492,7 @@ struct DiscDriveView: View {
                     model.submitDisc(drive, category: submitCategory)
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(!gnudbCategories.contains(submitCategory))
             }
         }
         .padding(20)

@@ -112,6 +112,14 @@ struct AppState {
     id3_editor_window: Option<gtk4::Window>,
     /// Callback to refresh the media library window, registered by the window itself.
     rebuild_ml_callback: Option<Rc<dyn Fn()>>,
+    /// Callback that re-polls the ML window's disc drives, registered by the
+    /// ML window — the audio-CD insertion watcher uses it so navigation
+    /// doesn't wait for the window's own 10 s poll.
+    disc_refresh_callback: Option<Rc<dyn Fn()>>,
+    /// Drive id the ML window should navigate to after its next disc
+    /// refresh. Set by the insertion watcher (auto-open setting); consumed
+    /// once the refresh has built that drive's sidebar row.
+    pending_disc_nav: Option<String>,
     /// Callback to update ML scan UI in all windows, registered by each window.
     ml_scan_ui_callback: Option<Rc<dyn Fn()>>,
     /// Callback to rebuild the playlist widget, set during build().
@@ -289,6 +297,8 @@ impl AppState {
             ml_window: None,
             id3_editor_window: None,
             rebuild_ml_callback: None,
+            disc_refresh_callback: None,
+            pending_disc_nav: None,
             ml_scan_ui_callback: None,
             rebuild_pl_callback: None,
             play_and_update_callback: None,
@@ -844,6 +854,14 @@ fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
     genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
     items.extend_from_slice(&genres);
     let dd = DropDown::from_strings(&items);
+    // Typeahead: the open dropdown gets a search field filtering the 190+
+    // genres as you type.
+    dd.set_expression(Some(&gtk4::PropertyExpression::new(
+        gtk4::StringObject::static_type(),
+        None::<gtk4::Expression>,
+        "string",
+    )));
+    dd.set_enable_search(true);
 
     // Hidden value carrier — the save handler reads this entry, so the
     // dropdown mirrors every selection into it ("" for undefined).
@@ -5123,6 +5141,82 @@ pub fn build(
         }
     });
 
+    // ── Audio-CD insertion watcher (auto-open, from app start) ──────────────
+    // Every 10 s, a NO-SPIN status check (list_drives_cached — kernel ioctl,
+    // full probe only on change) looks for a drive transitioning to "audio CD
+    // loaded". On that transition — including the first poll after launch
+    // seeing an already-loaded CD, so an OS-handler launch navigates — the
+    // Media Library opens (or comes forward) on that drive's detail view.
+    // Runs regardless of the ML window; the setting gates the reaction.
+    {
+        let state_rc = state.clone();
+        let btn_ml_watch = btn_ml.clone();
+        let prev: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> = Rc::new(RefCell::new(Vec::new()));
+        let in_flight = Rc::new(Cell::new(false));
+        let tick: Rc<dyn Fn()> = Rc::new(move || {
+            if in_flight.get() {
+                return;
+            }
+            if !state_rc.borrow().config.disc.auto_show_inserted_audio_cd {
+                return;
+            }
+            in_flight.set(true);
+            let state_rc = state_rc.clone();
+            let btn_ml_watch = btn_ml_watch.clone();
+            let prev = prev.clone();
+            let in_flight = in_flight.clone();
+            glib::spawn_future_local(async move {
+                let snapshot = prev.borrow().clone();
+                let drives = gio::spawn_blocking(move || {
+                    crate::disc::detect::list_drives_cached(&snapshot)
+                })
+                .await
+                .unwrap_or_default();
+                in_flight.set(false);
+                let inserted: Option<String> = drives
+                    .iter()
+                    .find(|d| {
+                        d.media.is_audio_cd
+                            && !prev
+                                .borrow()
+                                .iter()
+                                .any(|o| o.id == d.id && o.media.is_audio_cd)
+                    })
+                    .map(|d| d.id.clone());
+                *prev.borrow_mut() = drives;
+                let Some(id) = inserted else { return };
+                state_rc.borrow_mut().pending_disc_nav = Some(id);
+                // Bring the Media Library up: present the existing window, or
+                // create it through the toolbar button's own handler.
+                let existing = state_rc.borrow().ml_window.clone();
+                match existing {
+                    Some(w) => {
+                        if !w.is_visible() {
+                            w.present();
+                        }
+                    }
+                    None => {
+                        // emit_clicked runs the ML button handler above, which
+                        // creates + presents the window (and its initial disc
+                        // refresh will consume the parked navigation).
+                        btn_ml_watch.emit_clicked();
+                    }
+                }
+                // Window already open: nudge its disc poll so the navigation
+                // doesn't wait for the next 10 s cadence.
+                let refresh = state_rc.borrow().disc_refresh_callback.clone();
+                if let Some(f) = refresh {
+                    f();
+                }
+            });
+        });
+        tick();
+        glib::timeout_add_local(Duration::from_secs(10), move || {
+            tick();
+            ControlFlow::Continue
+        });
+    }
+
     // EQ button — toggle the 10-band equalizer window.
     let eq_win_ref: Rc<RefCell<Option<gtk4::Window>>> = Rc::new(RefCell::new(None));
     btn_eq.connect_clicked({
@@ -7120,6 +7214,30 @@ fn open_settings_window(
             });
         }
         grid.attach(&email_entry, 1, 2, 1, 1);
+
+        // Auto-open on audio-CD insert (mirrors the macOS Settings toggle;
+        // the app-level insertion watcher reads this live).
+        let lbl_autocd = Label::builder()
+            .label("Audio CD inserted")
+            .halign(Align::Start)
+            .build();
+        lbl_autocd.set_tooltip_text(Some(
+            "When an audio CD is inserted, open the Media Library on that \
+             drive's view. Also covers a CD already in the drive at launch, \
+             so setting Sparkamp as the system's CD handler lands on the disc.",
+        ));
+        grid.attach(&lbl_autocd, 0, 3, 1, 1);
+        let chk_autocd = CheckButton::with_label("Open the Media Library");
+        chk_autocd.set_active(state.borrow().config.disc.auto_show_inserted_audio_cd);
+        {
+            let state_rc = state.clone();
+            chk_autocd.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.disc.auto_show_inserted_audio_cd = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_autocd, 1, 3, 1, 1);
 
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
@@ -18270,7 +18388,16 @@ fn open_media_library_window(
                         }
                     }
                     if !tags.artist.is_empty() || !tags.album.is_empty() {
-                        header = Some(format!("{} — {}", tags.artist, tags.album));
+                        // Same shape as the macOS drive header:
+                        // "Artist — Album (year)", each part optional.
+                        let mut h = tags.artist.clone();
+                        if !tags.album.is_empty() {
+                            h.push_str(&format!(" — {}", tags.album));
+                        }
+                        if !tags.year.is_empty() {
+                            h.push_str(&format!(" ({})", tags.year));
+                        }
+                        header = Some(h);
                     }
                 }
             }
@@ -18451,9 +18578,14 @@ fn open_media_library_window(
                 return;
             }
             for d in ds.iter() {
-                let card = GtkBox::new(Orientation::Vertical, 4);
+                // Card: disc glyph (format badge overlaid) + the text column.
+                let card = GtkBox::new(Orientation::Horizontal, 10);
                 card.set_margin_top(4);
                 card.set_margin_bottom(4);
+                let icon = disc::disc_card_icon(d);
+                icon.set_valign(Align::Center);
+                card.append(&icon);
+                let text_col = GtkBox::new(Orientation::Vertical, 4);
                 let name = Label::builder()
                     .label(&gtk_safe(&d.label))
                     .halign(Align::Start)
@@ -18465,8 +18597,8 @@ fn open_media_library_window(
                     .xalign(0.0)
                     .build();
                 state_lbl.add_css_class("dim-label");
-                card.append(&name);
-                card.append(&state_lbl);
+                text_col.append(&name);
+                text_col.append(&state_lbl);
                 if let Some(detail) = disc_overview_detail_line(d) {
                     let dl = Label::builder()
                         .label(&detail)
@@ -18474,8 +18606,9 @@ fn open_media_library_window(
                         .xalign(0.0)
                         .build();
                     dl.add_css_class("dim-label");
-                    card.append(&dl);
+                    text_col.append(&dl);
                 }
+                card.append(&text_col);
                 let gesture = GestureClick::new();
                 let sidebar_c = sidebar_ov.clone();
                 let target = format!("disc:{}", d.id);
@@ -18538,6 +18671,7 @@ fn open_media_library_window(
             let populate_detail = populate_detail.clone();
             let disc_detecting = disc_detecting.clone();
             let disc_detect_spinner = disc_detect_spinner.clone();
+            let state = state.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
                 // Cached poll: an unchanged loaded disc is answered by the
@@ -18656,6 +18790,15 @@ fn open_media_library_window(
                 rebuild_overview();
                 if let Some(d) = detail_update {
                     populate_detail(&d);
+                }
+                // Auto-open navigation: the insertion watcher parked a drive
+                // id — jump to it now that its sidebar row exists. A request
+                // whose drive this refresh doesn't know is dropped (the disc
+                // was pulled again); the watcher parks a fresh one next time.
+                if let Some(id) = state.borrow_mut().pending_disc_nav.take() {
+                    if let Some(r) = find_row_by_name(&sidebar, &format!("disc:{id}")) {
+                        sidebar.select_row(Some(&r));
+                    }
                 }
             });
         })
@@ -19072,6 +19215,11 @@ fn open_media_library_window(
         selected_disc_id.clone(),
         refresh_discs.clone(),
     );
+
+    // Let the app-level insertion watcher trigger an immediate re-poll (and
+    // consume its pending navigation) instead of waiting for the window's
+    // own cadence.
+    state.borrow_mut().disc_refresh_callback = Some(refresh_discs.clone());
 
     // Initial scan + lazy 10 s poll (stops once the window/sidebar is gone).
     refresh_discs();

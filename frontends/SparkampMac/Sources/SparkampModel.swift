@@ -190,6 +190,9 @@ final class SparkampModel: ObservableObject {
     @Published var discSubmitting: Bool = false
     /// Live rip progress (done/total · current title); nil when idle.
     @Published var ripProgress: CopyProgress? = nil
+    /// 0–1 within the track currently encoding (from the core job poll), so
+    /// the progress bar moves during a single track too.
+    @Published var ripTrackFrac: Double = 0
     /// Set to stop the rip after the track currently encoding.
     var ripCancelRequested: Bool = false
     /// The Burn list — a dedicated queue separate from the active playlist

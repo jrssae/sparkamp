@@ -242,6 +242,172 @@ pub unsafe extern "C" fn sparkamp_disc_rip_track(
     }
 }
 
+// ───────────────────── rip job (whole selection, core loop) ─────────────────
+//
+// One rip at a time: `start` spawns a worker running `rip::run_job` (the same
+// loop the GTK/TUI frontends use — destination pre-flight, per-track tags,
+// within-track progress, cancel between tracks); the frontend polls `poll`
+// from its UI timer and shows `frac`; `cancel` stops after the current track.
+
+/// A whole rip job (JSON in): the selected entries plus the disc's tag set.
+#[derive(serde::Deserialize)]
+struct RipRunIn {
+    entries: Vec<crate::disc::DiscTrackEntry>,
+    dest_root: String,
+    /// 0 = VBR V0, 1 = VBR V2, 2 = 320 CBR (config preset ids).
+    quality: u8,
+    tags: crate::disc::xmcd::XmcdEntry,
+    total_on_disc: u8,
+}
+
+/// What a finished job produced (mirrors `rip::RipOutcome`).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RipJobDone {
+    ripped: Vec<String>,
+    failures: Vec<String>,
+    cancelled: bool,
+}
+
+/// Snapshot returned by `sparkamp_disc_rip_job_poll`.
+#[derive(Clone, Default, serde::Serialize)]
+struct RipJobStatus {
+    running: bool,
+    /// 0-based index of the track being ripped.
+    track_index: usize,
+    track_count: usize,
+    title: String,
+    /// 0.0–1.0 within the current track (pipeline position / TOC duration).
+    frac: f64,
+    /// Set once the job finished (successfully, with failures, or cancelled).
+    done: Option<RipJobDone>,
+}
+
+struct RipJobSlot {
+    status: RipJobStatus,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+static RIP_JOB: std::sync::LazyLock<std::sync::Mutex<RipJobSlot>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(RipJobSlot {
+            status: RipJobStatus::default(),
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    });
+
+/// Start ripping a selection on a core worker thread. Returns 0 on start,
+/// -1 for bad JSON, -2 when a rip is already running. Progress via
+/// `sparkamp_disc_rip_job_poll`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_job_start(
+    _ctx: *mut SparkampCtx,
+    job_json: *const c_char,
+) -> c_int {
+    let Some(job): Option<RipRunIn> = json_in(job_json) else {
+        return -1;
+    };
+    let cancel = {
+        let mut slot = RIP_JOB.lock().unwrap();
+        if slot.status.running {
+            return -2;
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        slot.cancel = cancel.clone();
+        slot.status = RipJobStatus {
+            running: true,
+            track_count: job.entries.len(),
+            title: job.entries.first().map(|e| e.title.clone()).unwrap_or_default(),
+            ..RipJobStatus::default()
+        };
+        cancel
+    };
+    std::thread::spawn(move || {
+        use crate::disc::rip;
+        let outcome = rip::run_job(
+            &job.entries,
+            std::path::Path::new(&job.dest_root),
+            rip::Mp3Quality::from_config(job.quality),
+            &job.tags,
+            job.total_on_disc,
+            &cancel,
+            |i, n, title, frac| {
+                let mut slot = RIP_JOB.lock().unwrap();
+                slot.status.track_index = i;
+                slot.status.track_count = n;
+                slot.status.title = title.to_string();
+                slot.status.frac = frac;
+            },
+        );
+        let mut slot = RIP_JOB.lock().unwrap();
+        slot.status.running = false;
+        slot.status.done = Some(RipJobDone {
+            ripped: outcome.ripped,
+            failures: outcome.failures,
+            cancelled: outcome.cancelled,
+        });
+    });
+    0
+}
+
+/// Poll the running (or just-finished) rip job: JSON `RipJobStatus`. Once
+/// `done` is non-null the job is over and a new one may start. Free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_job_poll(_ctx: *mut SparkampCtx) -> *mut c_char {
+    json_out(&RIP_JOB.lock().unwrap().status)
+}
+
+/// Ask the running rip job to stop after the current track.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_job_cancel(_ctx: *mut SparkampCtx) {
+    RIP_JOB
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The one status line every frontend shows for a finished rip, given the
+/// job's `done` JSON and how many files the library import registered.
+/// Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_result_message(
+    _ctx: *mut SparkampCtx,
+    done_json: *const c_char,
+    imported: c_int,
+) -> *mut c_char {
+    let Some(done): Option<RipJobDone> = json_in(done_json) else {
+        return std::ptr::null_mut();
+    };
+    let outcome = crate::disc::rip::RipOutcome {
+        ripped: done.ripped,
+        failures: done.failures,
+        cancelled: done.cancelled,
+    };
+    std::ffi::CString::new(outcome.status_message(imported.max(0) as usize))
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+// ───────────────────────── shared lists (UI pickers) ────────────────────────
+
+/// The fixed CDDB category set, as a JSON string array — the submit sheet's
+/// picker items. Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_gnudb_categories(_ctx: *mut SparkampCtx) -> *mut c_char {
+    json_out(&crate::disc::gnudb::CATEGORIES.to_vec())
+}
+
+/// Every ID3v1 genre string, alphabetically sorted, as a JSON string array —
+/// the ID3 editor's genre typeahead items (same order the GTK dropdown
+/// shows). Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_id3_genres(_ctx: *mut SparkampCtx) -> *mut c_char {
+    let mut genres: Vec<&str> = crate::id3_editor::ID3V1_GENRES.to_vec();
+    genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
+    json_out(&genres)
+}
+
 // ─────────────────────────── burning (Phases 5–6) ───────────────────────────
 //
 // Blind-implemented (no blank media on the dev box) — the command builders
@@ -562,6 +728,79 @@ mod tests {
         // And the payload still parses as a plain OpticalDrive.
         let round: OpticalDrive = serde_json::from_value(v).unwrap();
         assert_eq!(round.id, "/dev/sr0");
+    }
+
+    #[test]
+    fn rip_result_message_round_trip() {
+        let done = RipJobDone {
+            ripped: vec!["a.mp3".into(), "b.mp3".into()],
+            failures: vec!["3: stalled".into()],
+            cancelled: false,
+        };
+        let arg = CString::new(serde_json::to_string(&done).unwrap()).unwrap();
+        let out = unsafe {
+            sparkamp_disc_rip_result_message(std::ptr::null_mut(), arg.as_ptr(), 2)
+        };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        assert_eq!(s, "Ripped 2 tracks · 1 failed — 3: stalled");
+    }
+
+    #[test]
+    fn category_and_genre_lists() {
+        let out = unsafe { sparkamp_gnudb_categories(std::ptr::null_mut()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        let cats: Vec<String> = serde_json::from_str(&s).unwrap();
+        assert_eq!(cats.len(), crate::disc::gnudb::CATEGORIES.len());
+        assert!(cats.iter().any(|c| c == "rock"));
+
+        let out = unsafe { sparkamp_id3_genres(std::ptr::null_mut()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        let genres: Vec<String> = serde_json::from_str(&s).unwrap();
+        assert_eq!(genres.len(), crate::id3_editor::ID3V1_GENRES.len());
+        let mut sorted = genres.clone();
+        sorted.sort_unstable_by_key(|g| g.to_ascii_lowercase());
+        assert_eq!(genres, sorted, "genres must arrive alphabetically");
+    }
+
+    #[test]
+    fn rip_job_rejects_bad_json_and_double_start() {
+        let bad = CString::new("nope").unwrap();
+        assert_eq!(
+            unsafe { sparkamp_disc_rip_job_start(std::ptr::null_mut(), bad.as_ptr()) },
+            -1
+        );
+        // Simulate a running job, then check the busy answer + poll shape.
+        RIP_JOB.lock().unwrap().status.running = true;
+        let job = RipRunIn {
+            entries: vec![],
+            dest_root: "/tmp".into(),
+            quality: 1,
+            tags: crate::disc::xmcd::XmcdEntry::default(),
+            total_on_disc: 0,
+        };
+        let arg = CString::new(
+            serde_json::to_string(&serde_json::json!({
+                "entries": job.entries,
+                "dest_root": job.dest_root,
+                "quality": job.quality,
+                "tags": job.tags,
+                "total_on_disc": job.total_on_disc,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            unsafe { sparkamp_disc_rip_job_start(std::ptr::null_mut(), arg.as_ptr()) },
+            -2
+        );
+        let out = unsafe { sparkamp_disc_rip_job_poll(std::ptr::null_mut()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        assert!(s.contains("\"running\":true"));
+        RIP_JOB.lock().unwrap().status.running = false;
     }
 
     #[test]

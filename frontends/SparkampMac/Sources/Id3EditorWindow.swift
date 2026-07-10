@@ -182,7 +182,8 @@ struct Id3EditorView: View {
                             FieldRow(label: field.label,
                                      value: binding(for: field.id),
                                      readOnly: isReadOnly,
-                                     theme: theme)
+                                     theme: theme,
+                                     suggestions: field.id == "TCON" ? id3GenreList : [])
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -194,7 +195,8 @@ struct Id3EditorView: View {
                             FieldRow(label: field.label,
                                      value: binding(for: field.id),
                                      readOnly: isReadOnly,
-                                     theme: theme)
+                                     theme: theme,
+                                     suggestions: field.id == "TCON" ? id3GenreList : [])
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -373,6 +375,9 @@ private struct FieldRow: View {
     @Binding var value: String
     let readOnly: Bool
     let theme: SkinTheme
+    /// Typeahead items — non-empty turns the field into a suggestion text
+    /// field (used for Genre with the ID3v1 list).
+    var suggestions: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -380,13 +385,78 @@ private struct FieldRow: View {
                 .font(theme.vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistDurationText)
                 .padding(.leading, 2)
-            TextField("", text: $value)
-                .textFieldStyle(.roundedBorder)
-                .font(theme.vars.bodyFont)
-                .disabled(readOnly)
+            if suggestions.isEmpty {
+                TextField("", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .font(theme.vars.bodyFont)
+                    .disabled(readOnly)
+            } else {
+                TypeaheadTextField(
+                    placeholder: "",
+                    text: $value,
+                    items: suggestions,
+                    font: theme.vars.bodyFont)
+                    .disabled(readOnly)
+            }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
+    }
+}
+
+/// A text field with an inline typeahead: while focused and non-empty, up
+/// to eight case-insensitive prefix matches from `items` appear beneath it;
+/// clicking one fills the field. Free text stays allowed — the list is a
+/// shortcut, not a constraint (callers wanting a closed set validate on
+/// commit, e.g. the gnudb category picker).
+struct TypeaheadTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    let items: [String]
+    var font: Font = .body
+
+    @FocusState private var focused: Bool
+
+    private var matches: [String] {
+        guard focused, !text.isEmpty else { return [] }
+        let hits = items.filter {
+            $0.range(of: text, options: [.caseInsensitive, .anchored]) != nil
+                && $0.caseInsensitiveCompare(text) != .orderedSame
+        }
+        return Array(hits.prefix(8))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(font)
+                .focused($focused)
+            if !matches.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(matches, id: \.self) { item in
+                        Button {
+                            text = item
+                            focused = false
+                        } label: {
+                            Text(item)
+                                .font(font)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color(nsColor: .windowBackgroundColor)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(.secondary.opacity(0.4), lineWidth: 1))
+            }
+        }
     }
 }
 
