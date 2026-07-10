@@ -100,6 +100,9 @@ fn start_rip(
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     *ui.rip_cancel.borrow_mut() = Some(cancel.clone());
     ui.rip_active.set(true);
+    // Keep every poller (incl. the app-level insertion watcher) off the
+    // drive for the whole rip — status ioctls disturb the streaming read.
+    ui.state.borrow().disc_reading.set(true);
     ui.rip_box.set_visible(true);
     ui.rip_bar.set_fraction(0.0);
     ui.rip_bar.set_text(Some("Starting…"));
@@ -170,6 +173,7 @@ fn start_rip(
             ui.status.set_text(&outcome.status_message(imported));
             ui.rip_box.set_visible(false);
             ui.rip_active.set(false);
+            ui.state.borrow().disc_reading.set(false);
             *ui.rip_cancel.borrow_mut() = None;
             return glib::ControlFlow::Break;
         }

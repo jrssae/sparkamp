@@ -120,6 +120,12 @@ struct AppState {
     /// refresh. Set by the insertion watcher (auto-open setting); consumed
     /// once the refresh has built that drive's sidebar row.
     pending_disc_nav: Option<String>,
+    /// True while a rip holds the optical drive. EVERY poller must stay
+    /// completely off the device then — even the "harmless" status ioctls
+    /// interleave SCSI commands with the streaming reads and make flaky
+    /// drives fault mid-read (verified live: one CDROM_DRIVE_STATUS during
+    /// cdda streaming killed the stream).
+    disc_reading: std::cell::Cell<bool>,
     /// Callback to update ML scan UI in all windows, registered by each window.
     ml_scan_ui_callback: Option<Rc<dyn Fn()>>,
     /// Callback to rebuild the playlist widget, set during build().
@@ -299,6 +305,7 @@ impl AppState {
             rebuild_ml_callback: None,
             disc_refresh_callback: None,
             pending_disc_nav: None,
+            disc_reading: std::cell::Cell::new(false),
             ml_scan_ui_callback: None,
             rebuild_pl_callback: None,
             play_and_update_callback: None,
@@ -5156,6 +5163,21 @@ pub fn build(
         let tick: Rc<dyn Fn()> = Rc::new(move || {
             if in_flight.get() {
                 return;
+            }
+            // NEVER touch the drive while it's being read: even the status
+            // ioctls interleave SCSI commands with the streaming reads and
+            // make flaky drives fault mid-read (kills playback/rips).
+            {
+                let s = state_rc.borrow();
+                let playing_disc = !matches!(s.player.state(), PlayerState::Stopped)
+                    && s
+                        .playlist
+                        .current()
+                        .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
+                        .unwrap_or(false);
+                if playing_disc || s.disc_reading.get() {
+                    return;
+                }
             }
             if !state_rc.borrow().config.disc.auto_show_inserted_audio_cd {
                 return;
