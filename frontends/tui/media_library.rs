@@ -1483,11 +1483,23 @@ impl App {
         }
     }
 
-    /// Re-detect optical drives (subprocess-backed — only on Discs-tab entry
-    /// or an explicit `r`), clamp the drive selection, and reload the track
-    /// entries of the selected drive.
+    /// Re-detect optical drives (only on Discs-tab entry or an explicit
+    /// `r`), clamp the drive selection, and reload the track entries of the
+    /// selected drive. While a cdda:// track plays the scan is skipped —
+    /// even status ioctls fault flaky drives mid-stream (the shared
+    /// exclusive-read flag would blank the fresh-start list otherwise).
     pub(super) fn refresh_ml_drives(&mut self) {
-        let drives = crate::disc::detect::list_drives();
+        let playing_disc = *self.player.state() != crate::engine::PlayerState::Stopped
+            && self
+                .playlist
+                .current()
+                .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
+                .unwrap_or(false);
+        if playing_disc {
+            self.set_status("Drive busy (disc playing) — showing the last scan");
+            return;
+        }
+        let drives = crate::disc::detect::list_drives_shared();
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.selected_drive = s.selected_drive.min(drives.len().saturating_sub(1));
             s.drives = drives;

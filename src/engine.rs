@@ -497,11 +497,17 @@ impl Player {
             if let Ok(mut slot) = self.cdda_device.lock() {
                 *slot = device.map(str::to_string);
             }
+            // From here until stop() the drive belongs to the pipeline's
+            // streaming read — silence every detection poll BEFORE the
+            // source opens the device (a status ioctl mid-stream faults
+            // flaky drives and wedges the open in endless retries).
+            crate::disc::detect::set_exclusive_read(true);
             format!("cdda://{track}")
         } else {
             if let Ok(mut slot) = self.cdda_device.lock() {
                 *slot = None;
             }
+            crate::disc::detect::set_exclusive_read(false);
             uri.to_string()
         };
 
@@ -561,6 +567,8 @@ impl Player {
     pub fn stop(&mut self) -> Result<()> {
         self.pipeline.set_state(gst::State::Null)?;
         self.state = PlayerState::Stopped;
+        // Null released the device — detection polling may resume.
+        crate::disc::detect::set_exclusive_read(false);
         if let Ok(mut spec) = self.spectrum_data.write() {
             spec.clear();
         }

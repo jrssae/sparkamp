@@ -21,6 +21,7 @@ use super::{DiscToc, MediaInfo, MediaKind, OpticalDrive, TocTrack};
 ///
 /// Runs small subprocesses (`drutil`/`plutil` on macOS, `cd-info` on Linux) —
 /// call it off the UI thread and throttle polling (a few seconds is plenty).
+#[allow(dead_code)] // the in-process frontends poll via list_drives_shared; the FFI (lib only) probes fresh
 pub fn list_drives() -> Vec<OpticalDrive> {
     platform::list_drives()
 }
@@ -54,6 +55,25 @@ pub fn list_drives_shared() -> Vec<OpticalDrive> {
     let drives = list_drives_cached(&cache);
     *cache = drives.clone();
     drives
+}
+
+/// While a streaming read owns the drive (cdda playback or a rip), even the
+/// "harmless" status ioctls interleave SCSI commands with the reads and make
+/// flaky drives fault mid-stream (verified live). The engine flips this ON
+/// **before** GStreamer opens the device and OFF when the session ends; while
+/// set, every Linux detection entry point answers from its previous result
+/// without opening the device at all. Frontend-level guards remain as a
+/// second layer, but this closes the race where a poll is already in flight
+/// when playback starts.
+static EXCLUSIVE_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_exclusive_read(active: bool) {
+    EXCLUSIVE_READ.store(active, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn exclusive_read() -> bool {
+    EXCLUSIVE_READ.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +576,11 @@ mod platform {
     /// (`CDROM_DRIVE_STATUS`, a no-media-access ioctl) and reuses `prev`'s
     /// entry while the same disc is still sitting there.
     pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
+        // A streaming read owns the drive: answer from the previous state
+        // without opening the device (see EXCLUSIVE_READ).
+        if super::exclusive_read() {
+            return prev.to_vec();
+        }
         let mut drives: Vec<OpticalDrive> = Vec::new();
         let Ok(entries) = std::fs::read_dir("/sys/block") else {
             return drives;
@@ -888,6 +913,24 @@ mod tests {
             .and_then(|o| parse_cd_info(&o))
             .expect("cd-info parses the same disc");
         assert_eq!(toc, &cd_info, "ioctl TOC must equal cd-info's");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn exclusive_read_freezes_polling() {
+        let fake = vec![OpticalDrive {
+            id: "/dev/sr-test".into(),
+            label: "FAKE".into(),
+            media: MediaInfo::none(),
+            toc: None,
+            mount_path: None,
+        }];
+        set_exclusive_read(true);
+        let out = list_drives_cached(&fake);
+        set_exclusive_read(false);
+        // While a streaming read owns the drive, polling must echo the
+        // previous state untouched — no device access, no re-enumeration.
+        assert_eq!(out, fake);
     }
 
     #[test]
