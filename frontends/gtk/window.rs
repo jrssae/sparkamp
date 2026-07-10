@@ -18527,7 +18527,15 @@ fn open_media_library_window(
             let disc_detect_spinner = disc_detect_spinner.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
-                let result = gio::spawn_blocking(crate::disc::detect::list_drives).await;
+                // Cached poll: an unchanged loaded disc is answered by the
+                // kernel status ioctl and NOT re-probed — the full cd-info
+                // probe spins the drive, and a 10 s poll doing that keeps
+                // the disc spinning forever.
+                let prev = current_drives.borrow().clone();
+                let result = gio::spawn_blocking(move || {
+                    crate::disc::detect::list_drives_cached(&prev)
+                })
+                .await;
                 in_flight.set(false);
                 // First poll finished — drop the "Detecting…" hint + sidebar
                 // spinner and show the real state.

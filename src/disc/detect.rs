@@ -25,6 +25,24 @@ pub fn list_drives() -> Vec<OpticalDrive> {
     platform::list_drives()
 }
 
+/// [`list_drives`] for repeated polling: pass the previous poll's result and
+/// an unchanged loaded disc is NOT re-probed. On Linux the full probe
+/// (`cd-info` reading the TOC) physically spins the drive up, so a periodic
+/// poll must go through here — the cheap kernel status ioctl answers
+/// "same disc still loaded?" without any medium access. On macOS this is
+/// [`list_drives`] (drutil's status query doesn't spin the disc).
+pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
+    #[cfg(target_os = "linux")]
+    {
+        platform::list_drives_cached(prev)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = prev;
+        platform::list_drives()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // macOS `.TOC.plist` (shared parser — the plist is what macOS mounts, but the
 // parser itself is platform-neutral text handling)
@@ -310,6 +328,47 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+// ---------------------------------------------------------------------------
+// Poll cost control (Linux): what a status poll should do per drive
+// ---------------------------------------------------------------------------
+
+/// Linux `<linux/cdrom.h>` values for the cheap status ioctls.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const CDROM_DRIVE_STATUS: i32 = 0x5326;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const CDROM_MEDIA_CHANGED: i32 = 0x5325;
+/// `CDSL_CURRENT` — "the currently loaded slot".
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const CDSL_CURRENT: i32 = i32::MAX;
+/// `CDS_DISC_OK` — a readable disc is loaded.
+const CDS_DISC_OK: i32 = 4;
+
+/// What a poll should do for one drive, decided from the no-spin status
+/// ioctl + the previous poll's entry. Pure so the matrix is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum ProbeAction {
+    /// Same readable disc as last poll — reuse the previous entry, don't
+    /// touch the medium.
+    Reuse,
+    /// No readable disc (empty, tray open, not ready) — report an empty
+    /// drive without probing.
+    Empty,
+    /// New or changed disc (or no usable history) — run the full TOC probe.
+    Probe,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn probe_action(status: i32, media_changed: bool, prev_present: Option<bool>) -> ProbeAction {
+    if status != CDS_DISC_OK {
+        return ProbeAction::Empty;
+    }
+    match prev_present {
+        Some(true) if !media_changed => ProbeAction::Reuse,
+        _ => ProbeAction::Probe,
+    }
+}
+
 /// Eject the disc in a drive. Blocking (the tray takes a moment) — call off
 /// the UI thread. `drive_id` is the same id `list_drives` reports: Linux the
 /// device node (`eject /dev/srX`), macOS the drutil index
@@ -446,6 +505,16 @@ mod platform {
     use super::*;
 
     pub fn list_drives() -> Vec<OpticalDrive> {
+        list_drives_cached(&[])
+    }
+
+    /// Like [`list_drives`], but spins the disc up ONLY when something
+    /// changed. The full `cd-info` probe reads the TOC, which physically
+    /// spins the drive — running it on a 10 s poll keeps the disc spinning
+    /// forever. Instead each poll asks the kernel for the drive status
+    /// (`CDROM_DRIVE_STATUS`, a no-media-access ioctl) and reuses `prev`'s
+    /// entry while the same disc is still sitting there.
+    pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
         let mut drives: Vec<OpticalDrive> = Vec::new();
         let Ok(entries) = std::fs::read_dir("/sys/block") else {
             return drives;
@@ -464,29 +533,105 @@ mod platform {
         for name in names {
             let node = format!("/dev/{name}");
             let label = sysfs_label(&name).unwrap_or_else(|| node.clone());
+            let prev_drive = prev.iter().find(|d| d.id == node);
 
-            // cd-info exits non-zero with no medium; treat any parsed TOC as
-            // media present. Finer media typing (blank/RW) lands with the
-            // burn phases.
-            let toc = run("cd-info", &["--no-header", &node]).and_then(|o| parse_cd_info(&o));
-            let media = match &toc {
-                Some(t) => MediaInfo {
-                    present: true,
-                    is_audio_cd: t.tracks.iter().any(|tr| tr.is_audio),
-                    ..MediaInfo::none()
-                },
-                None => MediaInfo::none(),
+            let action = match drive_status(&node) {
+                Some(status) => super::probe_action(
+                    status,
+                    media_changed(&node).unwrap_or(true),
+                    prev_drive.map(|d| d.media.present),
+                ),
+                // Status ioctl unavailable (permissions?) — fall back to the
+                // old always-probe behavior rather than reporting nothing.
+                None => super::ProbeAction::Probe,
             };
 
-            drives.push(OpticalDrive {
-                id: node,
-                label,
-                media,
-                toc,
-                mount_path: None,
-            });
+            match action {
+                super::ProbeAction::Reuse => {
+                    let mut d = prev_drive
+                        .cloned()
+                        .expect("Reuse only chosen when a previous entry exists");
+                    d.label = label;
+                    drives.push(d);
+                }
+                super::ProbeAction::Empty => drives.push(OpticalDrive {
+                    id: node,
+                    label,
+                    media: MediaInfo::none(),
+                    toc: None,
+                    mount_path: None,
+                }),
+                super::ProbeAction::Probe => drives.push(probe_drive(node, label)),
+            }
         }
         drives
+    }
+
+    /// Full probe of one drive: `cd-info` reads the TOC (this spins the
+    /// disc). cd-info exits non-zero with no medium; treat any parsed TOC
+    /// as media present. Finer media typing (blank/RW) lands with the burn
+    /// phases.
+    fn probe_drive(node: String, label: String) -> OpticalDrive {
+        let toc = run("cd-info", &["--no-header", &node]).and_then(|o| parse_cd_info(&o));
+        let media = match &toc {
+            Some(t) => MediaInfo {
+                present: true,
+                is_audio_cd: t.tracks.iter().any(|tr| tr.is_audio),
+                ..MediaInfo::none()
+            },
+            None => MediaInfo::none(),
+        };
+        OpticalDrive {
+            id: node,
+            label,
+            media,
+            toc,
+            mount_path: None,
+        }
+    }
+
+    /// `CDROM_DRIVE_STATUS` for a device node — answered by the drive
+    /// without touching the medium (no spin-up). `None` when the node can't
+    /// be opened or the ioctl isn't supported.
+    fn drive_status(node: &str) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK is the documented way to open an optical device without
+        // requiring (or waiting on) a readable medium.
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(node)
+            .ok()?;
+        let r = unsafe {
+            libc::ioctl(
+                f.as_raw_fd(),
+                super::CDROM_DRIVE_STATUS as libc::c_ulong,
+                super::CDSL_CURRENT,
+            )
+        };
+        (r >= 0).then_some(r)
+    }
+
+    /// `CDROM_MEDIA_CHANGED`: has the medium changed since the last time
+    /// anyone asked? Catches a disc swapped between two polls that both see
+    /// "disc ok". Also a pure drive-firmware query — no spin-up.
+    fn media_changed(node: &str) -> Option<bool> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(node)
+            .ok()?;
+        let r = unsafe {
+            libc::ioctl(
+                f.as_raw_fd(),
+                super::CDROM_MEDIA_CHANGED as libc::c_ulong,
+                super::CDSL_CURRENT,
+            )
+        };
+        (r >= 0).then_some(r != 0)
     }
 
     /// "VENDOR MODEL" from sysfs, e.g. "/sys/block/sr0/device/{vendor,model}".
@@ -590,6 +735,44 @@ mod tests {
         assert!(toc.tracks[0].is_audio);
         assert_eq!(toc.tracks[1].start_frame, 13834);
         assert!(!toc.tracks[2].is_audio); // Data=true track
+    }
+
+    #[test]
+    fn probe_action_matrix() {
+        const NO_DISC: i32 = 1;
+        const TRAY_OPEN: i32 = 2;
+        // A loaded, unchanged disc from last poll: reuse, never spin.
+        assert_eq!(probe_action(CDS_DISC_OK, false, Some(true)), ProbeAction::Reuse);
+        // Media-changed flag set (disc swapped between polls): re-probe.
+        assert_eq!(probe_action(CDS_DISC_OK, true, Some(true)), ProbeAction::Probe);
+        // Disc newly inserted (previous poll saw the drive empty): probe.
+        assert_eq!(probe_action(CDS_DISC_OK, false, Some(false)), ProbeAction::Probe);
+        // First sighting of the drive (no history): probe.
+        assert_eq!(probe_action(CDS_DISC_OK, false, None), ProbeAction::Probe);
+        assert_eq!(probe_action(CDS_DISC_OK, true, None), ProbeAction::Probe);
+        // No readable disc: empty entry, regardless of history/changed flag.
+        assert_eq!(probe_action(NO_DISC, true, Some(true)), ProbeAction::Empty);
+        assert_eq!(probe_action(TRAY_OPEN, false, Some(true)), ProbeAction::Empty);
+        assert_eq!(probe_action(0, false, None), ProbeAction::Empty);
+    }
+
+    /// Live check of the no-spin poll path: a full probe, then a cached
+    /// poll that must return the same drives near-instantly (no cd-info).
+    /// `cargo test --lib live_cached_poll -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_cached_poll() {
+        let first = list_drives();
+        println!("full probe: {} drive(s)", first.len());
+        let started = std::time::Instant::now();
+        let second = list_drives_cached(&first);
+        let elapsed = started.elapsed();
+        println!("cached poll took {elapsed:.2?}");
+        assert_eq!(first, second, "cached poll must mirror the probe");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "cached poll looks like it ran a full probe ({elapsed:?})"
+        );
     }
 
     #[test]
