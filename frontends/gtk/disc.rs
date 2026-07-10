@@ -177,6 +177,207 @@ fn start_rip(
     });
 }
 
+/// Whether the Submit-to-gnudb action applies: the disc is unknown to gnudb
+/// (no official baseline) or the user's tags differ from the official match.
+/// Same field set the macOS `discSubmittable` compares.
+pub(super) fn disc_submittable(
+    discid: &str,
+    disc_tags: &std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    disc_official: &std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+) -> bool {
+    let Some(official) = disc_official.get(discid) else {
+        return true;
+    };
+    let Some(user) = disc_tags.get(discid) else {
+        return false;
+    };
+    user.artist != official.artist
+        || user.album != official.album
+        || user.year != official.year
+        || user.genre != official.genre
+        || user.track_titles != official.track_titles
+}
+
+/// Wire Phase 4: the Submit-to-gnudb button. Validates locally, collects the
+/// email once (gnudb requires a personal address), picks a category
+/// (prefilled from the genre), then POSTs on a worker thread. Honors the
+/// test-mode setting; results land in the status label.
+#[allow(clippy::type_complexity)]
+pub(super) fn connect_submit(
+    submit_btn: &Button,
+    state: Rc<RefCell<AppState>>,
+    status: Label,
+    win: &gtk4::Window,
+    disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+    disc_official: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+    selected_disc_id: Rc<RefCell<Option<String>>>,
+    current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
+) {
+    let in_flight = Rc::new(Cell::new(false));
+    let win_wk = win.downgrade();
+
+    // The category dialog + POST, entered once the email is known.
+    let open_category_dialog: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let status = status.clone();
+        let disc_tags = disc_tags.clone();
+        let disc_official = disc_official.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let in_flight = in_flight.clone();
+        let win_wk = win_wk.clone();
+        Rc::new(move || {
+            let Some((toc, discid)) = selected_disc_discid(&selected_disc_id, &current_drives)
+            else {
+                status.set_text("No audio disc loaded");
+                return;
+            };
+            let Some(mut entry) = disc_tags.borrow().get(&discid).cloned() else {
+                status.set_text("No tags yet — Identify or Edit Tags first");
+                return;
+            };
+            // Revision: updating an official match needs old + 1; a disc
+            // gnudb doesn't know starts at 0.
+            entry.revision = disc_official
+                .borrow()
+                .get(&discid)
+                .map(|o| o.revision + 1)
+                .unwrap_or(0);
+            // Fast local validation for immediate feedback (the server would
+            // reject these anyway, after a round-trip).
+            if let Err(reason) = crate::disc::xmcd::validate_for_submit(&entry, &toc) {
+                status.set_text(&gtk_safe(&reason));
+                return;
+            }
+
+            let test_mode = state.borrow().config.disc.gnudb_submit_mode_test;
+            let dialog = gtk4::Window::builder()
+                .title("Submit to gnudb")
+                .modal(true)
+                .default_width(400)
+                .build();
+            if let Some(w) = win_wk.upgrade() {
+                dialog.set_transient_for(Some(&w));
+            }
+            let outer = GtkBox::new(Orientation::Vertical, 8);
+            outer.set_margin_top(12);
+            outer.set_margin_bottom(12);
+            outer.set_margin_start(12);
+            outer.set_margin_end(12);
+            outer.append(
+                &Label::builder()
+                    .label(&gtk_safe(&format!(
+                        "Send \"{} — {}\" to gnudb.org so other players can identify this disc.",
+                        entry.artist, entry.album
+                    )))
+                    .wrap(true)
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build(),
+            );
+            if test_mode {
+                let note = Label::builder()
+                    .label("Test mode is on (Settings): the server validates the submission but does not publish it.")
+                    .wrap(true)
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build();
+                note.add_css_class("dim-label");
+                outer.append(&note);
+            }
+            let cat_row = GtkBox::new(Orientation::Horizontal, 6);
+            cat_row.append(
+                &Label::builder()
+                    .label("Category")
+                    .halign(Align::Start)
+                    .build(),
+            );
+            let cat_dd = gtk4::DropDown::from_strings(&crate::disc::gnudb::CATEGORIES);
+            let suggested = crate::disc::gnudb::suggest_category(&entry.genre);
+            let idx = crate::disc::gnudb::CATEGORIES
+                .iter()
+                .position(|c| *c == suggested)
+                .unwrap_or(0);
+            cat_dd.set_selected(idx as u32);
+            cat_row.append(&cat_dd);
+            outer.append(&cat_row);
+
+            let btns = GtkBox::new(Orientation::Horizontal, 6);
+            btns.set_halign(Align::End);
+            let cancel = Button::with_label("Cancel");
+            let send = Button::with_label("Submit");
+            send.add_css_class("suggested-action");
+            btns.append(&cancel);
+            btns.append(&send);
+            outer.append(&btns);
+            dialog.set_child(Some(&outer));
+            let d = dialog.clone();
+            cancel.connect_clicked(move |_| d.close());
+
+            let d = dialog.clone();
+            let state = state.clone();
+            let status = status.clone();
+            let in_flight = in_flight.clone();
+            send.connect_clicked(move |_| {
+                let category = crate::disc::gnudb::CATEGORIES
+                    [cat_dd.selected() as usize];
+                let email = state.borrow().config.disc.gnudb_email.clone();
+                in_flight.set(true);
+                status.set_text(if test_mode {
+                    "Submitting to gnudb (test mode)…"
+                } else {
+                    "Submitting to gnudb…"
+                });
+                let entry = entry.clone();
+                let toc = toc.clone();
+                let status = status.clone();
+                let in_flight = in_flight.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let result = gio::spawn_blocking(move || {
+                        use crate::disc::{discid as discid_mod, gnudb, xmcd};
+                        let body = xmcd::build(&entry, &toc, entry.revision);
+                        let id = discid_mod::freedb_discid(&toc);
+                        gnudb::submit(&body, category, &id, &email, test_mode)
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("submit task failed".into()));
+                    in_flight.set(false);
+                    match result {
+                        Ok(server_msg) => status.set_text(&gtk_safe(&if test_mode {
+                            format!("gnudb: {server_msg} (test mode — not published)")
+                        } else {
+                            format!("gnudb: {server_msg}")
+                        })),
+                        Err(e) => status.set_text(&gtk_safe(&format!("gnudb: {e}"))),
+                    }
+                });
+                d.close();
+            });
+            dialog.present();
+        })
+    };
+
+    submit_btn.connect_clicked(move |_| {
+        if in_flight.get() {
+            status.set_text("gnudb request already running…");
+            return;
+        }
+        // gnudb requires a personal address (the config ships blank on
+        // purpose) — capture it once before the first submission.
+        let email = state.borrow().config.disc.gnudb_email.clone();
+        if crate::disc::gnudb::is_unset_email(&email) {
+            super::prompt_gnudb_email(
+                win_wk.upgrade().as_ref(),
+                state.clone(),
+                open_category_dialog.clone(),
+            );
+        } else {
+            open_category_dialog();
+        }
+    });
+}
+
 /// Wire the Eject button: refuses while the drive is being read (playback of
 /// a cdda:// track from this drive, or a running rip — the OS would refuse
 /// anyway, with a worse message), then runs the blocking eject off the UI

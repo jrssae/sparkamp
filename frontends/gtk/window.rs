@@ -13499,6 +13499,9 @@ fn open_media_library_window(
     let disc_identify = Button::with_label("Identify");
     let disc_rip = Button::with_label("Rip…");
     let disc_edit_tags = Button::with_label("Edit Tags");
+    // Shown only when the disc is unknown to gnudb or the user's tags differ
+    // from the official match (visibility set in populate_disc_detail).
+    let disc_submit = Button::with_label("Submit to gnudb");
     let disc_eject = Button::with_label("Eject");
     for b in [
         &disc_add_sel,
@@ -13506,6 +13509,7 @@ fn open_media_library_window(
         &disc_identify,
         &disc_rip,
         &disc_edit_tags,
+        &disc_submit,
         &disc_eject,
     ] {
         b.add_css_class("pl-btn");
@@ -13516,6 +13520,7 @@ fn open_media_library_window(
     disc_actions.append(&disc_identify);
     disc_actions.append(&disc_rip);
     disc_actions.append(&disc_edit_tags);
+    disc_actions.append(&disc_submit);
     disc_actions.append(&disc_eject);
     disc_detail.append(&disc_actions);
     // Rip progress row (hidden unless a rip is running): a bar + Cancel.
@@ -18232,8 +18237,10 @@ fn open_media_library_window(
             disc_edit_tags.clone(),
         ];
         let eject_btn = disc_eject.clone();
+        let submit_btn = disc_submit.clone();
         let entries_store = current_disc_entries.clone();
         let disc_tags = disc_tags.clone();
+        let disc_official = disc_official.clone();
         let search_row = disc_search_row.clone();
         let search_entry = disc_search_entry.clone();
         // Which drive the detail last showed — a switch clears the search
@@ -18283,6 +18290,11 @@ fn open_media_library_window(
                     b.set_visible(true);
                 }
                 eject_btn.set_visible(true);
+                // Submit only makes sense with something to send: the disc is
+                // unknown to gnudb, or the tags differ from the official match.
+                submit_btn.set_visible(discid.as_ref().is_some_and(|id| {
+                    disc::disc_submittable(id, &disc_tags.borrow(), &disc_official.borrow())
+                }));
                 for e in &entries {
                     let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
                     // Show the real title once known; otherwise the placeholder.
@@ -18313,6 +18325,7 @@ fn open_media_library_window(
                 for b in &audio_btns {
                     b.set_visible(false);
                 }
+                submit_btn.set_visible(false);
                 eject_btn.set_visible(drive.media.present);
                 tag_lbl.set_visible(false);
                 let msg = if !drive.media.present {
@@ -19032,6 +19045,20 @@ fn open_media_library_window(
         &win,
         current_disc_entries.clone(),
         disc_tags.clone(),
+        selected_disc_id.clone(),
+        current_drives.clone(),
+    );
+
+    // Submit to gnudb (Phase 4): category picker + background POST; the
+    // button's visibility (unknown disc / tags differ from the official
+    // match) is maintained by populate_disc_detail.
+    disc::connect_submit(
+        &disc_submit,
+        state.clone(),
+        disc_status_lbl.clone(),
+        &win,
+        disc_tags.clone(),
+        disc_official.clone(),
         selected_disc_id.clone(),
         current_drives.clone(),
     );
