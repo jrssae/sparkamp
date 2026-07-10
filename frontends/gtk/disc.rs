@@ -215,12 +215,20 @@ pub(super) fn disc_card_icon(d: &crate::disc::OpticalDrive) -> gtk4::Overlay {
     let overlay = gtk4::Overlay::new();
     overlay.set_child(Some(&icon));
     if let Some(badge) = media_badge(d) {
+        // GTK's built-in "osd" style: translucent dark pill, readable over
+        // the glyph in both themes (mirrors the mac badge-on-background).
+        let pill = GtkBox::new(Orientation::Horizontal, 0);
+        pill.add_css_class("osd");
+        pill.set_halign(gtk4::Align::End);
+        pill.set_valign(gtk4::Align::End);
         let lbl = Label::new(None);
         lbl.set_markup(&format!("<small><b>{badge}</b></small>"));
-        lbl.set_halign(gtk4::Align::End);
-        lbl.set_valign(gtk4::Align::End);
-        lbl.add_css_class("dim-label");
-        overlay.add_overlay(&lbl);
+        lbl.set_margin_start(3);
+        lbl.set_margin_end(3);
+        lbl.set_margin_top(1);
+        lbl.set_margin_bottom(1);
+        pill.append(&lbl);
+        overlay.add_overlay(&pill);
     }
     overlay
 }

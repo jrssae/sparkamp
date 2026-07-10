@@ -13532,16 +13532,23 @@ fn open_media_library_window(
     // Detail: the selected drive (hidden until one is picked).
     let disc_detail = GtkBox::new(Orientation::Vertical, 8);
     disc_detail.set_visible(false);
+    // Header: drive icon (media badge overlaid, rebuilt per populate) beside
+    // the title/media/tag labels — same layout as the mac drive header.
+    let disc_header_row = GtkBox::new(Orientation::Horizontal, 10);
+    let disc_icon_box = GtkBox::new(Orientation::Horizontal, 0);
+    disc_icon_box.set_valign(Align::Center);
+    disc_header_row.append(&disc_icon_box);
+    let disc_header_text = GtkBox::new(Orientation::Vertical, 2);
     let disc_title = Label::builder().halign(Align::Start).xalign(0.0).build();
     disc_title.add_css_class("ml-section-header");
-    disc_detail.append(&disc_title);
+    disc_header_text.append(&disc_title);
     let disc_media_lbl = Label::builder()
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
         .build();
     disc_media_lbl.add_css_class("dim-label");
-    disc_detail.append(&disc_media_lbl);
+    disc_header_text.append(&disc_media_lbl);
     // "Artist — Album" once the disc has gnudb/edited tags (hidden otherwise).
     let disc_tag_lbl = Label::builder()
         .halign(Align::Start)
@@ -13550,7 +13557,9 @@ fn open_media_library_window(
         .build();
     disc_tag_lbl.add_css_class("ml-section-header");
     disc_tag_lbl.set_visible(false);
-    disc_detail.append(&disc_tag_lbl);
+    disc_header_text.append(&disc_tag_lbl);
+    disc_header_row.append(&disc_header_text);
+    disc_detail.append(&disc_header_row);
     // Banner shown for non-audio media (no disc / blank / data).
     let disc_banner = Label::builder()
         .halign(Align::Start)
@@ -13611,8 +13620,9 @@ fn open_media_library_window(
     // Add + identify/rip/tag/eject actions. Order matches the macOS drive
     // header (Identify · Rip… · Edit Tags · … · Eject last), with the GTK-only
     // Add buttons in front.
-    let disc_add_sel = Button::with_label("Add Selected");
-    let disc_add_all = Button::with_label("Add All");
+    // Disc management on the left; playlist actions (Enqueue / ▶ Play, acting
+    // on the selection or the whole disc when nothing is selected) on the
+    // right — same split as the files/playlist/device views.
     let disc_identify = Button::with_label("Identify");
     let disc_rip = Button::with_label("Rip…");
     let disc_edit_tags = Button::with_label("Edit Tags");
@@ -13620,25 +13630,30 @@ fn open_media_library_window(
     // from the official match (visibility set in populate_disc_detail).
     let disc_submit = Button::with_label("Submit to gnudb");
     let disc_eject = Button::with_label("Eject");
+    let disc_enqueue = Button::with_label("Enqueue");
+    let disc_play = Button::with_label("▶ Play");
     for b in [
-        &disc_add_sel,
-        &disc_add_all,
         &disc_identify,
         &disc_rip,
         &disc_edit_tags,
         &disc_submit,
         &disc_eject,
+        &disc_enqueue,
+        &disc_play,
     ] {
         b.add_css_class("pl-btn");
     }
     let disc_actions = GtkBox::new(Orientation::Horizontal, 6);
-    disc_actions.append(&disc_add_sel);
-    disc_actions.append(&disc_add_all);
     disc_actions.append(&disc_identify);
     disc_actions.append(&disc_rip);
     disc_actions.append(&disc_edit_tags);
     disc_actions.append(&disc_submit);
     disc_actions.append(&disc_eject);
+    let disc_actions_spring = GtkBox::new(Orientation::Horizontal, 0);
+    disc_actions_spring.set_hexpand(true);
+    disc_actions.append(&disc_actions_spring);
+    disc_actions.append(&disc_enqueue);
+    disc_actions.append(&disc_play);
     disc_detail.append(&disc_actions);
     // Rip progress row (hidden unless a rip is running): a bar + Cancel.
     let disc_rip_box = GtkBox::new(Orientation::Horizontal, 6);
@@ -18278,19 +18293,37 @@ fn open_media_library_window(
     // add-behavior + autoplay rules as the ML double-click path. Phase 1 has no
     // gnudb tags yet, so titles are "Track N" and artist/album stay empty (the
     // " / " sampler split still applies to future matched discs).
-    let add_disc_entries: Rc<dyn Fn(&[crate::disc::DiscTrackEntry])> = {
+    // How disc tracks land in the active playlist:
+    //   Behavior — the double-click path: honor the replace/append setting
+    //   and autoplay-on-add (same as the ML files double-click).
+    //   PlayNow — the "▶ Play" button: replace the playlist with the picked
+    //   tracks and play (same as the device/files views' Play).
+    //   Enqueue — append only; start playing only when the playlist was
+    //   empty and autoplay-on-add is set (same as the views' Enqueue).
+    #[derive(Clone, Copy, PartialEq)]
+    enum DiscAdd {
+        Behavior,
+        PlayNow,
+        Enqueue,
+    }
+    let add_disc_entries: Rc<dyn Fn(&[crate::disc::DiscTrackEntry], DiscAdd)> = {
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
         let disc_tags = disc_tags.clone();
         let selected_disc_id = selected_disc_id.clone();
         let current_drives = current_drives.clone();
-        Rc::new(move |entries: &[crate::disc::DiscTrackEntry]| {
+        Rc::new(move |entries: &[crate::disc::DiscTrackEntry], mode: DiscAdd| {
             if entries.is_empty() {
                 return;
             }
             use crate::config::PlaylistAddBehavior;
             let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
+            let replace = match mode {
+                DiscAdd::Behavior => behavior == PlaylistAddBehavior::Replace,
+                DiscAdd::PlayNow => true,
+                DiscAdd::Enqueue => false,
+            };
             // Disc-level artist/album for the currently shown drive (empty until
             // identified/edited); used for the non-sampler title case.
             let (disc_artist, disc_album) =
@@ -18302,7 +18335,7 @@ fn open_media_library_window(
                             .map(|t| (t.artist.clone(), t.album.clone()))
                     })
                     .unwrap_or_default();
-            if behavior == PlaylistAddBehavior::Replace {
+            if replace {
                 let _ = state.borrow_mut().player.stop();
                 let mut s = state.borrow_mut();
                 s.playlist.tracks.clear();
@@ -18327,7 +18360,12 @@ fn open_media_library_window(
                 });
             }
             rebuild();
-            if autoplay && (behavior == PlaylistAddBehavior::Replace || insert_start == 0) {
+            let start = match mode {
+                DiscAdd::PlayNow => true,
+                DiscAdd::Behavior => autoplay && (replace || insert_start == 0),
+                DiscAdd::Enqueue => autoplay && insert_start == 0,
+            };
+            if start {
                 state.borrow_mut().playlist.jump_to(insert_start);
                 state.borrow_mut().play_current();
             }
@@ -18338,6 +18376,7 @@ fn open_media_library_window(
     // the audio-track list or a banner for no-disc/blank/data media.
     let populate_disc_detail: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
         let title = disc_title.clone();
+        let icon_box = disc_icon_box.clone();
         let media_lbl = disc_media_lbl.clone();
         let tag_lbl = disc_tag_lbl.clone();
         let banner = disc_banner.clone();
@@ -18347,8 +18386,8 @@ fn open_media_library_window(
         // Audio-only actions hide on non-audio media; Eject shows whenever a
         // disc is present (mac parity).
         let audio_btns = [
-            disc_add_sel.clone(),
-            disc_add_all.clone(),
+            disc_enqueue.clone(),
+            disc_play.clone(),
             disc_identify.clone(),
             disc_rip.clone(),
             disc_edit_tags.clone(),
@@ -18368,6 +18407,11 @@ fn open_media_library_window(
                 *last_drive.borrow_mut() = Some(drive.id.clone());
                 search_entry.set_text("");
             }
+            // Header icon reflects the loaded media (badge included).
+            while let Some(child) = icon_box.first_child() {
+                icon_box.remove(&child);
+            }
+            icon_box.append(&disc::disc_card_icon(drive));
             title.set_text(&gtk_safe(&drive.label));
             media_lbl.set_text(&drive.media_summary());
             while let Some(child) = track_list.first_child() {
@@ -18834,30 +18878,37 @@ fn open_media_library_window(
         });
     }
 
-    // Add actions: selected tracks, all tracks, or a double-clicked row.
-    {
+    // Playlist actions: ▶ Play / Enqueue act on the selected rows, or the
+    // whole disc when nothing is selected (a whole-disc play is the common
+    // case); a double-clicked row honors the add-behavior setting, like the
+    // ML files double-click.
+    let picked_disc_entries: Rc<dyn Fn() -> Vec<crate::disc::DiscTrackEntry>> = {
         let entries = current_disc_entries.clone();
         let track_list = disc_track_list.clone();
-        let add = add_disc_entries.clone();
-        disc_add_sel.connect_clicked(move |_| {
+        Rc::new(move || {
             let sel = track_list.selected_rows();
-            if sel.is_empty() {
-                return;
-            }
             let all = entries.borrow();
-            let picked: Vec<crate::disc::DiscTrackEntry> = sel
-                .iter()
-                .filter_map(|r| all.get(r.index() as usize).cloned())
-                .collect();
-            add(&picked);
+            if sel.is_empty() {
+                all.clone()
+            } else {
+                sel.iter()
+                    .filter_map(|r| all.get(r.index() as usize).cloned())
+                    .collect()
+            }
+        })
+    };
+    {
+        let picked = picked_disc_entries.clone();
+        let add = add_disc_entries.clone();
+        disc_play.connect_clicked(move |_| {
+            add(&picked(), DiscAdd::PlayNow);
         });
     }
     {
-        let entries = current_disc_entries.clone();
+        let picked = picked_disc_entries.clone();
         let add = add_disc_entries.clone();
-        disc_add_all.connect_clicked(move |_| {
-            let all = entries.borrow().clone();
-            add(&all);
+        disc_enqueue.connect_clicked(move |_| {
+            add(&picked(), DiscAdd::Enqueue);
         });
     }
     {
@@ -18865,7 +18916,7 @@ fn open_media_library_window(
         let add = add_disc_entries.clone();
         disc_track_list.connect_row_activated(move |_, row| {
             if let Some(e) = entries.borrow().get(row.index() as usize).cloned() {
-                add(&[e]);
+                add(&[e], DiscAdd::Behavior);
             }
         });
     }
