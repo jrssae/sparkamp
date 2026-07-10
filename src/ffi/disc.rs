@@ -36,12 +36,45 @@ unsafe fn json_in<T: for<'de> serde::Deserialize<'de>>(p: *const c_char) -> Opti
     serde_json::from_str(s).ok()
 }
 
+/// One drive as the FFI reports it: the `OpticalDrive` fields plus the
+/// core-computed `media_summary` line ("Audio CD (8 tracks)", "Blank CD-R",
+/// …) so Swift renders the same wording as the GTK/TUI frontends instead of
+/// rebuilding it.
+#[derive(serde::Serialize)]
+struct DriveOut {
+    #[serde(flatten)]
+    drive: OpticalDrive,
+    media_summary: String,
+}
+
 /// Enumerate every optical drive with its loaded-media state and (for an
-/// audio CD) the TOC. Returns a JSON array of `OpticalDrive`. Runs
-/// subprocesses — call on a background queue and throttle polling.
+/// audio CD) the TOC. Returns a JSON array of `OpticalDrive` (+ a
+/// `media_summary` field per drive). Runs subprocesses — call on a
+/// background queue and throttle polling.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_list_drives(_ctx: *mut SparkampCtx) -> *mut c_char {
-    json_out(&detect::list_drives())
+    let drives: Vec<DriveOut> = detect::list_drives()
+        .into_iter()
+        .map(|drive| DriveOut {
+            media_summary: drive.media_summary(),
+            drive,
+        })
+        .collect();
+    json_out(&drives)
+}
+
+/// Best-effort map from a free-text genre to a fixed CDDB category (the same
+/// `gnudb::suggest_category` the GTK/TUI frontends call), for prefilling the
+/// submit sheet's category picker. Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_gnudb_suggest_category(
+    _ctx: *mut SparkampCtx,
+    genre: *const c_char,
+) -> *mut c_char {
+    let genre = cstr(genre).unwrap_or_default();
+    std::ffi::CString::new(crate::disc::gnudb::suggest_category(&genre))
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Playlist-ready entries (path/URI + "Track N" title + duration) for every
@@ -501,5 +534,47 @@ mod tests {
         let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
         unsafe { super::super::sparkamp_free_string(out) };
         assert_eq!(s, "[]");
+    }
+
+    #[test]
+    fn drive_out_flattens_and_adds_summary() {
+        let out = DriveOut {
+            media_summary: "Blank CD-R".into(),
+            drive: OpticalDrive {
+                id: "/dev/sr0".into(),
+                label: "TEST".into(),
+                media: crate::disc::MediaInfo {
+                    present: true,
+                    is_blank: true,
+                    kind: crate::disc::MediaKind::CdR,
+                    ..crate::disc::MediaInfo::none()
+                },
+                toc: None,
+                mount_path: None,
+            },
+        };
+        let v: serde_json::Value = serde_json::to_value(&out).unwrap();
+        // The OpticalDrive fields stay top-level (Swift's existing decoder
+        // keeps working) with the summary alongside them.
+        assert_eq!(v["id"], "/dev/sr0");
+        assert_eq!(v["media"]["is_blank"], true);
+        assert_eq!(v["media_summary"], "Blank CD-R");
+        // And the payload still parses as a plain OpticalDrive.
+        let round: OpticalDrive = serde_json::from_value(v).unwrap();
+        assert_eq!(round.id, "/dev/sr0");
+    }
+
+    #[test]
+    fn suggest_category_ffi_round_trip() {
+        let arg = CString::new("Progressive Rock").unwrap();
+        let out =
+            unsafe { sparkamp_gnudb_suggest_category(std::ptr::null_mut(), arg.as_ptr()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        assert_eq!(s, "rock");
+        let out = unsafe { sparkamp_gnudb_suggest_category(std::ptr::null_mut(), std::ptr::null()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        assert_eq!(s, "misc");
     }
 }

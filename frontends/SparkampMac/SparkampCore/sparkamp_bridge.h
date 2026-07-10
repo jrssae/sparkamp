@@ -652,7 +652,10 @@ bool sparkamp_device_fs_unsupported(const char *fs_type);
 // schemas (OpticalDrive / DiscTrackEntry Codable structs on the Swift side).
 
 /** Every optical drive with its loaded-media state (+ TOC for an audio CD),
-    as a JSON [OpticalDrive]. Free with sparkamp_free_string. */
+    as a JSON [OpticalDrive]. Each drive also carries a "media_summary"
+    string ("Audio CD (8 tracks)", "Blank CD-R", "Data disc", "No disc") —
+    prefer it over rebuilding the wording in Swift so all frontends match.
+    Free with sparkamp_free_string. */
 char *sparkamp_disc_list_drives(SparkampCtx *ctx);
 
 /** Playlist-ready entries for the drive's audio tracks as a JSON
@@ -675,6 +678,11 @@ char *sparkamp_gnudb_query(SparkampCtx *ctx, const char *toc_json,
     network — background queue only. Free with sparkamp_free_string. */
 char *sparkamp_gnudb_read(SparkampCtx *ctx, const char *category,
                           const char *discid, const char *email);
+
+/** Best-effort genre → fixed CDDB category (the same core mapping the
+    GTK/TUI use), for prefilling the submit sheet's picker. Plain string
+    (e.g. "rock", default "misc"). Free with sparkamp_free_string. */
+char *sparkamp_gnudb_suggest_category(SparkampCtx *ctx, const char *genre);
 
 /** Rip ONE track to a tagged MP3 (job JSON: source/dest_root/quality/tag
     values — see RipJobIn in src/ffi/disc.rs). Blocks for the whole encode

@@ -228,12 +228,8 @@ pub struct RipSetupState {
 pub enum RipMsg {
     /// About to rip track `index+1` of `total` named `title`.
     Progress(usize, usize, String),
-    /// The run finished (all tracks, a failure list, or cancelled).
-    Done {
-        ripped: Vec<String>,
-        failed: usize,
-        cancelled: bool,
-    },
+    /// The run finished (all tracks, failures, or cancelled).
+    Done(crate::disc::rip::RipOutcome),
 }
 
 /// State of the disc tag-override editor overlay (Discs tab, `e`).

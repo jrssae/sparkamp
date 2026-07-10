@@ -166,3 +166,74 @@ pub struct DiscTrackEntry {
     pub title: String,
     pub duration_secs: u32,
 }
+
+/// Split a `cdda://N?device=/dev/srX` pseudo-URI (built by
+/// [`toc::track_entries`]) into its track part and device node. `None` when
+/// the string isn't a cdda URI; the device is `None` when the URI carries no
+/// `?device=` suffix. The engine's loader and the rip source builder both
+/// parse through here, so the URI format has one producer and one consumer
+/// shape.
+pub fn parse_cdda_uri(uri: &str) -> Option<(&str, Option<&str>)> {
+    let rest = uri.strip_prefix("cdda://")?;
+    Some(match rest.split_once("?device=") {
+        Some((track, device)) => (track, Some(device)),
+        None => (rest, None),
+    })
+}
+
+/// Display/tag metadata for one disc track after applying the xmcd sampler
+/// convention: a track title of the form "Artist / Title" carries a per-track
+/// artist, and the disc-level artist is demoted to album artist. Plain titles
+/// keep the disc artist and an empty album artist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackMeta {
+    pub artist: String,
+    pub title: String,
+    pub album_artist: String,
+}
+
+/// One shared rule for the sampler split — playlist adds, tag-edit
+/// propagation, and rip tagging must all agree on it.
+pub fn track_meta(raw_title: &str, disc_artist: &str) -> TrackMeta {
+    match raw_title.split_once(" / ") {
+        Some((artist, title)) => TrackMeta {
+            artist: artist.to_string(),
+            title: title.to_string(),
+            album_artist: disc_artist.to_string(),
+        },
+        None => TrackMeta {
+            artist: disc_artist.to_string(),
+            title: raw_title.to_string(),
+            album_artist: String::new(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+
+    #[test]
+    fn parse_cdda_uri_variants() {
+        assert_eq!(
+            parse_cdda_uri("cdda://3?device=/dev/sr0"),
+            Some(("3", Some("/dev/sr0")))
+        );
+        assert_eq!(parse_cdda_uri("cdda://12"), Some(("12", None)));
+        assert_eq!(parse_cdda_uri("/Volumes/Audio CD/1 Track.aiff"), None);
+        assert_eq!(parse_cdda_uri("file:///x.mp3"), None);
+    }
+
+    #[test]
+    fn track_meta_sampler_split() {
+        let plain = track_meta("Song", "Band");
+        assert_eq!(plain.artist, "Band");
+        assert_eq!(plain.title, "Song");
+        assert!(plain.album_artist.is_empty());
+
+        let split = track_meta("Guest / Tune", "Various");
+        assert_eq!(split.artist, "Guest");
+        assert_eq!(split.title, "Tune");
+        assert_eq!(split.album_artist, "Various");
+    }
+}

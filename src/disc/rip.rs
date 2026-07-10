@@ -7,11 +7,14 @@
 //! [`crate::id3_editor::write_tag_fields`], so one code path owns tagging
 //! (no `id3v2mux` in the pipeline).
 //!
-//! Everything here is synchronous and per-track: the frontends loop on a
-//! background thread/queue, publish per-track progress, and check a cancel
-//! flag between tracks (cancel stops after the current track).
+//! Everything here is synchronous: [`run_job`] rips a whole selection on the
+//! caller's (worker) thread, publishing per-track progress through a callback
+//! and checking a cancel flag between tracks (cancel stops after the current
+//! track). The GTK and TUI frontends call it directly; the FFI exposes the
+//! per-track [`rip_track`] for the Swift loop.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::id3_editor::TagFields;
 
@@ -178,7 +181,8 @@ pub(crate) fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
 
 /// The [`TagFields`] for one ripped track, from the disc's tag set. The
 /// sampler convention ("Artist / Title" inside a track title) yields a
-/// per-track artist, with the disc artist as `album_artist` in that case.
+/// per-track artist, with the disc artist as `album_artist` in that case
+/// (one shared rule: [`crate::disc::track_meta`]).
 pub fn tag_fields_for_track(
     disc_artist: &str,
     album: &str,
@@ -188,15 +192,12 @@ pub fn tag_fields_for_track(
     total: u8,
     raw_title: &str,
 ) -> TagFields {
-    let (artist, title, album_artist) = match raw_title.split_once(" / ") {
-        Some((a, t)) => (a.to_string(), t.to_string(), disc_artist.to_string()),
-        None => (disc_artist.to_string(), raw_title.to_string(), String::new()),
-    };
+    let meta = crate::disc::track_meta(raw_title, disc_artist);
     TagFields {
-        title,
-        artist,
+        title: meta.title,
+        artist: meta.artist,
         album: album.to_string(),
-        album_artist,
+        album_artist: meta.album_artist,
         genre: genre.to_string(),
         year: year.to_string(),
         track_number: number.to_string(),
@@ -207,6 +208,135 @@ pub fn tag_fields_for_track(
         comment: String::new(),
         artwork_path: String::new(),
     }
+}
+
+/// Where a disc entry's audio comes from: `cdda://N?device=…` pseudo-URIs
+/// (Linux) become a [`RipSource::Cdda`]; anything else is a plain file path
+/// (macOS's mounted AIFF).
+pub fn source_for_entry(entry: &crate::disc::DiscTrackEntry) -> RipSource {
+    match crate::disc::parse_cdda_uri(&entry.path) {
+        Some((track, device)) => RipSource::Cdda {
+            device: device.unwrap_or_default().to_string(),
+            track: track.parse().unwrap_or(entry.number),
+        },
+        None => RipSource::File {
+            path: PathBuf::from(&entry.path),
+        },
+    }
+}
+
+/// What a finished (or cancelled) rip run produced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RipOutcome {
+    /// Paths of the successfully written MP3s, in rip order.
+    pub ripped: Vec<String>,
+    /// One "N: error" line per failed track.
+    pub failures: Vec<String>,
+    /// The cancel flag fired (the run stopped after the then-current track).
+    pub cancelled: bool,
+}
+
+impl RipOutcome {
+    /// The one-line result every frontend shows, given how many of the ripped
+    /// files the library import actually registered (import only accepts
+    /// files under watched folders).
+    pub fn status_message(&self, imported: usize) -> String {
+        let mut msg = format!(
+            "Ripped {} track{}",
+            self.ripped.len(),
+            if self.ripped.len() == 1 { "" } else { "s" }
+        );
+        if self.cancelled {
+            msg.push_str(" · cancelled");
+        }
+        if !self.ripped.is_empty() && imported == 0 {
+            msg.push_str(" · not in library (destination isn't a watched folder)");
+        } else if imported < self.ripped.len() {
+            msg.push_str(&format!(" · only {imported} added to the library"));
+        }
+        if !self.failures.is_empty() {
+            msg.push_str(&format!(" · {} failed", self.failures.len()));
+        }
+        msg
+    }
+}
+
+/// Rip a whole selection, blocking — call on a worker thread. Reports
+/// "starting track i of n" through `progress` before each track, checks
+/// `cancel` between tracks (a cancel stops after the current track), and
+/// derives each track's source, tags, and destination from the entry + the
+/// disc's tag set. This is the one job runner shared by the frontends.
+pub fn run_job(
+    entries: &[crate::disc::DiscTrackEntry],
+    dest_root: &Path,
+    quality: Mp3Quality,
+    tags: &crate::disc::xmcd::XmcdEntry,
+    total_on_disc: u8,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(usize, usize, &str),
+) -> RipOutcome {
+    let mut outcome = RipOutcome::default();
+    let n = entries.len();
+    for (i, entry) in entries.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            outcome.cancelled = true;
+            break;
+        }
+        progress(i, n, &entry.title);
+        let source = source_for_entry(entry);
+        let track_tags = tag_fields_for_track(
+            &tags.artist,
+            &tags.album,
+            &tags.year,
+            &tags.genre,
+            entry.number,
+            total_on_disc,
+            &entry.title,
+        );
+        let out = dest_path(
+            dest_root,
+            &tags.artist,
+            &tags.album,
+            entry.number,
+            &track_tags.title,
+        );
+        match rip_track(&source, &out, quality, &track_tags) {
+            Ok(()) => outcome.ripped.push(out.display().to_string()),
+            Err(e) => outcome.failures.push(format!("{}: {e}", entry.number)),
+        }
+    }
+    outcome
+}
+
+/// Whether a rip destination sits under one of the watched library folders —
+/// outside every one, the import step skips the ripped files (library policy:
+/// importing never creates watch folders). Comparison is component-wise (so
+/// `/music-other` never matches a watched `/music`) on canonicalized paths
+/// when they exist (so symlinked watch folders still count; a
+/// not-yet-created destination falls back to its literal path).
+pub fn dest_is_watched(dest: &str, watched_folders: &[String]) -> bool {
+    let dest = Path::new(dest);
+    let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    watched_folders.iter().any(|folder| {
+        let folder = Path::new(folder);
+        let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+        dest.starts_with(&folder)
+    })
+}
+
+/// Default rip destination: the configured directory, else the first watched
+/// library folder, else `~/Music`. (The frontends pass their config value and
+/// folder list; the choice the user makes in the rip dialog is written back
+/// to config.)
+pub fn default_dest(configured: Option<&Path>, first_watched: Option<&str>) -> String {
+    if let Some(dir) = configured {
+        return dir.display().to_string();
+    }
+    if let Some(folder) = first_watched {
+        return folder.to_string();
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    format!("{home}/Music")
 }
 
 #[cfg(test)]
@@ -276,6 +406,137 @@ mod tests {
         assert_eq!(split.artist, "Guest");
         assert_eq!(split.title, "Tune");
         assert_eq!(split.album_artist, "Various");
+    }
+
+    #[test]
+    fn source_for_entry_maps_uris() {
+        let cdda = crate::disc::DiscTrackEntry {
+            number: 3,
+            path: "cdda://3?device=/dev/sr0".into(),
+            title: "Track 3".into(),
+            duration_secs: 200,
+        };
+        assert_eq!(
+            source_for_entry(&cdda),
+            RipSource::Cdda {
+                device: "/dev/sr0".into(),
+                track: 3
+            }
+        );
+        // Unparseable track part falls back to the entry's number.
+        let odd = crate::disc::DiscTrackEntry {
+            number: 7,
+            path: "cdda://x?device=/dev/sr1".into(),
+            ..cdda.clone()
+        };
+        assert_eq!(
+            source_for_entry(&odd),
+            RipSource::Cdda {
+                device: "/dev/sr1".into(),
+                track: 7
+            }
+        );
+        let file = crate::disc::DiscTrackEntry {
+            number: 1,
+            path: "/Volumes/Audio CD/1 Audio Track.aiff".into(),
+            title: "Track 1".into(),
+            duration_secs: 100,
+        };
+        assert_eq!(
+            source_for_entry(&file),
+            RipSource::File {
+                path: PathBuf::from("/Volumes/Audio CD/1 Audio Track.aiff")
+            }
+        );
+    }
+
+    #[test]
+    fn outcome_status_messages() {
+        let mut o = RipOutcome {
+            ripped: vec!["a.mp3".into(), "b.mp3".into()],
+            failures: vec![],
+            cancelled: false,
+        };
+        assert_eq!(o.status_message(2), "Ripped 2 tracks");
+        assert_eq!(
+            o.status_message(0),
+            "Ripped 2 tracks · not in library (destination isn't a watched folder)"
+        );
+        assert_eq!(o.status_message(1), "Ripped 2 tracks · only 1 added to the library");
+        o.cancelled = true;
+        o.failures.push("4: stalled".into());
+        assert_eq!(
+            o.status_message(2),
+            "Ripped 2 tracks · cancelled · 1 failed"
+        );
+        let one = RipOutcome {
+            ripped: vec!["a.mp3".into()],
+            ..Default::default()
+        };
+        assert_eq!(one.status_message(1), "Ripped 1 track");
+        let none = RipOutcome::default();
+        assert_eq!(none.status_message(0), "Ripped 0 tracks");
+    }
+
+    #[test]
+    fn run_job_honors_preset_cancel() {
+        // Cancel already set: the loop must exit before touching GStreamer,
+        // reporting cancelled with no progress callbacks.
+        let entries = vec![crate::disc::DiscTrackEntry {
+            number: 1,
+            path: "cdda://1?device=/dev/sr0".into(),
+            title: "Track 1".into(),
+            duration_secs: 100,
+        }];
+        let cancel = AtomicBool::new(true);
+        let mut calls = 0;
+        let outcome = run_job(
+            &entries,
+            Path::new("/tmp"),
+            Mp3Quality::VbrV2,
+            &crate::disc::xmcd::XmcdEntry::default(),
+            1,
+            &cancel,
+            |_, _, _| calls += 1,
+        );
+        assert!(outcome.cancelled);
+        assert!(outcome.ripped.is_empty() && outcome.failures.is_empty());
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn dest_is_watched_needs_a_path_boundary() {
+        let base = std::env::temp_dir().join(format!("sparkamp-watch-{}", std::process::id()));
+        let music = base.join("Music");
+        let sibling = base.join("MusicOther");
+        let sub = music.join("Rips");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let watched = vec![music.display().to_string()];
+
+        assert!(dest_is_watched(&music.display().to_string(), &watched));
+        assert!(dest_is_watched(&sub.display().to_string(), &watched));
+        // The old starts_with-on-strings bug: a sibling sharing the prefix.
+        assert!(!dest_is_watched(&sibling.display().to_string(), &watched));
+        // A destination that doesn't exist yet still resolves by prefix.
+        assert!(dest_is_watched(
+            &music.join("New Album").display().to_string(),
+            &watched
+        ));
+        assert!(!dest_is_watched("/somewhere/else", &watched));
+        assert!(!dest_is_watched("/anywhere", &[]));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn default_dest_chain() {
+        assert_eq!(
+            default_dest(Some(Path::new("/cfg/rips")), Some("/watched")),
+            "/cfg/rips"
+        );
+        assert_eq!(default_dest(None, Some("/watched")), "/watched");
+        let fallback = default_dest(None, None);
+        assert!(fallback.ends_with("/Music"), "{fallback}");
     }
 
     /// Live end-to-end rip of track 1 from the real mounted audio CD — run

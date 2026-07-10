@@ -991,11 +991,8 @@ impl App {
                 s.disc_entries
                     .iter()
                     .map(|e| {
-                        let (artist, title) = match e.title.split_once(" / ") {
-                            Some((a, t)) => (a.to_string(), t.to_string()),
-                            None => (disc_artist.clone(), e.title.clone()),
-                        };
-                        (e.path.clone(), title, artist)
+                        let meta = crate::disc::track_meta(&e.title, &disc_artist);
+                        (e.path.clone(), meta.title, meta.artist)
                     })
                     .collect()
             } else {
@@ -1024,26 +1021,12 @@ impl App {
             self.set_status("A rip is already running (c cancels it)");
             return;
         }
-        let dest = self
-            .config
-            .disc
-            .rip_dest_dir
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .or_else(|| {
-                self.media_lib
-                    .as_ref()
-                    .and_then(|l| l.list_folders().ok())
-                    .and_then(|f| f.into_iter().next().map(|(_, p)| p))
-            })
-            .unwrap_or_else(|| {
-                format!(
-                    "{}/Music",
-                    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-                )
-            });
+        let dest = crate::disc::rip::default_dest(
+            self.config.disc.rip_dest_dir.as_deref(),
+            self.watched_folders().first().map(String::as_str),
+        );
         let quality = self.config.disc.rip_mp3_quality;
-        let dest_watched = self.rip_dest_is_watched(&dest);
+        let dest_watched = crate::disc::rip::dest_is_watched(&dest, &self.watched_folders());
         if let Mode::MediaLibrary(s) = &mut self.mode {
             if s.disc_entries.is_empty() {
                 self.set_status("No audio disc loaded");
@@ -1060,14 +1043,13 @@ impl App {
         }
     }
 
-    /// Whether a rip destination sits under a watched folder (the import
-    /// step skips files outside every watched folder — library policy).
-    fn rip_dest_is_watched(&self, dest: &str) -> bool {
+    /// The watched library folder paths (empty when no library is open).
+    fn watched_folders(&self) -> Vec<String> {
         self.media_lib
             .as_ref()
             .and_then(|l| l.list_folders().ok())
-            .map(|folders| folders.iter().any(|(_, f)| dest.starts_with(f.as_str())))
-            .unwrap_or(false)
+            .map(|folders| folders.into_iter().map(|(_, p)| p).collect())
+            .unwrap_or_default()
     }
 
     /// Keys in the rip overlay. Browsing: ↑/↓ move, Space toggle, a all/none,
@@ -1129,7 +1111,7 @@ impl App {
             return;
         }
         if let Some(dest) = recheck_dest {
-            let watched = self.rip_dest_is_watched(&dest);
+            let watched = crate::disc::rip::dest_is_watched(&dest, &self.watched_folders());
             if let Mode::MediaLibrary(s) = &mut self.mode {
                 if let Some(rip) = &mut s.rip {
                     rip.dest_watched = watched;
@@ -1148,6 +1130,19 @@ impl App {
         let Some((_, discid)) = self.selected_disc_identity() else {
             return;
         };
+        // An active cdda:// playback shares the drive head with the rip's
+        // cdiocddasrc — the device allows one reader, so both would thrash.
+        // Refuse instead of wedging (same contention rule as the disc poll).
+        let playing_disc = *self.player.state() != crate::engine::PlayerState::Stopped
+            && self
+                .playlist
+                .current()
+                .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
+                .unwrap_or(false);
+        if playing_disc {
+            self.set_status("Stop disc playback before ripping (one reader per drive)");
+            return;
+        }
         let tags = self.disc_tags.get(&discid).cloned().unwrap_or_default();
 
         let (entries, dest, quality) = {
@@ -1188,57 +1183,18 @@ impl App {
 
         std::thread::spawn(move || {
             use crate::disc::rip;
-            let quality = rip::Mp3Quality::from_config(quality);
-            let dest_root = std::path::PathBuf::from(&dest);
-            let mut ripped = Vec::new();
-            let mut failed = 0;
-            let mut cancelled = false;
-            let n = entries.len();
-            for (i, entry) in entries.into_iter().enumerate() {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    cancelled = true;
-                    break;
-                }
-                let _ = tx.send(super::RipMsg::Progress(i, n, entry.title.clone()));
-                // Linux entries are cdda://N?device=…; macOS entries are the
-                // mounted AIFF path.
-                let source = if let Some(rest) = entry.path.strip_prefix("cdda://") {
-                    let (track, device) = match rest.split_once("?device=") {
-                        Some((t, d)) => (t.parse().unwrap_or(entry.number as u8), d.to_string()),
-                        None => (entry.number as u8, String::new()),
-                    };
-                    rip::RipSource::Cdda { device, track }
-                } else {
-                    rip::RipSource::File {
-                        path: std::path::PathBuf::from(&entry.path),
-                    }
-                };
-                let track_tags = rip::tag_fields_for_track(
-                    &tags.artist,
-                    &tags.album,
-                    &tags.year,
-                    &tags.genre,
-                    entry.number as u8,
-                    total_on_disc,
-                    &entry.title,
-                );
-                let out = rip::dest_path(
-                    &dest_root,
-                    &tags.artist,
-                    &tags.album,
-                    entry.number as u8,
-                    &track_tags.title,
-                );
-                match rip::rip_track(&source, &out, quality, &track_tags) {
-                    Ok(()) => ripped.push(out.display().to_string()),
-                    Err(_) => failed += 1,
-                }
-            }
-            let _ = tx.send(super::RipMsg::Done {
-                ripped,
-                failed,
-                cancelled,
-            });
+            let outcome = rip::run_job(
+                &entries,
+                std::path::Path::new(&dest),
+                rip::Mp3Quality::from_config(quality),
+                &tags,
+                total_on_disc,
+                &cancel,
+                |i, n, title| {
+                    let _ = tx.send(super::RipMsg::Progress(i, n, title.to_string()));
+                },
+            );
+            let _ = tx.send(super::RipMsg::Done(outcome));
         });
     }
 
@@ -1248,40 +1204,21 @@ impl App {
             super::RipMsg::Progress(i, n, title) => {
                 self.rip_progress = Some((i, n, title));
             }
-            super::RipMsg::Done {
-                ripped,
-                failed,
-                cancelled,
-            } => {
+            super::RipMsg::Done(outcome) => {
                 self.disc_rip = None;
                 self.rip_cancel = None;
                 self.rip_progress = None;
                 // Import the fresh files so the library sees them now. The
-                // import only registers files under watched folders — report
-                // honestly when some (or all) stayed outside the library.
+                // import only registers files under watched folders — the
+                // shared status line reports honestly when some (or all)
+                // stayed outside the library.
                 let mut imported = 0;
-                if !ripped.is_empty() {
+                if !outcome.ripped.is_empty() {
                     if let Some(lib) = &self.media_lib {
-                        imported = lib.add_files_to_library(&ripped).unwrap_or(0);
+                        imported = lib.add_files_to_library(&outcome.ripped).unwrap_or(0);
                     }
                 }
-                let mut msg = format!(
-                    "Ripped {} track{}",
-                    ripped.len(),
-                    if ripped.len() == 1 { "" } else { "s" }
-                );
-                if cancelled {
-                    msg.push_str(" · cancelled");
-                }
-                if !ripped.is_empty() && imported == 0 {
-                    msg.push_str(" · not in library (destination isn't a watched folder)");
-                } else if imported < ripped.len() {
-                    msg.push_str(&format!(" · only {imported} added to the library"));
-                }
-                if failed > 0 {
-                    msg.push_str(&format!(" · {failed} failed"));
-                }
-                self.set_status(msg);
+                self.set_status(outcome.status_message(imported));
             }
         }
     }
@@ -1609,14 +1546,11 @@ impl App {
         }
         for e in entries {
             // Sampler discs put the per-track artist in the title.
-            let (artist, title) = match e.title.split_once(" / ") {
-                Some((a, t)) => (a.to_string(), t.to_string()),
-                None => (disc_artist.clone(), e.title.clone()),
-            };
+            let meta = crate::disc::track_meta(&e.title, &disc_artist);
             self.playlist.add(crate::model::Track {
                 path: std::path::PathBuf::from(&e.path),
-                title,
-                artist,
+                title: meta.title,
+                artist: meta.artist,
                 album_artist: String::new(),
                 album: disc_album.clone(),
                 duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),

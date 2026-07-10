@@ -493,13 +493,9 @@ impl Player {
         // (`cdda://3?device=/dev/sr0`) because the GStreamer cdda scheme has
         // no device syntax. Strip it and hand the device to the source-setup
         // handler; plain URIs clear any stale device.
-        let uri = if let Some(rest) = uri.strip_prefix("cdda://") {
-            let (track, device) = match rest.split_once("?device=") {
-                Some((t, d)) => (t, Some(d.to_string())),
-                None => (rest, None),
-            };
+        let uri = if let Some((track, device)) = crate::disc::parse_cdda_uri(uri) {
             if let Ok(mut slot) = self.cdda_device.lock() {
-                *slot = device;
+                *slot = device.map(str::to_string);
             }
             format!("cdda://{track}")
         } else {
