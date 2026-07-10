@@ -10294,6 +10294,19 @@ fn is_optical_fs(fs_type: &str) -> bool {
     matches!(fs_type.to_ascii_lowercase().as_str(), "iso9660" | "udf")
 }
 
+/// Progress messages from the rip worker thread to the GTK poller.
+enum DiscRipMsg {
+    /// (index of the track starting, total, its title).
+    Progress(usize, usize, String),
+    /// Finished (or cancelled): the successfully-ripped file paths, the failure
+    /// count, and whether the user cancelled partway.
+    Done {
+        ripped: Vec<String>,
+        failed: usize,
+        cancelled: bool,
+    },
+}
+
 /// Overview-card detail line for one optical drive: total audio time for an
 /// audio CD, writable size for a blank disc, or used-of-total for a data disc.
 /// `None` when nothing meaningful is known (e.g. an empty tray, or capacities
@@ -11410,6 +11423,11 @@ fn open_media_library_window(
             }
         }
     }
+    // Phase 3 rip state: a cancel flag shared with the worker thread, and a
+    // guard so only one rip runs at a time.
+    let rip_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
+        Rc::new(RefCell::new(None));
+    let rip_active = Rc::new(Cell::new(false));
     // True until the first drive poll finishes, so the overview shows a
     // "Detecting…" hint instead of a premature "No disc drives connected".
     let disc_detecting = Rc::new(Cell::new(true));
@@ -13409,12 +13427,19 @@ fn open_media_library_window(
         .child(&disc_track_list)
         .build();
     disc_detail.append(&disc_tracks_scroll);
-    // Add + identify/tag actions.
+    // Add + identify/tag/rip actions.
     let disc_add_sel = Button::with_label("Add Selected");
     let disc_add_all = Button::with_label("Add All");
     let disc_identify = Button::with_label("Identify");
     let disc_edit_tags = Button::with_label("Edit Tags");
-    for b in [&disc_add_sel, &disc_add_all, &disc_identify, &disc_edit_tags] {
+    let disc_rip = Button::with_label("Rip…");
+    for b in [
+        &disc_add_sel,
+        &disc_add_all,
+        &disc_identify,
+        &disc_edit_tags,
+        &disc_rip,
+    ] {
         b.add_css_class("pl-btn");
     }
     let disc_actions = GtkBox::new(Orientation::Horizontal, 6);
@@ -13422,8 +13447,20 @@ fn open_media_library_window(
     disc_actions.append(&disc_add_all);
     disc_actions.append(&disc_identify);
     disc_actions.append(&disc_edit_tags);
+    disc_actions.append(&disc_rip);
     disc_detail.append(&disc_actions);
-    // Transient status for gnudb lookups ("Asking gnudb…", match/err results).
+    // Rip progress row (hidden unless a rip is running): a bar + Cancel.
+    let disc_rip_box = GtkBox::new(Orientation::Horizontal, 6);
+    disc_rip_box.set_visible(false);
+    let disc_rip_bar = gtk4::ProgressBar::new();
+    disc_rip_bar.set_hexpand(true);
+    disc_rip_bar.set_show_text(true);
+    let disc_rip_cancel = Button::with_label("Cancel");
+    disc_rip_cancel.add_css_class("pl-btn");
+    disc_rip_box.append(&disc_rip_bar);
+    disc_rip_box.append(&disc_rip_cancel);
+    disc_detail.append(&disc_rip_box);
+    // Transient status for gnudb lookups + rip results.
     let disc_status_lbl = Label::builder()
         .halign(Align::Start)
         .xalign(0.0)
@@ -18318,15 +18355,16 @@ fn open_media_library_window(
         let state = state.clone();
         let disc_detecting = disc_detecting.clone();
         let disc_detect_spinner = disc_detect_spinner.clone();
+        let rip_active = rip_active.clone();
         let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
             if in_flight.get() {
                 return;
             }
-            // Never run cd-info on a drive we're actively playing from: it seeks
-            // the same head cdiocddasrc is reading, stalling playback (the device
-            // only allows one reader). Skip while a cdda:// track is loaded and
-            // the player isn't stopped; polling resumes once playback ends.
+            // Never run cd-info on a drive we're actively reading from — cdiocddasrc
+            // (playback OR a rip) seeks the same head, and the device only allows
+            // one reader, so a concurrent cd-info thrashes it. Skip while a cdda://
+            // track plays or a rip is in progress; polling resumes afterwards.
             {
                 let s = state.borrow();
                 let playing_disc = !matches!(s.player.state(), PlayerState::Stopped)
@@ -18335,7 +18373,7 @@ fn open_media_library_window(
                         .current()
                         .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
                         .unwrap_or(false);
-                if playing_disc {
+                if playing_disc || rip_active.get() {
                     // Not detecting right now — clear any spinner a show/map set.
                     disc_detect_spinner.stop();
                     disc_detect_spinner.set_visible(false);
@@ -18807,6 +18845,398 @@ fn open_media_library_window(
                 entry.track_titles =
                     title_entries.iter().map(|e| e.text().to_string()).collect();
                 commit(discid.clone(), entry, None);
+                d.close();
+            });
+            dialog.present();
+        });
+    }
+
+    // ── Rip to MP3 (Phase 3) ────────────────────────────────────────────────
+    // Spawn the rip worker + a main-thread progress poller. Runs off the UI
+    // thread; imports the results and reports honestly about the watched-folder
+    // policy. `tags` is the disc's tag set; `total` the disc's track count.
+    #[allow(clippy::type_complexity)]
+    let start_rip: Rc<
+        dyn Fn(Vec<crate::disc::DiscTrackEntry>, String, u8, crate::disc::xmcd::XmcdEntry, u8),
+    > = {
+        let state = state.clone();
+        let rip_cancel = rip_cancel.clone();
+        let rip_active = rip_active.clone();
+        let rip_box = disc_rip_box.clone();
+        let rip_bar = disc_rip_bar.clone();
+        let status = disc_status_lbl.clone();
+        Rc::new(move |entries, dest, quality, tags, total| {
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            *rip_cancel.borrow_mut() = Some(cancel.clone());
+            rip_active.set(true);
+            rip_box.set_visible(true);
+            rip_bar.set_fraction(0.0);
+            rip_bar.set_text(Some("Starting…"));
+            status.set_text("");
+            let (tx, rx) = std::sync::mpsc::channel::<DiscRipMsg>();
+
+            std::thread::spawn(move || {
+                use crate::disc::rip;
+                let q = rip::Mp3Quality::from_config(quality);
+                let dest_root = std::path::PathBuf::from(&dest);
+                let mut ripped = Vec::new();
+                let mut failed = 0usize;
+                let mut cancelled = false;
+                let n = entries.len();
+                for (i, entry) in entries.into_iter().enumerate() {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        cancelled = true;
+                        break;
+                    }
+                    let _ = tx.send(DiscRipMsg::Progress(i, n, entry.title.clone()));
+                    // Linux disc entries are cdda://N?device=…; anything else is
+                    // a plain file path (kept for parity with the mac AIFF path).
+                    let source = if let Some(rest) = entry.path.strip_prefix("cdda://") {
+                        let (track, device) = match rest.split_once("?device=") {
+                            Some((t, d)) => (t.parse().unwrap_or(entry.number), d.to_string()),
+                            None => (entry.number, String::new()),
+                        };
+                        rip::RipSource::Cdda { device, track }
+                    } else {
+                        rip::RipSource::File {
+                            path: std::path::PathBuf::from(&entry.path),
+                        }
+                    };
+                    let tf = rip::tag_fields_for_track(
+                        &tags.artist,
+                        &tags.album,
+                        &tags.year,
+                        &tags.genre,
+                        entry.number,
+                        total,
+                        &entry.title,
+                    );
+                    let out = rip::dest_path(&dest_root, &tags.artist, &tags.album, entry.number, &tf.title);
+                    match rip::rip_track(&source, &out, q, &tf) {
+                        Ok(()) => ripped.push(out.display().to_string()),
+                        Err(_) => failed += 1,
+                    }
+                }
+                let _ = tx.send(DiscRipMsg::Done {
+                    ripped,
+                    failed,
+                    cancelled,
+                });
+            });
+
+            // Main-thread poller: drain progress, update the bar, import on done.
+            let state_p = state.clone();
+            let rip_cancel_p = rip_cancel.clone();
+            let rip_active_p = rip_active.clone();
+            let rip_box_p = rip_box.clone();
+            let rip_bar_p = rip_bar.clone();
+            let status_p = status.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                let mut done: Option<(Vec<String>, usize, bool)> = None;
+                loop {
+                    match rx.try_recv() {
+                        Ok(DiscRipMsg::Progress(i, n, title)) => {
+                            let frac = if n > 0 { i as f64 / n as f64 } else { 0.0 };
+                            rip_bar_p.set_fraction(frac);
+                            rip_bar_p.set_text(Some(&gtk_safe(&format!(
+                                "Ripping {}/{} · {}",
+                                i + 1,
+                                n,
+                                title
+                            ))));
+                        }
+                        Ok(DiscRipMsg::Done {
+                            ripped,
+                            failed,
+                            cancelled,
+                        }) => {
+                            done = Some((ripped, failed, cancelled));
+                            break;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            done = Some((Vec::new(), 0, false));
+                            break;
+                        }
+                    }
+                }
+                if let Some((ripped, failed, cancelled)) = done {
+                    rip_bar_p.set_fraction(1.0);
+                    // Import so the library sees the new files immediately (only
+                    // registers files under a watched folder — report honestly).
+                    let mut imported = 0;
+                    if !ripped.is_empty() {
+                        if let Some(lib) = state_p.borrow().media_lib.as_ref() {
+                            imported = lib.add_files_to_library(&ripped).unwrap_or(0);
+                        }
+                    }
+                    let mut msg = format!(
+                        "Ripped {} track{}",
+                        ripped.len(),
+                        if ripped.len() == 1 { "" } else { "s" }
+                    );
+                    if cancelled {
+                        msg.push_str(" · cancelled");
+                    }
+                    if !ripped.is_empty() && imported == 0 {
+                        msg.push_str(" · not in library (destination isn't a watched folder)");
+                    } else if imported < ripped.len() {
+                        msg.push_str(&format!(" · only {imported} added to the library"));
+                    }
+                    if failed > 0 {
+                        msg.push_str(&format!(" · {failed} failed"));
+                    }
+                    status_p.set_text(&msg);
+                    rip_box_p.set_visible(false);
+                    rip_active_p.set(false);
+                    *rip_cancel_p.borrow_mut() = None;
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        })
+    };
+
+    // Cancel the running rip (stops after the current track finishes).
+    {
+        let rip_cancel = rip_cancel.clone();
+        let status = disc_status_lbl.clone();
+        disc_rip_cancel.connect_clicked(move |_| {
+            if let Some(flag) = rip_cancel.borrow().as_ref() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                status.set_text("Cancelling after the current track…");
+            }
+        });
+    }
+
+    // Rip button: dialog to pick tracks / destination / quality, then rip.
+    {
+        let state = state.clone();
+        let entries_store = current_disc_entries.clone();
+        let track_list = disc_track_list.clone();
+        let disc_tags = disc_tags.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let rip_active = rip_active.clone();
+        let status = disc_status_lbl.clone();
+        let start_rip = start_rip.clone();
+        let win_wk = win.downgrade();
+        disc_rip.connect_clicked(move |_| {
+            if rip_active.get() {
+                status.set_text("A rip is already running.");
+                return;
+            }
+            let Some((_, discid)) = selected_disc_discid(&selected_disc_id, &current_drives) else {
+                status.set_text("No audio disc loaded");
+                return;
+            };
+            let entries = entries_store.borrow().clone();
+            if entries.is_empty() {
+                return;
+            }
+            // Preselect the highlighted track rows, else all tracks.
+            let selected_idx: std::collections::HashSet<usize> = track_list
+                .selected_rows()
+                .iter()
+                .map(|r| r.index() as usize)
+                .collect();
+            let dest_default = {
+                let s = state.borrow();
+                s.config
+                    .disc
+                    .rip_dest_dir
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .or_else(|| {
+                        s.media_lib
+                            .as_ref()
+                            .and_then(|l| l.list_folders().ok())
+                            .and_then(|f| f.into_iter().next().map(|(_, p)| p))
+                    })
+                    .unwrap_or_else(|| {
+                        format!("{}/Music", std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                    })
+            };
+            let quality_cfg = state.borrow().config.disc.rip_mp3_quality;
+
+            let dialog = gtk4::Window::builder()
+                .title("Rip Audio CD")
+                .modal(true)
+                .default_width(460)
+                .default_height(520)
+                .build();
+            if let Some(w) = win_wk.upgrade() {
+                dialog.set_transient_for(Some(&w));
+            }
+            let outer = GtkBox::new(Orientation::Vertical, 8);
+            outer.set_margin_top(12);
+            outer.set_margin_bottom(12);
+            outer.set_margin_start(12);
+            outer.set_margin_end(12);
+
+            outer.append(
+                &Label::builder()
+                    .label("Tracks to rip")
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .build(),
+            );
+            let list = gtk4::ListBox::new();
+            list.set_selection_mode(gtk4::SelectionMode::Multiple);
+            for (i, e) in entries.iter().enumerate() {
+                let lbl = Label::builder()
+                    .label(&gtk_safe(&format!("{}. {}", e.number, e.title.replace(" / ", " - "))))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(3)
+                    .margin_bottom(3)
+                    .build();
+                let row = ListBoxRow::new();
+                row.set_child(Some(&lbl));
+                list.append(&row);
+                if selected_idx.is_empty() || selected_idx.contains(&i) {
+                    list.select_row(Some(&row));
+                }
+            }
+            let list_scroll = ScrolledWindow::builder().vexpand(true).child(&list).build();
+            outer.append(&list_scroll);
+
+            let dest_row = GtkBox::new(Orientation::Horizontal, 6);
+            dest_row.append(
+                &Label::builder()
+                    .label("Folder")
+                    .width_chars(7)
+                    .halign(Align::Start)
+                    .build(),
+            );
+            let dest_entry = Entry::new();
+            dest_entry.set_hexpand(true);
+            dest_entry.set_text(&gtk_safe(&dest_default));
+            let browse = Button::with_label("Browse…");
+            dest_row.append(&dest_entry);
+            dest_row.append(&browse);
+            outer.append(&dest_row);
+
+            let warn = Label::builder()
+                .halign(Align::Start)
+                .xalign(0.0)
+                .wrap(true)
+                .build();
+            warn.add_css_class("dim-label");
+            outer.append(&warn);
+            let update_warn: Rc<dyn Fn()> = {
+                let state = state.clone();
+                let warn = warn.clone();
+                let dest_entry = dest_entry.clone();
+                Rc::new(move || {
+                    let dest = dest_entry.text().to_string();
+                    let watched = state
+                        .borrow()
+                        .media_lib
+                        .as_ref()
+                        .and_then(|l| l.list_folders().ok())
+                        .map(|f| f.iter().any(|(_, p)| dest.starts_with(p.as_str())))
+                        .unwrap_or(false);
+                    warn.set_text(if watched {
+                        ""
+                    } else {
+                        "⚠ Not a watched folder — files rip here but won't appear in the library."
+                    });
+                })
+            };
+            update_warn();
+            {
+                let uw = update_warn.clone();
+                dest_entry.connect_changed(move |_| uw());
+            }
+            {
+                let dest_entry = dest_entry.clone();
+                let dialog2 = dialog.clone();
+                browse.connect_clicked(move |_| {
+                    let fd = gtk4::FileDialog::builder()
+                        .title("Choose rip destination")
+                        .build();
+                    let dest_entry = dest_entry.clone();
+                    fd.select_folder(
+                        Some(&dialog2),
+                        gio::Cancellable::NONE,
+                        move |res| {
+                            if let Ok(folder) = res {
+                                if let Some(p) = folder.path() {
+                                    dest_entry.set_text(&p.display().to_string());
+                                }
+                            }
+                        },
+                    );
+                });
+            }
+
+            let qbox = GtkBox::new(Orientation::Horizontal, 6);
+            qbox.append(
+                &Label::builder()
+                    .label("Quality")
+                    .width_chars(7)
+                    .halign(Align::Start)
+                    .build(),
+            );
+            let qdd = DropDown::from_strings(&[
+                "VBR V0 (~245 kbps)",
+                "VBR V2 (~190 kbps)",
+                "320 kbps CBR",
+            ]);
+            qdd.set_selected(match quality_cfg {
+                0 => 0,
+                2 => 2,
+                _ => 1,
+            });
+            qbox.append(&qdd);
+            outer.append(&qbox);
+
+            let btns = GtkBox::new(Orientation::Horizontal, 6);
+            btns.set_halign(Align::End);
+            let cancel = Button::with_label("Cancel");
+            let start = Button::with_label("Rip");
+            start.add_css_class("suggested-action");
+            btns.append(&cancel);
+            btns.append(&start);
+            outer.append(&btns);
+            dialog.set_child(Some(&outer));
+            let d = dialog.clone();
+            cancel.connect_clicked(move |_| d.close());
+
+            let d = dialog.clone();
+            let state_s = state.clone();
+            let disc_tags_s = disc_tags.clone();
+            let start_rip = start_rip.clone();
+            let total = entries.len() as u8;
+            start.connect_clicked(move |_| {
+                let chosen: Vec<crate::disc::DiscTrackEntry> = list
+                    .selected_rows()
+                    .iter()
+                    .filter_map(|r| entries.get(r.index() as usize).cloned())
+                    .collect();
+                if chosen.is_empty() {
+                    return;
+                }
+                let dest = dest_entry.text().to_string();
+                if dest.trim().is_empty() {
+                    return;
+                }
+                let quality = match qdd.selected() {
+                    0 => 0u8,
+                    2 => 2u8,
+                    _ => 1u8,
+                };
+                {
+                    let mut s = state_s.borrow_mut();
+                    s.config.disc.rip_dest_dir = Some(std::path::PathBuf::from(dest.trim()));
+                    s.config.disc.rip_mp3_quality = quality;
+                    let _ = s.config.save();
+                }
+                let tags = disc_tags_s.borrow().get(&discid).cloned().unwrap_or_default();
+                start_rip(chosen, dest.trim().to_string(), quality, tags, total);
                 d.close();
             });
             dialog.present();
