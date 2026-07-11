@@ -268,53 +268,95 @@ pub fn request_cancel() {
 }
 
 /// Run a burn/erase tool to completion. Polls every 200 ms for exit or a
-/// cancel request (cancel kills the child and reports it); on non-zero exit
-/// the last chunk of stderr becomes the error message.
+/// cancel request (cancel kills the child and reports it). Output is judged by
+/// [`interpret_exit`] — for most tools the exit status, but drutil needs its
+/// text scanned too (it exits 0 even on a failed burn; see there).
+///
+/// stdout+stderr are captured to a temp file rather than a pipe: burn tools
+/// emit a long, unbounded progress stream and an undrained pipe would fill and
+/// deadlock the child mid-burn. A file has no such back-pressure.
 pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
-    use std::io::Read;
-
     CANCEL.store(false, Ordering::Relaxed);
+
+    let log_path = std::env::temp_dir().join(format!(
+        "sparkamp-burn-{}-{}.log",
+        std::process::id(),
+        program
+    ));
+    let log = std::fs::File::create(&log_path).map_err(|e| format!("{program}: {e}"))?;
+    let log_err = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
+
     let mut child = std::process::Command::new(program)
         .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stdout(log)
+        .stderr(log_err)
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
 
-    loop {
+    let result = loop {
         if CANCEL.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("cancelled".to_string());
+            break Err("cancelled".to_string());
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                }
-                let mut err = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    let _ = stderr.read_to_string(&mut err);
-                }
-                let tail: String = err
-                    .lines()
-                    .rev()
-                    .take(4)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                return Err(if tail.is_empty() {
-                    format!("{program} exited with {status}")
-                } else {
-                    tail
-                });
+                let output = std::fs::read_to_string(&log_path).unwrap_or_default();
+                break interpret_exit(program, status, &output);
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
-            Err(e) => return Err(format!("wait {program}: {e}")),
+            Err(e) => break Err(format!("wait {program}: {e}")),
         }
+    };
+    let _ = std::fs::remove_file(&log_path);
+    result
+}
+
+/// Decide success/failure from a finished burn/erase tool given its exit status
+/// and captured output.
+///
+/// Exit status is the primary signal, but macOS `drutil` is unreliable: a
+/// failed burn (e.g. "Burn failed: The disc drive didn't respond properly…")
+/// prints the failure to its output yet the process **still exits 0**. Trusting
+/// the exit code alone reports a coaster as a success. So for drutil we also
+/// scan the output for its failure marker. cdrskin/xorriso exit non-zero on
+/// failure like well-behaved tools, so their exit code is trusted as-is.
+fn interpret_exit(
+    program: &str,
+    status: std::process::ExitStatus,
+    output: &str,
+) -> Result<(), String> {
+    let failed_line = output
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("Burn failed") || l.starts_with("Burn Failed"));
+    // drutil's exit code lies on failure; its failure text is the truth.
+    let drutil_lied = program == "drutil" && failed_line.is_some();
+
+    if status.success() && !drutil_lied {
+        return Ok(());
     }
+    if let Some(line) = failed_line {
+        return Err(line.to_string());
+    }
+    let tail: String = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    Err(if tail.is_empty() {
+        format!("{program} exited with {status}")
+    } else {
+        tail
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -668,6 +710,33 @@ mod tests {
         let res = handle.join().unwrap();
         assert_eq!(res.unwrap_err(), "cancelled");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// drutil exits 0 even when a burn fails, printing "Burn failed: …" instead.
+    /// `interpret_exit` must treat that as a failure and surface the reason —
+    /// otherwise a coaster is reported to the user as a successful burn.
+    #[cfg(unix)]
+    #[test]
+    fn interpret_exit_catches_drutil_zero_exit_lie() {
+        use std::os::unix::process::ExitStatusExt;
+        let zero = std::process::ExitStatus::from_raw(0);
+
+        let failed = "Found: 01.wav\nBurning Audio Disc: /tmp/x\n\
+                      Burn failed: The disc drive didn't respond properly and can't recover or retry.\n";
+        let e = interpret_exit("drutil", zero, failed).unwrap_err();
+        assert!(e.starts_with("Burn failed"), "{e}");
+
+        // A clean drutil run at exit 0 stays a success.
+        assert!(interpret_exit("drutil", zero, "Found: 01.wav\nBurn completed.\n").is_ok());
+
+        // Other tools trust exit 0 even if the word "failed" appears in output
+        // (they exit non-zero on real failure), so no false positive there.
+        assert!(interpret_exit("cdrskin", zero, "cdrskin: no operation failed\n").is_ok());
+
+        // A non-zero exit with no "Burn failed" line falls back to the tail.
+        let three = std::process::ExitStatus::from_raw(3 << 8);
+        let e = interpret_exit("cdrskin", three, "line one\nfatal: laser off\n").unwrap_err();
+        assert!(e.contains("laser off"), "{e}");
     }
 
     /// Live Red Book WAV preparation from any real audio file — run with
