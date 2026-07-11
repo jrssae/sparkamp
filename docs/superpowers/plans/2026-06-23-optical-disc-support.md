@@ -227,11 +227,11 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 
 **Files:** `src/disc/*`, `src/ffi/disc.rs`, all three frontends (GTK, TUI, mac).
 
-- [ ] **Drive disconnect** — the detection poll notices the device vanished → invalidate the loaded-disc session, hide/disable disc actions, show a banner ("Drive disconnected — reconnect and reload"). Any in-flight subprocess op errors out (child dies with the device); the app never wedges. On mac, DiskArbitration disappearance drives the same. *Already partially in place: mac nav falls back when a drive disappears; TUI shows "No optical drives found" after `r`.*
-- [ ] **Disc read error / scratch** — `cdiocddasrc`/decode read failure surfaces as a GStreamer bus error (existing handling); ripping offers **retry / skip track / abort**, and reports which tracks failed. Playback of a bad track marks it broken like any unreadable file. *Already partially in place: a failed rip track is counted and reported; retry/skip UI is the remaining piece.*
-- [ ] **Blank/append/capacity errors** — over-capacity is blocked pre-burn (shipped in Phases 5–6); a burn failure is parsed from the tool's exit/stderr tail and shown (shipped); verify the messages read sensibly against real failures.
-- [ ] **Timeouts** — rip already has the 30 s position watchdog; add a coarse wall-clock watchdog to the burn/erase subprocess runner (suggested: kill + report after 30 min without exit).
-- [ ] **No-drive / unsupported-media** — clean messaging when no optical drive exists or the media can't serve the request (shipped: non-blank write-once refusals, "insert a blank disc" states; verify wording in the flesh).
+- [x] **Drive disconnect** (core/mac/TUI 2026-07-10; GTK pending on-device) — the drive being viewed vanishing mid-session now invalidates its loaded-disc session and surfaces a banner instead of silently dropping out. **mac:** `discDisconnectNotice` → dismissible banner on the Disc Drives overview, `discTracks` cleared, nav falls back. **TUI:** `refresh_ml_drives` diffs the prior selected drive id; if gone → "Drive disconnected — reconnect and reload (r)" status + entries rebuilt for the new selection. In-flight subprocess ops still die with the device (unchanged). *GTK: mirror the banner + session-invalidate.*
+- [x] **Disc read error / scratch** (core 2026-07-10, all frontends via shared `run_job`; GTK inherits) — decision: instead of a blocking retry/skip/abort prompt mid-rip (heavy across two async UIs, and worse UX — user babysits the rip), `run_job` now **auto-retries each track** up to `RIP_MAX_ATTEMPTS` (=2) — a scratched disc's transient read error usually clears on re-read — then **skips** the unrecoverable track and **reports** it; **abort** stays the existing cancel-between-tracks. Retry is visible in the progress label ("… — retry 1"). Playback of a bad ripped/disc track marks it broken via the existing unreadable-file path. Retry policy split into `rip_with_retries` + unit-tested. *If a per-failure interactive prompt is later wanted, it layers on top; the seam is there.*
+- [x] **Blank/append/capacity errors** — over-capacity blocked pre-burn (Phases 5–6); a burn failure is parsed and shown — **hardened 2026-07-10**: drutil exits 0 even on a failed burn, so `interpret_exit` scans its output for the "Burn failed" marker (was falsely reporting success). Live-verified against a real drive failure.
+- [x] **Timeouts** (core 2026-07-10) — rip keeps its 30 s position watchdog; the burn/erase subprocess runner gained a coarse wall-clock watchdog (`BURN_TIMEOUT` = 30 min → kill + "timed out … the drive stopped responding"). Unit-tested with a wedged `sleep` child.
+- [ ] **No-drive / unsupported-media** — clean messaging when no optical drive exists or the media can't serve the request (shipped: non-blank write-once refusals, "insert a blank disc" states; verify wording in the flesh). *Note (2026-07-10): USB enclosures can report `SupportLevel: Unsupported` in `drutil list` — a future nicety is surfacing "this drive can't burn" up front; not done.*
 - [ ] **Commit** `feat(disc): graceful drive/disc/burn error handling`.
 
 **Internal tests (runnable without media, for Opus to add while hardening):**
@@ -439,6 +439,29 @@ directly, in-process, like the TUI does.
 the UI thread (`gio::spawn_blocking` on GTK); detection is subprocess-backed,
 so poll lazily (mac: ~10 s while the window is open; TUI: on tab entry +
 explicit rescan) — never per-frame.
+
+**Consolidations landed 2026-07-11 (all three frontends):**
+- **`burn::run_job`** now owns the whole burn orchestration (staging dir,
+  optional erase, per-track WAV prep with cancel + phase strings, data
+  staging + companion playlist, the burn, detection-cache invalidation,
+  cleanup) — the exact mirror of `rip::run_job`. TUI and GTK workers are
+  ~10-line `run_job` calls forwarding phases over their channels; **GTK's
+  rewired worker (`frontends/gtk/window/disc.rs`) still needs its first
+  compile on the Linux box** (this machine can't build the GTK frontend).
+- The macOS per-step burn FFI (`sparkamp_disc_prepare_wav` /
+  `sparkamp_disc_erase` / `sparkamp_disc_burn_audio` / `sparkamp_disc_burn_data`)
+  was **replaced** by a job API mirroring the rip one:
+  `sparkamp_disc_burn_job_start` / `_poll` (phase line + done{ok,message}) /
+  `_cancel`. Swift no longer duplicates phase strings or the `%02d.wav`
+  staging convention.
+- **`frontends/gtk/window.rs` (20.8k lines) was physically split** into
+  `frontends/gtk/window/` (state, util, player, id3, settings, eq, dedupe,
+  ml_columns, viz, devices, media_library, tests + disc.rs moved in). The
+  sections are `include!`d **verbatim byte slices** — chosen because byte
+  identity is provable without a Linux compiler. **Opus follow-up:** convert
+  them to real `mod` submodules one file at a time on the dev box (visibility
+  + import surgery with the compiler arbitrating), starting with the small
+  ones; `media_library.rs` (8.8k, one megafunction) also wants decomposing.
 
 ---
 

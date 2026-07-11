@@ -1,0 +1,623 @@
+/// Read the user's GNOME accent-colour choice from gsettings and return
+/// the matching hex string.  Falls back to GNOME's default blue when
+/// gsettings is unavailable or the value is unrecognised.
+/// Returns the label for the repeat button based on the current mode.
+fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
+    match mode {
+        // Song mode shows the dedicated "repeat single" icon. Off and All
+        // share the generic "repeat" icon — the .mode-btn-active class on
+        // the button distinguishes Off (inactive) from All (active).
+        crate::shuffle::RepeatMode::Song => "media-playlist-repeat-song-symbolic",
+        crate::shuffle::RepeatMode::Off | crate::shuffle::RepeatMode::Playlist =>
+            "media-playlist-repeat-symbolic",
+    }
+}
+
+/// Returns the visible text for the repeat button — mirrors the macOS
+/// PlayerWindow repeatLabel ("Repeat", "Repeat 1", "Repeat All").
+fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
+    match mode {
+        crate::shuffle::RepeatMode::Off => "Repeat",
+        crate::shuffle::RepeatMode::Song => "Repeat 1",
+        crate::shuffle::RepeatMode::Playlist => "Repeat All",
+    }
+}
+
+fn gtk_safe(s: &str) -> String {
+    if s.contains('\0') {
+        s.replace('\0', "")
+    } else {
+        s.to_owned()
+    }
+}
+
+fn sanitize_id3_text(s: &str) -> String {
+    gtk_safe(s.trim())
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .take(256)
+        .collect()
+}
+
+fn sanitize_id3_numeric(s: &str) -> String {
+    let trimmed = s.trim();
+    let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    numeric.chars().take(8).collect()
+}
+
+fn format_last_played(iso_timestamp: &str) -> String {
+    if iso_timestamp.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<&str> = iso_timestamp
+        .trim_end_matches('Z')
+        .split(|c| c == 'T' || c == ':' || c == '-')
+        .collect();
+    if parts.len() < 5 {
+        return iso_timestamp.to_string();
+    }
+    let year = parts[0];
+    let month = parts[1];
+    let day = parts[2];
+    let hour: u32 = parts.get(3).and_then(|h| h.parse().ok()).unwrap_or(0);
+    let minute = parts.get(4).unwrap_or(&"00");
+    let (hour_12, am_pm) = if hour == 0 {
+        (12, "AM")
+    } else if hour < 12 {
+        (hour, "AM")
+    } else if hour == 12 {
+        (12, "PM")
+    } else {
+        (hour - 12, "PM")
+    };
+    format!(
+        "{}-{}-{} {:02}:{} {}",
+        year, month, day, hour_12, minute, am_pm
+    )
+}
+
+#[allow(deprecated)]
+fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
+    // First item clears the genre; a custom (non-ID3v1) value gets its own
+    // item so the dropdown reflects what's actually in the tag. The genre
+    // list itself is shown alphabetically (ID3v1 declaration order is
+    // meaningless to a human scanning the dropdown).
+    const UNDEFINED: &str = "(undefined)";
+    let mut items: Vec<&str> = Vec::with_capacity(crate::id3_editor::ID3V1_GENRES.len() + 2);
+    items.push(UNDEFINED);
+    if !initial_value.is_empty()
+        && !crate::id3_editor::ID3V1_GENRES.contains(&initial_value)
+    {
+        items.push(initial_value);
+    }
+    let mut genres: Vec<&str> = crate::id3_editor::ID3V1_GENRES.to_vec();
+    genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
+    items.extend_from_slice(&genres);
+    let dd = DropDown::from_strings(&items);
+    // Typeahead: the open dropdown gets a search field filtering the 190+
+    // genres as you type.
+    dd.set_expression(Some(&gtk4::PropertyExpression::new(
+        gtk4::StringObject::static_type(),
+        None::<gtk4::Expression>,
+        "string",
+    )));
+    dd.set_enable_search(true);
+
+    // Hidden value carrier — the save handler reads this entry, so the
+    // dropdown mirrors every selection into it ("" for undefined).
+    let entry = Entry::new();
+    entry.set_width_chars(16);
+    entry.set_text(initial_value);
+
+    let selected = if initial_value.is_empty() {
+        0
+    } else {
+        items.iter().position(|g| *g == initial_value).unwrap_or(0)
+    };
+    dd.set_selected(selected as u32);
+
+    {
+        let entry_sync = entry.clone();
+        dd.connect_selected_notify(move |d| {
+            let text = d
+                .selected_item()
+                .and_then(|o| o.downcast::<gtk4::StringObject>().ok())
+                .map(|s| s.string().to_string())
+                .unwrap_or_default();
+            entry_sync.set_text(if text == UNDEFINED { "" } else { &text });
+        });
+    }
+
+    (dd, entry)
+}
+
+/// Make a sidebar/manage playlist row draggable, carrying `pl:<id>` so a drop
+/// onto a device row can send the whole playlist.
+fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
+    let src = gtk4::DragSource::new();
+    src.set_actions(gdk::DragAction::COPY);
+    let payload = format!("pl:{id}");
+    src.connect_prepare(move |_, _, _| {
+        Some(gdk::ContentProvider::for_value(&payload.to_value()))
+    });
+    row.add_controller(src);
+}
+
+/// Index of the ML sidebar's Devices header (= the end of the Playlists
+/// section). New playlist rows insert here so they land inside the Playlists
+/// section rather than below Devices.
+fn sidebar_pl_end_index(sidebar: &gtk4::ListBox) -> i32 {
+    let mut idx = 0i32;
+    while let Some(r) = sidebar.row_at_index(idx) {
+        if r.widget_name() == "devices" {
+            return idx;
+        }
+        idx += 1;
+    }
+    idx
+}
+
+/// Find a ListBoxRow by its widget name.
+fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
+    let mut child = listbox.first_child();
+    while let Some(c) = child {
+        if let Ok(row) = c.clone().downcast::<gtk4::ListBoxRow>() {
+            if row.widget_name().as_str() == name {
+                return Some(row);
+            }
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Show a modal alert parented to `parent` (avoids the "GtkDialog mapped
+/// without a transient parent" warning).
+fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
+    let alert = gtk4::AlertDialog::builder()
+        .message("Sparkamp")
+        .detail(msg)
+        .modal(true)
+        .build();
+    alert.show(parent);
+}
+
+/// Embedded app logo PNG bytes (compiled into the binary).
+/// Replace `square logo.png` in the project root with the SparkAmp logo asset.
+static LOGO_BYTES: &[u8] = include_bytes!("../../square logo.png");
+
+/// Load the app logo as a pixbuf scaled to `size × size` pixels.
+/// Returns `None` if the PNG fails to decode (handled gracefully so the
+/// rest of the UI still starts up even if the asset is missing).
+fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
+    let loader = gdk_pixbuf::PixbufLoader::new();
+    loader.write(LOGO_BYTES).ok()?;
+    loader.close().ok()?;
+    let pb = loader.pixbuf()?;
+    pb.scale_simple(size, size, gdk_pixbuf::InterpType::Bilinear)
+}
+
+/// Set up a 100ms polling timer that drains the three scan channels and updates
+/// the playlist UI.  Shared by "Add Folder" and "Add Files" so both use identical
+/// behaviour.
+///
+/// `scan_start` is the index into `playlist.tracks` where this scan's tracks begin.
+/// It is captured at the moment the user confirms the dialog, before any tracks are
+/// added, so that `playlist.tracks[scan_start + scan_index]` always addresses the
+/// right track during the metadata phase.
+///
+/// ## Poller phases
+/// 1. **Fast phase** – drain up to 100 fast tracks per tick, rebuild once per batch.
+/// 2. **Transition** – when the first metadata message arrives, all fast tracks are
+///    guaranteed to have been sent (the background thread completes Phase 1 before
+///    starting Phase 2).  Drain any remaining fast tracks, rebuild, spawn duration
+///    probes for all newly-added tracks.
+/// 3. **Metadata phase** – patch `playlist.tracks[scan_start + idx]` in O(1);
+///    rebuild every 5 ticks (~500 ms) so tags fill in gradually.
+/// 4. **Done** – drain any remaining metadata, final rebuild, clear scan state.
+fn start_playlist_scan_poller(
+    state: std::rc::Rc<RefCell<AppState>>,
+    status: Label,
+    rebuild: std::rc::Rc<dyn Fn()>,
+    cancel_btn: Button,
+    probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
+    broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
+    patch_row: std::rc::Rc<dyn Fn(usize)>,
+    // Called when Phase 2 updates the currently playing track's metadata so the
+    // marquee immediately reflects the new "Artist - Title" display name.
+    set_track: std::rc::Rc<dyn Fn(&str)>,
+    fast_rx: std::sync::mpsc::Receiver<crate::model::Track>,
+    meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
+    done_rx: std::sync::mpsc::Receiver<usize>,
+    phase1_done_rx: std::sync::mpsc::Receiver<usize>,
+    scan_start: usize,
+) {
+    use gtk4::prelude::*;
+    use std::cell::Cell;
+
+    // How many fast tracks this scan has added to state.playlist so far.
+    let fast_added = Cell::new(0usize);
+    // True once the scan thread has confirmed it finished sending all Phase 1 tracks.
+    // We wait for this signal before treating an empty fast_rx as "exhausted" —
+    // without it we'd give up on Phase 1 as soon as the channel is momentarily
+    // empty (e.g. while the scan thread is still walking the directory).
+    let phase1_signal_received = Cell::new(false);
+    // True once fast_rx is empty AND phase1_signal_received — all fast tracks are
+    // now in state.playlist and Phase 2 / probe spawning can proceed.
+    let fast_exhausted = Cell::new(false);
+    // True once duration probes have been spawned for the fast tracks.
+    let probes_spawned = Cell::new(false);
+    // Set when done_rx fires; we keep polling until meta_rx is also empty.
+    let completion_pending = Cell::new(false);
+    // True once we have done the one intermediate rebuild that shows initial filenames.
+    let phase1_rebuilt = Cell::new(false);
+
+    // Phase 1 and Phase 2 update only the in-memory model during the scan.
+    // The TreeView is rebuilt once after Phase 1 (first_display) and again at
+    // FINALISING.  Because TreeView virtualizes rows, a full rebuild() is O(n)
+    // in data and O(visible_rows) in paint cost — no row cap needed.
+
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        // ── Phase 1: add tracks to the in-memory model ───────────────────
+        // We update the model here and let the TreeView render whatever is
+        // visible on demand — no O(n²) layout penalty from per-row widgets.
+
+        // Check whether the scan thread has finished sending all Phase 1 tracks.
+        // We must receive this signal before treating an empty fast_rx as truly
+        // exhausted — without it we would give up on tick 1 when the channel is
+        // momentarily empty while the scan thread is still walking the directory.
+        if !phase1_signal_received.get() && phase1_done_rx.try_recv().is_ok() {
+            phase1_signal_received.set(true);
+        }
+
+        let p1_before = fast_added.get();
+        if !fast_exhausted.get() {
+            // Drain all available fast tracks with no per-tick cap.  The scan
+            // thread produces them almost instantly (filesystem stat + canonicalize
+            // only), so all tracks usually land in the channel within the first
+            // 100 ms and are consumed in a single tick.
+            loop {
+                match fast_rx.try_recv() {
+                    Ok(track) => {
+                        state.borrow_mut().playlist.add(track);
+                        fast_added.set(fast_added.get() + 1);
+                    }
+                    Err(_) => {
+                        // Channel temporarily empty.  Only mark Phase 1 exhausted if
+                        // the scan thread has confirmed it sent everything — otherwise
+                        // the directory walk may still be in progress and more tracks
+                        // will arrive on a future tick.
+                        if phase1_signal_received.get() {
+                            fast_exhausted.set(true);
+                        }
+                        break;
+                    }
+                }
+            }
+            if fast_added.get() > p1_before {
+                status.set_text(&format!("Adding {}…", fast_added.get()));
+            }
+        }
+        // Rebuild to show all Phase 1 filenames once the channel is drained.
+        // Phase 2 starts immediately after and updates rows in place via
+        // patch_row(), so the user sees names replace filenames live.
+        if !phase1_rebuilt.get() && fast_exhausted.get() {
+            phase1_rebuilt.set(true);
+            rebuild();
+        }
+
+        // Once all fast tracks are in, spawn duration probes.
+        if fast_exhausted.get() && !probes_spawned.get() {
+            probes_spawned.set(true);
+            let paths = state.borrow().uncached_paths_from(scan_start);
+            if !paths.is_empty() {
+                duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
+            }
+            let total = fast_added.get();
+            if total > 0 {
+                status.set_text(&format!("Reading tags… 0/{}", total));
+            }
+        }
+
+        // ── Phase 2: apply metadata and update individual rows ───────────
+        // patch_row is O(1) per call: it finds the store iter by position
+        // and updates that row's text in place, so live updates are cheap.
+        let mut meta_drained = 0usize;
+        while meta_drained < 200 {
+            let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() else {
+                break;
+            };
+            let playlist_idx = scan_start + idx;
+            let is_current = {
+                let mut s = state.borrow_mut();
+                if let Some(track) = s.playlist.tracks.get_mut(playlist_idx) {
+                    track.title = title;
+                    track.artist = artist;
+                    track.album_artist = album_artist;
+                    track.album = album;
+                }
+                if let Some(ref mut scan) = s.playlist_scan {
+                    scan.current += 1;
+                }
+                s.playlist.current_index == playlist_idx
+            };
+            // Update just this row in the ListView store; O(1), no full rebuild needed.
+            patch_row(playlist_idx);
+            // If Phase 2 just filled in metadata for the currently playing track,
+            // refresh the marquee so it shows "Artist - Title" instead of the
+            // filename that was used as a placeholder during Phase 1.
+            if is_current {
+                let display = state
+                    .borrow()
+                    .playlist
+                    .tracks
+                    .get(playlist_idx)
+                    .map(|t| t.display_name())
+                    .unwrap_or_default();
+                if !display.is_empty() {
+                    set_track(&display);
+                }
+            }
+            meta_drained += 1;
+        }
+        // Update the status label with metadata progress.
+        if meta_drained > 0 {
+            let s = state.borrow();
+            let current = s.playlist_scan.as_ref().map(|sc| sc.current).unwrap_or(0);
+            let total = fast_added.get();
+            drop(s);
+            status.set_text(&format!("Reading tags… {}/{}", current, total));
+        }
+
+        // ── Completion ────────────────────────────────────────────────────
+        if !completion_pending.get() && done_rx.try_recv().is_ok() {
+            completion_pending.set(true);
+            // Edge case: folder had no files or all failed Phase 1.
+            if !probes_spawned.get() {
+                probes_spawned.set(true);
+                let paths = state.borrow().uncached_paths_from(scan_start);
+                if !paths.is_empty() {
+                    duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
+                }
+            }
+        }
+
+        // Finalise when done_rx has fired, all fast tracks are received, and
+        // meta_rx is drained for this tick.
+        if completion_pending.get() && fast_exhausted.get() && meta_drained == 0 {
+            let added = fast_added.get();
+            {
+                let mut s = state.borrow_mut();
+                s.playlist_scan = None;
+                s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+            }
+            status.set_text(&format!(
+                "Added {} track{}",
+                added,
+                if added == 1 { "" } else { "s" }
+            ));
+            // Apply any durations that are already in the on-disk cache for the
+            // newly-added tracks, so the final rebuild can show them immediately
+            // without waiting for background probes to return.
+            state.borrow_mut().apply_cached_durations();
+            // TreeView rebuild() is O(n) in data and O(visible_rows) in paint —
+            // no row cap needed; all tracks are inserted and rendered efficiently.
+            rebuild();
+            cancel_btn.set_visible(false);
+            return ControlFlow::Break;
+        }
+
+        ControlFlow::Continue
+    });
+}
+
+/// Determine the default initial folder for the playlist Save dialog.
+/// Mirrors `SparkampModel.mlDefaultSaveAsDir()` on macOS:
+///
+/// 1. First watched ML folder if one exists on disk.
+/// 2. The current user's `~/Music` folder.
+/// 3. The home directory as a last-resort fallback.
+///
+/// Avoids defaulting to Sparkamp's managed `~/.config/sparkamp/playlists/`
+/// directory — saving there has the side effect of registering that
+/// internal dir as a watched folder via `add_playlist_file`.
+fn default_playlist_save_dir(
+    state: &std::rc::Rc<std::cell::RefCell<AppState>>,
+) -> std::path::PathBuf {
+    if let Some(lib) = state.borrow().media_lib.as_ref() {
+        if let Ok(folders) = lib.list_folders() {
+            if let Some((_, p)) = folders.first() {
+                let pb = std::path::PathBuf::from(p);
+                if pb.exists() { return pb; }
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let music = home.join("Music");
+        if music.exists() { return music; }
+        return home;
+    }
+    std::path::PathBuf::from("/")
+}
+
+/// Run the native Save dialog for a playlist file (`.m3u8`).  Initial
+/// name is `initial_stem.m3u8`, initial folder is the first watched ML
+/// folder or `~/Music`.  On accept, calls `on_accept` with the chosen
+/// absolute path (extension is forced to `.m3u8` if the user didn't add
+/// one).  Single helper used by every playlist-creation flow so all
+/// paths share the same defaults.
+fn run_playlist_save_dialog<W, F>(
+    state: std::rc::Rc<std::cell::RefCell<AppState>>,
+    win: W,
+    initial_stem: &str,
+    on_accept: F,
+) where
+    W: gtk4::prelude::IsA<gtk4::Window>,
+    F: 'static + FnOnce(std::path::PathBuf, gtk4::Window),
+{
+    let ext = state
+        .borrow()
+        .config
+        .media_library
+        .playlist_format
+        .extension();
+    let dialog = gtk4::FileDialog::new();
+    dialog.set_title("Save Playlist As");
+    dialog.set_initial_name(Some(&format!("{initial_stem}.{ext}")));
+    let initial_folder = default_playlist_save_dir(&state);
+    if initial_folder.exists() {
+        dialog.set_initial_folder(Some(&gio::File::for_path(&initial_folder)));
+    }
+    let win_for_cb: gtk4::Window = win.clone().upcast();
+    let ext = ext.to_string();
+    dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
+        let Ok(file) = res else { return };
+        let Some(mut path) = file.path() else { return };
+        if path.extension().is_none() {
+            path.set_extension(&ext);
+        }
+        on_accept(path, win_for_cb);
+    });
+}
+
+thread_local! {
+    /// Editor-refresh callback registered by the ML window when it opens.
+    /// Any view that appends to a saved playlist (active-playlist menu,
+    /// ML files menu, drag/drop onto sidebar) invokes this with the
+    /// target playlist id so the open editor reloads when its current
+    /// playlist is the one being modified.  No-op when no ML window is
+    /// open or the hook hasn't been registered yet.
+    static EDITOR_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn(i64)>>> =
+        const { RefCell::new(None) };
+
+    /// Refresh the editor's currently-open playlist, regardless of which
+    /// pid changed.  Fired after a track is recorded as played so the
+    /// editor reflects updated last_played / play_count + the unread
+    /// glyph clears alongside the files view's own refresh.
+    static EDITOR_CURRENT_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
+        const { RefCell::new(None) };
+
+    /// Re-sync the ML window's playlist navigation (sidebar sub-rows +
+    /// manage list) with the playlists table.  Fired after a playlist is
+    /// created outside the ML window (e.g. "Add to new playlist" in the
+    /// active-playlist window) so it appears immediately.  No-op when no
+    /// ML window is open.
+    static PLAYLIST_NAV_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
+        const { RefCell::new(None) };
+}
+
+fn notify_playlist_changed(pid: i64) {
+    EDITOR_REFRESH_HOOK.with(|h| {
+        if let Some(cb) = h.borrow().as_ref() {
+            cb(pid);
+        }
+    });
+}
+
+fn notify_editor_refresh() {
+    EDITOR_CURRENT_REFRESH_HOOK.with(|h| {
+        if let Some(cb) = h.borrow().as_ref() {
+            cb();
+        }
+    });
+}
+
+fn notify_playlist_nav_refresh() {
+    PLAYLIST_NAV_REFRESH_HOOK.with(|h| {
+        if let Some(cb) = h.borrow().as_ref() {
+            cb();
+        }
+    });
+}
+
+/// Build an "Add to Playlist" submenu with a leading "New Playlist…" entry
+/// (bound to `new_action`, no parameter) followed by one entry per saved
+/// playlist (each bound to `append_action(<playlist-id>: i64)`).  Always
+/// returns a menu — "New Playlist…" is shown even when no saved playlists
+/// exist so the user can seed a fresh playlist from any selection.
+fn build_add_to_playlist_submenu(
+    state: &std::rc::Rc<std::cell::RefCell<AppState>>,
+    new_action: &str,
+    append_action: &str,
+) -> gio::Menu {
+    let submenu = gio::Menu::new();
+    let new_item = gio::MenuItem::new(Some("New Playlist…"), Some(new_action));
+    submenu.append_item(&new_item);
+
+    let playlists: Vec<(i64, String)> = state.borrow()
+        .media_lib.as_ref()
+        .and_then(|lib| lib.all_playlists().ok())
+        .map(|v| v.into_iter().map(|p| (p.id, p.name)).collect())
+        .unwrap_or_default();
+    if !playlists.is_empty() {
+        // Separator between "New" and the saved-playlist list — matches the
+        // macOS frontend's Add-to-Playlist submenu structure.
+        let saved_section = gio::Menu::new();
+        for (pid, name) in playlists {
+            let item = gio::MenuItem::new(Some(&name), None);
+            item.set_action_and_target_value(
+                Some(append_action),
+                Some(&pid.to_variant()),
+            );
+            saved_section.append_item(&item);
+        }
+        submenu.append_section(None, &saved_section);
+    }
+    submenu
+}
+
+/// Walk every descendant of `root` looking for cell labels tagged with a
+/// `pos:<N>` widget name (set by the editor column binder).  Returns the
+/// canonical play-order index plus the label's vertical bounds (top + height)
+/// relative to `root`.  Used by the editor's drop target to resolve a drop
+/// coordinate that lands between two rows — the picked widget at that y is
+/// the inner ListView, not a cell, so a coordinate-to-row scan is needed.
+fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32)> {
+    use gtk4::prelude::*;
+    let mut out: Vec<(usize, f32, f32)> = Vec::new();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    fn walk(
+        w: &gtk4::Widget,
+        root: &gtk4::Widget,
+        out: &mut Vec<(usize, f32, f32)>,
+        seen: &mut std::collections::HashSet<usize>,
+    ) {
+        let name = w.widget_name().to_string();
+        if let Some(rest) = name.strip_prefix("pos:") {
+            if let Ok(canonical) = rest.parse::<usize>() {
+                if seen.insert(canonical) {
+                    if let Some(b) = w.compute_bounds(root) {
+                        out.push((canonical, b.y(), b.height()));
+                    }
+                }
+            }
+        }
+        let mut child = w.first_child();
+        while let Some(c) = child {
+            walk(&c, root, out, seen);
+            child = c.next_sibling();
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        walk(&c, root, &mut out, &mut seen);
+        child = c.next_sibling();
+    }
+    out
+}
+
+/// Show a modal AlertDialog reporting a playlist-save failure.
+/// Caller-side error reporting for [`run_playlist_save_dialog`] callbacks.
+fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err: &anyhow::Error) {
+    let dialog = gtk4::AlertDialog::builder()
+        .message("Couldn't save playlist")
+        .detail(format!(
+            "Failed to write {}\n\n{}",
+            target.display(),
+            err
+        ))
+        .modal(true)
+        .build();
+    dialog.show(Some(parent));
+}
+

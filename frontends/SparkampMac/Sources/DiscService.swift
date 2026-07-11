@@ -406,60 +406,53 @@ enum DiscService {
         return Int(json.withCString { sparkamp_disc_audio_capacity_secs(nil, $0) })
     }
 
-    /// Transcode one file to a Red Book WAV (pre-burn step). Blocking —
-    /// worker thread; loop per track.
-    static func prepareWav(src: String, out: String) -> Result<String, GnudbFailure> {
-        let ptr = src.withCString { s in
-            out.withCString { o in sparkamp_disc_prepare_wav(nil, s, o) }
-        }
-        return decodeGnudb(takeString(ptr))
+    /// A whole burn job (`BurnRunIn` in Rust). The caller has already done
+    /// the pre-flight (capacity, eraseDecision, the erase confirmation).
+    struct BurnRunJob: Codable {
+        var drive: OpticalDrive
+        var items: [BurnJobItem]
+        var audio: Bool
+        var useM3u: Bool
+        var eraseFirst: Bool
+        var verify: Bool
     }
 
-    /// Erase the loaded rewritable disc — only after explicit confirmation.
-    static func eraseDisc(drive: OpticalDrive) -> Result<String, GnudbFailure> {
-        guard let json = jsonString(drive)
-        else { return .failure(GnudbFailure(message: "bad drive")) }
-        let ptr = json.withCString { sparkamp_disc_erase(nil, $0) }
-        return decodeGnudb(takeString(ptr))
+    /// One queued file: path + the display line the phase messages show.
+    struct BurnJobItem: Codable {
+        var path: String
+        var display: String
     }
 
-    /// Burn prepared WAVs (track order) as an audio CD. Blocking whole burn.
-    static func burnAudio(
-        drive: OpticalDrive, stagedDir: String, wavs: [String], verify: Bool
-    ) -> Result<String, GnudbFailure> {
-        guard let driveJSON = jsonString(drive),
-              let wavsJSON = jsonString(wavs)
-        else { return .failure(GnudbFailure(message: "bad burn payload")) }
-        let ptr = driveJSON.withCString { d in
-            stagedDir.withCString { s in
-                wavsJSON.withCString { w in
-                    sparkamp_disc_burn_audio(nil, d, s, w, verify)
-                }
-            }
-        }
-        return decodeGnudb(takeString(ptr))
+    /// A finished job (`BurnJobDone` in Rust): success flag + status line.
+    struct BurnJobDone: Codable {
+        var ok: Bool
+        var message: String
     }
 
-    /// Stage files, write the MP3-CD companion playlist, and burn as a data
-    /// disc. Blocking whole burn.
-    static func burnData(
-        drive: OpticalDrive, stagedDir: String, files: [String],
-        playlistFormat: Int32, verify: Bool
-    ) -> Result<String, GnudbFailure> {
-        guard let driveJSON = jsonString(drive),
-              let filesJSON = jsonString(files)
-        else { return .failure(GnudbFailure(message: "bad burn payload")) }
-        let ptr = driveJSON.withCString { d in
-            stagedDir.withCString { s in
-                filesJSON.withCString { f in
-                    sparkamp_disc_burn_data(nil, d, s, f, playlistFormat, verify)
-                }
-            }
-        }
-        return decodeGnudb(takeString(ptr))
+    /// Poll snapshot (`BurnJobStatus` in Rust).
+    struct BurnJobStatus: Codable {
+        var running: Bool
+        var phase: String
+        var done: BurnJobDone?
     }
 
-    /// Kill the in-flight burn/erase subprocess.
+    /// Start the core burn worker (staging, optional erase, prep, burn,
+    /// cleanup — the same job GTK/TUI run). False when the JSON failed or a
+    /// burn is already running.
+    static func burnJobStart(job: BurnRunJob) -> Bool {
+        guard let json = jsonString(job) else { return false }
+        return json.withCString { sparkamp_disc_burn_job_start(nil, $0) == 0 }
+    }
+
+    /// Poll the running/just-finished burn (call from a main-thread timer).
+    static func burnJobPoll() -> BurnJobStatus? {
+        guard let json = takeString(sparkamp_disc_burn_job_poll(nil)),
+              let data = json.data(using: .utf8)
+        else { return nil }
+        return try? decoder().decode(BurnJobStatus.self, from: data)
+    }
+
+    /// Cancel the burn: stops between steps and kills a mid-write subprocess.
     static func burnCancel() {
         sparkamp_disc_burn_cancel(nil)
     }

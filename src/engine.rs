@@ -592,7 +592,10 @@ impl Player {
     }
 
     /// Only available in tests — sets a fake position for testing back button behavior.
+    /// Its callers live in the GTK window tests, so on non-Linux test builds
+    /// (where the GTK frontend isn't compiled) it would warn as dead code.
     #[cfg(test)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn set_position_for_test(&mut self, pos: Duration) {
         self.fake_position = Some(pos);
     }

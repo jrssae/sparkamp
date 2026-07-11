@@ -461,106 +461,145 @@ pub unsafe extern "C" fn sparkamp_disc_audio_capacity_secs(
     crate::disc::burn::audio_capacity_secs(&drive) as c_int
 }
 
-/// Transcode one file to a Red Book WAV (44.1 kHz/16-bit/stereo) at
-/// `out_path` — the per-track pre-burn step. Blocking; loop on a worker
-/// thread for progress/cancel-between-tracks. `{"ok":"<out>"}` / error.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_disc_prepare_wav(
-    _ctx: *mut SparkampCtx,
-    src_path: *const c_char,
-    out_path: *const c_char,
-) -> *mut c_char {
-    let (Some(src), Some(out)) = (cstr(src_path), cstr(out_path)) else {
-        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
-            "bad arguments".into(),
-        )));
-    };
-    match crate::disc::burn::prepare_wav(std::path::Path::new(&src), std::path::Path::new(&out)) {
-        Ok(()) => gnudb_out(Ok(out)),
-        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
-    }
-}
+// One burn at a time: `start` spawns a worker running `burn::run_job` (the
+// same orchestration the GTK/TUI frontends call directly — staging, optional
+// erase, per-track WAV preparation or data staging + playlist, the burn,
+// detection-cache invalidation, cleanup); the frontend polls `poll` from its
+// UI timer and shows `phase`; `cancel` stops between steps and kills the
+// burn/erase subprocess.
 
-/// Erase the loaded rewritable disc. The caller MUST have shown the explicit
-/// confirmation first (erase_decision == 1). Blocking.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_disc_erase(
-    _ctx: *mut SparkampCtx,
-    drive_json: *const c_char,
-) -> *mut c_char {
-    let Some(drive): Option<OpticalDrive> = json_in(drive_json) else {
-        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
-            "bad arguments".into(),
-        )));
-    };
-    match crate::disc::burn::erase(&drive) {
-        Ok(()) => gnudb_out(Ok("erased".to_string())),
-        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
-    }
-}
-
-/// Burn prepared WAVs (JSON array of paths, in track order, staged under
-/// `staged_dir`) as an audio CD. `verify` = post-burn verification where the
-/// tool supports it. Blocking for the whole burn.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_disc_burn_audio(
-    _ctx: *mut SparkampCtx,
-    drive_json: *const c_char,
-    staged_dir: *const c_char,
-    wavs_json: *const c_char,
+/// A whole burn job (JSON in). The caller has already done the pre-flight
+/// (capacity check, erase_decision, the explicit erase confirmation).
+#[derive(serde::Deserialize)]
+struct BurnRunIn {
+    drive: OpticalDrive,
+    items: Vec<BurnItemIn>,
+    audio: bool,
+    /// Data mode: companion playlist as .m3u instead of .m3u8 (app setting).
+    use_m3u: bool,
+    erase_first: bool,
     verify: bool,
-) -> *mut c_char {
-    let (Some(drive), Some(dir), Some(wavs)): (Option<OpticalDrive>, _, Option<Vec<String>>) =
-        (json_in(drive_json), cstr(staged_dir), json_in(wavs_json))
-    else {
-        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
-            "bad arguments".into(),
-        )));
-    };
-    let wavs: Vec<std::path::PathBuf> = wavs.into_iter().map(std::path::PathBuf::from).collect();
-    match crate::disc::burn::burn_audio(&drive, std::path::Path::new(&dir), &wavs, verify) {
-        Ok(()) => gnudb_out(Ok("burned".to_string())),
-        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
-    }
 }
 
-/// Stage the given files (JSON array of paths) into `staged_dir`, write the
-/// MP3-CD companion playlist (`playlist.m3u8`, or `.m3u` when
-/// `playlist_format` == 1 — the app-wide setting), and burn as a data disc.
-/// Blocking for the whole burn.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_disc_burn_data(
-    _ctx: *mut SparkampCtx,
-    drive_json: *const c_char,
-    staged_dir: *const c_char,
-    files_json: *const c_char,
-    playlist_format: c_int,
-    verify: bool,
-) -> *mut c_char {
-    let (Some(drive), Some(dir), Some(files)): (Option<OpticalDrive>, _, Option<Vec<String>>) =
-        (json_in(drive_json), cstr(staged_dir), json_in(files_json))
-    else {
-        return gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(
-            "bad arguments".into(),
-        )));
-    };
-    let files: Vec<std::path::PathBuf> = files.into_iter().map(std::path::PathBuf::from).collect();
-    let dir = std::path::PathBuf::from(&dir);
-    let result = crate::disc::burn::stage_data_files(&files, &dir)
-        .and_then(|staged| {
-            crate::disc::burn::write_data_playlist(&dir, &staged, playlist_format == 1)
-                .map(|_| ())
+/// One queued file: the path plus its "Artist - Title" display line for the
+/// "Preparing i/N · …" phases.
+#[derive(serde::Deserialize)]
+struct BurnItemIn {
+    path: String,
+    display: String,
+}
+
+/// Snapshot returned by `sparkamp_disc_burn_job_poll`.
+#[derive(Clone, Default, serde::Serialize)]
+struct BurnJobStatus {
+    running: bool,
+    /// Current phase line ("Erasing…", "Preparing 2/8 · …", "Burning…").
+    phase: String,
+    /// Set once the job finished: `ok` + the success/failure message.
+    done: Option<BurnJobDone>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BurnJobDone {
+    ok: bool,
+    message: String,
+}
+
+struct BurnJobSlot {
+    status: BurnJobStatus,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+static BURN_JOB: std::sync::LazyLock<std::sync::Mutex<BurnJobSlot>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(BurnJobSlot {
+            status: BurnJobStatus::default(),
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
-        .and_then(|_| crate::disc::burn::burn_data(&drive, &dir, verify));
-    match result {
-        Ok(()) => gnudb_out(Ok("burned".to_string())),
-        Err(e) => gnudb_out::<String>(Err(crate::disc::gnudb::GnudbError::Protocol(e))),
-    }
+    });
+
+/// Start a burn on a core worker thread. Returns 0 on start, -1 for bad
+/// JSON, -2 when a burn is already running. Progress via
+/// `sparkamp_disc_burn_job_poll`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
+    _ctx: *mut SparkampCtx,
+    job_json: *const c_char,
+) -> c_int {
+    let Some(job): Option<BurnRunIn> = json_in(job_json) else {
+        return -1;
+    };
+    let cancel = {
+        let mut slot = BURN_JOB.lock().unwrap();
+        if slot.status.running {
+            return -2;
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        slot.cancel = cancel.clone();
+        slot.status = BurnJobStatus {
+            running: true,
+            phase: "Starting…".to_string(),
+            done: None,
+        };
+        cancel
+    };
+    std::thread::spawn(move || {
+        use crate::disc::burn;
+        let items: Vec<crate::disc::burnlist::BurnItem> = job
+            .items
+            .into_iter()
+            .map(|i| crate::disc::burnlist::BurnItem {
+                path: std::path::PathBuf::from(i.path),
+                display: i.display,
+                duration_secs: None, // capacity pre-flight already happened caller-side
+                bytes: 0,
+            })
+            .collect();
+        let mode = if job.audio {
+            burn::BurnMode::Audio
+        } else {
+            burn::BurnMode::Data {
+                use_m3u: job.use_m3u,
+            }
+        };
+        let result = burn::run_job(
+            &job.drive,
+            &items,
+            mode,
+            job.erase_first,
+            job.verify,
+            &cancel,
+            |p| {
+                BURN_JOB.lock().unwrap().status.phase = p.to_string();
+            },
+        );
+        let mut slot = BURN_JOB.lock().unwrap();
+        slot.status.running = false;
+        slot.status.done = Some(match result {
+            Ok(message) => BurnJobDone { ok: true, message },
+            Err(message) => BurnJobDone { ok: false, message },
+        });
+    });
+    0
 }
 
-/// Kill the in-flight burn/erase subprocess (one runs at a time).
+/// Poll the running (or just-finished) burn job: JSON `BurnJobStatus`. Once
+/// `done` is non-null the job is over and a new one may start. Free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_burn_job_poll(_ctx: *mut SparkampCtx) -> *mut c_char {
+    json_out(&BURN_JOB.lock().unwrap().status)
+}
+
+/// Cancel the in-flight burn: stops the job between steps AND kills the
+/// burn/erase subprocess if one is mid-write (one burn runs at a time).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_burn_cancel(_ctx: *mut SparkampCtx) {
+    BURN_JOB
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     crate::disc::burn::request_cancel();
 }
 

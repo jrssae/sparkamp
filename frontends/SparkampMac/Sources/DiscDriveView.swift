@@ -58,11 +58,36 @@ struct DiscOverview: View {
     let theme: SkinTheme
     let vars: SkinVars
     let onSelect: (OpticalDrive) -> Void
+    /// Non-nil after a viewed drive disconnected: shown as a dismissible banner.
+    var disconnectNotice: String? = nil
+    var onDismissNotice: (() -> Void)? = nil
 
     private let columns = [GridItem(.adaptive(minimum: 240), spacing: 16)]
 
     var body: some View {
         ScrollView {
+            if let notice = disconnectNotice {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(notice)
+                        .font(vars.bodyFont)
+                        .foregroundStyle(theme.playlistText)
+                    Spacer()
+                    Button {
+                        onDismissNotice?()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(theme.playlistDurationText)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.15))
+                )
+                .padding([.horizontal, .top], 12)
+            }
             if drives.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "opticaldiscdrive")

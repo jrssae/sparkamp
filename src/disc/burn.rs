@@ -275,7 +275,23 @@ pub fn request_cancel() {
 /// stdout+stderr are captured to a temp file rather than a pipe: burn tools
 /// emit a long, unbounded progress stream and an undrained pipe would fill and
 /// deadlock the child mid-burn. A file has no such back-pressure.
+///
+/// A [`BURN_TIMEOUT`] wall-clock ceiling guards against a wedged tool (e.g. the
+/// drive stops responding and the child never exits) so the app never hangs.
 pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
+    run_tool_with_timeout(program, args, BURN_TIMEOUT)
+}
+
+/// Coarse wall-clock ceiling for one burn/erase subprocess. A full audio-CD
+/// burn is minutes; 30 min without exit means the tool wedged — kill and report
+/// rather than hang the burn UI forever.
+const BURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+fn run_tool_with_timeout(
+    program: &str,
+    args: &[String],
+    timeout: std::time::Duration,
+) -> Result<(), String> {
     CANCEL.store(false, Ordering::Relaxed);
 
     let log_path = std::env::temp_dir().join(format!(
@@ -293,6 +309,7 @@ pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
 
+    let started = std::time::Instant::now();
     let result = loop {
         if CANCEL.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -304,7 +321,17 @@ pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
                 let output = std::fs::read_to_string(&log_path).unwrap_or_default();
                 break interpret_exit(program, status, &output);
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(format!(
+                        "{program} timed out after {} min — the drive stopped responding",
+                        timeout.as_secs() / 60
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
             Err(e) => break Err(format!("wait {program}: {e}")),
         }
     };
@@ -390,6 +417,96 @@ pub fn burn_audio(
         let _ = (staged_dir, verify);
         run_tool("cdrskin", &cdrskin_audio_args(&drive.id, wavs))
     }
+}
+
+/// Which kind of disc [`run_job`] writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnMode {
+    /// Red Book audio CD from the queue's tracks (prepared to WAV first).
+    Audio,
+    /// ISO9660/Joliet data disc of the queued files plus a companion
+    /// playlist; `use_m3u` mirrors the app-wide playlist-format setting
+    /// (false = m3u8/UTF-8, the default).
+    Data { use_m3u: bool },
+}
+
+/// The whole burn job, shared by every frontend (mirrors [`crate::disc::rip::run_job`]):
+/// staging-directory lifecycle, the optional erase step, per-track WAV
+/// preparation (audio) or file staging + playlist (data), the burn itself,
+/// detection-cache invalidation, and cleanup. The caller has already done the
+/// pre-flight (capacity check, refuse/erase decision, erase confirmation) and
+/// shows the phases this reports through `phase`.
+///
+/// `cancel` stops between steps; a cancel *during* the burn subprocess needs
+/// [`request_cancel`] as well (the UIs' cancel buttons do both). Returns the
+/// one-line success status, or the failure/cancel reason.
+pub fn run_job(
+    drive: &OpticalDrive,
+    items: &[crate::disc::burnlist::BurnItem],
+    mode: BurnMode,
+    erase_first: bool,
+    verify: bool,
+    cancel: &AtomicBool,
+    mut phase: impl FnMut(&str),
+) -> Result<String, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+    let staged = std::env::temp_dir().join(format!("sparkamp-burn-{}", std::process::id()));
+    std::fs::create_dir_all(&staged).map_err(|e| format!("create {}: {e}", staged.display()))?;
+
+    // The burn subprocess owns the drive for the whole run — keep every
+    // detection poll (even status ioctls) off the device.
+    crate::disc::detect::set_exclusive_read(true);
+    let result = (|| -> Result<String, String> {
+        if erase_first {
+            phase("Erasing…");
+            erase(drive)?;
+        }
+        match mode {
+            BurnMode::Audio => {
+                let mut wavs = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
+                    }
+                    phase(&format!(
+                        "Preparing {}/{} · {}",
+                        i + 1,
+                        items.len(),
+                        item.display
+                    ));
+                    let out = staged.join(staged_wav_name(i));
+                    prepare_wav(&item.path, &out)?;
+                    wavs.push(out);
+                }
+                phase("Burning… (this takes a while)");
+                burn_audio(drive, &staged, &wavs, verify)?;
+                Ok(format!("Audio CD burned ({} tracks)", items.len()))
+            }
+            BurnMode::Data { use_m3u } => {
+                phase("Burning… (this takes a while)");
+                let files: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
+                let staged_files = stage_data_files(&files, &staged)?;
+                // Staging is usually instant hard-links; re-check before the
+                // irreversible part in case a cancel landed during copies.
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".to_string());
+                }
+                write_data_playlist(&staged, &staged_files, use_m3u)?;
+                burn_data(drive, &staged, verify)?;
+                Ok(format!("Data disc burned ({} files + playlist)", items.len()))
+            }
+        }
+    })();
+    crate::disc::detect::set_exclusive_read(false);
+    if result.is_ok() {
+        // Our own write doesn't raise the kernel's media-changed flag —
+        // drop the shared snapshot so the next poll re-probes the disc.
+        crate::disc::detect::invalidate_shared_cache();
+    }
+    let _ = std::fs::remove_dir_all(&staged);
+    result
 }
 
 /// Burn a staged folder as a data disc.
@@ -737,6 +854,112 @@ mod tests {
         let three = std::process::ExitStatus::from_raw(3 << 8);
         let e = interpret_exit("cdrskin", three, "line one\nfatal: laser off\n").unwrap_err();
         assert!(e.contains("laser off"), "{e}");
+    }
+
+    /// A wedged burn tool that never exits is killed by the wall-clock watchdog
+    /// and surfaces a timeout error, so the burn UI can't hang forever.
+    #[test]
+    fn run_tool_watchdog_kills_a_wedged_child() {
+        let started = std::time::Instant::now();
+        let err = run_tool_with_timeout(
+            "sh",
+            &["-c".into(), "sleep 30".into()],
+            std::time::Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // A child that finishes within the ceiling is unaffected.
+        assert!(run_tool_with_timeout(
+            "sh",
+            &["-c".into(), "exit 0".into()],
+            std::time::Duration::from_secs(5)
+        )
+        .is_ok());
+    }
+
+    /// A cancel that's already set stops `run_job` before it touches the
+    /// drive, the staging area, or GStreamer — no phases, no leftovers.
+    #[test]
+    fn run_job_cancelled_before_start_touches_nothing() {
+        let items = vec![crate::disc::burnlist::BurnItem {
+            path: PathBuf::from("/nonexistent.mp3"),
+            display: "X - Y".into(),
+            duration_secs: Some(60),
+            bytes: 1,
+        }];
+        let d = drive(true, true, false, MediaKind::CdR);
+        let cancel = AtomicBool::new(true);
+        let mut phases: Vec<String> = Vec::new();
+        for mode in [BurnMode::Audio, BurnMode::Data { use_m3u: false }] {
+            let r = run_job(&d, &items, mode, false, true, &cancel, |p| {
+                phases.push(p.to_string())
+            });
+            assert_eq!(r.unwrap_err(), "cancelled");
+        }
+        assert!(phases.is_empty(), "{phases:?}");
+    }
+
+    /// The audio prep loop re-checks the cancel flag per track: a cancel set
+    /// after the run starts stops before the *second* track's (nonexistent →
+    /// would-fail) prepare, reporting the cancel rather than a prep error.
+    #[test]
+    fn run_job_audio_cancel_between_tracks() {
+        gstreamer::init().expect("gst init");
+        let tmp = std::env::temp_dir().join(format!("sparkamp-runjob-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Track 1: a real (tiny, silent) WAV so its prepare succeeds; the
+        // phase callback then flips cancel before track 2 is reached.
+        let src = tmp.join("t1.wav");
+        std::fs::write(&src, minimal_wav()).unwrap();
+        let items = vec![
+            crate::disc::burnlist::BurnItem {
+                path: src.clone(),
+                display: "One".into(),
+                duration_secs: Some(1),
+                bytes: 1,
+            },
+            crate::disc::burnlist::BurnItem {
+                path: tmp.join("missing.mp3"),
+                display: "Two".into(),
+                duration_secs: Some(1),
+                bytes: 1,
+            },
+        ];
+        let d = drive(true, true, false, MediaKind::CdR);
+        let cancel = AtomicBool::new(false);
+        let phases = std::cell::RefCell::new(Vec::<String>::new());
+        let r = run_job(&d, &items, BurnMode::Audio, false, true, &cancel, |p| {
+            phases.borrow_mut().push(p.to_string());
+            // Cancel as soon as track 1 starts preparing.
+            cancel.store(true, Ordering::Relaxed);
+        });
+        assert_eq!(r.unwrap_err(), "cancelled");
+        let phases = phases.into_inner();
+        assert_eq!(phases.len(), 1, "{phases:?}");
+        assert!(phases[0].starts_with("Preparing 1/2"), "{phases:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A tiny valid Red Book-shaped WAV (PCM S16LE stereo 44.1 kHz, ~9 ms of
+    /// silence) for tests that need a decodable source without fixtures.
+    fn minimal_wav() -> Vec<u8> {
+        let data_len: u32 = 1600; // 400 stereo S16 frames
+        let mut w = Vec::with_capacity(44 + data_len as usize);
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + data_len).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+        w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        w.extend_from_slice(&2u16.to_le_bytes()); // stereo
+        w.extend_from_slice(&44_100u32.to_le_bytes());
+        w.extend_from_slice(&176_400u32.to_le_bytes()); // byte rate
+        w.extend_from_slice(&4u16.to_le_bytes()); // block align
+        w.extend_from_slice(&16u16.to_le_bytes()); // bits
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data_len.to_le_bytes());
+        w.resize(44 + data_len as usize, 0);
+        w
     }
 
     /// Live Red Book WAV preparation from any real audio file — run with

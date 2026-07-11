@@ -324,6 +324,33 @@ fn check_dest_writable(dest_root: &Path) -> Result<(), String> {
 /// between tracks (a cancel stops after the current track) and derives each
 /// track's source, tags, and destination from the entry + the disc's tag
 /// set. This is the one job runner shared by the frontends.
+/// How many times to attempt a single track before giving up on it. A scratched
+/// or dirty disc often yields a transient read error that a re-read clears, so
+/// each track is retried automatically rather than making the user babysit the
+/// rip with a prompt. Unrecoverable tracks are then skipped and reported; the
+/// whole run can still be aborted (cancel) between attempts.
+const RIP_MAX_ATTEMPTS: u32 = 2;
+
+/// Attempt one track up to [`RIP_MAX_ATTEMPTS`] times, stopping on the first
+/// success or once cancelled. `try_once(attempt)` runs a single rip attempt
+/// (1-based). Split out so the retry policy is unit-testable without a drive.
+fn rip_with_retries(
+    cancel: &AtomicBool,
+    mut try_once: impl FnMut(u32) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut last = Err("not attempted".to_string());
+    for attempt in 1..=RIP_MAX_ATTEMPTS {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        last = try_once(attempt);
+        if last.is_ok() {
+            break;
+        }
+    }
+    last
+}
+
 pub fn run_job(
     entries: &[crate::disc::DiscTrackEntry],
     dest_root: &Path,
@@ -368,9 +395,29 @@ pub fn run_job(
             &track_tags.title,
         );
         let dur = entry.duration_secs.max(1) as f64;
-        let result = rip_track_observed(&source, &out, quality, &track_tags, |pos_secs| {
-            progress(i, n, &entry.title, (pos_secs / dur).clamp(0.0, 1.0));
+        let result = rip_with_retries(cancel, |attempt| {
+            // Show the retry in the progress label so a re-read is visible.
+            let label = if attempt == 1 {
+                entry.title.clone()
+            } else {
+                format!("{} — retry {}", entry.title, attempt - 1)
+            };
+            progress(i, n, &label, 0.0);
+            rip_track_observed(&source, &out, quality, &track_tags, |pos_secs| {
+                progress(i, n, &label, (pos_secs / dur).clamp(0.0, 1.0));
+            })
         });
+        // A cancel that landed during (or just before) this track ends the run
+        // without recording a phantom failure — `rip_with_retries` returns a
+        // sentinel error when cancelled before its first attempt, which must not
+        // reach the user as a failed track. A track that still completed counts.
+        if cancel.load(Ordering::Relaxed) {
+            outcome.cancelled = true;
+            if result.is_ok() {
+                outcome.ripped.push(out.display().to_string());
+            }
+            break;
+        }
         match result {
             Ok(()) => outcome.ripped.push(out.display().to_string()),
             Err(e) => outcome.failures.push(format!("{}: {e}", entry.number)),
@@ -383,15 +430,12 @@ pub fn run_job(
 /// Whether a rip destination sits under one of the watched library folders —
 /// outside every one, the import step skips the ripped files (library policy:
 /// importing never creates watch folders). Comparison is component-wise (so
-/// `/music-other` never matches a watched `/music`) on canonicalized paths
-/// when they exist (so symlinked watch folders still count; a
-/// not-yet-created destination falls back to its literal path).
+/// `/music-other` never matches a watched `/music`) on canonicalized paths so
+/// symlinked watch folders still count.
 pub fn dest_is_watched(dest: &str, watched_folders: &[String]) -> bool {
-    let dest = Path::new(dest);
-    let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    let dest = crate::pathutil::canonicalize_lenient(Path::new(dest));
     watched_folders.iter().any(|folder| {
-        let folder = Path::new(folder);
-        let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+        let folder = crate::pathutil::canonicalize_lenient(Path::new(folder));
         dest.starts_with(&folder)
     })
 }
@@ -573,6 +617,43 @@ mod tests {
         );
         assert!(outcome.cancelled);
         assert!(outcome.ripped.is_empty() && outcome.failures.is_empty());
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn rip_with_retries_recovers_gives_up_and_respects_cancel() {
+        let no_cancel = AtomicBool::new(false);
+
+        // A transient failure on the first read clears on retry → success.
+        let mut calls = 0;
+        let r = rip_with_retries(&no_cancel, |attempt| {
+            calls += 1;
+            if attempt < 2 {
+                Err("read glitch".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(r.is_ok());
+        assert_eq!(calls, 2);
+
+        // A hard-bad track fails every attempt → Err after RIP_MAX_ATTEMPTS.
+        let mut calls: u32 = 0;
+        let r = rip_with_retries(&no_cancel, |_| {
+            calls += 1;
+            Err::<(), String>("scratched".into())
+        });
+        assert!(r.unwrap_err().contains("scratched"));
+        assert_eq!(calls, RIP_MAX_ATTEMPTS);
+
+        // Cancel already set: abort before any attempt.
+        let cancel = AtomicBool::new(true);
+        let mut calls = 0;
+        let r = rip_with_retries(&cancel, |_| {
+            calls += 1;
+            Ok::<(), String>(())
+        });
+        assert!(r.is_err());
         assert_eq!(calls, 0);
     }
 

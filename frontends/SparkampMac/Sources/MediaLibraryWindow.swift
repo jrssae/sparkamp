@@ -134,7 +134,9 @@ struct MediaLibraryView: View {
                         drives: model.discDrives,
                         theme: theme,
                         vars: themeManager.currentVars,
-                        onSelect: { drive in nav = .discDrive(id: drive.id) }
+                        onSelect: { drive in nav = .discDrive(id: drive.id) },
+                        disconnectNotice: model.discDisconnectNotice,
+                        onDismissNotice: { model.discDisconnectNotice = nil }
                     )
                 case .discDrive(let id):
                     if let drive = model.discDrives.first(where: { $0.id == id }) {
@@ -202,7 +204,11 @@ struct MediaLibraryView: View {
         // play-count threshold).  Using a trigger counter rather than
         // calling mlFetchTracks() directly preserves search & sort state.
         .onChange(of: model.mlReloadTrigger) { _, _ in reload() }
-        .onChange(of: nav) { _, _ in selection.removeAll() }
+        .onChange(of: nav) { _, _ in
+            selection.removeAll()
+            // Opening any drive clears a stale disconnect banner.
+            if case .discDrive = nav { model.discDisconnectNotice = nil }
+        }
         // When the selected device disappears (eject completed, or unplugged
         // while viewing it), return to the overview so nav + sidebar stay
         // consistent rather than pointing at a gone device.
@@ -212,10 +218,15 @@ struct MediaLibraryView: View {
                 nav = .devicesOverview
             }
         }
-        // Selected optical drive unplugged — return to the drives overview.
+        // Selected optical drive unplugged — invalidate its loaded-disc
+        // session and surface a banner rather than silently dropping out.
         .onChange(of: model.discDrives) { _, drives in
             if case let .discDrive(id) = nav,
                !drives.contains(where: { $0.id == id }) {
+                // Invalidate the loaded-disc session; any in-flight loader/rip/burn
+                // dies with the device and resets its own busy state.
+                model.discTracks = []
+                model.discDisconnectNotice = "Drive disconnected — reconnect and reload the disc."
                 nav = .discsOverview
             }
         }

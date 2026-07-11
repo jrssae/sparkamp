@@ -170,6 +170,9 @@ final class SparkampModel: ObservableObject {
     @Published var ejectingDiscs: Set<String> = []
     /// One-line result of the last disc op ("Added 8 disc tracks", …).
     @Published var discStatus: String? = nil
+    /// Set when the drive being viewed disconnects mid-session; shown as a
+    /// banner on the Disc Drives overview until dismissed or a drive is reopened.
+    @Published var discDisconnectNotice: String? = nil
     /// gnudb matches awaiting the user's pick (sheet shown while non-nil;
     /// empty array = "no match" handled inline, never presented).
     @Published var discMatches: [DiscMatch]? = nil
@@ -199,10 +202,9 @@ final class SparkampModel: ObservableObject {
     /// (Winamp-style). Fed from the ML Files context menu.
     @Published var burnList: [BurnEntry] = []
     /// Phase text while a burn runs ("Preparing 2/5 …", "Burning…"); nil idle.
+    /// Mirrored from the core burn job's poll; cancel goes through
+    /// `cancelBurn()` (the job stops between steps / kills the subprocess).
     @Published var burnPhase: String? = nil
-    /// Set to stop the prepare loop between tracks (the burn itself is
-    /// cancelled through the core's subprocess kill).
-    var burnCancelRequested: Bool = false
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false

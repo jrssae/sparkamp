@@ -33,6 +33,7 @@ mod granite;
 mod id3_editor;
 mod media_library;
 mod model;
+mod pathutil;
 mod shuffle;
 mod skin;
 mod tags;

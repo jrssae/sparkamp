@@ -608,62 +608,21 @@ pub(super) fn build_burn_panel(
                     let drive = drive.clone();
                     let audio_mode = audio;
                     std::thread::spawn(move || {
+                        // The whole orchestration (staging, erase, prep, burn,
+                        // cache invalidation, cleanup) is the shared core job —
+                        // this worker only forwards its phases to the poller.
                         use crate::disc::burn;
-                        let staged = std::env::temp_dir()
-                            .join(format!("sparkamp-burn-{}", std::process::id()));
-                        let _ = std::fs::create_dir_all(&staged);
-                        // The burn subprocess owns the drive — silence every
-                        // detection poll for the whole run.
-                        crate::disc::detect::set_exclusive_read(true);
-                        let result = (|| -> Result<String, String> {
-                            if erase_first {
-                                let _ = tx.send(BurnMsg::Phase("Erasing…".into()));
-                                burn::erase(&drive)?;
-                            }
-                            if audio_mode {
-                                let mut wavs = Vec::with_capacity(items.len());
-                                for (i, item) in items.iter().enumerate() {
-                                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                                        return Err("cancelled".into());
-                                    }
-                                    let _ = tx.send(BurnMsg::Phase(format!(
-                                        "Preparing {}/{} · {}",
-                                        i + 1,
-                                        items.len(),
-                                        item.display
-                                    )));
-                                    let out = staged.join(burn::staged_wav_name(i));
-                                    burn::prepare_wav(&item.path, &out)?;
-                                    wavs.push(out);
-                                }
-                                let _ = tx.send(BurnMsg::Phase(
-                                    "Burning… (this takes a while)".into(),
-                                ));
-                                burn::burn_audio(&drive, &staged, &wavs, verify)?;
-                                Ok(format!("Audio CD burned ({} tracks)", items.len()))
-                            } else {
-                                let files: Vec<std::path::PathBuf> =
-                                    items.iter().map(|i| i.path.clone()).collect();
-                                let _ = tx.send(BurnMsg::Phase(
-                                    "Burning… (this takes a while)".into(),
-                                ));
-                                let staged_files = burn::stage_data_files(&files, &staged)?;
-                                burn::write_data_playlist(&staged, &staged_files, use_m3u)?;
-                                burn::burn_data(&drive, &staged, verify)?;
-                                Ok(format!(
-                                    "Data disc burned ({} files + playlist)",
-                                    items.len()
-                                ))
-                            }
-                        })();
-                        crate::disc::detect::set_exclusive_read(false);
-                        if result.is_ok() {
-                            // Our own write doesn't raise the kernel's
-                            // media-changed flag — force the next poll to
-                            // re-probe the disc's new content.
-                            crate::disc::detect::invalidate_shared_cache();
-                        }
-                        let _ = std::fs::remove_dir_all(&staged);
+                        let mode = if audio_mode {
+                            burn::BurnMode::Audio
+                        } else {
+                            burn::BurnMode::Data { use_m3u }
+                        };
+                        let result = burn::run_job(
+                            &drive, &items, mode, erase_first, verify, &cancel,
+                            |p| {
+                                let _ = tx.send(BurnMsg::Phase(p.to_string()));
+                            },
+                        );
                         let _ = tx.send(BurnMsg::Done(result));
                     });
 

@@ -97,22 +97,6 @@ extension SparkampModel {
         return p.map { String(cString: $0) } ?? ""
     }
 
-    /// Fresh staging directory for a burn run (removed by the caller).
-    nonisolated private func burnStagingDir() -> String {
-        NSTemporaryDirectory() + "sparkamp-burn-\(ProcessInfo.processInfo.processIdentifier)"
-    }
-
-    /// Shared erase step for both burn modes: runs on the worker thread,
-    /// publishes the phase, and reports the failure message if any.
-    nonisolated private func eraseStepIfNeeded(_ drive: OpticalDrive, _ eraseFirst: Bool) -> String? {
-        guard eraseFirst else { return nil }
-        DispatchQueue.main.async { self.burnPhase = "Erasing…" }
-        if case .failure(let err) = DiscService.eraseDisc(drive: drive) {
-            return err.message
-        }
-        return nil
-    }
-
     /// Overlay the stored tag set's titles onto `discTracks` ("Track N" stays
     /// wherever a title is missing/empty).
     func applyDiscTagTitles(_ drive: OpticalDrive) {
@@ -491,116 +475,65 @@ extension SparkampModel {
         burnList.reduce(0) { $0 + $1.bytes }
     }
 
-    /// Burn the queue as an audio CD: erase first when the user confirmed it
-    /// (RW with content), transcode each entry to a Red Book WAV with
-    /// per-track progress, then hand the whole set to the burner. Cancel
-    /// stops between tracks during prepare and kills the subprocess during
-    /// the erase/burn phases.
+    /// Burn the queue as an audio CD (erase first when the user confirmed it,
+    /// RW with content). The whole orchestration — staging, erase, per-track
+    /// WAV preparation, the burn, cleanup — is the shared core job (the same
+    /// one GTK/TUI run); this side only starts it and mirrors its phase line.
     func burnAudio(_ drive: OpticalDrive, eraseFirst: Bool) {
-        guard !burnList.isEmpty, burnPhase == nil, let ctx = ctx else { return }
-        let entries = burnList
-        let verify = sparkamp_get_burn_verify(ctx)
-        burnCancelRequested = false
-        burnPhase = "Starting…"
-        discStatus = nil
-        DispatchQueue.global(qos: .utility).async {
-            let staged = self.burnStagingDir()
-            defer { try? FileManager.default.removeItem(atPath: staged) }
-
-            if let eraseError = self.eraseStepIfNeeded(drive, eraseFirst) {
-                DispatchQueue.main.async {
-                    self.burnPhase = nil
-                    self.discStatus = "Erase failed: \(eraseError)"
-                }
-                return
-            }
-
-            var wavs: [String] = []
-            for (i, entry) in entries.enumerated() {
-                if DispatchQueue.main.sync(execute: { self.burnCancelRequested }) {
-                    DispatchQueue.main.async {
-                        self.burnPhase = nil
-                        self.discStatus = "Burn cancelled before writing"
-                    }
-                    return
-                }
-                DispatchQueue.main.async {
-                    self.burnPhase = "Preparing \(i + 1)/\(entries.count) · \(entry.display)"
-                }
-                let out = staged + "/" + String(format: "%02d.wav", i + 1)
-                switch DiscService.prepareWav(src: entry.path, out: out) {
-                case .success(let p): wavs.append(p)
-                case .failure(let err):
-                    DispatchQueue.main.async {
-                        self.burnPhase = nil
-                        self.discStatus = "Prepare failed (\(entry.display)): \(err.message)"
-                    }
-                    return
-                }
-            }
-
-            DispatchQueue.main.async { self.burnPhase = "Burning… (this takes a while)" }
-            let result = DiscService.burnAudio(
-                drive: drive, stagedDir: staged, wavs: wavs, verify: verify)
-            DispatchQueue.main.async {
-                self.burnPhase = nil
-                switch result {
-                case .success:
-                    self.discStatus = "Audio CD burned (\(entries.count) tracks)"
-                    self.burnList.removeAll()
-                    self.pollDiscDrives()
-                case .failure(let err):
-                    self.discStatus = "Burn failed: \(err.message)"
-                }
-            }
-        }
+        startBurnJob(drive, audio: true, eraseFirst: eraseFirst)
     }
 
-    /// Burn the queue as a data disc (files at the disc root; staging +
-    /// name-dedup happen in the core).
+    /// Burn the queue as a data disc (files at the disc root + the MP3-CD
+    /// companion playlist; staging and name-dedup happen in the core job).
     func burnData(_ drive: OpticalDrive, eraseFirst: Bool) {
+        startBurnJob(drive, audio: false, eraseFirst: eraseFirst)
+    }
+
+    private func startBurnJob(_ drive: OpticalDrive, audio: Bool, eraseFirst: Bool) {
         guard !burnList.isEmpty, burnPhase == nil, let ctx = ctx else { return }
-        let files = burnList.map(\.path)
-        let verify = sparkamp_get_burn_verify(ctx)
-        // The MP3-CD companion playlist follows the app-wide format setting.
-        let playlistFormat = sparkamp_get_playlist_format(ctx)
-        burnCancelRequested = false
+        let job = DiscService.BurnRunJob(
+            drive: drive,
+            items: burnList.map { DiscService.BurnJobItem(path: $0.path, display: $0.display) },
+            audio: audio,
+            // The companion playlist follows the app-wide format setting.
+            useM3u: sparkamp_get_playlist_format(ctx) == 1,
+            eraseFirst: eraseFirst,
+            verify: sparkamp_get_burn_verify(ctx))
+        guard DiscService.burnJobStart(job: job) else {
+            discStatus = "Couldn't start the burn (is another burn running?)"
+            return
+        }
         burnPhase = "Starting…"
         discStatus = nil
-        DispatchQueue.global(qos: .utility).async {
-            let staged = self.burnStagingDir()
-            defer { try? FileManager.default.removeItem(atPath: staged) }
 
-            if let eraseError = self.eraseStepIfNeeded(drive, eraseFirst) {
-                DispatchQueue.main.async {
-                    self.burnPhase = nil
-                    self.discStatus = "Erase failed: \(eraseError)"
-                }
+        // Poll the core job from the main run loop; `done` ends the timer.
+        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
                 return
             }
-
-            DispatchQueue.main.async { self.burnPhase = "Burning… (this takes a while)" }
-            let result = DiscService.burnData(
-                drive: drive, stagedDir: staged, files: files,
-                playlistFormat: playlistFormat, verify: verify)
-            DispatchQueue.main.async {
+            guard let st = DiscService.burnJobPoll() else { return }
+            if let done = st.done {
+                timer.invalidate()
                 self.burnPhase = nil
-                switch result {
-                case .success:
-                    self.discStatus = "Data disc burned (\(files.count) files)"
+                if done.ok {
+                    self.discStatus = done.message
                     self.burnList.removeAll()
                     self.pollDiscDrives()
-                case .failure(let err):
-                    self.discStatus = "Burn failed: \(err.message)"
+                } else if done.message == "cancelled" {
+                    self.discStatus = "Burn cancelled"
+                } else {
+                    self.discStatus = "Burn failed: \(done.message)"
                 }
+            } else if st.running {
+                self.burnPhase = st.phase
             }
         }
     }
 
-    /// Cancel whatever burn stage is running: sets the between-tracks flag
-    /// for the prepare loop AND kills any live erase/burn subprocess.
+    /// Cancel the burn: the core job stops between steps and kills any live
+    /// erase/burn subprocess.
     func cancelBurn() {
-        burnCancelRequested = true
         DiscService.burnCancel()
     }
 

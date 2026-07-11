@@ -20,12 +20,13 @@ impl MediaLibrary {
     /// Canonicalize a folder path so `add_folder` and `folder_exists`
     /// agree on the comparison key under symlink indirection (macOS
     /// `/var → /private/var`, Flatpak document-portal FUSE mounts).
-    /// Falls back to the raw input when the path does not exist on disk.
+    /// Resolves the existing part of a not-yet-created path via the shared
+    /// [`crate::pathutil::canonicalize_lenient`], so a path that doesn't exist
+    /// on disk still lands under the same resolved ancestors.
     pub(super) fn canonicalize_folder_path(path: &str) -> String {
-        Path::new(path)
-            .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_owned())
+        crate::pathutil::canonicalize_lenient(Path::new(path))
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Check if a folder path is already in the watch list.
