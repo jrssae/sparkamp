@@ -366,13 +366,15 @@ mod tests {
     use super::*;
     use crate::disc::MediaInfo;
 
-    /// The rewritable drive for the live hardware tests, or `None` (skip).
+    /// A drive holding burnable media for the live hardware tests, or
+    /// `None` (skip): anything the erase-decision matrix wouldn't refuse —
+    /// blank write-once included.
     fn live_rw_drive(want_blank: bool) -> Option<OpticalDrive> {
         crate::disc::detect::invalidate_shared_cache();
         let drives = crate::disc::detect::list_drives_shared();
         drives.into_iter().find(|d| {
             d.media.present
-                && (d.media.rewritable || matches!(d.media.kind, MediaKind::DvdRam))
+                && erase_decision(d) != EraseDecision::Refuse
                 && (!want_blank || d.media.is_blank)
         })
     }

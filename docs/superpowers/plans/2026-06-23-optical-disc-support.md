@@ -179,6 +179,21 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 > unimplemented, xorriso carries `-blank deformat` if a packet-formatted RW
 > ever needs it. Success-path burns still need a healthy drive or fresh
 > media (retry the matrix below then).
+>
+> **Second attempt, same day (fresh CD-R, second USB enclosure — also a
+> MATSHITA UJ8C2 mech):** full variable sweep — CD-RW + fresh CD-R, two
+> enclosures, hub/dual-cable/direct-motherboard ports, default + speed=4,
+> DAO + TAO — every write fails in drive calibration or servo
+> ([3 73 03] / sense 4-09-90) before any data byte, while reads work.
+> Both units share the worn-write-laser-prone UJ8C2 laptop-pull mechanism:
+> blocked on equipment, not code. Also learned: libburn (cdrskin AND
+> xorriso) reads a bogus 30.5 MiB free from this mech on blank media while
+> the ATIP says 703 MB — if a healthy drive ever shows "predicted session
+> size does not fit" against our own capacity gate's verdict, that's the
+> drive lying to libburn, and cdrskin `-force` (with OUR ATIP-based
+> pre-burn block still in front) is the documented escape hatch. Failed
+> calibration attempts consume the disc's PCA slots — use fresh media
+> after a string of failures.
 
 **Hardware tests (Opus, blank media required):**
 1. **Audio CD-R:** add 3+ library tracks to the burn list (ML Files → right-click → Add to Burn List / TUI `b`), insert blank CD-R, drive view → Burn Audio CD → expect prepare progress per track, then burn phase, success status; disc plays in the Sparkamp Discs tab (TOC track count matches) and in Music.app. Verify gap/order correctness.
