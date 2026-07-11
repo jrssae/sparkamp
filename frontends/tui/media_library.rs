@@ -1417,6 +1417,9 @@ impl App {
             ));
             let _ = std::fs::create_dir_all(&staged);
 
+            // The burn subprocess owns the drive for the whole run — keep
+            // every detection poll (even status ioctls) off the device.
+            crate::disc::detect::set_exclusive_read(true);
             let result = (|| -> Result<String, String> {
                 if erase_first {
                     let _ = tx.send(super::BurnMsg::Phase("Erasing…".to_string()));
@@ -1458,6 +1461,12 @@ impl App {
                     ))
                 }
             })();
+            crate::disc::detect::set_exclusive_read(false);
+            if result.is_ok() {
+                // Our own write doesn't raise the kernel media-changed flag —
+                // drop the shared snapshot so the next scan re-probes.
+                crate::disc::detect::invalidate_shared_cache();
+            }
 
             let _ = std::fs::remove_dir_all(&staged);
             let _ = tx.send(super::BurnMsg::Done(result));

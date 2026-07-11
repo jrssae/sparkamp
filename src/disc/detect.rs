@@ -49,12 +49,21 @@ pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
 /// previous-state snapshot, so a newly inserted disc is probed exactly once
 /// no matter how many pollers fire — concurrent callers block briefly and
 /// reuse the fresh result instead of contending for the drive.
+static SHARED: std::sync::Mutex<Vec<OpticalDrive>> = std::sync::Mutex::new(Vec::new());
+
 pub fn list_drives_shared() -> Vec<OpticalDrive> {
-    static SHARED: std::sync::Mutex<Vec<OpticalDrive>> = std::sync::Mutex::new(Vec::new());
     let mut cache = SHARED.lock().unwrap();
     let drives = list_drives_cached(&cache);
     *cache = drives.clone();
     drives
+}
+
+/// Drop the shared snapshot so the next poll re-probes. Needed after WE
+/// change the medium (burn/erase finished): the kernel's media-changed flag
+/// doesn't fire for our own writes, so the cache would keep reporting the
+/// pre-burn state.
+pub fn invalidate_shared_cache() {
+    SHARED.lock().unwrap().clear();
 }
 
 /// While a streaming read owns the drive (cdda playback or a rip), even the
@@ -376,6 +385,58 @@ const CDSL_CURRENT: i32 = i32::MAX;
 /// `CDS_DISC_OK` — a readable disc is loaded.
 const CDS_DISC_OK: i32 = 4;
 
+/// Parse `cdrskin dev=… -minfo` output into the loaded media's typing —
+/// the Linux probe for discs WITHOUT a readable TOC (blank / just-erased
+/// media), where the burn phases need kind + capacity + blank/rewritable.
+/// Pure `&str` parser, unit-tested against captured real output. `None`
+/// when the output carries no "Mounted media type" line (no disc, or a
+/// tool error).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
+    let mut kind: Option<MediaKind> = None;
+    let mut blank = false;
+    let mut erasable = false;
+    let mut leadout_blocks: u64 = 0;
+    for line in out.lines() {
+        let l = line.trim();
+        if let Some(v) = l.strip_prefix("Mounted media type:") {
+            kind = Some(match v.trim() {
+                "CD-R" => MediaKind::CdR,
+                "CD-RW" => MediaKind::CdRw,
+                "DVD-R" | "DVD+R" | "DVD+R/DL" => MediaKind::DvdR,
+                "DVD-RW" | "DVD+RW" | "DVD-RW sequential recording"
+                | "DVD-RW restricted overwrite" => MediaKind::DvdRw,
+                "DVD-RAM" => MediaKind::DvdRam,
+                _ => MediaKind::Unknown,
+            });
+        } else if let Some(v) = l.strip_prefix("disk status:") {
+            blank = v.trim() == "empty";
+        } else if l.contains("Is erasable") && !l.contains("not") {
+            erasable = true;
+        } else if let Some(v) = l.strip_prefix("ATIP start of lead out:") {
+            leadout_blocks = v
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+        }
+    }
+    let kind = kind?;
+    // 2048 data bytes per block — the convention MediaInfo's byte fields use
+    // (audio capacity derives as blocks/75 seconds from the same figure).
+    let capacity_bytes = leadout_blocks * 2048;
+    Some(MediaInfo {
+        present: true,
+        is_audio_cd: false,
+        is_blank: blank,
+        rewritable: erasable,
+        kind,
+        free_bytes: if blank { capacity_bytes } else { 0 },
+        capacity_bytes,
+    })
+}
+
 /// Assemble a [`DiscToc`] from raw TOC entries as the `CDROMREADTOCENTRY`
 /// ioctl reports them: `(track number, ctrl nibble, LBA)` per track plus the
 /// lead-out LBA. Adds the +150 pregap (LBA → CDDB-absolute frame) and maps
@@ -648,7 +709,13 @@ mod platform {
                 is_audio_cd: t.tracks.iter().any(|tr| tr.is_audio),
                 ..MediaInfo::none()
             },
-            None => MediaInfo::none(),
+            // No readable TOC but the status ioctl said "disc ok" (the
+            // caller only probes then): blank / just-erased media — type it
+            // via cdrskin -minfo (kind, capacity, blank/rewritable) for the
+            // burn phases.
+            None => run("cdrskin", &[&format!("dev={node}"), "-minfo"])
+                .and_then(|o| super::parse_minfo(&o))
+                .unwrap_or_else(MediaInfo::none),
         };
         OpticalDrive {
             id: node,
@@ -870,6 +937,65 @@ mod tests {
         assert!(toc.tracks[0].is_audio);
         assert_eq!(toc.tracks[1].start_frame, 13834);
         assert!(!toc.tracks[2].is_audio); // Data=true track
+    }
+
+    /// Captured from the real blank TDK CD-RW in the MATSHITA drive
+    /// (`cdrskin dev=/dev/sr0 -minfo`), trimmed to the parsed region.
+    const MINFO_BLANK_CDRW: &str = "\
+Device type    : Removable CD-ROM
+Vendor_info    : 'MATSHITA'
+Supported modes: TAO SAO
+ATIP info from disk:
+  Is erasable
+  ATIP start of lead in:  -12900 (97:10/00)
+  ATIP start of lead out: 359849 (79:59/74)
+Product Id:    97m10s00f/79m59s74f
+Producer:      TDK / Ritek
+
+Mounted media class:      CD
+Mounted media type:       CD-RW
+Disk Is erasable
+disk status:              empty
+session status:           empty
+number of sessions:       1
+";
+
+    #[test]
+    fn minfo_parses_blank_cdrw() {
+        let m = parse_minfo(MINFO_BLANK_CDRW).unwrap();
+        assert!(m.present);
+        assert!(m.is_blank);
+        assert!(m.rewritable);
+        assert_eq!(m.kind, MediaKind::CdRw);
+        assert_eq!(m.capacity_bytes, 359_849 * 2048);
+        assert_eq!(m.free_bytes, m.capacity_bytes);
+        // ≈ 79:57 of audio from the same figure.
+        let d = OpticalDrive {
+            id: "/dev/sr0".into(),
+            label: "T".into(),
+            media: m,
+            toc: None,
+            mount_path: None,
+        };
+        assert_eq!(crate::disc::burn::audio_capacity_secs(&d), 4797);
+    }
+
+    #[test]
+    fn minfo_written_cdr_and_edge_cases() {
+        let written = "\
+Mounted media type:       CD-R
+disk status:              complete
+session status:           complete
+";
+        let m = parse_minfo(written).unwrap();
+        assert!(!m.is_blank);
+        assert!(!m.rewritable);
+        assert_eq!(m.kind, MediaKind::CdR);
+        assert_eq!(m.free_bytes, 0);
+
+        assert!(parse_minfo("cdrskin: no disc\n").is_none());
+        let ram = parse_minfo("Mounted media type:       DVD-RAM\ndisk status: empty\n").unwrap();
+        assert_eq!(ram.kind, MediaKind::DvdRam);
     }
 
     #[test]

@@ -237,6 +237,574 @@ pub(super) fn disc_card_icon(d: &crate::disc::OpticalDrive) -> gtk4::Overlay {
     overlay
 }
 
+// ─────────────────────────── Burn (Phases 5–6) ──────────────────────────────
+
+/// Progress/result of the background burn, drained by a main-thread poller.
+enum BurnMsg {
+    Phase(String),
+    Done(Result<String, String>),
+}
+
+/// The burn panel on the drive detail view, shown whenever writable
+/// non-audio media is loaded (blank, rewritable-with-content, or a data
+/// disc). Owns its widgets; `refresh` re-renders for the drive being shown.
+pub(super) struct BurnUi {
+    /// The whole panel — window.rs toggles visibility per media state.
+    pub root: GtkBox,
+    refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)>,
+}
+
+impl BurnUi {
+    /// Re-render the queue, meters, and button sensitivity for `drive`.
+    pub fn refresh(&self, drive: &crate::disc::OpticalDrive) {
+        (self.refresh_cb)(drive);
+    }
+}
+
+/// Build + wire the burn panel. `burn_list` is shared with the ML files
+/// view's "Add to Burn List" context action; `refresh_discs` re-polls after
+/// a finished burn so the detail reflects the disc's new content.
+pub(super) fn build_burn_panel(
+    state: Rc<RefCell<AppState>>,
+    burn_list: Rc<RefCell<crate::disc::burnlist::BurnList>>,
+    refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
+    win: &gtk4::Window,
+) -> BurnUi {
+    let root = GtkBox::new(Orientation::Vertical, 6);
+    root.set_visible(false);
+
+    let title = Label::builder()
+        .label("Burn")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .build();
+    title.add_css_class("ml-section-header");
+    root.append(&title);
+
+    // Queue rows ("Artist - Title — M:SS · size"), selectable for the
+    // remove/reorder buttons; burn order = disc track order.
+    let queue = gtk4::ListBox::new();
+    queue.set_selection_mode(gtk4::SelectionMode::Single);
+    queue.add_css_class("ml-col-view");
+    let queue_scroll = ScrolledWindow::builder()
+        .vexpand(true)
+        .min_content_height(120)
+        .child(&queue)
+        .build();
+    root.append(&queue_scroll);
+    let empty_hint = Label::builder()
+        .label("Burn list is empty — right-click files in the Library and pick \"Add to Burn List\".")
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    empty_hint.add_css_class("dim-label");
+    root.append(&empty_hint);
+
+    // Capacity meters — over-capacity turns the line red and blocks that
+    // mode's burn button.
+    let audio_meter = Label::builder().halign(Align::Start).xalign(0.0).build();
+    audio_meter.add_css_class("dim-label");
+    let data_meter = Label::builder().halign(Align::Start).xalign(0.0).build();
+    data_meter.add_css_class("dim-label");
+    root.append(&audio_meter);
+    root.append(&data_meter);
+
+    // Queue management (left) + the two burn actions (right).
+    let btn_row = GtkBox::new(Orientation::Horizontal, 6);
+    let btn_remove = Button::with_label("− Remove");
+    let btn_up = Button::with_label("↑");
+    let btn_down = Button::with_label("↓");
+    let btn_clear = Button::with_label("Clear");
+    let spring = GtkBox::new(Orientation::Horizontal, 0);
+    spring.set_hexpand(true);
+    let btn_audio = Button::with_label("Burn Audio CD");
+    let btn_data = Button::with_label("Burn Data Disc");
+    for b in [&btn_remove, &btn_up, &btn_down, &btn_clear, &btn_audio, &btn_data] {
+        b.add_css_class("pl-btn");
+    }
+    btn_row.append(&btn_remove);
+    btn_row.append(&btn_up);
+    btn_row.append(&btn_down);
+    btn_row.append(&btn_clear);
+    btn_row.append(&spring);
+    btn_row.append(&btn_audio);
+    btn_row.append(&btn_data);
+    root.append(&btn_row);
+
+    // Progress row (hidden while idle): phase text + Cancel.
+    let progress_row = GtkBox::new(Orientation::Horizontal, 6);
+    progress_row.set_visible(false);
+    let phase_lbl = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .hexpand(true)
+        .wrap(true)
+        .build();
+    let btn_cancel = Button::with_label("Cancel");
+    btn_cancel.add_css_class("pl-btn");
+    progress_row.append(&phase_lbl);
+    progress_row.append(&btn_cancel);
+    root.append(&progress_row);
+
+    // Result/refusal status line for this panel.
+    let status = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    status.add_css_class("dim-label");
+    root.append(&status);
+
+    let burn_running = Rc::new(Cell::new(false));
+    let prep_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
+        Rc::new(RefCell::new(None));
+    let shown_drive: Rc<RefCell<Option<crate::disc::OpticalDrive>>> =
+        Rc::new(RefCell::new(None));
+
+    // ── Refresh: queue rows + meters + sensitivity for the shown drive ────
+    let refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
+        let burn_list = burn_list.clone();
+        let queue = queue.clone();
+        let queue_scroll = queue_scroll.clone();
+        let empty_hint = empty_hint.clone();
+        let audio_meter = audio_meter.clone();
+        let data_meter = data_meter.clone();
+        let btn_audio = btn_audio.clone();
+        let btn_data = btn_data.clone();
+        let burn_running = burn_running.clone();
+        let shown_drive = shown_drive.clone();
+        Rc::new(move |drive: &crate::disc::OpticalDrive| {
+            *shown_drive.borrow_mut() = Some(drive.clone());
+            while let Some(child) = queue.first_child() {
+                queue.remove(&child);
+            }
+            let list = burn_list.borrow();
+            for item in &list.items {
+                let secs = item.duration_secs.unwrap_or(0);
+                let line = format!(
+                    "{} — {}:{:02} · {:.1} MB",
+                    item.display,
+                    secs / 60,
+                    secs % 60,
+                    item.bytes as f64 / 1e6
+                );
+                let lbl = Label::builder()
+                    .label(&gtk_safe(&line))
+                    .halign(Align::Start)
+                    .xalign(0.0)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(2)
+                    .margin_bottom(2)
+                    .build();
+                let row = ListBoxRow::new();
+                row.set_child(Some(&lbl));
+                queue.append(&row);
+            }
+            let empty = list.is_empty();
+            queue_scroll.set_visible(!empty);
+            empty_hint.set_visible(empty);
+
+            // Audio meter: queued minutes vs the media's audio capacity.
+            let cap = crate::disc::burn::audio_capacity_secs(drive);
+            let total = list.total_secs();
+            let over_audio = list.over_audio_capacity(cap);
+            let unknown = if list.has_unknown_durations() {
+                " (some durations unknown — total is a lower bound)"
+            } else {
+                ""
+            };
+            audio_meter.set_text(&format!(
+                "Audio: {}:{:02} of {}:{:02}{unknown}",
+                total / 60,
+                total % 60,
+                cap / 60,
+                cap % 60
+            ));
+            set_meter_over(&audio_meter, over_audio);
+
+            // Data meter: queued bytes vs free bytes (capacity for blanks).
+            let free = if drive.media.free_bytes > 0 {
+                drive.media.free_bytes
+            } else {
+                drive.media.capacity_bytes
+            };
+            let over_data = free > 0 && list.over_data_capacity(free);
+            data_meter.set_text(&format!(
+                "Data: {:.1} MB of {:.1} MB",
+                list.total_bytes() as f64 / 1e6,
+                free as f64 / 1e6
+            ));
+            set_meter_over(&data_meter, over_data);
+
+            let decision = crate::disc::burn::erase_decision(drive);
+            let writable = decision != crate::disc::burn::EraseDecision::Refuse;
+            let idle = !burn_running.get();
+            btn_audio.set_sensitive(idle && writable && !empty && !over_audio);
+            btn_data.set_sensitive(idle && writable && !empty && !over_data);
+        })
+    };
+
+    // Queue management buttons operate on the selected row.
+    let selected_idx = {
+        let queue = queue.clone();
+        move || queue.selected_row().map(|r| r.index() as usize)
+    };
+    let rerender = {
+        let refresh_cb = refresh_cb.clone();
+        let shown_drive = shown_drive.clone();
+        move || {
+            if let Some(d) = shown_drive.borrow().clone() {
+                refresh_cb(&d);
+            }
+        }
+    };
+    {
+        let burn_list = burn_list.clone();
+        let selected_idx = selected_idx.clone();
+        let rerender = rerender.clone();
+        btn_remove.connect_clicked(move |_| {
+            if let Some(i) = selected_idx() {
+                burn_list.borrow_mut().remove(i);
+                rerender();
+            }
+        });
+    }
+    {
+        let burn_list = burn_list.clone();
+        let selected_idx = selected_idx.clone();
+        let rerender = rerender.clone();
+        let queue = queue.clone();
+        btn_up.connect_clicked(move |_| {
+            if let Some(i) = selected_idx() {
+                burn_list.borrow_mut().move_up(i);
+                rerender();
+                if i > 0 {
+                    if let Some(r) = queue.row_at_index(i as i32 - 1) {
+                        queue.select_row(Some(&r));
+                    }
+                }
+            }
+        });
+    }
+    {
+        let burn_list = burn_list.clone();
+        let selected_idx = selected_idx.clone();
+        let rerender = rerender.clone();
+        let queue = queue.clone();
+        btn_down.connect_clicked(move |_| {
+            if let Some(i) = selected_idx() {
+                burn_list.borrow_mut().move_down(i);
+                rerender();
+                if let Some(r) = queue.row_at_index(i as i32 + 1) {
+                    queue.select_row(Some(&r));
+                }
+            }
+        });
+    }
+    {
+        let burn_list = burn_list.clone();
+        let rerender = rerender.clone();
+        btn_clear.connect_clicked(move |_| {
+            burn_list.borrow_mut().clear();
+            rerender();
+        });
+    }
+
+    // Cancel: stop between prepare tracks, kill the burn/erase subprocess.
+    {
+        let prep_cancel = prep_cancel.clone();
+        let status = status.clone();
+        btn_cancel.connect_clicked(move |_| {
+            if let Some(flag) = prep_cancel.borrow().as_ref() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            crate::disc::burn::request_cancel();
+            status.set_text("Cancelling burn…");
+        });
+    }
+
+    // ── Start a burn (shared by both mode buttons) ─────────────────────────
+    let start_burn: Rc<dyn Fn(bool)> = {
+        let state = state.clone();
+        let burn_list = burn_list.clone();
+        let shown_drive = shown_drive.clone();
+        let burn_running = burn_running.clone();
+        let prep_cancel = prep_cancel.clone();
+        let progress_row = progress_row.clone();
+        let phase_lbl = phase_lbl.clone();
+        let status = status.clone();
+        let refresh_discs_holder = refresh_discs_holder.clone();
+        let rerender = rerender.clone();
+        let win_wk = win.downgrade();
+        Rc::new(move |audio: bool| {
+            if burn_running.get() {
+                status.set_text("A burn is already running.");
+                return;
+            }
+            let Some(drive) = shown_drive.borrow().clone() else {
+                return;
+            };
+            if burn_list.borrow().is_empty() {
+                return;
+            }
+            use crate::disc::burn::{self, EraseDecision};
+            let decision = burn::erase_decision(&drive);
+            if decision == EraseDecision::Refuse {
+                status.set_text(
+                    "This disc can't be written — insert a blank or rewritable disc.",
+                );
+                return;
+            }
+            // Capacity guard before anything touches the disc.
+            {
+                let list = burn_list.borrow();
+                if audio && list.over_audio_capacity(burn::audio_capacity_secs(&drive)) {
+                    status.set_text("Over the media's audio capacity — remove tracks first.");
+                    return;
+                }
+                let free = if drive.media.free_bytes > 0 {
+                    drive.media.free_bytes
+                } else {
+                    drive.media.capacity_bytes
+                };
+                if !audio && free > 0 && list.over_data_capacity(free) {
+                    status.set_text("Over the disc's free space — remove files first.");
+                    return;
+                }
+            }
+
+            // Everything below actually runs the burn; RW-with-content asks
+            // for the explicit erase confirmation first (never auto-blank).
+            let run = {
+                let state = state.clone();
+                let burn_list = burn_list.clone();
+                let burn_running = burn_running.clone();
+                let prep_cancel = prep_cancel.clone();
+                let progress_row = progress_row.clone();
+                let phase_lbl = phase_lbl.clone();
+                let status = status.clone();
+                let refresh_discs_holder = refresh_discs_holder.clone();
+                let rerender = rerender.clone();
+                let drive = drive.clone();
+                Rc::new(move |erase_first: bool| {
+                    let verify = state.borrow().config.disc.burn_verify;
+                    let use_m3u = matches!(
+                        state.borrow().config.media_library.playlist_format,
+                        crate::config::PlaylistFormat::M3u
+                    );
+                    let items = burn_list.borrow().items.clone();
+                    let cancel =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    *prep_cancel.borrow_mut() = Some(cancel.clone());
+                    burn_running.set(true);
+                    state.borrow().disc_reading.set(true);
+                    progress_row.set_visible(true);
+                    phase_lbl.set_text("Starting…");
+                    status.set_text("");
+                    let (tx, rx) = std::sync::mpsc::channel::<BurnMsg>();
+
+                    let drive = drive.clone();
+                    let audio_mode = audio;
+                    std::thread::spawn(move || {
+                        use crate::disc::burn;
+                        let staged = std::env::temp_dir()
+                            .join(format!("sparkamp-burn-{}", std::process::id()));
+                        let _ = std::fs::create_dir_all(&staged);
+                        // The burn subprocess owns the drive — silence every
+                        // detection poll for the whole run.
+                        crate::disc::detect::set_exclusive_read(true);
+                        let result = (|| -> Result<String, String> {
+                            if erase_first {
+                                let _ = tx.send(BurnMsg::Phase("Erasing…".into()));
+                                burn::erase(&drive)?;
+                            }
+                            if audio_mode {
+                                let mut wavs = Vec::with_capacity(items.len());
+                                for (i, item) in items.iter().enumerate() {
+                                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                                        return Err("cancelled".into());
+                                    }
+                                    let _ = tx.send(BurnMsg::Phase(format!(
+                                        "Preparing {}/{} · {}",
+                                        i + 1,
+                                        items.len(),
+                                        item.display
+                                    )));
+                                    let out = staged.join(burn::staged_wav_name(i));
+                                    burn::prepare_wav(&item.path, &out)?;
+                                    wavs.push(out);
+                                }
+                                let _ = tx.send(BurnMsg::Phase(
+                                    "Burning… (this takes a while)".into(),
+                                ));
+                                burn::burn_audio(&drive, &staged, &wavs, verify)?;
+                                Ok(format!("Audio CD burned ({} tracks)", items.len()))
+                            } else {
+                                let files: Vec<std::path::PathBuf> =
+                                    items.iter().map(|i| i.path.clone()).collect();
+                                let _ = tx.send(BurnMsg::Phase(
+                                    "Burning… (this takes a while)".into(),
+                                ));
+                                let staged_files = burn::stage_data_files(&files, &staged)?;
+                                burn::write_data_playlist(&staged, &staged_files, use_m3u)?;
+                                burn::burn_data(&drive, &staged, verify)?;
+                                Ok(format!(
+                                    "Data disc burned ({} files + playlist)",
+                                    items.len()
+                                ))
+                            }
+                        })();
+                        crate::disc::detect::set_exclusive_read(false);
+                        if result.is_ok() {
+                            // Our own write doesn't raise the kernel's
+                            // media-changed flag — force the next poll to
+                            // re-probe the disc's new content.
+                            crate::disc::detect::invalidate_shared_cache();
+                        }
+                        let _ = std::fs::remove_dir_all(&staged);
+                        let _ = tx.send(BurnMsg::Done(result));
+                    });
+
+                    // Main-thread poller: phases into the label, Done wraps up.
+                    let state_p = state.clone();
+                    let burn_list_p = burn_list.clone();
+                    let burn_running_p = burn_running.clone();
+                    let prep_cancel_p = prep_cancel.clone();
+                    let progress_row_p = progress_row.clone();
+                    let phase_lbl_p = phase_lbl.clone();
+                    let status_p = status.clone();
+                    let refresh_holder_p = refresh_discs_holder.clone();
+                    let rerender_p = rerender.clone();
+                    glib::timeout_add_local(
+                        std::time::Duration::from_millis(200),
+                        move || {
+                            let mut done: Option<Result<String, String>> = None;
+                            loop {
+                                match rx.try_recv() {
+                                    Ok(BurnMsg::Phase(p)) => {
+                                        phase_lbl_p.set_text(&gtk_safe(&p))
+                                    }
+                                    Ok(BurnMsg::Done(r)) => {
+                                        done = Some(r);
+                                        break;
+                                    }
+                                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                        done = Some(Err("burn worker vanished".into()));
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(result) = done {
+                                progress_row_p.set_visible(false);
+                                burn_running_p.set(false);
+                                state_p.borrow().disc_reading.set(false);
+                                *prep_cancel_p.borrow_mut() = None;
+                                match result {
+                                    Ok(summary) => {
+                                        burn_list_p.borrow_mut().clear();
+                                        status_p.set_text(&gtk_safe(&summary));
+                                        // Re-poll so the detail shows the
+                                        // disc's new content.
+                                        if let Some(f) =
+                                            refresh_holder_p.borrow().clone()
+                                        {
+                                            f();
+                                        }
+                                    }
+                                    Err(e) => status_p
+                                        .set_text(&gtk_safe(&format!("Burn failed: {e}"))),
+                                }
+                                rerender_p();
+                                return glib::ControlFlow::Break;
+                            }
+                            glib::ControlFlow::Continue
+                        },
+                    );
+                })
+            };
+
+            if decision == EraseDecision::EraseAfterConfirm {
+                confirm_erase_dialog(win_wk.upgrade().as_ref(), {
+                    let run = run.clone();
+                    move || run(true)
+                });
+            } else {
+                run(false);
+            }
+        })
+    };
+    {
+        let start = start_burn.clone();
+        btn_audio.connect_clicked(move |_| start(true));
+    }
+    {
+        let start = start_burn.clone();
+        btn_data.connect_clicked(move |_| start(false));
+    }
+
+    BurnUi { root, refresh_cb }
+}
+
+/// Mark a capacity meter line as over/OK (red via the shared "broken" class).
+fn set_meter_over(meter: &Label, over: bool) {
+    if over {
+        meter.remove_css_class("dim-label");
+        meter.add_css_class("broken");
+    } else {
+        meter.remove_css_class("broken");
+        meter.add_css_class("dim-label");
+    }
+}
+
+/// Modal "erase and burn?" confirmation for rewritable media with content.
+/// `on_confirm` runs only on the explicit yes — never auto-blank.
+fn confirm_erase_dialog(parent: Option<&gtk4::Window>, on_confirm: impl Fn() + 'static) {
+    let dialog = gtk4::Window::builder()
+        .title("Erase disc?")
+        .modal(true)
+        .default_width(400)
+        .build();
+    if let Some(p) = parent {
+        dialog.set_transient_for(Some(p));
+    }
+    let vbox = GtkBox::new(Orientation::Vertical, 10);
+    vbox.set_margin_top(12);
+    vbox.set_margin_bottom(12);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+    vbox.append(
+        &Label::builder()
+            .label(
+                "This rewritable disc already has content. Burning will ERASE \
+                 everything on it first. This cannot be undone.",
+            )
+            .wrap(true)
+            .halign(Align::Start)
+            .xalign(0.0)
+            .build(),
+    );
+    let btns = GtkBox::new(Orientation::Horizontal, 6);
+    btns.set_halign(Align::End);
+    let cancel = Button::with_label("Cancel");
+    let erase = Button::with_label("Erase and Burn");
+    erase.add_css_class("destructive-action");
+    btns.append(&cancel);
+    btns.append(&erase);
+    vbox.append(&btns);
+    dialog.set_child(Some(&vbox));
+    let d = dialog.clone();
+    cancel.connect_clicked(move |_| d.close());
+    let d = dialog.clone();
+    erase.connect_clicked(move |_| {
+        on_confirm();
+        d.close();
+    });
+    dialog.present();
+}
+
 /// Whether the Submit-to-gnudb action applies: the disc is unknown to gnudb
 /// (no official baseline) or the user's tags differ from the official match.
 /// Same field set the macOS `discSubmittable` compares.

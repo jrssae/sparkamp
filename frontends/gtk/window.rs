@@ -11564,6 +11564,13 @@ fn open_media_library_window(
     let current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(Vec::new()));
     let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // The Burn list — a dedicated queue separate from the active playlist,
+    // fed from the Files view's context menu, consumed by the burn panel.
+    let burn_list: Rc<RefCell<crate::disc::burnlist::BurnList>> =
+        Rc::new(RefCell::new(Default::default()));
+    // refresh_discs is built much later; the burn panel takes this holder so
+    // a finished burn can trigger a re-poll.
+    let refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
     let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
         Rc::new(RefCell::new(Vec::new()));
     // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
@@ -13723,6 +13730,16 @@ fn open_media_library_window(
         .build();
     disc_status_lbl.add_css_class("dim-label");
     disc_detail.append(&disc_status_lbl);
+    // Burn panel (Phases 5–6): shown for writable non-audio media
+    // (visibility handled by populate_disc_detail).
+    let burn_ui = disc::build_burn_panel(
+        state.clone(),
+        burn_list.clone(),
+        refresh_discs_holder.clone(),
+        &win,
+    );
+    disc_detail.append(&burn_ui.root);
+    let burn_ui = Rc::new(burn_ui);
     disc_page.append(&disc_detail);
 
     // ── Content stack ─────────────────────────────────────────────────────
@@ -13779,6 +13796,10 @@ fn open_media_library_window(
         let ml_action_group = gio::SimpleActionGroup::new();
         col_view.insert_action_group("ml", Some(&ml_action_group));
 
+        // The files status label is created further down — the burn action
+        // reports "Queued N…" through this holder.
+        let files_status_holder: Rc<RefCell<Option<Label>>> = Rc::new(RefCell::new(None));
+
         // Store for selected tracks (used by action handlers)
         let ml_selected_tracks: Rc<RefCell<Vec<std::path::PathBuf>>> =
             Rc::new(RefCell::new(Vec::new()));
@@ -13813,6 +13834,65 @@ fn open_media_library_window(
             ml_action_append_rebuild();
         });
         ml_action_group.add_action(&action_append);
+
+        // Add to Burn List: queue the selected files for the disc burn panel
+        // (dedup by path; display/duration/size from the library row).
+        {
+            let state_burn = state.clone();
+            let tracks_src = ml_selected_tracks.clone();
+            let burn_list = burn_list.clone();
+            let status = files_status_holder.clone();
+            let action = gio::SimpleAction::new("add-to-burn", None);
+            action.connect_activate(move |_, _| {
+                let paths: Vec<_> = tracks_src.borrow().clone();
+                if paths.is_empty() {
+                    return;
+                }
+                let mut added = 0;
+                {
+                    let s = state_burn.borrow();
+                    let mut list = burn_list.borrow_mut();
+                    for path in &paths {
+                        let lib_row = s
+                            .media_lib
+                            .as_ref()
+                            .and_then(|l| l.track_by_path(&path.display().to_string()).ok());
+                        let display = lib_row
+                            .as_ref()
+                            .map(|t| match (&t.artist, &t.title) {
+                                (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
+                                (_, Some(ti)) => ti.clone(),
+                                _ => t.filename.clone(),
+                            })
+                            .unwrap_or_else(|| {
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string())
+                            });
+                        let duration_secs = lib_row
+                            .as_ref()
+                            .and_then(|t| t.length_secs)
+                            .map(|s| s as u32);
+                        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                        if list.add(crate::disc::burnlist::BurnItem {
+                            path: path.clone(),
+                            display,
+                            duration_secs,
+                            bytes,
+                        }) {
+                            added += 1;
+                        }
+                    }
+                }
+                let total = burn_list.borrow().len();
+                if let Some(lbl) = status.borrow().as_ref() {
+                    lbl.set_text(&format!(
+                        "Queued {added} for burning ({total} on the list)"
+                    ));
+                }
+            });
+            ml_action_group.add_action(&action);
+        }
 
         // Replace current playlist action
         let ml_action_replace_state = state.clone();
@@ -14309,6 +14389,10 @@ fn open_media_library_window(
                         }
 
                         menu.append_item(&gio::MenuItem::new(
+                            Some("Add to Burn List"),
+                            Some("ml.add-to-burn"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
                             Some("Rescan Metadata"),
                             Some("ml.rescan"),
                         ));
@@ -14611,6 +14695,7 @@ fn open_media_library_window(
             .build();
         files_status.add_css_class("status-label");
         files_vbox.append(&files_status);
+        *files_status_holder.borrow_mut() = Some(files_status.clone());
 
         // Button row.
         let btn_row = GtkBox::new(Orientation::Horizontal, 4);
@@ -18448,6 +18533,7 @@ fn open_media_library_window(
         let disc_official = disc_official.clone();
         let search_row = disc_search_row.clone();
         let search_entry = disc_search_entry.clone();
+        let burn_ui = burn_ui.clone();
         // Which drive the detail last showed — a switch clears the search
         // (the 10 s poll repopulates the SAME drive and must not).
         let last_drive: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -18514,6 +18600,8 @@ fn open_media_library_window(
                 submit_btn.set_visible(discid.as_ref().is_some_and(|id| {
                     disc::disc_submittable(id, &disc_tags.borrow(), &disc_official.borrow())
                 }));
+                // Audio discs get the play view, not the burn panel.
+                burn_ui.root.set_visible(false);
                 for e in &entries {
                     let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
                     // Show the real title once known; otherwise the placeholder.
@@ -18550,12 +18638,18 @@ fn open_media_library_window(
                 let msg = if !drive.media.present {
                     "No disc in the drive. Insert an audio CD to play its tracks."
                 } else if drive.media.is_blank {
-                    "Blank disc. Burning arrives in a later phase."
+                    "Blank disc — ready to burn."
                 } else {
                     "Data disc — no audio tracks to play."
                 };
                 banner.set_text(msg);
                 banner.set_visible(true);
+                // Burn panel for writable/loaded non-audio media (blank,
+                // RW-with-content, data disc); hidden on an empty tray.
+                if drive.media.present {
+                    burn_ui.refresh(drive);
+                }
+                burn_ui.root.set_visible(drive.media.present);
             }
             *entries_store.borrow_mut() = entries;
             // Fresh rows + fresh entries: re-run the search filter over them.
@@ -19316,6 +19410,8 @@ fn open_media_library_window(
     // consume its pending navigation) instead of waiting for the window's
     // own cadence.
     state.borrow_mut().disc_refresh_callback = Some(refresh_discs.clone());
+    // …and the burn panel too (a finished burn re-polls the disc's content).
+    *refresh_discs_holder.borrow_mut() = Some(refresh_discs.clone());
 
     // Initial scan + 2 s poll (stops once the window/sidebar is gone). Cheap:
     // unchanged ticks are one status ioctl through the shared cache; only an

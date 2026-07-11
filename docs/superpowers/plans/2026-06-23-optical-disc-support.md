@@ -150,6 +150,8 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 > UIs don't change).
 
 - [x] **Burn list model** (`src/disc/burnlist.rs`) — dedicated queue, separate from the active playlist: add (dedup)/remove/move-up/down, running audio seconds vs a media capacity, data bytes total. Unit-tested.
+- [x] **Linux blank/RW media typing** (2026-07-10, was the missing Phase-1 leftover): a disc with no readable TOC but `CDROM_DRIVE_STATUS == DISC_OK` is typed via `cdrskin -minfo` (`detect::parse_minfo`, unit-tested on captured output) — kind, blank, rewritable, capacity from the ATIP lead-out. Live-verified: the blank TDK CD-RW probes as "Blank CD-RW", 703 MB / 79:57.
+- [x] **GTK burn UI (Phases 5–6)** — `disc::build_burn_panel` on the drive detail, shown for loaded non-audio media: queue (remove/↑/↓/clear), audio + data capacity meters (red + button-blocking when over), Burn Audio CD / Burn Data Disc, erase-confirm modal for RW-with-content, write-once refusal, phases Starting → Erasing… → Preparing i/N · title → Burning… → result, Cancel (prep flag + subprocess kill), worker thread + 200 ms poller. Burn list fed from ML Files → right-click → "Add to Burn List" ("Queued N…" in the files status line). A finished burn invalidates the shared detection cache (our own write raises no kernel media-changed flag) and re-polls. Burns hold `detect::set_exclusive_read` for the whole run (GTK + TUI), same contention rule as playback/rip.
 - [x] **Confirm before erasing.** Both frontends prompt before any burn onto a non-blank rewritable disc; write-once non-blank media is refused outright. Never auto-blank.
 - [x] **Prepare audio.** `burn::prepare_wav` — GStreamer `decodebin ! audioconvert ! audioresample ! capsfilter 44.1 kHz/S16LE/stereo ! wavenc` per track into a temp dir. **Live-tested without media** (see Internal tests: rip output → WAV, header verified).
 - [x] **Linux burn (written blind, compile-checked on the dev box later).** `cdrskin dev=<node> blank=as_needed -audio -pad -dao <wavs…>`; erase = `cdrskin dev=<node> blank=fast`. Killable subprocess; non-zero exit → typed error with stderr tail.
@@ -161,6 +163,22 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 - `cargo test --lib disc::burn` — command builders byte-for-byte (`cdrskin` audio/erase, `xorriso` data, `drutil` audio/data/erase), WAV staging name order (`01.wav…`), capacity math (blank CD-R 359 999 blocks ≈ 79:59), erase-decision matrix (blank → no erase; RW+content → erase-after-confirm; write-once+content → refuse).
 - `cargo test --lib live_prepare_wav -- --ignored --nocapture` — real transcode of any library file to Red Book WAV; asserts RIFF header: PCM, 2 ch, 44 100 Hz, 16-bit.
 - `cargo build` zero warnings, `xcodebuild` succeeds; TUI burn overlay opens with no media and shows the "insert a blank disc" state.
+
+> **Hardware pass attempt (2026-07-10, Fable, real blank TDK CD-RW in the
+> MATSHITA UJ8C2):** detection/typing/erase-decision all verified live (disc
+> probes "Blank CD-RW", 703 MB / 79:57). The burn itself FAILED in the
+> drive's optimum-power-calibration step — `[3 73 03] Power calibration area
+> error` at both drive-default (10x) and speed=4, before any data write; the
+> same drive also failed *reading* outer tracks of two pressed discs the same
+> day, so its write laser is the prime suspect (a worn RW calibration area is
+> the alternate). Error surfaced verbatim through the stderr-tail path (the
+> "burn failure is parsed and shown" requirement is therefore live-verified).
+> Two gotchas captured for the runner: (1) a failed calibration can leave the
+> drive reporting a tiny free capacity on a blank disc ("does not fit on
+> media") — a tray eject/reload resets it; (2) `cdrskin blank=deformat` is
+> unimplemented, xorriso carries `-blank deformat` if a packet-formatted RW
+> ever needs it. Success-path burns still need a healthy drive or fresh
+> media (retry the matrix below then).
 
 **Hardware tests (Opus, blank media required):**
 1. **Audio CD-R:** add 3+ library tracks to the burn list (ML Files → right-click → Add to Burn List / TUI `b`), insert blank CD-R, drive view → Burn Audio CD → expect prepare progress per track, then burn phase, success status; disc plays in the Sparkamp Discs tab (TOC track count matches) and in Music.app. Verify gap/order correctness.

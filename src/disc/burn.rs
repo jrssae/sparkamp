@@ -366,6 +366,141 @@ mod tests {
     use super::*;
     use crate::disc::MediaInfo;
 
+    /// The rewritable drive for the live hardware tests, or `None` (skip).
+    fn live_rw_drive(want_blank: bool) -> Option<OpticalDrive> {
+        crate::disc::detect::invalidate_shared_cache();
+        let drives = crate::disc::detect::list_drives_shared();
+        drives.into_iter().find(|d| {
+            d.media.present
+                && (d.media.rewritable || matches!(d.media.kind, MediaKind::DvdRam))
+                && (!want_blank || d.media.is_blank)
+        })
+    }
+
+    /// The two smallest MP3s from the Testing folder (short burn).
+    fn small_test_mp3s(n: usize) -> Vec<PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("Testing");
+        let mut mp3s: Vec<(u64, PathBuf)> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().map(|x| x == "mp3").unwrap_or(false))
+            .map(|e| (e.metadata().map(|m| m.len()).unwrap_or(u64::MAX), e.path()))
+            .collect();
+        mp3s.sort();
+        mp3s.into_iter().take(n).map(|(_, p)| p).collect()
+    }
+
+    /// LIVE: burn 2 short tracks as an audio CD onto the blank rewritable
+    /// disc, then re-probe and assert the disc reads back as a 2-track
+    /// audio CD. `cargo test --lib live_hw_burn_audio -- --ignored --nocapture`.
+    /// WRITES THE LOADED DISC — run only on media you own for testing.
+    #[test]
+    #[ignore]
+    fn live_hw_burn_audio() {
+        gstreamer::init().expect("gst init");
+        let Some(drive) = live_rw_drive(true) else {
+            println!("no blank rewritable disc — skipping");
+            return;
+        };
+        let srcs = small_test_mp3s(2);
+        assert_eq!(srcs.len(), 2, "need two Testing MP3s");
+        let staged = std::env::temp_dir().join(format!("sparkamp-hwtest-{}", std::process::id()));
+        std::fs::create_dir_all(&staged).unwrap();
+        let mut wavs = Vec::new();
+        for (i, s) in srcs.iter().enumerate() {
+            println!("preparing {}…", s.display());
+            let out = staged.join(staged_wav_name(i));
+            prepare_wav(s, &out).expect("prepare wav");
+            wavs.push(out);
+        }
+        println!("burning… (audio, {} tracks)", wavs.len());
+        let started = std::time::Instant::now();
+        crate::disc::detect::set_exclusive_read(true);
+        let r = burn_audio(&drive, &staged, &wavs, false);
+        crate::disc::detect::set_exclusive_read(false);
+        let _ = std::fs::remove_dir_all(&staged);
+        r.expect("burn_audio");
+        println!("burned in {:.1?}", started.elapsed());
+
+        crate::disc::detect::invalidate_shared_cache();
+        let after = crate::disc::detect::list_drives_shared();
+        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        println!("after burn: {}", d.media_summary());
+        assert!(d.media.is_audio_cd, "disc must read back as an audio CD");
+        assert_eq!(
+            d.toc.as_ref().map(|t| t.tracks.len()),
+            Some(2),
+            "TOC must carry both tracks"
+        );
+    }
+
+    /// LIVE: erase the loaded rewritable disc and assert it probes blank
+    /// again. `cargo test --lib live_hw_erase -- --ignored --nocapture`.
+    /// ERASES THE LOADED DISC.
+    #[test]
+    #[ignore]
+    fn live_hw_erase() {
+        let Some(drive) = live_rw_drive(false) else {
+            println!("no rewritable disc — skipping");
+            return;
+        };
+        if drive.media.is_blank {
+            println!("already blank — nothing to erase");
+            return;
+        }
+        println!("erasing…");
+        let started = std::time::Instant::now();
+        crate::disc::detect::set_exclusive_read(true);
+        let r = erase(&drive);
+        crate::disc::detect::set_exclusive_read(false);
+        r.expect("erase");
+        println!("erased in {:.1?}", started.elapsed());
+
+        crate::disc::detect::invalidate_shared_cache();
+        let after = crate::disc::detect::list_drives_shared();
+        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        println!("after erase: {}", d.media_summary());
+        assert!(d.media.is_blank, "disc must probe blank after the erase");
+    }
+
+    /// LIVE: burn 3 MP3s + companion playlist as a data disc onto blank
+    /// rewritable media, re-probe, and assert it reads back as a data disc.
+    /// `cargo test --lib live_hw_burn_data -- --ignored --nocapture`.
+    /// WRITES THE LOADED DISC.
+    #[test]
+    #[ignore]
+    fn live_hw_burn_data() {
+        let Some(drive) = live_rw_drive(true) else {
+            println!("no blank rewritable disc — skipping");
+            return;
+        };
+        let files = small_test_mp3s(3);
+        assert_eq!(files.len(), 3);
+        let staged = std::env::temp_dir().join(format!("sparkamp-hwdata-{}", std::process::id()));
+        let staged_files = stage_data_files(&files, &staged).expect("stage");
+        let pl = write_data_playlist(&staged, &staged_files, false).expect("playlist");
+        println!("staged {} files + {}", staged_files.len(), pl.display());
+        println!("burning… (data)");
+        let started = std::time::Instant::now();
+        crate::disc::detect::set_exclusive_read(true);
+        let r = burn_data(&drive, &staged, false);
+        crate::disc::detect::set_exclusive_read(false);
+        let _ = std::fs::remove_dir_all(&staged);
+        r.expect("burn_data");
+        println!("burned in {:.1?}", started.elapsed());
+
+        crate::disc::detect::invalidate_shared_cache();
+        let after = crate::disc::detect::list_drives_shared();
+        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        println!("after burn: {}", d.media_summary());
+        assert!(d.media.present, "disc must probe present");
+        assert!(
+            !d.media.is_audio_cd,
+            "data disc must not read as an audio CD"
+        );
+    }
+
     fn drive(present: bool, blank: bool, rw: bool, kind: MediaKind) -> OpticalDrive {
         OpticalDrive {
             id: "1".into(),
