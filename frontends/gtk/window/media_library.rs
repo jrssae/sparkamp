@@ -2094,6 +2094,7 @@ fn open_media_library_window(
         let reload_pls = reload_dev_playlists.clone();
         let apply_filter = apply_pl_filter.clone();
         let sel_pl = selected_dev_playlist.clone();
+        let state_del = state.clone();
         let win_wk = win.downgrade();
         dev_file_remove.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
@@ -2147,6 +2148,7 @@ fn open_media_library_window(
             let dev2 = dev.clone();
             let win_wk2 = win_wk.clone();
             let in_playlist2 = in_playlist.clone();
+            let state2 = state_del.clone();
             dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
                 if res != Ok(1) {
                     return;
@@ -2168,6 +2170,44 @@ fn open_media_library_window(
                         let failed = device_delete_files(&dev2, &paths);
                         reload_store2(dev2.clone());
                         reload_pls2(dev2.clone());
+                        // Reconcile the ACTIVE playlist too: device files can
+                        // be queued there (device Play/Enqueue), and a deleted
+                        // file must show broken immediately — and stop the
+                        // player if it was the one playing — instead of
+                        // lingering until a read error.
+                        let rebuild_pl = {
+                            let deleted: std::collections::HashSet<&std::path::PathBuf> =
+                                paths.iter().collect();
+                            let mut s = state2.borrow_mut();
+                            let cur = s.playlist.current_index;
+                            let mut touched = false;
+                            let mut current_deleted = false;
+                            for (i, t) in s.playlist.tracks.iter_mut().enumerate() {
+                                if deleted.contains(&t.path) {
+                                    t.broken = true;
+                                    touched = true;
+                                    if i == cur {
+                                        current_deleted = true;
+                                    }
+                                }
+                            }
+                            if current_deleted
+                                && !matches!(
+                                    *s.player.state(),
+                                    crate::engine::PlayerState::Stopped
+                                )
+                            {
+                                let _ = s.player.stop();
+                            }
+                            if touched {
+                                s.rebuild_pl_callback.clone()
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(cb) = rebuild_pl {
+                            cb();
+                        }
                         if failed > 0 {
                             show_alert_parented(
                                 win_wk2.upgrade().as_ref(),
@@ -2877,6 +2917,10 @@ fn open_media_library_window(
                             show_playlist_save_error(&win_cb, &path, &e);
                         }
                     }
+                    // The new playlist must appear in the sidebar + manage
+                    // list right away (same call the active playlist's
+                    // Save-as flow already makes).
+                    notify_playlist_nav_refresh();
                 },
             );
         });

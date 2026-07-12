@@ -170,6 +170,13 @@ fn start_rip(
                     imported = lib.add_files_to_library(&outcome.ripped).unwrap_or(0);
                 }
             }
+            // An open Files view must show the fresh rips immediately.
+            if imported > 0 {
+                let rebuild_ml = ui.state.borrow().rebuild_ml_callback.clone();
+                if let Some(cb) = rebuild_ml {
+                    cb();
+                }
+            }
             ui.status.set_text(&outcome.status_message(imported));
             ui.rip_box.set_visible(false);
             ui.rip_active.set(false);

@@ -557,25 +557,33 @@ impl AppState {
 
     /// Remove the track at `index` (0-based) from the playlist.
     ///
-    /// If the removed track was the one currently playing, playback of the
-    /// new current track begins automatically.  If the playlist becomes empty,
-    /// the player is stopped.
+    /// If the removed track was the one currently playing (or paused),
+    /// playback of the new current track begins automatically.  Removing the
+    /// merely-highlighted current row while stopped must NOT start music —
+    /// the marquee just moves to the new current row.  If the playlist
+    /// becomes empty, the player is stopped.
     ///
-    /// Returns `Some(display_name)` if auto-advance triggered a new track,
-    /// or `None` otherwise.  Returns `None` immediately for out-of-bounds
-    /// indices (playlist is unchanged).
+    /// Returns the string the marquee should show now, or `None` when it
+    /// needn't change; `Some("")` means "clear it" (playlist emptied — the
+    /// removed song's name must not linger).  Returns `None` immediately for
+    /// out-of-bounds indices (playlist is unchanged).
     fn remove_track(&mut self, index: usize) -> Option<String> {
         if index >= self.playlist.tracks.len() {
             return None;
         }
         let was_current = index == self.playlist.current_index;
+        let was_playing = !matches!(*self.player.state(), crate::engine::PlayerState::Stopped);
         self.playlist.remove(index);
 
         if self.playlist.is_empty() {
             let _ = self.player.stop();
-            None
+            Some(String::new())
         } else if was_current {
-            self.play_current()
+            if was_playing {
+                self.play_current()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            }
         } else {
             None
         }

@@ -1114,15 +1114,16 @@ fn open_id3_editor_window(
 
             match write_tag_fields(&path, &new_fields) {
                 Ok(()) => {
-                    for track in &mut state_s.borrow_mut().playlist.tracks {
-                        if track.path == path {
-                            if let Ok(fresh) = crate::model::Track::from_path(&path) {
-                                track.title = fresh.title;
-                                track.artist = fresh.artist;
-                                track.album_artist = fresh.album_artist;
-                                track.album = fresh.album;
+                    // EVERY matching playlist row updates — a file queued
+                    // more than once must not keep stale tags on later rows.
+                    if let Ok(fresh) = crate::model::Track::from_path(&path) {
+                        for track in &mut state_s.borrow_mut().playlist.tracks {
+                            if track.path == path {
+                                track.title = fresh.title.clone();
+                                track.artist = fresh.artist.clone();
+                                track.album_artist = fresh.album_artist.clone();
+                                track.album = fresh.album.clone();
                             }
-                            break;
                         }
                     }
 
@@ -1167,6 +1168,10 @@ fn open_id3_editor_window(
                         if let Some(ref cb) = rebuild_ml {
                             cb();
                         }
+                        // The ML playlist editor shows the same DB rows —
+                        // reload its open playlist so the edited tags land
+                        // there immediately too.
+                        notify_editor_refresh();
                         glib::ControlFlow::Break
                     });
                 }

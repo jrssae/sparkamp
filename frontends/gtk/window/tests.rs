@@ -413,11 +413,27 @@ mod tests {
     }
 
     #[test]
-    fn remove_last_remaining_track_stops_player_and_returns_none() {
+    fn remove_last_remaining_track_stops_player_and_clears_the_marquee() {
         let mut s = state_with_tracks(&["A"]);
         let result = s.remove_track(0);
-        assert!(result.is_none());
+        // Some("") tells the caller to blank the marquee — the removed
+        // song's name must not linger after the playlist empties.
+        assert_eq!(result.as_deref(), Some(""));
         assert!(s.playlist.is_empty());
+    }
+
+    #[test]
+    fn remove_current_row_while_stopped_does_not_start_playback() {
+        let mut s = state_with_tracks(&["A", "B", "C"]);
+        s.playlist.jump_to(1);
+        let result = s.remove_track(1);
+        // Marquee reflects the new current row, but nothing plays.
+        assert_eq!(result.as_deref(), Some("C"));
+        assert!(matches!(
+            *s.player.state(),
+            crate::engine::PlayerState::Stopped
+        ));
+        assert_eq!(s.playlist.current_index, 1);
     }
 
     #[test]

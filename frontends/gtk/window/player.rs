@@ -3789,9 +3789,10 @@ pub fn build(
                     return;
                 }
             }
-            if !state_rc.borrow().config.disc.auto_show_inserted_audio_cd {
-                return;
-            }
+            // No auto-show gate here: the poll also drives the playlist
+            // invalidation for removed/swapped discs, which must run even
+            // when the auto-open setting is off. The setting gates only the
+            // open-the-library reaction below.
             in_flight.set(true);
             let state_rc = state_rc.clone();
             let btn_ml_watch = btn_ml_watch.clone();
@@ -3812,8 +3813,63 @@ pub fn build(
                                 .any(|o| o.id == d.id && o.media.is_audio_cd)
                     })
                     .map(|d| d.id.clone());
+                // Disc removed or swapped: every active-playlist row still
+                // streaming from that drive is dead — mark it broken NOW
+                // (event-driven) instead of waiting for a read error, stop
+                // the player if the current row was one, and repaint.
+                let invalidated: Vec<String> = prev
+                    .borrow()
+                    .iter()
+                    .filter(|old| {
+                        if !old.media.is_audio_cd {
+                            return false;
+                        }
+                        let now = drives.iter().find(|d| d.id == old.id);
+                        !now.map(|n| n.media.is_audio_cd && n.toc == old.toc)
+                            .unwrap_or(false)
+                    })
+                    .map(|old| old.id.clone())
+                    .collect();
+                if !invalidated.is_empty() {
+                    let rebuild_pl = {
+                        let mut s = state_rc.borrow_mut();
+                        let cur = s.playlist.current_index;
+                        let mut touched = false;
+                        let mut current_dead = false;
+                        for (i, t) in s.playlist.tracks.iter_mut().enumerate() {
+                            let path = t.path.to_string_lossy();
+                            let on_gone_drive = crate::disc::parse_cdda_uri(&path)
+                                .and_then(|(_, dev)| dev)
+                                .map(|dev| invalidated.iter().any(|id| id == dev))
+                                .unwrap_or(false);
+                            if on_gone_drive && !t.broken {
+                                t.broken = true;
+                                touched = true;
+                                if i == cur {
+                                    current_dead = true;
+                                }
+                            }
+                        }
+                        if current_dead
+                            && !matches!(*s.player.state(), PlayerState::Stopped)
+                        {
+                            let _ = s.player.stop();
+                        }
+                        if touched {
+                            s.rebuild_pl_callback.clone()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(cb) = rebuild_pl {
+                        cb();
+                    }
+                }
                 *prev.borrow_mut() = drives;
                 let Some(id) = inserted else { return };
+                if !state_rc.borrow().config.disc.auto_show_inserted_audio_cd {
+                    return;
+                }
                 state_rc.borrow_mut().pending_disc_nav = Some(id);
                 // Bring the Media Library up: present the existing window, or
                 // create it through the toolbar button's own handler.
