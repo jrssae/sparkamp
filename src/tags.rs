@@ -245,3 +245,94 @@ pub(crate) fn read_symphonia_basic(path: &Path) -> Option<(String, String, Strin
         t.album.unwrap_or_default(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use id3::TagLike;
+
+    /// A temp "mp3" that is really just an ID3v2 tag — enough for the ID3
+    /// strategy (Symphonia never runs when ID3 succeeds).
+    fn tagged_file(build: impl FnOnce(&mut id3::Tag)) -> tempfile::NamedTempFile {
+        let f = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
+        let mut tag = id3::Tag::new();
+        build(&mut tag);
+        tag.write_to_path(f.path(), id3::Version::Id3v24).unwrap();
+        f
+    }
+
+    #[test]
+    fn reads_the_common_id3_fields() {
+        let f = tagged_file(|t| {
+            t.set_title("Song");
+            t.set_artist("Band");
+            t.set_album("Album");
+            t.set_album_artist("Various");
+            t.set_genre("Rock");
+            t.set_year(2001);
+            t.set_track(3);
+            t.set_disc(1);
+            t.set_total_discs(2);
+        });
+        let tags = read_track_tags(f.path());
+        assert_eq!(tags.title.as_deref(), Some("Song"));
+        assert_eq!(tags.artist.as_deref(), Some("Band"));
+        assert_eq!(tags.album.as_deref(), Some("Album"));
+        assert_eq!(tags.album_artist.as_deref(), Some("Various"));
+        assert_eq!(tags.genre.as_deref(), Some("Rock"));
+        assert_eq!(tags.track_num, Some(3));
+        assert_eq!(tags.disc_num, Some(1));
+        assert_eq!(tags.disc_total, Some(2));
+    }
+
+    #[test]
+    fn comment_prefers_the_empty_description_frame() {
+        // Files often carry tool/release COMM frames with a description
+        // (e.g. "PMEDIA NETWORK"); the editor reads/writes the plain one.
+        let f = tagged_file(|t| {
+            t.add_frame(id3::frame::Comment {
+                lang: "eng".into(),
+                description: "RELEASE GROUP".into(),
+                text: "noise".into(),
+            });
+            t.add_frame(id3::frame::Comment {
+                lang: "eng".into(),
+                description: String::new(),
+                text: "the real comment".into(),
+            });
+        });
+        let tags = read_track_tags(f.path());
+        assert_eq!(tags.comment.as_deref(), Some("the real comment"));
+    }
+
+    #[test]
+    fn comment_falls_back_to_the_first_frame_when_none_is_plain() {
+        let f = tagged_file(|t| {
+            t.add_frame(id3::frame::Comment {
+                lang: "eng".into(),
+                description: "only".into(),
+                text: "described comment".into(),
+            });
+        });
+        let tags = read_track_tags(f.path());
+        assert_eq!(tags.comment.as_deref(), Some("described comment"));
+    }
+
+    #[test]
+    fn text_fields_are_sanitized() {
+        let f = tagged_file(|t| {
+            t.set_title("Bad\0Title");
+        });
+        let tags = read_track_tags(f.path());
+        assert_eq!(tags.title.as_deref(), Some("BadTitle"));
+    }
+
+    #[test]
+    fn missing_or_untagged_file_yields_defaults() {
+        let tags = read_track_tags(std::path::Path::new("/definitely/not/here.mp3"));
+        assert!(tags.title.is_none());
+        assert!(tags.artist.is_none());
+        assert!(tags.track_num.is_none());
+        assert!(tags.comment.is_none());
+    }
+}

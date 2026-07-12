@@ -441,3 +441,112 @@ impl Controller<'_> {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Track;
+    use std::path::PathBuf;
+
+    /// Everything a `Controller` borrows, owned by the test. The Player needs
+    /// GStreamer initialized (element creation only — nothing plays).
+    struct Fixture {
+        player: Player,
+        playlist: Playlist,
+        config: Config,
+        shuffle: ShuffleState,
+    }
+
+    impl Fixture {
+        fn new(tracks: usize) -> Self {
+            gstreamer::init().expect("GStreamer must be available for tests");
+            let mut playlist = Playlist::new();
+            for i in 0..tracks {
+                playlist.add(Track {
+                    path: PathBuf::from(format!("/fake/{i}.mp3")),
+                    title: format!("T{i}"),
+                    artist: String::new(),
+                    album_artist: String::new(),
+                    album: String::new(),
+                    duration: None,
+                    broken: false,
+                    read_only: false,
+                });
+            }
+            Fixture {
+                player: Player::new().expect("Player::new"),
+                playlist,
+                config: Config::default(),
+                shuffle: ShuffleState::new(),
+            }
+        }
+
+        fn ctrl(&mut self) -> Controller<'_> {
+            Controller {
+                player: &mut self.player,
+                playlist: &mut self.playlist,
+                config: &mut self.config,
+                shuffle_state: &mut self.shuffle,
+            }
+        }
+    }
+
+    #[test]
+    fn adjust_volume_clamps_both_ends_and_returns_the_result() {
+        let mut f = Fixture::new(0);
+        assert_eq!(f.ctrl().adjust_volume(10.0), 1.0);
+        assert_eq!(f.ctrl().adjust_volume(-10.0), 0.0);
+        let v = f.ctrl().adjust_volume(0.25);
+        assert!((v - 0.25).abs() < 1e-9);
+        assert!((f.config.playback.volume - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_eq_band_clamps_to_plus_minus_12_and_stores() {
+        let mut f = Fixture::new(0);
+        assert_eq!(f.ctrl().set_eq_band(0, 40.0), 12.0);
+        assert_eq!(f.ctrl().set_eq_band(0, -40.0), -12.0);
+        assert_eq!(f.ctrl().set_eq_band(3, 5.5), 5.5);
+        assert_eq!(f.config.equalizer.bands[3], 5.5);
+    }
+
+    #[test]
+    fn set_preamp_clamps_to_half_through_one_and_a_half() {
+        let mut f = Fixture::new(0);
+        assert_eq!(f.ctrl().set_preamp(9.0), 1.5);
+        assert_eq!(f.ctrl().set_preamp(0.0), 0.5);
+        assert_eq!(f.ctrl().set_preamp(1.2), 1.2);
+        assert_eq!(f.config.equalizer.preamp, 1.2);
+    }
+
+    #[test]
+    fn reset_eq_to_flat_zeroes_every_band_and_names_the_preset() {
+        let mut f = Fixture::new(0);
+        f.ctrl().set_eq_band(2, 8.0);
+        f.ctrl().reset_eq_to_flat();
+        assert!(f.config.equalizer.bands.iter().all(|b| *b == 0.0));
+        assert_eq!(f.config.equalizer.preset, "Flat");
+    }
+
+    #[test]
+    fn cycle_eq_preset_changes_the_stored_preset() {
+        let mut f = Fixture::new(0);
+        let before = f.config.equalizer.preset.clone();
+        f.ctrl().cycle_eq_preset();
+        assert_ne!(f.config.equalizer.preset, before);
+    }
+
+    #[test]
+    fn seek_delta_without_a_loaded_pipeline_is_a_noop() {
+        // Stopped player has no position/duration — must not panic or seek.
+        let mut f = Fixture::new(1);
+        f.ctrl().seek_delta_secs(30.0);
+        f.ctrl().seek_delta_secs(-30.0);
+    }
+
+    #[test]
+    fn play_current_with_empty_playlist_reports_no_track() {
+        let mut f = Fixture::new(0);
+        assert!(matches!(f.ctrl().play_current(), PlayResult::NoTrack));
+    }
+}

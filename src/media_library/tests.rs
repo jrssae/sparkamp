@@ -1213,3 +1213,54 @@ fn playlist_baseline_crud() {
     lib.delete_playlist_baseline("UUID-1234", 42).unwrap();
     assert!(lib.playlist_baselines_for_device("UUID-1234").unwrap().is_empty());
 }
+
+// ── search_tracks / search_tracks_sorted ────────────────────────────────
+
+#[test]
+fn search_tracks_matches_case_insensitive_substrings() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path).unwrap();
+
+    assert_eq!(lib.search_tracks("TRACK_").unwrap().len(), 3);
+    let one = lib.search_tracks("track_1").unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].filename, "track_1.mp3");
+    assert!(lib.search_tracks("zzz-no-match").unwrap().is_empty());
+}
+
+#[test]
+fn search_tracks_with_empty_query_returns_nothing() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 2);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path).unwrap();
+
+    // Consistent with the jump window: empty (or whitespace) query = empty
+    // result, not "everything".
+    assert!(lib.search_tracks("").unwrap().is_empty());
+    assert!(lib.search_tracks("   ").unwrap().is_empty());
+}
+
+#[test]
+fn search_words_all_have_to_match_and_sort_is_honored() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path).unwrap();
+
+    // Two words AND together: "track" hits all, "_2" narrows to one.
+    let hits = lib.search_tracks("track _2").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].filename, "track_2.mp3");
+
+    // Descending filename sort puts track_2 first.
+    let sorted = lib.search_tracks_sorted("track", "filename", true).unwrap();
+    assert_eq!(sorted.len(), 3);
+    assert_eq!(sorted[0].filename, "track_2.mp3");
+    assert_eq!(sorted[2].filename, "track_0.mp3");
+}

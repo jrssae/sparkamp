@@ -104,3 +104,51 @@ impl Drop for DurationCache {
         self.save_if_dirty();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_at(path: PathBuf) -> DurationCache {
+        DurationCache {
+            data: CacheData::default(),
+            path,
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn insert_then_get_round_trips_and_sets_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = cache_at(dir.path().join("cache.toml"));
+        let p = Path::new("/music/a.mp3");
+        assert!(c.get(p).is_none());
+        c.insert(p, Duration::from_secs(185));
+        assert!(c.dirty);
+        assert_eq!(c.get(p), Some(Duration::from_secs(185)));
+        assert!(c.get(Path::new("/music/other.mp3")).is_none());
+    }
+
+    #[test]
+    fn save_if_dirty_writes_once_and_survives_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sub").join("cache.toml");
+        let mut c = cache_at(file.clone());
+        c.insert(Path::new("/music/a.mp3"), Duration::from_nanos(1_500_000_000));
+        c.save_if_dirty();
+        assert!(!c.dirty, "successful save clears the dirty flag");
+        assert!(file.exists());
+
+        // A clean cache doesn't rewrite: truncate, save again, still empty.
+        std::fs::write(&file, "").unwrap();
+        c.save_if_dirty();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+
+        // The written TOML parses back to the same entry.
+        c.dirty = true;
+        c.save_if_dirty();
+        let reloaded: CacheData =
+            toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(reloaded.durations.get("/music/a.mp3"), Some(&1_500_000_000));
+    }
+}
