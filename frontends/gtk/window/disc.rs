@@ -1014,7 +1014,8 @@ pub(super) fn connect_eject(
                 return;
             }
         }
-        btn.set_sensitive(false);
+        // Spinner replaces the label while the tray moves (mac "Ejecting…").
+        super::set_button_busy(btn, true, "Eject");
         status.set_text("Ejecting…");
         let btn = btn.clone();
         let status = status.clone();
@@ -1023,7 +1024,7 @@ pub(super) fn connect_eject(
             let result = gio::spawn_blocking(move || crate::disc::detect::eject(&id))
                 .await
                 .unwrap_or_else(|_| Err("eject task failed".into()));
-            btn.set_sensitive(true);
+            super::set_button_busy(&btn, false, "Eject");
             match result {
                 Ok(()) => {
                     status.set_text("");

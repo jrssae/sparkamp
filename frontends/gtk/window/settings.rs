@@ -413,6 +413,61 @@ fn open_settings_window(
         }
         grid.attach(&chk_autocd, 1, 3, 1, 1);
 
+        // gnudb test mode (mirrors the macOS Settings toggle).
+        let lbl_gnudb_test = Label::builder()
+            .label("gnudb submissions")
+            .halign(Align::Start)
+            .build();
+        lbl_gnudb_test.set_tooltip_text(Some(
+            "gnudb validates test submissions without publishing them. \
+             Turn off once a real submission is confirmed working.",
+        ));
+        grid.attach(&lbl_gnudb_test, 0, 4, 1, 1);
+        let chk_gnudb_test = CheckButton::with_label("Submit in test mode");
+        chk_gnudb_test.set_active(state.borrow().config.disc.gnudb_submit_mode_test);
+        {
+            let state_rc = state.clone();
+            chk_gnudb_test.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.disc.gnudb_submit_mode_test = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_gnudb_test, 1, 4, 1, 1);
+
+        // OS handler registration shortcut (mirrors the macOS "Open CDs &
+        // DVDs Settings…" button): GNOME's "CD audio" handler choice lives
+        // in Settings → Removable Media. We never write that preference
+        // ourselves — the user points it at Sparkamp once there.
+        let lbl_handler = Label::builder()
+            .label("System CD handler")
+            .halign(Align::Start)
+            .build();
+        lbl_handler.set_tooltip_text(Some(
+            "To have GNOME launch Sparkamp automatically on insert, pick it \
+             under \"CD audio\" in Settings → Removable Media.",
+        ));
+        grid.attach(&lbl_handler, 0, 5, 1, 1);
+        let btn_handler = Button::with_label("Open Removable Media Settings…");
+        btn_handler.add_css_class("pl-btn");
+        {
+            let win_alert = win.clone();
+            btn_handler.connect_clicked(move |_| {
+                let launched = std::process::Command::new("gnome-control-center")
+                    .arg("removable-media")
+                    .spawn()
+                    .is_ok();
+                if !launched {
+                    show_alert_parented(
+                        Some(&win_alert),
+                        "Couldn't open GNOME Settings. Open Settings → Removable \
+                         Media yourself and pick Sparkamp under \"CD audio\".",
+                    );
+                }
+            });
+        }
+        grid.attach(&btn_handler, 1, 5, 1, 1);
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
