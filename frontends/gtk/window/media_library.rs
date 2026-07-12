@@ -2358,6 +2358,26 @@ fn open_media_library_window(
         .build();
     disc_overview_title.add_css_class("ml-section-header");
     disc_overview.append(&disc_overview_title);
+    // Dismissible disconnect notice (Phase 7): shown when the drive being
+    // viewed vanishes mid-session — mac's overview banner, GTK dress.
+    let disc_disconnect_row = GtkBox::new(Orientation::Horizontal, 6);
+    disc_disconnect_row.set_visible(false);
+    let disc_disconnect_lbl = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .hexpand(true)
+        .wrap(true)
+        .build();
+    disc_disconnect_lbl.add_css_class("broken");
+    let disc_disconnect_dismiss = Button::with_label("✕");
+    disc_disconnect_dismiss.add_css_class("pl-btn");
+    {
+        let row = disc_disconnect_row.clone();
+        disc_disconnect_dismiss.connect_clicked(move |_| row.set_visible(false));
+    }
+    disc_disconnect_row.append(&disc_disconnect_lbl);
+    disc_disconnect_row.append(&disc_disconnect_dismiss);
+    disc_overview.append(&disc_disconnect_row);
     let disc_overview_list = GtkBox::new(Orientation::Vertical, 12);
     disc_overview_list.set_margin_top(6);
     disc_overview.append(&disc_overview_list);
@@ -7601,6 +7621,9 @@ fn open_media_library_window(
         let disc_detecting = disc_detecting.clone();
         let disc_detect_spinner = disc_detect_spinner.clone();
         let rip_active = rip_active.clone();
+        let disconnect_row = disc_disconnect_row.clone();
+        let disconnect_lbl = disc_disconnect_lbl.clone();
+        let entries_store = current_disc_entries.clone();
         let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
             if in_flight.get() {
@@ -7636,6 +7659,9 @@ fn open_media_library_window(
             let disc_detecting = disc_detecting.clone();
             let disc_detect_spinner = disc_detect_spinner.clone();
             let state = state.clone();
+            let disconnect_row = disconnect_row.clone();
+            let disconnect_lbl = disconnect_lbl.clone();
+            let entries_store = entries_store.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
                 // Shared cached poll: an unchanged loaded disc is answered by
@@ -7721,10 +7747,19 @@ fn open_media_library_window(
                         }
                     }
                 }
-                // Unplug fallback: if the drive being viewed disappeared, return
-                // to the discs overview.
+                // Unplug fallback (Phase 7): the drive being viewed vanished —
+                // invalidate the loaded-disc session (entries cleared, so
+                // nothing stale can be added/ripped), return to the discs
+                // overview, and say so in the dismissible banner instead of
+                // silently dropping out. In-flight subprocess ops die with
+                // the device (unchanged).
                 if let Some(sel) = selected_disc_id.borrow().clone() {
                     if !drives.iter().any(|d| d.id == sel) {
+                        entries_store.borrow_mut().clear();
+                        disconnect_lbl.set_text(
+                            "Drive disconnected — reconnect it to continue with the disc.",
+                        );
+                        disconnect_row.set_visible(true);
                         if let Some(r) = find_row_by_name(&sidebar, "discs") {
                             sidebar.select_row(Some(&r));
                         }
@@ -7775,6 +7810,7 @@ fn open_media_library_window(
         let rebuild_overview = rebuild_disc_overview.clone();
         let sel_id = selected_disc_id.clone();
         let exp = discs_expanded.clone();
+        let disconnect_row = disc_disconnect_row.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
@@ -7790,6 +7826,8 @@ fn open_media_library_window(
             } else if let Some(id) = name.strip_prefix("disc:") {
                 stack_ref.set_visible_child_name("discs");
                 if let Some(d) = drives.borrow().iter().find(|d| d.id == id) {
+                    // Opening a drive supersedes any disconnect notice.
+                    disconnect_row.set_visible(false);
                     overview.set_visible(false);
                     detail.set_visible(true);
                     populate(d);

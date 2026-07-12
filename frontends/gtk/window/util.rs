@@ -184,7 +184,7 @@ fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
 
 /// Embedded app logo PNG bytes (compiled into the binary).
 /// Replace `square logo.png` in the project root with the SparkAmp logo asset.
-static LOGO_BYTES: &[u8] = include_bytes!("../../square logo.png");
+static LOGO_BYTES: &[u8] = include_bytes!("../../../square logo.png");
 
 /// Load the app logo as a pixbuf scaled to `size × size` pixels.
 /// Returns `None` if the PNG fails to decode (handled gracefully so the
