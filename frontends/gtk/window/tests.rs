@@ -583,47 +583,59 @@ mod tests {
         assert_eq!(fmt_duration(Some(Duration::from_secs(65))), "1:05");
     }
 
-    // ── AppState::apply_probed_duration ───────────────────────────────────────
+    // ── AppState::apply_probed_durations (batch) ─────────────────────────────
 
-    #[test]
-    fn apply_probed_duration_sets_track_duration() {
-        let mut s = make_state();
-        s.playlist.add(fake_track("Song"));
-        let path = s.playlist.tracks[0].path.clone();
-        let dur = Duration::from_secs(180);
-        let _ = s.apply_probed_duration(&path, dur);
-        assert_eq!(s.playlist.tracks[0].duration, Some(dur));
+    fn batch_of(entries: &[(&std::path::Path, Duration)])
+        -> std::collections::HashMap<std::path::PathBuf, Duration>
+    {
+        entries.iter().map(|(p, d)| (p.to_path_buf(), *d)).collect()
     }
 
     #[test]
-    fn apply_probed_duration_inserts_into_cache() {
+    fn apply_probed_durations_sets_every_matching_row_in_one_pass() {
+        let mut s = make_state();
+        s.playlist.add(fake_track("Song"));
+        s.playlist.add(fake_track("Other"));
+        // The same file queued twice — BOTH rows must receive the duration.
+        s.playlist.add(fake_track("Song"));
+        let path = s.playlist.tracks[0].path.clone();
+        let dur = Duration::from_secs(180);
+        let changed = s.apply_probed_durations(&batch_of(&[(&path, dur)]));
+        assert_eq!(changed, vec![0, 2]);
+        assert_eq!(s.playlist.tracks[0].duration, Some(dur));
+        assert_eq!(s.playlist.tracks[2].duration, Some(dur));
+        assert_eq!(s.playlist.tracks[1].duration, None);
+    }
+
+    #[test]
+    fn apply_probed_durations_inserts_into_cache() {
         let mut s = make_state();
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
-        let _ = s.apply_probed_duration(&path, Duration::from_secs(120));
+        let _ = s.apply_probed_durations(&batch_of(&[(&path, Duration::from_secs(120))]));
         assert!(s.duration_cache.dirty);
         assert_eq!(s.duration_cache.get(&path), Some(Duration::from_secs(120)));
     }
 
     #[test]
-    fn apply_probed_duration_updates_last_duration_for_current_stopped_track() {
+    fn apply_probed_durations_updates_last_duration_for_current_stopped_track() {
         let mut s = make_state();
         s.playlist.add(fake_track("Song"));
         let path = s.playlist.tracks[0].path.clone();
         let dur = Duration::from_secs(200);
-        let _ = s.apply_probed_duration(&path, dur);
+        let _ = s.apply_probed_durations(&batch_of(&[(&path, dur)]));
         // Player is Stopped (freshly created), current track matches → last_duration set.
         assert_eq!(s.last_duration, Some(dur));
     }
 
     #[test]
-    fn apply_probed_duration_does_not_update_last_duration_for_non_current_track() {
+    fn apply_probed_durations_does_not_update_last_duration_for_non_current_track() {
         let mut s = make_state();
         s.playlist.add(fake_track("A"));
         s.playlist.add(fake_track("B"));
         s.playlist.current_index = 0;
         let path_b = s.playlist.tracks[1].path.clone();
-        let _ = s.apply_probed_duration(&path_b, Duration::from_secs(99));
+        let _ = s.apply_probed_durations(&batch_of(&[(&path_b, Duration::from_secs(99))]));
         // Track B is not current → last_duration unchanged.
         assert_eq!(s.last_duration, None);
     }

@@ -28,9 +28,11 @@ fn draw_zoned_bar(
     let half_gap = 0.75;
     let bar_w = bar_w - half_gap;
 
+    // Parse the hex colors once per draw — the closure runs per zone per
+    // bar at 30 fps.
+    let parsed: Vec<(f64, f64, f64)> = zone_colors.iter().map(|c| parse_hex_color(c)).collect();
     let get_color = |zone: usize| -> (f64, f64, f64) {
-        let idx = zone.min(zone_colors.len().saturating_sub(1));
-        parse_hex_color(&zone_colors[idx])
+        parsed[zone.min(parsed.len().saturating_sub(1))]
     };
 
     if mirror {
@@ -123,9 +125,10 @@ fn draw_waveform(
         ((frac * num_zones as f64) as usize).min(num_zones - 1)
     };
 
+    // Parsed once per draw — the closure runs per waveform segment at 30 fps.
+    let parsed: Vec<(f64, f64, f64)> = zone_colors.iter().map(|c| parse_hex_color(c)).collect();
     let get_color = |zone: usize| -> (f64, f64, f64) {
-        let idx = zone.min(zone_colors.len().saturating_sub(1));
-        parse_hex_color(&zone_colors[idx])
+        parsed[zone.min(parsed.len().saturating_sub(1))]
     };
 
     // sample ∈ [-1, 1] → y = center - sample × (center × 0.9)

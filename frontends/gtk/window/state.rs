@@ -511,24 +511,40 @@ impl AppState {
             .collect()
     }
 
-    fn apply_probed_duration(&mut self, path: &std::path::PathBuf, dur: Duration) -> Option<usize> {
-        let mut found_idx = None;
+    /// Apply a batch of background probe results in ONE playlist pass.
+    ///
+    /// Results arrive hundreds at a time while a big folder scans; the old
+    /// one-result-at-a-time version rescanned the whole playlist per result
+    /// (O(rows × results) — ~8.5M path compares per tick on a 17k playlist),
+    /// stalling the UI thread exactly when the playlist is busiest. It also
+    /// stopped at the first match, so duplicate rows of the same file never
+    /// received their duration.
+    ///
+    /// Returns the indices of every updated row for per-row repaints.
+    fn apply_probed_durations(
+        &mut self,
+        batch: &std::collections::HashMap<std::path::PathBuf, Duration>,
+    ) -> Vec<usize> {
+        let mut changed = Vec::new();
         for (i, track) in self.playlist.tracks.iter_mut().enumerate() {
-            if &track.path == path {
-                track.duration = Some(dur);
-                found_idx = Some(i);
-                break;
+            if track.duration.is_none() {
+                if let Some(dur) = batch.get(&track.path) {
+                    track.duration = Some(*dur);
+                    changed.push(i);
+                }
             }
         }
-        self.duration_cache.insert(path, dur);
+        for (path, dur) in batch {
+            self.duration_cache.insert(path, *dur);
+        }
         // Refresh last_duration so the seek bar shows correct time right away
         // when the player is stopped (GStreamer reports None from a Null pipeline).
         if *self.player.state() == PlayerState::Stopped {
-            if self.playlist.current().map(|t| &t.path) == Some(path) {
-                self.last_duration = Some(dur);
+            if let Some(dur) = self.playlist.current().and_then(|t| batch.get(&t.path)) {
+                self.last_duration = Some(*dur);
             }
         }
-        found_idx
+        changed
     }
 
     /// Format a time display string for the given seek `fraction` [0.0, 1.0].

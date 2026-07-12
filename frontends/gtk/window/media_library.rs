@@ -774,11 +774,26 @@ fn open_media_library_window(
     let (dev_search_row, dev_search_entry) =
         make_view_search_row("Search this device — artist, title, album…");
     {
+        // 150 ms debounce: the filter re-scans every row's text fields, so
+        // re-running it per keystroke stutters on large device libraries.
         let q = dev_search_query.clone();
         let filter = dev_filter.clone();
+        let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         dev_search_entry.connect_changed(move |e| {
-            *q.borrow_mut() = e.text().to_lowercase();
-            filter.changed(gtk4::FilterChange::Different);
+            let text = e.text().to_lowercase();
+            if let Some(src) = pending.borrow_mut().take() {
+                src.remove();
+            }
+            let q = q.clone();
+            let filter = filter.clone();
+            let pending_inner = pending.clone();
+            let src = glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                *q.borrow_mut() = text.clone();
+                filter.changed(gtk4::FilterChange::Different);
+                pending_inner.borrow_mut().take();
+                glib::ControlFlow::Break
+            });
+            *pending.borrow_mut() = Some(src);
         });
     }
     let dev_sort_model = SortListModel::new(Some(dev_filter_model), None::<gtk4::Sorter>);
@@ -4160,11 +4175,26 @@ fn open_media_library_window(
     let (pl_search_row, pl_search_entry) =
         make_view_search_row("Search this playlist — artist, title, album…");
     {
+        // 150 ms debounce — same rationale as the device search: the filter
+        // walks every row per change, heavy on multi-thousand-row playlists.
         let q = pl_edit_query.clone();
         let filter = edit_filter.clone();
+        let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         pl_search_entry.connect_changed(move |e| {
-            *q.borrow_mut() = e.text().to_lowercase();
-            filter.changed(gtk4::FilterChange::Different);
+            let text = e.text().to_lowercase();
+            if let Some(src) = pending.borrow_mut().take() {
+                src.remove();
+            }
+            let q = q.clone();
+            let filter = filter.clone();
+            let pending_inner = pending.clone();
+            let src = glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                *q.borrow_mut() = text.clone();
+                filter.changed(gtk4::FilterChange::Different);
+                pending_inner.borrow_mut().take();
+                glib::ControlFlow::Break
+            });
+            *pending.borrow_mut() = Some(src);
         });
     }
     let edit_sort_model = gtk4::SortListModel::new(

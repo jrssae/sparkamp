@@ -2435,18 +2435,23 @@ pub fn build(
             // a large library delivers thousands of results at once.
             let is_scanning = state.borrow().playlist_scan.is_some();
             let probe_cap = if is_scanning { 50usize } else { 500usize };
-            let mut probes_this_tick = 0usize;
-            while probes_this_tick < probe_cap {
+            // Drain into a batch first, then apply in ONE playlist pass —
+            // a per-result pass was O(rows × results) and stalled this tick
+            // on large playlists.
+            let mut probe_batch: std::collections::HashMap<std::path::PathBuf, Duration> =
+                std::collections::HashMap::new();
+            while probe_batch.len() < probe_cap {
                 let Ok((path, dur)) = probe_rx.try_recv() else {
                     break;
                 };
-                // Bind the return value to a `let` so the temporary RefMut is
-                // dropped at the semicolon — before patch_pl_row tries to borrow.
-                let probed_idx = state.borrow_mut().apply_probed_duration(&path, dur);
-                if let Some(idx) = probed_idx {
+                probe_batch.insert(path, dur);
+            }
+            if !probe_batch.is_empty() {
+                // Bind so the RefMut drops before patch_pl_row borrows again.
+                let changed = state.borrow_mut().apply_probed_durations(&probe_batch);
+                for idx in changed {
                     patch_pl_row(idx);
                 }
-                probes_this_tick += 1;
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.
             while let Ok(path) = broken_rx.try_recv() {

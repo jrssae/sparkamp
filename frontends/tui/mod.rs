@@ -779,22 +779,38 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub fn tick(&mut self) {
-        // 1. Async probe results.
+        // 1. Async probe results — drain into a batch, then apply in ONE
+        // playlist pass. A per-result pass was O(rows × results) and stalled
+        // the tick while a big folder's probes flooded in; the batch also
+        // fills EVERY duplicate row of the same file, not just the first.
+        let mut probe_batch: std::collections::HashMap<PathBuf, Duration> =
+            std::collections::HashMap::new();
         while let Ok((path, dur)) = self.probe_rx.try_recv() {
+            probe_batch.insert(path, dur);
+        }
+        if !probe_batch.is_empty() {
             for track in &mut self.playlist.tracks {
-                if track.path == path && track.duration.is_none() {
-                    track.duration = Some(dur);
-                    self.duration_cache.insert(&path, dur);
-                    break;
+                if track.duration.is_none() {
+                    if let Some(dur) = probe_batch.get(&track.path) {
+                        track.duration = Some(*dur);
+                    }
                 }
             }
+            for (path, dur) in &probe_batch {
+                self.duration_cache.insert(path, *dur);
+            }
         }
-        // 1b. Missing-file notifications from the probe threads.
+        // 1b. Missing-file notifications from the probe threads — same
+        // batching, and every duplicate row goes broken, not just the first.
+        let mut broken_batch: std::collections::HashSet<PathBuf> =
+            std::collections::HashSet::new();
         while let Ok(path) = self.broken_rx.try_recv() {
+            broken_batch.insert(path);
+        }
+        if !broken_batch.is_empty() {
             for track in &mut self.playlist.tracks {
-                if track.path == path {
+                if broken_batch.contains(&track.path) {
                     track.broken = true;
-                    break;
                 }
             }
         }
