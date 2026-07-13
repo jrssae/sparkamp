@@ -28,6 +28,29 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.1.0" date="2026-07-13">
+      <description>
+        <p>Optical disc support across all three frontends: play audio CDs
+        from the Media Library's new Disc Drives section, identify discs via
+        gnudb.org and edit or submit corrected track lists, rip discs to
+        tagged MP3s with per-track progress and automatic library import, and
+        burn audio CDs or MP3 data discs (with a companion playlist) from a
+        dedicated burn queue — including erase-with-confirmation for
+        rewritable media, capacity meters, and cancellable burns. Sparkamp
+        can also act as the system's audio-CD handler: inserting a disc opens
+        the library at that drive (GNOME Removable Media / macOS CDs &amp;
+        DVDs settings; the in-app toggle is on by default).</p>
+        <p>Device sync grows richer file views, playlist management on the
+        device, conflict resolution, and iOS/MTP recognition with honest
+        capability messaging. The Granite visualizer gains a
+        frame-rate-independent core, a Kaleidoscope fold fix with clean
+        crossfades, an honest FPS/render readout naming the active effect,
+        and steadier frame pacing on macOS. Failure handling hardened
+        throughout: drive disconnects surface banners, scratched-disc rips
+        retry then skip, burns report tool failures truthfully, and a
+        watchdog kills wedged burner processes.</p>
+      </description>
+    </release>
     <release version="1.0.3" date="2026-06-13">
       <description>
         <p>Granite becomes a built-in visualizer. The Geiss-inspired plasma now

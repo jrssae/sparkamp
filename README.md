@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v1.0.0** — see [What's New](#whats-new-v100) for everything added in this release.
+> **v1.1.0** — see [What's New](#whats-new-v110) for everything added in this release.
 
 ---
 
@@ -11,6 +11,16 @@ There are a number of various Winamp clones and other audio players available fo
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
 
 ---
+
+## What's New (v1.1.0)
+
+Optical discs land, devices mature, Granite steadies.
+
+- **Optical disc support (all three frontends)** — a new **Disc Drives** section in the Media Library: play audio CDs straight into the playlist, **identify discs via gnudb.org** (with tag editing and upstream submission of corrections), **rip to tagged MP3** with per-track progress and automatic library import, and **burn audio CDs or MP3 data discs** (companion playlist included) from a dedicated burn queue — capacity meters, erase-with-confirmation for rewritable media, write-once refusals, and cancellable burns throughout. (Note: disc *burning* is implemented but still awaiting a healthy drive for hardware verification.)
+- **Default CD player** — Sparkamp can be the system's audio-CD handler: inserting a disc launches/foregrounds the app with the library open at that drive (GNOME Settings → Removable Media; macOS System Settings → CDs & DVDs; in-app auto-open toggle, on by default).
+- **Device sync parity** — richer device file views with full columns and context menus, on-device playlist management (create/rename/duplicate/delete/filter), two-way sync conflict resolution, proper whole-disk eject, and honest recognition of iOS/MTP devices that can't sync music.
+- **Granite refinements** — frame-rate-independent core (delta-time sim), a Kaleidoscope fold fix with clean crossfade dissolves, click-to-cycle on the mini visualizer, an honest fullscreen FPS/render overlay that names the active effect, and steadier frame pacing on macOS.
+- **Hardened failure handling** — drive disconnects surface banners instead of silent resets, scratched-disc rips retry then skip with a truthful report, burn-tool failures are parsed and shown, and a wall-clock watchdog kills wedged burner processes.
 
 ## What's New (v1.0.3)
 
