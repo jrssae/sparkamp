@@ -399,12 +399,16 @@ impl Player {
     // Called by the GTK frontend (Linux bin) and the C FFI (lib); dead in
     // the macOS bin where neither is compiled.
     #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// `dt` is the elapsed time since the previous frame in 30 fps frame
+    /// units (1.0 = 33 ms) — pass the measured frame delta so the plasma
+    /// moves at the same speed at any refresh rate (see `Granite::render`).
     pub fn render_granite(
         &mut self,
         dst: &mut [u8],
         w: u32,
         h: u32,
         cfg: &crate::granite::GraniteConfig,
+        dt: f32,
     ) {
         let t_seconds = self
             .position()
@@ -418,7 +422,7 @@ impl Player {
         let g = self
             .granite
             .get_or_insert_with(|| crate::granite::Granite::new(w, h));
-        g.render(dst, w, h, t_seconds, is_active, &pcm, cfg);
+        g.render(dst, w, h, t_seconds, is_active, &pcm, cfg, dt);
     }
 
     /// Live effect the scheduler is showing this frame. `None` if the

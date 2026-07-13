@@ -23,7 +23,7 @@ const ACCENT_RING: usize = 24;
 
 /// What one frame of audio produced: nothing, a beat, or a beat that lands
 /// on the estimated downbeat (the "1" of the measure).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct BeatTick {
     pub(super) is_beat: bool,
     pub(super) is_downbeat: bool,

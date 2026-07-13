@@ -128,7 +128,9 @@ pub struct Granite {
     next_palette: Option<GranitePalette>,
     current_shape: WaveShape,
     switch_at_frame: u64,
-    crossfade_remaining: u8,
+    /// Frames left in the effect crossfade, in 30 fps frame units —
+    /// fractional so delta-time rendering (60 fps+) advances it smoothly.
+    crossfade_remaining: f32,
     rng: StdRng,
     // Beat reactions.
     beat: BeatDetector,
@@ -138,20 +140,24 @@ pub struct Granite {
     /// stroke so measure starts visibly punch harder than ordinary beats.
     downbeat_glow: f32,
     /// Beat colour change: frames left in the LUT fade from
-    /// `palette_fade_from` to `current_palette`.
-    palette_fade_remaining: u8,
+    /// `palette_fade_from` to `current_palette` (30 fps units, fractional).
+    palette_fade_remaining: f32,
     palette_fade_from: GranitePalette,
     /// While `frame` is below this, the scheduler and beat reactions leave
     /// the palette alone — a user just picked one in Settings.
     palette_hold_until: u64,
     /// Dwell guard so beat-triggered switches never machine-gun.
     last_switch_frame: u64,
+    /// Fractional-frame accumulator: `frame`, the beat detector, and every
+    /// frame-counted window advance in 30 fps units regardless of the real
+    /// call rate — `render(dt)` adds `dt` here and steps whole frames out.
+    frame_acc: f32,
 }
 
 /// ~0.5 s LUT fade when a beat rolls a new palette.
-const PALETTE_FADE_FRAMES: u8 = 15;
+const PALETTE_FADE_FRAMES: f32 = 15.0;
 
-const CROSSFADE_FRAMES: u8 = 30; // ~1 s at 30 fps
+const CROSSFADE_FRAMES: f32 = 30.0; // ~1 s in 30 fps frame units
 const SWITCH_INTERVAL_MIN: u64 = 360;  // 12 s
 const SWITCH_INTERVAL_MAX: u64 = 720;  // 24 s
 
@@ -188,15 +194,16 @@ impl Granite {
             next_palette: None,
             current_shape,
             switch_at_frame: SWITCH_INTERVAL_MIN,
-            crossfade_remaining: 0,
+            crossfade_remaining: 0.0,
             rng,
             beat: BeatDetector::new(),
             beat_glow: 0.0,
             downbeat_glow: 0.0,
-            palette_fade_remaining: 0,
+            palette_fade_remaining: 0.0,
             palette_fade_from: current_palette,
             palette_hold_until: 0,
             last_switch_frame: 0,
+            frame_acc: 0.0,
         };
         g.resize(w, h);
         g
@@ -217,7 +224,7 @@ impl Granite {
         self.map_current = generate_warp_map(self.current, w, h, &mut self.rng);
         self.map_next = None;
         self.next = None;
-        self.crossfade_remaining = 0;
+        self.crossfade_remaining = 0.0;
     }
 
     /// Manually pin the active effect (used when the user picks one in
@@ -228,7 +235,7 @@ impl Granite {
         self.next = None;
         self.next_palette = None;
         self.map_next = None;
-        self.crossfade_remaining = 0;
+        self.crossfade_remaining = 0.0;
         self.map_current = generate_warp_map(effect, self.w, self.h, &mut self.rng);
         self.last_switch_frame = self.frame;
         // Push the next auto-switch out by ~20 s.
@@ -243,7 +250,7 @@ impl Granite {
     pub fn set_palette(&mut self, palette: GranitePalette) {
         self.current_palette = palette;
         self.next_palette = None;
-        self.palette_fade_remaining = 0;
+        self.palette_fade_remaining = 0.0;
         self.palette_hold_until = self.frame + 600;
     }
 
@@ -253,6 +260,15 @@ impl Granite {
     /// scope shape (line / circle / square / etc.) is stamped INTO the
     /// feedback buffer as bright ink. The warp then carries that ink on every
     /// following frame — the dissolve is structural, not an overlay.
+    /// `dt` is the elapsed time since the previous call in **30 fps frame
+    /// units** (1.0 = the legacy 33 ms step; 0.5 at 60 fps; any refresh rate
+    /// works). Every per-frame quantity scales through it — warp advance,
+    /// trail decay, glow tails, crossfade windows — while `frame`, the beat
+    /// detector, and the scheduler step at a fixed 30 Hz cadence via an
+    /// internal accumulator, so the plasma's SPEED and FEEL are identical at
+    /// 30, 60, or 144 fps. `dt = 1.0` reproduces the historical behaviour
+    /// bit-for-bit (pow(x, 1) = x, exact).
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         dst: &mut [u8],
@@ -262,19 +278,24 @@ impl Granite {
         is_active: bool,
         waveform: &[f32],
         cfg: &GraniteConfig,
+        dt: f32,
     ) {
         if w != self.w || h != self.h {
             self.resize(w, h);
         }
         debug_assert_eq!(dst.len(), (w as usize) * (h as usize) * 4);
+        // Guard against clock hiccups (paused debugger, suspended laptop):
+        // never integrate more than a few frames or less than a sliver.
+        let dt = dt.clamp(0.1, 4.0);
 
         let (speed, cfg_palette, feedback) = cfg.clamped();
         let palette_phase = palette_phase_at(t_seconds, speed);
 
         // Inactive: decay the feedback buffer toward black and present it.
         if !is_active {
+            let k = 0.94f32.powf(dt);
             for v in self.prev.iter_mut() {
-                *v *= 0.94;
+                *v *= k;
             }
             let pal = if cfg.auto_switch { self.current_palette } else { cfg_palette };
             let lut = build_lut(pal, palette_phase);
@@ -282,13 +303,21 @@ impl Granite {
             return;
         }
 
-        self.frame = self.frame.wrapping_add(1);
-
         // Beat tick: drives the ink brightness boost; downbeats (the "1" of
         // the estimated measure) drive colour changes and early map switches.
-        let tick = self
-            .beat
-            .process(waveform, cfg.beat_sensitivity.clamp(1.05, 3.0));
+        // The detector's energy windows are calibrated for 30 Hz, so it steps
+        // through the fractional-frame accumulator, not per render call.
+        self.frame_acc += dt;
+        let mut tick = beat::BeatTick::default();
+        while self.frame_acc >= 1.0 {
+            self.frame_acc -= 1.0;
+            self.frame = self.frame.wrapping_add(1);
+            let t = self
+                .beat
+                .process(waveform, cfg.beat_sensitivity.clamp(1.05, 3.0));
+            tick.is_beat |= t.is_beat;
+            tick.is_downbeat |= t.is_downbeat;
+        }
         if tick.is_beat {
             self.beat_glow = 1.0;
         }
@@ -300,8 +329,8 @@ impl Granite {
             // (a pinned palette is the user's explicit choice), and skipped
             // during an effect crossfade, which is already blending palettes.
             if cfg.auto_switch
-                && self.crossfade_remaining == 0
-                && self.palette_fade_remaining == 0
+                && self.crossfade_remaining <= 0.0
+                && self.palette_fade_remaining <= 0.0
                 && self.frame >= self.palette_hold_until
                 && self.rng.gen_bool(0.33)
             {
@@ -311,8 +340,9 @@ impl Granite {
                 self.palette_fade_remaining = PALETTE_FADE_FRAMES;
             }
         }
-        self.beat_glow *= 0.80; // ~5-frame tail
-        self.downbeat_glow *= 0.80;
+        let glow_k = 0.80f32.powf(dt); // ~5-frame tail in 30 fps units
+        self.beat_glow *= glow_k;
+        self.downbeat_glow *= glow_k;
 
         // Scheduler: pick / advance / start crossfades.
         if cfg.auto_switch {
@@ -321,13 +351,13 @@ impl Granite {
             // ≥4 s dwell so it can't thrash. The 12–24 s timer remains the
             // fallback when no beats land.
             if tick.is_downbeat
-                && self.crossfade_remaining == 0
+                && self.crossfade_remaining <= 0.0
                 && self.frame.saturating_sub(self.last_switch_frame) > 120
                 && self.rng.gen_bool(0.25)
             {
                 self.switch_at_frame = self.frame;
             }
-            self.tick_scheduler();
+            self.tick_scheduler(dt);
         } else {
             // User-pinned: snap to the configured effect + palette, drop any
             // in-flight crossfade.
@@ -337,15 +367,15 @@ impl Granite {
             self.next = None;
             self.map_next = None;
             self.next_palette = None;
-            self.crossfade_remaining = 0;
-            self.palette_fade_remaining = 0;
+            self.crossfade_remaining = 0.0;
+            self.palette_fade_remaining = 0.0;
             self.current_palette = cfg_palette;
         }
 
         // Warp: pull the previous frame through the displacement map (lerped
         // toward the incoming map during a crossfade) and decay it.
-        let alpha = if self.crossfade_remaining > 0 {
-            1.0 - (self.crossfade_remaining as f32 / CROSSFADE_FRAMES as f32)
+        let alpha = if self.crossfade_remaining > 0.0 {
+            1.0 - (self.crossfade_remaining / CROSSFADE_FRAMES)
         } else {
             0.0
         };
@@ -357,8 +387,11 @@ impl Granite {
             map_b,
             w,
             h,
-            speed,
-            trail_decay(feedback),
+            // The map encodes one 30 fps step of flow; dt scales how far
+            // along that displacement this frame travels, and the decay is
+            // per-frame retention so it exponentiates by the same dt.
+            speed * dt,
+            trail_decay(feedback).powf(dt),
         );
 
         // Stamp fresh ink into the feedback buffer so the next frame's warp
@@ -385,9 +418,9 @@ impl Granite {
             let la = build_lut(pal_a, palette_phase);
             let lb = build_lut(pb, palette_phase);
             lerp_lut(&la, &lb, alpha)
-        } else if self.palette_fade_remaining > 0 {
-            self.palette_fade_remaining -= 1;
-            let t = 1.0 - (self.palette_fade_remaining as f32 / PALETTE_FADE_FRAMES as f32);
+        } else if self.palette_fade_remaining > 0.0 {
+            self.palette_fade_remaining = (self.palette_fade_remaining - dt).max(0.0);
+            let t = 1.0 - (self.palette_fade_remaining / PALETTE_FADE_FRAMES);
             let la = build_lut(self.palette_fade_from, palette_phase);
             let lb = build_lut(pal_a, palette_phase);
             lerp_lut(&la, &lb, t)
@@ -438,11 +471,11 @@ impl Granite {
     // Scheduler
     // -----------------------------------------------------------------------
 
-    fn tick_scheduler(&mut self) {
+    fn tick_scheduler(&mut self, dt: f32) {
         // Advance an in-flight crossfade.
-        if self.crossfade_remaining > 0 {
-            self.crossfade_remaining -= 1;
-            if self.crossfade_remaining == 0 {
+        if self.crossfade_remaining > 0.0 {
+            self.crossfade_remaining = (self.crossfade_remaining - dt).max(0.0);
+            if self.crossfade_remaining <= 0.0 {
                 if let Some(n) = self.next.take() {
                     self.current = n;
                 }
@@ -463,7 +496,7 @@ impl Granite {
         if self.frame >= self.switch_at_frame {
             // An effect crossfade owns palette blending; drop any beat
             // colour fade still in flight.
-            self.palette_fade_remaining = 0;
+            self.palette_fade_remaining = 0.0;
             let next_eff = random_other_effect(self.current, &mut self.rng);
             self.map_next = Some(generate_warp_map(next_eff, self.w, self.h, &mut self.rng));
             self.next = Some(next_eff);
@@ -496,6 +529,65 @@ mod tests {
     use super::palette::ALL_PALETTES;
     use super::*;
 
+    // ── delta-time behaviour ────────────────────────────────────────────
+
+    /// Two half-frames of inactive decay must land where one whole frame
+    /// does (0.94^0.5 twice == 0.94): the fade speed is refresh-rate
+    /// independent.
+    #[test]
+    fn inactive_decay_is_dt_equivalent() {
+        let mut a = gnew(32, 18);
+        let mut b = gnew(32, 18);
+        let wave = test_wave();
+        let cfg = GraniteConfig::default();
+        let mut da = buf_for(32, 18);
+        let mut db = buf_for(32, 18);
+        // Identical energy into both.
+        for f in 0..5 {
+            a.render(&mut da, 32, 18, f as f32 / 30.0, true, &wave, &cfg, 1.0);
+            b.render(&mut db, 32, 18, f as f32 / 30.0, true, &wave, &cfg, 1.0);
+        }
+        // a: one 30 fps inactive step; b: two 60 fps steps.
+        a.render(&mut da, 32, 18, 0.2, false, &[], &cfg, 1.0);
+        b.render(&mut db, 32, 18, 0.2, false, &[], &cfg, 0.5);
+        b.render(&mut db, 32, 18, 0.2, false, &[], &cfg, 0.5);
+        let max_diff = da
+            .iter()
+            .zip(&db)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap();
+        assert!(max_diff <= 1, "decay diverged by {max_diff} LSB");
+    }
+
+    /// At dt = 0.5 (60 fps) the internal 30 Hz frame counter — which drives
+    /// the beat detector and the switch scheduler — advances at exactly half
+    /// the call rate, so scheduling cadence is refresh-rate independent.
+    #[test]
+    fn fractional_dt_steps_frames_at_thirty_hz() {
+        let mut g = gnew(32, 18);
+        let wave = test_wave();
+        let cfg = GraniteConfig::default();
+        let mut dst = buf_for(32, 18);
+        let start = g.frame;
+        for f in 0..60 {
+            g.render(&mut dst, 32, 18, f as f32 / 60.0, true, &wave, &cfg, 0.5);
+        }
+        assert_eq!(g.frame - start, 30);
+    }
+
+    /// dt is clamped: a wild timestamp (suspended laptop) can't integrate a
+    /// runaway step.
+    #[test]
+    fn dt_is_clamped_to_a_sane_range() {
+        let mut g = gnew(32, 18);
+        let cfg = GraniteConfig::default();
+        let mut dst = buf_for(32, 18);
+        let start = g.frame;
+        g.render(&mut dst, 32, 18, 0.0, true, &test_wave(), &cfg, 1_000.0);
+        assert!(g.frame - start <= 4, "clamp must cap the integrated frames");
+    }
+
     fn buf_for(w: u32, h: u32) -> Vec<u8> {
         vec![0u8; (w * h * 4) as usize]
     }
@@ -522,7 +614,7 @@ mod tests {
     fn render_active_writes_nonzero() {
         let mut g = gnew(64, 36);
         let mut dst = buf_for(64, 36);
-        g.render(&mut dst, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default());
+        g.render(&mut dst, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
         assert!(luminance_total(&dst) > 0);
     }
 
@@ -538,14 +630,14 @@ mod tests {
         };
         let mut g = gnew(64, 36);
         let mut dst = buf_for(64, 36);
-        g.render(&mut dst, 64, 36, 0.0, true, &test_wave(), &cfg);
+        g.render(&mut dst, 64, 36, 0.0, true, &test_wave(), &cfg, 1.0);
         let initial = luminance_total(&dst);
         assert!(initial > 0);
 
         // No new ink from here on; the warp must carry and fade the old ink.
         let mut lums = Vec::new();
         for f in 1..=15 {
-            g.render(&mut dst, 64, 36, f as f32 / 30.0, true, &[], &cfg);
+            g.render(&mut dst, 64, 36, f as f32 / 30.0, true, &[], &cfg, 1.0);
             lums.push(luminance_total(&dst));
         }
         assert!(
@@ -563,12 +655,12 @@ mod tests {
         let mut dst = buf_for(32, 18);
         for f in 0..3 {
             g.render(&mut dst, 32, 18, f as f32 / 30.0, true, &test_wave(),
-                     &GraniteConfig::default());
+                     &GraniteConfig::default(), 1.0);
         }
         let initial = luminance_total(&dst);
         assert!(initial > 0);
         for _ in 0..90 {
-            g.render(&mut dst, 32, 18, 1.0, false, &[], &GraniteConfig::default());
+            g.render(&mut dst, 32, 18, 1.0, false, &[], &GraniteConfig::default(), 1.0);
         }
         let final_lum = luminance_total(&dst);
         assert!(final_lum * 10 < initial,
@@ -582,7 +674,7 @@ mod tests {
         for palette in ALL_PALETTES {
             let cfg = GraniteConfig { palette, auto_switch: false, ..Default::default() };
             for f in 0..30 {
-                g.render(&mut dst, 48, 27, f as f32 / 30.0, true, &test_wave(), &cfg);
+                g.render(&mut dst, 48, 27, f as f32 / 30.0, true, &test_wave(), &cfg, 1.0);
             }
             for px in dst.chunks_exact(4) {
                 assert_eq!(px[3], 255, "alpha drift on palette {palette:?}");
@@ -594,15 +686,15 @@ mod tests {
     fn resize_clears_prev_and_no_panic() {
         let mut g = gnew(64, 36);
         let mut dst1 = buf_for(64, 36);
-        g.render(&mut dst1, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default());
+        g.render(&mut dst1, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
 
         let mut dst2 = buf_for(96, 54);
-        g.render(&mut dst2, 96, 54, 1.0, true, &test_wave(), &GraniteConfig::default());
+        g.render(&mut dst2, 96, 54, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
         assert_eq!(g.w, 96);
         assert_eq!(g.h, 54);
 
         let mut dst3 = buf_for(64, 36);
-        g.render(&mut dst3, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default());
+        g.render(&mut dst3, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
         assert_eq!(g.w, 64);
         assert_eq!(g.h, 36);
     }
@@ -616,8 +708,8 @@ mod tests {
         let mut a = buf_for(32, 18);
         let mut b = buf_for(32, 18);
         for f in 0..10 {
-            g1.render(&mut a, 32, 18, f as f32 * 0.1, true, &wave, &cfg);
-            g2.render(&mut b, 32, 18, f as f32 * 0.1, true, &wave, &cfg);
+            g1.render(&mut a, 32, 18, f as f32 * 0.1, true, &wave, &cfg, 1.0);
+            g2.render(&mut b, 32, 18, f as f32 * 0.1, true, &wave, &cfg, 1.0);
         }
         assert_eq!(a, b);
     }
@@ -636,8 +728,8 @@ mod tests {
         let mut b = buf_for(32, 18);
         for f in 0..60 {
             let pcm = if f % 15 == 0 { &kick } else { &quiet };
-            g1.render(&mut a, 32, 18, f as f32 / 30.0, true, pcm, &cfg);
-            g2.render(&mut b, 32, 18, f as f32 / 30.0, true, pcm, &cfg);
+            g1.render(&mut a, 32, 18, f as f32 / 30.0, true, pcm, &cfg, 1.0);
+            g2.render(&mut b, 32, 18, f as f32 / 30.0, true, pcm, &cfg, 1.0);
         }
         assert_eq!(a, b);
     }
@@ -651,13 +743,13 @@ mod tests {
         let kick: Vec<f32> = (0..512).map(|i| (i as f32 * 0.02).sin() * 0.9).collect();
         let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
-        g.render(&mut dst, 32, 18, 0.0, true, &quiet, &cfg);
+        g.render(&mut dst, 32, 18, 0.0, true, &quiet, &cfg, 1.0);
         g.set_palette(GranitePalette::Crt);
         // 500 frames < 600 hold; includes kicks (beat colour pressure) and
         // at least one scheduled effect switch (interval min 360).
         for f in 0..500 {
             let pcm = if f % 15 == 0 { &kick } else { &quiet };
-            g.render(&mut dst, 32, 18, f as f32 / 30.0, true, pcm, &cfg);
+            g.render(&mut dst, 32, 18, f as f32 / 30.0, true, pcm, &cfg, 1.0);
         }
         assert_eq!(g.current_palette, GranitePalette::Crt,
                    "palette must hold while the user's choice is fresh");
@@ -669,13 +761,13 @@ mod tests {
         let wave = test_wave();
         let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
-        g.render(&mut dst, 32, 18, 0.0, true, &wave, &cfg);
+        g.render(&mut dst, 32, 18, 0.0, true, &wave, &cfg, 1.0);
         let before = g.active_effect();
         let chosen = g.random_switch();
         assert_ne!(chosen, before);
         // Crossfade completes within CROSSFADE_FRAMES ticks.
         for f in 0..(CROSSFADE_FRAMES as usize + 2) {
-            g.render(&mut dst, 32, 18, f as f32 / 30.0, true, &wave, &cfg);
+            g.render(&mut dst, 32, 18, f as f32 / 30.0, true, &wave, &cfg, 1.0);
         }
         assert_eq!(g.active_effect(), chosen);
     }
@@ -693,7 +785,7 @@ mod tests {
             let cfg = GraniteConfig { auto_switch: false, effect, ..Default::default() };
             // Several frames so each map's flow visibly diverges.
             for f in 0..6 {
-                g.render(&mut dst, 48, 27, f as f32 * 0.1, true, &wave, &cfg);
+                g.render(&mut dst, 48, 27, f as f32 * 0.1, true, &wave, &cfg, 1.0);
             }
             assert!(luminance_total(&dst) > 0, "effect {effect:?} produced black");
             // Cheap content hash.
@@ -713,12 +805,12 @@ mod tests {
         let wave = test_wave();
         let cfg = GraniteConfig::default();
         for f in 0..10 {
-            g.render(&mut dst, 576, 360, f as f32 / 30.0, true, &wave, &cfg);
+            g.render(&mut dst, 576, 360, f as f32 / 30.0, true, &wave, &cfg, 1.0);
         }
         let t0 = std::time::Instant::now();
         let frames = 300;
         for f in 0..frames {
-            g.render(&mut dst, 576, 360, f as f32 / 30.0, true, &wave, &cfg);
+            g.render(&mut dst, 576, 360, f as f32 / 30.0, true, &wave, &cfg, 1.0);
         }
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;
         println!("granite 576x360: {ms:.2} ms/frame");
@@ -735,7 +827,7 @@ mod tests {
         // Run enough frames to guarantee at least one switch + crossfade
         // completion: max interval (720) + crossfade (30) + slack.
         for f in 0..800 {
-            g.render(&mut dst, 16, 9, f as f32 * 0.033, true, &wave, &cfg);
+            g.render(&mut dst, 16, 9, f as f32 * 0.033, true, &wave, &cfg, 1.0);
         }
         assert_ne!(g.active_effect(), start, "scheduler never advanced");
     }

@@ -2415,6 +2415,11 @@ pub fn build(
         let granite_pic_tick = granite_pic.downgrade();
         let granite_buf_tick: std::rc::Rc<std::cell::RefCell<Vec<u8>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        // Last mini-Granite render instant → measured dt (in 30 fps frame
+        // units) for the dt-aware sim, so timer jitter never changes the
+        // plasma's speed.
+        let granite_last_tick: std::rc::Rc<std::cell::Cell<Option<std::time::Instant>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
         // Tick-side handle on the shutdown flag declared above.
         let viz_shut_for_tick = viz_shutting_down.clone();
         let fs_viz_open_tick = fs_viz_open.clone();
@@ -2885,7 +2890,15 @@ pub fn build(
                             buf.resize(need, 0);
                         }
                         let cfg = state.borrow().config.visualizer.granite;
-                        state.borrow_mut().player.render_granite(&mut buf, w, h, &cfg);
+                        let now = std::time::Instant::now();
+                        let dt_frames = granite_last_tick
+                            .replace(Some(now))
+                            .map(|prev| now.duration_since(prev).as_secs_f32() * 30.0)
+                            .unwrap_or(1.0);
+                        state
+                            .borrow_mut()
+                            .player
+                            .render_granite(&mut buf, w, h, &cfg, dt_frames);
                         let bytes = glib::Bytes::from(&buf[..]);
                         let texture = gdk::MemoryTexture::new(
                             w as i32,

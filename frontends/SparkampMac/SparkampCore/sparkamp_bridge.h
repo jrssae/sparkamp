@@ -137,8 +137,12 @@ void    sparkamp_get_waveform(const SparkampCtx *ctx, float *out, int32_t len);
  *  exactly w*h*4 bytes). The renderer keeps a previous-frame buffer between
  *  calls so the Geiss-style feedback trail builds up. Pass consistent (w, h);
  *  changing them resets the trail. Safe to call while paused — buffer fades. */
+/* dt = elapsed time since the previous frame in 30 fps frame units
+   (1.0 = 33 ms; pass elapsed_seconds * 30). The plasma moves at the same
+   speed at any refresh rate — a 60 fps caller passes ~0.5. Clamped
+   internally against clock hiccups. */
 void    sparkamp_render_granite(SparkampCtx *ctx, uint8_t *out,
-                                uint32_t w, uint32_t h);
+                                uint32_t w, uint32_t h, float dt);
 
 /* ── Granite plasma settings (speed / palette / feedback) ───────────────── */
 

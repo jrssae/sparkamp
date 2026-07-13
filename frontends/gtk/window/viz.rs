@@ -307,7 +307,13 @@ fn open_waveform_fullscreen(
     let last_instant: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
     let ema_dt_ms: Rc<Cell<f32>> = Rc::new(Cell::new(33.3));
     let fps_update_countdown: Rc<Cell<u32>> = Rc::new(Cell::new(0));
-    glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+    // Vsync-locked render loop: the frame clock fires at the display's real
+    // refresh rate (60 fps on most monitors, more on fast ones) and supplies
+    // the timestamps the dt-aware sim needs, so fullscreen Granite runs at
+    // full refresh while moving at exactly the same speed as the 30 fps
+    // windowed view. The windowed mini stays on its 33 ms timer.
+    let last_frame_us: Rc<Cell<i64>> = Rc::new(Cell::new(0));
+    fs_win.add_tick_callback(move |_, frame_clock| {
         if fs_shut_for_tick.get() {
             return glib::ControlFlow::Break;
         }
@@ -317,6 +323,14 @@ fn open_waveform_fullscreen(
         if pic.root().is_none() {
             return glib::ControlFlow::Break;
         }
+        // Frame-clock timestamps (µs) → dt in 30 fps frame units.
+        let now_us = frame_clock.frame_time();
+        let prev_us = last_frame_us.replace(now_us);
+        let dt_frames = if prev_us == 0 {
+            1.0
+        } else {
+            ((now_us - prev_us) as f32 / 1_000_000.0) * 30.0
+        };
         let mode = state_tick.borrow().config.visualizer.mode.clone();
         if mode == VisualizerMode::Granite {
             if stack.visible_child_name().as_deref() != Some("granite") {
@@ -333,7 +347,10 @@ fn open_waveform_fullscreen(
                 buf.resize(need, 0);
             }
             let cfg = state_tick.borrow().config.visualizer.granite;
-            state_tick.borrow_mut().player.render_granite(&mut buf, w, h, &cfg);
+            state_tick
+                .borrow_mut()
+                .player
+                .render_granite(&mut buf, w, h, &cfg, dt_frames);
             let bytes = glib::Bytes::from(&buf[..]);
             let texture = gdk::MemoryTexture::new(
                 w as i32,

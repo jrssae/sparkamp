@@ -73,12 +73,18 @@ pub unsafe extern "C" fn sparkamp_get_waveform(
 ///
 /// Safe to call when paused/stopped — the buffer fades to black.
 /// No-op on null `ctx` or null `out`.
+///
+/// `dt` is the elapsed time since the previous frame in 30 fps frame units
+/// (1.0 = 33 ms; pass `elapsed_seconds * 30.0`). The plasma's speed and
+/// trail feel stay identical at any refresh rate — a 60 fps caller passes
+/// ~0.5. Values are clamped to a sane range internally.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_render_granite(
     ctx: *mut SparkampCtx,
     out: *mut u8,
     w: u32,
     h: u32,
+    dt: f32,
 ) {
     if ctx.is_null() || out.is_null() || w == 0 || h == 0 {
         return;
@@ -87,7 +93,7 @@ pub unsafe extern "C" fn sparkamp_render_granite(
     let len = (w as usize).saturating_mul(h as usize).saturating_mul(4);
     let dst = std::slice::from_raw_parts_mut(out, len);
     let cfg = ctx.config.visualizer.granite;
-    ctx.player.render_granite(dst, w, h, &cfg);
+    ctx.player.render_granite(dst, w, h, &cfg, dt);
 }
 
 // ---------------------------------------------------------------------------

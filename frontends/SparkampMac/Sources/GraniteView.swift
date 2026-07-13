@@ -30,8 +30,11 @@ struct GraniteView: NSViewRepresentable {
         // coordinator so it lives exactly as long as the view. Hop onto the
         // main actor the same way SparkampModel's tick timer does.
         let coordinator = context.coordinator
+        // Fullscreen runs at 60 fps (the dt-aware sim keeps the plasma's
+        // speed identical); the windowed mini stays at 30 to save power.
+        let fps: Double = coordinator.isFullscreen ? 60.0 : 30.0
         let timer = Timer.scheduledTimer(
-            withTimeInterval: 1.0 / 30.0,
+            withTimeInterval: 1.0 / fps,
             repeats: true
         ) { [weak v] _ in
             Task { @MainActor in
@@ -61,6 +64,9 @@ struct GraniteView: NSViewRepresentable {
         let isFullscreen: Bool
         var timer: Timer?
         private var buffer = [UInt8]()
+        /// Previous render timestamp — measured dt keeps the sim's speed
+        /// exact regardless of the timer's real cadence.
+        private var lastRender: Date?
 
         init(model: SparkampModel, isFullscreen: Bool) {
             self.model = model
@@ -98,13 +104,23 @@ struct GraniteView: NSViewRepresentable {
             if buffer.count != need {
                 buffer = [UInt8](repeating: 0, count: need)
             }
+            // Elapsed time in 30 fps frame units (1.0 = 33 ms).
+            let now = Date()
+            let dtFrames: Float
+            if let prev = lastRender {
+                dtFrames = Float(now.timeIntervalSince(prev) * 30.0)
+            } else {
+                dtFrames = 1.0
+            }
+            lastRender = now
             buffer.withUnsafeMutableBufferPointer { ptr in
                 guard let base = ptr.baseAddress else { return }
                 sparkamp_render_granite(
                     ctx,
                     base,
                     UInt32(internalW),
-                    UInt32(internalH)
+                    UInt32(internalH),
+                    dtFrames
                 )
             }
             view.present(buffer: buffer, width: internalW, height: internalH)
