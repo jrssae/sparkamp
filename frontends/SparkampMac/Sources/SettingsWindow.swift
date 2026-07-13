@@ -352,9 +352,8 @@ private struct VisualizerPane: View {
 
     private static let granitePaletteNames =
         ["Granite", "Fire", "Neon", "Ocean", "Violet", "Sunset", "CRT", "Spectrum"]
-    private static let graniteEffectNames =
-        ["Plasma", "Tunnel", "Swirl", "Spin", "Cells", "Explode",
-         "Ripple", "Shear", "Kaleidoscope", "Gravity Well", "Drain", "Flag"]
+    // Effect names live in GraniteCatalog (shared with the fullscreen FPS
+    // overlay) so the two lists can't drift.
 
     var body: some View {
         Form {
@@ -428,7 +427,7 @@ private struct VisualizerPane: View {
                     }
 
                     Picker("Effect", selection: $graniteEffect) {
-                        ForEach(Array(Self.graniteEffectNames.enumerated()), id: \.offset) {
+                        ForEach(Array(GraniteCatalog.effectNames.enumerated()), id: \.offset) {
                             idx, name in
                             Text(name).tag(idx)
                         }

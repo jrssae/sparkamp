@@ -26,46 +26,54 @@ struct GraniteView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> GraniteBlitView {
         let v = GraniteBlitView()
-        // Drive at 30 fps via a Timer on the main run loop. Stored on the
-        // coordinator so it lives exactly as long as the view. Hop onto the
-        // main actor the same way SparkampModel's tick timer does.
         let coordinator = context.coordinator
-        // Fullscreen runs at 60 fps (the dt-aware sim keeps the plasma's
-        // speed identical); the windowed mini stays at 30 to save power.
-        let fps: Double = coordinator.isFullscreen ? 60.0 : 30.0
-        let timer = Timer.scheduledTimer(
-            withTimeInterval: 1.0 / fps,
-            repeats: true
-        ) { [weak v] _ in
-            Task { @MainActor in
-                guard let v else { return }
-                coordinator.tick(into: v)
-            }
+        // Both instances tick on a fixed 30 fps main-run-loop Timer.
+        // Display-rate pacing (CADisplayLink at 60/120 Hz) was tried and
+        // REVERTED: several Granite effects glitch visibly whenever the
+        // sim runs at fractional dt (≈0.5 at 60 Hz, jittering under load),
+        // and the corruption compounds across fullscreen re-entries. Until
+        // the core's delta-time path is fixed and verified at dt≠1, a
+        // stable 30 beats a glitchy 60 — at 30 Hz the measured dt stays
+        // ≈1.0, which reproduces the historical sim bit-for-bit.
+        // A strict DispatchSourceTimer, not a run-loop Timer: NSTimer gets
+        // system leeway/coalescing, which was observed delivering 20 of the
+        // 30 requested ticks. `.strict` opts out of coalescing, and the
+        // handler runs directly on the main queue (no actor-hop — routing
+        // each tick through Task { @MainActor } also cost a third of them).
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(
+            deadline: .now(),
+            repeating: .milliseconds(33),
+            leeway: .milliseconds(2)
+        )
+        timer.setEventHandler { [weak v] in
+            guard let v else { return }
+            MainActor.assumeIsolated { coordinator.tick(into: v) }
         }
-        RunLoop.main.add(timer, forMode: .common)
+        timer.activate()
         coordinator.timer = timer
         return v
     }
 
     func updateNSView(_ nsView: GraniteBlitView, context: Context) {
-        // Nothing to do; the timer pulls the latest `model.ctx` each tick.
+        // Nothing to do; the tick pulls the latest `model.ctx` each frame.
     }
 
     static func dismantleNSView(_ nsView: GraniteBlitView, coordinator: Coordinator) {
-        coordinator.timer?.invalidate()
+        coordinator.timer?.cancel()
         coordinator.timer = nil
     }
 
-    /// Per-instance state: the pixel buffer and the timer reference for
-    /// cleanup. @MainActor because it reads `model.ctx`.
+    /// Per-instance state: the pixel buffer and the tick-source references
+    /// for cleanup. @MainActor because it reads `model.ctx`.
     @MainActor
     final class Coordinator {
         let model: SparkampModel
         let isFullscreen: Bool
-        var timer: Timer?
+        var timer: DispatchSourceTimer?
         private var buffer = [UInt8]()
         /// Previous render timestamp — measured dt keeps the sim's speed
-        /// exact regardless of the timer's real cadence.
+        /// exact regardless of the tick source's real cadence.
         private var lastRender: Date?
 
         init(model: SparkampModel, isFullscreen: Bool) {
@@ -73,7 +81,7 @@ struct GraniteView: NSViewRepresentable {
             self.isFullscreen = isFullscreen
         }
 
-        /// 30 fps tick: render one frame and present it.
+        /// One tick: render one frame and present it.
         func tick(into view: GraniteBlitView) {
             guard let ctx = model.ctx else { return }
             // Single-driver rule (see type comment): the mini view yields
@@ -124,6 +132,16 @@ struct GraniteView: NSViewRepresentable {
                 )
             }
             view.present(buffer: buffer, width: internalW, height: internalH)
+            // Real presented-frame count for the fullscreen FPS overlay —
+            // the overlay's own sampler runs at a fixed low rate and must
+            // not measure itself. The render cost rides along so a low FPS
+            // reading distinguishes callback overrun from system throttling.
+            if isFullscreen {
+                model.noteVizFrame()
+                let ms = Date().timeIntervalSince(now) * 1000.0
+                model.vizRenderMs = model.vizRenderMs == 0
+                    ? ms : model.vizRenderMs * 0.9 + ms * 0.1
+            }
         }
     }
 }

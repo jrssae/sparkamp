@@ -287,6 +287,14 @@ impl Granite {
         // Guard against clock hiccups (paused debugger, suspended laptop):
         // never integrate more than a few frames or less than a sliver.
         let dt = dt.clamp(0.1, 4.0);
+        // Frontends measure dt from wall-clock timers, so a nominal 30 fps
+        // arrives as ~0.9–1.1, never exactly 1.0 — the warp distance wobbles
+        // ±10% frame-to-frame and the beat accumulator fires zero or two
+        // times on jittery frames instead of once. Snapping the near-1 band
+        // to exactly 1.0 restores the historical fixed-step sim at 30 fps
+        // (its calibrated look and cadence), while genuinely different rates
+        // (0.5 at 60 fps) still scale through untouched.
+        let dt = if (dt - 1.0).abs() < 0.15 { 1.0 } else { dt };
 
         let (speed, cfg_palette, feedback) = cfg.clamped();
         let palette_phase = palette_phase_at(t_seconds, speed);
@@ -815,6 +823,31 @@ mod tests {
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;
         println!("granite 576x360: {ms:.2} ms/frame");
         assert!(ms < 33.0, "kernel too slow: {ms:.2} ms/frame");
+    }
+
+    /// Per-effect cost at the fullscreen internal resolution — finds effects
+    /// whose maps sample cache-hostile patterns (mirror folds, long throws).
+    /// `cargo test --release granite_per_effect_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn granite_per_effect_speed() {
+        let wave = test_wave();
+        let cfg = GraniteConfig::default();
+        for effect in crate::granite::maps::ALL_EFFECTS {
+            let mut g = gnew(576, 360);
+            let mut dst = buf_for(576, 360);
+            g.set_effect(effect);
+            for f in 0..10 {
+                g.render(&mut dst, 576, 360, f as f32 / 30.0, true, &wave, &cfg, 1.0);
+            }
+            let t0 = std::time::Instant::now();
+            let frames = 200;
+            for f in 0..frames {
+                g.render(&mut dst, 576, 360, f as f32 / 30.0, true, &wave, &cfg, 1.0);
+            }
+            let ms = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+            println!("{:<14} {ms:.2} ms/frame", format!("{effect:?}"));
+        }
     }
 
     #[test]

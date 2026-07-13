@@ -13,6 +13,23 @@ func cBytesToString<T>(_ value: inout T) -> String {
     }
 }
 
+// MARK: - Granite catalog
+
+/// Display names for the Granite effects, index-aligned with the core's
+/// `GraniteEffect` numbering (`sparkamp_get/set_granite_effect`). One shared
+/// list: the Settings dropdown and the fullscreen FPS overlay must agree.
+enum GraniteCatalog {
+    static let effectNames = [
+        "Plasma", "Tunnel", "Swirl", "Spin", "Cells", "Explode",
+        "Ripple", "Shear", "Kaleidoscope", "Gravity Well", "Drain", "Flag",
+    ]
+
+    /// Name for a core effect index; tolerant of out-of-range values.
+    static func effectName(_ index: Int) -> String {
+        effectNames.indices.contains(index) ? effectNames[index] : "Effect \(index)"
+    }
+}
+
 // MARK: - Media Library types
 
 /// A single track row from the media library.

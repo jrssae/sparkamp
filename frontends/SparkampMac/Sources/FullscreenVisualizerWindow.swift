@@ -58,10 +58,16 @@ struct FullscreenVisualizerView: View {
     /// dismiss timer restarts rather than the old one firing early.
     @State private var toastDismiss: DispatchWorkItem? = nil
     @State private var fpsValue: Double      = 0
+    @State private var renderMsValue: Double = 0
+    @State private var effectName: String    = ""
     @State private var bpmValue: Double      = 0
     @State private var meterValue: Int       = 0
     @State private var fpsLastTick: Date?    = nil
-    @State private var fpsEmaMs: Double      = 33.3
+    /// model.vizFrameCount at the previous sample — the FPS reading is the
+    /// frame-count delta over the wall-clock delta, so a low-rate sampler
+    /// can report a 120 Hz render truthfully.
+    @State private var fpsLastCount: UInt64  = 0
+    @State private var fpsEma: Double        = 0
 
     var body: some View {
         ZStack {
@@ -69,8 +75,9 @@ struct FullscreenVisualizerView: View {
 
             // Full-size visualizer. Granite uses the dedicated layer-blit path
             // so the GPU compositor handles upscaling at 4K; Bars / Waveform
-            // stay on SwiftUI Canvas.
-            if let ctx = model.ctx, sparkamp_get_viz_mode(ctx) == 2 {
+            // stay on SwiftUI Canvas. Branch on the published mirror so a
+            // mode change while fullscreen (v key) swaps the branch live.
+            if model.vizMode == 2 {
                 GraniteView(isFullscreen: true)
                     .ignoresSafeArea()
             } else {
@@ -83,6 +90,9 @@ struct FullscreenVisualizerView: View {
                         } else {
                             drawWaveform(gctx: gctx, size: size, ctx: ctx)
                         }
+                        // Count the presented frame for the FPS overlay
+                        // (plain var bump — never invalidates layout).
+                        model.noteVizFrame()
                     }
                 }
                 .ignoresSafeArea()
@@ -95,8 +105,11 @@ struct FullscreenVisualizerView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        Text(String(format: "FPS: %.0f   BPM: %@%@",
+                        Text(String(format: "%@   FPS: %.0f / %d   render: %.1f ms   BPM: %@%@",
+                                    effectName,
                                     fpsValue,
+                                    hostWindow?.screen?.maximumFramesPerSecond ?? 0,
+                                    renderMsValue,
                                     bpmValue > 0 ? String(format: "%.0f", bpmValue) : "--",
                                     meterValue > 0 ? " (\(meterValue)/4)" : ""))
                             .font(.system(size: 14, weight: .semibold, design: .monospaced))
@@ -113,20 +126,35 @@ struct FullscreenVisualizerView: View {
                 .transition(.opacity)
             }
 
-            // FPS sampler — fires at 30 fps via TimelineView and updates the
-            // smoothed FPS reading via @State without re-rendering the viz.
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+            // FPS sampler — a fixed low-rate ticker that reads the presented
+            // frame COUNTER and reports Δframes/Δt. Timing the sampler's own
+            // ticks (the old approach) capped the reading at the sampler's
+            // rate and could never show the display-link's 60/120 Hz.
+            TimelineView(.animation(minimumInterval: 1.0 / 10.0)) { ctx in
                 Color.clear
                     .onChange(of: ctx.date) { _, now in
+                        let count = model.vizFrameCount
                         if let prev = fpsLastTick {
-                            let dt = now.timeIntervalSince(prev) * 1000.0
-                            fpsEmaMs = fpsEmaMs * 0.9 + dt * 0.1
-                            if fpsEmaMs > 0 { fpsValue = 1000.0 / fpsEmaMs }
+                            let dt = now.timeIntervalSince(prev)
+                            if dt > 0 {
+                                // &- : the counter wraps by design.
+                                let frames = Double(count &- fpsLastCount)
+                                let inst = frames / dt
+                                fpsEma = fpsEma == 0 ? inst : fpsEma * 0.8 + inst * 0.2
+                                fpsValue = fpsEma
+                            }
                         }
                         fpsLastTick = now
+                        fpsLastCount = count
+                        renderMsValue = model.vizRenderMs
                         if let c = model.ctx {
                             bpmValue = Double(sparkamp_get_granite_bpm(c))
                             meterValue = Int(sparkamp_get_granite_meter(c))
+                            // Active effect (auto-switch follows what's on
+                            // screen), named so glitch reports can say
+                            // exactly which effect misbehaved.
+                            effectName = GraniteCatalog.effectName(
+                                Int(sparkamp_get_granite_effect(c)))
                         }
                     }
             }

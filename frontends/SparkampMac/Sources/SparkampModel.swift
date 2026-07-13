@@ -33,6 +33,20 @@ final class SparkampModel: ObservableObject {
     @Published var showRemainingTime: Bool = false
     /// Current visualizer mode mirrored from config: 0 = Bars, 1 = Waveform.
     @Published var vizMode: Int = 0
+    /// Presented fullscreen-visualizer frames since launch. Deliberately NOT
+    /// @Published — it changes every frame (up to display rate) and must
+    /// never trigger layout; the FPS overlay's low-rate sampler reads the
+    /// delta. Wraps on overflow (&+), which the delta math tolerates.
+    var vizFrameCount: UInt64 = 0
+    /// Smoothed cost of one fullscreen Granite render+present, in ms (plain
+    /// var, same non-published rationale). Shown in the FPS overlay to tell
+    /// "our callback overruns the frame budget" apart from "the system
+    /// throttled the display link" when the rate reads low.
+    var vizRenderMs: Double = 0
+
+    /// Record one presented fullscreen-visualizer frame (Granite blit or
+    /// fullscreen Canvas draw) for the FPS overlay.
+    func noteVizFrame() { vizFrameCount &+= 1 }
     /// When true, the fullscreen visualizer window is open.
     @Published var fullscreenVizVisible: Bool = false {
         // Single chokepoint for the display-sleep assertion: every open and
@@ -319,12 +333,27 @@ final class SparkampModel: ObservableObject {
         guard let ctx = ctx else { return }
         sparkamp_tick(ctx)
 
-        // Sync lightweight state that changes during playback.
+        // Sync lightweight state that changes during playback. Publish only
+        // actual changes: every @Published write fires objectWillChange and
+        // invalidates every observing view, changed or not.
         let state = sparkamp_get_state(ctx)
-        isPlaying = (state == 1)
-        isPaused  = (state == 2)
-        position  = sparkamp_get_position(ctx)
-        duration  = sparkamp_get_duration(ctx)
+        let playing = (state == 1)
+        let paused = (state == 2)
+        if isPlaying != playing { isPlaying = playing }
+        if isPaused != paused { isPaused = paused }
+        let pos = sparkamp_get_position(ctx)
+        let dur = sparkamp_get_duration(ctx)
+        // While the fullscreen visualizer owns the screen, keep the 10 Hz
+        // position/duration stream out of the publisher entirely: nothing
+        // visible reads it (the time display lives in the occluded player
+        // window), and its per-tick SwiftUI invalidation bursts were
+        // stealing slots from the visualizer's strict 30 Hz timer (the
+        // observed 20–30 fps wobble). Values keep flowing to the logic
+        // below via the locals; publishing resumes on exit.
+        if !fullscreenVizVisible {
+            position = pos
+            duration = dur
+        }
         let idx   = Int(sparkamp_playlist_current_index(ctx))
         if idx != currentIndex {
             currentIndex = idx
@@ -348,7 +377,7 @@ final class SparkampModel: ObservableObject {
         // for `playCountThresholdSecs` seconds of the current track.  The
         // path-based gate (countedPlayPath) ensures we only count each
         // playthrough once even if tick() runs many times per second.
-        if isPlaying, idx >= 0, position >= playCountThresholdSecs {
+        if isPlaying, idx >= 0, pos >= playCountThresholdSecs {
             if let pathPtr = sparkamp_playlist_get_path(ctx, Int32(idx)) {
                 let path = String(cString: pathPtr)
                 sparkamp_free_string(pathPtr)
@@ -498,12 +527,17 @@ final class SparkampModel: ObservableObject {
             model.handlePlaybackError()
         }, selfPtr)
 
-        // Position: update seek bar and duration display.
+        // Position: update seek bar and duration display. Muted while the
+        // fullscreen visualizer is up — same rationale as in tick(): the
+        // seek bar is occluded, and these @Published writes were part of
+        // the invalidation bursts starving the visualizer's frame timer.
         sparkamp_set_position_callback(ctx, { userdata, pos, dur in
             guard let userdata = userdata else { return }
             let model = Unmanaged<SparkampModel>.fromOpaque(userdata).takeUnretainedValue()
-            model.position = pos
-            model.duration = dur
+            if !model.fullscreenVizVisible {
+                model.position = pos
+                model.duration = dur
+            }
         }, selfPtr)
     }
 

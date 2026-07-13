@@ -362,7 +362,20 @@ private struct WindowManagerModifier: ViewModifier {
         content
             .onChange(of: model.playlistVisible)          { _, v in v ? openWindow(id: "playlist")         : dismissWindow(id: "playlist") }
             .onChange(of: model.keyboardShortcutsVisible) { _, v in v ? openWindow(id: "shortcuts")         : dismissWindow(id: "shortcuts") }
-            .onChange(of: model.fullscreenVizVisible)     { _, v in v ? openWindow(id: "fullscreen-viz")    : dismissWindow(id: "fullscreen-viz") }
+            .onChange(of: model.fullscreenVizVisible)     { _, v in
+                if v {
+                    openWindow(id: "fullscreen-viz")
+                } else {
+                    dismissWindow(id: "fullscreen-viz")
+                    // AppKit hands key status to an arbitrary surviving window
+                    // (often the Media Library) when the fullscreen Space
+                    // closes; the player should come back instead. Next
+                    // runloop turn, after the dismissal has settled.
+                    DispatchQueue.main.async {
+                        NSApp.windows.first { $0.title == "Sparkamp" }?.makeKeyAndOrderFront(nil)
+                    }
+                }
+            }
             .onChange(of: model.jumpToTrackVisible)       { _, v in v ? openWindow(id: "jump-to-track")     : dismissWindow(id: "jump-to-track") }
             .onChange(of: model.equalizerVisible)         { _, v in v ? openWindow(id: "equalizer")         : dismissWindow(id: "equalizer") }
             .onChange(of: model.settingsVisible)          { _, v in v ? openWindow(id: "settings")          : dismissWindow(id: "settings") }

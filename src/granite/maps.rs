@@ -81,11 +81,17 @@ pub(super) fn random_other_effect(current: GraniteEffect, rng: &mut StdRng) -> G
 pub(super) struct WarpMap {
     sx: Vec<f32>,
     sy: Vec<f32>,
+    /// True when the map stores absolute sample TARGETS rather than a small
+    /// identity-relative flow step. Fold/mirror families (Kaleido) replace a
+    /// pixel's angle outright — scaling that displacement toward identity
+    /// (the live `speed`/dt factor) "partially unfolds" the sectors into
+    /// smeared garbage, so apply_warp samples absolute maps unscaled.
+    absolute: bool,
 }
 
 impl WarpMap {
     pub(super) fn empty() -> Self {
-        WarpMap { sx: Vec::new(), sy: Vec::new() }
+        WarpMap { sx: Vec::new(), sy: Vec::new(), absolute: false }
     }
 }
 
@@ -112,7 +118,7 @@ fn fill_map(w: u32, h: u32, f: impl Fn(f32, f32) -> (f32, f32) + Sync) -> WarpMa
                 row_y[x] = sv * hf;
             }
         });
-    WarpMap { sx, sy }
+    WarpMap { sx, sy, absolute: false }
 }
 
 /// Random ±1.0 — many families flip direction per activation.
@@ -254,7 +260,7 @@ pub(super) fn generate_warp_map(
             let th = rng.gen_range(0.015..0.035f32) * rsign(rng);
             let s = rng.gen_range(1.002..1.012f32);
             let sec = PI / sectors;
-            fill_map(w, h, move |u, v| {
+            let mut m = fill_map(w, h, move |u, v| {
                 let (ax, ay) = to_c(u, v);
                 let r = (ax * ax + ay * ay).sqrt();
                 let a = ay.atan2(ax);
@@ -264,7 +270,12 @@ pub(super) fn generate_warp_map(
                 let folded = if am > sec { 2.0 * sec - am } else { am };
                 let a2 = folded + th;
                 from_c(r * a2.cos() * s, r * a2.sin() * s)
-            })
+            });
+            // The fold is an absolute remap (a pixel at 170° reads from ~10°):
+            // exempt from the live speed/dt displacement scaling, which would
+            // partially unfold the sectors into shimmer (see WarpMap.absolute).
+            m.absolute = true;
+            m
         }
         GraniteEffect::GravityWell => {
             let px = rng.gen_range(-0.25..0.25f32) * aspect;
@@ -311,10 +322,19 @@ pub(super) fn generate_warp_map(
 
 /// `curr[p] = bilinear(prev, map[p]) * decay` for every pixel, in parallel.
 ///
-/// `speed` scales the stored displacement away from identity at sample time,
-/// so the speed slider acts live without regenerating maps. During a
-/// crossfade `map_b = Some((incoming_map, alpha))` and the two displacement
-/// fields are lerped per pixel — blending fields morphs the flow smoothly.
+/// `speed` scales a flow map's stored displacement away from identity at
+/// sample time, so the speed slider acts live without regenerating maps.
+/// Absolute maps (mirror folds — see [`WarpMap::absolute`]) sample their
+/// stored target directly: scaling a fold toward identity would partially
+/// unfold the sectors into smeared shimmer.
+///
+/// Crossfades (`map_b = Some((incoming_map, alpha))`) come in two shapes:
+/// - **flow ↔ flow**: lerp the two effective sample positions — blending
+///   displacement fields is itself a valid field, and the motion morphs.
+/// - **either side absolute**: positions between "unfolded" and "folded"
+///   are partially-unfolded garbage (the Kaleido enter/exit flash), so the
+///   two warped VALUES are sampled separately and dissolved instead. Twice
+///   the sampling cost, but only for the ~1 s a crossfade runs.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_warp(
     curr: &mut [f32],
@@ -329,6 +349,7 @@ pub(super) fn apply_warp(
     let wi = w as i32;
     let hi = h as i32;
     let wu = w as usize;
+    let dissolve = map_b.is_some() && (map_a.absolute || map_b.is_some_and(|(m, _)| m.absolute));
     curr.par_chunks_mut(wu)
         .enumerate()
         .for_each(|(y, row)| {
@@ -336,16 +357,32 @@ pub(super) fn apply_warp(
             let yf = y as f32;
             for x in 0..wu {
                 let i = base + x;
-                let mut sx = map_a.sx[i];
-                let mut sy = map_a.sy[i];
-                if let Some((mb, alpha)) = map_b {
-                    sx += (mb.sx[i] - sx) * alpha;
-                    sy += (mb.sy[i] - sy) * alpha;
-                }
                 let xf = x as f32;
-                let sxe = xf + (sx - xf) * speed;
-                let sye = yf + (sy - yf) * speed;
-                row[x] = bilinear1(prev, wi, hi, sxe, sye) * decay;
+                // Effective sample position per map: flow maps scale toward
+                // identity by `speed`; absolute maps are taken as stored.
+                let eff = |m: &WarpMap| -> (f32, f32) {
+                    if m.absolute {
+                        (m.sx[i], m.sy[i])
+                    } else {
+                        (xf + (m.sx[i] - xf) * speed, yf + (m.sy[i] - yf) * speed)
+                    }
+                };
+                let (sxa, sya) = eff(map_a);
+                row[x] = match map_b {
+                    Some((mb, alpha)) if dissolve => {
+                        let (bx, by) = eff(mb);
+                        let va = bilinear1(prev, wi, hi, sxa, sya);
+                        let vb = bilinear1(prev, wi, hi, bx, by);
+                        (va + (vb - va) * alpha) * decay
+                    }
+                    Some((mb, alpha)) => {
+                        let (bx, by) = eff(mb);
+                        let sxe = sxa + (bx - sxa) * alpha;
+                        let sye = sya + (by - sya) * alpha;
+                        bilinear1(prev, wi, hi, sxe, sye) * decay
+                    }
+                    None => bilinear1(prev, wi, hi, sxa, sya) * decay,
+                };
             }
         });
 }
@@ -375,4 +412,81 @@ fn bilinear1(buf: &[f32], w: i32, h: i32, x: f32, y: f32) -> f32 {
     let top = v00 + (v10 - v00) * dx;
     let bot = v01 + (v11 - v01) * dx;
     top + (bot - top) * dy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Absolute (fold) maps must ignore the live speed factor — scaling a
+    /// mirror fold toward identity partially unfolds it (the Kaleido
+    /// shimmer bug). Flow maps must keep scaling.
+    #[test]
+    fn absolute_maps_ignore_speed_scaling() {
+        let w = 8u32;
+        let h = 8u32;
+        let n = (w * h) as usize;
+        // prev has a single bright pixel so sample positions are observable.
+        let mut prev = vec![0.0f32; n];
+        prev[(3 * w + 5) as usize] = 1.0;
+
+        // Both maps send every pixel to (5, 3) — as a fold target vs a flow.
+        let target = WarpMap {
+            sx: vec![5.0; n],
+            sy: vec![3.0; n],
+            absolute: true,
+        };
+        let flow = WarpMap {
+            sx: vec![5.0; n],
+            sy: vec![3.0; n],
+            absolute: false,
+        };
+
+        let run = |map: &WarpMap, speed: f32| -> Vec<f32> {
+            let mut curr = vec![0.0f32; n];
+            apply_warp(&mut curr, &prev, map, None, w, h, speed, 1.0);
+            curr
+        };
+
+        // Absolute: identical output at any speed (samples (5,3) verbatim).
+        assert_eq!(run(&target, 1.0), run(&target, 0.5));
+        // Flow: half speed lands halfway to the target — different output.
+        assert_ne!(run(&flow, 1.0), run(&flow, 0.5));
+        // And at speed 1.0 the two rules agree, so flow maps are unchanged.
+        assert_eq!(run(&target, 1.0), run(&flow, 1.0));
+    }
+
+    /// Crossfades touching an absolute map dissolve the two warped VALUES —
+    /// they must never sample a position between "unfolded" and "folded"
+    /// (the Kaleido enter/exit flash).
+    #[test]
+    fn crossfade_with_absolute_map_dissolves_values() {
+        let w = 8u32;
+        let h = 8u32;
+        let n = (w * h) as usize;
+        let mut prev = vec![0.0f32; n];
+        prev[(3 * w + 5) as usize] = 1.0; // fold target
+        prev[(2 * w + 2) as usize] = 0.5; // where the identity flow reads for (2,2)
+
+        // A: identity flow (every pixel samples itself).
+        let mut ax = vec![0.0f32; n];
+        let mut ay = vec![0.0f32; n];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                ax[y * w as usize + x] = x as f32;
+                ay[y * w as usize + x] = y as f32;
+            }
+        }
+        let ident = WarpMap { sx: ax, sy: ay, absolute: false };
+        // B: absolute fold sending everything to the bright pixel (5,3).
+        let fold = WarpMap { sx: vec![5.0; n], sy: vec![3.0; n], absolute: true };
+
+        let mut curr = vec![0.0f32; n];
+        apply_warp(&mut curr, &prev, &ident, Some((&fold, 0.5)), w, h, 1.0, 1.0);
+
+        // Pixel (2,2): dissolve = 0.5·prev[(2,2)] + 0.5·prev[(5,3)] = 0.75.
+        // A position-lerp would read halfway between (2,2) and (5,3) — dark.
+        let got = curr[(2 * w + 2) as usize];
+        assert!((got - 0.75).abs() < 1e-4, "expected value dissolve, got {got}");
+    }
 }
