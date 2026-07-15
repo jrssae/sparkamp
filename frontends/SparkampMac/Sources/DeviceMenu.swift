@@ -59,12 +59,12 @@ func sendToSpec(drives: [SendTarget], devices: [SendTarget]) -> [SendEntry] {
 extension SparkampModel {
 
     /// "Saved Playlist ▸ (New Playlist… + each saved playlist)" — appends the
-    /// given file paths to the chosen playlist, or seeds a new one. `title`
-    /// defaults to the item's pre-SendToMenu wording ("Send to Playlist") so
-    /// the one remaining direct caller (PlaylistView.swift's active-playlist
-    /// context menu, not in this task's scope) keeps its existing label;
-    /// `sendToMenuItems` below passes "Saved Playlist" to match the GTK spec.
-    func sendToPlaylistMenuItem(paths: [String], title: String = "Send to Playlist") -> NSMenuItem {
+    /// given file paths to the chosen playlist, or seeds a new one. Every
+    /// call site now goes through `sendToMenuItems` below, which always
+    /// passes "Saved Playlist" to match the GTK spec (the old standalone
+    /// "Send to Playlist" direct caller in PlaylistView.swift was replaced
+    /// by the shared `sendToMenuItem` in the PlaylistView.swift parity fix).
+    func sendToPlaylistMenuItem(paths: [String], title: String) -> NSMenuItem {
         let sub = NSMenu()
         sub.autoenablesItems = false
         sub.addItem(BlockMenuItem(title: "New Playlist…", enabled: !paths.isEmpty) {
@@ -85,31 +85,6 @@ extension SparkampModel {
         return parent
     }
 
-    /// "Send to Device ▸ (each writable connected device)" — copies the given
-    /// file paths onto the chosen device under Music/<file>. Kept as-is for
-    /// PlaylistView.swift; `sendToMenuItems` below applies the 0/1/N rule
-    /// instead of always nesting a submenu.
-    func sendToDeviceMenuItem(paths: [String]) -> NSMenuItem {
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-        let writable = devices.filter { $0.fsVisible && !$0.readOnly }
-        if writable.isEmpty {
-            sub.addItem(BlockMenuItem(title: "No devices connected", enabled: false) {})
-        } else {
-            for dev in writable {
-                let d = dev
-                let name = d.label.isEmpty ? "Untitled" : d.label
-                sub.addItem(BlockMenuItem(title: name, enabled: !paths.isEmpty) {
-                    self.copyToDevice(d, paths: paths)
-                })
-            }
-        }
-        let parent = NSMenuItem(title: "Send to Device", action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        parent.isEnabled = !paths.isEmpty && !writable.isEmpty
-        return parent
-    }
-
     /// Run the Save panel and create a saved playlist seeded with `paths`.
     func createPlaylistFromPaths(_ paths: [String]) {
         guard !paths.isEmpty else { return }
@@ -127,8 +102,8 @@ extension SparkampModel {
         copyToDevice(dev, paths: paths)
     }
 
-    /// Writable devices as Send-to targets — the same `fsVisible &&
-    /// !readOnly` filter `sendToDeviceMenuItem` has always used.
+    /// Writable devices as Send-to targets — filters out read-only mounts
+    /// and anything not currently filesystem-visible.
     var writableSendToDevices: [SendTarget] {
         devices.filter { $0.fsVisible && !$0.readOnly }
             .map { SendTarget(id: $0.id, label: $0.label) }

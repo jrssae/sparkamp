@@ -548,11 +548,12 @@ struct PlaylistView: View {
             if let first = sorted.first { model.jumpTo(index: first) }
         })
 
-        // "Send to Playlist" / "Send to Device" submenus, shared with the
-        // files view and the saved-playlist editor.
+        // Shared "Send to" submenu (Saved Playlist ▸ / Disc Drive /
+        // Removable Device), same as the files view and the saved-playlist
+        // editor. `includeActive: false` — these tracks are already in the
+        // active playlist, mirrors GTK's player.rs row menu (`active: ""`).
         let paths = sorted.compactMap { model.playlistTrackPath(index: $0) }
-        menu.addItem(model.sendToPlaylistMenuItem(paths: paths))
-        menu.addItem(model.sendToDeviceMenuItem(paths: paths))
+        menu.addItem(model.sendToMenuItem(paths: paths, includeActive: false))
 
         menu.addItem(BlockMenuItem(title: "Edit Tags…", enabled: sorted.count == 1) {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
