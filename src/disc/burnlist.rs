@@ -96,6 +96,31 @@ impl BurnList {
     }
 }
 
+/// Per-drive burn queues — each burner owns an independent list, so
+/// "Send to Disc Drive → B" queues onto B only.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct BurnQueues {
+    queues: std::collections::HashMap<String, BurnList>,
+}
+
+#[allow(dead_code)]
+impl BurnQueues {
+    /// The queue for a drive, created empty on first use.
+    pub fn queue(&mut self, drive_id: &str) -> &mut BurnList {
+        self.queues.entry(drive_id.to_string()).or_default()
+    }
+
+    pub fn get(&self, drive_id: &str) -> Option<&BurnList> {
+        self.queues.get(drive_id)
+    }
+
+    /// Drop queues whose drive is no longer attached.
+    pub fn remove_gone(&mut self, live: &[&str]) {
+        self.queues.retain(|id, _| live.contains(&id.as_str()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +188,26 @@ mod tests {
         assert!(bl.over_audio_capacity(4800));
         assert!(bl.over_data_capacity(700_000_000));
         assert!(!bl.over_data_capacity(1_000_000_000));
+    }
+
+    #[test]
+    fn queues_are_isolated_per_drive() {
+        let mut q = BurnQueues::default();
+        q.queue("/dev/sr0").add(item("a.mp3", Some(1), 1));
+        q.queue("/dev/sr1").add(item("b.mp3", Some(2), 2));
+        assert_eq!(q.get("/dev/sr0").unwrap().len(), 1);
+        assert_eq!(q.get("/dev/sr1").unwrap().len(), 1);
+        assert_eq!(q.get("/dev/sr0").unwrap().items[0].display, "a.mp3");
+        assert!(q.get("/dev/sr2").is_none());
+    }
+
+    #[test]
+    fn remove_gone_prunes_unplugged_drives() {
+        let mut q = BurnQueues::default();
+        q.queue("/dev/sr0").add(item("a.mp3", Some(1), 1));
+        q.queue("/dev/sr1").add(item("b.mp3", Some(2), 2));
+        q.remove_gone(&["/dev/sr1"]);
+        assert!(q.get("/dev/sr0").is_none());
+        assert_eq!(q.get("/dev/sr1").unwrap().len(), 1);
     }
 }
