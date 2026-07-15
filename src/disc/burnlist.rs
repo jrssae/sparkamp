@@ -99,18 +99,19 @@ impl BurnList {
 /// Per-drive burn queues — each burner owns an independent list, so
 /// "Send to Disc Drive → B" queues onto B only.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct BurnQueues {
     queues: std::collections::HashMap<String, BurnList>,
 }
 
-#[allow(dead_code)]
 impl BurnQueues {
     /// The queue for a drive, created empty on first use.
     pub fn queue(&mut self, drive_id: &str) -> &mut BurnList {
         self.queues.entry(drive_id.to_string()).or_default()
     }
 
+    /// Read-only lookup without creating the queue — not yet consumed
+    /// outside tests; kept for the drive-overview reads a later task adds.
+    #[allow(dead_code)]
     pub fn get(&self, drive_id: &str) -> Option<&BurnList> {
         self.queues.get(drive_id)
     }

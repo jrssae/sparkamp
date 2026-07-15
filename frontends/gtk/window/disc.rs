@@ -268,12 +268,14 @@ impl BurnUi {
     }
 }
 
-/// Build + wire the burn panel. `burn_list` is shared with the ML files
-/// view's "Add to Burn List" context action; `refresh_discs` re-polls after
-/// a finished burn so the detail reflects the disc's new content.
+/// Build + wire the burn panel. `burn_queues` is shared with the ML files
+/// view's "Add to Burn List" context action; the panel reads/writes only the
+/// queue for the drive currently shown in the detail view — every other
+/// drive's queue is untouched. `refresh_discs` re-polls after a finished burn
+/// so the detail reflects the disc's new content.
 pub(super) fn build_burn_panel(
     state: Rc<RefCell<AppState>>,
-    burn_list: Rc<RefCell<crate::disc::burnlist::BurnList>>,
+    burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
     refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     win: &gtk4::Window,
 ) -> BurnUi {
@@ -371,7 +373,7 @@ pub(super) fn build_burn_panel(
 
     // ── Refresh: queue rows + meters + sensitivity for the shown drive ────
     let refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
-        let burn_list = burn_list.clone();
+        let burn_queues = burn_queues.clone();
         let queue = queue.clone();
         let queue_scroll = queue_scroll.clone();
         let empty_hint = empty_hint.clone();
@@ -386,7 +388,8 @@ pub(super) fn build_burn_panel(
             while let Some(child) = queue.first_child() {
                 queue.remove(&child);
             }
-            let list = burn_list.borrow();
+            let mut queues = burn_queues.borrow_mut();
+            let list = queues.queue(&drive.id);
             for item in &list.items {
                 let secs = item.duration_secs.unwrap_or(0);
                 let line = format!(
@@ -471,24 +474,28 @@ pub(super) fn build_burn_panel(
         }
     };
     {
-        let burn_list = burn_list.clone();
+        let burn_queues = burn_queues.clone();
+        let shown_drive = shown_drive.clone();
         let selected_idx = selected_idx.clone();
         let rerender = rerender.clone();
         btn_remove.connect_clicked(move |_| {
-            if let Some(i) = selected_idx() {
-                burn_list.borrow_mut().remove(i);
+            let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
+            if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
+                burn_queues.borrow_mut().queue(&id).remove(i);
                 rerender();
             }
         });
     }
     {
-        let burn_list = burn_list.clone();
+        let burn_queues = burn_queues.clone();
+        let shown_drive = shown_drive.clone();
         let selected_idx = selected_idx.clone();
         let rerender = rerender.clone();
         let queue = queue.clone();
         btn_up.connect_clicked(move |_| {
-            if let Some(i) = selected_idx() {
-                burn_list.borrow_mut().move_up(i);
+            let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
+            if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
+                burn_queues.borrow_mut().queue(&id).move_up(i);
                 rerender();
                 if i > 0 {
                     if let Some(r) = queue.row_at_index(i as i32 - 1) {
@@ -499,13 +506,15 @@ pub(super) fn build_burn_panel(
         });
     }
     {
-        let burn_list = burn_list.clone();
+        let burn_queues = burn_queues.clone();
+        let shown_drive = shown_drive.clone();
         let selected_idx = selected_idx.clone();
         let rerender = rerender.clone();
         let queue = queue.clone();
         btn_down.connect_clicked(move |_| {
-            if let Some(i) = selected_idx() {
-                burn_list.borrow_mut().move_down(i);
+            let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
+            if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
+                burn_queues.borrow_mut().queue(&id).move_down(i);
                 rerender();
                 if let Some(r) = queue.row_at_index(i as i32 + 1) {
                     queue.select_row(Some(&r));
@@ -514,11 +523,15 @@ pub(super) fn build_burn_panel(
         });
     }
     {
-        let burn_list = burn_list.clone();
+        let burn_queues = burn_queues.clone();
+        let shown_drive = shown_drive.clone();
         let rerender = rerender.clone();
         btn_clear.connect_clicked(move |_| {
-            burn_list.borrow_mut().clear();
-            rerender();
+            let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
+            if let Some(id) = drive_id {
+                burn_queues.borrow_mut().queue(&id).clear();
+                rerender();
+            }
         });
     }
 
@@ -538,7 +551,7 @@ pub(super) fn build_burn_panel(
     // ── Start a burn (shared by both mode buttons) ─────────────────────────
     let start_burn: Rc<dyn Fn(bool)> = {
         let state = state.clone();
-        let burn_list = burn_list.clone();
+        let burn_queues = burn_queues.clone();
         let shown_drive = shown_drive.clone();
         let burn_running = burn_running.clone();
         let prep_cancel = prep_cancel.clone();
@@ -556,7 +569,7 @@ pub(super) fn build_burn_panel(
             let Some(drive) = shown_drive.borrow().clone() else {
                 return;
             };
-            if burn_list.borrow().is_empty() {
+            if burn_queues.borrow_mut().queue(&drive.id).is_empty() {
                 return;
             }
             use crate::disc::burn::{self, EraseDecision};
@@ -569,7 +582,8 @@ pub(super) fn build_burn_panel(
             }
             // Capacity guard before anything touches the disc.
             {
-                let list = burn_list.borrow();
+                let mut queues = burn_queues.borrow_mut();
+                let list = queues.queue(&drive.id);
                 if audio && list.over_audio_capacity(burn::audio_capacity_secs(&drive)) {
                     status.set_text("Over the media's audio capacity — remove tracks first.");
                     return;
@@ -589,7 +603,7 @@ pub(super) fn build_burn_panel(
             // for the explicit erase confirmation first (never auto-blank).
             let run = {
                 let state = state.clone();
-                let burn_list = burn_list.clone();
+                let burn_queues = burn_queues.clone();
                 let burn_running = burn_running.clone();
                 let prep_cancel = prep_cancel.clone();
                 let progress_row = progress_row.clone();
@@ -604,7 +618,8 @@ pub(super) fn build_burn_panel(
                         state.borrow().config.media_library.playlist_format,
                         crate::config::PlaylistFormat::M3u
                     );
-                    let items = burn_list.borrow().items.clone();
+                    let drive_id = drive.id.clone();
+                    let items = burn_queues.borrow_mut().queue(&drive_id).items.clone();
                     let cancel =
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     *prep_cancel.borrow_mut() = Some(cancel.clone());
@@ -638,7 +653,8 @@ pub(super) fn build_burn_panel(
 
                     // Main-thread poller: phases into the label, Done wraps up.
                     let state_p = state.clone();
-                    let burn_list_p = burn_list.clone();
+                    let burn_queues_p = burn_queues.clone();
+                    let drive_id_p = drive_id.clone();
                     let burn_running_p = burn_running.clone();
                     let prep_cancel_p = prep_cancel.clone();
                     let progress_row_p = progress_row.clone();
@@ -673,7 +689,7 @@ pub(super) fn build_burn_panel(
                                 *prep_cancel_p.borrow_mut() = None;
                                 match result {
                                     Ok(summary) => {
-                                        burn_list_p.borrow_mut().clear();
+                                        burn_queues_p.borrow_mut().queue(&drive_id_p).clear();
                                         status_p.set_text(&gtk_safe(&summary));
                                         // Re-poll so the detail shows the
                                         // disc's new content.

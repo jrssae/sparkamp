@@ -342,9 +342,10 @@ fn open_media_library_window(
     let current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(Vec::new()));
     let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    // The Burn list — a dedicated queue separate from the active playlist,
-    // fed from the Files view's context menu, consumed by the burn panel.
-    let burn_list: Rc<RefCell<crate::disc::burnlist::BurnList>> =
+    // Per-drive burn queues — each drive's list is separate from the active
+    // playlist and from every other drive's list, fed from the Files view's
+    // context menu, consumed by the burn panel for the drive it shows.
+    let burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>> =
         Rc::new(RefCell::new(Default::default()));
     // refresh_discs is built much later; the burn panel takes this holder so
     // a finished burn can trigger a re-poll.
@@ -2587,7 +2588,7 @@ fn open_media_library_window(
     // (visibility handled by populate_disc_detail).
     let burn_ui = disc::build_burn_panel(
         state.clone(),
-        burn_list.clone(),
+        burn_queues.clone(),
         refresh_discs_holder.clone(),
         &win,
     );
@@ -2688,12 +2689,18 @@ fn open_media_library_window(
         });
         ml_action_group.add_action(&action_append);
 
-        // Add to Burn List: queue the selected files for the disc burn panel
+        // Add to Burn List: queue the selected files onto the drive whose
+        // detail the disc view currently shows (falls back to the first
+        // known drive when nothing is shown yet). Interim target-selection
+        // only — Task 7 replaces this action with an explicit "Send to
+        // Disc Drive → …" submenu that picks the drive itself.
         // (dedup by path; display/duration/size from the library row).
         {
             let state_burn = state.clone();
             let tracks_src = ml_selected_tracks.clone();
-            let burn_list = burn_list.clone();
+            let burn_queues = burn_queues.clone();
+            let selected_disc_id = selected_disc_id.clone();
+            let current_drives = current_drives.clone();
             let status = files_status_holder.clone();
             let action = gio::SimpleAction::new("add-to-burn", None);
             action.connect_activate(move |_, _| {
@@ -2701,10 +2708,20 @@ fn open_media_library_window(
                 if paths.is_empty() {
                     return;
                 }
+                let target_drive = selected_disc_id.borrow().clone().or_else(|| {
+                    current_drives.borrow().first().map(|d| d.id.clone())
+                });
+                let Some(drive_id) = target_drive else {
+                    if let Some(lbl) = status.borrow().as_ref() {
+                        lbl.set_text("No disc drive available to queue onto.");
+                    }
+                    return;
+                };
                 let mut added = 0;
                 {
                     let s = state_burn.borrow();
-                    let mut list = burn_list.borrow_mut();
+                    let mut queues = burn_queues.borrow_mut();
+                    let list = queues.queue(&drive_id);
                     for path in &paths {
                         let lib_row = s
                             .media_lib
@@ -2737,7 +2754,7 @@ fn open_media_library_window(
                         }
                     }
                 }
-                let total = burn_list.borrow().len();
+                let total = burn_queues.borrow_mut().queue(&drive_id).len();
                 if let Some(lbl) = status.borrow().as_ref() {
                     lbl.set_text(&format!(
                         "Queued {added} for burning ({total} on the list)"
@@ -7689,6 +7706,7 @@ fn open_media_library_window(
         let discs_expanded = discs_expanded.clone();
         let current_drives = current_drives.clone();
         let selected_disc_id = selected_disc_id.clone();
+        let burn_queues = burn_queues.clone();
         let rebuild_overview = rebuild_disc_overview.clone();
         let populate_detail = populate_disc_detail.clone();
         let state = state.clone();
@@ -7728,6 +7746,7 @@ fn open_media_library_window(
             let discs_expanded = discs_expanded.clone();
             let current_drives = current_drives.clone();
             let selected_disc_id = selected_disc_id.clone();
+            let burn_queues = burn_queues.clone();
             let rebuild_overview = rebuild_overview.clone();
             let populate_detail = populate_detail.clone();
             let disc_detecting = disc_detecting.clone();
@@ -7857,6 +7876,13 @@ fn open_media_library_window(
                         (old_d.as_ref() != Some(&new_d)).then_some(new_d)
                     });
                 *current_drives.borrow_mut() = drives;
+                // Drop burn queues for drives that are no longer attached —
+                // they'd otherwise linger invisibly (no panel shows them).
+                {
+                    let drives = current_drives.borrow();
+                    let live: Vec<&str> = drives.iter().map(|d| d.id.as_str()).collect();
+                    burn_queues.borrow_mut().remove_gone(&live);
+                }
                 rebuild_overview();
                 if let Some(d) = detail_update {
                     populate_detail(&d);
