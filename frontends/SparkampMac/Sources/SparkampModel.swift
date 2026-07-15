@@ -212,13 +212,23 @@ final class SparkampModel: ObservableObject {
     @Published var ripTrackFrac: Double = 0
     /// Set to stop the rip after the track currently encoding.
     var ripCancelRequested: Bool = false
-    /// The Burn list — a dedicated queue separate from the active playlist
-    /// (Winamp-style). Fed from the ML Files context menu.
-    @Published var burnList: [BurnEntry] = []
+    /// Per-drive burn queues — a dedicated queue separate from the active
+    /// playlist (Winamp-style), keyed by drive id so "Send to ▸ Disc Drive
+    /// → B" only ever touches B's own queue (mirrors the core's
+    /// `disc::burnlist::BurnQueues`). Always read/write through
+    /// `burnQueue(for:)` / `addToBurnList(driveId:...)` — never index this
+    /// dict directly, so a drive with nothing queued yet reads as empty
+    /// rather than crashing. Fed from any "Send to ▸ Disc Drive" action.
+    @Published var burnQueues: [String: [BurnEntry]] = [:]
     /// Phase text while a burn runs ("Preparing 2/5 …", "Burning…"); nil idle.
     /// Mirrored from the core burn job's poll; cancel goes through
     /// `cancelBurn()` (the job stops between steps / kills the subprocess).
     @Published var burnPhase: String? = nil
+    /// Paths that failed the duration probe on the most recent "Send to ▸
+    /// Disc Drive" — non-nil presents a one-shot alert listing them, then
+    /// cleared. Those files are never queued (an unknown duration would
+    /// defeat the over-capacity gate).
+    @Published var burnUnreadableFiles: [String]? = nil
 
     // ── Deduplication ────────────────────────────────────────────────────────
     @Published var dedupVisible: Bool = false

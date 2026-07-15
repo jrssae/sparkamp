@@ -273,6 +273,19 @@ struct MediaLibraryView: View {
         } message: {
             Text(model.ejectError ?? "")
         }
+        // "Send to ▸ Disc Drive" skipped one or more unreadable files
+        // (mirrors GTK's show_unreadable_dialog) — shown regardless of which
+        // page is on screen, since the send can be triggered from the Files
+        // view, a playlist editor, or a device's file list.
+        .alert("Some files could not be read", isPresented: Binding(
+            get: { model.burnUnreadableFiles != nil },
+            set: { if !$0 { model.burnUnreadableFiles = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.burnUnreadableFiles = nil }
+        } message: {
+            Text("These files could not be read and were not added:\n\n"
+                 + (model.burnUnreadableFiles ?? []).joined(separator: "\n"))
+        }
     }
 
     // MARK: - Sidebar
@@ -667,17 +680,6 @@ struct MediaLibraryView: View {
                     if let t = model.mlTracks.first(where: { $0.id == id }) {
                         model.mlViewArtForPath(t.path)
                     }
-                case .addToBurnList(let ids):
-                    let rows = model.mlTracks.filter { ids.contains($0.id) }
-                    var displays: [String: String] = [:]
-                    var durations: [String: Int] = [:]
-                    for t in rows {
-                        displays[t.path] = t.artist.isEmpty
-                            ? t.title : "\(t.artist) - \(t.title)"
-                        if t.lengthSecs > 0 { durations[t.path] = Int(t.lengthSecs) }
-                    }
-                    model.addToBurnList(
-                        paths: rows.map(\.path), displays: displays, durations: durations)
                 }
             },
             onDropPaths: { paths in
@@ -702,9 +704,15 @@ struct MediaLibraryView: View {
                 Text("\(selection.count) selected")
                     .font(themeManager.currentVars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
-                Button("Add to Playlist") { model.mlAddToPlaylist(ids: Array(selection)) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                // GTK's "Send to ▾" MenuButton equivalent — same spec as the
+                // right-click "Send to" submenu, just as a top-level button
+                // (so it isn't nested under another "Send to" label).
+                Menu("Send to ▾") {
+                    SendToMenu(paths: model.mlTracks
+                        .filter { selection.contains($0.id) }.map(\.path))
+                }
+                .controlSize(.small)
+                .fixedSize()
             }
         }
         .padding(.horizontal, 12)

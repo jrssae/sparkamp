@@ -483,6 +483,13 @@ struct DeviceDetailView: View {
                 Button("View Album Art") { model.mlViewArtForPath(p) }
                 Divider()
             }
+            // Active Playlist / Saved Playlist ▸ / Disc Drive / Removable
+            // Device over the selected device files — same spec as the
+            // Files-view and playlist-editor context menus.
+            Menu("Send to") {
+                SendToMenu(paths: paths(for: ids))
+            }
+            Divider()
             Button(deleteActionLabel, role: .destructive) {
                 requestDelete(paths(for: ids))
             }

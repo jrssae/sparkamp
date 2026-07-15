@@ -814,10 +814,13 @@ struct DiscDriveView: View {
     @State private var pendingBurnAudio = true
 
     private var burnPanel: some View {
+        // Only ever reads/writes THIS drive's queue — every other drive's
+        // list is untouched (per-drive burn queues).
+        let queue = model.burnQueue(for: drive.id)
         let decision = DiscService.eraseDecision(drive: drive)
         let capacitySecs = DiscService.audioCapacitySecs(drive: drive)
-        let totalSecs = model.burnListTotalSecs
-        let totalBytes = model.burnListTotalBytes
+        let totalSecs = model.burnListTotalSecs(for: drive.id)
+        let totalBytes = model.burnListTotalBytes(for: drive.id)
         let freeBytes = drive.media.freeBytes
         let overAudio = totalSecs > capacitySecs
         let overData = freeBytes > 0 && totalBytes > freeBytes
@@ -828,13 +831,13 @@ struct DiscDriveView: View {
                 .font(vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistText)
 
-            if model.burnList.isEmpty {
-                Text("Queue tracks from the Media Library Files view: right-click → Add to Burn List.")
+            if queue.isEmpty {
+                Text("Queue tracks from the Media Library: right-click → Send to ▸ Disc Drive.")
                     .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
             } else {
                 List {
-                    ForEach(model.burnList) { e in
+                    ForEach(queue) { e in
                         HStack {
                             Text(e.display)
                                 .font(vars.bodyFont)
@@ -848,7 +851,7 @@ struct DiscDriveView: View {
                             }
                         }
                     }
-                    .onDelete { model.removeFromBurnList(at: $0) }
+                    .onDelete { model.removeFromBurnList(driveId: drive.id, at: $0) }
                 }
                 .frame(minHeight: 120, maxHeight: 220)
                 .scrollContentBackground(.hidden)
@@ -891,7 +894,7 @@ struct DiscDriveView: View {
                 } label: {
                     Label("Burn Audio CD", systemImage: "opticaldisc")
                 }
-                .disabled(model.burnList.isEmpty || decision == 2 || overAudio
+                .disabled(queue.isEmpty || decision == 2 || overAudio
                           || model.burnPhase != nil)
                 .help(overAudio ? "Over the disc's audio capacity — remove tracks first" : "")
 
@@ -905,14 +908,14 @@ struct DiscDriveView: View {
                 } label: {
                     Label("Burn Data Disc", systemImage: "doc.on.doc")
                 }
-                .disabled(model.burnList.isEmpty || decision == 2 || overData
+                .disabled(queue.isEmpty || decision == 2 || overData
                           || model.burnPhase != nil)
                 .help(overData ? "Over the disc's free space — remove files first" : "")
 
                 Spacer()
 
-                Button("Clear List") { model.burnList.removeAll() }
-                    .disabled(model.burnList.isEmpty || model.burnPhase != nil)
+                Button("Clear List") { model.clearBurnList(driveId: drive.id) }
+                    .disabled(queue.isEmpty || model.burnPhase != nil)
             }
             .buttonStyle(.bordered)
 

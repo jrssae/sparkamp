@@ -406,6 +406,21 @@ enum DiscService {
         return Int(json.withCString { sparkamp_disc_audio_capacity_secs(nil, $0) })
     }
 
+    /// Probe durations for a batch of absolute file paths (GStreamer
+    /// discovery per file — runs synchronously, so call this from a
+    /// background queue, same as every other DiscService entry point).
+    /// A path missing from the result, or mapped to `nil`, is unreadable.
+    static func probeDurations(paths: [String]) -> [String: UInt32?] {
+        guard let json = jsonString(paths) else { return [:] }
+        let out = json.withCString { sparkamp_disc_probe_durations(nil, $0) }
+        struct Probe: Codable { let path: String; let secs: UInt32? }
+        guard let text = takeString(out),
+              let data = text.data(using: .utf8),
+              let probes = try? decoder().decode([Probe].self, from: data)
+        else { return [:] }
+        return Dictionary(uniqueKeysWithValues: probes.map { ($0.path, $0.secs) })
+    }
+
     /// A whole burn job (`BurnRunIn` in Rust). The caller has already done
     /// the pre-flight (capacity, eraseDecision, the erase confirmation).
     struct BurnRunJob: Codable {

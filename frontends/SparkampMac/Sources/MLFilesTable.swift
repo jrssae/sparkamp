@@ -18,8 +18,6 @@ enum MLTableEvent {
     case removeTracks([Int64])
     case doubleClick([Int64])
     case viewArt(Int64)
-    /// Queue the selected rows on the Burn list (disc burning).
-    case addToBurnList([Int64])
 }
 
 // MARK: - ML files table (AppKit NSTableView wrapper)
@@ -50,7 +48,7 @@ struct MLFilesTable: NSViewRepresentable {
     @Binding var columnCustomization: TableColumnCustomization<MLTrack>
     let theme: SkinTheme
     @ObservedObject var themeManager: ThemeManager
-    /// Used to build the shared "Send to Playlist" / "Send to Device" submenus.
+    /// Used to build the shared "Send to" submenu.
     @ObservedObject var model: SparkampModel
     let onEvent: (MLTableEvent) -> Void
     let onDropPaths: MLFilesDropHandler
@@ -556,15 +554,11 @@ struct MLFilesTable: NSViewRepresentable {
             }
             let menu = NSMenu()
             menu.autoenablesItems = false
-            // Shared "Send to Playlist" / "Send to Device" submenus over the
-            // selected rows' file paths.
+            // Shared "Send to" submenu (Active Playlist / Saved Playlist ▸ /
+            // Disc Drive / Removable Device) over the selected rows' paths.
             let idSet = Set(ids)
             let paths = tracks.filter { idSet.contains($0.id) }.map { $0.path }
-            menu.addItem(parent.model.sendToPlaylistMenuItem(paths: paths))
-            menu.addItem(parent.model.sendToDeviceMenuItem(paths: paths))
-            menu.addItem(BlockMenuItem(title: "Add to Burn List", enabled: !ids.isEmpty) {
-                self.parent.onEvent(.addToBurnList(ids))
-            })
+            menu.addItem(parent.model.sendToMenuItem(paths: paths, includeActive: true))
             menu.addItem(BlockMenuItem(title: "Replace Current Playlist", enabled: !ids.isEmpty) {
                 self.parent.onEvent(.replacePlaylist(ids))
             })

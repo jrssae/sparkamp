@@ -28,6 +28,7 @@ extension SparkampModel {
 
                 if drives != self.discDrives {
                     self.discDrives = drives
+                    self.pruneBurnQueues()
                 }
 
                 if let drive = inserted, self.autoShowInsertedCd {
@@ -442,37 +443,124 @@ extension SparkampModel {
         }
     }
 
-    // MARK: Burn list + burning (blind-implemented; hardware pass = Opus)
+    // MARK: Burn queues (per-drive) + burning (blind-implemented; hardware pass = Opus)
 
-    /// Queue files for burning (dedup by path). Size/duration read here so
-    /// the capacity meters work without touching the files again.
-    func addToBurnList(paths: [String], displays: [String: String], durations: [String: Int]) {
-        var added = 0
-        for p in paths where !burnList.contains(where: { $0.path == p }) {
-            let bytes = (try? FileManager.default.attributesOfItem(atPath: p)[.size] as? UInt64)
-                .flatMap { $0 } ?? 0
-            burnList.append(BurnEntry(
-                path: p,
-                display: displays[p] ?? URL(fileURLWithPath: p).lastPathComponent,
-                durationSecs: durations[p],
-                bytes: bytes))
-            added += 1
+    /// The burn queue for one drive — empty when nothing has been queued
+    /// there yet. Always read through this accessor rather than indexing
+    /// `burnQueues` directly.
+    func burnQueue(for driveId: String) -> [BurnEntry] {
+        burnQueues[driveId] ?? []
+    }
+
+    func burnListTotalSecs(for driveId: String) -> Int {
+        burnQueue(for: driveId).reduce(0) { $0 + ($1.durationSecs ?? 0) }
+    }
+
+    func burnListTotalBytes(for driveId: String) -> UInt64 {
+        burnQueue(for: driveId).reduce(0) { $0 + $1.bytes }
+    }
+
+    func removeFromBurnList(driveId: String, at offsets: IndexSet) {
+        burnQueues[driveId, default: []].remove(atOffsets: offsets)
+    }
+
+    func clearBurnList(driveId: String) {
+        burnQueues[driveId] = []
+    }
+
+    /// Drop queues for drives no longer attached — they'd otherwise linger
+    /// invisibly (no panel shows them). Mirrors the core's
+    /// `BurnQueues::remove_gone`; call after every drive-list poll.
+    private func pruneBurnQueues() {
+        let live = Set(discDrives.map(\.id))
+        burnQueues = burnQueues.filter { live.contains($0.key) }
+    }
+
+    /// Queue files for burning onto ONE drive's queue (dedup by path within
+    /// that drive only — the whole point of per-drive queues is that
+    /// "Send to ▸ Disc Drive → B" never touches any other drive's list).
+    /// Duration comes from the caller's library metadata when known
+    /// (`durations`); anything unknown is probed off the main thread via
+    /// `sparkamp_disc_probe_durations`. A path that comes back unreadable
+    /// (no library duration AND a null probe result) is never queued — an
+    /// unknown duration would defeat the over-capacity gate — instead it's
+    /// collected into `burnUnreadableFiles` for a single alert. Mirrors the
+    /// core's `disc::burnlist::add_files` + GTK's `show_unreadable_dialog`.
+    func addToBurnList(
+        driveId: String, driveLabel: String,
+        paths: [String], displays: [String: String], durations: [String: Int]
+    ) {
+        guard !paths.isEmpty else { return }
+        let already = Set(burnQueue(for: driveId).map(\.path))
+        let candidates = paths.filter { !already.contains($0) }
+        let duplicateCount = paths.count - candidates.count
+        guard !candidates.isEmpty else {
+            discStatus = "Already queued on \(driveLabel)"
+            return
         }
-        discStatus = added > 0
-            ? "Added \(added) to the burn list (\(burnList.count) queued)"
-            : "Already on the burn list"
+
+        func finish(_ probed: [String: UInt32?]) {
+            var secs = durations
+            for p in candidates where secs[p] == nil {
+                if let s = probed[p] ?? nil { secs[p] = Int(s) }
+            }
+            let unreadable = candidates.filter { secs[$0] == nil }
+            var added = 0
+            for p in candidates where secs[p] != nil {
+                let bytes = (try? FileManager.default.attributesOfItem(atPath: p)[.size] as? UInt64)
+                    .flatMap { $0 } ?? 0
+                self.burnQueues[driveId, default: []].append(BurnEntry(
+                    path: p,
+                    display: displays[p] ?? URL(fileURLWithPath: p).lastPathComponent,
+                    durationSecs: secs[p],
+                    bytes: bytes))
+                added += 1
+            }
+            let total = self.burnQueue(for: driveId).count
+            var msg = "Queued \(added) for burning on \(driveLabel) (\(total) on the list)"
+            if duplicateCount > 0 { msg += " — \(duplicateCount) already queued" }
+            self.discStatus = msg
+            if !unreadable.isEmpty { self.burnUnreadableFiles = unreadable }
+        }
+
+        let needsProbe = candidates.filter { durations[$0] == nil }
+        guard !needsProbe.isEmpty else { finish([:]); return }
+        discStatus = "Reading files…"
+        probeDurations(paths: needsProbe, completion: finish)
     }
 
-    func removeFromBurnList(at offsets: IndexSet) {
-        burnList.remove(atOffsets: offsets)
+    /// Resolve display/duration metadata from the library where possible
+    /// (falls back to a filename display + a full probe when the path isn't
+    /// a library row — e.g. a device file), then queue onto one drive's burn
+    /// list. The single entry point every "Send to ▸ Disc Drive" action
+    /// calls (SendToMenu, DeviceMenu.swift's NSMenu builder).
+    func sendPathsToDrive(_ driveId: String, paths: [String]) {
+        guard !paths.isEmpty else { return }
+        let driveLabel = discDrives.first(where: { $0.id == driveId })?.label ?? driveId
+        var displays: [String: String] = [:]
+        var durations: [String: Int] = [:]
+        for p in paths {
+            guard let t = mlTracks.first(where: { $0.path == p }) else { continue }
+            displays[p] = t.artist.isEmpty ? t.title : "\(t.artist) - \(t.title)"
+            if t.lengthSecs > 0 { durations[p] = Int(t.lengthSecs) }
+        }
+        addToBurnList(driveId: driveId, driveLabel: driveLabel,
+                      paths: paths, displays: displays, durations: durations)
     }
 
-    var burnListTotalSecs: Int {
-        burnList.reduce(0) { $0 + ($1.durationSecs ?? 0) }
-    }
-
-    var burnListTotalBytes: UInt64 {
-        burnList.reduce(0) { $0 + $1.bytes }
+    /// Probe durations for paths off the main thread (GStreamer discovery
+    /// per file can take real time) — decode + free follow the same
+    /// `takeString`/`decoder()` pattern as every other `DiscService` call;
+    /// `completion` runs back on the main actor. Nil map on FFI failure.
+    func probeDurations(paths: [String], completion: @escaping ([String: UInt32?]) -> Void) {
+        guard !paths.isEmpty else {
+            DispatchQueue.main.async { completion([:]) }
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let map = DiscService.probeDurations(paths: paths)
+            DispatchQueue.main.async { completion(map) }
+        }
     }
 
     /// Burn the queue as an audio CD (erase first when the user confirmed it,
@@ -490,10 +578,11 @@ extension SparkampModel {
     }
 
     private func startBurnJob(_ drive: OpticalDrive, audio: Bool, eraseFirst: Bool) {
-        guard !burnList.isEmpty, burnPhase == nil, let ctx = ctx else { return }
+        let items = burnQueue(for: drive.id)
+        guard !items.isEmpty, burnPhase == nil, let ctx = ctx else { return }
         let job = DiscService.BurnRunJob(
             drive: drive,
-            items: burnList.map { DiscService.BurnJobItem(path: $0.path, display: $0.display) },
+            items: items.map { DiscService.BurnJobItem(path: $0.path, display: $0.display) },
             audio: audio,
             // The companion playlist follows the app-wide format setting.
             useM3u: sparkamp_get_playlist_format(ctx) == 1,
@@ -505,6 +594,7 @@ extension SparkampModel {
         }
         burnPhase = "Starting…"
         discStatus = nil
+        let driveId = drive.id
 
         // Poll the core job from the main run loop; `done` ends the timer.
         Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
@@ -518,7 +608,7 @@ extension SparkampModel {
                 self.burnPhase = nil
                 if done.ok {
                     self.discStatus = done.message
-                    self.burnList.removeAll()
+                    self.clearBurnList(driveId: driveId)
                     self.pollDiscDrives()
                 } else if done.message == "cancelled" {
                     self.discStatus = "Burn cancelled"
