@@ -45,13 +45,14 @@ pub fn build(
     // Owned here (not inside open_media_library_window) so the active
     // playlist's Send-to menu (below) and the ML window's Files/Editor/Device
     // views all read and write the SAME lists and burn queue. Threaded into
-    // open_media_library_window at each call site. current_devices and
-    // copy_files_holder are only populated once the ML window has been built
-    // at least once (its device poll / copy runner live there); until then
-    // the active playlist's "Removable Device" Send-to entry simply has no
-    // devices to list, which build_send_to_menu already handles by omitting
-    // the entry.  current_drives is also kept fresh by the audio-CD watcher
-    // below, independent of the ML window.
+    // open_media_library_window at each call site. current_drives is kept
+    // fresh by the audio-CD watcher below, and current_devices by the device
+    // poll further down (mirrors the ML window's own device poll) — both run
+    // from app start, independent of whether the ML window has ever been
+    // opened, so the active playlist's "Removable Device" Send-to entry is
+    // never missing devices while some are actually present.
+    // copy_files_holder is only populated once the ML window has been built
+    // at least once (its copy runner lives there).
     let current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(Vec::new()));
     let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
@@ -4127,6 +4128,75 @@ pub fn build(
         tick();
         // 2 s: each unchanged tick costs one status ioctl (~ms, no medium
         // access) — insertion reacts about as fast as the file manager.
+        glib::timeout_add_local(Duration::from_secs(2), move || {
+            tick();
+            ControlFlow::Continue
+        });
+    }
+
+    // ── Device poll: keeps the Send-to menu's device list fresh ─────────────
+    // Mirrors the ML window's `refresh_devices` (media_library.rs) — same
+    // listing logic (udisks + MTP), same 2 s cadence — so `current_devices`
+    // is populated from app start instead of staying empty until the ML
+    // window has been opened once. Both pollers write the same Rc when the
+    // ML window is also open; that's cheap and idempotent (identical source
+    // data, no UI to fight over here), the same way `current_drives` above
+    // is written by this watcher regardless of whether the ML window's own
+    // disc poll is also running — so no extra coordination is added.
+    {
+        let current_devices_watch = current_devices.clone();
+        let in_flight = Rc::new(Cell::new(false));
+        let tick: Rc<dyn Fn()> = Rc::new(move || {
+            if in_flight.get() {
+                return;
+            }
+            in_flight.set(true);
+            let current_devices_watch = current_devices_watch.clone();
+            let in_flight = in_flight.clone();
+            // Same worker-thread split as the ML poll: MTP mount metadata is
+            // enumerated on the main thread (cheap, no FUSE IO), then udisks
+            // listing + storage-root resolution runs on a worker thread so a
+            // stalled D-Bus/gvfs call can never freeze the UI.
+            glib::spawn_future_local(async move {
+                let mtp_raw = enumerate_mtp_raw();
+                let result = gio::spawn_blocking(move || {
+                    let udisks = crate::devices::detect::list_devices();
+                    let mtp: Vec<crate::devices::Device> =
+                        mtp_raw.into_iter().filter_map(mtp_raw_to_device).collect();
+                    (udisks, mtp)
+                })
+                .await;
+                in_flight.set(false);
+                match result {
+                    Ok((Ok(devs), mtp)) => {
+                        let mut devs = devs;
+                        // Mounted optical data discs belong to Disc Drives,
+                        // not the removable-Devices list — drop them here
+                        // too, matching the ML poll.
+                        devs.retain(|d| !is_optical_fs(&d.fs_type));
+                        devs.extend(mtp);
+                        devs.sort_by(|a, b| {
+                            a.label
+                                .to_lowercase()
+                                .cmp(&b.label.to_lowercase())
+                                .then_with(|| a.mount_path.cmp(&b.mount_path))
+                        });
+                        *current_devices_watch.borrow_mut() = devs;
+                    }
+                    // udisks failed or the worker thread panicked — leave the
+                    // Send-to entry showing no devices; the ML window (if
+                    // opened) surfaces the diagnostic banner for this.
+                    Ok((Err(_), _mtp)) => {
+                        current_devices_watch.borrow_mut().clear();
+                    }
+                    Err(_) => {
+                        current_devices_watch.borrow_mut().clear();
+                    }
+                }
+            });
+        });
+        tick();
+        // Same 2 s cadence as the ML window's device poll.
         glib::timeout_add_local(Duration::from_secs(2), move || {
             tick();
             ControlFlow::Continue
