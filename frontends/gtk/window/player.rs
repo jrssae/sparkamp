@@ -2022,14 +2022,24 @@ pub fn build(
             pl_action_group.add_action(&action);
         }
 
-        // Send to Removable Device: hand off to the Media Library's copy
-        // runner (via the shared holder — it owns the progress UI, which
-        // only exists once the ML window has been built).
+        // Send to Removable Device: self-contained — copies straight onto the
+        // device using the same core plan/copy helpers as the Media Library's
+        // copy_files_run (device_plan_fs / device_recorded_relpath /
+        // device_record_pair / devices::io::for_device), but without any of
+        // that runner's ML-only widgets (sidebar row, progress bar, eject
+        // button — copy_files_run captures those directly and they don't
+        // exist until the ML window has been built). That coupling is why
+        // this path previously went through copy_files_holder and silently
+        // did nothing when the holder was still empty: the device already
+        // shows up in the menu via the app-start device poll, independent of
+        // the ML window. Progress goes to the playlist status label and the
+        // result to an alert on the playlist window, mirroring pl.send-drive.
         {
             let current_devices = current_devices.clone();
-            let copy_files_holder = copy_files_holder.clone();
             let pl_view_dev = pl_view.clone();
             let state_dev = state.clone();
+            let status = pl_status_label.clone();
+            let win_wk = playlist_win.downgrade();
             let action = gio::SimpleAction::new(
                 "send-device",
                 Some(glib::VariantTy::STRING),
@@ -2037,11 +2047,12 @@ pub fn build(
             action.connect_activate(move |_, target| {
                 let Some(dev_id) =
                     target.and_then(|v| v.get::<String>()) else { return };
-                let dev = current_devices
+                let Some(dev) = current_devices
                     .borrow()
                     .iter()
                     .find(|d| d.id == dev_id)
-                    .cloned();
+                    .cloned()
+                else { return };
                 #[allow(deprecated)]
                 let (sel_paths, _) = pl_view_dev.selection().selected_rows();
                 let indices: Vec<usize> = sel_paths
@@ -2056,11 +2067,112 @@ pub fn build(
                         .map(|t| t.path.clone())
                         .collect()
                 };
-                if let (Some(dev), false) = (dev, paths.is_empty()) {
-                    if let Some(run) = copy_files_holder.borrow().clone() {
-                        run(dev, paths);
+                let paths: Vec<std::path::PathBuf> =
+                    paths.into_iter().filter(|p| p.exists()).collect();
+                if paths.is_empty() {
+                    return;
+                }
+                let win_for_alert = || win_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
+                if dev.read_only {
+                    let n = if dev.label.is_empty() { "This device" } else { &dev.label };
+                    show_alert_parented(
+                        win_for_alert().as_ref(),
+                        &format!("{n} is read-only — can't copy files to it."),
+                    );
+                    return;
+                }
+                if device_fs_unsupported(&dev.fs_type) {
+                    show_alert_parented(
+                        win_for_alert().as_ref(),
+                        &format!(
+                            "{} is an unsupported filesystem — can't write to this device yet.",
+                            dev.fs_type
+                        ),
+                    );
+                    return;
+                }
+                let device_id = device_sync_id(&dev);
+                let mount = dev.mount_path.clone();
+                // Free-space guard — only when capacity is known (mirrors
+                // copy_files_run: skips slow per-file device checks on
+                // devices that can't report capacity, e.g. MTP).
+                if dev.free_bytes > 0 {
+                    let mut need = 0u64;
+                    for p in &paths {
+                        if !device_plan_one(&state_dev, &mount, &device_id, p).1 {
+                            need += std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                        }
+                    }
+                    if need > dev.free_bytes {
+                        show_alert_parented(
+                            win_for_alert().as_ref(),
+                            &format!(
+                                "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                                need as f64 / 1e9,
+                                dev.free_bytes as f64 / 1e9
+                            ),
+                        );
+                        return;
                     }
                 }
+                let dname = if dev.label.is_empty() { "device".to_string() } else { dev.label.clone() };
+                let total = paths.len();
+                let dev_for_copy = dev.clone();
+                let state2 = state_dev.clone();
+                let status2 = status.clone();
+                let win2 = win_wk.clone();
+                status.set_text("Reading files…");
+                // Same spawn_future_local + spawn_blocking pattern as
+                // pl.send-drive above: only Send data (paths, dev, ids)
+                // crosses into spawn_blocking; the Rcs stay in the local
+                // future, and the state borrow inside each step is short-lived.
+                glib::spawn_future_local(async move {
+                    let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+                    for (i, src) in paths.iter().enumerate() {
+                        status2.set_text(&gtk_safe(&format!(
+                            "Copying {}/{total} to {dname}…", i + 1
+                        )));
+                        let recorded = device_recorded_relpath(&state2, &device_id, src);
+                        let s = src.clone();
+                        let m = mount.clone();
+                        let dc = dev_for_copy.clone();
+                        let joined = gio::spawn_blocking(
+                            move || -> Result<(std::path::PathBuf, bool), ()> {
+                                let (rel, present) = device_plan_fs(&m, &s, recorded);
+                                if present {
+                                    return Ok((rel, false)); // already there
+                                }
+                                match crate::devices::io::for_device(&dc)
+                                    .copy_to_device(&s, &rel)
+                                {
+                                    Ok(_) => Ok((rel, true)),
+                                    Err(_) => Err(()),
+                                }
+                            },
+                        )
+                        .await;
+                        match joined {
+                            Ok(Ok((rel, copied_now))) => {
+                                if copied_now {
+                                    copied += 1;
+                                } else {
+                                    skipped += 1;
+                                }
+                                device_record_pair(&state2, &device_id, src, &rel);
+                            }
+                            _ => failed += 1,
+                        }
+                    }
+                    status2.set_text(&gtk_safe(&format!(
+                        "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
+                    )));
+                    show_alert_parented(
+                        win2.upgrade().map(|w| w.upcast::<gtk4::Window>()).as_ref(),
+                        &gtk_safe(&format!(
+                            "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
+                        )),
+                    );
+                });
             });
             pl_action_group.add_action(&action);
         }
