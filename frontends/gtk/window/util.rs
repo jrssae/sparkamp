@@ -621,3 +621,161 @@ fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err
     dialog.show(Some(parent));
 }
 
+/// What the "Send to" menu shows, as data — pure so the 0/1/N visibility
+/// rules are unit-testable without GTK.
+// consumed by Task 7
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum SendEntry {
+    ActivePlaylist,
+    SavedPlaylist,
+    /// One drive attached: direct item (id, label), no submenu.
+    DriveDirect(String, String),
+    /// Multiple drives: submenu, one item per (id, label).
+    DriveMenu(Vec<(String, String)>),
+    DeviceDirect(String, String),
+    DeviceMenu(Vec<(String, String)>),
+}
+
+// consumed by Task 7
+#[allow(dead_code)]
+pub(super) fn send_to_spec(
+    drives: &[(String, String)],
+    devices: &[(String, String)],
+) -> Vec<SendEntry> {
+    let mut out = vec![SendEntry::ActivePlaylist, SendEntry::SavedPlaylist];
+    match drives {
+        [] => {}
+        [(id, label)] => out.push(SendEntry::DriveDirect(id.clone(), label.clone())),
+        many => out.push(SendEntry::DriveMenu(many.to_vec())),
+    }
+    match devices {
+        [] => {}
+        [(id, label)] => out.push(SendEntry::DeviceDirect(id.clone(), label.clone())),
+        many => out.push(SendEntry::DeviceMenu(many.to_vec())),
+    }
+    out
+}
+
+/// Action names for one consumer of the Send-to menu; each consumer
+/// registers its own action group and passes prefixed names here.
+// consumed by Task 7
+#[allow(dead_code)]
+pub(super) struct SendToActions<'a> {
+    pub active: &'a str,         // e.g. "ml.send-active" (no target)
+    pub new_playlist: &'a str,   // e.g. "ml.add-to-new" (no target)
+    pub saved_playlist: &'a str, // e.g. "ml.add-to-saved" (i64 playlist id)
+    pub drive: &'a str,          // e.g. "ml.send-drive" (String drive id)
+    pub device: &'a str,         // e.g. "ml.send-device" (String device id)
+    pub drives: Vec<(String, String)>,
+    pub devices: Vec<(String, String)>,
+}
+
+/// Build the full "Send to" menu: Active Playlist / Saved Playlist ▸ /
+/// Disc Drive [▸] / Removable Device [▸]. Drive + device lists must come
+/// from the cached poll state — never probe from a menu handler.
+// consumed by Task 7
+// AppState (state.rs) is private to the `window` module; pub(super) here
+// (needed so a future sibling submodule can call this) makes the fn more
+// visible than that parameter type, which rustc flags as private_interfaces.
+// Widening AppState's own visibility is out of scope for this file.
+#[allow(dead_code, private_interfaces)]
+pub(super) fn build_send_to_menu(
+    state: &std::rc::Rc<std::cell::RefCell<AppState>>,
+    actions: &SendToActions<'_>,
+) -> gio::Menu {
+    let menu = gio::Menu::new();
+    for entry in send_to_spec(&actions.drives, &actions.devices) {
+        match entry {
+            SendEntry::ActivePlaylist => {
+                if !actions.active.is_empty() {
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("Active Playlist"),
+                        Some(actions.active),
+                    ));
+                }
+            }
+            SendEntry::SavedPlaylist => {
+                let sub = build_add_to_playlist_submenu(
+                    state,
+                    actions.new_playlist,
+                    actions.saved_playlist,
+                );
+                menu.append_submenu(Some("Saved Playlist"), &sub);
+            }
+            SendEntry::DriveDirect(id, _label) => {
+                let item = gio::MenuItem::new(Some("Disc Drive"), None);
+                item.set_action_and_target_value(
+                    Some(actions.drive),
+                    Some(&id.to_variant()),
+                );
+                menu.append_item(&item);
+            }
+            SendEntry::DriveMenu(drives) => {
+                let sub = gio::Menu::new();
+                for (id, label) in drives {
+                    let item = gio::MenuItem::new(Some(&label), None);
+                    item.set_action_and_target_value(
+                        Some(actions.drive),
+                        Some(&id.to_variant()),
+                    );
+                    sub.append_item(&item);
+                }
+                menu.append_submenu(Some("Disc Drive"), &sub);
+            }
+            SendEntry::DeviceDirect(id, _label) => {
+                let item = gio::MenuItem::new(Some("Removable Device"), None);
+                item.set_action_and_target_value(
+                    Some(actions.device),
+                    Some(&id.to_variant()),
+                );
+                menu.append_item(&item);
+            }
+            SendEntry::DeviceMenu(devices) => {
+                let sub = gio::Menu::new();
+                for (id, label) in devices {
+                    let item = gio::MenuItem::new(Some(&label), None);
+                    item.set_action_and_target_value(
+                        Some(actions.device),
+                        Some(&id.to_variant()),
+                    );
+                    sub.append_item(&item);
+                }
+                menu.append_submenu(Some("Removable Device"), &sub);
+            }
+        }
+    }
+    menu
+}
+
+// Named `send_to_tests` (not `tests`) because util.rs is `include!`d flat
+// into the `window` module alongside tests.rs, which already defines a
+// `mod tests` in that same namespace — a second `mod tests` here would
+// collide.
+#[cfg(test)]
+mod send_to_tests {
+    use super::*;
+
+    #[test]
+    fn send_to_spec_visibility_matrix() {
+        let d1 = vec![("sr0".to_string(), "Drive A".to_string())];
+        let d2 = vec![
+            ("sr0".to_string(), "Drive A".to_string()),
+            ("sr1".to_string(), "Drive B".to_string()),
+        ];
+        // 0 drives, 0 devices: playlist entries only.
+        let spec = send_to_spec(&[], &[]);
+        assert_eq!(spec, vec![SendEntry::ActivePlaylist, SendEntry::SavedPlaylist]);
+        // 1 drive: direct item, no submenu.
+        let spec = send_to_spec(&d1, &[]);
+        assert!(spec.contains(&SendEntry::DriveDirect("sr0".into(), "Drive A".into())));
+        // 2 drives: submenu with both.
+        let spec = send_to_spec(&d2, &[]);
+        assert!(spec.contains(&SendEntry::DriveMenu(d2.clone())));
+        // devices mirror the same rule.
+        let dev = vec![("usb1".to_string(), "Stick".to_string())];
+        let spec = send_to_spec(&[], &dev);
+        assert!(spec.contains(&SendEntry::DeviceDirect("usb1".into(), "Stick".into())));
+    }
+}
+
