@@ -7705,180 +7705,159 @@ fn open_media_library_window(
         // Guard against overlapping polls stacking up.
         let in_flight = Rc::new(Cell::new(false));
         Rc::new(move || {
-            if in_flight.get() {
-                return;
-            }
-            in_flight.set(true);
             let sidebar = sidebar.clone();
             let dev_sub_rows = dev_sub_rows.clone();
             let devices_expanded = devices_expanded.clone();
-            let current_devices = current_devices.clone();
+            let current_devices_cb = current_devices.clone();
             let banner = banner.clone();
             let banner_lbl = banner_lbl.clone();
             let rebuild_overview = rebuild_overview.clone();
-            let in_flight = in_flight.clone();
             // udisks2 access runs on a worker thread so a stalled D-Bus call
             // can never freeze the UI — a main-thread block previously made
             // the app impossible to quit or eject after a copy.
-            glib::spawn_future_local(async move {
-                // Enumerate MTP mount metadata on the main thread (cheap, no
-                // FUSE IO), then resolve storage roots + list udisks devices on
-                // the worker thread so no gvfs filesystem call blocks the UI.
-                let mtp_raw = enumerate_mtp_raw();
-                let result = gio::spawn_blocking(move || {
-                    let udisks = crate::devices::detect::list_devices();
-                    let mtp: Vec<crate::devices::Device> =
-                        mtp_raw.into_iter().filter_map(mtp_raw_to_device).collect();
-                    (udisks, mtp)
-                })
-                .await;
-                in_flight.set(false);
-                match result {
-                    Ok((Ok(devs), mtp)) => {
-                        banner.set_visible(false);
-                        // Merge MTP devices, then re-sort by label.
-                        let mut devs = devs;
-                        // Mounted optical data discs belong to Disc Drives, not
-                        // the removable-Devices list — drop them here.
-                        devs.retain(|d| !is_optical_fs(&d.fs_type));
-                        devs.extend(mtp);
-                        devs.sort_by(|a, b| {
-                            a.label
-                                .to_lowercase()
-                                .cmp(&b.label.to_lowercase())
-                                .then_with(|| a.mount_path.cmp(&b.mount_path))
-                        });
-                        let want: Vec<String> =
-                            devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
-                        // Remove rows for devices that went away.
-                        dev_sub_rows.borrow_mut().retain(|r| {
-                            let keep = want.contains(&r.widget_name().to_string());
-                            if !keep {
-                                sidebar.remove(r);
-                            }
-                            keep
-                        });
-                        // Add rows for new devices; update free-space bars in
-                        // place so selection isn't disturbed when unchanged.
-                        let expanded = devices_expanded.get();
-                        for d in &devs {
-                            let name = format!("dev:{}", d.backend_id);
-                            let used = if d.total_bytes > 0 {
-                                1.0 - (d.free_bytes as f64 / d.total_bytes as f64)
-                            } else {
-                                0.0
-                            };
-                            let base = if d.label.is_empty() {
-                                "Untitled device".to_string()
-                            } else {
-                                d.label.clone()
-                            };
-                            // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
-                            let label_text =
-                                format!("{}{base}", device_glyph_prefix(d.read_only, &d.fs_type));
-                            let existing = dev_sub_rows
-                                .borrow()
-                                .iter()
-                                .find(|r| r.widget_name().as_str() == name)
-                                .cloned();
-                            match existing {
-                                Some(row) => {
-                                    if let Some(bx) =
-                                        row.child().and_then(|c| c.downcast::<GtkBox>().ok())
-                                    {
-                                        // Keep the label current (e.g. an MTP
-                                        // device whose friendly name resolved
-                                        // after the first poll).
-                                        if let Some(lbl) = bx
-                                            .first_child()
-                                            .and_then(|c| c.downcast::<Label>().ok())
+            refresh_device_cache(
+                current_devices.clone(),
+                in_flight.clone(),
+                Rc::new(move |outcome| {
+                    match outcome {
+                        DeviceRefreshOutcome::Ok => {
+                            banner.set_visible(false);
+                            // `refresh_device_cache` already wrote the merged,
+                            // sorted list into `current_devices`.
+                            let devs = current_devices_cb.borrow();
+                            let want: Vec<String> =
+                                devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
+                            // Remove rows for devices that went away.
+                            dev_sub_rows.borrow_mut().retain(|r| {
+                                let keep = want.contains(&r.widget_name().to_string());
+                                if !keep {
+                                    sidebar.remove(r);
+                                }
+                                keep
+                            });
+                            // Add rows for new devices; update free-space bars in
+                            // place so selection isn't disturbed when unchanged.
+                            let expanded = devices_expanded.get();
+                            for d in devs.iter() {
+                                let name = format!("dev:{}", d.backend_id);
+                                let used = if d.total_bytes > 0 {
+                                    1.0 - (d.free_bytes as f64 / d.total_bytes as f64)
+                                } else {
+                                    0.0
+                                };
+                                let base = if d.label.is_empty() {
+                                    "Untitled device".to_string()
+                                } else {
+                                    d.label.clone()
+                                };
+                                // Status glyphs: ⚠ unsupported fs, 🔒 read-only.
+                                let label_text = format!(
+                                    "{}{base}",
+                                    device_glyph_prefix(d.read_only, &d.fs_type)
+                                );
+                                let existing = dev_sub_rows
+                                    .borrow()
+                                    .iter()
+                                    .find(|r| r.widget_name().as_str() == name)
+                                    .cloned();
+                                match existing {
+                                    Some(row) => {
+                                        if let Some(bx) =
+                                            row.child().and_then(|c| c.downcast::<GtkBox>().ok())
                                         {
-                                            lbl.set_text(&gtk_safe(&label_text));
-                                        }
-                                        if let Some(bar) = bx
-                                            .last_child()
-                                            .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
-                                        {
-                                            bar.set_value(used);
-                                            set_levelbar_fullness(&bar, used);
+                                            // Keep the label current (e.g. an MTP
+                                            // device whose friendly name resolved
+                                            // after the first poll).
+                                            if let Some(lbl) = bx
+                                                .first_child()
+                                                .and_then(|c| c.downcast::<Label>().ok())
+                                            {
+                                                lbl.set_text(&gtk_safe(&label_text));
+                                            }
+                                            if let Some(bar) = bx
+                                                .last_child()
+                                                .and_then(|c| c.downcast::<gtk4::LevelBar>().ok())
+                                            {
+                                                bar.set_value(used);
+                                                set_levelbar_fullness(&bar, used);
+                                            }
                                         }
                                     }
-                                }
-                                None => {
-                                    let bx = GtkBox::new(Orientation::Vertical, 2);
-                                    bx.set_margin_start(24);
-                                    bx.set_margin_end(8);
-                                    bx.set_margin_top(4);
-                                    bx.set_margin_bottom(4);
-                                    let lbl = Label::builder()
-                                        .label(&gtk_safe(&label_text))
-                                        .halign(Align::Start)
-                                        .xalign(0.0)
-                                        .build();
-                                    let bar = gtk4::LevelBar::new();
-                                    bar.set_min_value(0.0);
-                                    bar.set_max_value(1.0);
-                                    bar.set_value(used);
-                                    set_levelbar_fullness(&bar, used);
-                                    bx.append(&lbl);
-                                    bx.append(&bar);
-                                    let row = ListBoxRow::new();
-                                    row.set_widget_name(&name);
-                                    row.set_child(Some(&bx));
-                                    row.set_visible(expanded);
-                                    if device_fs_unsupported(&d.fs_type) {
-                                        row.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                                    None => {
+                                        let bx = GtkBox::new(Orientation::Vertical, 2);
+                                        bx.set_margin_start(24);
+                                        bx.set_margin_end(8);
+                                        bx.set_margin_top(4);
+                                        bx.set_margin_bottom(4);
+                                        let lbl = Label::builder()
+                                            .label(&gtk_safe(&label_text))
+                                            .halign(Align::Start)
+                                            .xalign(0.0)
+                                            .build();
+                                        let bar = gtk4::LevelBar::new();
+                                        bar.set_min_value(0.0);
+                                        bar.set_max_value(1.0);
+                                        bar.set_value(used);
+                                        set_levelbar_fullness(&bar, used);
+                                        bx.append(&lbl);
+                                        bx.append(&bar);
+                                        let row = ListBoxRow::new();
+                                        row.set_widget_name(&name);
+                                        row.set_child(Some(&bx));
+                                        row.set_visible(expanded);
+                                        if device_fs_unsupported(&d.fs_type) {
+                                            row.set_tooltip_text(Some(UNSUPPORTED_FS_TOOLTIP));
+                                        }
+                                        sidebar.append(&row);
+                                        dev_sub_rows.borrow_mut().push(row);
                                     }
-                                    sidebar.append(&row);
-                                    dev_sub_rows.borrow_mut().push(row);
                                 }
                             }
                         }
-                        *current_devices.borrow_mut() = devs;
-                    }
-                    // udisks failed — MTP (if any) is hidden until it recovers.
-                    Ok((Err(e), _mtp)) => {
-                        for r in dev_sub_rows.borrow_mut().drain(..) {
-                            sidebar.remove(&r);
+                        // udisks failed — MTP (if any) is hidden until it recovers.
+                        // `refresh_device_cache` already cleared `current_devices`.
+                        DeviceRefreshOutcome::UdisksError(e) => {
+                            for r in dev_sub_rows.borrow_mut().drain(..) {
+                                sidebar.remove(&r);
+                            }
+                            use crate::devices::diagnostics::{self, Diagnosis};
+                            let diag = diagnostics::classify(
+                                diagnostics::has_udisks_grant(&diagnostics::read_flatpak_info()),
+                                &diagnostics::read_distro_info(),
+                                crate::devices::detect::classify_error(&e),
+                            );
+                            let msg = match diag {
+                                Diagnosis::PermissionOff => {
+                                    "Can't access drives — Sparkamp needs permission to use the \
+                                     system disk service. Enable org.freedesktop.UDisks2 under \
+                                     System Bus in Flatseal, then Retry."
+                                }
+                                Diagnosis::NotInstalled => {
+                                    "Can't access drives — your system's disk service (udisks2) \
+                                     isn't installed. Install it, then Retry."
+                                }
+                                Diagnosis::EjectUnavailable => {
+                                    "Couldn't reach the disk service. Retry, or manage the device \
+                                     through your file browser."
+                                }
+                            };
+                            banner_lbl.set_text(msg);
+                            banner.set_visible(true);
                         }
-                        current_devices.borrow_mut().clear();
-                        use crate::devices::diagnostics::{self, Diagnosis};
-                        let diag = diagnostics::classify(
-                            diagnostics::has_udisks_grant(&diagnostics::read_flatpak_info()),
-                            &diagnostics::read_distro_info(),
-                            crate::devices::detect::classify_error(&e),
-                        );
-                        let msg = match diag {
-                            Diagnosis::PermissionOff => {
-                                "Can't access drives — Sparkamp needs permission to use the system \
-                                 disk service. Enable org.freedesktop.UDisks2 under System Bus in \
-                                 Flatseal, then Retry."
+                        // The worker thread panicked. `refresh_device_cache`
+                        // already cleared `current_devices`.
+                        DeviceRefreshOutcome::WorkerPanicked => {
+                            for r in dev_sub_rows.borrow_mut().drain(..) {
+                                sidebar.remove(&r);
                             }
-                            Diagnosis::NotInstalled => {
-                                "Can't access drives — your system's disk service (udisks2) isn't \
-                                 installed. Install it, then Retry."
-                            }
-                            Diagnosis::EjectUnavailable => {
-                                "Couldn't reach the disk service. Retry, or manage the device \
-                                 through your file browser."
-                            }
-                        };
-                        banner_lbl.set_text(msg);
-                        banner.set_visible(true);
-                    }
-                    Err(_) => {
-                        // The worker thread panicked.
-                        for r in dev_sub_rows.borrow_mut().drain(..) {
-                            sidebar.remove(&r);
+                            banner_lbl.set_text("Couldn't query the device service.");
+                            banner.set_visible(true);
                         }
-                        current_devices.borrow_mut().clear();
-                        banner_lbl.set_text("Couldn't query the device service.");
-                        banner.set_visible(true);
                     }
-                }
-                // Keep the overview list in sync with the latest results.
-                rebuild_overview();
-            });
+                    // Keep the overview list in sync with the latest results.
+                    rebuild_overview();
+                }),
+            );
         })
     };
 

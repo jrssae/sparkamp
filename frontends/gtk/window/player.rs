@@ -4135,65 +4135,25 @@ pub fn build(
     }
 
     // ── Device poll: keeps the Send-to menu's device list fresh ─────────────
-    // Mirrors the ML window's `refresh_devices` (media_library.rs) — same
-    // listing logic (udisks + MTP), same 2 s cadence — so `current_devices`
-    // is populated from app start instead of staying empty until the ML
-    // window has been opened once. Both pollers write the same Rc when the
-    // ML window is also open; that's cheap and idempotent (identical source
-    // data, no UI to fight over here), the same way `current_drives` above
-    // is written by this watcher regardless of whether the ML window's own
-    // disc poll is also running — so no extra coordination is added.
+    // Shares `refresh_device_cache` (util.rs) with the ML window's device
+    // poll (media_library.rs) — same listing/merge logic, same 2 s cadence —
+    // so `current_devices` is populated from app start instead of staying
+    // empty until the ML window has been opened once. Both pollers write the
+    // same Rc when the ML window is also open; that's cheap and idempotent
+    // (identical source data, no UI to fight over here), the same way
+    // `current_drives` above is written by this watcher regardless of
+    // whether the ML window's own disc poll is also running — so no extra
+    // coordination is added.
     {
         let current_devices_watch = current_devices.clone();
         let in_flight = Rc::new(Cell::new(false));
+        // udisks failing or the worker thread panicking just leaves the
+        // Send-to entry showing no devices; the ML window (if opened)
+        // surfaces the diagnostic banner for this, so there's nothing more
+        // to do here on completion.
+        let on_done: Rc<dyn Fn(DeviceRefreshOutcome)> = Rc::new(|_outcome| {});
         let tick: Rc<dyn Fn()> = Rc::new(move || {
-            if in_flight.get() {
-                return;
-            }
-            in_flight.set(true);
-            let current_devices_watch = current_devices_watch.clone();
-            let in_flight = in_flight.clone();
-            // Same worker-thread split as the ML poll: MTP mount metadata is
-            // enumerated on the main thread (cheap, no FUSE IO), then udisks
-            // listing + storage-root resolution runs on a worker thread so a
-            // stalled D-Bus/gvfs call can never freeze the UI.
-            glib::spawn_future_local(async move {
-                let mtp_raw = enumerate_mtp_raw();
-                let result = gio::spawn_blocking(move || {
-                    let udisks = crate::devices::detect::list_devices();
-                    let mtp: Vec<crate::devices::Device> =
-                        mtp_raw.into_iter().filter_map(mtp_raw_to_device).collect();
-                    (udisks, mtp)
-                })
-                .await;
-                in_flight.set(false);
-                match result {
-                    Ok((Ok(devs), mtp)) => {
-                        let mut devs = devs;
-                        // Mounted optical data discs belong to Disc Drives,
-                        // not the removable-Devices list — drop them here
-                        // too, matching the ML poll.
-                        devs.retain(|d| !is_optical_fs(&d.fs_type));
-                        devs.extend(mtp);
-                        devs.sort_by(|a, b| {
-                            a.label
-                                .to_lowercase()
-                                .cmp(&b.label.to_lowercase())
-                                .then_with(|| a.mount_path.cmp(&b.mount_path))
-                        });
-                        *current_devices_watch.borrow_mut() = devs;
-                    }
-                    // udisks failed or the worker thread panicked — leave the
-                    // Send-to entry showing no devices; the ML window (if
-                    // opened) surfaces the diagnostic banner for this.
-                    Ok((Err(_), _mtp)) => {
-                        current_devices_watch.borrow_mut().clear();
-                    }
-                    Err(_) => {
-                        current_devices_watch.borrow_mut().clear();
-                    }
-                }
-            });
+            refresh_device_cache(current_devices_watch.clone(), in_flight.clone(), on_done.clone());
         });
         tick();
         // Same 2 s cadence as the ML window's device poll.

@@ -39,6 +39,81 @@ fn sanitize_id3_text(s: &str) -> String {
         .collect()
 }
 
+/// Outcome of one [`refresh_device_cache`] poll, handed to `on_done` after
+/// the shared cache has already been written (or cleared). Distinguishes a
+/// udisks listing failure — worth diagnosing (permissions, missing udisks2,
+/// ...) — from a panicked worker thread, which has no useful error to show.
+enum DeviceRefreshOutcome {
+    Ok,
+    UdisksError(zbus::Error),
+    WorkerPanicked,
+}
+
+/// One async device-list refresh into the shared `current_devices` cache.
+/// Enumerates MTP mount metadata on the main thread (cheap, no FUSE IO),
+/// then lists udisks devices + resolves MTP storage roots on a worker
+/// thread so a stalled D-Bus/gvfs call can never freeze the UI. Filters out
+/// mounted optical data discs (those belong to Disc Drives, not the
+/// removable-devices list), merges in the MTP devices, and sorts by label.
+/// Guards against overlapping polls via `in_flight`.
+///
+/// Used by both the player-level poll (fills the cache from app start so
+/// the Send-to menu isn't empty until the ML window has been opened once)
+/// and the ML window's device poll (rebuilds its sidebar/banner). `on_done`
+/// runs after the cache is updated — ML passes its UI-rebuild hook, the
+/// player passes a no-op — so a future filter change here reaches both
+/// pollers instead of silently missing one.
+fn refresh_device_cache(
+    current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
+    in_flight: Rc<Cell<bool>>,
+    on_done: Rc<dyn Fn(DeviceRefreshOutcome)>,
+) {
+    if in_flight.get() {
+        return;
+    }
+    in_flight.set(true);
+    glib::spawn_future_local(async move {
+        let mtp_raw = enumerate_mtp_raw();
+        let result = gio::spawn_blocking(move || {
+            let udisks = crate::devices::detect::list_devices();
+            let mtp: Vec<crate::devices::Device> =
+                mtp_raw.into_iter().filter_map(mtp_raw_to_device).collect();
+            (udisks, mtp)
+        })
+        .await;
+        in_flight.set(false);
+        let outcome = match result {
+            Ok((Ok(devs), mtp)) => {
+                let mut devs = devs;
+                // Mounted optical data discs belong to Disc Drives, not the
+                // removable-Devices list — drop them here too.
+                devs.retain(|d| !is_optical_fs(&d.fs_type));
+                devs.extend(mtp);
+                devs.sort_by(|a, b| {
+                    a.label
+                        .to_lowercase()
+                        .cmp(&b.label.to_lowercase())
+                        .then_with(|| a.mount_path.cmp(&b.mount_path))
+                });
+                *current_devices.borrow_mut() = devs;
+                DeviceRefreshOutcome::Ok
+            }
+            // udisks failed — leave the cache empty; the caller decides how
+            // (or whether) to surface the diagnostic.
+            Ok((Err(e), _mtp)) => {
+                current_devices.borrow_mut().clear();
+                DeviceRefreshOutcome::UdisksError(e)
+            }
+            // The worker thread panicked.
+            Err(_) => {
+                current_devices.borrow_mut().clear();
+                DeviceRefreshOutcome::WorkerPanicked
+            }
+        };
+        on_done(outcome);
+    });
+}
+
 fn sanitize_id3_numeric(s: &str) -> String {
     let trimmed = s.trim();
     let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
