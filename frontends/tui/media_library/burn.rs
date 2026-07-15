@@ -8,7 +8,45 @@ impl App {
     // Discs tab: burn (blind-implemented; hardware pass = Opus)
     // -----------------------------------------------------------------------
 
-    /// Files tab `b`: queue the highlighted library track on the Burn list.
+    /// The burn queue of the drive the Discs tab currently shows. `b` in the
+    /// Files tab and every burn-overlay action target this list — never a
+    /// picker, since the disc view is already per-drive (one row per
+    /// physical drive). Creates the drive's queue empty on first use.
+    ///
+    /// Only callable where `self.mode` isn't already borrowed; sites inside
+    /// an active `&mut self.mode` match (e.g. `handle_burn_setup_key`) read
+    /// the drive id off their own `s: &mut MediaLibraryState` instead and go
+    /// through `self.burn_queues.queue(&id)` directly, since a method call
+    /// here would conflict with that borrow.
+    fn selected_burn_list(&mut self) -> &mut crate::disc::burnlist::BurnList {
+        let id = self.selected_drive_id().unwrap_or_default();
+        self.burn_queues.queue(&id)
+    }
+
+    /// Id of the drive shown in the Discs tab, when one is selected.
+    fn selected_drive_id(&self) -> Option<String> {
+        if let Mode::MediaLibrary(s) = &self.mode {
+            s.drives.get(s.selected_drive).map(|d| d.id.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Human label of the drive shown in the Discs tab, for the status line.
+    fn selected_drive_label(&self) -> Option<String> {
+        if let Mode::MediaLibrary(s) = &self.mode {
+            s.drives.get(s.selected_drive).map(|d| d.label.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Files tab `b`: queue the highlighted library track onto the shown
+    /// drive's burn list. When the library doesn't already know the track's
+    /// duration, this probes the file synchronously via
+    /// `duration_probe::probe_duration` — a single-file probe is quick, but
+    /// it does block the TUI's event loop for that one keypress; acceptable
+    /// in a terminal flow. Unreadable files are reported and never queued.
     pub(super) fn add_selected_ml_track_to_burn_list(&mut self) {
         let track = if let Mode::MediaLibrary(s) = &self.mode {
             s.tracks.get(s.selected_track).cloned()
@@ -24,18 +62,26 @@ impl App {
             ),
             _ => t.title.clone().unwrap_or_else(|| t.filename.clone()),
         };
-        let bytes = std::fs::metadata(&t.path).map(|m| m.len()).unwrap_or(0);
-        let added = self.burn_list.add(crate::disc::burnlist::BurnItem {
-            path: std::path::PathBuf::from(&t.path),
-            display,
-            duration_secs: t.length_secs.map(|s| s as u32),
-            bytes,
-        });
-        self.set_status(if added {
-            format!("Queued for burning ({} on the list)", self.burn_list.len())
-        } else {
-            "Already on the burn list".to_string()
-        });
+        let known = t.length_secs.map(|s| s as u32);
+        let path = std::path::PathBuf::from(&t.path);
+        let label = self.selected_drive_label().unwrap_or_default();
+        let list = self.selected_burn_list();
+        let out = crate::disc::burnlist::add_files(
+            list,
+            &[path],
+            |p| {
+                let bytes = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                (display.clone(), known, bytes)
+            },
+            |p| {
+                crate::duration_probe::probe_duration(p).map(|d| d.as_secs() as u32)
+            },
+        );
+        let total = list.len();
+        self.set_status(
+            out.failed_message()
+                .unwrap_or_else(|| out.status_message(&label, total)),
+        );
     }
 
     /// Discs tab `b`: open the burn overlay for the selected drive's media.
@@ -44,7 +90,7 @@ impl App {
             self.set_status("A burn is already running (c cancels it)");
             return;
         }
-        if self.burn_list.is_empty() {
+        if self.selected_burn_list().is_empty() {
             self.set_status("Burn list is empty — queue tracks with b in the Files tab");
             return;
         }
@@ -77,6 +123,14 @@ impl App {
     pub(super) fn handle_burn_setup_key(&mut self, code: KeyCode) {
         let mut start: Option<bool> = None; // Some(audio_mode) when confirmed
         if let Mode::MediaLibrary(s) = &mut self.mode {
+            // `s` already borrows self.mode mutably, so the list has to come
+            // from the drive id read off `s` directly (disjoint field from
+            // self.burn_queues) rather than through `self.selected_burn_list()`.
+            let drive_id = s
+                .drives
+                .get(s.selected_drive)
+                .map(|d| d.id.clone())
+                .unwrap_or_default();
             let Some(burn) = &mut s.burn else { return };
             if burn.confirm_erase {
                 match code {
@@ -96,28 +150,29 @@ impl App {
                         burn.cursor = burn.cursor.saturating_sub(1);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if burn.cursor + 1 < self.burn_list.len() {
+                        if burn.cursor + 1 < self.burn_queues.queue(&drive_id).len() {
                             burn.cursor += 1;
                         }
                     }
                     KeyCode::Char('x') | KeyCode::Char('X') => {
-                        self.burn_list.remove(burn.cursor);
-                        if burn.cursor >= self.burn_list.len() && burn.cursor > 0 {
+                        let list = self.burn_queues.queue(&drive_id);
+                        list.remove(burn.cursor);
+                        if burn.cursor >= list.len() && burn.cursor > 0 {
                             burn.cursor -= 1;
                         }
-                        if self.burn_list.is_empty() {
+                        if list.is_empty() {
                             s.burn = None;
                         }
                     }
                     // [ / ] — move the highlighted row up/down (burn order =
                     // track order on the disc).
                     KeyCode::Char('[') => {
-                        self.burn_list.move_up(burn.cursor);
+                        self.burn_queues.queue(&drive_id).move_up(burn.cursor);
                         burn.cursor = burn.cursor.saturating_sub(1);
                     }
                     KeyCode::Char(']') => {
-                        if burn.cursor + 1 < self.burn_list.len() {
-                            self.burn_list.move_down(burn.cursor);
+                        if burn.cursor + 1 < self.burn_queues.queue(&drive_id).len() {
+                            self.burn_queues.queue(&drive_id).move_down(burn.cursor);
                             burn.cursor += 1;
                         }
                     }
@@ -162,11 +217,10 @@ impl App {
         // Capacity guard before anything touches the disc.
         if audio {
             let cap = crate::disc::burn::audio_capacity_secs(&drive);
-            if self.burn_list.over_audio_capacity(cap) {
+            if self.burn_queues.queue(&drive.id).over_audio_capacity(cap) {
+                let total_secs = self.burn_queues.queue(&drive.id).total_secs();
                 self.set_status(format!(
-                    "Over audio capacity ({} s of {} s) — remove tracks first",
-                    self.burn_list.total_secs(),
-                    cap
+                    "Over audio capacity ({total_secs} s of {cap} s) — remove tracks first",
                 ));
                 return;
             }
@@ -179,7 +233,7 @@ impl App {
             } else {
                 drive.media.capacity_bytes
             };
-            if free > 0 && self.burn_list.over_data_capacity(free) {
+            if free > 0 && self.burn_queues.queue(&drive.id).over_data_capacity(free) {
                 self.set_status("Over the disc's free space — remove files first");
                 return;
             }
@@ -193,7 +247,7 @@ impl App {
             self.config.media_library.playlist_format,
             crate::config::PlaylistFormat::M3u
         );
-        let items = self.burn_list.items.clone();
+        let items = self.burn_queues.queue(&drive.id).items.clone();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.burn_prep_cancel = Some(cancel.clone());
         let (tx, rx) = std::sync::mpsc::channel();
@@ -227,7 +281,13 @@ impl App {
                 self.burn_phase = None;
                 match result {
                     Ok(summary) => {
-                        self.burn_list.clear();
+                        // Clears the *shown* drive's queue. Only one burn
+                        // runs at a time, and nothing currently stops the
+                        // user from switching the Discs-tab selection while
+                        // it runs — a mid-burn switch would clear the wrong
+                        // drive's list here. Pre-existing single-queue
+                        // behavior; not tightened by this per-drive change.
+                        self.selected_burn_list().clear();
                         self.set_status(summary);
                     }
                     Err(e) => self.set_status(format!("Burn failed: {e}")),

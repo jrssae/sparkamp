@@ -109,9 +109,8 @@ impl BurnQueues {
         self.queues.entry(drive_id.to_string()).or_default()
     }
 
-    /// Read-only lookup without creating the queue — not yet consumed
-    /// outside tests; kept for the drive-overview reads a later task adds.
-    #[allow(dead_code)]
+    /// Read-only lookup without creating the queue (used by the burn
+    /// overlay's read-only render path, which can't hold `&mut App`).
     pub fn get(&self, drive_id: &str) -> Option<&BurnList> {
         self.queues.get(drive_id)
     }
@@ -126,14 +125,12 @@ impl BurnQueues {
 /// could not be read (and therefore was NOT added — an unknown duration
 /// would defeat the over-capacity gate).
 #[derive(Debug, Clone, Default, PartialEq)]
-#[allow(dead_code)]
 pub struct AddOutcome {
     pub added: usize,
     pub duplicate: usize,
     pub failed: Vec<PathBuf>,
 }
 
-#[allow(dead_code)]
 impl AddOutcome {
     /// One status line, shared wording across frontends.
     pub fn status_message(&self, drive_label: &str, total: usize) -> String {
@@ -166,7 +163,6 @@ impl AddOutcome {
 /// caller's library; when the duration is unknown, `probe` reads the file
 /// (production: `duration_probe::probe_duration`). Probe failure ⇒ the file
 /// is skipped and reported, never queued with an unknown length.
-#[allow(dead_code)]
 pub fn add_files(
     list: &mut BurnList,
     paths: &[PathBuf],

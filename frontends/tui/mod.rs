@@ -414,9 +414,10 @@ pub struct App {
     rip_cancel: Option<Arc<AtomicBool>>,
     /// Rip progress for the status/hint line: (index, total, title).
     pub rip_progress: Option<(usize, usize, String, f64)>,
-    /// The Burn list — a dedicated queue separate from the active playlist,
-    /// fed from the Files tab (`b`).
-    pub burn_list: crate::disc::burnlist::BurnList,
+    /// Per-drive burn queues — each burner owns its own list, separate from
+    /// the active playlist, fed from the Files tab (`b`) onto the drive
+    /// currently shown in the Discs tab.
+    pub burn_queues: crate::disc::burnlist::BurnQueues,
     /// Receiver for an in-flight background burn, drained by tick().
     disc_burn: Option<mpsc::Receiver<BurnMsg>>,
     /// Cancel flag for the burn's prepare loop (the erase/burn subprocess is
@@ -524,7 +525,7 @@ impl App {
             disc_rip: None,
             rip_cancel: None,
             rip_progress: None,
-            burn_list: crate::disc::burnlist::BurnList::default(),
+            burn_queues: crate::disc::burnlist::BurnQueues::default(),
             disc_burn: None,
             burn_prep_cancel: None,
             burn_phase: None,

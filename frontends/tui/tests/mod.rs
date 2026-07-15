@@ -52,3 +52,4 @@ mod playback;
 mod views;
 mod bindings;
 mod engine;
+mod burn;

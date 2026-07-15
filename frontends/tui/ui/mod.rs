@@ -147,13 +147,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Settings(state) => draw_settings_overlay(frame, app, state, area),
         Mode::Equalizer(state) => draw_eq_overlay(frame, app, state, area),
         Mode::MediaLibrary(state) => {
+            // Read-only: the overlay shows the queue of the drive currently
+            // in view, not a picker — same shown-drive rule as `b`.
+            let empty_burn_list = crate::disc::burnlist::BurnList::default();
+            let burn_list = state
+                .drives
+                .get(state.selected_drive)
+                .and_then(|d| app.burn_queues.get(&d.id))
+                .unwrap_or(&empty_burn_list);
             draw_media_library(
                 frame,
                 state,
                 app.status_message.as_deref(),
                 app.rip_progress.as_ref(),
                 app.burn_phase.as_deref(),
-                &app.burn_list,
+                burn_list,
                 area,
             )
         }
