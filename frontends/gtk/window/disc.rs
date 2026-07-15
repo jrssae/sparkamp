@@ -462,7 +462,10 @@ pub(super) fn build_burn_panel(
         let refresh_cb = refresh_cb.clone();
         let shown_drive = shown_drive.clone();
         move || {
-            if let Some(d) = shown_drive.borrow().clone() {
+            // Bind first: the borrow() Ref must drop before refresh_cb
+            // re-borrows shown_drive mutably (live crash 2026-07-15).
+            let drive = shown_drive.borrow().clone();
+            if let Some(d) = drive {
                 refresh_cb(&d);
             }
         }
