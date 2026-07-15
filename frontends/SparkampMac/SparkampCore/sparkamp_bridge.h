@@ -778,4 +778,10 @@ char *sparkamp_gnudb_submit(SparkampCtx *ctx, const char *toc_json,
                             const char *entry_json, const char *category,
                             const char *email, bool test_mode);
 
+/** Probe durations for a JSON array of absolute paths. Returns a JSON
+    array [{"path":"…","secs":123|null}] — null ⇒ unreadable, skip the
+    file. Runs GStreamer discovery per file: call off the main thread.
+    Free with sparkamp_free_string. */
+char *sparkamp_disc_probe_durations(SparkampCtx *ctx, const char *paths_json);
+
 #endif /* sparkamp_bridge_h */

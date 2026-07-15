@@ -696,6 +696,35 @@ pub unsafe extern "C" fn sparkamp_gnudb_submit(
     gnudb_out(gnudb::submit(&body, &category, &id, &email, test_mode))
 }
 
+/// One probed path result: `secs` is `None` (JSON `null`) when the file is
+/// unreadable — the caller must skip it rather than queue an unknown length.
+#[derive(serde::Serialize)]
+struct DurationProbeOut {
+    path: String,
+    secs: Option<u32>,
+}
+
+/// Probe durations for a JSON array of absolute paths. Returns a JSON array
+/// `[{"path":"…","secs":123|null}]` — null ⇒ unreadable; the caller must
+/// skip that file (never queue unknown lengths). Runs GStreamer discovery
+/// per file: call from a background queue, not the UI thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_probe_durations(
+    _ctx: *mut SparkampCtx,
+    paths_json: *const c_char,
+) -> *mut c_char {
+    let paths: Vec<String> = json_in(paths_json).unwrap_or_default();
+    let results: Vec<DurationProbeOut> = paths
+        .into_iter()
+        .map(|p| {
+            let secs = crate::duration_probe::probe_duration(std::path::Path::new(&p))
+                .map(|d| d.as_secs() as u32);
+            DurationProbeOut { path: p, secs }
+        })
+        .collect();
+    json_out(&results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,6 +884,27 @@ mod tests {
         unsafe { super::super::sparkamp_free_string(out) };
         assert!(s.contains("\"running\":true"));
         RIP_JOB.lock().unwrap().status.running = false;
+    }
+
+    #[test]
+    fn probe_durations_empty_and_missing_path() {
+        // Empty array in -> empty array out.
+        let arg = CString::new("[]").unwrap();
+        let out = unsafe { sparkamp_disc_probe_durations(std::ptr::null_mut(), arg.as_ptr()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        assert_eq!(s, "[]");
+
+        // Nonexistent path -> secs null, path echoed back.
+        let arg =
+            CString::new(serde_json::to_string(&["/no/such/file.mp3"]).unwrap()).unwrap();
+        let out = unsafe { sparkamp_disc_probe_durations(std::ptr::null_mut(), arg.as_ptr()) };
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        let results: Vec<serde_json::Value> = serde_json::from_str(&s).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "/no/such/file.mp3");
+        assert!(results[0]["secs"].is_null());
     }
 
     #[test]
