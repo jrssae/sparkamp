@@ -81,9 +81,13 @@ UX issues plus one crash.
 
 ### TUI — `frontends/tui/`
 
-- Burn queue keyed by the selected drive; >1 drive → drive picker prompt on
-  add. Probe-on-add with the same failure wording in the status line.
-  Send-to-device via the same core copy helper (device picker prompt).
+- Burn queue keyed by the selected drive (the TUI disc view is already
+  per-drive, so `b` targets the shown drive — no picker needed).
+  Probe-on-add with the same failure wording in the status line.
+- Send-to-device is OUT OF SCOPE for the TUI here: the TUI has no device
+  integration at all today (nothing under `frontends/tui/` touches
+  `devices::`), so device sends there are a separate feature, not a menu
+  change. Flagged as a follow-up, pending user interest.
 
 ### Mac — `frontends/SparkampMac/` (blind)
 
