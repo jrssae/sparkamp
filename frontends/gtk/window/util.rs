@@ -182,6 +182,16 @@ fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
     alert.show(parent);
 }
 
+/// Modal listing files that could not be read (and were not queued).
+pub(super) fn show_unreadable_dialog(win: &gtk4::Window, body: &str) {
+    let dlg = gtk4::AlertDialog::builder()
+        .message("Some files could not be read")
+        .detail(gtk_safe(body))
+        .modal(true)
+        .build();
+    dlg.show(Some(win));
+}
+
 /// Embedded app logo PNG bytes (compiled into the binary).
 /// Replace `square logo.png` in the project root with the SparkAmp logo asset.
 static LOGO_BYTES: &[u8] = include_bytes!("../../../square logo.png");
@@ -623,8 +633,6 @@ fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err
 
 /// What the "Send to" menu shows, as data — pure so the 0/1/N visibility
 /// rules are unit-testable without GTK.
-// consumed by Task 7
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum SendEntry {
     ActivePlaylist,
@@ -637,8 +645,6 @@ pub(super) enum SendEntry {
     DeviceMenu(Vec<(String, String)>),
 }
 
-// consumed by Task 7
-#[allow(dead_code)]
 pub(super) fn send_to_spec(
     drives: &[(String, String)],
     devices: &[(String, String)],
@@ -659,8 +665,6 @@ pub(super) fn send_to_spec(
 
 /// Action names for one consumer of the Send-to menu; each consumer
 /// registers its own action group and passes prefixed names here.
-// consumed by Task 7
-#[allow(dead_code)]
 pub(super) struct SendToActions<'a> {
     pub active: &'a str,         // e.g. "ml.send-active" (no target)
     pub new_playlist: &'a str,   // e.g. "ml.add-to-new" (no target)
@@ -674,12 +678,11 @@ pub(super) struct SendToActions<'a> {
 /// Build the full "Send to" menu: Active Playlist / Saved Playlist ▸ /
 /// Disc Drive [▸] / Removable Device [▸]. Drive + device lists must come
 /// from the cached poll state — never probe from a menu handler.
-// consumed by Task 7
 // AppState (state.rs) is private to the `window` module; pub(super) here
 // (needed so a future sibling submodule can call this) makes the fn more
 // visible than that parameter type, which rustc flags as private_interfaces.
 // Widening AppState's own visibility is out of scope for this file.
-#[allow(dead_code, private_interfaces)]
+#[allow(private_interfaces)]
 pub(super) fn build_send_to_menu(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
     actions: &SendToActions<'_>,

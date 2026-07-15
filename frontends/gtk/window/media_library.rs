@@ -2689,76 +2689,140 @@ fn open_media_library_window(
         });
         ml_action_group.add_action(&action_append);
 
-        // Add to Burn List: queue the selected files onto the drive whose
-        // detail the disc view currently shows (falls back to the first
-        // known drive when nothing is shown yet). Interim target-selection
-        // only — Task 7 replaces this action with an explicit "Send to
-        // Disc Drive → …" submenu that picks the drive itself.
-        // (dedup by path; display/duration/size from the library row).
+        // Send to Disc Drive: probe-on-add, then queue onto THAT drive.
         {
             let state_burn = state.clone();
             let tracks_src = ml_selected_tracks.clone();
             let burn_queues = burn_queues.clone();
-            let selected_disc_id = selected_disc_id.clone();
             let current_drives = current_drives.clone();
             let status = files_status_holder.clone();
-            let action = gio::SimpleAction::new("add-to-burn", None);
-            action.connect_activate(move |_, _| {
+            let win_wk = win.downgrade();
+            let action = gio::SimpleAction::new(
+                "send-drive",
+                Some(glib::VariantTy::STRING),
+            );
+            action.connect_activate(move |_, target| {
+                let Some(drive_id) =
+                    target.and_then(|v| v.get::<String>()) else { return };
+                let drive_label = current_drives
+                    .borrow()
+                    .iter()
+                    .find(|d| d.id == drive_id)
+                    .map(|d| d.label.clone())
+                    .unwrap_or_else(|| drive_id.clone());
                 let paths: Vec<_> = tracks_src.borrow().clone();
                 if paths.is_empty() {
                     return;
                 }
-                let target_drive = selected_disc_id.borrow().clone().or_else(|| {
-                    current_drives.borrow().first().map(|d| d.id.clone())
-                });
-                let Some(drive_id) = target_drive else {
-                    if let Some(lbl) = status.borrow().as_ref() {
-                        lbl.set_text("No disc drive available to queue onto.");
-                    }
-                    return;
-                };
-                let mut added = 0;
-                {
+                // Metadata from the library NOW (SQLite is not Send).
+                let metas: std::collections::HashMap<_, _> = {
                     let s = state_burn.borrow();
-                    let mut queues = burn_queues.borrow_mut();
-                    let list = queues.queue(&drive_id);
-                    for path in &paths {
-                        let lib_row = s
-                            .media_lib
-                            .as_ref()
-                            .and_then(|l| l.track_by_path(&path.display().to_string()).ok());
-                        let display = lib_row
-                            .as_ref()
+                    paths.iter().map(|path| {
+                        let row = s.media_lib.as_ref().and_then(|l| {
+                            l.track_by_path(&path.display().to_string()).ok()
+                        });
+                        let display = row.as_ref()
                             .map(|t| match (&t.artist, &t.title) {
-                                (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
+                                (Some(a), Some(ti)) if !a.is_empty() =>
+                                    format!("{a} - {ti}"),
                                 (_, Some(ti)) => ti.clone(),
                                 _ => t.filename.clone(),
                             })
-                            .unwrap_or_else(|| {
-                                path.file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| path.display().to_string())
-                            });
-                        let duration_secs = lib_row
-                            .as_ref()
-                            .and_then(|t| t.length_secs)
-                            .map(|s| s as u32);
-                        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                        if list.add(crate::disc::burnlist::BurnItem {
-                            path: path.clone(),
-                            display,
-                            duration_secs,
-                            bytes,
-                        }) {
-                            added += 1;
-                        }
-                    }
-                }
-                let total = burn_queues.borrow_mut().queue(&drive_id).len();
+                            .unwrap_or_else(|| path.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string()));
+                        let secs = row.as_ref()
+                            .and_then(|t| t.length_secs).map(|s| s as u32);
+                        let bytes = std::fs::metadata(path)
+                            .map(|m| m.len()).unwrap_or(0);
+                        (path.clone(), (display, secs, bytes))
+                    }).collect()
+                };
                 if let Some(lbl) = status.borrow().as_ref() {
-                    lbl.set_text(&format!(
-                        "Queued {added} for burning ({total} on the list)"
-                    ));
+                    lbl.set_text("Reading files…");
+                }
+                let burn_queues = burn_queues.clone();
+                let status = status.clone();
+                let win_wk = win_wk.clone();
+                // Probe off-thread (GStreamer discovery can take seconds),
+                // then queue on the main loop — the codebase's established
+                // spawn_future_local + spawn_blocking(...).await pattern
+                // (e.g. media_library.rs:1072). Only Send data (paths,
+                // metas) crosses into spawn_blocking; the Rcs stay in the
+                // local future.
+                glib::spawn_future_local(async move {
+                    let probe_metas: Vec<(std::path::PathBuf, Option<u32>)> =
+                        paths.iter()
+                            .map(|p| (p.clone(), metas.get(p).and_then(|m| m.1)))
+                            .collect();
+                    let probed: Vec<(std::path::PathBuf, Option<u32>)> =
+                        gio::spawn_blocking(move || {
+                            probe_metas
+                                .into_iter()
+                                .map(|(p, known)| {
+                                    let secs = known.or_else(|| {
+                                        crate::duration_probe::probe_duration(&p)
+                                            .map(|d| d.as_secs() as u32)
+                                    });
+                                    (p, secs)
+                                })
+                                .collect()
+                        })
+                        .await
+                        .unwrap_or_default();
+                    let out;
+                    let total;
+                    {
+                        let mut queues = burn_queues.borrow_mut();
+                        let list = queues.queue(&drive_id);
+                        out = crate::disc::burnlist::add_files(
+                            list,
+                            &paths,
+                            |p| metas.get(p).cloned().unwrap_or_else(|| {
+                                (p.display().to_string(), None, 0)
+                            }),
+                            |p| probed.iter()
+                                .find(|(pp, _)| pp == p)
+                                .and_then(|(_, s)| *s),
+                        );
+                        total = list.len();
+                    } // queues borrow drops before any UI call
+                    if let Some(lbl) = status.borrow().as_ref() {
+                        lbl.set_text(&gtk_safe(
+                            &out.status_message(&drive_label, total),
+                        ));
+                    }
+                    if let (Some(body), Some(win)) =
+                        (out.failed_message(), win_wk.upgrade())
+                    {
+                        show_unreadable_dialog(&win, &body);
+                    }
+                });
+            });
+            ml_action_group.add_action(&action);
+        }
+
+        // Send to Removable Device: hand off to the existing copy runner,
+        // which already reports progress through the files status line.
+        {
+            let current_devices = current_devices.clone();
+            let tracks_src = ml_selected_tracks.clone();
+            let copy_files_run = copy_files_run.clone();
+            let action = gio::SimpleAction::new(
+                "send-device",
+                Some(glib::VariantTy::STRING),
+            );
+            action.connect_activate(move |_, target| {
+                let Some(dev_id) =
+                    target.and_then(|v| v.get::<String>()) else { return };
+                let dev = current_devices
+                    .borrow()
+                    .iter()
+                    .find(|d| d.id == dev_id)
+                    .cloned();
+                let paths: Vec<_> = tracks_src.borrow().clone();
+                if let (Some(dev), false) = (dev, paths.is_empty()) {
+                    copy_files_run(dev, paths);
                 }
             });
             ml_action_group.add_action(&action);
@@ -3082,6 +3146,8 @@ fn open_media_library_window(
                 let _ctx_store = store_for_ctx.clone();
                 let ml_tracks_gest = ml_selected_tracks.clone();
                 let state_for_ctx = state.clone();
+                let ctx_drives = current_drives.clone();
+                let ctx_devices = current_devices.clone();
 
                 factory.connect_setup(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -3181,6 +3247,8 @@ fn open_media_library_window(
                     let li_gest = li.clone();
                     let ml_tracks_for_gest = ml_tracks_gest.clone();
                     let state_for_gest = state_for_ctx.clone();
+                    let drives_for_gest = ctx_drives.clone();
+                    let devices_for_gest = ctx_devices.clone();
                     gesture.connect_pressed(move |gest, n_press, x, y| {
                         if n_press != 1 {
                             return;
@@ -3263,10 +3331,6 @@ fn open_media_library_window(
                         }
 
                         menu.append_item(&gio::MenuItem::new(
-                            Some("Add to Burn List"),
-                            Some("ml.add-to-burn"),
-                        ));
-                        menu.append_item(&gio::MenuItem::new(
                             Some("Rescan Metadata"),
                             Some("ml.rescan"),
                         ));
@@ -3275,16 +3339,27 @@ fn open_media_library_window(
                             Some("ml.remove"),
                         ));
 
-                        let submenu = build_add_to_playlist_submenu(
+                        let send = build_send_to_menu(
                             &state_for_gest,
-                            "ml.add-to-new",
-                            "ml.add-to-saved",
+                            &SendToActions {
+                                active: "ml.send-active",
+                                new_playlist: "ml.add-to-new",
+                                saved_playlist: "ml.add-to-saved",
+                                drive: "ml.send-drive",
+                                device: "ml.send-device",
+                                drives: drives_for_gest.borrow().iter()
+                                    .map(|d| (d.id.clone(), d.label.clone()))
+                                    .collect(),
+                                devices: devices_for_gest.borrow().iter()
+                                    .map(|d| (d.id.clone(), d.label.clone()))
+                                    .collect(),
+                            },
                         );
-                        menu.append_submenu(Some("Add to Playlist"), &submenu);
+                        menu.append_submenu(Some("Send to"), &send);
 
-                        // Create popover menu — NESTED so the "Add to
-                        // Playlist" submenu opens as its own popover with
-                        // an independent height instead of sliding inside
+                        // Create popover menu — NESTED so the "Send to"
+                        // submenu opens as its own popover with an
+                        // independent height instead of sliding inside
                         // the parent popover (which would clip it to the
                         // parent's content height).
                         let popover = gtk4::PopoverMenu::from_model_full(
@@ -3577,8 +3652,10 @@ fn open_media_library_window(
         btn_row.set_margin_end(4);
         btn_row.set_margin_bottom(4);
 
-        let btn_add_to_pl = Button::with_label("▶ Add to Playlist");
-        btn_add_to_pl.add_css_class("pl-btn");
+        let btn_send_to = gtk4::MenuButton::builder()
+            .label("Send to ▾")
+            .build();
+        btn_send_to.add_css_class("pl-btn");
         let btn_customize = Button::with_label("⚙ Columns");
         btn_customize.add_css_class("pl-btn");
         let btn_add_folder = Button::with_label("+ Add Folder");
@@ -3593,10 +3670,10 @@ fn open_media_library_window(
         btn_rm_from_ml.add_css_class("pl-btn");
         btn_rm_from_ml.add_css_class("destructive");
 
-        // Button row: add-to-playlist on the left, management buttons on the right.
+        // Button row: send-to on the left, management buttons on the right.
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
-        btn_row.append(&btn_add_to_pl);
+        btn_row.append(&btn_send_to);
         btn_row.append(&spring);
         btn_row.append(&btn_rm_from_ml);
         btn_row.append(&btn_customize);
@@ -3647,12 +3724,41 @@ fn open_media_library_window(
             })
         };
 
-        btn_add_to_pl.connect_clicked({
+        // "Active Playlist" in the Send-to menu reuses this same logic.
+        {
             let add = add_selected.clone();
-            move |_| {
+            let action_send_active = gio::SimpleAction::new("send-active", None);
+            action_send_active.connect_activate(move |_, _| {
                 add();
-            }
-        });
+            });
+            ml_action_group.add_action(&action_send_active);
+        }
+
+        // Rebuild the Send-to menu model fresh on open — drives/devices
+        // may have come or gone since the last popup.
+        {
+            let state_menu = state.clone();
+            let current_drives = current_drives.clone();
+            let current_devices = current_devices.clone();
+            let btn = btn_send_to.clone();
+            btn_send_to.connect_activate(move |_| {
+                let menu = build_send_to_menu(
+                    &state_menu,
+                    &SendToActions {
+                        active: "ml.send-active",
+                        new_playlist: "ml.add-to-new",
+                        saved_playlist: "ml.add-to-saved",
+                        drive: "ml.send-drive",
+                        device: "ml.send-device",
+                        drives: current_drives.borrow().iter()
+                            .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                        devices: current_devices.borrow().iter()
+                            .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                    },
+                );
+                btn.set_menu_model(Some(&menu));
+            });
+        }
 
         // Double-click / Enter to add a single track.
         {
