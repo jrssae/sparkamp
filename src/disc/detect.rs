@@ -437,6 +437,20 @@ pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
     })
 }
 
+/// Overlay `-minfo` media typing (kind, blank, rewritable, capacity) onto
+/// TOC-derived info. The TOC path owns `present` and `is_audio_cd` (typing
+/// tools don't judge audio); everything else comes from the typing probe.
+/// Without this a burned CD-RW — which has a readable TOC — looked
+/// write-once-with-content and every erase/re-burn was refused.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn merge_minfo_typing(toc_media: MediaInfo, minfo: MediaInfo) -> MediaInfo {
+    MediaInfo {
+        present: true,
+        is_audio_cd: toc_media.is_audio_cd,
+        ..minfo
+    }
+}
+
 /// Assemble a [`DiscToc`] from raw TOC entries as the `CDROMREADTOCENTRY`
 /// ioctl reports them: `(track number, ctrl nibble, LBA)` per track plus the
 /// lead-out LBA. Adds the +150 pregap (LBA → CDDB-absolute frame) and maps
@@ -704,11 +718,21 @@ mod platform {
         let toc = read_toc_ioctl(&node)
             .or_else(|| run("cd-info", &["--no-header", &node]).and_then(|o| parse_cd_info(&o)));
         let media = match &toc {
-            Some(t) => MediaInfo {
-                present: true,
-                is_audio_cd: t.tracks.iter().any(|tr| tr.is_audio),
-                ..MediaInfo::none()
-            },
+            // Readable TOC still needs the `-minfo` typing merged in —
+            // a burned CD-RW has a TOC, and without kind/rewritable the
+            // burn phases refuse to erase it. One extra subprocess per
+            // media *change* only (unchanged poll ticks are ioctl-only).
+            Some(t) => {
+                let toc_media = MediaInfo {
+                    present: true,
+                    is_audio_cd: t.tracks.iter().any(|tr| tr.is_audio),
+                    ..MediaInfo::none()
+                };
+                run("cdrskin", &[&format!("dev={node}"), "-minfo"])
+                    .and_then(|o| super::parse_minfo(&o))
+                    .map(|m| super::merge_minfo_typing(toc_media.clone(), m))
+                    .unwrap_or(toc_media)
+            }
             // No readable TOC but the status ioctl said "disc ok" (the
             // caller only probes then): blank / just-erased media — type it
             // via cdrskin -minfo (kind, capacity, blank/rewritable) for the
@@ -978,6 +1002,45 @@ number of sessions:       1
             mount_path: None,
         };
         assert_eq!(crate::disc::burn::audio_capacity_secs(&d), 4797);
+    }
+
+    /// Captured from the same TDK CD-RW after a real audio burn in the
+    /// Slimtype DS8A5SH (`cdrskin dev=/dev/sr0 -minfo`), trimmed.
+    const MINFO_BURNED_CDRW: &str = "\
+ATIP info from disk:
+  Is erasable
+  ATIP start of lead in:  -12900 (97:10/00)
+  ATIP start of lead out: 359849 (79:59/74)
+Product Id:    97m10s00f/79m59s74f
+Producer:      TDK / Ritek
+
+Mounted media class:      CD
+Mounted media type:       CD-RW
+Disk Is erasable
+disk status:              complete
+session status:           complete
+number of sessions:       1
+";
+
+    /// A burned CD-RW reads back with a valid TOC, so the TOC path builds
+    /// the MediaInfo — the `-minfo` typing must be merged in or the disc
+    /// looks write-once-with-content and every erase/re-burn is refused
+    /// (found live: first hardware burn, 2026-07-15).
+    #[test]
+    fn merged_typing_keeps_audio_cd_and_gains_rewritable() {
+        let toc_media = MediaInfo {
+            present: true,
+            is_audio_cd: true,
+            ..MediaInfo::none()
+        };
+        let m = merge_minfo_typing(toc_media, parse_minfo(MINFO_BURNED_CDRW).unwrap());
+        assert!(m.present);
+        assert!(m.is_audio_cd, "TOC's audio-CD verdict must survive the merge");
+        assert!(!m.is_blank);
+        assert!(m.rewritable, "burned CD-RW must still probe rewritable");
+        assert_eq!(m.kind, MediaKind::CdRw);
+        assert_eq!(m.capacity_bytes, 359_849 * 2048);
+        assert_eq!(m.free_bytes, 0);
     }
 
     #[test]
