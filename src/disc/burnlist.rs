@@ -3,7 +3,7 @@
 //! (transcoded to Red Book WAV, capacity in seconds) and data (files as-is,
 //! capacity in bytes).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One queued file plus the metadata the overlays display and the audio
 /// capacity math needs.
@@ -121,6 +121,82 @@ impl BurnQueues {
     }
 }
 
+/// Result of one batch add: what queued, what was already there, and what
+/// could not be read (and therefore was NOT added — an unknown duration
+/// would defeat the over-capacity gate).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[allow(dead_code)]
+pub struct AddOutcome {
+    pub added: usize,
+    pub duplicate: usize,
+    pub failed: Vec<PathBuf>,
+}
+
+#[allow(dead_code)]
+impl AddOutcome {
+    /// One status line, shared wording across frontends.
+    pub fn status_message(&self, drive_label: &str, total: usize) -> String {
+        let mut s = format!(
+            "Queued {} for burning on {drive_label} ({total} on the list)",
+            self.added
+        );
+        if self.duplicate > 0 {
+            s.push_str(&format!(" — {} already queued", self.duplicate));
+        }
+        s
+    }
+
+    /// Multi-line error body listing every skipped file; `None` when all
+    /// files were readable.
+    pub fn failed_message(&self) -> Option<String> {
+        if self.failed.is_empty() {
+            return None;
+        }
+        let mut s =
+            String::from("These files could not be read and were not added:\n");
+        for p in &self.failed {
+            s.push_str(&format!("\n{}", p.display()));
+        }
+        Some(s)
+    }
+}
+
+/// Queue a batch. `meta` supplies (display, known duration, bytes) from the
+/// caller's library; when the duration is unknown, `probe` reads the file
+/// (production: `duration_probe::probe_duration`). Probe failure ⇒ the file
+/// is skipped and reported, never queued with an unknown length.
+#[allow(dead_code)]
+pub fn add_files(
+    list: &mut BurnList,
+    paths: &[PathBuf],
+    meta: impl Fn(&Path) -> (String, Option<u32>, u64),
+    probe: impl Fn(&Path) -> Option<u32>,
+) -> AddOutcome {
+    let mut out = AddOutcome::default();
+    for path in paths {
+        let (display, known_secs, bytes) = meta(path);
+        let secs = match known_secs.or_else(|| probe(path)) {
+            Some(s) => s,
+            None => {
+                out.failed.push(path.clone());
+                continue;
+            }
+        };
+        let added = list.add(BurnItem {
+            path: path.clone(),
+            display,
+            duration_secs: Some(secs),
+            bytes,
+        });
+        if added {
+            out.added += 1;
+        } else {
+            out.duplicate += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +285,46 @@ mod tests {
         q.remove_gone(&["/dev/sr1"]);
         assert!(q.get("/dev/sr0").is_none());
         assert_eq!(q.get("/dev/sr1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_files_probes_unknown_durations_and_skips_unreadable() {
+        use std::path::Path;
+        let mut bl = BurnList::default();
+        let paths: Vec<PathBuf> =
+            ["/m/known.mp3", "/m/probed.mp3", "/m/bad.mp3", "/m/known.mp3"]
+                .iter().map(PathBuf::from).collect();
+        let meta = |p: &Path| {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let secs = (name == "known.mp3").then_some(120);
+            (name, secs, 1_000u64)
+        };
+        let probe = |p: &Path| match p.file_name().unwrap().to_str().unwrap() {
+            "probed.mp3" => Some(240),
+            _ => None, // bad.mp3 is unreadable; known.mp3 never probed
+        };
+        let out = add_files(&mut bl, &paths, meta, probe);
+        assert_eq!(out.added, 2);
+        assert_eq!(out.duplicate, 1); // second known.mp3
+        assert_eq!(out.failed, vec![PathBuf::from("/m/bad.mp3")]);
+        assert_eq!(bl.len(), 2);
+        assert_eq!(bl.total_secs(), 360); // 120 known + 240 probed
+        assert!(!bl.has_unknown_durations()); // nothing unknown ever enters
+    }
+
+    #[test]
+    fn add_outcome_messages() {
+        let out = AddOutcome { added: 2, duplicate: 1, failed: vec![PathBuf::from("/m/x.mp3")] };
+        let msg = out.status_message("Slimtype DS8A5SH", 5);
+        assert!(msg.contains("Queued 2"), "{msg}");
+        assert!(msg.contains("Slimtype DS8A5SH"), "{msg}");
+        assert!(msg.contains("5 on the list"), "{msg}");
+        assert!(msg.contains("1 already queued"), "{msg}");
+        let fail = out.failed_message().unwrap();
+        assert!(fail.contains("could not be read"), "{fail}");
+        assert!(fail.contains("/m/x.mp3"), "{fail}");
+        let clean = AddOutcome { added: 1, duplicate: 0, failed: vec![] };
+        assert!(clean.failed_message().is_none());
+        assert!(!clean.status_message("D", 1).contains("already queued"));
     }
 }
