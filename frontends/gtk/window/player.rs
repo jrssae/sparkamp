@@ -41,6 +41,27 @@ pub fn build(
         }
     };
 
+    // ── Drives / devices / burn queues — shared with the Media Library ──────────
+    // Owned here (not inside open_media_library_window) so the active
+    // playlist's Send-to menu (below) and the ML window's Files/Editor/Device
+    // views all read and write the SAME lists and burn queue. Threaded into
+    // open_media_library_window at each call site. current_devices and
+    // copy_files_holder are only populated once the ML window has been built
+    // at least once (its device poll / copy runner live there); until then
+    // the active playlist's "Removable Device" Send-to entry simply has no
+    // devices to list, which build_send_to_menu already handles by omitting
+    // the entry.  current_drives is also kept fresh by the audio-CD watcher
+    // below, independent of the ML window.
+    let current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>> =
+        Rc::new(RefCell::new(Default::default()));
+    let copy_files_holder: Rc<
+        RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>,
+    > = Rc::new(RefCell::new(None));
+
     // ── Duration probe channel ─────────────────────────────────────────────────
     // std::sync::mpsc::Sender is Clone+Send so it can be handed to Rayon
     // worker threads.  The Receiver is polled non-blocking from the tick loop
@@ -1877,7 +1898,175 @@ pub fn build(
         });
         pl_action_group.add_action(&action_add_to_saved);
 
+        // Send to Disc Drive: probe-on-add, then queue onto THAT drive.
+        // Same body as the Media Library's ml.send-drive (media_library.rs)
+        // — shares burn_queues so the burn panel sees items queued here.
+        {
+            let state_burn = state.clone();
+            let pl_view_drv = pl_view.clone();
+            let burn_queues = burn_queues.clone();
+            let current_drives = current_drives.clone();
+            let status = pl_status_label.clone();
+            let win_wk = playlist_win.downgrade();
+            let action = gio::SimpleAction::new(
+                "send-drive",
+                Some(glib::VariantTy::STRING),
+            );
+            action.connect_activate(move |_, target| {
+                let Some(drive_id) =
+                    target.and_then(|v| v.get::<String>()) else { return };
+                let drive_label = current_drives
+                    .borrow()
+                    .iter()
+                    .find(|d| d.id == drive_id)
+                    .map(|d| d.label.clone())
+                    .unwrap_or_else(|| drive_id.clone());
+                #[allow(deprecated)]
+                let (sel_paths, _) = pl_view_drv.selection().selected_rows();
+                let indices: Vec<usize> = sel_paths
+                    .iter()
+                    .filter_map(|p| p.indices().first().copied())
+                    .map(|i| i as usize)
+                    .collect();
+                let paths: Vec<std::path::PathBuf> = {
+                    let s = state_burn.borrow();
+                    indices.iter()
+                        .filter_map(|i| s.playlist.tracks.get(*i))
+                        .map(|t| t.path.clone())
+                        .collect()
+                };
+                if paths.is_empty() {
+                    return;
+                }
+                // Metadata from the library NOW (SQLite is not Send).
+                let metas: std::collections::HashMap<_, _> = {
+                    let s = state_burn.borrow();
+                    paths.iter().map(|path| {
+                        let row = s.media_lib.as_ref().and_then(|l| {
+                            l.track_by_path(&path.display().to_string()).ok()
+                        });
+                        let display = row.as_ref()
+                            .map(|t| match (&t.artist, &t.title) {
+                                (Some(a), Some(ti)) if !a.is_empty() =>
+                                    format!("{a} - {ti}"),
+                                (_, Some(ti)) => ti.clone(),
+                                _ => t.filename.clone(),
+                            })
+                            .unwrap_or_else(|| path.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string()));
+                        let secs = row.as_ref()
+                            .and_then(|t| t.length_secs).map(|s| s as u32);
+                        let bytes = std::fs::metadata(path)
+                            .map(|m| m.len()).unwrap_or(0);
+                        (path.clone(), (display, secs, bytes))
+                    }).collect()
+                };
+                status.set_text("Reading files…");
+                let burn_queues = burn_queues.clone();
+                let status = status.clone();
+                let win_wk = win_wk.clone();
+                // Probe off-thread, then queue on the main loop — the
+                // codebase's established spawn_future_local +
+                // spawn_blocking(...).await pattern (media_library.rs
+                // ml.send-drive). Only Send data (paths, metas) crosses
+                // into spawn_blocking; the Rcs stay in the local future.
+                glib::spawn_future_local(async move {
+                    let probe_metas: Vec<(std::path::PathBuf, Option<u32>)> =
+                        paths.iter()
+                            .map(|p| (p.clone(), metas.get(p).and_then(|m| m.1)))
+                            .collect();
+                    let probed: Vec<(std::path::PathBuf, Option<u32>)> =
+                        gio::spawn_blocking(move || {
+                            probe_metas
+                                .into_iter()
+                                .map(|(p, known)| {
+                                    let secs = known.or_else(|| {
+                                        crate::duration_probe::probe_duration(&p)
+                                            .map(|d| d.as_secs() as u32)
+                                    });
+                                    (p, secs)
+                                })
+                                .collect()
+                        })
+                        .await
+                        .unwrap_or_default();
+                    let out;
+                    let total;
+                    {
+                        let mut queues = burn_queues.borrow_mut();
+                        let list = queues.queue(&drive_id);
+                        out = crate::disc::burnlist::add_files(
+                            list,
+                            &paths,
+                            |p| metas.get(p).cloned().unwrap_or_else(|| {
+                                (p.display().to_string(), None, 0)
+                            }),
+                            |p| probed.iter()
+                                .find(|(pp, _)| pp == p)
+                                .and_then(|(_, s)| *s),
+                        );
+                        total = list.len();
+                    } // queues borrow drops before any UI call
+                    status.set_text(&gtk_safe(
+                        &out.status_message(&drive_label, total),
+                    ));
+                    if let (Some(body), Some(win)) =
+                        (out.failed_message(), win_wk.upgrade())
+                    {
+                        show_unreadable_dialog(&win.upcast::<gtk4::Window>(), &body);
+                    }
+                });
+            });
+            pl_action_group.add_action(&action);
+        }
+
+        // Send to Removable Device: hand off to the Media Library's copy
+        // runner (via the shared holder — it owns the progress UI, which
+        // only exists once the ML window has been built).
+        {
+            let current_devices = current_devices.clone();
+            let copy_files_holder = copy_files_holder.clone();
+            let pl_view_dev = pl_view.clone();
+            let state_dev = state.clone();
+            let action = gio::SimpleAction::new(
+                "send-device",
+                Some(glib::VariantTy::STRING),
+            );
+            action.connect_activate(move |_, target| {
+                let Some(dev_id) =
+                    target.and_then(|v| v.get::<String>()) else { return };
+                let dev = current_devices
+                    .borrow()
+                    .iter()
+                    .find(|d| d.id == dev_id)
+                    .cloned();
+                #[allow(deprecated)]
+                let (sel_paths, _) = pl_view_dev.selection().selected_rows();
+                let indices: Vec<usize> = sel_paths
+                    .iter()
+                    .filter_map(|p| p.indices().first().copied())
+                    .map(|i| i as usize)
+                    .collect();
+                let paths: Vec<std::path::PathBuf> = {
+                    let s = state_dev.borrow();
+                    indices.iter()
+                        .filter_map(|i| s.playlist.tracks.get(*i))
+                        .map(|t| t.path.clone())
+                        .collect()
+                };
+                if let (Some(dev), false) = (dev, paths.is_empty()) {
+                    if let Some(run) = copy_files_holder.borrow().clone() {
+                        run(dev, paths);
+                    }
+                }
+            });
+            pl_action_group.add_action(&action);
+        }
+
         let state_menu_pl = state.clone();
+        let current_drives_ctx = current_drives.clone();
+        let current_devices_ctx = current_devices.clone();
         let pl_drag_sel_ctx = pl_drag_selection.clone();
         ctx_click.connect_pressed(move |gest, _, x, y| {
             #[allow(deprecated)]
@@ -1948,12 +2137,21 @@ pub fn build(
                 ));
             }
             menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));
-            let submenu = build_add_to_playlist_submenu(
+            let send = build_send_to_menu(
                 &state_menu_pl,
-                "pl.add-to-new",
-                "pl.add-to-saved",
+                &SendToActions {
+                    active: "", // tracks are already in the active playlist
+                    new_playlist: "pl.add-to-new",
+                    saved_playlist: "pl.add-to-saved",
+                    drive: "pl.send-drive",
+                    device: "pl.send-device",
+                    drives: current_drives_ctx.borrow().iter()
+                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                    devices: current_devices_ctx.borrow().iter()
+                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                },
             );
-            menu.append_submenu(Some("Add to Playlist"), &submenu);
+            menu.append_submenu(Some("Send to"), &send);
 
             // Create popover menu — NESTED keeps the Add-to-Playlist
             // submenu from being clipped to the parent menu's height.
@@ -3734,6 +3932,10 @@ pub fn build(
         let rebuild_pl = rebuild_playlist.clone();
         let set_track_ml = set_track.clone();
         let btn_ml_for_notify = btn_ml.clone();
+        let current_drives = current_drives.clone();
+        let current_devices = current_devices.clone();
+        let burn_queues = burn_queues.clone();
+        let copy_files_holder = copy_files_holder.clone();
         move |_| {
             // If already open (visible or hidden), toggle visibility.
             {
@@ -3754,6 +3956,10 @@ pub fn build(
                 state_rc.clone(),
                 rebuild_pl.clone(),
                 set_track_ml.clone(),
+                current_drives.clone(),
+                current_devices.clone(),
+                burn_queues.clone(),
+                copy_files_holder.clone(),
                 w,
                 h,
             );
@@ -3787,6 +3993,9 @@ pub fn build(
         let state_rc = state.clone();
         let btn_ml_watch = btn_ml.clone();
         let prev: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> = Rc::new(RefCell::new(Vec::new()));
+        // Keeps the Send-to menu's drive list fresh even before the ML
+        // window has ever been opened (its own poll only starts then).
+        let current_drives_watch = current_drives.clone();
         let in_flight = Rc::new(Cell::new(false));
         let tick: Rc<dyn Fn()> = Rc::new(move || {
             if in_flight.get() {
@@ -3815,6 +4024,7 @@ pub fn build(
             let state_rc = state_rc.clone();
             let btn_ml_watch = btn_ml_watch.clone();
             let prev = prev.clone();
+            let current_drives_watch = current_drives_watch.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
                 let drives = gio::spawn_blocking(crate::disc::detect::list_drives_shared)
@@ -3883,6 +4093,7 @@ pub fn build(
                         cb();
                     }
                 }
+                *current_drives_watch.borrow_mut() = drives.clone();
                 *prev.borrow_mut() = drives;
                 let Some(id) = inserted else { return };
                 if !state_rc.borrow().config.disc.auto_show_inserted_audio_cd {
@@ -4158,6 +4369,10 @@ pub fn build(
                 state_rc.clone(),
                 rebuild_pl.clone(),
                 set_track_init_ml.clone(),
+                current_drives,
+                current_devices,
+                burn_queues,
+                copy_files_holder,
                 init_ml_width,
                 init_ml_height,
             );
