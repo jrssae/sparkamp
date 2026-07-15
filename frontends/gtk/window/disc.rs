@@ -269,7 +269,7 @@ impl BurnUi {
 }
 
 /// Build + wire the burn panel. `burn_queues` is shared with the ML files
-/// view's "Add to Burn List" context action; the panel reads/writes only the
+/// view's "Send to ▸ Disc Drive" context action; the panel reads/writes only the
 /// queue for the drive currently shown in the detail view — every other
 /// drive's queue is untouched. `refresh_discs` re-polls after a finished burn
 /// so the detail reflects the disc's new content.
@@ -302,7 +302,7 @@ pub(super) fn build_burn_panel(
         .build();
     root.append(&queue_scroll);
     let empty_hint = Label::builder()
-        .label("Burn list is empty — right-click files in the Library and pick \"Add to Burn List\".")
+        .label("Burn list is empty — right-click files in the Library and pick Send to ▸ Disc Drive.")
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
