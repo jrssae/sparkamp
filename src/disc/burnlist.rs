@@ -23,9 +23,21 @@ pub struct BurnItem {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BurnList {
     pub items: Vec<BurnItem>,
+    /// Audio-burn disc metadata the user typed over the defaults; `None`
+    /// means recompute defaults from the current items. Cleared with the
+    /// queue after a successful burn.
+    pub meta_override: Option<crate::disc::cdtext::DiscMeta>,
 }
 
 impl BurnList {
+    /// The disc metadata a burn should use right now: the override when the
+    /// user set one, else freshly computed defaults from the current items.
+    pub fn effective_meta(&self) -> crate::disc::cdtext::DiscMeta {
+        self.meta_override
+            .clone()
+            .unwrap_or_else(|| crate::disc::cdtext::default_disc_meta(&self.items))
+    }
+
     /// Append, skipping paths already queued. Returns whether it was added.
     pub fn add(&mut self, item: BurnItem) -> bool {
         if self.items.iter().any(|i| i.path == item.path) {
@@ -56,6 +68,7 @@ impl BurnList {
 
     pub fn clear(&mut self) {
         self.items.clear();
+        self.meta_override = None;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -249,6 +262,33 @@ mod tests {
         assert_eq!(bl.len(), 3);
         bl.remove(0);
         assert_eq!(bl.items[0].display, "a.mp3");
+    }
+
+    #[test]
+    fn effective_meta_override_wins_else_recomputes() {
+        let mut bl = BurnList::default();
+        bl.add(item("Foo - One.mp3", Some(60), 1));
+        bl.add(item("Foo - Two.mp3", Some(60), 1));
+        // No override: defaults compute from the current items.
+        assert_eq!(bl.effective_meta().artist, "Foo");
+
+        // Override wins regardless of what's in the items.
+        bl.meta_override = Some(crate::disc::cdtext::DiscMeta {
+            artist: "Custom Artist".into(),
+            album: "Custom Album".into(),
+        });
+        assert_eq!(bl.effective_meta().artist, "Custom Artist");
+        assert_eq!(bl.effective_meta().album, "Custom Album");
+
+        // Clearing the queue drops the override too.
+        bl.clear();
+        assert!(bl.meta_override.is_none());
+
+        // None recomputes as items change.
+        bl.add(item("Bar - Three.mp3", Some(60), 1));
+        assert_eq!(bl.effective_meta().artist, "Bar");
+        bl.add(item("Baz - Four.mp3", Some(60), 1));
+        assert_eq!(bl.effective_meta().artist, "Various Artists");
     }
 
     #[test]

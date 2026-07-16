@@ -669,6 +669,12 @@ pub(super) fn build_burn_panel(
                     );
                     let drive_id = drive.id.clone();
                     let items = burn_queues.borrow_mut().queue(&drive_id).items.clone();
+                    // Editing the sheet's contents before a burn is Task 5 —
+                    // for now audio burns always use the queue's effective
+                    // (override-or-default) metadata; data burns carry no
+                    // CD-TEXT.
+                    let disc_meta =
+                        audio.then(|| burn_queues.borrow_mut().queue(&drive_id).effective_meta());
                     let cancel =
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     *prep_cancel.borrow_mut() = Some(cancel.clone());
@@ -692,7 +698,8 @@ pub(super) fn build_burn_panel(
                             burn::BurnMode::Data { use_m3u }
                         };
                         let result = burn::run_job(
-                            &drive, &items, mode, erase_first, verify, &cancel,
+                            &drive, &items, mode, erase_first, verify,
+                            disc_meta.as_ref(), &cancel,
                             |p| {
                                 let _ = tx.send(BurnMsg::Phase(p.to_string()));
                             },

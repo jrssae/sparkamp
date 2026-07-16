@@ -105,15 +105,18 @@ pub fn staged_wav_name(index: usize) -> String {
 // ---------------------------------------------------------------------------
 
 /// cdrskin: burn prepared WAVs as an audio CD, DAO, padding subframe gaps.
+/// `sheet` is the staged CD-TEXT v07t definition sheet (`None` skips
+/// CD-TEXT); when present it must precede `-dao` per cdrskin's docs for
+/// `input_sheet_v07t=` (SAO/DAO-only option).
 #[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
-pub fn cdrskin_audio_args(device: &str, wavs: &[PathBuf]) -> Vec<String> {
-    let mut args = vec![
-        format!("dev={device}"),
-        "blank=as_needed".to_string(),
-        "-dao".to_string(),
-        "-audio".to_string(),
-        "-pad".to_string(),
-    ];
+pub fn cdrskin_audio_args(device: &str, wavs: &[PathBuf], sheet: Option<&Path>) -> Vec<String> {
+    let mut args = vec![format!("dev={device}"), "blank=as_needed".to_string()];
+    if let Some(sheet) = sheet {
+        args.push(format!("input_sheet_v07t={}", sheet.display()));
+    }
+    args.push("-dao".to_string());
+    args.push("-audio".to_string());
+    args.push("-pad".to_string());
     args.extend(wavs.iter().map(|w| w.display().to_string()));
     args
 }
@@ -399,23 +402,29 @@ pub fn erase(drive: &OpticalDrive) -> Result<(), String> {
 }
 
 /// Burn already-prepared Red Book WAVs (in list order) as an audio CD.
-/// `verify` = post-burn verification where the tool supports it (drutil;
-/// cdrskin has none — a hardware-pass follow-up may add a readback check).
+/// `sheet` is the staged CD-TEXT v07t definition sheet (`None` skips
+/// CD-TEXT). `verify` = post-burn verification where the tool supports it
+/// (drutil; cdrskin has none — a hardware-pass follow-up may add a readback
+/// check).
+///
+/// macOS gap: `drutil` has no documented CD-TEXT/v07t input — burns via
+/// `drutil` carry no CD-TEXT regardless of `sheet` (flagged for Task 11).
 pub fn burn_audio(
     drive: &OpticalDrive,
     staged_dir: &Path,
     wavs: &[PathBuf],
+    sheet: Option<&Path>,
     verify: bool,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let _ = wavs; // drutil takes the folder; order comes from the 01.wav names
+        let _ = (wavs, sheet); // drutil takes the folder; order comes from the 01.wav names
         run_tool("drutil", &drutil_audio_args(&drive.id, staged_dir, verify))
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (staged_dir, verify);
-        run_tool("cdrskin", &cdrskin_audio_args(&drive.id, wavs))
+        run_tool("cdrskin", &cdrskin_audio_args(&drive.id, wavs, sheet))
     }
 }
 
@@ -437,7 +446,9 @@ pub enum BurnMode {
 /// pre-flight (capacity check, refuse/erase decision, erase confirmation) and
 /// shows the phases this reports through `phase`.
 ///
-/// `cancel` stops between steps; a cancel *during* the burn subprocess needs
+/// `disc_meta` supplies the CD-TEXT album/track titles for audio burns
+/// (`None` skips CD-TEXT entirely); data burns ignore it. `cancel` stops
+/// between steps; a cancel *during* the burn subprocess needs
 /// [`request_cancel`] as well (the UIs' cancel buttons do both). Returns the
 /// one-line success status, or the failure/cancel reason.
 pub fn run_job(
@@ -446,6 +457,7 @@ pub fn run_job(
     mode: BurnMode,
     erase_first: bool,
     verify: bool,
+    disc_meta: Option<&crate::disc::cdtext::DiscMeta>,
     cancel: &AtomicBool,
     mut phase: impl FnMut(&str),
 ) -> Result<String, String> {
@@ -480,8 +492,21 @@ pub fn run_job(
                     prepare_wav(&item.path, &out)?;
                     wavs.push(out);
                 }
+                // CD-TEXT sheet: written whenever the caller supplied disc
+                // metadata (audio mode only — data burns pass None). The
+                // macOS arm of `burn_audio` ignores the path (drutil gap).
+                let sheet = match disc_meta {
+                    Some(meta) => {
+                        let path = staged.join("cdtext.v07t");
+                        let body = crate::disc::cdtext::build_v07t(meta, items);
+                        std::fs::write(&path, body)
+                            .map_err(|e| format!("write {}: {e}", path.display()))?;
+                        Some(path)
+                    }
+                    None => None,
+                };
                 phase("Burning… (this takes a while)");
-                burn_audio(drive, &staged, &wavs, verify)?;
+                burn_audio(drive, &staged, &wavs, sheet.as_deref(), verify)?;
                 Ok(format!("Audio CD burned ({} tracks)", items.len()))
             }
             BurnMode::Data { use_m3u } => {
@@ -578,7 +603,7 @@ mod tests {
         println!("burning… (audio, {} tracks)", wavs.len());
         let started = std::time::Instant::now();
         crate::disc::detect::set_exclusive_read(true);
-        let r = burn_audio(&drive, &staged, &wavs, false);
+        let r = burn_audio(&drive, &staged, &wavs, None, false);
         crate::disc::detect::set_exclusive_read(false);
         let _ = std::fs::remove_dir_all(&staged);
         r.expect("burn_audio");
@@ -727,11 +752,27 @@ mod tests {
     #[test]
     fn command_builders_exact() {
         let wavs = vec![PathBuf::from("/t/01.wav"), PathBuf::from("/t/02.wav")];
+        // None: args unchanged from the pre-CD-TEXT shape.
         assert_eq!(
-            cdrskin_audio_args("/dev/sr0", &wavs),
+            cdrskin_audio_args("/dev/sr0", &wavs, None),
             [
                 "dev=/dev/sr0",
                 "blank=as_needed",
+                "-dao",
+                "-audio",
+                "-pad",
+                "/t/01.wav",
+                "/t/02.wav"
+            ]
+        );
+        // Some: input_sheet_v07t= is inserted right before -dao (cdrskin
+        // requires it ahead of the write-mode option).
+        assert_eq!(
+            cdrskin_audio_args("/dev/sr0", &wavs, Some(Path::new("/t/cdtext.v07t"))),
+            [
+                "dev=/dev/sr0",
+                "blank=as_needed",
+                "input_sheet_v07t=/t/cdtext.v07t",
                 "-dao",
                 "-audio",
                 "-pad",
@@ -892,7 +933,7 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let mut phases: Vec<String> = Vec::new();
         for mode in [BurnMode::Audio, BurnMode::Data { use_m3u: false }] {
-            let r = run_job(&d, &items, mode, false, true, &cancel, |p| {
+            let r = run_job(&d, &items, mode, false, true, None, &cancel, |p| {
                 phases.push(p.to_string())
             });
             assert_eq!(r.unwrap_err(), "cancelled");
@@ -929,7 +970,7 @@ mod tests {
         let d = drive(true, true, false, MediaKind::CdR);
         let cancel = AtomicBool::new(false);
         let phases = std::cell::RefCell::new(Vec::<String>::new());
-        let r = run_job(&d, &items, BurnMode::Audio, false, true, &cancel, |p| {
+        let r = run_job(&d, &items, BurnMode::Audio, false, true, None, &cancel, |p| {
             phases.borrow_mut().push(p.to_string());
             // Cancel as soon as track 1 starts preparing.
             cancel.store(true, Ordering::Relaxed);

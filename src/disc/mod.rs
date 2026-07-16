@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod burn;
 pub mod burnlist;
+pub mod cdtext;
 pub mod detect;
 pub mod discid;
 pub mod gnudb;

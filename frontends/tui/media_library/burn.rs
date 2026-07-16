@@ -248,6 +248,10 @@ impl App {
             crate::config::PlaylistFormat::M3u
         );
         let items = self.burn_queues.queue(&drive.id).items.clone();
+        // Editing the sheet's contents before a burn is Task 10 — for now
+        // audio burns always use the queue's effective (override-or-default)
+        // metadata; data burns carry no CD-TEXT.
+        let disc_meta = audio.then(|| self.burn_queues.queue(&drive.id).effective_meta());
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.burn_prep_cancel = Some(cancel.clone());
         let (tx, rx) = std::sync::mpsc::channel();
@@ -264,9 +268,18 @@ impl App {
             } else {
                 burn::BurnMode::Data { use_m3u }
             };
-            let result = burn::run_job(&drive, &items, mode, erase_first, verify, &cancel, |p| {
-                let _ = tx.send(super::super::BurnMsg::Phase(p.to_string()));
-            });
+            let result = burn::run_job(
+                &drive,
+                &items,
+                mode,
+                erase_first,
+                verify,
+                disc_meta.as_ref(),
+                &cancel,
+                |p| {
+                    let _ = tx.send(super::super::BurnMsg::Phase(p.to_string()));
+                },
+            );
             let _ = tx.send(super::super::BurnMsg::Done(result));
         });
     }

@@ -562,12 +562,17 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
                 use_m3u: job.use_m3u,
             }
         };
+        // No disc-metadata field on the FFI job yet, and macOS's `drutil`
+        // burn arm has no CD-TEXT input path regardless (see
+        // `burn::burn_audio`'s doc comment) — binding this over FFI is
+        // Task 11's mac gap, not this one.
         let result = burn::run_job(
             &job.drive,
             &items,
             mode,
             job.erase_first,
             job.verify,
+            None,
             &cancel,
             |p| {
                 BURN_JOB.lock().unwrap().status.phase = p.to_string();
