@@ -62,6 +62,10 @@ pub fn build(
     let copy_files_holder: Rc<
         RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>,
     > = Rc::new(RefCell::new(None));
+    // Filled by the ML window's burn panel; the active playlist's
+    // "Send to ▸ Disc Drive" calls it to live-refresh an open panel.
+    let burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(RefCell::new(None));
 
     // ── Duration probe channel ─────────────────────────────────────────────────
     // std::sync::mpsc::Sender is Clone+Send so it can be handed to Rayon
@@ -1906,6 +1910,7 @@ pub fn build(
             let state_burn = state.clone();
             let pl_view_drv = pl_view.clone();
             let burn_queues = burn_queues.clone();
+            let burn_refresh_holder = burn_refresh_holder.clone();
             let current_drives = current_drives.clone();
             let status = pl_status_label.clone();
             let win_wk = playlist_win.downgrade();
@@ -1965,6 +1970,7 @@ pub fn build(
                 };
                 status.set_text("Reading files…");
                 let burn_queues = burn_queues.clone();
+                let burn_refresh_holder = burn_refresh_holder.clone();
                 let status = status.clone();
                 let win_wk = win_wk.clone();
                 // Probe off-thread, then queue on the main loop — the
@@ -2009,6 +2015,10 @@ pub fn build(
                         );
                         total = list.len();
                     } // queues borrow drops before any UI call
+                    // Live-refresh the burn panel if it's the open view.
+                    if let Some(refresh) = burn_refresh_holder.borrow().as_ref() {
+                        refresh();
+                    }
                     status.set_text(&gtk_safe(
                         &out.status_message(&drive_label, total),
                     ));
@@ -4049,6 +4059,7 @@ pub fn build(
         let current_devices = current_devices.clone();
         let burn_queues = burn_queues.clone();
         let copy_files_holder = copy_files_holder.clone();
+        let burn_refresh_holder = burn_refresh_holder.clone();
         move |_| {
             // If already open (visible or hidden), toggle visibility.
             {
@@ -4073,6 +4084,7 @@ pub fn build(
                 current_devices.clone(),
                 burn_queues.clone(),
                 copy_files_holder.clone(),
+                burn_refresh_holder.clone(),
                 w,
                 h,
             );
@@ -4515,6 +4527,7 @@ pub fn build(
                 current_devices,
                 burn_queues,
                 copy_files_holder,
+                burn_refresh_holder,
                 init_ml_width,
                 init_ml_height,
             );

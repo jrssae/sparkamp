@@ -277,6 +277,10 @@ pub(super) fn build_burn_panel(
     state: Rc<RefCell<AppState>>,
     burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
     refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
+    // Filled with a closure that re-renders the queue for the drive currently
+    // shown; the Send-to actions call it so an external add updates the panel
+    // live instead of only after a navigate-away-and-back.
+    burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     win: &gtk4::Window,
 ) -> BurnUi {
     let root = GtkBox::new(Orientation::Vertical, 6);
@@ -461,46 +465,69 @@ pub(super) fn build_burn_panel(
         let queue = queue.clone();
         move || queue.selected_row().map(|r| r.index() as usize)
     };
-    let rerender = {
+    let rerender: Rc<dyn Fn()> = {
         let refresh_cb = refresh_cb.clone();
         let shown_drive = shown_drive.clone();
-        move || {
+        Rc::new(move || {
             // Bind first: the borrow() Ref must drop before refresh_cb
             // re-borrows shown_drive mutably (live crash 2026-07-15).
             let drive = shown_drive.borrow().clone();
             if let Some(d) = drive {
                 refresh_cb(&d);
             }
-        }
+        })
     };
-    {
+    // Expose the shown-drive rerender so an external "Send to ▸ Disc Drive"
+    // add (files view, playlist editor, active playlist) can live-refresh the
+    // queue while this detail is open — otherwise the new rows only appeared
+    // after navigating away and back (2026-07-16).
+    *burn_refresh_holder.borrow_mut() = Some(rerender.clone());
+    // Remove row `i` from the shown drive's queue, rerender, then reselect a
+    // neighbour so the list stays put instead of jumping to the top (the
+    // rerender rebuilds every row, which otherwise drops the selection).
+    let remove_at: Rc<dyn Fn(usize)> = {
         let burn_queues = burn_queues.clone();
         let shown_drive = shown_drive.clone();
-        let selected_idx = selected_idx.clone();
         let rerender = rerender.clone();
-        btn_remove.connect_clicked(move |_| {
+        let queue = queue.clone();
+        Rc::new(move |i: usize| {
             let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
-            if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
-                burn_queues.borrow_mut().queue(&id).remove(i);
-                rerender();
+            let Some(id) = drive_id else { return };
+            let new_len = {
+                let mut q = burn_queues.borrow_mut();
+                let list = q.queue(&id);
+                list.remove(i);
+                list.len()
+            };
+            rerender();
+            if new_len > 0 {
+                let sel = i.min(new_len - 1) as i32;
+                if let Some(r) = queue.row_at_index(sel) {
+                    queue.select_row(Some(&r));
+                }
+            }
+        })
+    };
+    {
+        let selected_idx = selected_idx.clone();
+        let remove_at = remove_at.clone();
+        btn_remove.connect_clicked(move |_| {
+            if let Some(i) = selected_idx() {
+                remove_at(i);
             }
         });
     }
     // Delete / Backspace on the queue list removes the selected row, matching
     // the Remove button (keyboard parity — users expect Delete to work here).
     {
-        let burn_queues = burn_queues.clone();
-        let shown_drive = shown_drive.clone();
         let selected_idx = selected_idx.clone();
-        let rerender = rerender.clone();
+        let remove_at = remove_at.clone();
         let key = gtk4::EventControllerKey::new();
         key.connect_key_pressed(move |_, keyval, _, _| {
             use gtk4::gdk::Key;
             if matches!(keyval, Key::Delete | Key::KP_Delete | Key::BackSpace) {
-                let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
-                if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
-                    burn_queues.borrow_mut().queue(&id).remove(i);
-                    rerender();
+                if let Some(i) = selected_idx() {
+                    remove_at(i);
                     return glib::Propagation::Stop;
                 }
             }

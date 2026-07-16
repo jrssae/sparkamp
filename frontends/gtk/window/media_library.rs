@@ -13,6 +13,10 @@ fn open_media_library_window(
     copy_files_holder: Rc<
         RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>,
     >,
+    // Filled by the burn panel with a closure that re-renders the shown
+    // drive's queue; the Send-to ▸ Disc Drive actions call it so an external
+    // add updates the open panel live (2026-07-16).
+    burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     init_width: i32,
     init_height: i32,
 ) -> gtk4::Window {
@@ -2442,6 +2446,7 @@ fn open_media_library_window(
         {
             let sel_tracks = selected_device_tracks.clone();
             let burn_queues = burn_queues.clone();
+            let burn_refresh_holder = burn_refresh_holder.clone();
             let current_drives = current_drives.clone();
             let win_wk = win.downgrade();
             let action = gio::SimpleAction::new(
@@ -2475,6 +2480,7 @@ fn open_media_library_window(
                 }).collect();
                 let burn_queues = burn_queues.clone();
                 let win_wk = win_wk.clone();
+                let burn_refresh_holder = burn_refresh_holder.clone();
                 // Probe off-thread, then queue on the main loop — Task 7's
                 // spawn_future_local + spawn_blocking(...).await pattern.
                 glib::spawn_future_local(async move {
@@ -2514,6 +2520,10 @@ fn open_media_library_window(
                         );
                         total = list.len();
                     } // queues borrow drops before any UI call
+                    // Live-refresh the burn panel if it's the open view.
+                    if let Some(refresh) = burn_refresh_holder.borrow().as_ref() {
+                        refresh();
+                    }
                     if let Some(win) = win_wk.upgrade() {
                         show_alert_parented(
                             Some(&win),
@@ -2838,6 +2848,7 @@ fn open_media_library_window(
         state.clone(),
         burn_queues.clone(),
         refresh_discs_holder.clone(),
+        burn_refresh_holder.clone(),
         &win,
     );
     disc_detail.append(&burn_ui.root);
@@ -2942,6 +2953,7 @@ fn open_media_library_window(
             let state_burn = state.clone();
             let tracks_src = ml_selected_tracks.clone();
             let burn_queues = burn_queues.clone();
+            let burn_refresh_holder = burn_refresh_holder.clone();
             let current_drives = current_drives.clone();
             let status = files_status_holder.clone();
             let win_wk = win.downgrade();
@@ -2992,6 +3004,7 @@ fn open_media_library_window(
                 let burn_queues = burn_queues.clone();
                 let status = status.clone();
                 let win_wk = win_wk.clone();
+                let burn_refresh_holder = burn_refresh_holder.clone();
                 // Probe off-thread (GStreamer discovery can take seconds),
                 // then queue on the main loop — the codebase's established
                 // spawn_future_local + spawn_blocking(...).await pattern
@@ -3035,6 +3048,10 @@ fn open_media_library_window(
                         );
                         total = list.len();
                     } // queues borrow drops before any UI call
+                    // Live-refresh the burn panel if it's the open view.
+                    if let Some(refresh) = burn_refresh_holder.borrow().as_ref() {
+                        refresh();
+                    }
                     if let Some(lbl) = status.borrow().as_ref() {
                         lbl.set_text(&gtk_safe(
                             &out.status_message(&drive_label, total),
@@ -3982,14 +3999,15 @@ fn open_media_library_window(
             ml_action_group.add_action(&action_send_active);
         }
 
-        // Rebuild the Send-to menu model fresh on open — drives/devices
-        // may have come or gone since the last popup.
+        // Rebuild the Send-to menu model fresh on every open — drives/devices
+        // may have come or gone. `set_create_popup_func` is invoked by GTK
+        // right before the popover is shown; `connect_activate` does NOT fire
+        // on a plain click, so the button appeared dead (2026-07-16).
         {
             let state_menu = state.clone();
             let current_drives = current_drives.clone();
             let current_devices = current_devices.clone();
-            let btn = btn_send_to.clone();
-            btn_send_to.connect_activate(move |_| {
+            btn_send_to.set_create_popup_func(move |btn| {
                 let menu = build_send_to_menu(
                     &state_menu,
                     &SendToActions {
@@ -4503,11 +4521,17 @@ fn open_media_library_window(
     {
         let state_burn = state.clone();
         let burn_queues = burn_queues.clone();
+        let burn_refresh_holder = burn_refresh_holder.clone();
         let paths_src = ed_send_paths.clone();
         let win_wk = win.downgrade();
         ed_action_drive.connect_activate(move |_, target| {
-            let Some(drive_id) = target.and_then(|v| v.get::<String>()) else { return };
+            let drive_id = target.and_then(|v| v.get::<String>());
             let paths: Vec<_> = paths_src.borrow().clone();
+            eprintln!(
+                "[sparkamp-dbg] ed.send-drive fired: target={:?} paths={}",
+                drive_id, paths.len()
+            );
+            let Some(drive_id) = drive_id else { return };
             if paths.is_empty() {
                 return;
             }
@@ -4537,6 +4561,7 @@ fn open_media_library_window(
             };
             let burn_queues = burn_queues.clone();
             let win_wk = win_wk.clone();
+            let burn_refresh_holder = burn_refresh_holder.clone();
             // Probe off-thread, then queue on the main loop — Task 7's
             // spawn_future_local + spawn_blocking(...).await pattern. Only
             // Send data (paths, metas) crosses into spawn_blocking.
@@ -4575,6 +4600,10 @@ fn open_media_library_window(
                             .and_then(|(_, s)| *s),
                     );
                 } // queues borrow drops before any UI call
+                // Live-refresh the burn panel if it's the open view.
+                if let Some(refresh) = burn_refresh_holder.borrow().as_ref() {
+                    refresh();
+                }
                 // Quiet on success (BUG #2 fix) — matches the Files view's
                 // ml.send-drive: no modal alert for the common case. The
                 // editor page has no status label to post the "queued N
