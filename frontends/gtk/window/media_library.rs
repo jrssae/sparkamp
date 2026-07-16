@@ -8445,6 +8445,7 @@ fn open_media_library_window(
                 // Unchanged drives skip this so the 10 s poll never disturbs
                 // the user's row selection.
                 let mut detail_update: Option<crate::disc::OpticalDrive> = sel_now
+                    .clone()
                     .and_then(|sel| {
                         let new_d = drives.iter().find(|d| d.id == sel).cloned()?;
                         let old_d = current_drives
