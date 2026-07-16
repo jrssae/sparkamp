@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 
 use super::{MediaKind, OpticalDrive};
 
@@ -84,11 +85,22 @@ pub fn prepare_pipeline_desc(src: &Path, out: &Path) -> String {
 /// Transcode one burn-list entry to a Red Book WAV. Blocking (worker
 /// threads loop per track for progress/cancel, same shape as ripping).
 pub fn prepare_wav(src: &Path, out: &Path) -> Result<(), String> {
+    prepare_wav_observed(src, out, |_| {})
+}
+
+/// [`prepare_wav`] with a position feed: `on_position` gets the pipeline
+/// position in seconds roughly twice a second while the transcode runs — the
+/// within-track fraction for [`run_job`]'s "Preparing i/N" progress.
+pub fn prepare_wav_observed(
+    src: &Path,
+    out: &Path,
+    on_position: impl FnMut(f64),
+) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
     let desc = prepare_pipeline_desc(src, out);
-    super::rip::run_pipeline_to_eos(&desc).inspect_err(|_| {
+    super::rip::run_pipeline_observed(&desc, on_position).inspect_err(|_| {
         let _ = std::fs::remove_file(out);
     })
 }
@@ -110,7 +122,14 @@ pub fn staged_wav_name(index: usize) -> String {
 /// `input_sheet_v07t=` (SAO/DAO-only option).
 #[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 pub fn cdrskin_audio_args(device: &str, wavs: &[PathBuf], sheet: Option<&Path>) -> Vec<String> {
-    let mut args = vec![format!("dev={device}"), "blank=as_needed".to_string()];
+    // -v: verbose progress ("Track NN: X of Y MB written" on stdout) —
+    // `run_job`'s streamed burn parses these lines via
+    // `parse_cdrskin_progress`; without -v cdrskin prints none of them.
+    let mut args = vec![
+        format!("dev={device}"),
+        "blank=as_needed".to_string(),
+        "-v".to_string(),
+    ];
     if let Some(sheet) = sheet {
         args.push(format!("input_sheet_v07t={}", sheet.display()));
     }
@@ -282,7 +301,24 @@ pub fn request_cancel() {
 /// A [`BURN_TIMEOUT`] wall-clock ceiling guards against a wedged tool (e.g. the
 /// drive stops responding and the child never exits) so the app never hangs.
 pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
-    run_tool_with_timeout(program, args, BURN_TIMEOUT)
+    run_tool_streaming(program, args, |_: &str| {})
+}
+
+/// [`run_tool`], but every stdout line is teed to `on_line` as it arrives —
+/// the live-progress feed for tools (cdrskin with `-v`) that report percent
+/// complete on stdout. `on_line` runs on a dedicated reader thread (not the
+/// caller's thread), which is why it must be `Send + 'static`: it's moved
+/// into `std::thread::spawn`. stderr still goes straight to the log file,
+/// same as [`run_tool`] — only stdout is split.
+///
+/// Cancel, the wall-clock watchdog, and the log-file error tail all behave
+/// exactly as [`run_tool`]'s.
+pub fn run_tool_streaming(
+    program: &str,
+    args: &[String],
+    on_line: impl FnMut(&str) + Send + 'static,
+) -> Result<(), String> {
+    run_tool_streaming_with_timeout(program, args, BURN_TIMEOUT, on_line)
 }
 
 /// Coarse wall-clock ceiling for one burn/erase subprocess. A full audio-CD
@@ -290,11 +326,14 @@ pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
 /// rather than hang the burn UI forever.
 const BURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-fn run_tool_with_timeout(
+fn run_tool_streaming_with_timeout(
     program: &str,
     args: &[String],
     timeout: std::time::Duration,
+    mut on_line: impl FnMut(&str) + Send + 'static,
 ) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+
     CANCEL.store(false, Ordering::Relaxed);
 
     let log_path = std::env::temp_dir().join(format!(
@@ -304,39 +343,76 @@ fn run_tool_with_timeout(
     ));
     let log = std::fs::File::create(&log_path).map_err(|e| format!("{program}: {e}"))?;
     let log_err = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
+    let mut log_out = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
 
     let mut child = std::process::Command::new(program)
         .args(args)
-        .stdout(log)
+        .stdout(std::process::Stdio::piped())
         .stderr(log_err)
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
 
+    // stdout is teed to the log file (so `interpret_exit`'s error tail still
+    // sees every line, same as before) AND to `on_line` (the live-progress
+    // feed) — on a dedicated reader thread, so the poll loop below is free to
+    // keep owning the cancel/watchdog checks at its own 200 ms cadence
+    // instead of blocking on child output. Killing/exiting the child closes
+    // its stdout pipe, which ends this thread's `read_line` loop on its own.
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::thread::spawn(move || {
+        let mut buf = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match buf.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = line.trim_end_matches(['\n', '\r']);
+                    let _ = writeln!(log_out, "{text}");
+                    on_line(text);
+                }
+            }
+        }
+    });
+
+    enum Outcome {
+        Exited(std::process::ExitStatus),
+        Errored(String),
+    }
+
     let started = std::time::Instant::now();
-    let result = loop {
+    let outcome = loop {
         if CANCEL.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            break Err("cancelled".to_string());
+            break Outcome::Errored("cancelled".to_string());
         }
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let output = std::fs::read_to_string(&log_path).unwrap_or_default();
-                break interpret_exit(program, status, &output);
-            }
+            Ok(Some(status)) => break Outcome::Exited(status),
             Ok(None) => {
                 if started.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break Err(format!(
+                    break Outcome::Errored(format!(
                         "{program} timed out after {} min — the drive stopped responding",
                         timeout.as_secs() / 60
                     ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            Err(e) => break Err(format!("wait {program}: {e}")),
+            Err(e) => break Outcome::Errored(format!("wait {program}: {e}")),
         }
+    };
+    // Join before reading the log: the reader thread's tee-write for the
+    // last lines (e.g. a failure message) must land before `interpret_exit`
+    // reads the file back.
+    let _ = reader.join();
+    let result = match outcome {
+        Outcome::Exited(status) => {
+            let output = std::fs::read_to_string(&log_path).unwrap_or_default();
+            interpret_exit(program, status, &output)
+        }
+        Outcome::Errored(e) => Err(e),
     };
     let _ = std::fs::remove_file(&log_path);
     result
@@ -389,6 +465,26 @@ fn interpret_exit(
     })
 }
 
+/// Parse one line of `cdrskin -v`'s audio-write progress ("Track 01:   12 of
+/// 34 MB written [buf  96%]   8.0x." — the `[buf …] …x.` suffix is optional
+/// and ignored) into a `0.0..=1.0` fraction. `None` for any non-progress line
+/// (banners, "Thank you for using cdrskin", etc.) or a zero denominator
+/// (cdrskin prints "0 of 0" for a moment before it knows the track size).
+pub fn parse_cdrskin_progress(line: &str) -> Option<f32> {
+    let before = line.split("MB written").next()?;
+    let tokens: Vec<&str> = before.split_whitespace().collect();
+    let of_idx = tokens.iter().position(|&t| t == "of")?;
+    if of_idx == 0 {
+        return None;
+    }
+    let numerator: f32 = tokens.get(of_idx - 1)?.parse().ok()?;
+    let denominator: f32 = tokens.get(of_idx + 1)?.parse().ok()?;
+    if denominator == 0.0 {
+        return None;
+    }
+    Some(numerator / denominator)
+}
+
 // ---------------------------------------------------------------------------
 // Whole-burn orchestration (platform split at the command level only)
 // ---------------------------------------------------------------------------
@@ -409,6 +505,13 @@ pub fn erase(drive: &OpticalDrive) -> Result<(), String> {
 ///
 /// macOS gap: `drutil` has no documented CD-TEXT/v07t input — burns via
 /// `drutil` carry no CD-TEXT regardless of `sheet` (flagged for Task 11).
+///
+/// `run_job`'s production Linux path calls [`burn_audio_streaming`] instead
+/// (same `cdrskin_audio_args`, but with live progress) — this one-shot form
+/// is macOS's (`drutil`) production burn arm and Linux's plain (no-progress)
+/// entry point, kept for the live hardware test and any future caller that
+/// doesn't need progress.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn burn_audio(
     drive: &OpticalDrive,
     staged_dir: &Path,
@@ -425,6 +528,67 @@ pub fn burn_audio(
     {
         let _ = (staged_dir, verify);
         run_tool("cdrskin", &cdrskin_audio_args(&drive.id, wavs, sheet))
+    }
+}
+
+/// [`run_job`]'s streamed burn progress: a `label` (the same phase text the
+/// UIs already string-match — "Erasing…", "Preparing i/N · …", "Burning…
+/// (this takes a while)") plus an optional `fraction` in `0.0..=1.0` for the
+/// phases that can report one (`None` means "show the label only, no bar" —
+/// e.g. erasing, or a burn phase before the first progress line arrives).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BurnProgress {
+    pub label: String,
+    pub fraction: Option<f32>,
+}
+
+impl BurnProgress {
+    fn new(label: impl Into<String>, fraction: Option<f32>) -> Self {
+        Self {
+            label: label.into(),
+            fraction,
+        }
+    }
+}
+
+/// Burn already-staged Red Book WAVs as an audio CD on Linux, streaming
+/// `cdrskin -v`'s "Track NN: X of Y MB written" lines into `progress` as they
+/// arrive. Runs `cdrskin` on its own thread (so `on_line`, which must be
+/// `Send`, doesn't need `progress` to be) and forwards parsed fractions back
+/// across an `mpsc` channel to this (the caller's/`run_job`'s) thread, where
+/// `progress` — not required to be `Send` — actually runs. See `run_job`'s
+/// doc comment for the fuller threading-shape rationale.
+#[cfg(not(target_os = "macos"))]
+fn burn_audio_streaming(
+    drive: &OpticalDrive,
+    wavs: &[PathBuf],
+    sheet: Option<&Path>,
+    mut progress: impl FnMut(BurnProgress),
+) -> Result<(), String> {
+    let label = "Burning… (this takes a while)";
+    let args = cdrskin_audio_args(&drive.id, wavs, sheet);
+    let (ftx, frx) = mpsc::channel::<f32>();
+    let handle = std::thread::spawn(move || {
+        run_tool_streaming("cdrskin", &args, move |line: &str| {
+            if let Some(fraction) = parse_cdrskin_progress(line) {
+                let _ = ftx.send(fraction);
+            }
+        })
+    });
+    loop {
+        match frx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(fraction) => progress(BurnProgress::new(label, Some(fraction))),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if handle.is_finished() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err("cdrskin: worker thread panicked".to_string()),
     }
 }
 
@@ -451,6 +615,33 @@ pub enum BurnMode {
 /// between steps; a cancel *during* the burn subprocess needs
 /// [`request_cancel`] as well (the UIs' cancel buttons do both). Returns the
 /// one-line success status, or the failure/cancel reason.
+///
+/// `progress` reports each phase as a [`BurnProgress`] (`label` is the same
+/// text prior versions passed as a bare `&str` — TUI/mac still string-match
+/// it until their own fraction-consuming tasks land):
+/// - Erasing: `fraction: None` (cdrskin/drutil's quick-blank has no useful
+///   percent to show).
+/// - Preparing i/N: `Some((i + within_track) / N)`, the within-track term
+///   from `prepare_wav_observed`'s GStreamer position feed (`position /
+///   item.duration_secs`) when the item's duration is known — every burn-list
+///   item's duration is populated on add, so this is the common case; falls
+///   back to the coarse `i/N` step otherwise.
+/// - Burning: on Linux, cdrskin's own `-v` progress lines
+///   (`parse_cdrskin_progress`) stream in via `burn_audio_streaming`; on
+///   macOS (drutil) and for data discs (xorriso — untouched, no matching
+///   progress format) it's `fraction: None` throughout, same as before this
+///   task.
+///
+/// Threading shape for the streamed burn fraction: `run_job` itself already
+/// runs on the caller's worker thread (GTK/TUI/FFI each spawn one), and
+/// `progress` is that worker's own closure — it does NOT need to be `Send`.
+/// But `run_tool_streaming`'s `on_line` fires on a *different* thread (the
+/// stdout reader thread it spawns internally), so it DOES need to be `Send`.
+/// `burn_audio_streaming` bridges the two: `on_line` parses each line and
+/// sends the fraction over an `mpsc::Sender<f32>` (a `Send` end of a channel
+/// created there, no `progress` involved); `run_job`'s own thread receives on
+/// the matching `Receiver` in a loop and calls `progress` directly — so
+/// `progress` only ever runs on the thread it was given on.
 pub fn run_job(
     drive: &OpticalDrive,
     items: &[crate::disc::burnlist::BurnItem],
@@ -459,7 +650,7 @@ pub fn run_job(
     verify: bool,
     disc_meta: Option<&crate::disc::cdtext::DiscMeta>,
     cancel: &AtomicBool,
-    mut phase: impl FnMut(&str),
+    mut progress: impl FnMut(BurnProgress),
 ) -> Result<String, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
@@ -472,24 +663,31 @@ pub fn run_job(
     crate::disc::detect::set_exclusive_read(true);
     let result = (|| -> Result<String, String> {
         if erase_first {
-            phase("Erasing…");
+            progress(BurnProgress::new("Erasing…", None));
             erase(drive)?;
         }
         match mode {
             BurnMode::Audio => {
+                let n = items.len().max(1) as f32;
                 let mut wavs = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".to_string());
                     }
-                    phase(&format!(
-                        "Preparing {}/{} · {}",
-                        i + 1,
-                        items.len(),
-                        item.display
-                    ));
+                    let label =
+                        format!("Preparing {}/{} · {}", i + 1, items.len(), item.display);
+                    progress(BurnProgress::new(label.clone(), Some(i as f32 / n)));
                     let out = staged.join(staged_wav_name(i));
-                    prepare_wav(&item.path, &out)?;
+                    match item.duration_secs.filter(|&d| d > 0) {
+                        Some(dur) => prepare_wav_observed(&item.path, &out, |pos_secs| {
+                            let track_frac = (pos_secs / dur as f64).clamp(0.0, 1.0) as f32;
+                            progress(BurnProgress::new(
+                                label.clone(),
+                                Some((i as f32 + track_frac) / n),
+                            ));
+                        })?,
+                        None => prepare_wav(&item.path, &out)?,
+                    }
                     wavs.push(out);
                 }
                 // CD-TEXT sheet: written whenever the caller supplied disc
@@ -505,12 +703,22 @@ pub fn run_job(
                     }
                     None => None,
                 };
-                phase("Burning… (this takes a while)");
+                progress(BurnProgress::new("Burning… (this takes a while)", None));
+                #[cfg(target_os = "macos")]
                 burn_audio(drive, &staged, &wavs, sheet.as_deref(), verify)?;
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = verify; // cdrskin has no verify option (see burn_audio's doc)
+                    burn_audio_streaming(drive, &wavs, sheet.as_deref(), &mut progress)?;
+                }
                 Ok(format!("Audio CD burned ({} tracks)", items.len()))
             }
             BurnMode::Data { use_m3u } => {
-                phase("Burning… (this takes a while)");
+                // xorriso (Linux data-disc tool) has no equivalent of
+                // cdrskin's `-v` percent lines, so this phase — like Erasing
+                // — stays untouched: plain `run_tool` via `burn_data`,
+                // `fraction: None` throughout.
+                progress(BurnProgress::new("Burning… (this takes a while)", None));
                 let files: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
                 let staged_files = stage_data_files(&files, &staged)?;
                 // Staging is usually instant hard-links; re-check before the
@@ -758,6 +966,7 @@ mod tests {
             [
                 "dev=/dev/sr0",
                 "blank=as_needed",
+                "-v",
                 "-dao",
                 "-audio",
                 "-pad",
@@ -772,6 +981,7 @@ mod tests {
             [
                 "dev=/dev/sr0",
                 "blank=as_needed",
+                "-v",
                 "input_sheet_v07t=/t/cdtext.v07t",
                 "-dao",
                 "-audio",
@@ -853,6 +1063,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `cdrskin -v`'s audio-write progress line (confirmed against the
+    /// `cdrskin` 1.5.8 binary in the dev-box: `strings` on it shows the
+    /// format string `"%s%sTrack %-2.2d: %s MB written %s[buf %3d%%]  %4.1fx.%s"`
+    /// with the inner `%s` built from `"%4d of %4d"` — i.e. real output looks
+    /// like `Track 01:   12 of   34 MB written [buf  96%]   8.0x.`; the
+    /// parser only depends on the `Track NN: X of Y MB written` prefix, so it
+    /// doesn't care about the trailing `[buf …] …x.` suffix.
+    #[test]
+    fn cdrskin_progress_lines_parse() {
+        assert_eq!(
+            parse_cdrskin_progress("Track 01:   12 of   34 MB written"),
+            Some(12.0 / 34.0)
+        );
+        assert_eq!(
+            parse_cdrskin_progress("Track 12:  340 of  340 MB written"),
+            Some(1.0)
+        );
+        assert_eq!(parse_cdrskin_progress("Thank you for using cdrskin"), None);
+        assert_eq!(parse_cdrskin_progress("Track 01: 0 of 0 MB written"), None);
+        // Real lines carry a trailing buffer/speed suffix after "MB written".
+        assert_eq!(
+            parse_cdrskin_progress("Track 01:   12 of   34 MB written [buf  96%]   8.0x."),
+            Some(12.0 / 34.0)
+        );
+    }
+
     #[test]
     fn run_tool_reports_failure_and_cancel() {
         // Non-zero exit surfaces stderr tail.
@@ -902,19 +1138,21 @@ mod tests {
     #[test]
     fn run_tool_watchdog_kills_a_wedged_child() {
         let started = std::time::Instant::now();
-        let err = run_tool_with_timeout(
+        let err = run_tool_streaming_with_timeout(
             "sh",
             &["-c".into(), "sleep 30".into()],
             std::time::Duration::from_millis(300),
+            |_: &str| {},
         )
         .unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         // A child that finishes within the ceiling is unaffected.
-        assert!(run_tool_with_timeout(
+        assert!(run_tool_streaming_with_timeout(
             "sh",
             &["-c".into(), "exit 0".into()],
-            std::time::Duration::from_secs(5)
+            std::time::Duration::from_secs(5),
+            |_: &str| {},
         )
         .is_ok());
     }
@@ -934,7 +1172,7 @@ mod tests {
         let mut phases: Vec<String> = Vec::new();
         for mode in [BurnMode::Audio, BurnMode::Data { use_m3u: false }] {
             let r = run_job(&d, &items, mode, false, true, None, &cancel, |p| {
-                phases.push(p.to_string())
+                phases.push(p.label)
             });
             assert_eq!(r.unwrap_err(), "cancelled");
         }
@@ -950,7 +1188,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("sparkamp-runjob-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         // Track 1: a real (tiny, silent) WAV so its prepare succeeds; the
-        // phase callback then flips cancel before track 2 is reached.
+        // progress callback then flips cancel before track 2 is reached.
         let src = tmp.join("t1.wav");
         std::fs::write(&src, minimal_wav()).unwrap();
         let items = vec![
@@ -971,14 +1209,22 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let phases = std::cell::RefCell::new(Vec::<String>::new());
         let r = run_job(&d, &items, BurnMode::Audio, false, true, None, &cancel, |p| {
-            phases.borrow_mut().push(p.to_string());
+            phases.borrow_mut().push(p.label);
             // Cancel as soon as track 1 starts preparing.
             cancel.store(true, Ordering::Relaxed);
         });
         assert_eq!(r.unwrap_err(), "cancelled");
         let phases = phases.into_inner();
-        assert_eq!(phases.len(), 1, "{phases:?}");
-        assert!(phases[0].starts_with("Preparing 1/2"), "{phases:?}");
+        // Track 1's real (if near-instant) WAV prepare may fire the
+        // within-track observer zero or more times before EOS — every one of
+        // those calls also re-flips (already-true) cancel, so the exact
+        // count isn't the invariant under test. What matters: cancel is seen
+        // before track 2 starts, so every phase text is still about track 1.
+        assert!(!phases.is_empty(), "{phases:?}");
+        assert!(
+            phases.iter().all(|p| p.starts_with("Preparing 1/2")),
+            "{phases:?}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

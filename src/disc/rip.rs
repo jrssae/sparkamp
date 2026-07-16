@@ -144,16 +144,11 @@ pub fn rip_track_observed(
     Ok(())
 }
 
-/// Build, play, and drain a pipeline until EOS or error. GStreamer must
-/// already be initialized (both frontends do it at startup). Shared with the
-/// burn module's Red Book WAV preparation.
-pub(crate) fn run_pipeline_to_eos(desc: &str) -> Result<(), String> {
-    run_pipeline_observed(desc, |_| {})
-}
-
-/// [`run_pipeline_to_eos`] with a position feed: `on_position` gets the
-/// pipeline position in seconds roughly twice a second while the pipeline
-/// runs (nothing on the EOS/error path).
+/// Build, play, and drain a pipeline until EOS or error, reporting the
+/// pipeline position in seconds roughly twice a second while it runs
+/// (nothing on the EOS/error path) via `on_position`. GStreamer must already
+/// be initialized (both frontends do it at startup). Shared with the burn
+/// module's Red Book WAV preparation (`burn::prepare_wav`/`prepare_wav_observed`).
 pub(crate) fn run_pipeline_observed(
     desc: &str,
     mut on_position: impl FnMut(f64),

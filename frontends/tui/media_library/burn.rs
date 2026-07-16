@@ -277,7 +277,7 @@ impl App {
                 disc_meta.as_ref(),
                 &cancel,
                 |p| {
-                    let _ = tx.send(super::super::BurnMsg::Phase(p.to_string()));
+                    let _ = tx.send(super::super::BurnMsg::Progress(p));
                 },
             );
             let _ = tx.send(super::super::BurnMsg::Done(result));
@@ -287,7 +287,7 @@ impl App {
     /// Apply a burn progress/result message (called from the tick loop).
     pub(crate) fn handle_burn_msg(&mut self, msg: super::super::BurnMsg) {
         match msg {
-            super::super::BurnMsg::Phase(text) => self.burn_phase = Some(text),
+            super::super::BurnMsg::Progress(p) => self.burn_phase = Some(p.label),
             super::super::BurnMsg::Done(result) => {
                 self.disc_burn = None;
                 self.burn_prep_cancel = None;

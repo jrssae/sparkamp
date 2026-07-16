@@ -202,8 +202,10 @@ pub struct BurnSetupState {
 
 /// Progress/result of a background burn, delivered to the tick loop.
 pub enum BurnMsg {
-    /// Human-readable phase ("Preparing 2/5 · …", "Burning…").
-    Phase(String),
+    /// Structured phase — `label` is the human-readable phase text
+    /// ("Preparing 2/5 · …", "Burning…") this UI still renders; `fraction`
+    /// is unused here until Task 10 wires a progress bar.
+    Progress(crate::disc::burn::BurnProgress),
     /// Finished: Ok(summary) or Err(reason).
     Done(Result<String, String>),
 }

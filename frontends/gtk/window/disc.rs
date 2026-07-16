@@ -248,7 +248,7 @@ pub(super) fn disc_card_icon(d: &crate::disc::OpticalDrive) -> gtk4::Overlay {
 
 /// Progress/result of the background burn, drained by a main-thread poller.
 enum BurnMsg {
-    Phase(String),
+    Progress(crate::disc::burn::BurnProgress),
     Done(Result<String, String>),
 }
 
@@ -776,7 +776,7 @@ pub(super) fn build_burn_panel(
                             &drive, &items, mode, erase_first, verify,
                             disc_meta.as_ref(), &cancel,
                             |p| {
-                                let _ = tx.send(BurnMsg::Phase(p.to_string()));
+                                let _ = tx.send(BurnMsg::Progress(p));
                             },
                         );
                         let _ = tx.send(BurnMsg::Done(result));
@@ -799,8 +799,11 @@ pub(super) fn build_burn_panel(
                             let mut done: Option<Result<String, String>> = None;
                             loop {
                                 match rx.try_recv() {
-                                    Ok(BurnMsg::Phase(p)) => {
-                                        phase_lbl_p.set_text(&gtk_safe(&p))
+                                    Ok(BurnMsg::Progress(p)) => {
+                                        // Fraction USE (progress bar fill) is
+                                        // Task 7 — for now only the label
+                                        // renders, same text as before.
+                                        phase_lbl_p.set_text(&gtk_safe(&p.label))
                                     }
                                     Ok(BurnMsg::Done(r)) => {
                                         done = Some(r);

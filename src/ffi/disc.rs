@@ -495,6 +495,10 @@ struct BurnJobStatus {
     running: bool,
     /// Current phase line ("Erasing…", "Preparing 2/8 · …", "Burning…").
     phase: String,
+    /// `0.0..=1.0` progress within the current phase when one is known
+    /// (`BurnProgress::fraction`); additive field — older mac clients that
+    /// don't read it just keep showing `phase` as before.
+    fraction: Option<f32>,
     /// Set once the job finished: `ok` + the success/failure message.
     done: Option<BurnJobDone>,
 }
@@ -539,6 +543,7 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
         slot.status = BurnJobStatus {
             running: true,
             phase: "Starting…".to_string(),
+            fraction: None,
             done: None,
         };
         cancel
@@ -574,8 +579,10 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
             job.verify,
             None,
             &cancel,
-            |p| {
-                BURN_JOB.lock().unwrap().status.phase = p.to_string();
+            |p: burn::BurnProgress| {
+                let mut slot = BURN_JOB.lock().unwrap();
+                slot.status.phase = p.label;
+                slot.status.fraction = p.fraction;
             },
         );
         let mut slot = BURN_JOB.lock().unwrap();
