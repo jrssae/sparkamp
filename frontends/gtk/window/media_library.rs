@@ -4469,38 +4469,44 @@ fn open_media_library_window(
     // The DB row id of the playlist currently open in the editor (-1 = none)
     let editing_pl_id: Rc<Cell<i64>> = Rc::new(Cell::new(-1));
 
-    // "Send to" for the editor's per-row popover (Task 8). The popover
-    // below deliberately never routes through PopoverMenu/gio::Menu — see
-    // the big comment at the per-cell gesture handler: PopoverMenu action
-    // dispatch proved unreliable for this view's ColumnView cell tree, so
-    // every menu item here is a plain Button with a direct connect_clicked
-    // body. Real `ed.send-drive` / `ed.send-device` actions still exist
-    // (registered once, here, not per-cell) for interface parity with the
-    // other three Send-to consumers, with the same bodies as Task 7's
-    // ml.send-drive/ml.send-device — but the popover buttons invoke them
-    // via `.activate()` directly (a plain method call on the action object
-    // this closure owns) rather than relying on the ancestor-lookup that
-    // PopoverMenu would use, which is what was unreliable.
+    // "Send to" and row-scoped actions for the editor's per-cell context
+    // menu. Task 8 originally built this as a flat Popover of plain Buttons
+    // because a PopoverMenu parented on the ColumnView cell tree lost
+    // dispatch. The Files-view menu (~col_view, "ml" prefix) proves the
+    // real fix: put the SimpleActionGroup on the SAME stable widget the
+    // PopoverMenu is parented to (single widget, no ancestor walk) instead
+    // of scattering it across track_list/win as the abandoned "ple" group
+    // above did. Here that stable widget is the editor's ScrolledWindow
+    // (`track_scroll`, exposed via `track_scroll_holder` since it doesn't
+    // exist yet at this point in the function) — see its
+    // `insert_action_group("ed", ...)` call right after it's built. The
+    // group is *also* inserted directly on each popped-up PopoverMenu
+    // instance (see the per-cell gesture) as defense in depth: the
+    // `ple_action_group_holder` comment above documents a GTK4 version
+    // where the NESTED PopoverMenu flag breaks the ancestor-chain walk
+    // entirely, and installing the group straight on the popup sidesteps
+    // that regardless of GTK version.
     let ed_send_paths: Rc<RefCell<Vec<std::path::PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+    // Canonical play-order indices (selection, or the single clicked row
+    // as fallback) captured once per right-click so every "ed.*" action —
+    // not just send-drive/send-device — can read row-scoped context
+    // without needing per-item closures.
+    let ed_ctx_indices: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let ed_action_group = gio::SimpleActionGroup::new();
-    // Kept as named bindings (not scoped to a block) so the per-cell popover
-    // built below can clone them and call `.activate()` directly.
+    // Kept as named bindings (not scoped to a block) so later code in this
+    // function (the "ed"-group insertion on track_scroll, and the
+    // additional actions registered further down once
+    // rebuild_track_list_holder/track_scroll_holder exist) can add more
+    // actions to the same group.
     let ed_action_drive = gio::SimpleAction::new("send-drive", Some(glib::VariantTy::STRING));
     let ed_action_device = gio::SimpleAction::new("send-device", Some(glib::VariantTy::STRING));
     {
         let state_burn = state.clone();
         let burn_queues = burn_queues.clone();
-        let current_drives = current_drives.clone();
         let paths_src = ed_send_paths.clone();
         let win_wk = win.downgrade();
         ed_action_drive.connect_activate(move |_, target| {
             let Some(drive_id) = target.and_then(|v| v.get::<String>()) else { return };
-            let drive_label = current_drives
-                .borrow()
-                .iter()
-                .find(|d| d.id == drive_id)
-                .map(|d| d.label.clone())
-                .unwrap_or_else(|| drive_id.clone());
             let paths: Vec<_> = paths_src.borrow().clone();
             if paths.is_empty() {
                 return;
@@ -4555,7 +4561,6 @@ fn open_media_library_window(
                     .await
                     .unwrap_or_default();
                 let out;
-                let total;
                 {
                     let mut queues = burn_queues.borrow_mut();
                     let list = queues.queue(&drive_id);
@@ -4569,13 +4574,17 @@ fn open_media_library_window(
                             .find(|(pp, _)| pp == p)
                             .and_then(|(_, s)| *s),
                     );
-                    total = list.len();
                 } // queues borrow drops before any UI call
+                // Quiet on success (BUG #2 fix) — matches the Files view's
+                // ml.send-drive: no modal alert for the common case. The
+                // editor page has no status label to post the "queued N
+                // for burning..." text to (grepped for one; only
+                // `edit_error_label` exists, and it's styled as an error
+                // banner, not a general status line), so the success
+                // message is dropped rather than repurposing an
+                // error-styled widget. Only surface a dialog when files
+                // actually failed to read.
                 if let Some(win) = win_wk.upgrade() {
-                    show_alert_parented(
-                        Some(&win),
-                        &gtk_safe(&out.status_message(&drive_label, total)),
-                    );
                     if let Some(body) = out.failed_message() {
                         show_unreadable_dialog(&win, &body);
                     }
@@ -4751,9 +4760,205 @@ fn open_media_library_window(
         Rc::new(RefCell::new(None));
     // Holder for the editor's ScrolledWindow — populated right after it
     // is built so the cell right-click handler can use it as the popover
-    // parent (cell-label parents render invisible on this GTK4 build).
+    // parent (cell-label parents render invisible on this GTK4 build), and
+    // so the "ed" action group can be installed on it once (see below).
     let track_scroll_holder: Rc<RefCell<Option<gtk4::ScrolledWindow>>> =
         Rc::new(RefCell::new(None));
+
+    // Row-scoped "ed" actions for the per-cell context menu's non-Send-to
+    // items (Replace Current Playlist, Edit/View ID3, Remove from
+    // Playlist) plus the Send-to family's Active Playlist / Saved
+    // Playlist entries (send-drive/send-device were already registered
+    // above). Registered here — after rebuild_track_list_holder and
+    // track_scroll_holder exist — because `remove` needs the rebuild
+    // closure holder. All read row context from `ed_ctx_indices`
+    // (selection, falling back to the single clicked row), populated once
+    // per right-click by the per-cell gesture below instead of being
+    // recomputed per menu item.
+    {
+        // Send to Active Playlist — same body as the old flat button.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let rebuild_pl = rebuild_playlist.clone();
+        let set_track_c = set_track.clone();
+        let idxs_src = ed_ctx_indices.clone();
+        let action = gio::SimpleAction::new("send-active", None);
+        action.connect_activate(move |_, _| {
+            let tracks: Vec<crate::media_library::LibTrack> = {
+                let et_b = et.borrow();
+                idxs_src.borrow().iter().filter_map(|&i| et_b.get(i).cloned()).collect()
+            };
+            if tracks.is_empty() { return }
+            let was_empty = state_c.borrow().playlist.is_empty();
+            let autoplay = state_c.borrow().config.behavior.autoplay_on_add;
+            {
+                let mut s = state_c.borrow_mut();
+                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
+            }
+            if autoplay && was_empty {
+                if let Some(d) = state_c.borrow_mut().play_current() { set_track_c(&d); }
+            }
+            rebuild_pl();
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
+        // Replace Current Playlist — same body as the old flat button.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let rebuild_pl = rebuild_playlist.clone();
+        let set_track_c = set_track.clone();
+        let idxs_src = ed_ctx_indices.clone();
+        let action = gio::SimpleAction::new("replace", None);
+        action.connect_activate(move |_, _| {
+            let tracks: Vec<crate::media_library::LibTrack> = {
+                let et_b = et.borrow();
+                idxs_src.borrow().iter().filter_map(|&i| et_b.get(i).cloned()).collect()
+            };
+            if tracks.is_empty() { return }
+            let autoplay = state_c.borrow().config.behavior.autoplay_on_add;
+            {
+                let mut s = state_c.borrow_mut();
+                let _ = s.player.stop();
+                s.playlist = crate::model::Playlist::new();
+                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
+            }
+            if autoplay {
+                if let Some(d) = state_c.borrow_mut().play_current() { set_track_c(&d); }
+            }
+            rebuild_pl();
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
+        // Edit / View ID3 — single-row only, reads the clicked row (not
+        // the selection) via ctx_canonical_idx, same as the old flat button.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let rebuild_pl = rebuild_playlist.clone();
+        let ctx_c = ctx_canonical_idx.clone();
+        let action = gio::SimpleAction::new("edit-id3", None);
+        action.connect_activate(move |_, _| {
+            let c = ctx_c.get();
+            if c < 0 { return }
+            let path = et.borrow().get(c as usize).map(|t| t.path.clone());
+            let Some(path) = path else { return };
+            open_id3_editor_window(
+                None::<&gtk4::Window>,
+                path.into(),
+                state_c.clone(),
+                rebuild_pl.clone(),
+                None,
+            );
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
+        // Remove from Playlist — same body as the old flat button.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let ep_id = editing_pl_id.clone();
+        let rb_holder = rebuild_track_list_holder.clone();
+        let idxs_src = ed_ctx_indices.clone();
+        let action = gio::SimpleAction::new("remove", None);
+        action.connect_activate(move |_, _| {
+            let mut idxs = idxs_src.borrow().clone();
+            if idxs.is_empty() { return }
+            idxs.sort_unstable_by(|a, b| b.cmp(a));
+            {
+                let mut e = et.borrow_mut();
+                for i in idxs.iter() {
+                    if *i < e.len() { e.remove(*i); }
+                }
+            }
+            let pid = ep_id.get();
+            if pid >= 0 {
+                let s = state_c.borrow();
+                if let Some(lib) = s.media_lib.as_ref() {
+                    let paths: Vec<String> = et.borrow()
+                        .iter().map(|t| t.path.clone()).collect();
+                    if let Ok(pl) = lib.playlist_by_id(pid) {
+                        let _ = lib.save_playlist_tracks_to_path(
+                            std::path::Path::new(&pl.path),
+                            &paths,
+                        );
+                    }
+                }
+            }
+            if let Some(rb) = rb_holder.borrow().as_ref() { rb(); }
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
+        // Seed a brand new saved playlist — same body as the old flat
+        // "New Playlist…" button; now the Send-to ▸ Saved Playlist ▸ entry.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let idxs_src = ed_ctx_indices.clone();
+        let win_c = win.clone();
+        let action = gio::SimpleAction::new("add-to-new", None);
+        action.connect_activate(move |_, _| {
+            let paths: Vec<String> = {
+                let et_b = et.borrow();
+                idxs_src.borrow().iter()
+                    .filter_map(|&i| et_b.get(i))
+                    .map(|t| t.path.clone())
+                    .collect()
+            };
+            if paths.is_empty() { return }
+            let default_stem = glib::DateTime::now_local().ok()
+                .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Playlist".to_string());
+            let state_cb = state_c.clone();
+            let paths_cb = paths.clone();
+            run_playlist_save_dialog(
+                state_c.clone(),
+                win_c.clone(),
+                &default_stem,
+                move |path, win_cb| {
+                    if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
+                        if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
+                            eprintln!("save_playlist_tracks_to_path: {e}");
+                            show_playlist_save_error(&win_cb, &path, &e);
+                        }
+                    }
+                },
+            );
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
+        // Append to an existing saved playlist — same body as the old
+        // flat per-playlist buttons; now Send-to ▸ Saved Playlist ▸ <name>.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let idxs_src = ed_ctx_indices.clone();
+        let action = gio::SimpleAction::new(
+            "add-to-saved",
+            Some(glib::VariantTy::INT64),
+        );
+        action.connect_activate(move |_, param| {
+            let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
+            let paths: Vec<String> = {
+                let et_b = et.borrow();
+                idxs_src.borrow().iter()
+                    .filter_map(|&i| et_b.get(i))
+                    .map(|t| t.path.clone())
+                    .collect()
+            };
+            if paths.is_empty() { return }
+            let mut ok = false;
+            if let Some(lib) = state_c.borrow().media_lib.as_ref() {
+                match lib.append_paths_to_playlist(pid, &paths) {
+                    Ok(_) => ok = true,
+                    Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
+                }
+            }
+            if ok { notify_playlist_changed(pid); }
+        });
+        ed_action_group.add_action(&action);
+    }
     {
         let visible_ids: Vec<String> =
             state.borrow().config.media_library.visible_columns.clone();
@@ -4848,7 +5053,6 @@ fn open_media_library_window(
 
             let setup_sel        = edit_multi_sel.clone();
             let setup_state      = state.clone();
-            let setup_tl         = track_list.clone();
             let setup_ctx_id     = ctx_canonical_idx.clone();
             let setup_et         = editing_tracks.clone();
             let setup_ep_id      = editing_pl_id.clone();
@@ -4858,14 +5062,10 @@ fn open_media_library_window(
             // outer scope, so capture the Rc via a deferred holder filled
             // immediately after the rebuild closure is created.
             let setup_rebuild    = rebuild_track_list_holder.clone();
-            let setup_rebuild_pl = rebuild_playlist.clone();
-            let setup_set_track  = set_track.clone();
-            let setup_win        = win.clone();
             let setup_scroll     = track_scroll_holder.clone();
-            let setup_actgroup   = ple_action_group_holder.clone();
+            let setup_ed_group   = ed_action_group.clone();
             let setup_ed_paths     = ed_send_paths.clone();
-            let setup_ed_drive_act  = ed_action_drive.clone();
-            let setup_ed_device_act = ed_action_device.clone();
+            let setup_ed_ctx_idx    = ed_ctx_indices.clone();
             let setup_drives     = current_drives.clone();
             let setup_devices    = current_devices.clone();
             let setup_id         = id_str.clone();
@@ -5054,34 +5254,33 @@ fn open_media_library_window(
                     lbl.add_controller(ds);
                 }
 
-                // Per-cell right-click gesture.  Builds a plain GtkPopover
-                // with a vertical box of Buttons rather than a PopoverMenu —
-                // each button's connect_clicked fires its action logic
-                // directly so dispatch doesn't depend on the GIO action
-                // muxer (which proved unreliable for editor menu items in
-                // this GTK4 version).
+                // Per-cell right-click gesture. Builds a real gio::Menu +
+                // PopoverMenu (NESTED), same as the Files view and the
+                // device-tracks view — see the big comment above
+                // `ed_send_paths`/`ed_ctx_indices` for why this now works
+                // where Task 8's flat-button popover was a workaround: the
+                // "ed" action group lives on `track_scroll` (installed once,
+                // not per-cell) and the popover is parented on that same
+                // widget, so action lookup never has to walk the ColumnView
+                // cell tree at all.
                 let gesture = gtk4::GestureClick::new();
                 gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
                 let g_sel        = setup_sel.clone();
                 let g_state      = setup_state.clone();
-                let g_tl         = setup_tl.clone();
                 let g_ctx_id     = setup_ctx_id.clone();
                 let g_li         = li.clone();
                 let g_lbl        = lbl.clone();
                 let g_et         = setup_et.clone();
-                let g_ep_id      = setup_ep_id.clone();
-                let g_rebuild    = setup_rebuild.clone();
-                let g_rebuild_pl = setup_rebuild_pl.clone();
-                let g_set_track  = setup_set_track.clone();
-                let g_win        = setup_win.clone();
                 let g_scroll     = setup_scroll.clone();
-                let g_act        = setup_actgroup.clone();
-                let g_ed_paths      = setup_ed_paths.clone();
-                let g_ed_drive_act  = setup_ed_drive_act.clone();
-                let g_ed_device_act = setup_ed_device_act.clone();
+                let g_ed_group   = setup_ed_group.clone();
+                let g_ed_paths   = setup_ed_paths.clone();
+                let g_ed_ctx_idx = setup_ed_ctx_idx.clone();
                 let g_drives     = setup_drives.clone();
                 let g_devices    = setup_devices.clone();
                 gesture.connect_pressed(move |g, _n, x, y| {
+                    let Some(scroll_widget) = g_scroll.borrow().clone() else {
+                        return;
+                    };
                     let Some(item) = g_li.item() else {
                         return;
                     };
@@ -5114,385 +5313,82 @@ fn open_media_library_window(
                     let sel_count: usize = (0..g_sel.n_items())
                         .filter(|i| g_sel.is_selected(*i)).count();
 
-                    // Helper closure: gather canonical indices the action
-                    // should operate on — selection first, falling back
-                    // to the single clicked row when nothing is selected.
-                    let sel_for_pick = g_sel.clone();
-                    let ctx_for_pick = g_ctx_id.clone();
-                    let pick_idxs = Rc::new(move || -> Vec<usize> {
-                        let mut idxs: Vec<usize> = (0..sel_for_pick.n_items())
-                            .filter(|i| sel_for_pick.is_selected(*i))
-                            .filter_map(|i| sel_for_pick.item(i))
-                            .filter_map(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            .map(|o| o.borrow::<EditorEntry>().canonical_idx)
-                            .collect();
-                        if idxs.is_empty() {
-                            let c = ctx_for_pick.get();
-                            if c >= 0 { idxs.push(c as usize); }
-                        }
-                        idxs
-                    });
-
-                    // ── Build plain Popover + Box of Buttons ----------
-                    // PopoverMenu dispatch path proved unreliable for the
-                    // editor — actions never fired even when group was
-                    // attached at multiple ancestors.  Plain Popover with
-                    // direct connect_clicked closures guarantees action
-                    // delivery.  Visual style is matched to the files
-                    // view via the `menu` CSS class on both the popover
-                    // and the content box, plus a "modelbutton"-style
-                    // CSS class on each button (mimics PopoverMenu's
-                    // internal GtkModelButtons).
-                    let popover = gtk4::Popover::new();
-                    popover.set_has_arrow(false);
-                    popover.set_position(gtk4::PositionType::Bottom);
-                    popover.add_css_class("menu");
-
-                    let vbox = GtkBox::new(Orientation::Vertical, 0);
-                    vbox.add_css_class("menu");
-                    vbox.set_size_request(240, -1);
-
-                    // Build buttons that look like PopoverMenu items.
-                    // Marked "modelbutton" so the GTK4 default theme
-                    // applies the same hover/padding/border treatment
-                    // PopoverMenu uses internally for its GtkModelButton
-                    // entries.
-                    let add_btn = |label: &str, vbox: &GtkBox| -> Button {
-                        let lbl = Label::builder()
-                            .label(label)
-                            .halign(Align::Start)
-                            .hexpand(true)
-                            .xalign(0.0)
-                            .build();
-                        let b = Button::new();
-                        b.set_child(Some(&lbl));
-                        b.set_has_frame(false);
-                        b.set_hexpand(true);
-                        b.add_css_class("flat");
-                        b.add_css_class("modelbutton");
-                        vbox.append(&b);
-                        b
+                    // Gather canonical indices the actions should operate
+                    // on — selection first, falling back to the single
+                    // clicked row when nothing is selected — and stash
+                    // them once for every "ed.*" action to read, plus the
+                    // matching paths for the async send-drive/send-device
+                    // bodies.
+                    let mut idxs: Vec<usize> = (0..g_sel.n_items())
+                        .filter(|i| g_sel.is_selected(*i))
+                        .filter_map(|i| g_sel.item(i))
+                        .filter_map(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                        .map(|o| o.borrow::<EditorEntry>().canonical_idx)
+                        .collect();
+                    if idxs.is_empty() {
+                        let c = g_ctx_id.get();
+                        if c >= 0 { idxs.push(c as usize); }
+                    }
+                    *g_ed_ctx_idx.borrow_mut() = idxs.clone();
+                    *g_ed_paths.borrow_mut() = {
+                        let et_b = g_et.borrow();
+                        idxs.iter()
+                            .filter_map(|&i| et_b.get(i))
+                            .map(|t| std::path::PathBuf::from(&t.path))
+                            .collect()
                     };
 
-                    // Send to Active Playlist (Task 8: folded into the
-                    // Send-to family, same body as before — this view has
-                    // no submenu nesting, so "Active Playlist" is just this
-                    // renamed top-level button rather than a menu entry).
-                    {
-                        let btn = add_btn("Send to Active Playlist", &vbox);
-                        let pop_c = popover.clone();
-                        let et_c = g_et.clone();
-                        let st_c = g_state.clone();
-                        let pi_c = pick_idxs.clone();
-                        let rb_pl_c = g_rebuild_pl.clone();
-                        let st_track_c = g_set_track.clone();
-                        btn.connect_clicked(move |_| {
-                            pop_c.popdown();
-                            let tracks: Vec<crate::media_library::LibTrack> = {
-                                let et_b = et_c.borrow();
-                                pi_c().into_iter().filter_map(|i| et_b.get(i).cloned()).collect()
-                            };
-                            if tracks.is_empty() { return }
-                            let was_empty = st_c.borrow().playlist.is_empty();
-                            let autoplay = st_c.borrow().config.behavior.autoplay_on_add;
-                            {
-                                let mut s = st_c.borrow_mut();
-                                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
-                            }
-                            if autoplay && was_empty {
-                                if let Some(d) = st_c.borrow_mut().play_current() { st_track_c(&d); }
-                            }
-                            rb_pl_c();
-                        });
-                    }
-
-                    // Replace Active Playlist
-                    {
-                        let btn = add_btn("Replace Current Playlist", &vbox);
-                        let pop_c = popover.clone();
-                        let et_c = g_et.clone();
-                        let st_c = g_state.clone();
-                        let pi_c = pick_idxs.clone();
-                        let rb_pl_c = g_rebuild_pl.clone();
-                        let st_track_c = g_set_track.clone();
-                        btn.connect_clicked(move |_| {
-                            pop_c.popdown();
-                            let tracks: Vec<crate::media_library::LibTrack> = {
-                                let et_b = et_c.borrow();
-                                pi_c().into_iter().filter_map(|i| et_b.get(i).cloned()).collect()
-                            };
-                            if tracks.is_empty() { return }
-                            let autoplay = st_c.borrow().config.behavior.autoplay_on_add;
-                            {
-                                let mut s = st_c.borrow_mut();
-                                let _ = s.player.stop();
-                                s.playlist = crate::model::Playlist::new();
-                                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
-                            }
-                            if autoplay {
-                                if let Some(d) = st_c.borrow_mut().play_current() { st_track_c(&d); }
-                            }
-                            rb_pl_c();
-                        });
-                    }
-
+                    // ── Build the real menu model ---------------------
+                    let menu = gio::Menu::new();
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("Replace Current Playlist"),
+                        Some("ed.replace"),
+                    ));
                     // Edit / View ID3 (single + library only)
                     if is_lib_track && sel_count <= 1 {
-                        let btn = add_btn("Edit / View ID3 Tags", &vbox);
-                        let pop_c = popover.clone();
-                        let et_c = g_et.clone();
-                        let st_c = g_state.clone();
-                        let rb_pl_c = g_rebuild_pl.clone();
-                        let ctx_c = g_ctx_id.clone();
-                        btn.connect_clicked(move |_| {
-                            pop_c.popdown();
-                            let c = ctx_c.get();
-                            if c < 0 { return }
-                            let path = et_c.borrow().get(c as usize).map(|t| t.path.clone());
-                            let Some(path) = path else { return };
-                            open_id3_editor_window(
-                                None::<&gtk4::Window>,
-                                path.into(),
-                                st_c.clone(),
-                                rb_pl_c.clone(),
-                                None,
-                            );
-                        });
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("Edit / View ID3 Tags"),
+                            Some("ed.edit-id3"),
+                        ));
                     }
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("Remove from Playlist"),
+                        Some("ed.remove"),
+                    ));
+                    let send = build_send_to_menu(
+                        &g_state,
+                        &SendToActions {
+                            active: "ed.send-active",
+                            new_playlist: "ed.add-to-new",
+                            saved_playlist: "ed.add-to-saved",
+                            drive: "ed.send-drive",
+                            device: "ed.send-device",
+                            drives: g_drives.borrow().iter()
+                                .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                            devices: g_devices.borrow().iter()
+                                .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                        },
+                    );
+                    menu.append_submenu(Some("Send to"), &send);
 
-                    // Remove from Playlist
-                    {
-                        let btn = add_btn("Remove from Playlist", &vbox);
-                        let pop_c = popover.clone();
-                        let et_c = g_et.clone();
-                        let st_c = g_state.clone();
-                        let pi_c = pick_idxs.clone();
-                        let ep_c = g_ep_id.clone();
-                        let rb_c = g_rebuild.clone();
-                        btn.connect_clicked(move |_| {
-                            pop_c.popdown();
-                            let mut idxs = pi_c();
-                            if idxs.is_empty() { return }
-                            idxs.sort_unstable_by(|a, b| b.cmp(a));
-                            {
-                                let mut e = et_c.borrow_mut();
-                                for i in idxs.iter() {
-                                    if *i < e.len() { e.remove(*i); }
-                                }
-                            }
-                            let pid = ep_c.get();
-                            if pid >= 0 {
-                                let s = st_c.borrow();
-                                if let Some(lib) = s.media_lib.as_ref() {
-                                    let paths: Vec<String> = et_c.borrow()
-                                        .iter().map(|t| t.path.clone()).collect();
-                                    if let Ok(pl) = lib.playlist_by_id(pid) {
-                                        let _ = lib.save_playlist_tracks_to_path(
-                                            std::path::Path::new(&pl.path),
-                                            &paths,
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(rb) = rb_c.borrow().as_ref() { rb(); }
-                        });
-                    }
-
-                    // ── Add to Playlist section ----------------------
-                    let sep = gtk4::Separator::new(Orientation::Horizontal);
-                    sep.set_margin_top(4);
-                    sep.set_margin_bottom(4);
-                    vbox.append(&sep);
-                    let header = Label::builder()
-                        .label("Save to Playlist")
-                        .halign(Align::Start)
-                        .margin_start(8)
-                        .build();
-                    header.add_css_class("dim-label");
-                    vbox.append(&header);
-
-                    // New Playlist…
-                    {
-                        let btn = add_btn("  New Playlist…", &vbox);
-                        let pop_c = popover.clone();
-                        let et_c = g_et.clone();
-                        let st_c = g_state.clone();
-                        let pi_c = pick_idxs.clone();
-                        let win_c = g_win.clone();
-                        btn.connect_clicked(move |_| {
-                            pop_c.popdown();
-                            let paths: Vec<String> = {
-                                let et_b = et_c.borrow();
-                                pi_c().into_iter()
-                                    .filter_map(|i| et_b.get(i))
-                                    .map(|t| t.path.clone())
-                                    .collect()
-                            };
-                            if paths.is_empty() { return }
-                            let default_stem = glib::DateTime::now_local().ok()
-                                .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "Playlist".to_string());
-                            let state_cb = st_c.clone();
-                            let paths_cb = paths.clone();
-                            run_playlist_save_dialog(
-                                st_c.clone(),
-                                win_c.clone(),
-                                &default_stem,
-                                move |path, win_cb| {
-                                    if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                                        if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                                            eprintln!("save_playlist_tracks_to_path: {e}");
-                                            show_playlist_save_error(&win_cb, &path, &e);
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                    }
-
-                    // Existing saved playlists
-                    let playlists: Vec<(i64, String)> = g_state.borrow()
-                        .media_lib.as_ref()
-                        .and_then(|lib| lib.all_playlists().ok())
-                        .map(|v| v.into_iter().map(|p| (p.id, p.name)).collect())
-                        .unwrap_or_default();
-                    for (pid, name) in playlists {
-                        let btn = add_btn(&format!("  {name}"), &vbox);
-                        let pop_c = popover.clone();
-                        let et_c = g_et.clone();
-                        let st_c = g_state.clone();
-                        let pi_c = pick_idxs.clone();
-                        btn.connect_clicked(move |_| {
-                            pop_c.popdown();
-                            let paths: Vec<String> = {
-                                let et_b = et_c.borrow();
-                                pi_c().into_iter()
-                                    .filter_map(|i| et_b.get(i))
-                                    .map(|t| t.path.clone())
-                                    .collect()
-                            };
-                            if paths.is_empty() { return }
-                            let mut ok = false;
-                            if let Some(lib) = st_c.borrow().media_lib.as_ref() {
-                                match lib.append_paths_to_playlist(pid, &paths) {
-                                    Ok(_)  => ok = true,
-                                    Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
-                                }
-                            }
-                            if ok { notify_playlist_changed(pid); }
-                        });
-                    }
-
-                    // ── Send to Disc Drive section ---------------------
-                    // Flat list (no submenu) — matches this popover's own
-                    // idiom (see the Save-to-Playlist section above), and
-                    // Task 7's cached-list-only rule: only what current_drives
-                    // / current_devices already hold, never probed here.
-                    let drives_now: Vec<(String, String)> = g_drives.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect();
-                    if !drives_now.is_empty() {
-                        let sep = gtk4::Separator::new(Orientation::Horizontal);
-                        sep.set_margin_top(4);
-                        sep.set_margin_bottom(4);
-                        vbox.append(&sep);
-                        let header = Label::builder()
-                            .label("Send to Disc Drive")
-                            .halign(Align::Start)
-                            .margin_start(8)
-                            .build();
-                        header.add_css_class("dim-label");
-                        vbox.append(&header);
-                        for (id, label) in drives_now {
-                            let btn = add_btn(&format!("  {label}"), &vbox);
-                            let pop_c = popover.clone();
-                            let et_c = g_et.clone();
-                            let pi_c = pick_idxs.clone();
-                            let paths_holder = g_ed_paths.clone();
-                            let action = g_ed_drive_act.clone();
-                            let drive_id = id.clone();
-                            btn.connect_clicked(move |_| {
-                                pop_c.popdown();
-                                let paths: Vec<std::path::PathBuf> = {
-                                    let et_b = et_c.borrow();
-                                    pi_c().into_iter()
-                                        .filter_map(|i| et_b.get(i))
-                                        .map(|t| std::path::PathBuf::from(&t.path))
-                                        .collect()
-                                };
-                                if paths.is_empty() { return }
-                                *paths_holder.borrow_mut() = paths;
-                                action.activate(Some(&drive_id.to_variant()));
-                            });
-                        }
-                    }
-
-                    // ── Send to Removable Device section -----------------
-                    let devices_now: Vec<(String, String)> = g_devices.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect();
-                    if !devices_now.is_empty() {
-                        let sep = gtk4::Separator::new(Orientation::Horizontal);
-                        sep.set_margin_top(4);
-                        sep.set_margin_bottom(4);
-                        vbox.append(&sep);
-                        let header = Label::builder()
-                            .label("Send to Removable Device")
-                            .halign(Align::Start)
-                            .margin_start(8)
-                            .build();
-                        header.add_css_class("dim-label");
-                        vbox.append(&header);
-                        for (id, label) in devices_now {
-                            let btn = add_btn(&format!("  {label}"), &vbox);
-                            let pop_c = popover.clone();
-                            let et_c = g_et.clone();
-                            let pi_c = pick_idxs.clone();
-                            let paths_holder = g_ed_paths.clone();
-                            let action = g_ed_device_act.clone();
-                            let dev_id = id.clone();
-                            btn.connect_clicked(move |_| {
-                                pop_c.popdown();
-                                let paths: Vec<std::path::PathBuf> = {
-                                    let et_b = et_c.borrow();
-                                    pi_c().into_iter()
-                                        .filter_map(|i| et_b.get(i))
-                                        .map(|t| std::path::PathBuf::from(&t.path))
-                                        .collect()
-                                };
-                                if paths.is_empty() { return }
-                                *paths_holder.borrow_mut() = paths;
-                                action.activate(Some(&dev_id.to_variant()));
-                            });
-                        }
-                    }
-
-                    // Wrap in scrolling container so many playlists fit.
-                    let menu_scroll = gtk4::ScrolledWindow::builder()
-                        .hscrollbar_policy(PolicyType::Never)
-                        .vscrollbar_policy(PolicyType::Automatic)
-                        .min_content_width(260)
-                        .max_content_height(420)
-                        .propagate_natural_height(true)
-                        .child(&vbox)
-                        .build();
-                    popover.set_child(Some(&menu_scroll));
-
-                    // Parent on track_list (ColumnView) — stable.  Plain
-                    // popover with size_request renders for both single
-                    // and multi-select cases.
-                    let parent_widget: gtk4::Widget = (*g_tl).clone().upcast();
+                    let popover = gtk4::PopoverMenu::from_model_full(
+                        &menu,
+                        gtk4::PopoverMenuFlags::NESTED,
+                    );
+                    // Defense in depth: also install the group directly on
+                    // the popup itself, not just on `scroll_widget` — see
+                    // the comment above `ed_ctx_indices` for the GTK4
+                    // NESTED-flag ancestor-walk bug this sidesteps.
+                    popover.insert_action_group("ed", Some(&g_ed_group));
                     let (px, py) = g_lbl
-                        .translate_coordinates(&parent_widget, x, y)
+                        .translate_coordinates(&scroll_widget, x, y)
                         .unwrap_or((x, y));
                     let rect = gtk4::gdk::Rectangle::new(px as i32, py as i32, 1, 1);
-                    popover.set_parent(&parent_widget);
+                    popover.set_parent(&scroll_widget);
                     popover.set_pointing_to(Some(&rect));
-
                     popover.connect_closed(|p| p.unparent());
                     popover.popup();
-                    let _ = g;
-                    let _ = g_scroll;
-                    let _ = g_act;
+                    g.set_state(gtk4::EventSequenceState::Claimed);
                 });
                 lbl.add_controller(gesture);
 
@@ -6308,6 +6204,12 @@ fn open_media_library_window(
         // Expose track_scroll so cell right-click popovers can parent
         // themselves to it (parented-to-leaf popovers don't render).
         *track_scroll_holder.borrow_mut() = Some(track_scroll.clone());
+        // Install the "ed" action group ONCE on this stable ScrolledWindow —
+        // mirrors dev_tracks_scroll.insert_action_group("dev", ...) in the
+        // device-tracks view. The per-cell PopoverMenu is parented here too
+        // (see the per-cell gesture), so action lookup never has to walk
+        // more than zero ancestors.
+        track_scroll.insert_action_group("ed", Some(&ed_action_group));
 
         // Delete key on the editor's ColumnView removes the selected
         // rows from the playlist (canonical play order) and rewrites
