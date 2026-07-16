@@ -3925,6 +3925,13 @@ fn open_media_library_window(
             .label("Send to ▾")
             .build();
         btn_send_to.add_css_class("pl-btn");
+        // Install "ml" directly on the button. Window-level alone enabled the
+        // top-level items but the NESTED submenu popovers (Saved Playlist ▸,
+        // Disc Drive ▸) resolve actions against the button's own popover
+        // chain, so their items didn't dispatch until the group sits on the
+        // button itself — the closest ancestor of every nested popover
+        // (2026-07-16).
+        btn_send_to.insert_action_group("ml", Some(&ml_action_group));
         let btn_customize = Button::with_label("⚙ Columns");
         btn_customize.add_css_class("pl-btn");
         let btn_add_folder = Button::with_label("+ Add Folder");
@@ -4529,13 +4536,8 @@ fn open_media_library_window(
         let paths_src = ed_send_paths.clone();
         let win_wk = win.downgrade();
         ed_action_drive.connect_activate(move |_, target| {
-            let drive_id = target.and_then(|v| v.get::<String>());
+            let Some(drive_id) = target.and_then(|v| v.get::<String>()) else { return };
             let paths: Vec<_> = paths_src.borrow().clone();
-            eprintln!(
-                "[sparkamp-dbg] ed.send-drive fired: target={:?} paths={}",
-                drive_id, paths.len()
-            );
-            let Some(drive_id) = drive_id else { return };
             if paths.is_empty() {
                 return;
             }
@@ -8349,7 +8351,13 @@ fn open_media_library_window(
                 // overview, and say so in the dismissible banner instead of
                 // silently dropping out. In-flight subprocess ops die with
                 // the device (unchanged).
-                if let Some(sel) = selected_disc_id.borrow().clone() {
+                // Snapshot the selected drive id ONCE. Holding a borrow on
+                // selected_disc_id across sidebar.select_row() below would
+                // re-enter connect_row_selected (which borrow_muts the same
+                // cell) and abort with "RefCell already borrowed" — hit live
+                // when hot-plugging a drive (2026-07-16).
+                let sel_now = selected_disc_id.borrow().clone();
+                if let Some(sel) = sel_now.clone() {
                     if !drives.iter().any(|d| d.id == sel) {
                         entries_store.borrow_mut().clear();
                         disconnect_lbl.set_text(
@@ -8366,9 +8374,7 @@ fn open_media_library_window(
                 // otherwise it keeps showing the previous disc's tracks.
                 // Unchanged drives skip this so the 10 s poll never disturbs
                 // the user's row selection.
-                let detail_update: Option<crate::disc::OpticalDrive> = selected_disc_id
-                    .borrow()
-                    .clone()
+                let detail_update: Option<crate::disc::OpticalDrive> = sel_now
                     .and_then(|sel| {
                         let new_d = drives.iter().find(|d| d.id == sel).cloned()?;
                         let old_d = current_drives
@@ -8394,7 +8400,11 @@ fn open_media_library_window(
                 // id — jump to it now that its sidebar row exists. A request
                 // whose drive this refresh doesn't know is dropped (the disc
                 // was pulled again); the watcher parks a fresh one next time.
-                if let Some(id) = state.borrow_mut().pending_disc_nav.take() {
+                // Take the parked nav id out BEFORE select_row so the state
+                // borrow doesn't span the row-selected callback (same
+                // re-entrancy hazard as the disconnect path above).
+                let pending_nav = state.borrow_mut().pending_disc_nav.take();
+                if let Some(id) = pending_nav {
                     if let Some(r) = find_row_by_name(&sidebar, &format!("disc:{id}")) {
                         sidebar.select_row(Some(&r));
                     }
