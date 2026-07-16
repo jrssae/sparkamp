@@ -289,6 +289,13 @@ pub fn request_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
 
+/// Disambiguates the per-run log file (see `log_path` below) when more than
+/// one `run_tool_streaming` call is in flight in this process at once — e.g.
+/// under `cargo test`'s parallel test threads, where several tests may run
+/// the same `program` (`sh`) concurrently. Without this, PID + program name
+/// alone collide and two runs' output gets interleaved into the same file.
+static RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Run a burn/erase tool to completion. Polls every 200 ms for exit or a
 /// cancel request (cancel kills the child and reports it). Output is judged by
 /// [`interpret_exit`] — for most tools the exit status, but drutil needs its
@@ -336,10 +343,12 @@ fn run_tool_streaming_with_timeout(
 
     CANCEL.store(false, Ordering::Relaxed);
 
+    let seq = RUN_SEQ.fetch_add(1, Ordering::Relaxed);
     let log_path = std::env::temp_dir().join(format!(
-        "sparkamp-burn-{}-{}.log",
+        "sparkamp-burn-{}-{}-{}.log",
         std::process::id(),
-        program
+        program,
+        seq
     ));
     let log = std::fs::File::create(&log_path).map_err(|e| format!("{program}: {e}"))?;
     let log_err = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
@@ -361,16 +370,28 @@ fn run_tool_streaming_with_timeout(
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = std::thread::spawn(move || {
         let mut buf = BufReader::new(stdout);
-        let mut line = String::new();
+        let mut line = Vec::new();
         loop {
             line.clear();
-            match buf.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
+            match buf.read_until(b'\n', &mut line) {
+                // EOF: the child closed its stdout (exited, or the pipe was
+                // torn down). This is the only condition that ends the loop
+                // on a clean read.
+                Ok(0) => break,
+                // Byte-transparent tee: decode lossily (invalid UTF-8 becomes
+                // U+FFFD) rather than dropping the line — the old
+                // kernel-redirect was byte-transparent, and `interpret_exit`'s
+                // error tail needs every line the tool wrote, even ones a
+                // buggy tool emits as non-UTF-8 garbage.
                 Ok(_) => {
-                    let text = line.trim_end_matches(['\n', '\r']);
+                    let text = String::from_utf8_lossy(&line);
+                    let text = text.trim_end_matches(['\n', '\r']);
                     let _ = writeln!(log_out, "{text}");
                     on_line(text);
                 }
+                // A real IO error reading the pipe (distinct from EOF above)
+                // — nothing more to read either way, so stop.
+                Err(_) => break,
             }
         }
     });
@@ -1104,6 +1125,47 @@ mod tests {
         let res = handle.join().unwrap();
         assert_eq!(res.unwrap_err(), "cancelled");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn run_tool_streaming_tees_lines_in_order() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let collected = lines.clone();
+        let res = run_tool_streaming(
+            "sh",
+            &["-c".into(), "printf 'a\\nb\\n'".into()],
+            move |line: &str| collected.lock().unwrap().push(line.to_string()),
+        );
+        assert!(res.is_ok(), "{res:?}");
+        assert_eq!(
+            *lines.lock().unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    /// Invalid UTF-8 mid-stream must not truncate the tee: the old
+    /// `read_line`-based reader treated a decode error as EOF and silently
+    /// dropped everything after it — including from the log file
+    /// `interpret_exit` reads back for failure diagnostics. The reader now
+    /// tees raw bytes lossily, so every line (valid or not) still reaches
+    /// `on_line`, and lines after the bad one are never lost.
+    #[test]
+    fn run_tool_streaming_lossy_on_invalid_utf8() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let collected = lines.clone();
+        let res = run_tool_streaming(
+            "sh",
+            &[
+                "-c".into(),
+                "printf 'ok\\n\\xff\\xfe bad\\nafter\\n'".into(),
+            ],
+            move |line: &str| collected.lock().unwrap().push(line.to_string()),
+        );
+        assert!(res.is_ok(), "{res:?}");
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0], "ok");
+        assert_eq!(lines[2], "after");
     }
 
     /// drutil exits 0 even when a burn fails, printing "Burn failed: …" instead.
