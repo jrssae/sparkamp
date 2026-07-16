@@ -3295,6 +3295,7 @@ fn open_media_library_window(
         // Append currently selected ML file paths to the chosen saved playlist.
         let ml_action_add_state = state.clone();
         let ml_action_add_tracks = ml_selected_tracks.clone();
+        let ml_action_add_win = win.downgrade();
         let action_add_to_saved = gio::SimpleAction::new(
             "add-to-saved",
             Some(glib::VariantTy::INT64),
@@ -3307,13 +3308,23 @@ fn open_media_library_window(
                 .collect();
             if paths.is_empty() { return }
             let mut ok = false;
+            let mut err_msg: Option<String> = None;
             if let Some(lib) = ml_action_add_state.borrow().media_lib.as_ref() {
                 match lib.append_paths_to_playlist(pid, &paths) {
                     Ok(_)  => ok = true,
-                    Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
+                    // Surface the failure instead of only logging it — e.g.
+                    // a read-only playlist folder must not fail silently.
+                    Err(e) => err_msg = Some(format!("Couldn't save to the playlist:\n{e}")),
                 }
             }
-            if ok { notify_playlist_changed(pid); }
+            if ok {
+                notify_playlist_changed(pid);
+            } else if let Some(msg) = err_msg {
+                show_alert_parented(
+                    ml_action_add_win.upgrade().as_ref(),
+                    &gtk_safe(&msg),
+                );
+            }
         });
         ml_action_group.add_action(&action_add_to_saved);
 
