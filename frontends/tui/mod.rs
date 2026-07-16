@@ -198,16 +198,59 @@ pub struct BurnSetupState {
     /// Set when the loaded disc needs an erase: the overlay shows the
     /// destroy-contents prompt and only `y` proceeds.
     pub confirm_erase: bool,
+    /// Which CD-TEXT field (if any) is capturing typed characters — `a`
+    /// starts editing the disc artist, `l` the disc album, Enter/Esc ends
+    /// either. `None` while browsing the overlay normally. There's no
+    /// separate text buffer: the field being typed into reads/writes
+    /// straight through `BurnList::{effective_meta, meta_override}` (see
+    /// `handle_burn_setup_key`), so it always starts from — and immediately
+    /// reflects — the same value the overlay renders.
+    pub editing_meta: Option<MetaField>,
+}
+
+/// The two CD-TEXT fields the burn overlay makes editable (Task 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaField {
+    Artist,
+    Album,
 }
 
 /// Progress/result of a background burn, delivered to the tick loop.
 pub enum BurnMsg {
-    /// Structured phase — `label` is the human-readable phase text
-    /// ("Preparing 2/5 · …", "Burning…") this UI still renders; `fraction`
-    /// is unused here until Task 10 wires a progress bar.
+    /// Structured phase: `label` is the human-readable phase text
+    /// ("Preparing 2/5 · …", "Burning…"); `fraction` (0.0..=1.0), when
+    /// present, drives the overlay's text progress bar — see
+    /// `render_progress_line`.
     Progress(crate::disc::burn::BurnProgress),
     /// Finished: Ok(summary) or Err(reason).
     Done(Result<String, String>),
+}
+
+/// Render a burn phase as one status-line string: a determinate `fraction`
+/// becomes a fixed-width text bar (`[########------------] 40%`); `None`
+/// (indeterminate phases — erasing, or a burn phase before its first
+/// progress line arrives) becomes a spinner character that advances with
+/// `tick`, the free-running per-tick counter (`App::anim_tick`, one tick per
+/// ~100 ms `tick()` call) so the phase visibly animates instead of sitting
+/// frozen. Pure function — no `App`/terminal state — so
+/// `frontends/tui/tests/burn.rs` exercises it directly.
+pub fn render_progress_line(p: &crate::disc::burn::BurnProgress, tick: usize) -> String {
+    const BAR_WIDTH: usize = 20;
+    const SPINNER: [char; 4] = ['-', '\\', '|', '/'];
+    match p.fraction {
+        Some(frac) => {
+            let frac = frac.clamp(0.0, 1.0);
+            let filled = ((frac * BAR_WIDTH as f32).round() as usize).min(BAR_WIDTH);
+            format!(
+                "{} [{}{}] {:>3.0}%",
+                p.label,
+                "#".repeat(filled),
+                "-".repeat(BAR_WIDTH - filled),
+                frac * 100.0
+            )
+        }
+        None => format!("{} {}", p.label, SPINNER[tick % SPINNER.len()]),
+    }
 }
 
 /// State of the rip-setup overlay (Discs tab, `g`).
@@ -410,6 +453,13 @@ pub struct App {
     /// wasn't showing — lookups keep running in the background, and the
     /// picker re-opens from here on the next Discs-tab visit.
     pub pending_disc_matches: Option<Vec<crate::disc::gnudb::DiscMatch>>,
+    /// Per-drive media fingerprint (`disc::detect::media_fingerprint`) as of
+    /// the last `refresh_ml_drives` poll. Compared against the fresh fetch
+    /// on the next poll so the shown drive's `disc_entries` (and the
+    /// highlighted track) are only rebuilt when the disc actually changed —
+    /// mirrors the GTK auto-refresh poll (Phase-2 Task 3), on the TUI's own
+    /// refresh cadence (Discs-tab entry + explicit `r`, no background timer).
+    pub disc_fingerprints: std::collections::HashMap<String, u64>,
     /// Receiver for an in-flight background rip, drained by tick().
     disc_rip: Option<mpsc::Receiver<RipMsg>>,
     /// Cancel flag for the running rip (stops after the current track).
@@ -425,8 +475,12 @@ pub struct App {
     /// Cancel flag for the burn's prepare loop (the erase/burn subprocess is
     /// killed through `disc::burn::request_cancel`).
     burn_prep_cancel: Option<Arc<AtomicBool>>,
-    /// Burn phase for the hint line ("Preparing 2/5 · …", "Burning…").
-    pub burn_phase: Option<String>,
+    /// Burn phase for the hint line — label plus an optional fraction the
+    /// overlay renders as a text progress bar (`render_progress_line`).
+    pub burn_phase: Option<crate::disc::burn::BurnProgress>,
+    /// Free-running per-tick counter (one per `tick()`, ~100 ms), sampled by
+    /// `render_progress_line` to advance the indeterminate-phase spinner.
+    pub anim_tick: usize,
 }
 
 impl App {
@@ -524,6 +578,7 @@ impl App {
             disc_official,
             disc_lookup: None,
             pending_disc_matches: None,
+            disc_fingerprints: std::collections::HashMap::new(),
             disc_rip: None,
             rip_cancel: None,
             rip_progress: None,
@@ -531,6 +586,7 @@ impl App {
             disc_burn: None,
             burn_prep_cancel: None,
             burn_phase: None,
+            anim_tick: 0,
         })
     }
 
@@ -782,6 +838,11 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub fn tick(&mut self) {
+        // 0. Advance the free-running animation tick (burn-overlay spinner —
+        // render_progress_line). Wrapping: only ever read mod a tiny spinner
+        // length, so overflow is harmless.
+        self.anim_tick = self.anim_tick.wrapping_add(1);
+
         // 1. Async probe results — drain into a batch, then apply in ONE
         // playlist pass. A per-result pass was O(rows × results) and stalled
         // the tick while a big folder's probes flooded in; the batch also

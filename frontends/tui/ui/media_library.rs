@@ -25,8 +25,9 @@ pub(super) fn draw_media_library(
     state: &MediaLibraryState,
     toast: Option<&str>,
     rip_progress: Option<&(usize, usize, String, f64)>,
-    burn_phase: Option<&str>,
+    burn_phase: Option<&crate::disc::burn::BurnProgress>,
     burn_list: &crate::disc::burnlist::BurnList,
+    tick: usize,
     area: Rect,
 ) {
     // Erase the player/playlist underneath so there are no legibility issues.
@@ -128,9 +129,9 @@ pub(super) fn draw_media_library(
 
     // Hint / toast bar — a running burn/rip's progress wins, then status
     // messages, then the per-tab key hints.
-    let hint_line = if let Some(phase) = burn_phase {
+    let hint_line = if let Some(progress) = burn_phase {
         Line::from(Span::styled(
-            format!("{phase} — c: cancel"),
+            format!("{} — c: cancel", render_progress_line(progress, tick)),
             Style::default().fg(C_PLAYING),
         ))
     } else if let Some((i, n, title, frac)) = rip_progress {
@@ -231,8 +232,10 @@ fn draw_burn_setup(
     area: Rect,
 ) {
     let w = area.width.saturating_sub(6).min(72).max(44);
-    let rows = list.len() as u16 + 5;
-    let h = rows.min(area.height.saturating_sub(2)).max(8);
+    // +5 for mode/blank/hints as before, +2 for the disc artist/album lines
+    // (Task 10).
+    let rows = list.len() as u16 + 7;
+    let h = rows.min(area.height.saturating_sub(2)).max(10);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + (area.height.saturating_sub(h)) / 2,
@@ -242,16 +245,19 @@ fn draw_burn_setup(
     frame.render_widget(Clear, rect);
     let title = if burn.confirm_erase {
         " ERASE DISC? contents are destroyed — y: erase & burn · other: back "
+    } else if burn.editing_meta.is_some() {
+        " Editing disc metadata — Enter/Esc: done "
     } else {
-        " Burn — t: audio/data · x: remove · [ ]: reorder · Enter: start · Esc "
+        " Burn — t: audio/data · a/l: artist/album · x: remove · [ ]: reorder · Enter: start · Esc "
     };
+    let highlighted = burn.confirm_erase || burn.editing_meta.is_some();
     let block = Block::default()
         .title(Span::styled(
             title,
-            Style::default().fg(if burn.confirm_erase { C_WARN } else { C_ACCENT }),
+            Style::default().fg(if highlighted { C_WARN } else { C_ACCENT }),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if burn.confirm_erase { C_WARN } else { C_ACCENT }));
+        .border_style(Style::default().fg(if highlighted { C_WARN } else { C_ACCENT }));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -271,8 +277,36 @@ fn draw_burn_setup(
     } else {
         format!("Mode: DATA DISC — {mb} MB queued")
     };
+    // Disc artist/album (CD-TEXT, audio burns): always shows the queue's
+    // effective metadata — the override once the user has typed one, else
+    // the computed default — same read used at burn time
+    // (`BurnList::effective_meta`, wired into `run_job` since Task 6). While
+    // a field is being edited its line gets the `|` cursor the app's other
+    // text-input overlays (add-path, search, rip destination) already use.
+    let meta = list.effective_meta();
+    let artist_editing = burn.editing_meta == Some(MetaField::Artist);
+    let album_editing = burn.editing_meta == Some(MetaField::Album);
+    let artist_line = if artist_editing {
+        format!("Disc artist: {}|", meta.artist)
+    } else {
+        format!("Disc artist: {}", meta.artist)
+    };
+    let album_line = if album_editing {
+        format!("Disc album:  {}|", meta.album)
+    } else {
+        format!("Disc album:  {}", meta.album)
+    };
+    let field_style = |editing: bool| {
+        if editing {
+            Style::default().fg(C_WARN)
+        } else {
+            Style::default().fg(C_TEXT)
+        }
+    };
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(mode, Style::default().fg(C_TEXT))),
+        Line::from(Span::styled(artist_line, field_style(artist_editing))),
+        Line::from(Span::styled(album_line, field_style(album_editing))),
         Line::from(""),
     ];
     for (i, item) in list.items.iter().enumerate() {

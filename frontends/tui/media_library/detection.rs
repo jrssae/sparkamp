@@ -31,6 +31,32 @@ impl App {
             .as_ref()
             .map(|id| !drives.iter().any(|d| &d.id == id))
             .unwrap_or(false);
+
+        // Auto-refresh (Task 10, mirrors the GTK poll from Phase-2 Task 3):
+        // only rebuild disc_entries when the shown drive's media fingerprint
+        // actually changed since the last poll — an unchanged disc keeps its
+        // entries and highlighted track exactly as the user left them, so a
+        // no-op `r` (or, in future, a periodic poll) never resets the
+        // selection. No prior fingerprint (first visit this session) always
+        // rebuilds.
+        let entries_stale = match &prev_selected_id {
+            Some(id) => drives
+                .iter()
+                .find(|d| &d.id == id)
+                .map(|d| {
+                    let new_fp = crate::disc::detect::media_fingerprint(d);
+                    Some(new_fp) != self.disc_fingerprints.get(id).copied()
+                })
+                .unwrap_or(true),
+            None => true,
+        };
+        // Snapshot fingerprints for every attached drive before `drives`
+        // moves into `s.drives` below — next poll compares against these.
+        self.disc_fingerprints = drives
+            .iter()
+            .map(|d| (d.id.clone(), crate::disc::detect::media_fingerprint(d)))
+            .collect();
+
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.selected_drive = s.selected_drive.min(drives.len().saturating_sub(1));
             s.drives = drives;
@@ -45,8 +71,10 @@ impl App {
             self.set_status("Drive disconnected — reconnect and reload (r)");
             return;
         }
-        // Rebuild disc_entries for the current selection.
-        self.reload_ml_disc_entries();
+        // Rebuild disc_entries only when the shown drive's disc changed.
+        if entries_stale {
+            self.reload_ml_disc_entries();
+        }
         let n = if let Mode::MediaLibrary(s) = &self.mode {
             s.drives.len()
         } else {

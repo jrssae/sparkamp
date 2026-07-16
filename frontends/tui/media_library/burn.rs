@@ -114,12 +114,14 @@ impl App {
                 cursor: 0,
                 audio: true,
                 confirm_erase: false,
+                editing_meta: None,
             });
         }
     }
 
     /// Keys in the burn overlay: ↑/↓ move, x remove, t toggle audio/data,
-    /// Enter start (or confirm the erase prompt with y), Esc close.
+    /// a/l edit disc artist/album, Enter start (or confirm the erase prompt
+    /// with y), Esc close.
     pub(super) fn handle_burn_setup_key(&mut self, code: KeyCode) {
         let mut start: Option<bool> = None; // Some(audio_mode) when confirmed
         if let Mode::MediaLibrary(s) = &mut self.mode {
@@ -142,6 +144,39 @@ impl App {
                         // Anything else backs out of the destructive step.
                         burn.confirm_erase = false;
                     }
+                }
+            } else if let Some(field) = burn.editing_meta {
+                // Disc artist/album text input — modeled on the rip overlay's
+                // `editing_dest` (frontends/tui/media_library/rip.rs). There's
+                // no separate buffer: each keystroke reads the queue's
+                // current effective (override-or-default) metadata, edits the
+                // one field being typed into, and writes both fields back as
+                // the override — same "an edit overrides both together"
+                // choice the GTK burn panel made, so a partial edit never
+                // reads back through a stale default for the other field.
+                match code {
+                    KeyCode::Enter | KeyCode::Esc => burn.editing_meta = None,
+                    KeyCode::Backspace => {
+                        let mut meta = self.burn_queues.queue(&drive_id).effective_meta();
+                        match field {
+                            super::super::MetaField::Artist => {
+                                meta.artist.pop();
+                            }
+                            super::super::MetaField::Album => {
+                                meta.album.pop();
+                            }
+                        }
+                        self.burn_queues.queue(&drive_id).meta_override = Some(meta);
+                    }
+                    KeyCode::Char(ch) => {
+                        let mut meta = self.burn_queues.queue(&drive_id).effective_meta();
+                        match field {
+                            super::super::MetaField::Artist => meta.artist.push(ch),
+                            super::super::MetaField::Album => meta.album.push(ch),
+                        }
+                        self.burn_queues.queue(&drive_id).meta_override = Some(meta);
+                    }
+                    _ => {}
                 }
             } else {
                 match code {
@@ -177,6 +212,12 @@ impl App {
                         }
                     }
                     KeyCode::Char('t') | KeyCode::Char('T') => burn.audio = !burn.audio,
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        burn.editing_meta = Some(super::super::MetaField::Artist);
+                    }
+                    KeyCode::Char('l') | KeyCode::Char('L') => {
+                        burn.editing_meta = Some(super::super::MetaField::Album);
+                    }
                     KeyCode::Enter => {
                         // Erase-needed media asks for the explicit yes first.
                         let needs_confirm = s
@@ -256,7 +297,10 @@ impl App {
         self.burn_prep_cancel = Some(cancel.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         self.disc_burn = Some(rx);
-        self.burn_phase = Some("Starting…".to_string());
+        self.burn_phase = Some(crate::disc::burn::BurnProgress {
+            label: "Starting…".to_string(),
+            fraction: None,
+        });
 
         std::thread::spawn(move || {
             // The whole orchestration (staging, erase, prep, burn, cache
@@ -287,7 +331,7 @@ impl App {
     /// Apply a burn progress/result message (called from the tick loop).
     pub(crate) fn handle_burn_msg(&mut self, msg: super::super::BurnMsg) {
         match msg {
-            super::super::BurnMsg::Progress(p) => self.burn_phase = Some(p.label),
+            super::super::BurnMsg::Progress(p) => self.burn_phase = Some(p),
             super::super::BurnMsg::Done(result) => {
                 self.disc_burn = None;
                 self.burn_prep_cancel = None;
