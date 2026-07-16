@@ -8,11 +8,9 @@
 //! like the external-device browser does.
 //!
 //! Linux-only: `zbus`/udisks2 has no macOS equivalent (macOS auto-mounts data
-//! discs, so no explicit mount call is needed there), and the only in-crate
-//! caller is the GTK frontend (also Linux-only). Until that caller lands
-//! (Task 9) this module has no caller outside its own tests, hence the
-//! module-wide dead-code allow (mirrors `devices::detect`/`devices::browse`).
-#![allow(dead_code)]
+//! discs, so no explicit mount call is needed there). The GTK frontend (also
+//! Linux-only, Task 9) is the in-crate caller — the data-disc browse/play/
+//! import view in the disc drive detail.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,6 +26,7 @@ const FILESYSTEM_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
 const MAX_DEPTH: u8 = 5;
 
 /// One audio file found on a mounted disc, ready for the burn/import UI.
+#[derive(Clone)]
 pub struct DiscFile {
     pub path: PathBuf,
     pub display: String,

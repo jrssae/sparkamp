@@ -62,7 +62,7 @@ pub(super) fn selected_disc_discid(
 }
 
 /// The watched library folder paths (empty when no library is open).
-fn watched_folders(state: &Rc<RefCell<AppState>>) -> Vec<String> {
+pub(super) fn watched_folders(state: &Rc<RefCell<AppState>>) -> Vec<String> {
     state
         .borrow()
         .media_lib
