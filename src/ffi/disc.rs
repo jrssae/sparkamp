@@ -479,6 +479,22 @@ struct BurnRunIn {
     use_m3u: bool,
     erase_first: bool,
     verify: bool,
+    /// Disc-level CD-TEXT artist/album for an audio burn (Task 11) — the mac
+    /// burn panel's editable "Disc artist"/"Disc album" fields, defaulted
+    /// client-side via `sparkamp_disc_default_meta`. `None`/absent skips
+    /// CD-TEXT (matches pre-Task-11 behavior); data burns ignore both fields
+    /// regardless of what's sent.
+    ///
+    /// MAC GAP: `drutil` (macOS's burn backend, see `burn::burn_audio`'s doc
+    /// comment) has no CD-TEXT/v07t input — a mac burn stays untitled no
+    /// matter what's sent here. These fields exist only so the UX (the
+    /// editable fields themselves, kept in sync with the queue) matches the
+    /// GTK/Linux burn panel; the v07t sheet they build only takes effect on
+    /// the Linux `cdrskin` backend.
+    #[serde(default)]
+    disc_artist: Option<String>,
+    #[serde(default)]
+    disc_album: Option<String>,
 }
 
 /// One queued file: the path plus its "Artist - Title" display line for the
@@ -567,17 +583,22 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
                 use_m3u: job.use_m3u,
             }
         };
-        // No disc-metadata field on the FFI job yet, and macOS's `drutil`
-        // burn arm has no CD-TEXT input path regardless (see
-        // `burn::burn_audio`'s doc comment) — binding this over FFI is
-        // Task 11's mac gap, not this one.
+        // Audio mode only, and only when the caller sent both fields — data
+        // burns ignore disc-level metadata entirely (see BurnRunIn's doc).
+        let disc_meta = if job.audio {
+            job.disc_artist
+                .zip(job.disc_album)
+                .map(|(artist, album)| crate::disc::cdtext::DiscMeta { artist, album })
+        } else {
+            None
+        };
         let result = burn::run_job(
             &job.drive,
             &items,
             mode,
             job.erase_first,
             job.verify,
-            None,
+            disc_meta.as_ref(),
             &cancel,
             |p: burn::BurnProgress| {
                 let mut slot = BURN_JOB.lock().unwrap();
@@ -613,6 +634,82 @@ pub unsafe extern "C" fn sparkamp_disc_burn_cancel(_ctx: *mut SparkampCtx) {
         .cancel
         .store(true, std::sync::atomic::Ordering::Relaxed);
     crate::disc::burn::request_cancel();
+}
+
+/// One queued item's display line, for [`sparkamp_disc_default_meta`] — the
+/// only field `cdtext::default_disc_meta` reads (path/duration/bytes don't
+/// factor into the artist/album defaults).
+#[derive(serde::Deserialize)]
+struct DefaultMetaItemIn {
+    display: String,
+}
+
+/// Compute the disc-level CD-TEXT defaults the core burn job would use right
+/// now (`cdtext::default_disc_meta`: the common track artist when every
+/// queued item agrees, else "Various Artists"; album = "Sparkamp Disc
+/// YYYY-MM-DD") for a JSON array of queue display lines:
+/// `[{"display":"Artist - Title"}, …]`. Exposed so the mac burn panel's
+/// artist/album fields can prefill/refresh without reimplementing the
+/// consensus rule or the date format in Swift (Task 11 — see BurnRunIn's
+/// `disc_artist`/`disc_album` doc for how the result flows back into a burn).
+/// Returns `{"artist":"…","album":"…"}`. Pure — safe on any thread. Free
+/// with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_default_meta(
+    _ctx: *mut SparkampCtx,
+    items_json: *const c_char,
+) -> *mut c_char {
+    let items: Vec<DefaultMetaItemIn> = json_in(items_json).unwrap_or_default();
+    let burn_items: Vec<crate::disc::burnlist::BurnItem> = items
+        .into_iter()
+        .map(|i| crate::disc::burnlist::BurnItem {
+            path: std::path::PathBuf::new(),
+            display: i.display,
+            duration_secs: None,
+            bytes: 0,
+        })
+        .collect();
+    json_out(&crate::disc::cdtext::default_disc_meta(&burn_items))
+}
+
+/// List the audio files on a mounted data disc: JSON `[DiscFile]`
+/// (`{"path","display","duration_secs":u32|null,"bytes":u64}`), empty when
+/// unmounted/unreadable/not a data disc. Takes an `OpticalDrive` JSON from
+/// `sparkamp_disc_list_drives`.
+///
+/// On Linux this mounts the disc via udisks2 first (`mount::ensure_mounted`,
+/// under the same exclusive-read guard a TOC probe/rip uses — the whole call
+/// may spin the drive). On macOS the OS already auto-mounted the disc by the
+/// time it shows up in `sparkamp_disc_list_drives`'s `mount_path` (Task 11's
+/// `drutil status` + `mount`(8) resolution in `disc::detect`), so this just
+/// trusts that path — no extra mount step, and no zbus/udisks2 involved.
+///
+/// Runs on the calling thread and may block (disc IO + a tag read per file,
+/// like every `devices::browse` file walk) — background queue only, same as
+/// every other `sparkamp_disc_*` call. Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_mount_list(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+) -> *mut c_char {
+    let Some(drive): Option<OpticalDrive> = json_in(drive_json) else {
+        return json_out(&Vec::<crate::disc::mount::DiscFile>::new());
+    };
+
+    #[cfg(target_os = "linux")]
+    let mount_path = {
+        crate::disc::detect::set_exclusive_read(true);
+        let result = crate::disc::mount::ensure_mounted(&drive);
+        crate::disc::detect::set_exclusive_read(false);
+        result.ok()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mount_path = drive.mount_path.clone();
+
+    let files = mount_path
+        .map(|p| crate::disc::mount::list_disc_files(&p))
+        .unwrap_or_default();
+    json_out(&files)
 }
 
 /// The stored tag record for a disc: `{"user":XmcdEntry|null,

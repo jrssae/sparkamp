@@ -1,4 +1,4 @@
-//! Read-only mount + audio-file listing for data discs (Linux).
+//! Read-only mount + audio-file listing for data discs.
 //!
 //! [`ensure_mounted`] talks to the host udisks2 service over the **system**
 //! D-Bus — same connection/proxy pattern as [`crate::devices::detect`] — to
@@ -7,17 +7,27 @@
 //! [`crate::devices::browse::read_device_track`] for per-file tags exactly
 //! like the external-device browser does.
 //!
-//! Linux-only: `zbus`/udisks2 has no macOS equivalent (macOS auto-mounts data
-//! discs, so no explicit mount call is needed there). The GTK frontend (also
-//! Linux-only, Task 9) is the in-crate caller — the data-disc browse/play/
-//! import view in the disc drive detail.
+//! `ensure_mounted` is Linux-only: `zbus`/udisks2 has no macOS equivalent.
+//! macOS auto-mounts data discs itself (no explicit mount call needed there —
+//! `disc::detect`'s mac platform glue resolves the mount path from `mount`(8)
+//! once the disc is inserted, Task 11), so [`list_disc_files`] and [`DiscFile`]
+//! stay platform-neutral and callable directly against that path. Callers:
+//! the GTK frontend's data-disc browse/play/import view (Linux, Task 9, via
+//! `ensure_mounted` + `list_disc_files`) and `sparkamp_disc_mount_list`
+//! (`src/ffi/disc.rs`, mac, `list_disc_files` only — the OS already mounted
+//! it).
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+
+#[cfg(target_os = "linux")]
 use zbus::zvariant::Value;
 
+#[cfg(target_os = "linux")]
 const UDISKS: &str = "org.freedesktop.UDisks2";
+#[cfg(target_os = "linux")]
 const FILESYSTEM_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
 
 /// Recursive walk depth cap for [`list_disc_files`] (root = 0). Data discs
@@ -26,7 +36,9 @@ const FILESYSTEM_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
 const MAX_DEPTH: u8 = 5;
 
 /// One audio file found on a mounted disc, ready for the burn/import UI.
-#[derive(Clone)]
+/// `Serialize`s for the mac FFI (`sparkamp_disc_mount_list`); GTK (Linux)
+/// consumes it in-crate and never needs the JSON shape.
+#[derive(Clone, serde::Serialize)]
 pub struct DiscFile {
     pub path: PathBuf,
     pub display: String,
@@ -50,6 +62,11 @@ pub struct DiscFile {
 /// context other disc reads use (see `disc::detect::set_exclusive_read`) —
 /// `ensure_mounted` does not take that guard itself; the GTK caller (Task 9)
 /// is responsible for wrapping it.
+///
+/// Linux-only (see the module doc): macOS never calls this — the OS mounts
+/// data discs itself, and `disc::detect`'s mac platform glue already resolves
+/// the mount path without a zbus round-trip.
+#[cfg(target_os = "linux")]
 pub fn ensure_mounted(drive: &super::OpticalDrive) -> Result<PathBuf, String> {
     let basename = Path::new(&drive.id)
         .file_name()
@@ -241,7 +258,8 @@ mod tests {
     /// audio files, and prints them. Run with
     /// `cargo test --lib live_disc_mount_and_list -- --ignored --nocapture`.
     /// Skips (prints + returns) when no disc is present; asserts non-empty
-    /// files when a data disc is loaded.
+    /// files when a data disc is loaded. Linux-only: exercises `ensure_mounted`.
+    #[cfg(target_os = "linux")]
     #[test]
     #[ignore]
     fn live_disc_mount_and_list() {

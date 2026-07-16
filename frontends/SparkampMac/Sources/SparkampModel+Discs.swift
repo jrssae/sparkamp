@@ -464,16 +464,41 @@ extension SparkampModel {
         burnQueues[driveId, default: []].remove(atOffsets: offsets)
     }
 
+    /// Clears the queue AND its disc-meta override — mirrors core
+    /// `BurnList::clear()`, which drops `meta_override` together with the
+    /// items so the fields fall back to fresh defaults on the next queue.
     func clearBurnList(driveId: String) {
         burnQueues[driveId] = []
+        burnMetaOverrides[driveId] = nil
     }
 
-    /// Drop queues for drives no longer attached — they'd otherwise linger
-    /// invisibly (no panel shows them). Mirrors the core's
-    /// `BurnQueues::remove_gone`; call after every drive-list poll.
+    /// Drop queues (and any disc-meta override) for drives no longer
+    /// attached — they'd otherwise linger invisibly (no panel shows them).
+    /// Mirrors the core's `BurnQueues::remove_gone`; call after every
+    /// drive-list poll.
     private func pruneBurnQueues() {
         let live = Set(discDrives.map(\.id))
         burnQueues = burnQueues.filter { live.contains($0.key) }
+        burnMetaOverrides = burnMetaOverrides.filter { live.contains($0.key) }
+    }
+
+    /// The disc-level artist/album for one drive's burn queue right now: the
+    /// user's override when they've edited the fields, else freshly computed
+    /// defaults from the queue's current items — mirrors core
+    /// `BurnList::effective_meta()`. Recomputed on every call (cheap, pure
+    /// FFI), so — unlike GTK's imperative sync-until-first-edit — the
+    /// SwiftUI burn panel just re-reads this on every render and it stays
+    /// live with the queue for free until an edit lands.
+    func burnMeta(for driveId: String) -> DiscMeta {
+        if let override = burnMetaOverrides[driveId] { return override }
+        return DiscService.defaultMeta(displays: burnQueue(for: driveId).map(\.display))
+    }
+
+    /// Record a user edit to one drive's disc artist/album; the override
+    /// sticks until `clearBurnList` (explicit Clear List, or a successful
+    /// burn) drops it, mirroring `BurnList.meta_override`'s lifetime.
+    func setBurnMeta(for driveId: String, artist: String, album: String) {
+        burnMetaOverrides[driveId] = DiscMeta(artist: artist, album: album)
     }
 
     /// Queue files for burning onto ONE drive's queue (dedup by path within
@@ -580,6 +605,8 @@ extension SparkampModel {
     private func startBurnJob(_ drive: OpticalDrive, audio: Bool, eraseFirst: Bool) {
         let items = burnQueue(for: drive.id)
         guard !items.isEmpty, burnPhase == nil, let ctx = ctx else { return }
+        // Audio only — data burns ignore both fields (see BurnRunJob's doc).
+        let meta = audio ? burnMeta(for: drive.id) : nil
         let job = DiscService.BurnRunJob(
             drive: drive,
             items: items.map { DiscService.BurnJobItem(path: $0.path, display: $0.display) },
@@ -587,12 +614,15 @@ extension SparkampModel {
             // The companion playlist follows the app-wide format setting.
             useM3u: sparkamp_get_playlist_format(ctx) == 1,
             eraseFirst: eraseFirst,
-            verify: sparkamp_get_burn_verify(ctx))
+            verify: sparkamp_get_burn_verify(ctx),
+            discArtist: meta?.artist,
+            discAlbum: meta?.album)
         guard DiscService.burnJobStart(job: job) else {
             discStatus = "Couldn't start the burn (is another burn running?)"
             return
         }
         burnPhase = "Starting…"
+        burnFraction = nil
         discStatus = nil
         let driveId = drive.id
 
@@ -606,6 +636,7 @@ extension SparkampModel {
             if let done = st.done {
                 timer.invalidate()
                 self.burnPhase = nil
+                self.burnFraction = nil
                 if done.ok {
                     self.discStatus = done.message
                     self.clearBurnList(driveId: driveId)
@@ -617,6 +648,7 @@ extension SparkampModel {
                 }
             } else if st.running {
                 self.burnPhase = st.phase
+                self.burnFraction = st.fraction
             }
         }
     }
@@ -636,10 +668,90 @@ extension SparkampModel {
             self.ejectingDiscs.remove(drive.id)
             if ok {
                 self.discTracks = []
+                self.discFiles = []
                 self.pollDiscDrives()
             } else {
                 self.discStatus = "Couldn't eject the disc"
             }
         }
+    }
+
+    // MARK: Data-disc file browsing (Task 11 — mirrors GTK's Task 9)
+
+    /// Load the audio files on a mounted data disc into `discFiles`
+    /// (background; empty when the drive holds no browsable data disc, or
+    /// nothing is mounted there yet — macOS auto-mounts on its own schedule,
+    /// so a disc can show `media.present` briefly before `mountPath` appears;
+    /// the view re-triggers this on `drive.mountPath` changing).
+    func loadDiscFiles(_ drive: OpticalDrive) {
+        guard !discFilesBusy else { return }
+        discFilesBusy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let files = DiscService.mountList(drive: drive)
+            DispatchQueue.main.async {
+                self.discFiles = files
+                self.discFilesBusy = false
+            }
+        }
+    }
+
+    /// Copy data-disc files into the first watched library folder, then
+    /// register the copies (mirrors GTK's `add_disc_files_to_library`:
+    /// `stage_data_files` + `add_files_to_library`). A straight
+    /// `mlAddFilesToLibrary(paths:)` on the disc paths would silently skip
+    /// every one of them — it only registers paths already under a watched
+    /// folder, and a disc's mount point never is one; the files would also
+    /// vanish from the library the moment the disc is ejected if it somehow
+    /// worked. Refuses up front with no watched folder to land in, same as
+    /// GTK. Collision-safe naming ("name (2).ext", …) mirrors core
+    /// `burn::stage_data_files`.
+    func addDiscFilesToLibrary(_ files: [DiscFile]) {
+        guard !files.isEmpty else { return }
+        guard let destDir = mlFolders.first else {
+            discStatus =
+                "Add a library folder first (Files → Add Folder) — nothing to import into."
+            return
+        }
+        discStatus = "Copying 1/\(files.count)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            var copiedPaths: [String] = []
+            var failed = 0
+            for f in files {
+                let srcURL = URL(fileURLWithPath: f.path)
+                let destURL = Self.collisionSafeDestination(
+                    dir: destDir, filename: srcURL.lastPathComponent)
+                do {
+                    try fm.copyItem(at: srcURL, to: destURL)
+                    copiedPaths.append(destURL.path)
+                } catch {
+                    failed += 1
+                }
+            }
+            DispatchQueue.main.async {
+                let imported = self.mlAddFilesToLibrary(paths: copiedPaths)
+                var msg = "Added \(imported) of \(files.count) to the library"
+                if failed > 0 { msg += " (\(failed) failed to copy)" }
+                self.discStatus = msg
+            }
+        }
+    }
+
+    /// A destination under `dir` for `filename` that doesn't collide with an
+    /// existing file: "name.ext", "name (2).ext", "name (3).ext", … — mirrors
+    /// core `burn::stage_data_files`'s collision suffixing so files with the
+    /// same name from different discs don't clobber each other.
+    private static func collisionSafeDestination(dir: String, filename: String) -> URL {
+        let base = URL(fileURLWithPath: dir)
+        let ext = (filename as NSString).pathExtension
+        let stem = (filename as NSString).deletingPathExtension
+        var candidate = base.appendingPathComponent(filename)
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let name = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
+            candidate = base.appendingPathComponent(name)
+            n += 1
+        }
+        return candidate
     }
 }

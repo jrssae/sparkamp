@@ -8,7 +8,7 @@
 //! | [`toc`]     | Duration math + playlist entries (AIFF paths / `cdda://`)  | tiny cfg split in `track_entries` |
 //! | [`discid`]  | freedb disc ID + `cddb query` args (pure)                  | none |
 //! | [`gnudb`]   | CDDB query/read/submit over HTTP (`minreq`)                | none |
-//! | [`mount`]   | Read-only data-disc mount (udisks2) + audio-file listing    | Linux-only (zbus/udisks2) |
+//! | [`mount`]   | Read-only data-disc mount (udisks2) + audio-file listing    | `ensure_mounted` is Linux-only (zbus/udisks2); the walk/list is platform-neutral — macOS calls it directly against the OS's auto-mount path (`OpticalDrive::mount_path`, Task 11) |
 //! | [`xmcd`]    | Entry parse/build + submission validation                  | none |
 //! | [`tagstore`]| Per-disc tag cache on disk (`disc_tags.toml`)              | none |
 //! | [`rip`]     | Track → tagged MP3 (GStreamer pipeline per track)          | source arm differs (AIFF vs `cdda`) |
@@ -46,9 +46,11 @@ pub mod cdtext;
 pub mod detect;
 pub mod discid;
 pub mod gnudb;
-// Read-only data-disc mount + audio-file listing over udisks2 (Linux-only —
-// the `zbus` dependency and the GTK caller (Task 9) are both Linux-gated).
-#[cfg(target_os = "linux")]
+// Read-only data-disc mount + audio-file listing. `ensure_mounted` (udisks2
+// via `zbus`) is Linux-only and cfg-gated inside the module; the walk/list
+// half is platform-neutral so the mac FFI (`sparkamp_disc_mount_list`, Task
+// 11) can call it directly against the OS's own auto-mount path without ever
+// touching zbus.
 pub mod mount;
 pub mod rip;
 pub mod tagstore;

@@ -179,6 +179,8 @@ struct DiscDriveView: View {
 
     @State private var selection: Set<Int> = []
     @State private var searchText = ""
+    /// Selected rows in `dataDiscView`'s file table (`DiscFile.id` = path).
+    @State private var discFilesSelection: Set<String> = []
     @State private var showTagEditor = false
     @State private var editTags = DiscTagSet()
     @State private var showSubmit = false
@@ -236,17 +238,29 @@ struct DiscDriveView: View {
                     .padding(.bottom, 8)
             }
             if let phase = model.burnPhase {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(phase)
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.playlistDurationText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Button("Cancel") { model.cancelBurn() }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 11))
+                // Determinate bar when the core reports a fraction for this
+                // phase (streamed cdrskin percent on Linux); indeterminate
+                // spinner otherwise (erase, xorriso, drutil — none report a
+                // percent) — same "label only, no bar" fallback the rip
+                // progress row above already uses for its own unknowns.
+                VStack(alignment: .leading, spacing: 3) {
+                    if let frac = model.burnFraction {
+                        ProgressView(value: frac, total: 1.0)
+                    }
+                    HStack(spacing: 8) {
+                        if model.burnFraction == nil {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(model.burnFraction.map { "\(phase) (\(Int($0 * 100))%)" } ?? phase)
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.playlistDurationText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Cancel") { model.cancelBurn() }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 11))
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
@@ -257,6 +271,14 @@ struct DiscDriveView: View {
                 trackTable
                 bottomBar
             } else if drive.media.present {
+                // A data disc's files are browsable in addition to (not
+                // instead of) the burn panel: a rewritable disc holding data
+                // can still be erased and reused, so the queue/erase/burn
+                // controls stay reachable underneath the file list.
+                if !drive.media.isBlank {
+                    dataDiscView
+                    Divider().background(theme.windowBorder)
+                }
                 burnPanel
             } else {
                 banner
@@ -264,16 +286,37 @@ struct DiscDriveView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.background)
-        .onAppear { model.loadDiscTracks(drive) }
+        .onAppear {
+            model.loadDiscTracks(drive)
+            if drive.media.present, !drive.media.isAudioCd, !drive.media.isBlank {
+                model.loadDiscFiles(drive)
+            }
+        }
         .onChange(of: drive.id) { _, _ in
             selection.removeAll()
             searchText = ""
+            discFilesSelection.removeAll()
             model.loadDiscTracks(drive)
+            model.discFiles = []
+            if drive.media.present, !drive.media.isAudioCd, !drive.media.isBlank {
+                model.loadDiscFiles(drive)
+            }
         }
         // Disc swapped/ejected under us — reload the entries.
         .onChange(of: drive.toc) { _, _ in
             selection.removeAll()
             model.loadDiscTracks(drive)
+        }
+        // The OS mounts a data disc asynchronously — `mountPath` can appear
+        // (or, on eject, disappear) after this view is already showing the
+        // drive; this is the fingerprint-equivalent auto-refresh for the
+        // data-disc file list (audio tracks refresh via `drive.toc` above).
+        .onChange(of: drive.mountPath) { _, _ in
+            if drive.media.present, !drive.media.isAudioCd, !drive.media.isBlank {
+                model.loadDiscFiles(drive)
+            } else {
+                model.discFiles = []
+            }
         }
         // gnudb offered several matches — let the user pick. Presented only
         // on the drive the lookup was for (results survive window close /
@@ -807,11 +850,122 @@ struct DiscDriveView: View {
         model.addDiscTracks(drive, entries: entries)
     }
 
+    // MARK: Data-disc file browsing (Task 11 — mirrors GTK's Task 9)
+
+    private func pathsFor(_ ids: Set<String>) -> [String] {
+        model.discFiles.filter { ids.contains($0.id) }.map(\.path)
+    }
+
+    /// Browsable file list for a non-blank, non-audio disc (a burned data
+    /// disc, or any pressed/appended data media) — shown above the burn
+    /// panel so its erase/reuse controls stay reachable for rewritable media.
+    /// "Add to Library" copies into the first watched folder first (files on
+    /// the disc's mount vanish on eject — see `addDiscFilesToLibrary`'s doc);
+    /// "Send to" reuses the same shared menu every other file view uses.
+    private var dataDiscView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Disc Files")
+                    .font(vars.bodyFont.weight(.semibold))
+                    .foregroundStyle(theme.playlistText)
+                if model.discFilesBusy {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                Text("\(model.discFiles.count) file\(model.discFiles.count == 1 ? "" : "s")")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            if model.discFiles.isEmpty {
+                Text(model.discFilesBusy ? "Reading disc…" : "No audio files found on this disc.")
+                    .font(vars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            } else {
+                Table(model.discFiles, selection: $discFilesSelection) {
+                    TableColumn("Title") { f in
+                        Text(f.display)
+                            .font(vars.bodyFont)
+                            .foregroundStyle(theme.playlistText)
+                    }
+                    TableColumn("Duration") { f in
+                        Text(f.durationText)
+                            .font(vars.bodyFont.monospacedDigit())
+                            .foregroundStyle(theme.playlistDurationText)
+                    }
+                    .width(min: 56, ideal: 70, max: 90)
+                    TableColumn("Size") { f in
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(f.bytes), countStyle: .file))
+                            .font(vars.bodyFont.monospacedDigit())
+                            .foregroundStyle(theme.playlistDurationText)
+                    }
+                    .width(min: 60, ideal: 80, max: 100)
+                }
+                .scrollContentBackground(.hidden)
+                .background(theme.lcdBackground)
+                .frame(minHeight: 120, maxHeight: 220)
+                .contextMenu(forSelectionType: String.self) { ids in
+                    Button("Add to Library") {
+                        model.addDiscFilesToLibrary(model.discFiles.filter { ids.contains($0.id) })
+                    }
+                    .disabled(ids.isEmpty)
+                    Menu("Send to") {
+                        SendToMenu(paths: pathsFor(ids))
+                    }
+                } primaryAction: { ids in
+                    // Double-click adds + plays — same replace/append +
+                    // autoplay semantics as any other ordinary file add.
+                    model.addFiles(pathsFor(ids).map { URL(fileURLWithPath: $0) })
+                }
+
+                HStack(spacing: 10) {
+                    Spacer()
+                    Button("Add Selected to Library") {
+                        model.addDiscFilesToLibrary(
+                            model.discFiles.filter { discFilesSelection.contains($0.id) })
+                    }
+                    .disabled(discFilesSelection.isEmpty)
+                    Button("Add All to Library") {
+                        model.addDiscFilesToLibrary(model.discFiles)
+                    }
+                    .disabled(model.discFiles.isEmpty)
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
     // MARK: Burn panel (blank / rewritable / data media)
 
     @State private var showEraseConfirm = false
     /// Which burn runs after the erase confirmation: true = audio.
     @State private var pendingBurnAudio = true
+
+    /// Disc-level artist/album fields, bound through `model.burnMeta(for:)` /
+    /// `setBurnMeta(for:artist:album:)` — reads the user's override when set,
+    /// else the live-computed default; any edit records an override that
+    /// sticks until the queue is cleared (see those functions' doc).
+    private var discArtistBinding: Binding<String> {
+        Binding(
+            get: { model.burnMeta(for: drive.id).artist },
+            set: { model.setBurnMeta(
+                for: drive.id, artist: $0, album: model.burnMeta(for: drive.id).album) }
+        )
+    }
+    private var discAlbumBinding: Binding<String> {
+        Binding(
+            get: { model.burnMeta(for: drive.id).album },
+            set: { model.setBurnMeta(
+                for: drive.id, artist: model.burnMeta(for: drive.id).artist, album: $0) }
+        )
+    }
 
     private var burnPanel: some View {
         // Only ever reads/writes THIS drive's queue — every other drive's
@@ -830,6 +984,26 @@ struct DiscDriveView: View {
             Text("Burn List")
                 .font(vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistText)
+
+            // Disc-level CD-TEXT for an audio burn (Task 11): synced to
+            // fresh defaults from the queue's current items until an edit
+            // lands (mirrors GTK's meta_override semantics via
+            // `model.burnMeta`/`setBurnMeta` — see those doc comments).
+            // MAC GAP: drutil has no CD-TEXT input, so these stay inert on
+            // an actual mac burn; kept only so the panel matches GTK's field
+            // for field (see `DiscMeta`'s doc for the full explanation).
+            HStack(spacing: 8) {
+                Text("Disc artist")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+                TextField("", text: discArtistBinding)
+                    .textFieldStyle(.roundedBorder)
+                Text("Disc album")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+                TextField("", text: discAlbumBinding)
+                    .textFieldStyle(.roundedBorder)
+            }
 
             if queue.isEmpty {
                 Text("Queue tracks from the Media Library: right-click → Send to ▸ Disc Drive.")

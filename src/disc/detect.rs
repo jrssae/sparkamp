@@ -15,6 +15,8 @@
 //!   `cd-info` (libcdio) reads the TOC. cd-info reports post-pregap LSNs, so
 //!   **+150** is added here to make them CDDB-absolute.
 
+use std::path::PathBuf;
+
 use super::{DiscToc, MediaInfo, MediaKind, OpticalDrive, TocTrack};
 
 /// Enumerate every optical drive with its loaded-media state.
@@ -222,6 +224,11 @@ pub(crate) struct DrutilStatus {
     pub free_blocks: Option<u64>,
     /// Whole "Writability:" line value (tokens like "appendable, blank…").
     pub writability: String,
+    /// The whole-disk BSD device node from the "Type:" line's "Name:" field
+    /// (e.g. `/dev/disk13`) — a data disc's mounted slice (`/dev/disk13s1`)
+    /// shares this prefix, which is how [`data_disc_mount_path`] finds the
+    /// mount `drutil` itself never reports.
+    pub device_node: Option<String>,
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -230,9 +237,17 @@ pub(crate) fn parse_drutil_status(out: &str) -> DrutilStatus {
     for raw in out.lines() {
         let line = raw.trim();
         if let Some(rest) = line.strip_prefix("Type:") {
-            // The Type line also carries "Name: /dev/diskN" further right.
-            let rest = rest.split("Name:").next().unwrap_or(rest);
-            st.media_type = rest.trim().to_string();
+            // "Type: CD-ROM   Name: /dev/disk13" — split off the device node.
+            match rest.split_once("Name:") {
+                Some((ty, name)) => {
+                    st.media_type = ty.trim().to_string();
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        st.device_node = Some(name.to_string());
+                    }
+                }
+                None => st.media_type = rest.trim().to_string(),
+            }
             // "Sessions: 1  Tracks: 8" shares a line in some layouts; Tracks
             // is parsed generically below either way.
         }
@@ -303,6 +318,52 @@ pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
         free_bytes: st.free_blocks.unwrap_or(0) * 2048,
         capacity_bytes: (st.free_blocks.unwrap_or(0) + st.used_blocks.unwrap_or(0)) * 2048,
     }
+}
+
+/// Find a data disc's mount point in BSD `mount`(8) output by matching a
+/// device slice against the drive's whole-disk node (`drutil status`'s
+/// "Name:", e.g. `/dev/disk13` — a slice mounts as `/dev/disk13s1`,
+/// `/dev/disk13s2`, …). `drutil` itself never reports a mount path, so this
+/// is Task 11's fill-in: macOS auto-mounts data discs the kernel already
+/// knows about (unlike audio CDs, `list_drives`'s existing `.TOC.plist` walk
+/// of `/Volumes` doesn't apply — a data disc's ISO9660/UDF volume carries no
+/// such marker file). One line of `mount` output looks like:
+/// ```text
+/// /dev/disk13s1 on /Volumes/MY_DATA_CD (cd9660, local, nodev, nosuid, read-only, noowners)
+/// ```
+/// Returns the first slice of `device_node` found mounted; `None` when no
+/// line matches (not yet auto-mounted, or the kernel is still probing it —
+/// callers already only reach this after `media.present` is true, so a miss
+/// here is surfaced as "no data-disc browsing" rather than retried).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn parse_mount_output(out: &str, device_node: &str) -> Option<PathBuf> {
+    let slice_prefix = format!("{device_node}s");
+    out.lines().find_map(|line| {
+        let dev = line.split_whitespace().next()?;
+        if !dev.starts_with(&slice_prefix) {
+            return None;
+        }
+        let rest = line.strip_prefix(dev)?.trim_start();
+        let rest = rest.strip_prefix("on ")?;
+        // The mount point runs up to " (<options>)"; paths can contain
+        // spaces (macOS volume names commonly do), so split on the LAST
+        // " (" rather than the first space.
+        let mount = rest.rsplit_once(" (").map(|(m, _)| m).unwrap_or(rest);
+        if mount.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(mount))
+        }
+    })
+}
+
+/// Run `mount` and resolve `device_node`'s data-disc mount path via
+/// [`parse_mount_output`]. Subprocess IO — only ever called from the same
+/// background-queue context every other drutil probe already runs on.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn data_disc_mount_path(device_node: &str) -> Option<PathBuf> {
+    let out = run("mount", &[])?;
+    parse_mount_output(&out, device_node)
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +649,14 @@ mod platform {
                         media.is_audio_cd = parsed.tracks.iter().any(|t| t.is_audio);
                         toc = Some(parsed);
                         mount_path = Some(path);
+                    } else if let Some(node) = &status.device_node {
+                        // Not an audio CD (no `.TOC.plist` volume claimed it)
+                        // but present: a data disc, which macOS auto-mounts
+                        // without any `.TOC.plist` marker — resolve its
+                        // mount point from `mount`(8) so the data-disc
+                        // browse/import FFI (`sparkamp_disc_mount_list`) has
+                        // somewhere to read (Task 11).
+                        mount_path = data_disc_mount_path(node);
                     }
                 }
 
@@ -1238,6 +1307,46 @@ session status:           complete
         assert!(!media.is_blank);
         assert!(!media.rewritable);
         assert_eq!(media.kind, MediaKind::Unknown); // pressed CD-ROM
+    }
+
+    #[test]
+    fn drutil_status_captures_device_node() {
+        let out = "           Type: CD-ROM               Name: /dev/disk13\n";
+        let st = parse_drutil_status(out);
+        assert_eq!(st.media_type, "CD-ROM");
+        assert_eq!(st.device_node.as_deref(), Some("/dev/disk13"));
+    }
+
+    #[test]
+    fn mount_output_finds_matching_slice() {
+        let out = "\
+/dev/disk1s1 on / (apfs, local, journaled)\n\
+/dev/disk13s1 on /Volumes/MY_DATA_CD (cd9660, local, nodev, nosuid, read-only, noowners)\n\
+/dev/disk2s1 on /Volumes/Other (msdos, local, nodev, nosuid)\n";
+        assert_eq!(
+            parse_mount_output(out, "/dev/disk13"),
+            Some(PathBuf::from("/Volumes/MY_DATA_CD"))
+        );
+    }
+
+    #[test]
+    fn mount_output_handles_spaces_in_volume_name() {
+        let out = "/dev/disk13s1 on /Volumes/My Burned Disc (cd9660, local, nodev, nosuid, read-only, noowners)\n";
+        assert_eq!(
+            parse_mount_output(out, "/dev/disk13"),
+            Some(PathBuf::from("/Volumes/My Burned Disc"))
+        );
+    }
+
+    #[test]
+    fn mount_output_no_match_returns_none() {
+        let out = "/dev/disk1s1 on / (apfs, local, journaled)\n";
+        assert_eq!(parse_mount_output(out, "/dev/disk13"), None);
+        // A different disk sharing a numeric prefix (13 vs 130) must not
+        // match — the "s" separator check keeps `/dev/disk13` from
+        // accidentally matching `/dev/disk130s1`.
+        let out2 = "/dev/disk130s1 on /Volumes/Unrelated (cd9660, local)\n";
+        assert_eq!(parse_mount_output(out2, "/dev/disk13"), None);
     }
 
     #[test]

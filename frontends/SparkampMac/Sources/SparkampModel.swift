@@ -224,6 +224,21 @@ final class SparkampModel: ObservableObject {
     /// Mirrored from the core burn job's poll; cancel goes through
     /// `cancelBurn()` (the job stops between steps / kills the subprocess).
     @Published var burnPhase: String? = nil
+    /// 0–1 progress within `burnPhase` when the core job knows one (streamed
+    /// cdrskin percent on Linux; nil during erase/xorriso/drutil phases,
+    /// which report no percent — shown as an indeterminate spinner instead).
+    @Published var burnFraction: Double? = nil
+    /// Per-drive disc-artist/disc-album overrides the user typed on the burn
+    /// panel; a drive with no entry here uses freshly computed defaults
+    /// (`burnMeta(for:)`) — mirrors core `BurnList.meta_override` (`None` =
+    /// recompute). Cleared alongside the queue by `clearBurnList`.
+    @Published var burnMetaOverrides: [String: DiscMeta] = [:]
+    /// Audio files on the data disc shown in the open drive detail view
+    /// (empty when the drive holds no browsable data disc, or the disc
+    /// hasn't been read yet).
+    @Published var discFiles: [DiscFile] = []
+    /// True while a data-disc mount+walk is in flight.
+    @Published var discFilesBusy: Bool = false
     /// Paths that failed the duration probe on the most recent "Send to ▸
     /// Disc Drive" — non-nil presents a one-shot alert listing them, then
     /// cleared. Those files are never queued (an unknown duration would

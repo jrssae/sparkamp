@@ -478,6 +478,20 @@ struct MediaLibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 6)
+                // Drop files onto a drive row to queue them for burning on
+                // THAT drive (per-drive burn queues — mirrors the device
+                // row's drop-to-copy just above). Reuses the same
+                // probe-on-add path every "Send to ▸ Disc Drive" action
+                // goes through (`sendPathsToDrive` → `addToBurnList`), so
+                // duplicates/unreadable files are handled identically.
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    TrackDragPayload.resolvePaths(from: providers) { paths in
+                        guard !paths.isEmpty else { return }
+                        nav = .discDrive(id: drive.id)
+                        model.sendPathsToDrive(drive.id, paths: paths)
+                    }
+                    return true
+                }
             }
         }
     }

@@ -8,7 +8,7 @@
 
 use crate::disc::burnlist::BurnItem;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DiscMeta {
     pub artist: String,
     pub album: String,

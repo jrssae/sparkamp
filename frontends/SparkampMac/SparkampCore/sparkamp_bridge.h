@@ -747,7 +747,13 @@ int sparkamp_disc_erase_decision(SparkampCtx *ctx, const char *drive_json);
 int sparkamp_disc_audio_capacity_secs(SparkampCtx *ctx, const char *drive_json);
 
 /** Start a burn job: {"drive":OpticalDrive, "items":[{"path","display"}…],
-    "audio":bool, "use_m3u":bool, "erase_first":bool, "verify":bool}.
+    "audio":bool, "use_m3u":bool, "erase_first":bool, "verify":bool,
+    "disc_artist":string|null, "disc_album":string|null}.
+    disc_artist/disc_album (Task 11) supply CD-TEXT for an AUDIO burn only;
+    absent/null skips CD-TEXT (pre-Task-11 behavior). MAC GAP: drutil (the
+    mac burn backend) has no CD-TEXT input, so these are inert on an actual
+    mac burn — send them anyway so the burn panel's fields match GTK's UX;
+    only the Linux cdrskin backend actually writes them.
     Returns 0 on start, -1 bad JSON, -2 when a burn is already running. */
 int sparkamp_disc_burn_job_start(SparkampCtx *ctx, const char *job_json);
 
@@ -785,5 +791,24 @@ char *sparkamp_gnudb_submit(SparkampCtx *ctx, const char *toc_json,
     file. Runs GStreamer discovery per file: call off the main thread.
     Free with sparkamp_free_string. */
 char *sparkamp_disc_probe_durations(SparkampCtx *ctx, const char *paths_json);
+
+/** Disc-meta defaults (Task 11) for a burn queue's current display lines —
+    mirrors core cdtext::default_disc_meta (common track artist else
+    "Various Artists"; album = "Sparkamp Disc YYYY-MM-DD") so the burn
+    panel's artist/album fields prefill/refresh without reimplementing the
+    rule in Swift. items_json: [{"display":"Artist - Title"}…] (only
+    "display" is read). Returns {"artist":"…","album":"…"}. Pure — safe on
+    any thread. Free with sparkamp_free_string. */
+char *sparkamp_disc_default_meta(SparkampCtx *ctx, const char *items_json);
+
+/** List the audio files on a mounted data disc: JSON [{"path","display",
+    "duration_secs":number|null,"bytes":number}], empty when unmounted/
+    unreadable/not a data disc. Takes an OpticalDrive JSON from
+    sparkamp_disc_list_drives. On Linux this mounts the disc via udisks2
+    first (spins the drive, like a TOC probe); on macOS the disc is already
+    auto-mounted by the OS, so this trusts the drive's "mount_path" field
+    with no extra mount step. Blocks on disc IO + a tag read per file —
+    background queue only. Free with sparkamp_free_string. */
+char *sparkamp_disc_mount_list(SparkampCtx *ctx, const char *drive_json);
 
 #endif /* sparkamp_bridge_h */

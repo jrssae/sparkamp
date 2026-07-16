@@ -147,6 +147,36 @@ struct BurnEntry: Identifiable, Equatable {
     var id: String { path }
 }
 
+/// Disc-level CD-TEXT artist/album (mirrors core `cdtext::DiscMeta`) — the
+/// mac burn panel's editable "Disc artist"/"Disc album" fields.
+///
+/// MAC GAP: drutil (macOS's burn backend, see `burn::burn_audio`'s Rust doc
+/// comment) has no CD-TEXT/v07t input, so these values are inert on an
+/// actual mac burn — sent over the burn-job FFI purely so the UI/UX matches
+/// GTK's burn panel field-for-field. A disc burned on mac carries no
+/// CD-TEXT regardless of what's typed here.
+struct DiscMeta: Codable, Equatable {
+    var artist: String = ""
+    var album: String = ""
+}
+
+/// One audio file found on a mounted data disc (mirrors core `DiscFile` in
+/// `disc::mount`). `path` is wherever the OS mounted the disc — those files
+/// disappear on eject, which is why `addDiscFilesToLibrary` copies before
+/// registering rather than pointing the library straight at the mount.
+struct DiscFile: Codable, Identifiable, Equatable {
+    var path: String
+    var display: String
+    var durationSecs: UInt32?
+    var bytes: UInt64
+    var id: String { path }
+
+    var durationText: String {
+        guard let s = durationSecs else { return "—" }
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
 /// The user's tag set for one disc — a gnudb match, hand edits, or both.
 /// Keyed by freedb disc ID in the model; feeds display titles now and rip
 /// tagging / submission in Phases 3–4.
@@ -430,6 +460,10 @@ enum DiscService {
         var useM3u: Bool
         var eraseFirst: Bool
         var verify: Bool
+        /// Disc-level CD-TEXT for an audio burn; nil skips CD-TEXT (data
+        /// burns ignore both fields regardless). See `DiscMeta`'s MAC GAP note.
+        var discArtist: String?
+        var discAlbum: String?
     }
 
     /// One queued file: path + the display line the phase messages show.
@@ -448,6 +482,10 @@ enum DiscService {
     struct BurnJobStatus: Codable {
         var running: Bool
         var phase: String
+        /// 0–1 progress within `phase` when the core knows one (Task 11's
+        /// additive field); nil shows the phase label with an indeterminate
+        /// spinner, same as before this task.
+        var fraction: Double?
         var done: BurnJobDone?
     }
 
@@ -470,6 +508,42 @@ enum DiscService {
     /// Cancel the burn: stops between steps and kills a mid-write subprocess.
     static func burnCancel() {
         sparkamp_disc_burn_cancel(nil)
+    }
+
+    /// Disc-meta defaults for a burn queue's current display lines — mirrors
+    /// core `cdtext::default_disc_meta` (common track artist else "Various
+    /// Artists"; album = "Sparkamp Disc YYYY-MM-DD") over FFI so the burn
+    /// panel's artist/album fields prefill/refresh without reimplementing
+    /// the consensus rule or the date format Swift-side (Task 11 — the less-
+    /// duplication choice over recomputing it locally). Pure — safe on any
+    /// thread, but keep it off the main thread anyway for consistency with
+    /// every other DiscService call.
+    static func defaultMeta(displays: [String]) -> DiscMeta {
+        struct Item: Encodable { let display: String }
+        let fallback = DiscMeta(artist: "Various Artists", album: "")
+        guard let json = jsonString(displays.map { Item(display: $0) }) else { return fallback }
+        let out = json.withCString { sparkamp_disc_default_meta(nil, $0) }
+        guard let text = takeString(out),
+              let data = text.data(using: .utf8),
+              let meta = try? decoder().decode(DiscMeta.self, from: data)
+        else { return fallback }
+        return meta
+    }
+
+    /// Audio files on a mounted data disc (empty when unmounted, unreadable,
+    /// or not a data disc). On Linux this mounts via udisks2 first (spins the
+    /// drive, like a TOC probe); on macOS the disc is already auto-mounted —
+    /// this trusts `drive.mountPath` (populated in `sparkamp_disc_list_drives`
+    /// once the OS has mounted a data disc). Either way this blocks on disc
+    /// IO — background queue only, same as every other DiscService call.
+    static func mountList(drive: OpticalDrive) -> [DiscFile] {
+        guard let driveJSON = jsonString(drive) else { return [] }
+        let out = driveJSON.withCString { sparkamp_disc_mount_list(nil, $0) }
+        guard let json = takeString(out),
+              let data = json.data(using: .utf8),
+              let files = try? decoder().decode([DiscFile].self, from: data)
+        else { return [] }
+        return files
     }
 
     /// Eject the disc in the given drutil drive (macOS). Runs `drutil eject`
