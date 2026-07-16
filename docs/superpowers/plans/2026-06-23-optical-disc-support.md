@@ -194,6 +194,44 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 > pre-burn block still in front) is the documented escape hatch. Failed
 > calibration attempts consume the disc's PCA slots — use fresh media
 > after a string of failures.
+>
+> **FIRST SUCCESSFUL HARDWARE PASS (2026-07-15, Opus, new Slimtype DVD A
+> DS8A5SH USB drive + TDK CD-RW):** the core burn path is now live-verified
+> end to end. `cargo test --lib` ignored hardware tests all pass on real
+> media: `live_hw_burn_audio` (2 tracks, 82 s → probes back as a 2-track
+> audio CD), `live_hw_erase` (30 s → probes blank again), `live_hw_burn_data`
+> (3 MP3s + playlist.m3u8, 59 s → mounts as a data disc, files at root,
+> md5 matches source, companion playlist correct). The dead UJ8C2 mechs
+> above were the whole blocker — a healthy burner clears the calibration
+> step immediately. Two code fixes fell out of this session (both on branch
+> `burn-hardware-pass`): (1) **a burned RW disc reads back with a valid TOC,
+> so the Linux probe built its MediaInfo from the TOC alone and typed the
+> disc as write-once-with-content — every erase/re-burn was refused**
+> (`live_hw_erase` skipped with "no rewritable disc"). Fixed by merging
+> `cdrskin -minfo` typing into TOC-derived info (`detect::merge_minfo_typing`,
+> keeps the TOC's `is_audio_cd`, takes kind/blank/rewritable/capacity from
+> `-minfo`); costs one subprocess per media *change* only. (2) A RefCell
+> double-borrow crash in the GTK burn panel's rerender path
+> (`disc.rs` `refresh_cb`/`rerender`), backtrace-confirmed, fixed by dropping
+> the `shown_drive` borrow before the redraw call.
+>
+> **Interactive GTK burn-matrix testing on the new drive is IN PROGRESS**
+> (crash + the UX issues it surfaced are fixed; the matrix below still needs
+> a human GUI pass on the Slimtype drive: erase-confirm modal, over-capacity
+> block, cancel-mid-burn, playback of the burned disc in the Discs tab).
+> A second drive (MATSHITA UJ8C2, sr1) is also attached for multi-drive menu
+> testing — its write laser is dead but detection/menus work.
+>
+> **Send-to redesign (spun off this session):** the UX issues the burn
+> matrix surfaced (drive-blind "Add to Burn List", no send path from other
+> views, unknown-duration files defeating the capacity gate) drove a full
+> rework — per-drive burn queues + a unified "Send to" menu across all
+> views and frontends. Spec + plan:
+> `docs/superpowers/specs/2026-07-15-send-to-menu-design.md`,
+> `docs/superpowers/plans/2026-07-15-send-to-menu.md`. Core + GTK + TUI
+> landed and green (967 tests, zero warnings); mac Swift written blind,
+> pending a Mac xcodebuild + manual pass (checklist in the branch's SDD
+> report).
 
 **Hardware tests (Opus, blank media required):**
 1. **Audio CD-R:** add 3+ library tracks to the burn list (ML Files → right-click → Add to Burn List / TUI `b`), insert blank CD-R, drive view → Burn Audio CD → expect prepare progress per track, then burn phase, success status; disc plays in the Sparkamp Discs tab (TOC track count matches) and in Music.app. Verify gap/order correctness.
