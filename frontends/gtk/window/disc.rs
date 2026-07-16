@@ -294,6 +294,22 @@ pub(super) fn build_burn_panel(
     title.add_css_class("ml-section-header");
     root.append(&title);
 
+    // Disc artist/album (CD-TEXT for audio burns). Defaults track the queue
+    // until the user types over them (Task 5); hidden when the loaded media
+    // can't take a burn at all (see `writable` in refresh_cb below).
+    let meta_row = GtkBox::new(Orientation::Horizontal, 6);
+    let artist_lbl = Label::new(Some("Disc artist:"));
+    let artist_entry = Entry::new();
+    artist_entry.set_hexpand(true);
+    let album_lbl = Label::new(Some("Disc album:"));
+    let album_entry = Entry::new();
+    album_entry.set_hexpand(true);
+    meta_row.append(&artist_lbl);
+    meta_row.append(&artist_entry);
+    meta_row.append(&album_lbl);
+    meta_row.append(&album_entry);
+    root.append(&meta_row);
+
     // Queue rows ("Artist - Title — M:SS · size"), selectable for the
     // remove/reorder buttons; burn order = disc track order.
     let queue = gtk4::ListBox::new();
@@ -374,6 +390,12 @@ pub(super) fn build_burn_panel(
         Rc::new(RefCell::new(None));
     let shown_drive: Rc<RefCell<Option<crate::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(None));
+    // Guards the disc artist/album entries' `connect_changed` against the
+    // programmatic `set_text` in refresh_cb below — without it, a default
+    // sync would look like a user edit, write an override, and the two would
+    // fight (crash-adjacent feedback loop; see the three prior live crashes
+    // on this branch).
+    let meta_syncing = Rc::new(Cell::new(false));
 
     // ── Refresh: queue rows + meters + sensitivity for the shown drive ────
     let refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
@@ -387,6 +409,10 @@ pub(super) fn build_burn_panel(
         let btn_data = btn_data.clone();
         let burn_running = burn_running.clone();
         let shown_drive = shown_drive.clone();
+        let meta_row = meta_row.clone();
+        let artist_entry = artist_entry.clone();
+        let album_entry = album_entry.clone();
+        let meta_syncing = meta_syncing.clone();
         Rc::new(move |drive: &crate::disc::OpticalDrive| {
             *shown_drive.borrow_mut() = Some(drive.clone());
             while let Some(child) = queue.first_child() {
@@ -419,6 +445,25 @@ pub(super) fn build_burn_panel(
             let empty = list.is_empty();
             queue_scroll.set_visible(!empty);
             empty_hint.set_visible(empty);
+
+            // Disc artist/album: while the user hasn't overridden them, keep
+            // the entries in sync with the queue's computed defaults. Only
+            // set_text when the text actually differs, and only under the
+            // syncing flag, so this programmatic write doesn't get mistaken
+            // for a user edit by the entries' connect_changed handlers below.
+            if list.meta_override.is_none() {
+                let defaults = list.effective_meta();
+                meta_syncing.set(true);
+                let artist = gtk_safe(&defaults.artist);
+                if artist_entry.text() != artist {
+                    artist_entry.set_text(&artist);
+                }
+                let album = gtk_safe(&defaults.album);
+                if album_entry.text() != album {
+                    album_entry.set_text(&album);
+                }
+                meta_syncing.set(false);
+            }
 
             // Audio meter: queued minutes vs the media's audio capacity.
             let cap = crate::disc::burn::audio_capacity_secs(drive);
@@ -457,8 +502,38 @@ pub(super) fn build_burn_panel(
             let idle = !burn_running.get();
             btn_audio.set_sensitive(idle && writable && !empty && !over_audio);
             btn_data.set_sensitive(idle && writable && !empty && !over_data);
+            meta_row.set_visible(writable);
         })
     };
+
+    // Disc artist/album: a user edit in either entry overrides both fields
+    // together (a partial override reading through to a stale default would
+    // be more surprising than not). Short borrow only — no rerender from
+    // inside a `connect_changed` handler (established feedback-loop trap on
+    // this branch; see refresh_cb's meta_syncing guard above).
+    let write_meta_override: Rc<dyn Fn()> = {
+        let burn_queues = burn_queues.clone();
+        let shown_drive = shown_drive.clone();
+        let artist_entry = artist_entry.clone();
+        let album_entry = album_entry.clone();
+        Rc::new(move || {
+            let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
+            let Some(id) = drive_id else { return };
+            let artist = artist_entry.text().to_string();
+            let album = album_entry.text().to_string();
+            burn_queues.borrow_mut().queue(&id).meta_override =
+                Some(crate::disc::cdtext::DiscMeta { artist, album });
+        })
+    };
+    for entry in [&artist_entry, &album_entry] {
+        let meta_syncing = meta_syncing.clone();
+        let write_meta_override = write_meta_override.clone();
+        entry.connect_changed(move |_| {
+            if !meta_syncing.get() {
+                write_meta_override();
+            }
+        });
+    }
 
     // Queue management buttons operate on the selected row.
     let selected_idx = {
