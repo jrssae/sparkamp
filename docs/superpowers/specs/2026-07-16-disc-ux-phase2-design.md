@@ -201,10 +201,38 @@ three test files appear. Interactive: play + add-to-library.
   Data-disc browsing + drag-to-drive are GTK/mac surfaces the TUI lacks —
   flagged out of scope (the TUI has no device/drag surface today).
 
+## Pre-work (user-approved 2026-07-16, from the branch UX audit)
+
+**P0 — media_library.rs page split (FIRST task).** 9,477 lines is past
+manageable and phase 2 lands more into it. Mechanical split by page into
+real files: `ml_files.rs`, `ml_playlists.rs` (manage + editor),
+`ml_devices.rs`, `ml_discs.rs`; shared scaffolding stays in
+`media_library.rs`. Zero behavior change; full suite + zero warnings gate.
+
+**P1 — Send-to consistency fixes** (fold into / alongside task B's
+`queue_paths_to_drive` dedupe):
+- G1: the files-view "Send to ▾" button acted on the last RIGHT-CLICKED
+  selection (`ml_selected_tracks` fills only in the context-menu gesture);
+  its Active Playlist entry used the live selection. Unify: every Send-to
+  entry (menu and button) reads the LIVE selection at dispatch time.
+- G2: the editor's button-row "Send to…" (whole playlist + .m3u8 → device)
+  becomes the standard full "Send to ▾" menu on selected tracks, with the
+  whole-playlist sender preserved as an extra entry in that menu
+  ("Entire playlist to device ▸" — files + .m3u8 semantics unchanged).
+- G3: success feedback normalized to a QUIET status line in every view —
+  add small status labels to the editor page and device view; interim
+  "Reading files…" everywhere; dialogs only for unreadable-file failures.
+- G4: empty selection → status "Select tracks first" instead of a silent
+  no-op.
+- Cleanup: drop the editor device-popover's `connect_closed(unparent)`
+  (pattern that broke action dispatch elsewhere; harmless here but
+  divergent).
+
 ## Sequencing
 
-A (auto-refresh) → B (drag-to-drive + send-drive dedupe) → C (CD-TEXT) and
-D (progress overlay) in parallel (independent) → E (data-disc browsing).
+P0 (file split) → P1 + B (consistency + drag-to-drive + send-drive dedupe,
+one motion) → A (auto-refresh) → C (CD-TEXT) and D (progress overlay) in
+parallel (independent) → E (data-disc browsing).
 Each task: build + test in dev-box, zero warnings, commit.
 
 ## Out of scope
