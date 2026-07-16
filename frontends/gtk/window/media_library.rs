@@ -8209,6 +8209,7 @@ fn open_media_library_window(
         let disc_status_lbl = disc_status_lbl.clone();
         let win_wk = win.downgrade();
         let in_flight = Rc::new(Cell::new(false));
+        let disc_fingerprints: Rc<RefCell<std::collections::HashMap<String, u64>>> = Rc::new(RefCell::new(std::collections::HashMap::new()));
         Rc::new(move || {
             if in_flight.get() {
                 return;
@@ -8251,6 +8252,7 @@ fn open_media_library_window(
             let disc_status_lbl = disc_status_lbl.clone();
             let win_wk = win_wk.clone();
             let in_flight = in_flight.clone();
+            let disc_fingerprints = disc_fingerprints.clone();
             glib::spawn_future_local(async move {
                 // Shared cached poll: an unchanged loaded disc is answered by
                 // the kernel status ioctl and NOT re-probed (probing touches
@@ -8442,7 +8444,7 @@ fn open_media_library_window(
                 // otherwise it keeps showing the previous disc's tracks.
                 // Unchanged drives skip this so the 10 s poll never disturbs
                 // the user's row selection.
-                let detail_update: Option<crate::disc::OpticalDrive> = sel_now
+                let mut detail_update: Option<crate::disc::OpticalDrive> = sel_now
                     .and_then(|sel| {
                         let new_d = drives.iter().find(|d| d.id == sel).cloned()?;
                         let old_d = current_drives
@@ -8452,7 +8454,29 @@ fn open_media_library_window(
                             .cloned();
                         (old_d.as_ref() != Some(&new_d)).then_some(new_d)
                     });
-                *current_drives.borrow_mut() = drives;
+                // Disc-swap auto-refresh: use fingerprints to catch changes the
+                // equality check missed. Snapshot the selected id and old
+                // fingerprint ONCE before any updates (borrow-discipline).
+                if detail_update.is_none() {
+                    if let Some(sel) = sel_now {
+                        let old_fp = disc_fingerprints.borrow().get(&sel).copied();
+                        if let Some(new_d) = drives.iter().find(|d| d.id == sel).cloned() {
+                            let new_fp = crate::disc::detect::media_fingerprint(&new_d);
+                            if old_fp.is_some() && Some(new_fp) != old_fp {
+                                detail_update = Some(new_d);
+                            }
+                        }
+                    }
+                }
+                *current_drives.borrow_mut() = drives.clone();
+                // Store fingerprints for all drives for next poll.
+                {
+                    let mut fps = disc_fingerprints.borrow_mut();
+                    fps.clear();
+                    for d in &drives {
+                        fps.insert(d.id.clone(), crate::disc::detect::media_fingerprint(d));
+                    }
+                }
                 // Drop burn queues for drives that are no longer attached —
                 // they'd otherwise linger invisibly (no panel shows them).
                 {

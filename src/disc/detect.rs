@@ -883,6 +883,24 @@ mod platform {
     }
 }
 
+/// Hash of the load-state a user can see: media kind/flags, TOC track
+/// count, capacity. The GTK poll compares per-drive fingerprints across
+/// ticks and refreshes an open detail view when the SHOWN drive's changes
+/// (disc swapped/ejected/inserted) — unchanged drives are never disturbed.
+pub fn media_fingerprint(d: &OpticalDrive) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    d.media.present.hash(&mut h);
+    d.media.is_audio_cd.hash(&mut h);
+    d.media.is_blank.hash(&mut h);
+    d.media.rewritable.hash(&mut h);
+    (d.media.kind as u8).hash(&mut h);
+    d.media.capacity_bytes.hash(&mut h);
+    d.media.free_bytes.hash(&mut h);
+    d.toc.as_ref().map(|t| t.tracks.len()).unwrap_or(0).hash(&mut h);
+    h.finish()
+}
+
 // ---------------------------------------------------------------------------
 // Tests — all parsers, on every platform.
 // ---------------------------------------------------------------------------
@@ -1158,6 +1176,27 @@ session status:           complete
             elapsed < std::time::Duration::from_millis(500),
             "cached poll looks like it ran a full probe ({elapsed:?})"
         );
+    }
+
+    #[test]
+    fn media_fingerprint_tracks_meaningful_changes() {
+        let mut d = OpticalDrive {
+            id: "/dev/sr0".into(), label: "T".into(),
+            media: MediaInfo::none(), toc: None, mount_path: None,
+        };
+        let empty = media_fingerprint(&d);
+        d.media.present = true;
+        d.media.kind = MediaKind::CdRw;
+        let blank = media_fingerprint(&d);
+        assert_ne!(empty, blank, "media arriving must change the fingerprint");
+        let same = media_fingerprint(&d);
+        assert_eq!(blank, same, "unchanged media must be stable");
+        d.media.is_blank = true;
+        assert_ne!(media_fingerprint(&d), blank, "blank flag change must show");
+        d.media.capacity_bytes = 700_000_000;
+        let with_cap = media_fingerprint(&d);
+        d.media.capacity_bytes = 4_700_000_000;
+        assert_ne!(media_fingerprint(&d), with_cap, "capacity change must show");
     }
 
     #[test]
