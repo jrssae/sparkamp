@@ -24,7 +24,18 @@
 
 ---
 
-### Task 1 (P0): Split media_library.rs into page sections
+### Task 1 (P0): Split media_library.rs into page sections — **DEFERRED (user decision 2026-07-16)**
+
+> **Execution note:** the mechanical premise was wrong — `include!` inside a
+> fn body splices a single EXPRESSION, never a statement sequence (proved
+> with minimal repros; rustc's `incomplete_include` lint names it), and a
+> `macro_rules!` wrapper hides its `let` bindings by hygiene. A real split
+> is an interface rewrite (context struct + per-page builder fns). User
+> chose to DEFER that to its own branch after phase 2 merges. The verified
+> 7-section boundary map is in `.superpowers/sdd/task-1-report.md` — reuse
+> it then. **All later tasks' references to `ml_files.rs` / `ml_playlists.rs`
+> / `ml_devices.rs` / `ml_discs.rs` resolve to the corresponding sections of
+> `media_library.rs`.**
 
 **Files:**
 - Modify: `frontends/gtk/window/media_library.rs` (9,477 lines → scaffolding only)

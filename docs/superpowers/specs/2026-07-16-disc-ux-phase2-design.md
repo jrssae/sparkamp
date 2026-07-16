@@ -203,11 +203,12 @@ three test files appear. Interactive: play + add-to-library.
 
 ## Pre-work (user-approved 2026-07-16, from the branch UX audit)
 
-**P0 — media_library.rs page split (FIRST task).** 9,477 lines is past
-manageable and phase 2 lands more into it. Mechanical split by page into
-real files: `ml_files.rs`, `ml_playlists.rs` (manage + editor),
-`ml_devices.rs`, `ml_discs.rs`; shared scaffolding stays in
-`media_library.rs`. Zero behavior change; full suite + zero warnings gate.
+**P0 — media_library.rs page split: DEFERRED (2026-07-16).** The intended
+mechanical split is impossible — `include!` in a fn body splices a single
+expression, not statements, and macro hygiene hides `let` bindings. A real
+split is an interface rewrite (context struct + per-page builder fns);
+user deferred it to a dedicated branch after phase 2. Boundary map kept in
+`.superpowers/sdd/task-1-report.md`.
 
 **P1 — Send-to consistency fixes** (fold into / alongside task B's
 `queue_paths_to_drive` dedupe):
