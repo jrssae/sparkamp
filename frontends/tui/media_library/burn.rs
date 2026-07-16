@@ -74,7 +74,7 @@ impl App {
                 (display.clone(), known, bytes)
             },
             |p| {
-                crate::duration_probe::probe_duration(p).map(|d| d.as_secs() as u32)
+                crate::duration_probe::probe_duration_full(p).map(|d| d.as_secs() as u32)
             },
         );
         let total = list.len();

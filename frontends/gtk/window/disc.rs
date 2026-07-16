@@ -486,6 +486,28 @@ pub(super) fn build_burn_panel(
             }
         });
     }
+    // Delete / Backspace on the queue list removes the selected row, matching
+    // the Remove button (keyboard parity — users expect Delete to work here).
+    {
+        let burn_queues = burn_queues.clone();
+        let shown_drive = shown_drive.clone();
+        let selected_idx = selected_idx.clone();
+        let rerender = rerender.clone();
+        let key = gtk4::EventControllerKey::new();
+        key.connect_key_pressed(move |_, keyval, _, _| {
+            use gtk4::gdk::Key;
+            if matches!(keyval, Key::Delete | Key::KP_Delete | Key::BackSpace) {
+                let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
+                if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
+                    burn_queues.borrow_mut().queue(&id).remove(i);
+                    rerender();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        queue.add_controller(key);
+    }
     {
         let burn_queues = burn_queues.clone();
         let shown_drive = shown_drive.clone();

@@ -67,6 +67,21 @@ pub fn probe_duration(path: &Path) -> Option<Duration> {
 }
 
 // ---------------------------------------------------------------------------
+// probe_duration_full  (Symphonia header read, then GStreamer fallback)
+// ---------------------------------------------------------------------------
+
+/// Full single-file duration probe: the fast Symphonia header read first, then
+/// the GStreamer Discoverer fallback for CBR MP3 and other containers whose
+/// header lacks an explicit frame count. This is the SAME two-step the
+/// library's background [`spawn_probes`] uses — call it anywhere a single
+/// file's duration is needed (e.g. the burn-list add path) so a headerless but
+/// perfectly playable file is not misreported as unreadable. Requires
+/// `gstreamer::init()` to have run (the app does this at startup).
+pub fn probe_duration_full(path: &Path) -> Option<Duration> {
+    probe_duration(path).or_else(|| discover_duration(path))
+}
+
+// ---------------------------------------------------------------------------
 // discover_duration  (GStreamer Discoverer fallback)
 // ---------------------------------------------------------------------------
 
@@ -132,6 +147,33 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// probe_duration_full must fall through to the GStreamer Discoverer when
+    /// Symphonia can't measure the header — a real CBR MP3 without a Xing
+    /// header returns None from `probe_duration` but a duration from the full
+    /// probe. Regression guard: the burn-list add path was calling only
+    /// `probe_duration` and rejecting such (perfectly playable) files as
+    /// unreadable (2026-07-15).
+    #[test]
+    #[ignore] // needs a real headerless-CBR MP3 + gstreamer; run with --ignored
+    fn probe_duration_full_recovers_headerless_cbr_via_gstreamer() {
+        gstreamer::init().ok();
+        // A CBR MP3 with no Xing/Info header (path supplied by the tester).
+        let p = std::path::Path::new(
+            "/var/mnt/Blackbeard/Music/Billboard Top 100 of 2014/\
+             24. One Direction - Story Of My Life.mp3",
+        );
+        if !p.exists() {
+            eprintln!("sample file absent — skipping");
+            return;
+        }
+        // The bug: probe_duration alone may return None here …
+        // … but the full probe must recover a duration via GStreamer.
+        assert!(
+            probe_duration_full(p).is_some(),
+            "full probe must measure a playable CBR MP3 the header read misses"
+        );
+    }
+
     /// spawn_probes must send the path on missing_tx when the file does not exist.
     #[test]
     fn spawn_probes_reports_missing_file_on_missing_tx() {
@@ -179,11 +221,9 @@ pub fn spawn_probes(
                 let _ = missing_tx.send(path.clone());
                 return;
             }
-            // Fast path: read duration from the container header (no decoding).
-            // Fallback: GStreamer Discoverer for CBR MP3 and other formats
-            // whose container header lacks an explicit frame count.
-            let dur = probe_duration(path)
-                .or_else(|| discover_duration(path));
+            // Header read (no decoding), then the GStreamer fallback for CBR
+            // MP3 and other formats whose container header lacks a frame count.
+            let dur = probe_duration_full(path);
             if let Some(dur) = dur {
                 let _ = result_tx.send((path.clone(), dur));
             }

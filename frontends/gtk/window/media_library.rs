@@ -2488,7 +2488,7 @@ fn open_media_library_window(
                                 .into_iter()
                                 .map(|(p, known)| {
                                     let secs = known.or_else(|| {
-                                        crate::duration_probe::probe_duration(&p)
+                                        crate::duration_probe::probe_duration_full(&p)
                                             .map(|d| d.as_secs() as u32)
                                     });
                                     (p, secs)
@@ -3009,7 +3009,7 @@ fn open_media_library_window(
                                 .into_iter()
                                 .map(|(p, known)| {
                                     let secs = known.or_else(|| {
-                                        crate::duration_probe::probe_duration(&p)
+                                        crate::duration_probe::probe_duration_full(&p)
                                             .map(|d| d.as_secs() as u32)
                                     });
                                     (p, secs)
@@ -4545,7 +4545,7 @@ fn open_media_library_window(
                             .into_iter()
                             .map(|(p, known)| {
                                 let secs = known.or_else(|| {
-                                    crate::duration_probe::probe_duration(&p)
+                                    crate::duration_probe::probe_duration_full(&p)
                                         .map(|d| d.as_secs() as u32)
                                 });
                                 (p, secs)
