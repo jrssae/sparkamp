@@ -2908,6 +2908,10 @@ fn open_media_library_window(
         // Create action group and actions for ML right-click menu
         let ml_action_group = gio::SimpleActionGroup::new();
         col_view.insert_action_group("ml", Some(&ml_action_group));
+        // Also on the window so the "Send to ▾" MenuButton in the button row
+        // — which is NOT a descendant of col_view — can reach these actions.
+        // Without this its menu items rendered disabled (2026-07-16).
+        win.insert_action_group("ml", Some(&ml_action_group));
 
         // The files status label is created further down — the burn action
         // reports "Queued N…" through this holder.
@@ -5092,7 +5096,6 @@ fn open_media_library_window(
             // immediately after the rebuild closure is created.
             let setup_rebuild    = rebuild_track_list_holder.clone();
             let setup_scroll     = track_scroll_holder.clone();
-            let setup_ed_group   = ed_action_group.clone();
             let setup_ed_paths     = ed_send_paths.clone();
             let setup_ed_ctx_idx    = ed_ctx_indices.clone();
             let setup_drives     = current_drives.clone();
@@ -5301,7 +5304,6 @@ fn open_media_library_window(
                 let g_lbl        = lbl.clone();
                 let g_et         = setup_et.clone();
                 let g_scroll     = setup_scroll.clone();
-                let g_ed_group   = setup_ed_group.clone();
                 let g_ed_paths   = setup_ed_paths.clone();
                 let g_ed_ctx_idx = setup_ed_ctx_idx.clone();
                 let g_drives     = setup_drives.clone();
@@ -5404,18 +5406,20 @@ fn open_media_library_window(
                         &menu,
                         gtk4::PopoverMenuFlags::NESTED,
                     );
-                    // Defense in depth: also install the group directly on
-                    // the popup itself, not just on `scroll_widget` — see
-                    // the comment above `ed_ctx_indices` for the GTK4
-                    // NESTED-flag ancestor-walk bug this sidesteps.
-                    popover.insert_action_group("ed", Some(&g_ed_group));
+                    // EXACT mirror of the working Files-view context menu
+                    // (~line 3630): parent the popover on the same widget the
+                    // "ed" action group is installed on (track_scroll), and
+                    // do NOT unparent on close. An earlier `connect_closed(||
+                    // unparent)` severed the widget-tree link to the group as
+                    // a nested item dispatched, so ed.send-drive never fired
+                    // (2026-07-16). The Files menu leaves its popover parented
+                    // too; matching that is what makes nested dispatch work.
                     let (px, py) = g_lbl
                         .translate_coordinates(&scroll_widget, x, y)
                         .unwrap_or((x, y));
                     let rect = gtk4::gdk::Rectangle::new(px as i32, py as i32, 1, 1);
                     popover.set_parent(&scroll_widget);
                     popover.set_pointing_to(Some(&rect));
-                    popover.connect_closed(|p| p.unparent());
                     popover.popup();
                     g.set_state(gtk4::EventSequenceState::Claimed);
                 });
