@@ -358,6 +358,15 @@ fn open_media_library_window(
     // refresh_discs is built much later; the burn panel takes this holder so
     // a finished burn can trigger a re-poll.
     let refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    // Live burn progress, keyed by drive id (Task 7). The burn poller in
+    // `build_burn_panel` writes an entry on every `BurnMsg::Progress` and
+    // removes it on Done/Failed/Cancelled; `populate_disc_detail` reads it to
+    // decide whether the disc-detail overlay card should be showing when a
+    // drive is (re)selected — this is what makes navigate-away-and-back
+    // re-show a live burn instead of losing it. Borrows are always short and
+    // never held across a populate/select call (see disc.rs's crash note).
+    let burn_progress_map: Rc<RefCell<std::collections::HashMap<String, crate::disc::burn::BurnProgress>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
     let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
         Rc::new(RefCell::new(Vec::new()));
     // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
@@ -2820,11 +2829,19 @@ fn open_media_library_window(
         burn_queues.clone(),
         refresh_discs_holder.clone(),
         burn_refresh_holder.clone(),
+        burn_progress_map.clone(),
         &win,
     );
     disc_detail.append(&burn_ui.root);
     let burn_ui = Rc::new(burn_ui);
-    disc_page.append(&disc_detail);
+    // Wrap the detail content in an Overlay so the burn card can float over
+    // whatever's showing (audio tracks or the burn panel itself) and survive
+    // navigating to another drive and back — `populate_disc_detail` decides
+    // per drive whether it's visible via `burn_ui.refresh_progress`.
+    let disc_detail_overlay = gtk4::Overlay::new();
+    disc_detail_overlay.set_child(Some(&disc_detail));
+    disc_detail_overlay.add_overlay(&burn_ui.overlay_card);
+    disc_page.append(&disc_detail_overlay);
 
     // ── Content stack ─────────────────────────────────────────────────────
     let stack = Stack::new();
@@ -8032,6 +8049,11 @@ fn open_media_library_window(
             *entries_store.borrow_mut() = entries;
             // Fresh rows + fresh entries: re-run the search filter over them.
             track_list.invalidate_filter();
+            // Overlay card: shows iff this drive has a live burn in the
+            // shared progress map (Task 7) — restores the last-known
+            // phase/fraction immediately; the burn poller's own 200 ms tick
+            // resumes the pulse animation right after, if indeterminate.
+            burn_ui.refresh_progress(&drive.id);
         })
     };
 
@@ -8517,6 +8539,7 @@ fn open_media_library_window(
         let sel_id = selected_disc_id.clone();
         let exp = discs_expanded.clone();
         let disconnect_row = disc_disconnect_row.clone();
+        let burn_ui = burn_ui.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let Some(row) = opt_row else { return };
             let name = row.widget_name().to_string();
@@ -8525,6 +8548,10 @@ fn open_media_library_window(
                 rebuild_overview();
                 overview.set_visible(true);
                 detail.set_visible(false);
+                // No drive shown — nothing for the overlay to key off (a
+                // background burn is still running; it re-shows once its
+                // drive is selected again, via `populate`'s refresh_progress).
+                burn_ui.overlay_card.set_visible(false);
                 *sel_id.borrow_mut() = None;
                 if !exp.get() {
                     exp.set(true);

@@ -258,7 +258,14 @@ enum BurnMsg {
 pub(super) struct BurnUi {
     /// The whole panel — window.rs toggles visibility per media state.
     pub root: GtkBox,
+    /// Centered card shown over the whole disc-detail view (added as the
+    /// overlay child of media_library.rs's `disc_detail_overlay`) while the
+    /// shown drive has a live burn: phase label + fraction bar + Cancel.
+    /// Hidden by default; visibility is driven by `refresh_progress` below
+    /// and by the burn poller itself while running.
+    pub overlay_card: GtkBox,
     refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)>,
+    progress_refresh_cb: Rc<dyn Fn(&str)>,
 }
 
 impl BurnUi {
@@ -266,13 +273,26 @@ impl BurnUi {
     pub fn refresh(&self, drive: &crate::disc::OpticalDrive) {
         (self.refresh_cb)(drive);
     }
+
+    /// Show/hide + restore the overlay card for `drive_id` from the shared
+    /// progress map — called whenever the disc detail (re)populates for a
+    /// drive, so navigating away from a running burn and back re-shows it
+    /// (rather than only the panel's own in-place progress row, which lives
+    /// only while this exact drive stays selected). A live burn's own 200 ms
+    /// poller tick follows right behind to resume the pulse animation.
+    pub fn refresh_progress(&self, drive_id: &str) {
+        (self.progress_refresh_cb)(drive_id);
+    }
 }
 
 /// Build + wire the burn panel. `burn_queues` is shared with the ML files
 /// view's "Send to ▸ Disc Drive" context action; the panel reads/writes only the
 /// queue for the drive currently shown in the detail view — every other
 /// drive's queue is untouched. `refresh_discs` re-polls after a finished burn
-/// so the detail reflects the disc's new content.
+/// so the detail reflects the disc's new content. `burn_progress_map` is
+/// shared with media_library.rs's `populate_disc_detail` (Task 7): this panel
+/// writes it as the burn progresses, `populate_disc_detail` reads it via
+/// `refresh_progress` on every drive switch.
 pub(super) fn build_burn_panel(
     state: Rc<RefCell<AppState>>,
     burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
@@ -281,6 +301,7 @@ pub(super) fn build_burn_panel(
     // shown; the Send-to actions call it so an external add updates the panel
     // live instead of only after a navigate-away-and-back.
     burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
+    burn_progress_map: Rc<RefCell<std::collections::HashMap<String, crate::disc::burn::BurnProgress>>>,
     win: &gtk4::Window,
 ) -> BurnUi {
     let root = GtkBox::new(Orientation::Vertical, 6);
@@ -384,6 +405,41 @@ pub(super) fn build_burn_panel(
         .build();
     status.add_css_class("dim-label");
     root.append(&status);
+
+    // ── Overlay card (Task 7) ───────────────────────────────────────────
+    // Centered card media_library.rs floats over the whole disc-detail view
+    // while the shown drive has a live burn — "osd"/"card" are GTK4's own
+    // built-in style classes (same translucent-panel look the drive-icon
+    // badge already uses), so this needs no custom CSS. Duplicates the
+    // panel's phase text + Cancel (progress_row/btn_cancel above) because a
+    // burn's own drive may not be the one on screen — see refresh_progress.
+    let overlay_card = GtkBox::new(Orientation::Vertical, 8);
+    overlay_card.add_css_class("osd");
+    overlay_card.add_css_class("card");
+    overlay_card.add_css_class("burn-overlay-card");
+    overlay_card.set_halign(Align::Center);
+    overlay_card.set_valign(Align::Center);
+    overlay_card.set_margin_top(12);
+    overlay_card.set_margin_bottom(12);
+    overlay_card.set_margin_start(12);
+    overlay_card.set_margin_end(12);
+    overlay_card.set_width_request(280);
+    overlay_card.set_visible(false);
+    let overlay_phase_lbl = Label::builder()
+        .halign(Align::Center)
+        .justify(gtk4::Justification::Center)
+        .wrap(true)
+        .build();
+    // show-text toggles per update below: percent text while determinate,
+    // none while pulsing (a stale/frozen percentage next to a moving pulse
+    // block would read as a bug).
+    let overlay_bar = gtk4::ProgressBar::new();
+    let overlay_cancel = Button::with_label("Cancel");
+    overlay_cancel.add_css_class("pl-btn");
+    overlay_cancel.set_halign(Align::Center);
+    overlay_card.append(&overlay_phase_lbl);
+    overlay_card.append(&overlay_bar);
+    overlay_card.append(&overlay_cancel);
 
     let burn_running = Rc::new(Cell::new(false));
     let prep_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
@@ -660,16 +716,26 @@ pub(super) fn build_burn_panel(
     }
 
     // Cancel: stop between prepare tracks, kill the burn/erase subprocess.
-    {
+    // Shared by the in-panel button and the overlay card's button (Task 7) —
+    // whichever the user sees, it does the exact same thing.
+    let do_cancel: Rc<dyn Fn()> = {
         let prep_cancel = prep_cancel.clone();
         let status = status.clone();
-        btn_cancel.connect_clicked(move |_| {
+        Rc::new(move || {
             if let Some(flag) = prep_cancel.borrow().as_ref() {
                 flag.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             crate::disc::burn::request_cancel();
             status.set_text("Cancelling burn…");
-        });
+        })
+    };
+    {
+        let do_cancel = do_cancel.clone();
+        btn_cancel.connect_clicked(move |_| do_cancel());
+    }
+    {
+        let do_cancel = do_cancel.clone();
+        overlay_cancel.connect_clicked(move |_| do_cancel());
     }
 
     // ── Start a burn (shared by both mode buttons) ─────────────────────────
@@ -684,6 +750,10 @@ pub(super) fn build_burn_panel(
         let status = status.clone();
         let refresh_discs_holder = refresh_discs_holder.clone();
         let rerender = rerender.clone();
+        let burn_progress_map = burn_progress_map.clone();
+        let overlay_card = overlay_card.clone();
+        let overlay_phase_lbl = overlay_phase_lbl.clone();
+        let overlay_bar = overlay_bar.clone();
         let win_wk = win.downgrade();
         Rc::new(move |audio: bool| {
             if burn_running.get() {
@@ -735,6 +805,11 @@ pub(super) fn build_burn_panel(
                 let status = status.clone();
                 let refresh_discs_holder = refresh_discs_holder.clone();
                 let rerender = rerender.clone();
+                let shown_drive = shown_drive.clone();
+                let burn_progress_map = burn_progress_map.clone();
+                let overlay_card = overlay_card.clone();
+                let overlay_phase_lbl = overlay_phase_lbl.clone();
+                let overlay_bar = overlay_bar.clone();
                 let drive = drive.clone();
                 Rc::new(move |erase_first: bool| {
                     let verify = state.borrow().config.disc.burn_verify;
@@ -758,6 +833,22 @@ pub(super) fn build_burn_panel(
                     progress_row.set_visible(true);
                     phase_lbl.set_text("Starting…");
                     status.set_text("");
+                    // Overlay card (Task 7): the drive we're about to burn is
+                    // always the one currently shown (start_burn only reads
+                    // `shown_drive`), so it's safe to show unconditionally
+                    // here — the map entry is what makes it re-show on its
+                    // own if the user navigates away and back mid-burn.
+                    let starting = crate::disc::burn::BurnProgress {
+                        label: "Starting…".to_string(),
+                        fraction: None,
+                    };
+                    burn_progress_map
+                        .borrow_mut()
+                        .insert(drive_id.clone(), starting);
+                    overlay_phase_lbl.set_text("Starting…");
+                    overlay_bar.set_fraction(0.0);
+                    overlay_bar.set_show_text(false);
+                    overlay_card.set_visible(true);
                     let (tx, rx) = std::sync::mpsc::channel::<BurnMsg>();
 
                     let drive = drive.clone();
@@ -793,6 +884,11 @@ pub(super) fn build_burn_panel(
                     let status_p = status.clone();
                     let refresh_holder_p = refresh_discs_holder.clone();
                     let rerender_p = rerender.clone();
+                    let shown_drive_p = shown_drive.clone();
+                    let burn_progress_map_p = burn_progress_map.clone();
+                    let overlay_card_p = overlay_card.clone();
+                    let overlay_phase_lbl_p = overlay_phase_lbl.clone();
+                    let overlay_bar_p = overlay_bar.clone();
                     glib::timeout_add_local(
                         std::time::Duration::from_millis(200),
                         move || {
@@ -800,10 +896,10 @@ pub(super) fn build_burn_panel(
                             loop {
                                 match rx.try_recv() {
                                     Ok(BurnMsg::Progress(p)) => {
-                                        // Fraction USE (progress bar fill) is
-                                        // Task 7 — for now only the label
-                                        // renders, same text as before.
-                                        phase_lbl_p.set_text(&gtk_safe(&p.label))
+                                        phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                        burn_progress_map_p
+                                            .borrow_mut()
+                                            .insert(drive_id_p.clone(), p);
                                     }
                                     Ok(BurnMsg::Done(r)) => {
                                         done = Some(r);
@@ -816,11 +912,46 @@ pub(super) fn build_burn_panel(
                                     }
                                 }
                             }
+                            // Live overlay refresh: only one burn ever runs
+                            // at a time (the "already running" guard above),
+                            // so if the shown drive is this burn's drive,
+                            // this poller is the sole owner of the overlay
+                            // widgets right now — safe to touch them
+                            // directly. `fraction: None` is re-pulsed every
+                            // tick even without a fresh message (Erasing and
+                            // xorriso data burns only send one Progress at
+                            // the phase's start — this is what makes the
+                            // bar visibly animate instead of sitting stuck).
+                            let showing_this = shown_drive_p
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|d| d.id == drive_id_p);
+                            if showing_this {
+                                let snapshot =
+                                    burn_progress_map_p.borrow().get(&drive_id_p).cloned();
+                                if let Some(p) = snapshot {
+                                    overlay_phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                    match p.fraction {
+                                        Some(f) => {
+                                            overlay_bar_p.set_fraction(f as f64);
+                                            overlay_bar_p.set_show_text(true);
+                                            overlay_bar_p
+                                                .set_text(Some(&format!("{:.0}%", f * 100.0)));
+                                        }
+                                        None => {
+                                            overlay_bar_p.pulse();
+                                            overlay_bar_p.set_show_text(false);
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(result) = done {
                                 progress_row_p.set_visible(false);
                                 burn_running_p.set(false);
                                 state_p.borrow().disc_reading.set(false);
                                 *prep_cancel_p.borrow_mut() = None;
+                                burn_progress_map_p.borrow_mut().remove(&drive_id_p);
+                                overlay_card_p.set_visible(false);
                                 match result {
                                     Ok(summary) => {
                                         burn_queues_p.borrow_mut().queue(&drive_id_p).clear();
@@ -864,7 +995,47 @@ pub(super) fn build_burn_panel(
         btn_data.connect_clicked(move |_| start(false));
     }
 
-    BurnUi { root, refresh_cb }
+    // Restore/hide the overlay card for one drive id from the shared
+    // progress map — see `BurnUi::refresh_progress`. `fraction: None` here
+    // just parks the bar at 0 (no pulse): if the map has an entry, that
+    // drive's burn — and its poller — is still running by construction
+    // (entries are inserted at burn start and removed together with the
+    // burn's own completion), so the poller's own next 200 ms tick resumes
+    // the animation; this call only needs to get the static parts right.
+    let progress_refresh_cb: Rc<dyn Fn(&str)> = {
+        let burn_progress_map = burn_progress_map.clone();
+        let overlay_card = overlay_card.clone();
+        let overlay_phase_lbl = overlay_phase_lbl.clone();
+        let overlay_bar = overlay_bar.clone();
+        Rc::new(move |drive_id: &str| {
+            let snapshot = burn_progress_map.borrow().get(drive_id).cloned();
+            match snapshot {
+                Some(p) => {
+                    overlay_phase_lbl.set_text(&gtk_safe(&p.label));
+                    match p.fraction {
+                        Some(f) => {
+                            overlay_bar.set_fraction(f as f64);
+                            overlay_bar.set_show_text(true);
+                            overlay_bar.set_text(Some(&format!("{:.0}%", f * 100.0)));
+                        }
+                        None => {
+                            overlay_bar.set_fraction(0.0);
+                            overlay_bar.set_show_text(false);
+                        }
+                    }
+                    overlay_card.set_visible(true);
+                }
+                None => overlay_card.set_visible(false),
+            }
+        })
+    };
+
+    BurnUi {
+        root,
+        overlay_card,
+        refresh_cb,
+        progress_refresh_cb,
+    }
 }
 
 /// Mark a capacity meter line as over/OK (red via the shared "broken" class).
