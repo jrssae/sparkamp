@@ -1913,7 +1913,8 @@ pub fn build(
             let burn_refresh_holder = burn_refresh_holder.clone();
             let current_drives = current_drives.clone();
             let status = pl_status_label.clone();
-            let win_wk = playlist_win.downgrade();
+            let win_wk: glib::WeakRef<gtk4::Window> =
+                playlist_win.clone().upcast::<gtk4::Window>().downgrade();
             let action = gio::SimpleAction::new(
                 "send-drive",
                 Some(glib::VariantTy::STRING),
@@ -1941,9 +1942,6 @@ pub fn build(
                         .map(|t| t.path.clone())
                         .collect()
                 };
-                if paths.is_empty() {
-                    return;
-                }
                 // Metadata from the library NOW (SQLite is not Send).
                 let metas: std::collections::HashMap<_, _> = {
                     let s = state_burn.borrow();
@@ -1968,66 +1966,17 @@ pub fn build(
                         (path.clone(), (display, secs, bytes))
                     }).collect()
                 };
-                status.set_text("Reading files…");
-                let burn_queues = burn_queues.clone();
-                let burn_refresh_holder = burn_refresh_holder.clone();
                 let status = status.clone();
-                let win_wk = win_wk.clone();
-                // Probe off-thread, then queue on the main loop — the
-                // codebase's established spawn_future_local +
-                // spawn_blocking(...).await pattern (media_library.rs
-                // ml.send-drive). Only Send data (paths, metas) crosses
-                // into spawn_blocking; the Rcs stay in the local future.
-                glib::spawn_future_local(async move {
-                    let probe_metas: Vec<(std::path::PathBuf, Option<u32>)> =
-                        paths.iter()
-                            .map(|p| (p.clone(), metas.get(p).and_then(|m| m.1)))
-                            .collect();
-                    let probed: Vec<(std::path::PathBuf, Option<u32>)> =
-                        gio::spawn_blocking(move || {
-                            probe_metas
-                                .into_iter()
-                                .map(|(p, known)| {
-                                    let secs = known.or_else(|| {
-                                        crate::duration_probe::probe_duration_full(&p)
-                                            .map(|d| d.as_secs() as u32)
-                                    });
-                                    (p, secs)
-                                })
-                                .collect()
-                        })
-                        .await
-                        .unwrap_or_default();
-                    let out;
-                    let total;
-                    {
-                        let mut queues = burn_queues.borrow_mut();
-                        let list = queues.queue(&drive_id);
-                        out = crate::disc::burnlist::add_files(
-                            list,
-                            &paths,
-                            |p| metas.get(p).cloned().unwrap_or_else(|| {
-                                (p.display().to_string(), None, 0)
-                            }),
-                            |p| probed.iter()
-                                .find(|(pp, _)| pp == p)
-                                .and_then(|(_, s)| *s),
-                        );
-                        total = list.len();
-                    } // queues borrow drops before any UI call
-                    // Live-refresh the burn panel if it's the open view.
-                    if let Some(refresh) = burn_refresh_holder.borrow().as_ref() {
-                        refresh();
-                    }
-                    status.set_text(&gtk_safe(
-                        &out.status_message(&drive_label, total),
-                    ));
-                    if let (Some(body), Some(win)) =
-                        (out.failed_message(), win_wk.upgrade())
-                    {
-                        show_unreadable_dialog(&win.upcast::<gtk4::Window>(), &body);
-                    }
-                });
+                queue_paths_to_drive(
+                    drive_id,
+                    drive_label,
+                    paths,
+                    metas,
+                    burn_queues.clone(),
+                    burn_refresh_holder.clone(),
+                    Rc::new(move |s: String| status.set_text(&gtk_safe(&s))),
+                    win_wk.clone(),
+                );
             });
             pl_action_group.add_action(&action);
         }

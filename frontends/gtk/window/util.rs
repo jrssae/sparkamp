@@ -267,6 +267,73 @@ pub(super) fn show_unreadable_dialog(win: &gtk4::Window, body: &str) {
     dlg.show(Some(win));
 }
 
+/// The one Send-to ▸ Disc Drive path: metadata is supplied by the caller
+/// (SQLite lookups must happen before any spawn), unknown durations are
+/// probed off-thread, readable files queue onto the drive's burn list,
+/// unreadable ones are skipped and listed, and an open burn panel is
+/// live-refreshed. `status` receives interim ("Reading files…") and final
+/// (AddOutcome::status_message) text — every view routes it to its quiet
+/// status label (G3: no success modals anywhere).
+pub(super) fn queue_paths_to_drive(
+    drive_id: String,
+    drive_label: String,
+    paths: Vec<std::path::PathBuf>,
+    metas: std::collections::HashMap<std::path::PathBuf, (String, Option<u32>, u64)>,
+    burn_queues: std::rc::Rc<std::cell::RefCell<crate::disc::burnlist::BurnQueues>>,
+    burn_refresh_holder: std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>>,
+    status: std::rc::Rc<dyn Fn(String)>,
+    win_wk: glib::WeakRef<gtk4::Window>,
+) {
+    if paths.is_empty() {
+        status("Select tracks first".to_string()); // G4
+        return;
+    }
+    status("Reading files…".to_string());
+    glib::spawn_future_local(async move {
+        let probe_metas: Vec<(std::path::PathBuf, Option<u32>)> = paths
+            .iter()
+            .map(|p| (p.clone(), metas.get(p).and_then(|m| m.1)))
+            .collect();
+        let probed: Vec<(std::path::PathBuf, Option<u32>)> =
+            gio::spawn_blocking(move || {
+                probe_metas
+                    .into_iter()
+                    .map(|(p, known)| {
+                        let secs = known.or_else(|| {
+                            crate::duration_probe::probe_duration_full(&p)
+                                .map(|d| d.as_secs() as u32)
+                        });
+                        (p, secs)
+                    })
+                    .collect()
+            })
+            .await
+            .unwrap_or_default();
+        let out;
+        let total;
+        {
+            let mut queues = burn_queues.borrow_mut();
+            let list = queues.queue(&drive_id);
+            out = crate::disc::burnlist::add_files(
+                list,
+                &paths,
+                |p| metas.get(p).cloned().unwrap_or_else(|| {
+                    (p.display().to_string(), None, 0)
+                }),
+                |p| probed.iter().find(|(pp, _)| pp == p).and_then(|(_, s)| *s),
+            );
+            total = list.len();
+        } // queues borrow drops before any UI call
+        if let Some(refresh) = burn_refresh_holder.borrow().as_ref() {
+            refresh();
+        }
+        status(out.status_message(&drive_label, total));
+        if let (Some(body), Some(win)) = (out.failed_message(), win_wk.upgrade()) {
+            show_unreadable_dialog(&win, &body);
+        }
+    });
+}
+
 /// Embedded app logo PNG bytes (compiled into the binary).
 /// Replace `square logo.png` in the project root with the SparkAmp logo asset.
 static LOGO_BYTES: &[u8] = include_bytes!("../../../square logo.png");
