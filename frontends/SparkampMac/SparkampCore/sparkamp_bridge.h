@@ -751,9 +751,11 @@ int sparkamp_disc_audio_capacity_secs(SparkampCtx *ctx, const char *drive_json);
     Returns 0 on start, -1 bad JSON, -2 when a burn is already running. */
 int sparkamp_disc_burn_job_start(SparkampCtx *ctx, const char *job_json);
 
-/** Poll the burn job: {"running":bool, "phase":"…",
+/** Poll the burn job: {"running":bool, "phase":"…", "fraction":number|null,
     "done":{"ok":bool,"message":"…"}|null}. done non-null = job over.
-    Free with sparkamp_free_string. */
+    "fraction" is additive (0.0..=1.0 progress within "phase" when known,
+    e.g. streamed cdrskin percent during an audio burn) — existing decoders
+    that don't read it are unaffected. Free with sparkamp_free_string. */
 char *sparkamp_disc_burn_job_poll(SparkampCtx *ctx);
 
 /** Cancel the burn: stops between steps and kills a mid-write subprocess. */
