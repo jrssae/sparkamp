@@ -14,6 +14,19 @@ pub struct DiscMeta {
     pub album: String,
 }
 
+/// Sanitize tag text by replacing line breaks with spaces. The v07t sheet is
+/// line-oriented (parsed line-by-line by cdrskin); untrusted tag values
+/// (from ID3 metadata) containing embedded `\r` or `\n` could inject new
+/// directive lines (e.g., redefining Album Title). This function collapses
+/// all line-break sequences to a single space and trims the result.
+fn sanitize(s: &str) -> String {
+    s.replace('\r', " ")
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Split one queue display line into (performer, title).
 fn split_display(display: &str, disc_artist: &str) -> (String, String) {
     match display.split_once(" - ") {
@@ -73,12 +86,12 @@ fn chrono_free_today() -> String {
 pub fn build_v07t(meta: &DiscMeta, items: &[BurnItem]) -> String {
     let mut s = String::new();
     s.push_str("Input Sheet Version = 0.7T\n");
-    s.push_str(&format!("Album Title = {}\n", meta.album));
-    s.push_str(&format!("Artist Name = {}\n", meta.artist));
+    s.push_str(&format!("Album Title = {}\n", sanitize(&meta.album)));
+    s.push_str(&format!("Artist Name = {}\n", sanitize(&meta.artist)));
     for (i, item) in items.iter().enumerate() {
         let (performer, title) = split_display(&item.display, &meta.artist);
-        s.push_str(&format!("Track {:02} Title = {}\n", i + 1, title));
-        s.push_str(&format!("Track {:02} Artist = {}\n", i + 1, performer));
+        s.push_str(&format!("Track {:02} Title = {}\n", i + 1, sanitize(&title)));
+        s.push_str(&format!("Track {:02} Artist = {}\n", i + 1, sanitize(&performer)));
     }
     s
 }
@@ -120,5 +133,34 @@ mod tests {
         // fills the per-track Artist field.
         assert!(sheet.contains("Track 02 Title = justafilename"), "{sheet}");
         assert!(sheet.contains("Track 02 Artist = Foo"), "{sheet}");
+    }
+
+    #[test]
+    fn v07t_strips_line_breaks_from_tag_text() {
+        let meta = DiscMeta {
+            artist: "A\nAlbum Title = HACKED".into(),
+            album: "B\r\nArtist Name = X".into(),
+        };
+        let items = [item("Evil\nTrack 02 Title = Nope - T")];
+        let sheet = build_v07t(&meta, &items);
+        // No injected directive lines: newlines are replaced with spaces,
+        // so attempted injections like "Album Title = HACKED" on their own
+        // line cannot exist.
+        let lines: Vec<&str> = sheet.lines().collect();
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Album Title = HACKED")),
+            "injected Album Title directive found: {sheet}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Artist Name = X")),
+            "injected Artist Name directive found: {sheet}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Track 02 Title = Nope")),
+            "injected Track 02 Title directive found: {sheet}"
+        );
+        // Sanitized text keeps the readable parts (newlines replaced with spaces).
+        assert!(sheet.contains("Album Title = B Artist Name = X"), "{sheet}");
+        assert!(sheet.contains("Artist Name = A Album Title = HACKED"), "{sheet}");
     }
 }
