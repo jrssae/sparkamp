@@ -152,6 +152,11 @@ pub fn xorriso_data_args(device: &str, staged_dir: &Path) -> Vec<String> {
     vec![
         "-outdev".to_string(),
         device.to_string(),
+        // Emit cdrecord-style write progress ("Track 01: X of Y MB written"),
+        // the same format cdrskin uses — so `parse_cdrskin_progress` drives
+        // the data-burn percentage too, not just audio.
+        "-pacifier".to_string(),
+        "cdrecord".to_string(),
         "-blank".to_string(),
         "as_needed".to_string(),
         "-joliet".to_string(),
@@ -752,10 +757,8 @@ pub fn run_job(
                 Ok(format!("Audio CD burned ({} tracks)", items.len()))
             }
             BurnMode::Data { use_m3u } => {
-                // xorriso (Linux data-disc tool) has no equivalent of
-                // cdrskin's `-v` percent lines, so this phase — like Erasing
-                // — stays untouched: plain `run_tool` via `burn_data`,
-                // `fraction: None` throughout.
+                // Start indeterminate; the streamed xorriso progress upgrades
+                // it to a real percentage once the write begins.
                 progress(BurnProgress::new("Burning… (this takes a while)", None));
                 let files: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
                 let staged_files = stage_data_files(&files, &staged)?;
@@ -765,7 +768,13 @@ pub fn run_job(
                     return Err("cancelled".to_string());
                 }
                 write_data_playlist(&staged, &staged_files, use_m3u)?;
+                #[cfg(target_os = "macos")]
                 burn_data(drive, &staged, verify)?;
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = verify;
+                    burn_data_streaming(drive, &staged, &mut progress)?;
+                }
                 Ok(format!("Data disc burned ({} files + playlist)", items.len()))
             }
         }
@@ -780,7 +789,11 @@ pub fn run_job(
     result
 }
 
-/// Burn a staged folder as a data disc.
+/// Burn a staged folder as a data disc. Non-streaming (no live percentage) —
+/// used by the macOS path and the live hardware test; the Linux GTK/TUI data
+/// burn goes through [`burn_data_streaming`] for a progress bar, so this has
+/// no non-test caller in a Linux bin build.
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 pub fn burn_data(drive: &OpticalDrive, staged_dir: &Path, verify: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return run_tool("drutil", &drutil_data_args(&drive.id, staged_dir, verify));
@@ -788,6 +801,43 @@ pub fn burn_data(drive: &OpticalDrive, staged_dir: &Path, verify: bool) -> Resul
     {
         let _ = verify;
         return run_tool("xorriso", &xorriso_data_args(&drive.id, staged_dir));
+    }
+}
+
+/// [`burn_data`] with a live percentage: streams xorriso's cdrecord-pacifier
+/// progress lines (single session, so the parsed within-track fraction IS the
+/// overall fraction). Falls back to an indeterminate bar for any line that
+/// doesn't parse, so a xorriso build with a different pacifier still burns.
+#[cfg(target_os = "linux")]
+fn burn_data_streaming(
+    drive: &OpticalDrive,
+    staged_dir: &Path,
+    mut progress: impl FnMut(BurnProgress),
+) -> Result<(), String> {
+    let label = "Burning… (this takes a while)";
+    let args = xorriso_data_args(&drive.id, staged_dir);
+    let (ftx, frx) = mpsc::channel::<f32>();
+    let handle = std::thread::spawn(move || {
+        run_tool_streaming("xorriso", &args, move |line: &str| {
+            if let Some((_track, within)) = parse_cdrskin_progress(line) {
+                let _ = ftx.send(within.clamp(0.0, 1.0));
+            }
+        })
+    });
+    loop {
+        match frx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(fraction) => progress(BurnProgress::new(label, Some(fraction))),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if handle.is_finished() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err("xorriso: worker thread panicked".to_string()),
     }
 }
 
@@ -1145,7 +1195,8 @@ mod tests {
         assert_eq!(
             xorriso_data_args("/dev/sr0", Path::new("/t/stage")),
             [
-                "-outdev", "/dev/sr0", "-blank", "as_needed", "-joliet", "on", "-map",
+                "-outdev", "/dev/sr0", "-pacifier", "cdrecord", "-blank", "as_needed",
+                "-joliet", "on", "-map",
                 "/t/stage", "/", "-commit"
             ]
         );
