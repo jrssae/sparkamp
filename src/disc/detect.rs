@@ -113,6 +113,11 @@ pub(crate) fn exclusive_read() -> bool {
     EXCLUSIVE_READ_DEPTH.load(std::sync::atomic::Ordering::Relaxed) > 0
 }
 
+/// Serializes every test that touches the process-wide exclusive-read
+/// depth — cargo's parallel runner would otherwise interleave them.
+#[cfg(test)]
+static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod exclusive_read_tests {
     use super::*;
@@ -122,6 +127,7 @@ mod exclusive_read_tests {
     // guard (cargo runs `#[test]`s concurrently by default).
     #[test]
     fn refcount_nesting_and_underflow() {
+        let _guard = EXCLUSIVE_READ_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         assert!(!exclusive_read(), "must start clear");
 
         begin_exclusive_read();
@@ -1265,6 +1271,7 @@ session status:           complete
     #[test]
     #[cfg(target_os = "linux")]
     fn exclusive_read_freezes_polling() {
+        let _guard = EXCLUSIVE_READ_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let fake = vec![OpticalDrive {
             id: "/dev/sr-test".into(),
             label: "FAKE".into(),
