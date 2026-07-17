@@ -47,7 +47,7 @@ warnings inside distrobox, mac verification items appended to
 |---|-------|----------|--------------------|
 | 0 | Fixes pass | B1+B2+B7 (ID3 extra-frame wiring, GTK save + mac FFI, wire-or-delete dead machinery), B3 (bind `u`, fix dialog claims), B4 (SparkAmp→Sparkamp titles), B5 (correct APIC mime for GIF/WebP), B6 (CLAUDE.md skins path), D8 (mac playlist autoscroll), D10 (strip mac EQ labels), D13 (GTK genre dropdown = predefined-only), D16 (GTK verify-discs toggle), D17 (GTK granite beat settings) | User choice: fixes first. All small and independent. D14 (mac art set/clear) deferred to phase 2 where it pairs with A5 |
 | 1 | Metadata foundations | F13 scanner/schema capture (sample rate, file size, `added_at`, stored mtime, VBR/CBR) + ML columns GTK/mac; F3 read-only tech line in ID3 window both frontends; F2 folder-image fallback (folder/cover/front .jpg/.png, case-insensitive) in `read_track_tags`/`refresh_artwork` | Unblocks phase 2 (A1 needs kHz; art panel inherits folder fallback). Scanner schema settles before later scanner work (F7 analysis, F10 watching). Rating column stays deferred with the ratings UI |
-| 2 | F14 album art | A1 expandable now-playing panel (core play-start snapshot hook before `record_play`; GTK marquee↔panel swap + viz stretch; mac panel; TUI data-as-text), A6 standalone art window (shared `handle_key` routing, `k`), A2 inline ML thumbnails (+ mac art column), A5 set-art refinements + D14 mac set/clear parity. `w`/`k` added to the shortcuts dialog | The primary feature; its dependencies land in phase 1. Builds the core "now playing changed" notification seam that phase 3 consumes |
+| 2 | F14 album art | A1 expandable now-playing panel (core play-start snapshot hook before `record_play`; GTK marquee↔panel swap + viz stretch; mac panel; TUI data-as-text), A6 standalone art window (singleton like the other windows — toggling/opening focuses the existing one, never a second instance; cover follows every track change; shared `handle_key` routing, `k`), A2 inline ML thumbnails (+ mac art column), A5 set-art refinements + D14 mac set/clear parity. `w`/`k` added to the shortcuts dialog | The primary feature; its dependencies land in phase 1. Builds the core "now playing changed" notification seam that phase 3 consumes |
 | 3 | F6 MPRIS + NowPlaying | Linux MPRIS2 D-Bus service (metadata incl. art URL, status, position, transport commands); mac MPNowPlayingInfoCenter + MPRemoteCommandCenter | Consumes the phase-2 seam; OS-widget art comes free right after art lands |
 | 4 | F7 ReplayGain | Pipeline `rgvolume` (+`rglimiter`) before EQ/volume; `rganalysis` scan path → DB always, tag write-back toggle (default OFF); 4 playback settings (master ON, source track/album/auto, clip protection ON, non-RG adjustment −6 dB default); 2 library settings (auto-analyze on add, write-back); context + bulk analyze actions; opt-in ML column | Todo calls it hugely important — earliest slot after its scanner (phase 1) and engine-adjacent (phase 2/3 seams stable) prerequisites. Isolated pipeline work, low conflict with later UI phases |
 | 5 | F8 play queue | Core ordered queue consulted before shuffle/linear advance, survives playlist mutation, resumes from last-queued position; playlist badges, right-click + `q` toggle, jump-window `q`; Queue Manager view optional, only if time allows | Advance-logic core; precedes phase 6 whose stop-after-current flag hooks the same advance seam |
@@ -93,7 +93,10 @@ leave the count higher, never lower.
 
 ## Error handling defaults
 
-Missing art → placeholder (never an error). Missing tags → skip the row in
+Missing art → placeholder, never an error: a large Sparkamp logo at 50%
+opacity in the background with a "No artwork available" message (same
+treatment in the A1 panel art area and the A6 window, user decision
+2026-07-17). Missing tags → skip the row in
 the A1 panel. GStreamer elements missing (rgvolume/rganalysis) → silent no-op
 per house rule. Filesystem watcher failures → degrade to manual rescan with a
 log line, never crash the ML.
