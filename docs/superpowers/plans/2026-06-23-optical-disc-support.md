@@ -251,9 +251,16 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 
 **Hardware tests (Opus, blank media required):**
 1. **Audio CD-R:** add 3+ library tracks to the burn list (ML Files → right-click → Add to Burn List / TUI `b`), insert blank CD-R, drive view → Burn Audio CD → expect prepare progress per track, then burn phase, success status; disc plays in the Sparkamp Discs tab (TOC track count matches) and in Music.app. Verify gap/order correctness.
+   *(2026-07-17, core path: DONE — blank CD-R typed "CD-R, not erasable,
+   empty"; audio burn WITH CD-TEXT succeeded in 85 s; TOC + CD-TEXT read
+   back off the disc. GTK-side burn of a CD-R + playback = interactive.)*
 2. **Over-capacity:** queue >80 min, expect the burn button blocked with the over-capacity message BEFORE any disc write.
 3. **CD-RW with content:** burn once, then burn a different list → expect the erase confirmation (cancel leaves the disc untouched; confirm erases and burns).
 4. **Write-once with content:** insert the burned CD-R again → audio burn must be refused with a clear message, no drutil/cdrskin invocation.
+   *(2026-07-17, core path: DONE — burned CD-R probes "CD-R, not erasable,
+   complete"; erase_decision = Refuse verified live: the erase and data-burn
+   live tests both correctly skip with "no (blank) rewritable disc". The
+   GTK message for this state was already live-verified earlier.)*
 5. **Cancel mid-burn:** cancel during the burn phase → subprocess killed, status reports cancellation, disc reported as likely unusable (expected for write-once).
 6. **drutil output audit:** capture `drutil burn` stdout/stderr from a real burn; if percent lines exist, wire them into the progress parser (`parse_drutil_burn_progress` stub notes the format to look for); if not, keep the indeterminate spinner.
 
