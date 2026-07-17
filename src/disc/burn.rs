@@ -806,9 +806,11 @@ mod tests {
         mp3s.into_iter().take(n).map(|(_, p)| p).collect()
     }
 
-    /// LIVE: burn 2 short tracks as an audio CD onto the blank rewritable
-    /// disc, then re-probe and assert the disc reads back as a 2-track
-    /// audio CD. `cargo test --lib live_hw_burn_audio -- --ignored --nocapture`.
+    /// LIVE: burn 2 short tracks as an audio CD — WITH CD-TEXT — onto the
+    /// blank rewritable disc, then re-probe and assert the disc reads back
+    /// as a 2-track audio CD, and read the CD-TEXT back off the disc
+    /// (`cdrskin cdtext_to_v07t=-`) asserting the album title survived the
+    /// round trip. `cargo test --lib live_hw_burn_audio -- --ignored --nocapture`.
     /// WRITES THE LOADED DISC — run only on media you own for testing.
     #[test]
     #[ignore]
@@ -829,10 +831,31 @@ mod tests {
             prepare_wav(s, &out).expect("prepare wav");
             wavs.push(out);
         }
-        println!("burning… (audio, {} tracks)", wavs.len());
+        // CD-TEXT: a fixed album title we can grep for in the readback, plus
+        // per-track titles built the same way the app does.
+        let meta = crate::disc::cdtext::DiscMeta {
+            artist: "Sparkamp Test".to_string(),
+            album: "Sparkamp CDTEXT Live".to_string(),
+        };
+        let items: Vec<crate::disc::burnlist::BurnItem> = srcs
+            .iter()
+            .map(|p| crate::disc::burnlist::BurnItem {
+                path: p.clone(),
+                display: p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                duration_secs: Some(60),
+                bytes: 1,
+            })
+            .collect();
+        let sheet_path = staged.join("cdtext.v07t");
+        std::fs::write(&sheet_path, crate::disc::cdtext::build_v07t(&meta, &items))
+            .expect("write v07t sheet");
+        println!("burning… (audio, {} tracks, CD-TEXT)", wavs.len());
         let started = std::time::Instant::now();
         crate::disc::detect::begin_exclusive_read();
-        let r = burn_audio(&drive, &staged, &wavs, None, false);
+        let r = burn_audio(&drive, &staged, &wavs, Some(&sheet_path), false);
         crate::disc::detect::end_exclusive_read();
         let _ = std::fs::remove_dir_all(&staged);
         r.expect("burn_audio");
@@ -847,6 +870,22 @@ mod tests {
             d.toc.as_ref().map(|t| t.tracks.len()),
             Some(2),
             "TOC must carry both tracks"
+        );
+
+        // Read the CD-TEXT back off the physical disc and assert the album
+        // title survived. cdrskin prints the v07t sheet on stdout with `-`.
+        println!("reading CD-TEXT back…");
+        crate::disc::detect::begin_exclusive_read();
+        let out = std::process::Command::new("cdrskin")
+            .args([&format!("dev={}", drive.id), "cdtext_to_v07t=-"])
+            .output();
+        crate::disc::detect::end_exclusive_read();
+        let out = out.expect("run cdrskin cdtext_to_v07t");
+        let text = String::from_utf8_lossy(&out.stdout);
+        println!("--- CD-TEXT readback ---\n{text}\n------------------------");
+        assert!(
+            text.contains("Sparkamp CDTEXT Live"),
+            "album title must survive the CD-TEXT round trip"
         );
     }
 

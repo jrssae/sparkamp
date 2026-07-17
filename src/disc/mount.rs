@@ -74,7 +74,9 @@ pub fn ensure_mounted(drive: &super::OpticalDrive) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("cannot derive a device node from drive id {:?}", drive.id))?;
     let object_path = format!("/org/freedesktop/UDisks2/block_devices/{basename}");
 
-    let conn = zbus::blocking::Connection::system()
+    // Container-aware connector: falls back to the distrobox host socket
+    // when the standard system-bus path doesn't exist (dev environment).
+    let conn = crate::devices::detect::system_bus()
         .map_err(|e| format!("connecting to the system D-Bus: {e}"))?;
     let fs = zbus::blocking::Proxy::new(&conn, UDISKS, object_path.as_str(), FILESYSTEM_IFACE)
         .map_err(|e| format!("building udisks2 Filesystem proxy for {object_path}: {e}"))?;
@@ -263,13 +265,18 @@ mod tests {
     #[test]
     #[ignore]
     fn live_disc_mount_and_list() {
-        crate::disc::detect::begin_exclusive_read();
+        // The tag read falls back to GStreamer's Discoverer for headerless
+        // files, which panics without init (same as the unit tests above).
+        gstreamer::init().ok();
+        // Probe BEFORE taking the exclusive-read guard: list_drives() answers
+        // from (empty) cached state while the guard is held, which made this
+        // test always skip with "no disc loaded" (found live 2026-07-17).
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.present) else {
-            crate::disc::detect::end_exclusive_read();
             println!("no disc loaded — skipping");
             return;
         };
+        crate::disc::detect::begin_exclusive_read();
         let mount_result = ensure_mounted(drive);
         let mount = match mount_result {
             Ok(m) => m,

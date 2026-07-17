@@ -101,13 +101,37 @@ fn is_writable(mount: &Path) -> bool {
 
 // ── live udisks2 access ─────────────────────────────────────────────────────
 
+/// Connect to the SYSTEM D-Bus, container-aware: inside a distrobox the
+/// standard socket (`/run/dbus/system_bus_socket`) doesn't exist and
+/// `DBUS_SYSTEM_BUS_ADDRESS` is unset, but the host's bus is exposed at
+/// `/run/host/run/dbus/system_bus_socket`. Without this fallback every
+/// udisks feature (device detection, data-disc mounting) silently fails in
+/// the dev environment — found live 2026-07-17. On a normal host (or in the
+/// Flatpak) the default connection succeeds and the fallback never runs.
+pub(crate) fn system_bus() -> zbus::Result<Connection> {
+    match Connection::system() {
+        Ok(c) => Ok(c),
+        Err(e) => {
+            const HOST_SOCKET: &str = "/run/host/run/dbus/system_bus_socket";
+            if std::env::var_os("DBUS_SYSTEM_BUS_ADDRESS").is_none()
+                && std::path::Path::new(HOST_SOCKET).exists()
+            {
+                let addr =
+                    zbus::Address::try_from("unix:path=/run/host/run/dbus/system_bus_socket")?;
+                return zbus::blocking::connection::Builder::address(addr)?.build();
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Enumerate currently-connected external storage with a mounted filesystem.
 ///
 /// Returns an empty vec when nothing external is mounted. Errors only when the
 /// udisks2 service itself can't be reached — map those with
 /// [`classify_error`] to drive the friendly diagnostics UI.
 pub fn list_devices() -> zbus::Result<Vec<Device>> {
-    let conn = Connection::system()?;
+    let conn = system_bus()?;
     let manager = ObjectManagerProxy::builder(&conn)
         .destination(UDISKS)?
         .path(MANAGER_PATH)?
@@ -202,7 +226,7 @@ pub fn eject(block_object: &str) -> zbus::Result<()> {
     // SAFETY: `sync()` takes no arguments and cannot fail.
     unsafe { libc::sync() };
 
-    let conn = Connection::system()?;
+    let conn = system_bus()?;
     let no_opts: HashMap<String, Value> = HashMap::new();
 
     let fs = zbus::blocking::Proxy::new(&conn, UDISKS, block_object, FILESYSTEM_IFACE)?;
