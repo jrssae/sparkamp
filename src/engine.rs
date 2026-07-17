@@ -498,20 +498,37 @@ impl Player {
         // no device syntax. Strip it and hand the device to the source-setup
         // handler; plain URIs clear any stale device.
         let uri = if let Some((track, device)) = crate::disc::parse_cdda_uri(uri) {
-            if let Ok(mut slot) = self.cdda_device.lock() {
-                *slot = device.map(str::to_string);
+            let was_active = self
+                .cdda_device
+                .lock()
+                .map(|mut slot| {
+                    let was_active = slot.is_some();
+                    *slot = device.map(str::to_string);
+                    was_active
+                })
+                .unwrap_or(false);
+            // From here until stop() (or the next non-cdda load) the drive
+            // belongs to the pipeline's streaming read — silence every
+            // detection poll BEFORE the source opens the device (a status
+            // ioctl mid-stream faults flaky drives and wedges the open in
+            // endless retries). The guard is refcounted, so back-to-back
+            // cdda loads with no `stop()` between them (advancing tracks on
+            // the same disc) must not `begin` again — that would leave the
+            // count one too high after the eventual single `end`, wedging
+            // polling off even once playback actually stops.
+            if !was_active {
+                crate::disc::detect::begin_exclusive_read();
             }
-            // From here until stop() the drive belongs to the pipeline's
-            // streaming read — silence every detection poll BEFORE the
-            // source opens the device (a status ioctl mid-stream faults
-            // flaky drives and wedges the open in endless retries).
-            crate::disc::detect::set_exclusive_read(true);
             format!("cdda://{track}")
         } else {
-            if let Ok(mut slot) = self.cdda_device.lock() {
-                *slot = None;
+            let was_active = self
+                .cdda_device
+                .lock()
+                .map(|mut slot| slot.take().is_some())
+                .unwrap_or(false);
+            if was_active {
+                crate::disc::detect::end_exclusive_read();
             }
-            crate::disc::detect::set_exclusive_read(false);
             uri.to_string()
         };
 
@@ -571,8 +588,18 @@ impl Player {
     pub fn stop(&mut self) -> Result<()> {
         self.pipeline.set_state(gst::State::Null)?;
         self.state = PlayerState::Stopped;
-        // Null released the device — detection polling may resume.
-        crate::disc::detect::set_exclusive_read(false);
+        // Null released the device — detection polling may resume, but only
+        // end the guard if a cdda session actually `begin`-ed it (matches
+        // `load`'s cdda branch above); stopping a non-disc track must not
+        // send an unmatched `end`.
+        let was_active = self
+            .cdda_device
+            .lock()
+            .map(|mut slot| slot.take().is_some())
+            .unwrap_or(false);
+        if was_active {
+            crate::disc::detect::end_exclusive_read();
+        }
         if let Ok(mut spec) = self.spectrum_data.write() {
             spec.clear();
         }

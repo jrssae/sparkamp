@@ -68,23 +68,94 @@ pub fn invalidate_shared_cache() {
     SHARED.lock().unwrap().clear();
 }
 
-/// While a streaming read owns the drive (cdda playback or a rip), even the
-/// "harmless" status ioctls interleave SCSI commands with the reads and make
-/// flaky drives fault mid-stream (verified live). The engine flips this ON
-/// **before** GStreamer opens the device and OFF when the session ends; while
-/// set, every Linux detection entry point answers from its previous result
-/// without opening the device at all. Frontend-level guards remain as a
-/// second layer, but this closes the race where a poll is already in flight
-/// when playback starts.
-static EXCLUSIVE_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// While a streaming read owns the drive (cdda playback, a rip, a burn, or a
+/// data-disc mount+browse), even the "harmless" status ioctls interleave SCSI
+/// commands with the reads and make flaky drives fault mid-stream (verified
+/// live). Each such scope flips this ON **before** touching the device and
+/// OFF when its session ends; while the count is above zero, every Linux
+/// detection entry point answers from its previous result without opening
+/// the device at all. Frontend-level guards remain as a second layer, but
+/// this closes the race where a poll is already in flight when a scope
+/// starts.
+///
+/// A refcount, not a bool: two scopes can legitimately overlap on two
+/// different drives (e.g. a burn running on drive B while a browse/rip
+/// finishes on drive A) — with a plain bool the one finishing first would
+/// clear the flag out from under the one still running, letting a poll
+/// re-probe (and potentially fault) a drive mid-write.
+static EXCLUSIVE_READ_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-pub fn set_exclusive_read(active: bool) {
-    EXCLUSIVE_READ.store(active, std::sync::atomic::Ordering::Relaxed);
+/// Enter an exclusive-read scope. Must be paired with [`end_exclusive_read`];
+/// nesting/overlapping scopes are additive (the guard stays up until every
+/// entered scope has exited).
+pub fn begin_exclusive_read() {
+    EXCLUSIVE_READ_DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Exit an exclusive-read scope entered with [`begin_exclusive_read`].
+/// Saturating: an unmatched call (a bug — every call site pairs begin/end)
+/// is a no-op in release rather than wrapping the counter around to
+/// `usize::MAX` and jamming detection off forever; debug builds assert.
+pub fn end_exclusive_read() {
+    let prev = EXCLUSIVE_READ_DEPTH.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |d| Some(d.saturating_sub(1)),
+    );
+    debug_assert!(
+        prev != Ok(0),
+        "end_exclusive_read called without a matching begin_exclusive_read"
+    );
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn exclusive_read() -> bool {
-    EXCLUSIVE_READ.load(std::sync::atomic::Ordering::Relaxed)
+    EXCLUSIVE_READ_DEPTH.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+#[cfg(test)]
+mod exclusive_read_tests {
+    use super::*;
+
+    // These share process-global state (`EXCLUSIVE_READ_DEPTH`), so they run
+    // as one test to avoid interleaving with any other test that touches the
+    // guard (cargo runs `#[test]`s concurrently by default).
+    #[test]
+    fn refcount_nesting_and_underflow() {
+        assert!(!exclusive_read(), "must start clear");
+
+        begin_exclusive_read();
+        begin_exclusive_read();
+        assert!(exclusive_read(), "still held with one outstanding begin");
+        end_exclusive_read();
+        assert!(exclusive_read(), "nested begin/begin/end leaves it held");
+        end_exclusive_read();
+        assert!(!exclusive_read(), "final end clears it");
+
+        // An unmatched end is a caller bug — real call sites always pair
+        // begin/end, so `end_exclusive_read` intentionally `debug_assert`s
+        // on it to catch that bug in debug/test builds. Exercising that
+        // exact misuse here means catching the expected panic (silencing
+        // the default hook so the test output stays clean) rather than
+        // letting it fail the test — what this asserts is the *saturating*
+        // half of the contract: the counter itself stays at 0, it does not
+        // wrap around to `usize::MAX` and wedge detection off forever. In a
+        // release build (`debug_assertions` off) the same call is a plain
+        // no-op with no panic at all — see `end_exclusive_read`'s doc.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(end_exclusive_read);
+        std::panic::set_hook(prev_hook);
+        if cfg!(debug_assertions) {
+            assert!(result.is_err(), "unmatched end must debug_assert");
+        }
+        assert!(!exclusive_read(), "unmatched end left the count saturated at 0, not wrapped");
+
+        begin_exclusive_read();
+        assert!(exclusive_read());
+        end_exclusive_read();
+        assert!(!exclusive_read(), "count still balanced after the earlier no-op");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,9 +1272,9 @@ session status:           complete
             toc: None,
             mount_path: None,
         }];
-        set_exclusive_read(true);
+        begin_exclusive_read();
         let out = list_drives_cached(&fake);
-        set_exclusive_read(false);
+        end_exclusive_read();
         // While a streaming read owns the drive, polling must echo the
         // previous state untouched — no device access, no re-enumeration.
         assert_eq!(out, fake);

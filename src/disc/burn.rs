@@ -681,7 +681,7 @@ pub fn run_job(
 
     // The burn subprocess owns the drive for the whole run — keep every
     // detection poll (even status ioctls) off the device.
-    crate::disc::detect::set_exclusive_read(true);
+    crate::disc::detect::begin_exclusive_read();
     let result = (|| -> Result<String, String> {
         if erase_first {
             progress(BurnProgress::new("Erasing…", None));
@@ -753,7 +753,7 @@ pub fn run_job(
             }
         }
     })();
-    crate::disc::detect::set_exclusive_read(false);
+    crate::disc::detect::end_exclusive_read();
     if result.is_ok() {
         // Our own write doesn't raise the kernel's media-changed flag —
         // drop the shared snapshot so the next poll re-probes the disc.
@@ -831,9 +831,9 @@ mod tests {
         }
         println!("burning… (audio, {} tracks)", wavs.len());
         let started = std::time::Instant::now();
-        crate::disc::detect::set_exclusive_read(true);
+        crate::disc::detect::begin_exclusive_read();
         let r = burn_audio(&drive, &staged, &wavs, None, false);
-        crate::disc::detect::set_exclusive_read(false);
+        crate::disc::detect::end_exclusive_read();
         let _ = std::fs::remove_dir_all(&staged);
         r.expect("burn_audio");
         println!("burned in {:.1?}", started.elapsed());
@@ -866,9 +866,9 @@ mod tests {
         }
         println!("erasing…");
         let started = std::time::Instant::now();
-        crate::disc::detect::set_exclusive_read(true);
+        crate::disc::detect::begin_exclusive_read();
         let r = erase(&drive);
-        crate::disc::detect::set_exclusive_read(false);
+        crate::disc::detect::end_exclusive_read();
         r.expect("erase");
         println!("erased in {:.1?}", started.elapsed());
 
@@ -898,9 +898,9 @@ mod tests {
         println!("staged {} files + {}", staged_files.len(), pl.display());
         println!("burning… (data)");
         let started = std::time::Instant::now();
-        crate::disc::detect::set_exclusive_read(true);
+        crate::disc::detect::begin_exclusive_read();
         let r = burn_data(&drive, &staged, false);
-        crate::disc::detect::set_exclusive_read(false);
+        crate::disc::detect::end_exclusive_read();
         let _ = std::fs::remove_dir_all(&staged);
         r.expect("burn_data");
         println!("burned in {:.1?}", started.elapsed());

@@ -3003,12 +3003,12 @@ fn open_media_library_window(
             busy.set(true);
             status.set_text("Reading disc…");
             // Both guards, like the rip flow: `disc_reading` makes the GTK
-            // pollers skip outright; `set_exclusive_read` is the core-level
+            // pollers skip outright; `begin_exclusive_read` is the core-level
             // flag `list_drives_cached`/`list_drives_shared` themselves check
             // (mount.rs's own doc: `ensure_mounted` doesn't take this guard
             // itself — the caller must).
             state.borrow().disc_reading.set(true);
-            crate::disc::detect::set_exclusive_read(true);
+            crate::disc::detect::begin_exclusive_read();
             let state2 = state.clone();
             let store2 = store.clone();
             let status2 = status.clone();
@@ -3023,7 +3023,7 @@ fn open_media_library_window(
                     },
                 )
                 .await;
-                crate::disc::detect::set_exclusive_read(false);
+                crate::disc::detect::end_exclusive_read();
                 state2.borrow().disc_reading.set(false);
                 busy2.set(false);
                 let result = match joined {
@@ -3085,7 +3085,7 @@ fn open_media_library_window(
             // the still-mounted disc file by file, so it's a disc read for
             // exactly as long as `load_disc_files`'s mount+walk was.
             state.borrow().disc_reading.set(true);
-            crate::disc::detect::set_exclusive_read(true);
+            crate::disc::detect::begin_exclusive_read();
             let total = files.len();
             status.set_text(&format!("Copying 1/{total}…"));
             let state2 = state.clone();
@@ -3109,7 +3109,7 @@ fn open_media_library_window(
                         _ => failed += 1,
                     }
                 }
-                crate::disc::detect::set_exclusive_read(false);
+                crate::disc::detect::end_exclusive_read();
                 state2.borrow().disc_reading.set(false);
                 busy2.set(false);
                 let mut imported = 0;
@@ -8908,7 +8908,11 @@ fn open_media_library_window(
             // Never run cd-info on a drive we're actively reading from — cdiocddasrc
             // (playback OR a rip) seeks the same head, and the device only allows
             // one reader, so a concurrent cd-info thrashes it. Skip while a cdda://
-            // track plays or a rip is in progress; polling resumes afterwards.
+            // track plays, a rip is in progress, or `disc_reading` is set (burn,
+            // and the data-disc browse/import mount+walk, both flip it for their
+            // duration — a full probe landing mid-burn or mid-mount is the same
+            // hardware hazard as the cases above, just on whichever drive that
+            // scope owns rather than necessarily this one).
             {
                 let s = state.borrow();
                 let playing_disc = !matches!(s.player.state(), PlayerState::Stopped)
@@ -8917,7 +8921,7 @@ fn open_media_library_window(
                         .current()
                         .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
                         .unwrap_or(false);
-                if playing_disc || rip_active.get() {
+                if playing_disc || rip_active.get() || s.disc_reading.get() {
                     // Not detecting right now — clear any spinner a show/map set.
                     disc_detect_spinner.stop();
                     disc_detect_spinner.set_visible(false);

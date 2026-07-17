@@ -364,7 +364,7 @@ pub fn run_job(
     }
     // The rip's streaming reads own the drive: keep every detection poll
     // (even status ioctls) off the device for the whole run.
-    crate::disc::detect::set_exclusive_read(true);
+    crate::disc::detect::begin_exclusive_read();
     let n = entries.len();
     for (i, entry) in entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -418,7 +418,7 @@ pub fn run_job(
             Err(e) => outcome.failures.push(format!("{}: {e}", entry.number)),
         }
     }
-    crate::disc::detect::set_exclusive_read(false);
+    crate::disc::detect::end_exclusive_read();
     outcome
 }
 

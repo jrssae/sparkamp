@@ -698,9 +698,9 @@ pub unsafe extern "C" fn sparkamp_disc_mount_list(
 
     #[cfg(target_os = "linux")]
     let mount_path = {
-        crate::disc::detect::set_exclusive_read(true);
+        crate::disc::detect::begin_exclusive_read();
         let result = crate::disc::mount::ensure_mounted(&drive);
-        crate::disc::detect::set_exclusive_read(false);
+        crate::disc::detect::end_exclusive_read();
         result.ok()
     };
     #[cfg(not(target_os = "linux"))]

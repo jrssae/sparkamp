@@ -59,7 +59,7 @@ pub struct DiscFile {
 /// **Contention note:** this function itself performs a disc READ (the Mount
 /// call spins the drive and probes the filesystem), exactly like a TOC probe
 /// or a rip. Callers must invoke it only from the same guarded, exclusive-read
-/// context other disc reads use (see `disc::detect::set_exclusive_read`) —
+/// context other disc reads use (see `disc::detect::begin_exclusive_read`) —
 /// `ensure_mounted` does not take that guard itself; the GTK caller (Task 9)
 /// is responsible for wrapping it.
 ///
@@ -263,10 +263,10 @@ mod tests {
     #[test]
     #[ignore]
     fn live_disc_mount_and_list() {
-        crate::disc::detect::set_exclusive_read(true);
+        crate::disc::detect::begin_exclusive_read();
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.present) else {
-            crate::disc::detect::set_exclusive_read(false);
+            crate::disc::detect::end_exclusive_read();
             println!("no disc loaded — skipping");
             return;
         };
@@ -274,13 +274,13 @@ mod tests {
         let mount = match mount_result {
             Ok(m) => m,
             Err(e) => {
-                crate::disc::detect::set_exclusive_read(false);
+                crate::disc::detect::end_exclusive_read();
                 println!("ensure_mounted failed ({e}) — skipping (likely an audio CD, not a data disc)");
                 return;
             }
         };
         let files = list_disc_files(&mount);
-        crate::disc::detect::set_exclusive_read(false);
+        crate::disc::detect::end_exclusive_read();
 
         println!("mounted at {}", mount.display());
         for f in &files {
