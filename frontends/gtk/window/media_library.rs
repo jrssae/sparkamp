@@ -8584,6 +8584,15 @@ fn open_media_library_window(
                 *last_drive.borrow_mut() = Some(drive.id.clone());
                 search_entry.set_text("");
             }
+            // Data-disc file browser: hidden/cleared unconditionally up front.
+            // The non-audio branch below re-shows/refills it for a data disc;
+            // without this, a data->audio swap on the same drive (e.g. via
+            // the fingerprint auto-refresh re-populating this same drive)
+            // left the stale file browser visible under the new track list,
+            // its rows still pointing at the now-unmounted data disc.
+            files_scroll.set_visible(false);
+            add_all_btn.set_visible(false);
+            files_store.remove_all();
             // Header icon reflects the loaded media (badge included).
             while let Some(child) = icon_box.first_child() {
                 icon_box.remove(&child);
