@@ -280,6 +280,14 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 **Hardware tests (Opus, blank media required):**
 1. **Data CD-R:** queue a dozen MP3s → Burn Data → after eject/reinsert, the volume mounts with exactly those files at the root; they play from the Devices/Finder path.
 2. **Data DVD-RAM / CD-RW rewrite:** burn, then burn a different set → erase confirmation → new content only.
+   *(2026-07-17, core path on a DVD+RW: DONE — typed "DVD+RW, erasable,
+   empty"; 3-file data burn 137 s; mounted + listed; then the new
+   `live_hw_rewrite_data` runs the real post-confirmation path
+   (run_job erase_first=true) burning a 2-file set over it in 49 s —
+   remount shows the new set ONLY. Learned: DVD+RW is overwrite media
+   with NO blank state — `blank=fast` is a fast no-op there and content
+   stays readable until overwritten; the erase live test now asserts
+   is_blank only for CD-RW and "still burnable" for every RW kind.)*
 3. **Over-capacity:** queue > free bytes → blocked pre-burn.
 4. **Write-once append (deferred feature):** current build must REFUSE a second data burn to a non-blank CD-R with a clear message. If append is wanted, implement `xorriso -dev` (not `-outdev`) growisofs-style appends + `drutil` equivalent, then test: two sequential burns → both sessions' files visible after remount.
 5. **Cancel mid-burn** and **drutil output audit** as in Phase 5.

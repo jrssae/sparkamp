@@ -915,7 +915,78 @@ mod tests {
         let after = crate::disc::detect::list_drives_shared();
         let d = after.iter().find(|d| d.id == drive.id).expect("drive");
         println!("after erase: {}", d.media_summary());
-        assert!(d.media.is_blank, "disc must probe blank after the erase");
+        // CD-RW genuinely blanks; DVD+RW is overwrite media with NO blank
+        // state — `blank=fast` is a fast compatibility no-op there and the
+        // old content stays readable until the next burn writes over it
+        // (found live 2026-07-17 on a DVD+RW). The meaningful invariant on
+        // every rewritable kind is "the disc can still be burned again".
+        if d.media.kind == MediaKind::CdRw {
+            assert!(d.media.is_blank, "a CD-RW must probe blank after the erase");
+        }
+        assert_ne!(
+            erase_decision(d),
+            EraseDecision::Refuse,
+            "an erased rewritable disc must remain burnable"
+        );
+    }
+
+    /// LIVE: rewrite a NON-blank rewritable disc — the "burn a different set
+    /// over existing content" flow: `run_job` with `erase_first = true`,
+    /// exactly what the UIs run after the erase confirmation. Burns 2 files
+    /// (vs the 3-file set the plain data test writes, so a mount check can
+    /// tell the sets apart). Skips on blank or write-once media.
+    /// `cargo test --lib live_hw_rewrite_data -- --ignored --nocapture`.
+    /// OVERWRITES THE LOADED DISC.
+    #[test]
+    #[ignore]
+    fn live_hw_rewrite_data() {
+        gstreamer::init().expect("gst init");
+        let drives = crate::disc::detect::list_drives_shared();
+        let Some(drive) = drives.iter().find(|d| {
+            d.media.present
+                && !d.media.is_blank
+                && erase_decision(d) == EraseDecision::EraseAfterConfirm
+        }) else {
+            println!("no rewritable disc with content — skipping");
+            return;
+        };
+        let files = small_test_mp3s(2);
+        assert_eq!(files.len(), 2);
+        let items: Vec<crate::disc::burnlist::BurnItem> = files
+            .iter()
+            .map(|p| crate::disc::burnlist::BurnItem {
+                path: p.clone(),
+                display: p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                duration_secs: Some(60),
+                bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+            })
+            .collect();
+        println!("rewriting… (erase-first data burn, {} files)", items.len());
+        let started = std::time::Instant::now();
+        let cancel = AtomicBool::new(false);
+        let r = run_job(
+            drive,
+            &items,
+            BurnMode::Data { use_m3u: false },
+            true, // erase_first — the post-confirmation path
+            false,
+            None,
+            &cancel,
+            |p| println!("  {}", p.label),
+        );
+        println!("rewrote in {:.1?}", started.elapsed());
+        let summary = r.expect("rewrite run_job");
+        println!("{summary}");
+
+        crate::disc::detect::invalidate_shared_cache();
+        let after = crate::disc::detect::list_drives_shared();
+        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        println!("after rewrite: {}", d.media_summary());
+        assert!(d.media.present, "disc must probe present");
+        assert!(!d.media.is_audio_cd, "rewritten disc must be a data disc");
     }
 
     /// LIVE: burn 3 MP3s + companion playlist as a data disc onto blank
