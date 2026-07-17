@@ -152,11 +152,6 @@ pub fn xorriso_data_args(device: &str, staged_dir: &Path) -> Vec<String> {
     vec![
         "-outdev".to_string(),
         device.to_string(),
-        // Emit cdrecord-style write progress ("Track 01: X of Y MB written"),
-        // the same format cdrskin uses — so `parse_cdrskin_progress` drives
-        // the data-burn percentage too, not just audio.
-        "-pacifier".to_string(),
-        "cdrecord".to_string(),
         "-blank".to_string(),
         "as_needed".to_string(),
         "-joliet".to_string(),
@@ -342,7 +337,7 @@ fn run_tool_streaming_with_timeout(
     program: &str,
     args: &[String],
     timeout: std::time::Duration,
-    mut on_line: impl FnMut(&str) + Send + 'static,
+    on_line: impl FnMut(&str) + Send + 'static,
 ) -> Result<(), String> {
     use std::io::{BufRead, BufReader, Write};
 
@@ -356,50 +351,67 @@ fn run_tool_streaming_with_timeout(
         seq
     ));
     let log = std::fs::File::create(&log_path).map_err(|e| format!("{program}: {e}"))?;
+    let log_out = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
     let log_err = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
-    let mut log_out = log.try_clone().map_err(|e| format!("{program}: {e}"))?;
 
     let mut child = std::process::Command::new(program)
         .args(args)
+        // BOTH streams are piped: cdrskin writes its write-progress to stdout,
+        // but xorriso writes its UPDATE/progress to stderr — so tee both to
+        // `on_line` (and to the log) or the data-burn bar never gets a
+        // fraction (2026-07-17).
         .stdout(std::process::Stdio::piped())
-        .stderr(log_err)
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
 
-    // stdout is teed to the log file (so `interpret_exit`'s error tail still
-    // sees every line, same as before) AND to `on_line` (the live-progress
-    // feed) — on a dedicated reader thread, so the poll loop below is free to
-    // keep owning the cancel/watchdog checks at its own 200 ms cadence
-    // instead of blocking on child output. Killing/exiting the child closes
-    // its stdout pipe, which ends this thread's `read_line` loop on its own.
-    let stdout = child.stdout.take().expect("piped stdout");
-    let reader = std::thread::spawn(move || {
-        let mut buf = BufReader::new(stdout);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match buf.read_until(b'\n', &mut line) {
-                // EOF: the child closed its stdout (exited, or the pipe was
-                // torn down). This is the only condition that ends the loop
-                // on a clean read.
-                Ok(0) => break,
-                // Byte-transparent tee: decode lossily (invalid UTF-8 becomes
-                // U+FFFD) rather than dropping the line — the old
-                // kernel-redirect was byte-transparent, and `interpret_exit`'s
-                // error tail needs every line the tool wrote, even ones a
-                // buggy tool emits as non-UTF-8 garbage.
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&line);
-                    let text = text.trim_end_matches(['\n', '\r']);
-                    let _ = writeln!(log_out, "{text}");
-                    on_line(text);
+    // One shared progress sink for both reader threads. Each line is teed to
+    // the log (so `interpret_exit`'s error tail still sees everything) AND to
+    // `on_line`. Reader threads keep the poll loop free to own the
+    // cancel/watchdog checks; killing/exiting the child closes both pipes,
+    // ending the reader loops on their own.
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(on_line));
+    fn tee_reader<R, F>(
+        stream: R,
+        mut log: std::fs::File,
+        sink: std::sync::Arc<std::sync::Mutex<F>>,
+    ) -> std::thread::JoinHandle<()>
+    where
+        R: std::io::Read + Send + 'static,
+        F: FnMut(&str) + Send + 'static,
+    {
+        std::thread::spawn(move || {
+            let mut buf = BufReader::new(stream);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match buf.read_until(b'\n', &mut line) {
+                    Ok(0) => break, // EOF: pipe closed
+                    Ok(_) => {
+                        // Byte-transparent tee (lossy UTF-8 decode) so the
+                        // error tail keeps every line, even non-UTF-8 garbage.
+                        let text = String::from_utf8_lossy(&line);
+                        let text = text.trim_end_matches(['\n', '\r']);
+                        let _ = writeln!(log, "{text}");
+                        if let Ok(mut f) = sink.lock() {
+                            f(text);
+                        }
+                    }
+                    Err(_) => break, // real IO error — nothing more to read
                 }
-                // A real IO error reading the pipe (distinct from EOF above)
-                // — nothing more to read either way, so stop.
-                Err(_) => break,
             }
-        }
-    });
+        })
+    }
+    let out_reader = tee_reader(
+        child.stdout.take().expect("piped stdout"),
+        log_out,
+        sink.clone(),
+    );
+    let err_reader = tee_reader(
+        child.stderr.take().expect("piped stderr"),
+        log_err,
+        sink.clone(),
+    );
 
     enum Outcome {
         Exited(std::process::ExitStatus),
@@ -429,10 +441,11 @@ fn run_tool_streaming_with_timeout(
             Err(e) => break Outcome::Errored(format!("wait {program}: {e}")),
         }
     };
-    // Join before reading the log: the reader thread's tee-write for the
-    // last lines (e.g. a failure message) must land before `interpret_exit`
-    // reads the file back.
-    let _ = reader.join();
+    // Join both readers before reading the log: their tee-writes for the last
+    // lines (e.g. a failure message) must land before `interpret_exit` reads
+    // the file back.
+    let _ = out_reader.join();
+    let _ = err_reader.join();
     let result = match outcome {
         Outcome::Exited(status) => {
             let output = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -517,6 +530,25 @@ pub fn parse_cdrskin_progress(line: &str) -> Option<(u32, f32)> {
         return None;
     }
     Some((track, numerator / denominator))
+}
+
+/// xorriso writes its progress to stderr as UPDATE pacifier lines, e.g.
+/// `xorriso : UPDATE : Writing:   45.2%  fifo 100%  buf  50%   8.0xB`. The
+/// write percentage is the FIRST `%`-token on a "Writing" line (the fifo/buf
+/// percentages follow it). Returns a `0.0..=1.0` fraction, or `None` for any
+/// other line. Falls back to cdrskin's per-track format for xorriso builds
+/// that mimic it.
+pub fn parse_xorriso_progress(line: &str) -> Option<f32> {
+    if line.contains("Writing") {
+        for tok in line.split_whitespace() {
+            if let Some(num) = tok.strip_suffix('%') {
+                if let Ok(p) = num.parse::<f32>() {
+                    return Some((p / 100.0).clamp(0.0, 1.0));
+                }
+            }
+        }
+    }
+    parse_cdrskin_progress(line).map(|(_, within)| within)
 }
 
 // ---------------------------------------------------------------------------
@@ -819,8 +851,8 @@ fn burn_data_streaming(
     let (ftx, frx) = mpsc::channel::<f32>();
     let handle = std::thread::spawn(move || {
         run_tool_streaming("xorriso", &args, move |line: &str| {
-            if let Some((_track, within)) = parse_cdrskin_progress(line) {
-                let _ = ftx.send(within.clamp(0.0, 1.0));
+            if let Some(f) = parse_xorriso_progress(line) {
+                let _ = ftx.send(f.clamp(0.0, 1.0));
             }
         })
     });
@@ -1195,7 +1227,7 @@ mod tests {
         assert_eq!(
             xorriso_data_args("/dev/sr0", Path::new("/t/stage")),
             [
-                "-outdev", "/dev/sr0", "-pacifier", "cdrecord", "-blank", "as_needed",
+                "-outdev", "/dev/sr0", "-blank", "as_needed",
                 "-joliet", "on", "-map",
                 "/t/stage", "/", "-commit"
             ]
@@ -1290,6 +1322,31 @@ mod tests {
         // → (2 + 0.5)/10 = 0.25 — always ≥ the previous track's max.
         let (t, w) = parse_cdrskin_progress("Track 03:  5 of 10 MB written").unwrap();
         assert_eq!((t, w), (3, 0.5));
+    }
+
+    #[test]
+    fn xorriso_progress_lines_parse() {
+        // The write percentage is the FIRST %-token on a "Writing" line;
+        // the fifo/buf percentages that follow must NOT be picked up.
+        let w = parse_xorriso_progress(
+            "xorriso : UPDATE : Writing:   45.2%  fifo 100%  buf  50%   8.0xB",
+        )
+        .unwrap();
+        assert!((w - 0.452).abs() < 1e-4, "got {w}, want ~0.452 (not fifo/buf %)");
+        // Non-progress UPDATE lines (patient/files-added) yield nothing.
+        assert_eq!(
+            parse_xorriso_progress("xorriso : UPDATE : Thank you for being patient."),
+            None
+        );
+        assert_eq!(
+            parse_xorriso_progress("xorriso : UPDATE :  10 files added in 1 seconds"),
+            None
+        );
+        // Falls back to a cdrecord-style line if a build emits one.
+        assert_eq!(
+            parse_xorriso_progress("Track 01:  5 of 10 MB written"),
+            Some(0.5)
+        );
     }
 
     #[test]
