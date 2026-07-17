@@ -96,6 +96,95 @@ pub fn build_v07t(meta: &DiscMeta, items: &[BurnItem]) -> String {
     s
 }
 
+// ---------------------------------------------------------------------------
+// Reading CD-TEXT back off a disc (so a burned/commercial disc with no gnudb
+// match still shows real track/album names instead of "Track N").
+// ---------------------------------------------------------------------------
+
+/// CD-TEXT read from a loaded disc.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CdText {
+    pub album: Option<String>,
+    pub artist: Option<String>,
+    /// (track number, title) — 1-based track numbers.
+    pub track_titles: Vec<(u32, String)>,
+}
+
+impl CdText {
+    pub fn is_empty(&self) -> bool {
+        self.album.is_none() && self.artist.is_none() && self.track_titles.is_empty()
+    }
+
+    /// Synthesize a gnudb-style entry so the disc detail can overlay CD-TEXT
+    /// exactly like a database match (album/artist header + per-track titles).
+    /// Display-only — the caller keeps this in memory, not the tag store.
+    pub fn to_xmcd(&self, discid: &str) -> crate::disc::xmcd::XmcdEntry {
+        let n = self
+            .track_titles
+            .iter()
+            .map(|(t, _)| *t as usize)
+            .max()
+            .unwrap_or(0);
+        let mut titles = vec![String::new(); n];
+        for (t, title) in &self.track_titles {
+            if *t >= 1 && (*t as usize) <= n {
+                titles[*t as usize - 1] = title.clone();
+            }
+        }
+        crate::disc::xmcd::XmcdEntry {
+            discid: discid.to_string(),
+            artist: self.artist.clone().unwrap_or_default(),
+            album: self.album.clone().unwrap_or_default(),
+            track_titles: titles,
+            ..Default::default()
+        }
+    }
+}
+
+/// Parse the Sony v07t sheet `cdrskin cdtext_to_v07t=-` prints (same field
+/// names as [`build_v07t`]) into a [`CdText`]. Ignores the "Artist"/performer
+/// lines and any header/remark lines — only album/artist and per-track titles
+/// drive the track list.
+pub fn parse_v07t_readback(text: &str) -> CdText {
+    let mut out = CdText::default();
+    for line in text.lines() {
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        let (key, val) = (key.trim(), val.trim());
+        if val.is_empty() {
+            continue;
+        }
+        match key {
+            "Album Title" => out.album = Some(val.to_string()),
+            "Artist Name" => out.artist = Some(val.to_string()),
+            k => {
+                if let Some(rest) = k.strip_prefix("Track ") {
+                    if let Some(num) = rest.strip_suffix(" Title") {
+                        if let Ok(n) = num.trim().parse::<u32>() {
+                            out.track_titles.push((n, val.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Read CD-TEXT off the loaded disc via `cdrskin cdtext_to_v07t=-`. `None`
+/// when the disc carries no CD-TEXT or cdrskin fails. READS THE DISC — the
+/// caller MUST hold the exclusive-read guard (drive-contention rule).
+#[cfg(target_os = "linux")]
+pub fn read_cdtext(drive_id: &str) -> Option<CdText> {
+    let out = std::process::Command::new("cdrskin")
+        .args([&format!("dev={drive_id}"), "cdtext_to_v07t=-"])
+        .output()
+        .ok()?;
+    let cd = parse_v07t_readback(&String::from_utf8_lossy(&out.stdout));
+    (!cd.is_empty()).then_some(cd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +196,36 @@ mod tests {
             duration_secs: Some(60),
             bytes: 1,
         }
+    }
+
+    #[test]
+    fn v07t_readback_parses_album_artist_and_titles() {
+        // Real cdrskin cdtext_to_v07t output (captured from a burned disc):
+        // header/remark/performer lines present and must be ignored.
+        let sheet = "\
+Input Sheet Version = 0.7T
+Remarks             = Libburn report of CD-TEXT Block 0
+Album Title         = Sparkamp CDTEXT Live
+Artist Name         = Sparkamp Test
+Track 01 Title      = I Found A Million Dollar Baby
+Track 01 Artist     = 0. Adolf Ginsburg tan orch
+Track 02 Title      = Boom Clap
+Track 02 Artist     = 34. Charli Xcx
+";
+        let cd = parse_v07t_readback(sheet);
+        assert_eq!(cd.album.as_deref(), Some("Sparkamp CDTEXT Live"));
+        assert_eq!(cd.artist.as_deref(), Some("Sparkamp Test"));
+        assert_eq!(cd.track_titles.len(), 2);
+        assert_eq!(cd.track_titles[0], (1, "I Found A Million Dollar Baby".into()));
+
+        // Round-trip into a gnudb-style entry (index 0 = track 1).
+        let x = cd.to_xmcd("deadbeef");
+        assert_eq!(x.artist, "Sparkamp Test");
+        assert_eq!(x.album, "Sparkamp CDTEXT Live");
+        assert_eq!(x.track_titles[1], "Boom Clap");
+
+        // A disc with no CD-TEXT parses empty.
+        assert!(parse_v07t_readback("Input Sheet Version = 0.7T\n").is_empty());
     }
 
     #[test]

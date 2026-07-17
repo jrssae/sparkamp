@@ -394,6 +394,18 @@ fn open_media_library_window(
             }
         }
     }
+    // CD-TEXT read off the physical disc (display-only, keyed by freedb id):
+    // a burned/commercial disc with no gnudb match still shows real names.
+    // Never persisted to the tag store; `disc_cdtext_tried` stops us
+    // re-reading the same disc on every populate.
+    let disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let disc_cdtext_tried: Rc<RefCell<std::collections::HashSet<String>>> =
+        Rc::new(RefCell::new(std::collections::HashSet::new()));
+    // Filled with populate_disc_detail after it's built, so the async CD-TEXT
+    // read can re-render the shown drive once names arrive.
+    let populate_holder: Rc<RefCell<Option<Rc<dyn Fn(&crate::disc::OpticalDrive)>>>> =
+        Rc::new(RefCell::new(None));
     // Phase 3 rip state: a cancel flag shared with the worker thread, and a
     // guard so only one rip runs at a time.
     let rip_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
@@ -8600,6 +8612,10 @@ fn open_media_library_window(
         let entries_store = current_disc_entries.clone();
         let disc_tags = disc_tags.clone();
         let disc_official = disc_official.clone();
+        let disc_cdtext = disc_cdtext.clone();
+        let disc_cdtext_tried = disc_cdtext_tried.clone();
+        let populate_holder = populate_holder.clone();
+        let current_drives_ct = current_drives.clone();
         let search_row = disc_search_row.clone();
         let search_entry = disc_search_entry.clone();
         let burn_ui = burn_ui.clone();
@@ -8640,7 +8656,15 @@ fn open_media_library_window(
             let discid = drive.toc.as_ref().map(crate::disc::discid::freedb_discid);
             let mut header: Option<String> = None;
             if let Some(id) = &discid {
-                if let Some(tags) = disc_tags.borrow().get(id) {
+                // Prefer a real gnudb/user entry; fall back to CD-TEXT read
+                // off the disc for discs gnudb doesn't know (e.g. our own
+                // burns). Same overlay for both.
+                let entry = disc_tags
+                    .borrow()
+                    .get(id)
+                    .cloned()
+                    .or_else(|| disc_cdtext.borrow().get(id).cloned());
+                if let Some(tags) = entry {
                     for e in &mut entries {
                         if let Some(t) = tags.track_titles.get(e.number as usize - 1) {
                             if !t.is_empty() {
@@ -8660,6 +8684,42 @@ fn open_media_library_window(
                         }
                         header = Some(h);
                     }
+                } else if drive.media.is_audio_cd
+                    && !disc_cdtext_tried.borrow().contains(id)
+                {
+                    // First time we've shown this unknown audio disc: read its
+                    // CD-TEXT off-thread (guarded — it spins the drive), cache
+                    // it, and re-render. `_tried` guarantees one attempt only.
+                    disc_cdtext_tried.borrow_mut().insert(id.clone());
+                    let id2 = id.clone();
+                    let drive_id = drive.id.clone();
+                    let cdtext = disc_cdtext.clone();
+                    let holder = populate_holder.clone();
+                    let drives = current_drives_ct.clone();
+                    glib::spawn_future_local(async move {
+                        let id_for_read = id2.clone();
+                        let drive_id_for_read = drive_id.clone();
+                        let result = gio::spawn_blocking(move || {
+                            crate::disc::detect::begin_exclusive_read();
+                            let r = crate::disc::cdtext::read_cdtext(&drive_id_for_read);
+                            crate::disc::detect::end_exclusive_read();
+                            r.map(|cd| cd.to_xmcd(&id_for_read))
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        if let Some(x) = result {
+                            cdtext.borrow_mut().insert(id2.clone(), x);
+                            // Re-render only if that drive is still shown.
+                            let still =
+                                drives.borrow().iter().find(|d| d.id == drive_id).cloned();
+                            if let (Some(d), Some(p)) =
+                                (still, holder.borrow().clone())
+                            {
+                                p(&d);
+                            }
+                        }
+                    });
                 }
             }
             match &header {
@@ -8757,6 +8817,8 @@ fn open_media_library_window(
             burn_ui.refresh_progress(&drive.id);
         })
     };
+    // Let the async CD-TEXT read re-render the shown drive once it resolves.
+    *populate_holder.borrow_mut() = Some(populate_disc_detail.clone());
 
     // Store a disc's tags (user set + optional official baseline), persist to
     // the shared store, refresh the detail if it's showing that disc, and push
