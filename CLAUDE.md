@@ -74,7 +74,7 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - Config: Use #[serde(default)] and Default impl for new fields.
 
-- Skins: Built-in (skin.rs) vs User (~/.local/share/sparkamp/skins/).
+- Skins: Built-in (skin.rs) vs User (~/.config/sparkamp/skins/ — shared verbatim by the macOS frontend; do not "fix" code to XDG data dir, skins are deliberately in config).
 
 --- 
 
