@@ -991,12 +991,21 @@ pub(super) fn build_burn_panel(
                                     Ok(summary) => {
                                         burn_queues_p.borrow_mut().queue(&drive_id_p).clear();
                                         status_p.set_text(&gtk_safe(&summary));
-                                        // Re-poll so the detail shows the
-                                        // disc's new content.
+                                        // Re-poll so the detail shows the disc's
+                                        // new content — but AFTER a short delay.
+                                        // Our own write raises no media-changed
+                                        // event and the drive is still settling
+                                        // right at Done; an immediate probe reads
+                                        // "could not be read" until a later poll
+                                        // succeeds (2026-07-17). Wait ~3 s so the
+                                        // first re-probe already sees the disc.
                                         if let Some(f) =
                                             refresh_holder_p.borrow().clone()
                                         {
-                                            f();
+                                            glib::timeout_add_local_once(
+                                                std::time::Duration::from_secs(3),
+                                                move || f(),
+                                            );
                                         }
                                     }
                                     Err(e) if e == "cancelled" => {
