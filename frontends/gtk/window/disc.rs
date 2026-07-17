@@ -342,7 +342,6 @@ pub(super) fn build_burn_panel(
     // select (plain replaces, Ctrl toggles, Shift ranges) like the other
     // list views.
     queue.set_activate_on_single_click(false);
-    queue.add_css_class("burn-queue");
     queue.add_css_class("ml-col-view");
     let queue_scroll = ScrolledWindow::builder()
         .vexpand(true)

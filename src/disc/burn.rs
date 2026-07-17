@@ -491,9 +491,17 @@ fn interpret_exit(
 /// and ignored) into a `0.0..=1.0` fraction. `None` for any non-progress line
 /// (banners, "Thank you for using cdrskin", etc.) or a zero denominator
 /// (cdrskin prints "0 of 0" for a moment before it knows the track size).
-pub fn parse_cdrskin_progress(line: &str) -> Option<f32> {
+/// Returns `(track_number, within_track_fraction)`. cdrskin reports progress
+/// PER TRACK, so `within` resets to ~0 at each new track — the caller must
+/// fold in the track number to get a monotonic overall fraction, else the
+/// bar visibly runs backward every time a track boundary is crossed
+/// (2026-07-17).
+pub fn parse_cdrskin_progress(line: &str) -> Option<(u32, f32)> {
     let before = line.split("MB written").next()?;
     let tokens: Vec<&str> = before.split_whitespace().collect();
+    // "Track NN:  x of  y" — the track number is the token after "Track".
+    let track_pos = tokens.iter().position(|&t| t == "Track")?;
+    let track: u32 = tokens.get(track_pos + 1)?.trim_end_matches(':').parse().ok()?;
     let of_idx = tokens.iter().position(|&t| t == "of")?;
     if of_idx == 0 {
         return None;
@@ -503,7 +511,7 @@ pub fn parse_cdrskin_progress(line: &str) -> Option<f32> {
     if denominator == 0.0 {
         return None;
     }
-    Some(numerator / denominator)
+    Some((track, numerator / denominator))
 }
 
 // ---------------------------------------------------------------------------
@@ -588,11 +596,16 @@ fn burn_audio_streaming(
 ) -> Result<(), String> {
     let label = "Burning… (this takes a while)";
     let args = cdrskin_audio_args(&drive.id, wavs, sheet);
+    // Fold cdrskin's per-track fraction into an overall one across all N
+    // tracks: (track-1 + within) / N. Monotonic, so the bar never reverses.
+    let total = wavs.len().max(1) as f32;
     let (ftx, frx) = mpsc::channel::<f32>();
     let handle = std::thread::spawn(move || {
         run_tool_streaming("cdrskin", &args, move |line: &str| {
-            if let Some(fraction) = parse_cdrskin_progress(line) {
-                let _ = ftx.send(fraction);
+            if let Some((track, within)) = parse_cdrskin_progress(line) {
+                let overall =
+                    ((track.saturating_sub(1) as f32 + within) / total).clamp(0.0, 1.0);
+                let _ = ftx.send(overall);
             }
         })
     });
@@ -1209,19 +1222,23 @@ mod tests {
     fn cdrskin_progress_lines_parse() {
         assert_eq!(
             parse_cdrskin_progress("Track 01:   12 of   34 MB written"),
-            Some(12.0 / 34.0)
+            Some((1, 12.0 / 34.0))
         );
         assert_eq!(
             parse_cdrskin_progress("Track 12:  340 of  340 MB written"),
-            Some(1.0)
+            Some((12, 1.0))
         );
         assert_eq!(parse_cdrskin_progress("Thank you for using cdrskin"), None);
         assert_eq!(parse_cdrskin_progress("Track 01: 0 of 0 MB written"), None);
         // Real lines carry a trailing buffer/speed suffix after "MB written".
         assert_eq!(
             parse_cdrskin_progress("Track 01:   12 of   34 MB written [buf  96%]   8.0x."),
-            Some(12.0 / 34.0)
+            Some((1, 12.0 / 34.0))
         );
+        // Overall folds in the track number: track 3 of 10 at half its bytes
+        // → (2 + 0.5)/10 = 0.25 — always ≥ the previous track's max.
+        let (t, w) = parse_cdrskin_progress("Track 03:  5 of 10 MB written").unwrap();
+        assert_eq!((t, w), (3, 0.5));
     }
 
     #[test]

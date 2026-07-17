@@ -707,20 +707,22 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {tbg}; \
     }}").unwrap();
     writeln!(css, ".playlist row, columnview row, listview row, \
-                   .burn-queue row {{ \
+                   .ml-col-view row {{ \
         color: {text}; \
     }}").unwrap();
     writeln!(css, ".playlist row:hover, .ml-sidebar row:hover, \
                    columnview row:hover, listview row:hover, \
-                   .burn-queue row:hover {{ \
+                   .ml-col-view row:hover {{ \
         background: {hl_hov}; \
     }}").unwrap();
-    // .burn-queue is the hand-built GtkListBox burn panel queue — a listbox,
-    // not a columnview/listview/treeview, so it needs its own selector here
-    // or its selected rows fall back to GTK's default (wrong) accent colour.
+    // `.ml-col-view` is on the hand-built GtkListBoxes (the burn-panel queue
+    // and the audio-CD track list) — a listbox, not a columnview/listview/
+    // treeview, so it needs its own selector here or its selected rows fall
+    // back to GTK's default (wrong) accent colour. Harmless on the real
+    // ColumnViews that also carry the class (already covered above).
     writeln!(css, ".playlist row:selected, .ml-sidebar row:selected, \
                    columnview row:selected, listview row:selected, \
-                   .burn-queue row:selected {{ \
+                   .ml-col-view row:selected {{ \
         background: {hl_sel}; color: {text}; \
     }}").unwrap();
     // GtkTreeView paints rows as a single widget with :selected state
