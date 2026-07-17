@@ -336,6 +336,13 @@ pub(super) fn build_burn_panel(
     let queue = gtk4::ListBox::new();
     // Multiple so Remove / Delete can clear several queued files at once.
     queue.set_selection_mode(gtk4::SelectionMode::Multiple);
+    // Without this, single-click "activates" rows and the Ctrl/Shift
+    // modifiers don't drive selection — plain clicks accumulated with no
+    // deselect and Shift-range didn't work (2026-07-17). False = clicks
+    // select (plain replaces, Ctrl toggles, Shift ranges) like the other
+    // list views.
+    queue.set_activate_on_single_click(false);
+    queue.add_css_class("burn-queue");
     queue.add_css_class("ml-col-view");
     let queue_scroll = ScrolledWindow::builder()
         .vexpand(true)
@@ -595,18 +602,8 @@ pub(super) fn build_burn_panel(
         });
     }
 
-    // Reorder buttons act on the first selected row (single target);
-    // `selected_row()` returns None in Multiple mode, so read the list.
-    let selected_idx = {
-        let queue = queue.clone();
-        move || {
-            queue
-                .selected_rows()
-                .first()
-                .map(|r| r.index() as usize)
-        }
-    };
-    // All selected rows, ascending — for Remove / Delete (multi-select).
+    // All selected rows, ascending — for Remove / Delete / reorder
+    // (Multiple mode; `selected_row()` returns None here, read the list).
     let selected_indices = {
         let queue = queue.clone();
         move || {
@@ -687,41 +684,58 @@ pub(super) fn build_burn_panel(
         });
         queue.add_controller(key);
     }
-    {
+    // Move the whole selected block up (delta -1) or down (+1) by one,
+    // clamped so it can't run off either end, and keep exactly those rows
+    // selected afterwards (rerender rebuilds the list and drops selection).
+    let move_selected: Rc<dyn Fn(i32)> = {
         let burn_queues = burn_queues.clone();
         let shown_drive = shown_drive.clone();
-        let selected_idx = selected_idx.clone();
         let rerender = rerender.clone();
         let queue = queue.clone();
-        btn_up.connect_clicked(move |_| {
+        let selected_indices = selected_indices.clone();
+        Rc::new(move |delta: i32| {
+            let idxs = selected_indices(); // ascending
+            if idxs.is_empty() {
+                return;
+            }
             let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
-            if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
-                burn_queues.borrow_mut().queue(&id).move_up(i);
-                rerender();
-                if i > 0 {
-                    if let Some(r) = queue.row_at_index(i as i32 - 1) {
-                        queue.select_row(Some(&r));
+            let Some(id) = drive_id else { return };
+            let len = burn_queues.borrow_mut().queue(&id).len();
+            // Block already against the edge it's moving toward → no-op.
+            if (delta < 0 && idxs[0] == 0)
+                || (delta > 0 && *idxs.last().unwrap() + 1 >= len)
+            {
+                return;
+            }
+            {
+                let mut q = burn_queues.borrow_mut();
+                let list = q.queue(&id);
+                if delta < 0 {
+                    for &i in idxs.iter() {
+                        list.move_up(i);
+                    }
+                } else {
+                    for &i in idxs.iter().rev() {
+                        list.move_down(i);
                     }
                 }
             }
-        });
-    }
-    {
-        let burn_queues = burn_queues.clone();
-        let shown_drive = shown_drive.clone();
-        let selected_idx = selected_idx.clone();
-        let rerender = rerender.clone();
-        let queue = queue.clone();
-        btn_down.connect_clicked(move |_| {
-            let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
-            if let (Some(id), Some(i)) = (drive_id, selected_idx()) {
-                burn_queues.borrow_mut().queue(&id).move_down(i);
-                rerender();
-                if let Some(r) = queue.row_at_index(i as i32 + 1) {
+            rerender();
+            for &i in idxs.iter() {
+                let ni = i as i32 + delta;
+                if let Some(r) = queue.row_at_index(ni) {
                     queue.select_row(Some(&r));
                 }
             }
-        });
+        })
+    };
+    {
+        let move_selected = move_selected.clone();
+        btn_up.connect_clicked(move |_| move_selected(-1));
+    }
+    {
+        let move_selected = move_selected.clone();
+        btn_down.connect_clicked(move |_| move_selected(1));
     }
     {
         let burn_queues = burn_queues.clone();

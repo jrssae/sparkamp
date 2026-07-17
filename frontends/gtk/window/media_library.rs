@@ -3345,6 +3345,28 @@ fn open_media_library_window(
             disc_files_action_group.add_action(&action);
         }
 
+        // View / Edit ID3 — opens the shared editor on the clicked disc file.
+        // The file lives on a read-only iso9660 mount, so the editor detects
+        // that and shows every field read-only with no Save button.
+        {
+            let sel_files = selected_disc_files.clone();
+            let state_id3 = state.clone();
+            let rebuild_id3 = rebuild_playlist.clone();
+            let action = gio::SimpleAction::new("edit-id3", None);
+            action.connect_activate(move |_, _| {
+                let files = sel_files();
+                let Some(f) = files.first() else { return };
+                open_id3_editor_window(
+                    None::<&gtk4::Window>,
+                    f.path.clone(),
+                    state_id3.clone(),
+                    rebuild_id3.clone(),
+                    None,
+                );
+            });
+            disc_files_action_group.add_action(&action);
+        }
+
         let sel_menu = selected_disc_files.clone();
         let scroll_menu = disc_files_scroll.clone();
         let state_menu = state.clone();
@@ -3360,6 +3382,13 @@ fn open_media_library_window(
                 Some("Add to Library"),
                 Some("disc-files.add-to-library"),
             ));
+            // Single selection only — the editor binds to one file.
+            if sel_menu().len() == 1 {
+                menu.append_item(&gio::MenuItem::new(
+                    Some("View ID3 Tags"),
+                    Some("disc-files.edit-id3"),
+                ));
+            }
             let this_drive = selected_disc_id_menu.borrow().clone();
             let send = build_send_to_menu(
                 &state_menu,
@@ -3382,8 +3411,11 @@ fn open_media_library_window(
             menu.append_submenu(Some("Send to"), &send);
             let popover =
                 gtk4::PopoverMenu::from_model_full(&menu, gtk4::PopoverMenuFlags::NESTED);
+            // Parent on the group-holding widget and DON'T unparent on close:
+            // the unparent severs the action-group link as a nested "Send to"
+            // item dispatches (the bug fixed in the playlist editor). Match
+            // the working files-view recipe.
             popover.set_parent(&scroll_menu);
-            popover.connect_closed(|p| p.unparent());
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
