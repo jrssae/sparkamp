@@ -92,3 +92,17 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       (SwiftUI Table) supports multi-row selection + delete.
 - [ ] **Burn progress overlay readability:** GTK card was translucent (osd
       style) — made opaque. Eyeball the mac overlay for contrast/readability.
+
+## Phase-2c: CD-TEXT read + eject (2026-07-17) — mac verify
+- [ ] **CD-TEXT read on unknown discs (GTK-only so far):** GTK now reads
+      CD-TEXT off an audio disc with no gnudb match (cdrskin cdtext_to_v07t)
+      and shows real track titles + an "Artist — Album" header. macOS uses
+      drutil, which doesn't expose CD-TEXT the same way — decide whether to
+      surface CD-TEXT on mac (DiscRecording can read it) or leave the mac
+      disc view showing "Track N" for unknown discs. Core
+      cdtext::{CdText, parse_v07t_readback, to_xmcd} is reusable; only the
+      read source is platform-specific.
+- [ ] **Eject unmount (Linux fix, verify mac path):** GTK eject failed
+      "must be superuser to unmount" on a mounted data disc; fixed by
+      udisks-unmounting first. macOS `drutil eject` — confirm it ejects a
+      mounted data disc without a similar error (drutil usually handles it).

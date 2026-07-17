@@ -107,8 +107,8 @@ pub fn ensure_mounted(drive: &super::OpticalDrive) -> Result<PathBuf, String> {
 /// Linux-only. macOS: `drutil burn` unmounts the disc itself, so the mac
 /// burn path needs no equivalent (verify on the Mac pass).
 #[cfg(target_os = "linux")]
-pub fn unmount_disc(drive: &super::OpticalDrive) -> Result<(), String> {
-    let Some(basename) = Path::new(&drive.id).file_name().and_then(|n| n.to_str()) else {
+pub fn unmount_disc(drive_id: &str) -> Result<(), String> {
+    let Some(basename) = Path::new(drive_id).file_name().and_then(|n| n.to_str()) else {
         return Ok(());
     };
     let object_path = format!("/org/freedesktop/UDisks2/block_devices/{basename}");
@@ -134,7 +134,7 @@ pub fn unmount_disc(drive: &super::OpticalDrive) -> Result<(), String> {
 pub fn unmount_for_burn(drive: &super::OpticalDrive) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return unmount_disc(drive);
+        return unmount_disc(&drive.id);
     }
     #[cfg(not(target_os = "linux"))]
     {

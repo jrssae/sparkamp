@@ -669,6 +669,13 @@ pub fn eject(drive_id: &str) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     return Err(format!("eject not supported on this platform ({drive_id})"));
 
+    // `eject(1)` unmounts the filesystem first, but a udisks `/run/media`
+    // mount isn't in fstab so its umount needs root → "must be superuser to
+    // unmount". Drop the mount via udisks (session-owned) first; best-effort,
+    // an already-unmounted disc is a no-op (2026-07-17).
+    #[cfg(target_os = "linux")]
+    let _ = crate::disc::mount::unmount_disc(drive_id);
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let out = std::process::Command::new(cmd)
