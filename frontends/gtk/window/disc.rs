@@ -334,7 +334,8 @@ pub(super) fn build_burn_panel(
     // Queue rows ("Artist - Title — M:SS · size"), selectable for the
     // remove/reorder buttons; burn order = disc track order.
     let queue = gtk4::ListBox::new();
-    queue.set_selection_mode(gtk4::SelectionMode::Single);
+    // Multiple so Remove / Delete can clear several queued files at once.
+    queue.set_selection_mode(gtk4::SelectionMode::Multiple);
     queue.add_css_class("ml-col-view");
     let queue_scroll = ScrolledWindow::builder()
         .vexpand(true)
@@ -414,7 +415,10 @@ pub(super) fn build_burn_panel(
     // panel's phase text + Cancel (progress_row/btn_cancel above) because a
     // burn's own drive may not be the one on screen — see refresh_progress.
     let overlay_card = GtkBox::new(Orientation::Vertical, 8);
-    overlay_card.add_css_class("osd");
+    // NOT "osd": GTK's osd style is a deliberately translucent overlay
+    // (built for video-player controls), which made the burn card hard to
+    // read over the detail view (2026-07-17). Use only "card" (an opaque
+    // raised surface) plus our own class for the solid-background rule.
     overlay_card.add_css_class("card");
     overlay_card.add_css_class("burn-overlay-card");
     overlay_card.set_halign(Align::Center);
@@ -591,10 +595,26 @@ pub(super) fn build_burn_panel(
         });
     }
 
-    // Queue management buttons operate on the selected row.
+    // Reorder buttons act on the first selected row (single target);
+    // `selected_row()` returns None in Multiple mode, so read the list.
     let selected_idx = {
         let queue = queue.clone();
-        move || queue.selected_row().map(|r| r.index() as usize)
+        move || {
+            queue
+                .selected_rows()
+                .first()
+                .map(|r| r.index() as usize)
+        }
+    };
+    // All selected rows, ascending — for Remove / Delete (multi-select).
+    let selected_indices = {
+        let queue = queue.clone();
+        move || {
+            let mut v: Vec<usize> =
+                queue.selected_rows().iter().map(|r| r.index() as usize).collect();
+            v.sort_unstable();
+            v
+        }
     };
     let rerender: Rc<dyn Fn()> = {
         let refresh_cb = refresh_cb.clone();
@@ -613,26 +633,35 @@ pub(super) fn build_burn_panel(
     // queue while this detail is open — otherwise the new rows only appeared
     // after navigating away and back (2026-07-16).
     *burn_refresh_holder.borrow_mut() = Some(rerender.clone());
-    // Remove row `i` from the shown drive's queue, rerender, then reselect a
-    // neighbour so the list stays put instead of jumping to the top (the
-    // rerender rebuilds every row, which otherwise drops the selection).
-    let remove_at: Rc<dyn Fn(usize)> = {
+    // Remove every selected row, highest index first so earlier removals
+    // don't shift the ones still to delete; then reselect a neighbour so the
+    // list stays put (rerender rebuilds every row, dropping the selection).
+    let remove_selected: Rc<dyn Fn()> = {
         let burn_queues = burn_queues.clone();
         let shown_drive = shown_drive.clone();
         let rerender = rerender.clone();
         let queue = queue.clone();
-        Rc::new(move |i: usize| {
+        let selected_indices = selected_indices.clone();
+        Rc::new(move || {
+            let mut idxs = selected_indices();
+            if idxs.is_empty() {
+                return;
+            }
+            let first = idxs[0];
+            idxs.sort_unstable_by(|a, b| b.cmp(a)); // descending
             let drive_id = shown_drive.borrow().as_ref().map(|d| d.id.clone());
             let Some(id) = drive_id else { return };
             let new_len = {
                 let mut q = burn_queues.borrow_mut();
                 let list = q.queue(&id);
-                list.remove(i);
+                for i in idxs {
+                    list.remove(i);
+                }
                 list.len()
             };
             rerender();
             if new_len > 0 {
-                let sel = i.min(new_len - 1) as i32;
+                let sel = first.min(new_len - 1) as i32;
                 if let Some(r) = queue.row_at_index(sel) {
                     queue.select_row(Some(&r));
                 }
@@ -640,27 +669,19 @@ pub(super) fn build_burn_panel(
         })
     };
     {
-        let selected_idx = selected_idx.clone();
-        let remove_at = remove_at.clone();
-        btn_remove.connect_clicked(move |_| {
-            if let Some(i) = selected_idx() {
-                remove_at(i);
-            }
-        });
+        let remove_selected = remove_selected.clone();
+        btn_remove.connect_clicked(move |_| remove_selected());
     }
-    // Delete / Backspace on the queue list removes the selected row, matching
-    // the Remove button (keyboard parity — users expect Delete to work here).
+    // Delete / Backspace on the queue list removes the selected row(s),
+    // matching the Remove button (keyboard parity — users expect Delete).
     {
-        let selected_idx = selected_idx.clone();
-        let remove_at = remove_at.clone();
+        let remove_selected = remove_selected.clone();
         let key = gtk4::EventControllerKey::new();
         key.connect_key_pressed(move |_, keyval, _, _| {
             use gtk4::gdk::Key;
             if matches!(keyval, Key::Delete | Key::KP_Delete | Key::BackSpace) {
-                if let Some(i) = selected_idx() {
-                    remove_at(i);
-                    return glib::Propagation::Stop;
-                }
+                remove_selected();
+                return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
         });

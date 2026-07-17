@@ -784,6 +784,12 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
         padding: 10px 12px; \
     }}").unwrap();
+    // Burn progress overlay card — SOLID background so the phase text/bar is
+    // readable over the detail view (the GTK `osd` style is translucent).
+    writeln!(css, ".burn-overlay-card {{ \
+        background-color: {bg}; border: 1px solid {border}; border-radius: 10px; \
+        padding: 16px 18px; \
+    }}").unwrap();
     writeln!(css, ".device-card-name {{ \
         color: {text}; font-size: {fs}px; font-weight: bold; \
     }}").unwrap();

@@ -96,6 +96,53 @@ pub fn ensure_mounted(drive: &super::OpticalDrive) -> Result<PathBuf, String> {
     Ok(PathBuf::from(mount_path))
 }
 
+/// Unmount the drive's filesystem if it's currently mounted, so a burn can
+/// open the raw device. A data disc left mounted (the desktop auto-mounts
+/// one, and Sparkamp's own browse mounts it) makes `cdrskin`/`xorriso` fail
+/// with "Cannot access '/dev/srN' as SG_IO CDROM drive" — the kernel FS
+/// layer holds the device (found live 2026-07-17). Best-effort: an
+/// already-unmounted disc or a udisks hiccup returns `Ok(())`; only a real
+/// still-mounted-after-trying failure is worth surfacing.
+///
+/// Linux-only. macOS: `drutil burn` unmounts the disc itself, so the mac
+/// burn path needs no equivalent (verify on the Mac pass).
+#[cfg(target_os = "linux")]
+pub fn unmount_disc(drive: &super::OpticalDrive) -> Result<(), String> {
+    let Some(basename) = Path::new(&drive.id).file_name().and_then(|n| n.to_str()) else {
+        return Ok(());
+    };
+    let object_path = format!("/org/freedesktop/UDisks2/block_devices/{basename}");
+    let Ok(conn) = crate::devices::detect::system_bus() else {
+        return Ok(()); // no udisks reachable → nothing we mounted
+    };
+    let Ok(fs) = zbus::blocking::Proxy::new(&conn, UDISKS, object_path.as_str(), FILESYSTEM_IFACE)
+    else {
+        return Ok(());
+    };
+    let raw: Vec<Vec<u8>> = fs.get_property("MountPoints").unwrap_or_default();
+    if crate::devices::detect::decode_mountpoints(&raw).is_empty() {
+        return Ok(()); // not mounted — nothing to do
+    }
+    let no_opts: HashMap<String, Value> = HashMap::new();
+    fs.call::<_, _, ()>("Unmount", &(no_opts,))
+        .map_err(|e| format!("could not unmount the disc before burning: {e}"))
+}
+
+/// Cross-platform pre-burn hook: drop any filesystem mount that would block
+/// raw device access. Real work on Linux; a no-op elsewhere (mac's `drutil`
+/// handles it).
+pub fn unmount_for_burn(drive: &super::OpticalDrive) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return unmount_disc(drive);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = drive;
+        Ok(())
+    }
+}
+
 /// Recursively collect audio files under `mount` (depth-capped at
 /// [`MAX_DEPTH`]), sorted by path.
 ///

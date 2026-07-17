@@ -683,6 +683,10 @@ pub fn run_job(
     // detection poll (even status ioctls) off the device.
     crate::disc::detect::begin_exclusive_read();
     let result = (|| -> Result<String, String> {
+        // A mounted data disc (desktop auto-mount, or Sparkamp's own browse)
+        // holds the raw device — cdrskin/xorriso then fail with "Cannot
+        // access '/dev/srN' as SG_IO CDROM drive". Drop the mount first.
+        crate::disc::mount::unmount_for_burn(drive)?;
         if erase_first {
             progress(BurnProgress::new("Erasing…", None));
             erase(drive)?;

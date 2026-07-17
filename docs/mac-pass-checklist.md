@@ -75,3 +75,20 @@ Two critical compiler/correctness issues fixed blind on Linux (no Xcode availabl
 Verification: Rust gate `cargo build` (zero warnings) + `cargo test` (all 603 tests pass) confirm no accidental breakage in the core.
 
 - [ ] Data-disc file list remains responsive and consistent during rapid mount/unmount cycles (specifically: verify the assertion at line 102 — "re-inserting a disc in the same drive reloads correctly").
+
+## Phase-2b: burn UX bugs found in GTK live testing (2026-07-17) — verify/port on mac
+Fixed on GTK+core; mac equivalents to check during the Xcode pass:
+- [ ] **Unmount before burn (core, shared):** run_job now calls
+      `disc::mount::unmount_for_burn(drive)` before erase/burn. On Linux it
+      udisks-unmounts a mounted data disc (else cdrskin fails "SG_IO"). On
+      mac it's a no-op assuming `drutil burn` self-unmounts — CONFIRM a
+      data burn works when the disc is auto-mounted in /Volumes; if drutil
+      fails, add a `diskutil unmount` in the mac arm.
+- [ ] **DVD over-capacity gate:** GTK bug was capacity=0 for DVD (no ATIP).
+      mac parses drutil free/used blocks — verify the data capacity meter
+      goes red + blocks the burn when the queue exceeds a DVD's ~4.7 GB.
+- [ ] **Burn queue multiselect removal:** GTK now allows selecting several
+      queued rows and Remove/Delete clears all. Verify the mac burn queue
+      (SwiftUI Table) supports multi-row selection + delete.
+- [ ] **Burn progress overlay readability:** GTK card was translucent (osd
+      style) — made opaque. Eyeball the mac overlay for contrast/readability.

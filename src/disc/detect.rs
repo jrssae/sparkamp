@@ -563,7 +563,20 @@ pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
     let kind = kind?;
     // 2048 data bytes per block — the convention MediaInfo's byte fields use
     // (audio capacity derives as blocks/75 seconds from the same figure).
-    let capacity_bytes = leadout_blocks * 2048;
+    // CDs carry an ATIP lead-out we can read; DVDs do NOT ("No reliable
+    // track size" from cdrskin -minfo), so leadout_blocks stays 0 and the
+    // over-capacity gate would be silently disabled (a data burn could be
+    // attempted well past the disc's size). Fall back to the standard
+    // single-layer capacity per DVD kind so the gate works (2026-07-17).
+    let capacity_bytes = if leadout_blocks > 0 {
+        leadout_blocks * 2048
+    } else {
+        match kind {
+            // 4.7 GB nominal single-layer DVD (DVD±R/RW, DVD-RAM).
+            MediaKind::DvdR | MediaKind::DvdRw | MediaKind::DvdRam => 4_700_000_000,
+            _ => 0,
+        }
+    };
     Some(MediaInfo {
         present: true,
         is_audio_cd: false,
@@ -1223,6 +1236,28 @@ session status:           complete
         assert!(parse_minfo("cdrskin: no disc\n").is_none());
         let ram = parse_minfo("Mounted media type:       DVD-RAM\ndisk status: empty\n").unwrap();
         assert_eq!(ram.kind, MediaKind::DvdRam);
+    }
+
+    #[test]
+    fn minfo_dvd_gets_default_capacity_without_atip() {
+        // DVDs carry no ATIP lead-out ("No reliable track size"), so the
+        // capacity must fall back to the standard single-layer size — else
+        // the over-capacity gate is silently disabled on DVD media.
+        let blank = "Mounted media type:       DVD+RW\ndisk status: empty\n";
+        let m = parse_minfo(blank).unwrap();
+        assert_eq!(m.kind, MediaKind::DvdRw);
+        assert_eq!(m.capacity_bytes, 4_700_000_000);
+        assert_eq!(m.free_bytes, 4_700_000_000, "blank DVD's free == capacity");
+
+        let full = "Mounted media type:       DVD+RW\ndisk status: complete\n";
+        let f = parse_minfo(full).unwrap();
+        assert_eq!(f.capacity_bytes, 4_700_000_000);
+        assert_eq!(f.free_bytes, 0, "non-blank overwrite media reports 0 free");
+
+        // A CD with a real ATIP lead-out still uses the measured value, not
+        // the DVD default.
+        let cd = "Mounted media type:       CD-RW\n  ATIP start of lead out: 359849\ndisk status: empty\n";
+        assert_eq!(parse_minfo(cd).unwrap().capacity_bytes, 359_849 * 2048);
     }
 
     #[test]
