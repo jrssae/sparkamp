@@ -347,6 +347,7 @@ impl App {
                         self.selected_burn_list().clear();
                         self.set_status(summary);
                     }
+                    Err(e) if e == "cancelled" => self.set_status("Burn cancelled.".to_string()),
                     Err(e) => self.set_status(format!("Burn failed: {e}")),
                 }
             }

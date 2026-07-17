@@ -964,6 +964,9 @@ pub(super) fn build_burn_panel(
                                             f();
                                         }
                                     }
+                                    Err(e) if e == "cancelled" => {
+                                        status_p.set_text("Burn cancelled.")
+                                    }
                                     Err(e) => status_p
                                         .set_text(&gtk_safe(&format!("Burn failed: {e}"))),
                                 }
