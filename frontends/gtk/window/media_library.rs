@@ -8743,8 +8743,18 @@ fn open_media_library_window(
                 submit_btn.set_visible(discid.as_ref().is_some_and(|id| {
                     disc::disc_submittable(id, &disc_tags.borrow(), &disc_official.borrow())
                 }));
-                // Audio discs get the play view, not the burn panel.
-                burn_ui.root.set_visible(false);
+                // Audio discs get the play view. A REWRITABLE audio disc
+                // (CD-RW/DVD-RW/DVD-RAM) also gets the burn panel below it, so
+                // it can be erased and re-burned — its erase-confirm handles
+                // wiping the audio content. A write-once audio CD-R stays
+                // play-only (erase_decision == Refuse), matching the old
+                // behaviour (2026-07-17).
+                let burnable = crate::disc::burn::erase_decision(drive)
+                    != crate::disc::burn::EraseDecision::Refuse;
+                if burnable {
+                    burn_ui.refresh(drive);
+                }
+                burn_ui.root.set_visible(burnable);
                 for e in &entries {
                     let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
                     // Show the real title once known; otherwise the placeholder.
