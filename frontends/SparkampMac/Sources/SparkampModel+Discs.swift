@@ -606,7 +606,7 @@ extension SparkampModel {
         let items = burnQueue(for: drive.id)
         guard !items.isEmpty, burnPhase == nil, let ctx = ctx else { return }
         // Audio only — data burns ignore both fields (see BurnRunJob's doc).
-        let meta = audio ? burnMeta(for: drive.id) : nil
+        let meta: DiscMeta? = audio ? burnMeta(for: drive.id) : nil
         let job = DiscService.BurnRunJob(
             drive: drive,
             items: items.map { DiscService.BurnJobItem(path: $0.path, display: $0.display) },
@@ -684,13 +684,24 @@ extension SparkampModel {
     /// so a disc can show `media.present` briefly before `mountPath` appears;
     /// the view re-triggers this on `drive.mountPath` changing).
     func loadDiscFiles(_ drive: OpticalDrive) {
-        guard !discFilesBusy else { return }
+        guard !discFilesBusy else {
+            discFilesPendingReload = true
+            return
+        }
         discFilesBusy = true
+        let driveId = drive.id
         DispatchQueue.global(qos: .userInitiated).async {
             let files = DiscService.mountList(drive: drive)
             DispatchQueue.main.async {
                 self.discFiles = files
                 self.discFilesBusy = false
+                // Fast unmount/remount could otherwise leave a stale list.
+                if self.discFilesPendingReload {
+                    self.discFilesPendingReload = false
+                    if let drive = self.discDrives.first(where: { $0.id == driveId }) {
+                        self.loadDiscFiles(drive)
+                    }
+                }
             }
         }
     }
