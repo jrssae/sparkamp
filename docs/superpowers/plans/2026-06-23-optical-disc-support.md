@@ -232,6 +232,22 @@ pub fn freedb_discid(toc: &DiscToc) -> String {
 > landed and green (967 tests, zero warnings); mac Swift written blind,
 > pending a Mac xcodebuild + manual pass (checklist in the branch's SDD
 > report).
+>
+> **Disc UX Phase 2 landed (2026-07-17, same branch):** Send-to
+> consistency fixes (live selection, quiet status everywhere, editor
+> full menu + whole-playlist entry), drag-to-drive burn queueing,
+> disc-swap auto-refresh (media fingerprints), CD-TEXT on audio burns
+> (Sony v07t sheet via `input_sheet_v07t=`, editable disc artist/album
+> per drive, injection-sanitized), structured `BurnProgress` with
+> streamed cdrskin percent + a per-drive burn overlay (pulses on
+> erase — the "stuck on Erasing" complaint), and read-only data-disc
+> browse/play/add-to-library (udisks mount, Linux). 1007 tests, zero
+> warnings. Spec/plan: `2026-07-16-disc-ux-phase2-*`. Pending: live
+> CD-TEXT readback + data-disc mount live test (need good media);
+> interactive GTK pass; the FULL Mac pass — consolidated checklist now
+> at `docs/mac-pass-checklist.md`. The media_library.rs split was
+> attempted and proven impossible mechanically (include! can't splice
+> fn-body statements) — deferred as a real refactor, boundary map kept.
 
 **Hardware tests (Opus, blank media required):**
 1. **Audio CD-R:** add 3+ library tracks to the burn list (ML Files → right-click → Add to Burn List / TUI `b`), insert blank CD-R, drive view → Burn Audio CD → expect prepare progress per track, then burn phase, success status; disc plays in the Sparkamp Discs tab (TOC track count matches) and in Music.app. Verify gap/order correctness.
