@@ -3487,6 +3487,7 @@ pub fn build(
         let kbd_rebuild_jump = rebuild_jump.clone();
         let kbd_jump_entry = jump_entry.clone();
         let kbd_btn_info = btn_info.clone();
+        let kbd_btn_eq = btn_eq.clone();
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
         let kbd_repeat_icon = repeat_icon.clone();
@@ -3771,6 +3772,13 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
+                // ── Equalizer toggle (u) — same path as the EQ button so
+                // the singleton/active-CSS logic stays in one place ────────
+                gdk::Key::u | gdk::Key::U => {
+                    kbd_btn_eq.emit_clicked();
+                    glib::Propagation::Stop
+                }
+
                 // ── Quit ──────────────────────────────────────────────────
                 gdk::Key::q | gdk::Key::Q => {
                     let _ = state.borrow().playlist.save_last();
@@ -3861,7 +3869,7 @@ pub fn build(
             ("Playlist", &[
                 ("n",          "Add file(s) or folder(s)"),
                 ("j",          "Jump / search"),
-                ("↑ k / ↓ l",  "Browse up / down"),
+                ("↑ ↓",        "Browse up / down"),
                 ("Enter",      "Play selected track"),
                 ("Del",        "Remove highlighted track"),
                 ("p",          "Toggle playlist window"),
@@ -3872,12 +3880,12 @@ pub fn build(
                 ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
                 ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
                 ("d",           "View/Edit ID3 tags for current track"),
-                ("u",           "Open EQ (TUI only — use EQ button in GUI)"),
+                ("u",           "Toggle equalizer window"),
                 ("Click logo",  "Open settings"),
             ]),
             ("Other", &[
                 ("i",          "Toggle this help"),
-                ("q / Esc",    "Quit"),
+                ("q",          "Quit"),
             ]),
         ];
 
