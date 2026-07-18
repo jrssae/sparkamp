@@ -1,9 +1,5 @@
 /// Get the display value for an ID3 editable field.
-fn get_id3_field_value(
-    fields: &crate::id3_editor::TagFields,
-    track_meta: &Option<crate::media_library::LibTrack>,
-    id: &str,
-) -> String {
+fn get_id3_field_value(fields: &crate::id3_editor::TagFields, id: &str) -> String {
     match id {
         "title" => fields.title.clone(),
         "artist" => fields.artist.clone(),
@@ -17,30 +13,12 @@ fn get_id3_field_value(
         "disc_total" => fields.disc_total.clone(),
         "bpm" => fields.bpm.clone(),
         "comment" => fields.comment.clone(),
-        "composer" => track_meta
-            .as_ref()
-            .and_then(|t| t.composer.clone())
-            .unwrap_or_default(),
-        "original_artist" => track_meta
-            .as_ref()
-            .and_then(|t| t.original_artist.clone())
-            .unwrap_or_default(),
-        "copyright" => track_meta
-            .as_ref()
-            .and_then(|t| t.copyright.clone())
-            .unwrap_or_default(),
-        "url" => track_meta
-            .as_ref()
-            .and_then(|t| t.url.clone())
-            .unwrap_or_default(),
-        "encoded_by" => track_meta
-            .as_ref()
-            .and_then(|t| t.encoded_by.clone())
-            .unwrap_or_default(),
-        "lyric" => track_meta
-            .as_ref()
-            .and_then(|t| t.lyric.clone())
-            .unwrap_or_default(),
+        "composer" => fields.composer.clone(),
+        "original_artist" => fields.original_artist.clone(),
+        "copyright" => fields.copyright.clone(),
+        "url" => fields.url.clone(),
+        "encoded_by" => fields.encoded_by.clone(),
+        "lyric" => fields.lyric.clone(),
         _ => String::new(),
     }
 }
@@ -727,19 +705,6 @@ fn open_id3_editor_window(
     }
 
     let fields = read_tag_fields(&path);
-    // The six B1 fields (composer, original artist, copyright, url,
-    // encoded_by, lyric) don't have form widgets yet — that's Task 2's job.
-    // Until then, Save must carry the file's existing values through
-    // unchanged rather than blanking them, since write_tag_fields now
-    // manages those frames directly.
-    let extended_fields_passthrough = (
-        fields.composer.clone(),
-        fields.original_artist.clone(),
-        fields.copyright.clone(),
-        fields.url.clone(),
-        fields.encoded_by.clone(),
-        fields.lyric.clone(),
-    );
     let fname = gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
     let path_str = path.to_string_lossy().into_owned();
 
@@ -840,9 +805,9 @@ fn open_id3_editor_window(
         let value = if let Some(ref vals) = initial_values {
             vals.get(*id)
                 .cloned()
-                .unwrap_or_else(|| get_id3_field_value(&fields, &track_meta, id))
+                .unwrap_or_else(|| get_id3_field_value(&fields, id))
         } else {
-            get_id3_field_value(&fields, &track_meta, id)
+            get_id3_field_value(&fields, id)
         };
         if *id == "genre" {
             let (combo, entry) = make_genre_combo(&value);
@@ -872,9 +837,9 @@ fn open_id3_editor_window(
         let value = if let Some(ref vals) = initial_values {
             vals.get(*id)
                 .cloned()
-                .unwrap_or_else(|| get_id3_field_value(&fields, &track_meta, id))
+                .unwrap_or_else(|| get_id3_field_value(&fields, id))
         } else {
-            get_id3_field_value(&fields, &track_meta, id)
+            get_id3_field_value(&fields, id)
         };
         if *id == "genre" {
             let (combo, entry) = make_genre_combo(&value);
@@ -1067,7 +1032,12 @@ fn open_id3_editor_window(
         let status_s = status_lbl.clone();
         let win_wk = win.downgrade();
         let entries_r = entries.clone();
-        let extended_fields_passthrough = extended_fields_passthrough.clone();
+        // A field hidden via the ID3 column customizer has no entry widget,
+        // so falling back to `.unwrap_or_default()` would write "" and
+        // write_tag_fields treats "" as "remove this frame" — silently
+        // stripping the value on every save while the field is hidden.
+        // Snapshot the disk-read values here and fall back to them instead.
+        let fields_snapshot = fields.clone();
 
         move || {
             let entries = entries_r.borrow();
@@ -1120,12 +1090,30 @@ fn open_id3_editor_window(
                     .get("comment")
                     .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
-                composer: extended_fields_passthrough.0.clone(),
-                original_artist: extended_fields_passthrough.1.clone(),
-                copyright: extended_fields_passthrough.2.clone(),
-                url: extended_fields_passthrough.3.clone(),
-                encoded_by: extended_fields_passthrough.4.clone(),
-                lyric: extended_fields_passthrough.5.clone(),
+                composer: entries
+                    .get("composer")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_else(|| fields_snapshot.composer.clone()),
+                original_artist: entries
+                    .get("original_artist")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_else(|| fields_snapshot.original_artist.clone()),
+                copyright: entries
+                    .get("copyright")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_else(|| fields_snapshot.copyright.clone()),
+                url: entries
+                    .get("url")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_else(|| fields_snapshot.url.clone()),
+                encoded_by: entries
+                    .get("encoded_by")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_else(|| fields_snapshot.encoded_by.clone()),
+                lyric: entries
+                    .get("lyric")
+                    .map(|e| sanitize_id3_text(&e.text()))
+                    .unwrap_or_else(|| fields_snapshot.lyric.clone()),
                 artwork_path: entries
                     .get("artwork_path")
                     .map(|e| e.text().to_string())
