@@ -123,3 +123,21 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
 - [ ] Setting a standard field and a Customize frame together, then saving
       once: both persist (the extra-frame write path runs after the main
       `write_tag_fields` call and doesn't clobber it).
+
+## Phase-0 fixes: playlist auto-scroll to current track (2026-07-17) — mac verify (D8, BLIND)
+- [ ] Playlist scrolls to the playing row on every track change: auto-advance
+      to the next track, `z`/`b` (prev/next), and double-click a different
+      row to play it — the newly-current row should end up visible without
+      manual scrolling.
+- [ ] While the same track keeps playing, manually scroll the playlist away
+      from the current row (e.g. to look at a track further down) — confirm
+      the view does NOT get yanked back to the current row on subsequent
+      `updateNSView` passes (selection changes, tag edits, etc. must not
+      re-trigger the scroll).
+- [ ] Scrolling to a very long playlist's last track (auto-advance reaching
+      the final row) actually reveals that row — no off-by-one against
+      `table.numberOfRows`.
+- [ ] Confirm `ActivePlaylistTable.Coordinator.lastScrolledIndex` compares
+      against `model.currentIndex` (a stable playlist id), not a raw row
+      number — reordering the playlist via drag should not cause a spurious
+      re-scroll purely from a row-index shift while the same track plays.

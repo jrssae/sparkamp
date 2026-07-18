@@ -226,6 +226,17 @@ struct ActivePlaylistTable: NSViewRepresentable {
             }
         }
 
+        // Auto-scroll to the current track on track change (D8) — mirrors
+        // the GTK frontend's scroll_to_row_if_needed. Only scrolls when the
+        // playing track actually changes (and its row is resolvable), so
+        // user scrolling isn't fought while the same track keeps playing.
+        let cur = model.currentIndex
+        if cur >= 0, cur != context.coordinator.lastScrolledIndex,
+           let row = newItems.firstIndex(where: { $0.id == cur }), row < table.numberOfRows {
+            table.scrollRowToVisible(row)
+            context.coordinator.lastScrolledIndex = cur
+        }
+
         // Sync selection from binding → table without echoing back through
         // tableViewSelectionDidChange (avoids feedback loops).
         let desired = IndexSet(
@@ -260,6 +271,10 @@ struct ActivePlaylistTable: NSViewRepresentable {
         var items: [PlaylistItem] = []
         weak var table: SparkampTableView?
         var applyingExternalSelection = false
+        /// Last `model.currentIndex` value we auto-scrolled to (D8). Prevents
+        /// re-scrolling on every unrelated `updateNSView` pass while the same
+        /// track keeps playing.
+        var lastScrolledIndex: Int = -1
         private let cellId = NSUserInterfaceItemIdentifier("playlistRow")
 
         init(_ parent: ActivePlaylistTable) {
