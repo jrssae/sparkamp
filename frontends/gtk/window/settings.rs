@@ -468,6 +468,31 @@ fn open_settings_window(
         }
         grid.attach(&btn_handler, 1, 5, 1, 1);
 
+        // Verify discs after burning (mirrors the macOS Settings toggle via
+        // sparkamp_set_burn_verify): re-reads the burned disc and compares
+        // it against the source audio before reporting a successful burn.
+        let lbl_verify = Label::builder()
+            .label("Disc burning")
+            .halign(Align::Start)
+            .build();
+        lbl_verify.set_tooltip_text(Some(
+            "After burning, re-read the disc and compare it against the \
+             source audio before reporting success. Slower, but catches \
+             bad burns.",
+        ));
+        grid.attach(&lbl_verify, 0, 6, 1, 1);
+        let chk_verify = CheckButton::with_label("Verify discs after burning");
+        chk_verify.set_active(state.borrow().config.disc.burn_verify);
+        {
+            let state_rc = state.clone();
+            chk_verify.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.disc.burn_verify = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_verify, 1, 6, 1, 1);
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
