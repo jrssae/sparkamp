@@ -997,6 +997,45 @@ fn open_settings_window(
         }
         gr_settings_box.attach(&chk_gr_auto, 1, 6, 1, 1);
 
+        // Beat sensitivity slider — matches the FFI clamp in
+        // src/ffi/granite.rs (1.05..=3.0). render_granite() re-reads the
+        // config struct fresh every tick (see player.rs/viz.rs), so a plain
+        // config write reaches the renderer next frame with no extra
+        // live-apply call, same as Speed and Feedback above.
+        let lbl_gr_sens = Label::new(Some("Beat sensitivity"));
+        lbl_gr_sens.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_sens, 0, 7, 1, 1);
+        let sens_adj = Adjustment::new(
+            state.borrow().config.visualizer.granite.beat_sensitivity as f64,
+            1.05, 3.0, 0.05, 0.1, 0.0,
+        );
+        let scale_gr_sens = Scale::new(Orientation::Horizontal, Some(&sens_adj));
+        scale_gr_sens.set_hexpand(true);
+        scale_gr_sens.set_digits(2);
+        scale_gr_sens.set_draw_value(true);
+        {
+            let state_rc = state.clone();
+            sens_adj.connect_value_changed(move |a| {
+                state_rc.borrow_mut().config.visualizer.granite.beat_sensitivity =
+                    a.value().clamp(1.05, 3.0) as f32;
+            });
+        }
+        gr_settings_box.attach(&scale_gr_sens, 1, 7, 1, 1);
+
+        // Brighten colors on beats toggle.
+        let lbl_gr_bright = Label::new(Some("Brighten colors on beats"));
+        lbl_gr_bright.set_halign(Align::Start);
+        gr_settings_box.attach(&lbl_gr_bright, 0, 8, 1, 1);
+        let chk_gr_bright = CheckButton::new();
+        chk_gr_bright.set_active(state.borrow().config.visualizer.granite.beat_brightness);
+        {
+            let state_rc = state.clone();
+            chk_gr_bright.connect_toggled(move |c| {
+                state_rc.borrow_mut().config.visualizer.granite.beat_brightness = c.is_active();
+            });
+        }
+        gr_settings_box.attach(&chk_gr_bright, 1, 8, 1, 1);
+
         // Show/hide based on mode (mirrors Bars/Waveform pattern).
         gr_settings_box.set_visible(false);
         {
