@@ -727,6 +727,19 @@ fn open_id3_editor_window(
     }
 
     let fields = read_tag_fields(&path);
+    // The six B1 fields (composer, original artist, copyright, url,
+    // encoded_by, lyric) don't have form widgets yet — that's Task 2's job.
+    // Until then, Save must carry the file's existing values through
+    // unchanged rather than blanking them, since write_tag_fields now
+    // manages those frames directly.
+    let extended_fields_passthrough = (
+        fields.composer.clone(),
+        fields.original_artist.clone(),
+        fields.copyright.clone(),
+        fields.url.clone(),
+        fields.encoded_by.clone(),
+        fields.lyric.clone(),
+    );
     let fname = gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
     let path_str = path.to_string_lossy().into_owned();
 
@@ -1054,6 +1067,7 @@ fn open_id3_editor_window(
         let status_s = status_lbl.clone();
         let win_wk = win.downgrade();
         let entries_r = entries.clone();
+        let extended_fields_passthrough = extended_fields_passthrough.clone();
 
         move || {
             let entries = entries_r.borrow();
@@ -1106,6 +1120,12 @@ fn open_id3_editor_window(
                     .get("comment")
                     .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_default(),
+                composer: extended_fields_passthrough.0.clone(),
+                original_artist: extended_fields_passthrough.1.clone(),
+                copyright: extended_fields_passthrough.2.clone(),
+                url: extended_fields_passthrough.3.clone(),
+                encoded_by: extended_fields_passthrough.4.clone(),
+                lyric: extended_fields_passthrough.5.clone(),
                 artwork_path: entries
                     .get("artwork_path")
                     .map(|e| e.text().to_string())

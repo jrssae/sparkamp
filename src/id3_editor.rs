@@ -249,8 +249,14 @@ pub struct TagFields {
     pub disc_number: String,  // "x" part of "x/y"
     pub disc_total: String,   // "y" part of "x/y"
     pub bpm: String,
-    pub comment: String,      // default comment (no content description)
-    pub artwork_path: String, // path to artwork file (not embedded in tag)
+    pub comment: String, // default comment (no content description)
+    pub composer: String,        // TCOM
+    pub original_artist: String, // TOPE
+    pub copyright: String,       // TCOP
+    pub url: String,             // WXXX — a link frame, not a text frame
+    pub encoded_by: String,      // TENC
+    pub lyric: String,           // USLT — unsynchronised lyrics content
+    pub artwork_path: String,    // path to artwork file (not embedded in tag)
 }
 
 impl TagFields {
@@ -275,6 +281,12 @@ impl TagFields {
             ("Disc Total", self.disc_total.clone()),
             ("BPM", self.bpm.clone()),
             ("Comment", self.comment.clone()),
+            ("Composer", self.composer.clone()),
+            ("Original Artist", self.original_artist.clone()),
+            ("Copyright", self.copyright.clone()),
+            ("URL", self.url.clone()),
+            ("Encoded By", self.encoded_by.clone()),
+            ("Lyric", self.lyric.clone()),
         ]
     }
 }
@@ -343,6 +355,22 @@ pub fn read_tag_fields(path: &Path) -> TagFields {
         .map(|c| c.text.clone())
         .unwrap_or_default();
 
+    let get_extended = |frame_id: &str| -> String {
+        tag.get(frame_id)
+            .and_then(|f| f.content().text())
+            .unwrap_or("")
+            .to_string()
+    };
+    // WXXX carries ExtendedLink content — pull the link out explicitly
+    // rather than relying on Content::text() covering link frames.
+    let url = tag
+        .get("WXXX")
+        .map(|f| match f.content() {
+            id3::Content::ExtendedLink(e) => e.link.clone(),
+            c => c.text().unwrap_or("").to_string(),
+        })
+        .unwrap_or_default();
+
     TagFields {
         title: tag.title().unwrap_or("").to_string(),
         artist: tag.artist().unwrap_or("").to_string(),
@@ -360,6 +388,12 @@ pub fn read_tag_fields(path: &Path) -> TagFields {
             .unwrap_or("")
             .to_string(),
         comment,
+        composer: get_extended("TCOM"),
+        original_artist: get_extended("TOPE"),
+        copyright: get_extended("TCOP"),
+        url,
+        encoded_by: get_extended("TENC"),
+        lyric: tag.lyrics().next().map(|l| l.text.clone()).unwrap_or_default(),
         artwork_path: String::new(),
     }
 }
@@ -373,6 +407,7 @@ pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
     // Frame IDs covered by the default TagFields view — exclude these.
     const DEFAULT_IDS: &[&str] = &[
         "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TRCK", "TPOS", "TBPM", "COMM",
+        "TCOM", "TOPE", "TCOP", "WXXX", "TENC", "USLT",
     ];
 
     let tag = match Tag::read_from_path(path) {
@@ -431,6 +466,33 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
     set_text!("TPE2", &fields.album_artist);
     set_text!("TCON", &fields.genre);
     set_text!("TBPM", &fields.bpm);
+    set_text!("TCOM", &fields.composer);
+    set_text!("TOPE", &fields.original_artist);
+    set_text!("TCOP", &fields.copyright);
+    set_text!("TENC", &fields.encoded_by);
+
+    // WXXX is a link frame — set_text would serialize it as a malformed
+    // text frame, so build the ExtendedLink content explicitly.
+    tag.remove("WXXX");
+    if !fields.url.is_empty() {
+        tag.add_frame(id3::Frame::with_content(
+            "WXXX",
+            id3::Content::ExtendedLink(id3::frame::ExtendedLink {
+                description: String::new(),
+                link: fields.url.clone(),
+            }),
+        ));
+    }
+
+    // USLT likewise carries Lyrics content rather than plain text.
+    tag.remove("USLT");
+    if !fields.lyric.is_empty() {
+        tag.add_frame(id3::frame::Lyrics {
+            lang: "eng".to_string(),
+            description: String::new(),
+            text: fields.lyric.clone(),
+        });
+    }
 
     // Year — stored in TDRC (ID3v2.4) but we write TYER for v2.3 compatibility.
     if fields.year.is_empty() {
@@ -751,6 +813,12 @@ mod tests {
             disc_total: "2".into(),
             bpm: "128".into(),
             comment: "Test comment".into(),
+            composer: String::new(),
+            original_artist: String::new(),
+            copyright: String::new(),
+            url: String::new(),
+            encoded_by: String::new(),
+            lyric: String::new(),
             artwork_path: String::new(),
         };
 
@@ -777,23 +845,26 @@ mod tests {
         f.write_all(&[0xFF, 0xFB, 0x90, 0x00]).unwrap();
         let mut tag = Tag::new();
         tag.set_title("Original");
-        tag.set_text("TCOM", "A Composer"); // not in default fields
+        // TSRC (ISRC) isn't part of TagFields, so it must survive a write
+        // that doesn't mention it — unlike TCOM et al., which Task 1 moved
+        // into TagFields and are now managed (cleared when empty).
+        tag.set_text("TSRC", "US-ABC-12-34567");
         tag.write_to_path(f.path(), Version::Id3v23).unwrap();
 
-        // Write default fields (no TCOM).
+        // Write default fields (no TSRC).
         let fields = TagFields {
             title: "Updated".into(),
             ..Default::default()
         };
         write_tag_fields(f.path(), &fields).unwrap();
 
-        // TCOM should still be present.
+        // TSRC should still be present.
         let tag_after = Tag::read_from_path(f.path()).unwrap();
-        let composer = tag_after
-            .get("TCOM")
+        let isrc = tag_after
+            .get("TSRC")
             .and_then(|f| f.content().text())
             .unwrap_or("");
-        assert_eq!(composer, "A Composer");
+        assert_eq!(isrc, "US-ABC-12-34567");
         assert_eq!(tag_after.title().unwrap_or(""), "Updated");
     }
 
@@ -810,14 +881,53 @@ mod tests {
         assert!(tag.artist().is_none() || tag.artist().unwrap().is_empty());
     }
 
+    #[test]
+    fn extended_fields_roundtrip() {
+        // The six fields the GTK editor used to drop (B1) must survive a
+        // write/read cycle, including the two non-text frames (WXXX, USLT).
+        let path = std::env::temp_dir().join("sparkamp_ext_fields_test.mp3");
+        std::fs::write(&path, b"").unwrap();
+
+        let fields = TagFields {
+            title: "T".into(),
+            composer: "A Composer".into(),
+            original_artist: "Orig Artist".into(),
+            copyright: "(c) 2026".into(),
+            url: "https://example.com/a".into(),
+            encoded_by: "Sparkamp".into(),
+            lyric: "la la\nla".into(),
+            ..TagFields::default()
+        };
+        write_tag_fields(&path, &fields).unwrap();
+
+        let back = read_tag_fields(&path);
+        assert_eq!(back.composer, "A Composer");
+        assert_eq!(back.original_artist, "Orig Artist");
+        assert_eq!(back.copyright, "(c) 2026");
+        assert_eq!(back.url, "https://example.com/a");
+        assert_eq!(back.encoded_by, "Sparkamp");
+        assert_eq!(back.lyric, "la la\nla");
+
+        // Clearing a field must remove its frame.
+        let mut cleared = back.clone();
+        cleared.lyric = String::new();
+        cleared.url = String::new();
+        write_tag_fields(&path, &cleared).unwrap();
+        let back2 = read_tag_fields(&path);
+        assert_eq!(back2.lyric, "");
+        assert_eq!(back2.url, "");
+
+        std::fs::remove_file(&path).ok();
+    }
+
     // -----------------------------------------------------------------------
     // field_pairs
     // -----------------------------------------------------------------------
 
     #[test]
-    fn field_pairs_returns_12_entries() {
+    fn field_pairs_returns_18_entries() {
         let fields = TagFields::default();
-        assert_eq!(fields.field_pairs().len(), 12);
+        assert_eq!(fields.field_pairs().len(), 18);
     }
 
     // -----------------------------------------------------------------------

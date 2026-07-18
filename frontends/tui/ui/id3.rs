@@ -55,8 +55,8 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rows[0]);
 
-    let pairs = state.fields.field_pairs(); // 12 (label, value) pairs
-    let mid = pairs.len() / 2; // 6 in each column
+    let pairs = state.fields.field_pairs(); // 18 (label, value) pairs
+    let mid = pairs.len() / 2; // 9 in each column
 
     // Render each column.
     draw_id3_field_column(frame, state, &pairs[..mid], 0, cols[0]);

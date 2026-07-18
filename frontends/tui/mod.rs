@@ -964,7 +964,9 @@ impl App {
 ///
 /// Indices correspond to the `field_pairs()` order:
 /// 0=Title, 1=Artist, 2=Album, 3=Album Artist, 4=Genre, 5=Year,
-/// 6=Track#, 7=Track Total, 8=Disc#, 9=Disc Total, 10=BPM, 11=Comment.
+/// 6=Track#, 7=Track Total, 8=Disc#, 9=Disc Total, 10=BPM, 11=Comment,
+/// 12=Composer, 13=Original Artist, 14=Copyright, 15=URL, 16=Encoded By,
+/// 17=Lyric.
 pub fn id3_field_value_mut(fields: &mut TagFields, index: usize) -> &mut String {
     match index {
         0 => &mut fields.title,
@@ -978,7 +980,13 @@ pub fn id3_field_value_mut(fields: &mut TagFields, index: usize) -> &mut String 
         8 => &mut fields.disc_number,
         9 => &mut fields.disc_total,
         10 => &mut fields.bpm,
-        _ => &mut fields.comment,
+        11 => &mut fields.comment,
+        12 => &mut fields.composer,
+        13 => &mut fields.original_artist,
+        14 => &mut fields.copyright,
+        15 => &mut fields.url,
+        16 => &mut fields.encoded_by,
+        _ => &mut fields.lyric,
     }
 }
 

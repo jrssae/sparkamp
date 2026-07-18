@@ -228,6 +228,12 @@ pub fn tag_fields_for_track(
         disc_total: String::new(),
         bpm: String::new(),
         comment: String::new(),
+        composer: String::new(),
+        original_artist: String::new(),
+        copyright: String::new(),
+        url: String::new(),
+        encoded_by: String::new(),
+        lyric: String::new(),
         artwork_path: String::new(),
     }
 }
