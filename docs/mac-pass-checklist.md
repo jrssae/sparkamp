@@ -106,3 +106,20 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       "must be superuser to unmount" on a mounted data disc; fixed by
       udisks-unmounting first. macOS `drutil eject` — confirm it ejects a
       mounted data disc without a similar error (drutil usually handles it).
+
+## Phase-0 fixes: ID3 editor extended + passthrough frames (2026-07-17) — mac verify
+- [ ] Mac ID3 editor's standard fields — Composer, Copyright, Encoded-by (and
+      Original Artist, URL, Lyrics if exposed in the UI) — save via
+      `sparkamp_tag_set`/`sparkamp_tag_save` and survive a close/reopen of
+      the file (round-trips through `TagFields`, not silently dropped).
+- [ ] Customize panel: add a frame not covered by the standard fields (e.g.
+      Publisher/TPUB, Key/TKEY, Mood/TMOO, Language/TLAN, ISRC/TSRC,
+      Subtitle/TIT3) via `sparkamp_tag_set`, save, close, and reopen the
+      file — confirm the value survives (passthrough via
+      `write_extra_frame`, not just held in memory until close).
+- [ ] Setting a Customize frame, then reading it back via
+      `sparkamp_tag_get` **before** saving, shows the just-set value (pending
+      writes must win over what was loaded from disk).
+- [ ] Setting a standard field and a Customize frame together, then saving
+      once: both persist (the extra-frame write path runs after the main
+      `write_tag_fields` call and doesn't clobber it).

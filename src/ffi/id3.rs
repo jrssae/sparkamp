@@ -15,6 +15,10 @@ pub struct SparkampTagCtx {
     fields: crate::id3_editor::TagFields,
     extra_frames: Vec<crate::id3_editor::ExtraFrame>,
     artwork: Option<Vec<u8>>,
+    /// Values set via sparkamp_tag_set for frames outside TagFields —
+    /// written with write_extra_frame on save. This is what finally uses
+    /// the extra-frame write path (B7) for the mac Customize fields (B2).
+    pending_extra: Vec<(String, String)>,
 }
 
 #[unsafe(no_mangle)]
@@ -37,6 +41,7 @@ pub unsafe extern "C" fn sparkamp_tag_open(path: *const c_char) -> *mut Sparkamp
         fields,
         extra_frames,
         artwork,
+        pending_extra: Vec::new(),
     };
     Box::into_raw(Box::new(tag_ctx))
 }
@@ -70,7 +75,29 @@ pub unsafe extern "C" fn sparkamp_tag_get(
         "TPOS" => &tag.fields.disc_number,
         "TBPM" => &tag.fields.bpm,
         "COMM" => &tag.fields.comment,
-        _ => return CString::new("").unwrap().into_raw(),
+        "TCOM" => &tag.fields.composer,
+        "TOPE" => &tag.fields.original_artist,
+        "TCOP" => &tag.fields.copyright,
+        "WXXX" => &tag.fields.url,
+        "TENC" => &tag.fields.encoded_by,
+        "USLT" => &tag.fields.lyric,
+        other => {
+            // Pending writes win over what was read from disk.
+            let v = tag
+                .pending_extra
+                .iter()
+                .rev()
+                .find(|(id, _)| id == other)
+                .map(|(_, v)| v.as_str())
+                .or_else(|| {
+                    tag.extra_frames
+                        .iter()
+                        .find(|f| f.id == other)
+                        .map(|f| f.value.as_str())
+                })
+                .unwrap_or("");
+            return CString::new(v).unwrap_or_default().into_raw();
+        }
     };
     CString::new(value.as_str()).unwrap_or_default().into_raw()
 }
@@ -98,6 +125,16 @@ pub unsafe extern "C" fn sparkamp_tag_set(
         "TPOS" => tag.fields.disc_number = val,
         "TBPM" => tag.fields.bpm = val,
         "COMM" => tag.fields.comment = val,
+        "TCOM" => tag.fields.composer = val,
+        "TOPE" => tag.fields.original_artist = val,
+        "TCOP" => tag.fields.copyright = val,
+        "WXXX" => tag.fields.url = val,
+        "TENC" => tag.fields.encoded_by = val,
+        "USLT" => tag.fields.lyric = val,
+        other if other.starts_with('T') => {
+            tag.pending_extra.retain(|(id, _)| id != other);
+            tag.pending_extra.push((other.to_string(), val));
+        }
         _ => {}
     }
 }
@@ -161,9 +198,17 @@ pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
         Ok(false) => {}
     }
     match crate::id3_editor::write_tag_fields(path, &tag.fields) {
-        Ok(_) => 0,
-        Err(_) => -2,
+        Ok(_) => {}
+        Err(_) => return -2,
     }
+    for (id, value) in &tag.pending_extra {
+        // write_extra_frame re-reads and rewrites the tag per frame; the
+        // Customize panel tops out at a handful of frames, so that's fine.
+        if crate::id3_editor::write_extra_frame(path, id, value).is_err() {
+            return -2;
+        }
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -195,5 +240,46 @@ pub unsafe extern "C" fn sparkamp_tag_free_artwork(ptr: *mut u8, len: c_int) {
         return;
     }
     drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len as usize)));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+
+    // Round-trip a TagFields-backed frame and a passthrough frame through
+    // the raw FFI surface the mac editor uses (B2/B7).
+    #[test]
+    fn ffi_extended_and_passthrough_roundtrip() {
+        let path = std::env::temp_dir().join("sparkamp_ffi_tag_test.mp3");
+        std::fs::write(&path, b"").unwrap();
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        unsafe {
+            let ctx = super::sparkamp_tag_open(c_path.as_ptr());
+            assert!(!ctx.is_null());
+            let set = |ctx, id: &str, v: &str| {
+                let id = CString::new(id).unwrap();
+                let v = CString::new(v).unwrap();
+                super::sparkamp_tag_set(ctx, id.as_ptr(), v.as_ptr());
+            };
+            set(ctx, "TCOM", "A Composer");
+            set(ctx, "TPUB", "A Publisher"); // not in TagFields — passthrough
+            assert_eq!(super::sparkamp_tag_save(ctx), 0);
+            super::sparkamp_tag_close(ctx);
+
+            let ctx2 = super::sparkamp_tag_open(c_path.as_ptr());
+            let get = |ctx, id: &str| -> String {
+                let id = CString::new(id).unwrap();
+                let p = super::sparkamp_tag_get(ctx, id.as_ptr());
+                let s = std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+                crate::ffi::sparkamp_free_string(p);
+                s
+            };
+            assert_eq!(get(ctx2, "TCOM"), "A Composer");
+            assert_eq!(get(ctx2, "TPUB"), "A Publisher");
+            super::sparkamp_tag_close(ctx2);
+        }
+        std::fs::remove_file(&path).ok();
+    }
 }
 
