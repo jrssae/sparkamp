@@ -262,12 +262,6 @@ mod tests {
                 let v = CString::new(v).unwrap();
                 super::sparkamp_tag_set(ctx, id.as_ptr(), v.as_ptr());
             };
-            set(ctx, "TCOM", "A Composer");
-            set(ctx, "TPUB", "A Publisher"); // not in TagFields — passthrough
-            assert_eq!(super::sparkamp_tag_save(ctx), 0);
-            super::sparkamp_tag_close(ctx);
-
-            let ctx2 = super::sparkamp_tag_open(c_path.as_ptr());
             let get = |ctx, id: &str| -> String {
                 let id = CString::new(id).unwrap();
                 let p = super::sparkamp_tag_get(ctx, id.as_ptr());
@@ -275,8 +269,25 @@ mod tests {
                 crate::ffi::sparkamp_free_string(p);
                 s
             };
+
+            set(ctx, "TCOM", "A Composer");
+            set(ctx, "TPUB", "A Publisher"); // not in TagFields — passthrough
+
+            // Pending-beats-disk: sparkamp_tag_get must see the just-set value
+            // before any save has happened (disk still has nothing for TPUB).
+            assert_eq!(get(ctx, "TPUB"), "A Publisher");
+
+            // Last-write-wins: setting the same passthrough frame again
+            // replaces the earlier pending value rather than appending it.
+            set(ctx, "TPUB", "Second Publisher");
+            assert_eq!(get(ctx, "TPUB"), "Second Publisher");
+
+            assert_eq!(super::sparkamp_tag_save(ctx), 0);
+            super::sparkamp_tag_close(ctx);
+
+            let ctx2 = super::sparkamp_tag_open(c_path.as_ptr());
             assert_eq!(get(ctx2, "TCOM"), "A Composer");
-            assert_eq!(get(ctx2, "TPUB"), "A Publisher");
+            assert_eq!(get(ctx2, "TPUB"), "Second Publisher");
             super::sparkamp_tag_close(ctx2);
         }
         std::fs::remove_file(&path).ok();

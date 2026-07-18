@@ -808,4 +808,28 @@ mod tests {
         // After this tick, counted_play_path should STILL be Some(path).
         assert_eq!(s.counted_play_path, Some(path));
     }
+
+    // ── sanitize_id3_text_unbounded ──────────────────────────────────────────
+
+    #[test]
+    fn sanitize_id3_text_unbounded_preserves_long_multiline_lyrics() {
+        // sanitize_id3_text caps at 256 chars, which silently truncates USLT
+        // lyrics on save. The unbounded variant must keep every char (newlines
+        // included) beyond that cap, stripping only NUL/control chars like its
+        // capped sibling does.
+        let verse = "La la la, a line of lyrics.\n";
+        let long_lyric = verse.repeat(20); // well over 256 chars, multi-line
+        assert!(long_lyric.chars().count() > 256);
+
+        let sanitized = sanitize_id3_text_unbounded(&long_lyric);
+        assert_eq!(sanitized, long_lyric.trim());
+
+        // Forbidden chars (NUL, other control chars) are still stripped, and
+        // newlines/tabs are still preserved, matching sanitize_id3_text's rules.
+        let dirty = "line one\nline two\0\x01line three\ttab";
+        assert_eq!(
+            sanitize_id3_text_unbounded(dirty),
+            "line one\nline twoline three\ttab"
+        );
+    }
 }

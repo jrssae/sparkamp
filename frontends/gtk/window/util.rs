@@ -39,6 +39,17 @@ fn sanitize_id3_text(s: &str) -> String {
         .collect()
 }
 
+/// Same NUL/control-char stripping as `sanitize_id3_text`, but with no
+/// length cap. USLT lyrics are legitimately long, multi-line content — the
+/// 256-char cap was sized for single-line tag text (title/artist/...), and
+/// applying it to lyrics silently truncated anything longer on save.
+fn sanitize_id3_text_unbounded(s: &str) -> String {
+    gtk_safe(s.trim())
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
 /// Outcome of one [`refresh_device_cache`] poll, handed to `on_done` after
 /// the shared cache has already been written (or cleared). Distinguishes a
 /// udisks listing failure — worth diagnosing (permissions, missing udisks2,

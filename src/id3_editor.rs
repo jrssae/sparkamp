@@ -682,6 +682,10 @@ pub fn frame_label<'a>(id: &'a str) -> &'a str {
 /// panel's "add frame" picker.
 #[allow(dead_code)]
 pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
+    // TCOM, TOPE, TCOP, TENC, USLT and WXXX are excluded: they're managed
+    // fields the main editor already owns (composer, original_artist,
+    // copyright, encoded_by, lyric, url), so a future "add frame" UI must
+    // not offer to add them a second time as extra frames.
     vec![
         ("TIT1", "Content Group"),
         ("TIT3", "Subtitle"),
@@ -689,20 +693,16 @@ pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
         ("TSRC", "ISRC"),
         ("TPE3", "Conductor"),
         ("TPE4", "Interpreted By"),
-        ("TOPE", "Original Artist"),
-        ("TCOM", "Composer"),
         ("TEXT", "Lyricist"),
         ("TOLY", "Original Lyricist"),
         ("TMCL", "Musician Credits"),
         ("TIPL", "Involved People"),
-        ("TENC", "Encoded By"),
         ("TLEN", "Length (ms)"),
         ("TKEY", "Initial Key"),
         ("TLAN", "Language"),
         ("TFLT", "File Type"),
         ("TMED", "Media Type"),
         ("TMOO", "Mood"),
-        ("TCOP", "Copyright"),
         ("TPUB", "Publisher"),
         ("TOWN", "File Owner"),
         ("TRSN", "Radio Station Name"),
@@ -711,9 +711,7 @@ pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
         ("TSOA", "Album Sort Order"),
         ("TSOP", "Artist Sort Order"),
         ("TSOT", "Title Sort Order"),
-        ("USLT", "Unsynchronised Lyrics"),
         ("TXXX", "User-Defined Text"),
-        ("WXXX", "User-Defined URL"),
     ]
 }
 

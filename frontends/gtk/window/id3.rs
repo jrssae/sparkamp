@@ -1108,9 +1108,12 @@ fn open_id3_editor_window(
                     .get("encoded_by")
                     .map(|e| sanitize_id3_text(&e.text()))
                     .unwrap_or_else(|| fields_snapshot.encoded_by.clone()),
+                // Lyric is exempt from sanitize_id3_text's 256-char cap: USLT
+                // is long-form multi-line content, unlike the single-line tag
+                // text that cap was sized for.
                 lyric: entries
                     .get("lyric")
-                    .map(|e| sanitize_id3_text(&e.text()))
+                    .map(|e| sanitize_id3_text_unbounded(&e.text()))
                     .unwrap_or_else(|| fields_snapshot.lyric.clone()),
                 artwork_path: entries
                     .get("artwork_path")
