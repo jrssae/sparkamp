@@ -142,7 +142,7 @@ pub fn build(
     let _ = init_player_width;
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("SparkAmp")
+        .title("Sparkamp")
         .default_width(384)
         .default_height(init_player_height)
         .resizable(false)
@@ -582,7 +582,7 @@ pub fn build(
 
     let playlist_win = ApplicationWindow::builder()
         .application(app)
-        .title("SparkAmp — Playlist")
+        .title("Sparkamp — Playlist")
         .default_width(init_pl_width)
         .default_height(init_pl_height)
         .transient_for(&window)

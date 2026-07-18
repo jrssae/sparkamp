@@ -335,7 +335,7 @@ pub(super) fn queue_paths_to_drive(
 }
 
 /// Embedded app logo PNG bytes (compiled into the binary).
-/// Replace `square logo.png` in the project root with the SparkAmp logo asset.
+/// Replace `square logo.png` in the project root with the Sparkamp logo asset.
 static LOGO_BYTES: &[u8] = include_bytes!("../../../square logo.png");
 
 /// Load the app logo as a pixbuf scaled to `size × size` pixels.

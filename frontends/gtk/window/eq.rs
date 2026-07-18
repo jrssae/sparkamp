@@ -11,7 +11,7 @@ fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 
     let win = gtk4::Window::new();
-    win.set_title(Some("Equalizer — SparkAmp"));
+    win.set_title(Some("Equalizer — Sparkamp"));
     win.set_default_size(560, 240);
     win.set_resizable(false);
     if let Some(p) = parent {

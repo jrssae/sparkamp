@@ -673,7 +673,7 @@ impl AppState {
 // Window construction
 // ---------------------------------------------------------------------------
 
-/// Build and present the SparkAmp main window and companion playlist window.
+/// Build and present the Sparkamp main window and companion playlist window.
 ///
 /// ## Layout overview
 ///

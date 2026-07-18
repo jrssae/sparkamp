@@ -8,7 +8,7 @@ fn open_settings_window(
     rebuild_playlist: Rc<dyn Fn()>,
 ) {
     let win = gtk4::Window::new();
-    win.set_title(Some("Settings — SparkAmp"));
+    win.set_title(Some("Settings — Sparkamp"));
     win.set_default_size(480, 340);
     win.set_resizable(false);
     if let Some(p) = parent {
