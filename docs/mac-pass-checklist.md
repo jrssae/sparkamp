@@ -141,3 +141,7 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       against `model.currentIndex` (a stable playlist id), not a raw row
       number — reordering the playlist via drag should not cause a spurious
       re-scroll purely from a row-index shift while the same track plays.
+- [ ] Stop playback, scroll the playlist away from the (former) current
+      row, then play that same track again — confirm the view scrolls back
+      to it (the guard resets on stop, so replaying the same track re-fires
+      the scroll instead of being treated as "already scrolled there").

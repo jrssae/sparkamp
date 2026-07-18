@@ -235,6 +235,11 @@ struct ActivePlaylistTable: NSViewRepresentable {
            let row = newItems.firstIndex(where: { $0.id == cur }), row < table.numberOfRows {
             table.scrollRowToVisible(row)
             context.coordinator.lastScrolledIndex = cur
+        } else if cur < 0 {
+            // Playback stopped — reset the guard so replaying the same
+            // track (same id) still triggers a scroll instead of being
+            // silently skipped as "already scrolled there".
+            context.coordinator.lastScrolledIndex = -1
         }
 
         // Sync selection from binding → table without echoing back through
