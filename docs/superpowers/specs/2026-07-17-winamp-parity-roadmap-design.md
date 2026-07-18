@@ -91,6 +91,15 @@ what it can't reach goes on the user's interactive checklist for that phase
 plus the mac checklist. Suite currently at 1015 tests — each phase should
 leave the count higher, never lower.
 
+## Known limitations (recorded during phase 0)
+
+The GTK ID3 editor renders the lyric (USLT) field in a single-line Entry:
+long lyrics are no longer truncated on save (the 256-char sanitizer cap is
+bypassed for lyric), but multi-line structure is flattened to one line on an
+open→save round-trip — inherent to the widget, strictly better than the
+pre-phase-0 silent truncation. Full fidelity needs a multi-line TextView for
+the lyric field; fold into phase 2 (F14 touches tag display) or later.
+
 ## Error handling defaults
 
 Missing art → placeholder, never an error: a large Sparkamp logo at 50%
