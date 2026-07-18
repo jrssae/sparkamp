@@ -810,11 +810,9 @@ fn open_id3_editor_window(
             get_id3_field_value(&fields, id)
         };
         if *id == "genre" {
-            let (combo, entry) = make_genre_combo(&value);
-            combo.set_hexpand(true);
-            grid.attach(&combo, 1, row as i32, 1, 1);
-            // Register the hidden carrier entry so Save picks the genre up;
-            // without it the save handler writes an empty genre.
+            let entry = make_genre_entry(&value);
+            entry.set_hexpand(true);
+            grid.attach(&entry, 1, row as i32, 1, 1);
             left_entries.push((id.to_string(), entry));
         } else {
             let entry = Entry::new();
@@ -842,9 +840,9 @@ fn open_id3_editor_window(
             get_id3_field_value(&fields, id)
         };
         if *id == "genre" {
-            let (combo, entry) = make_genre_combo(&value);
-            combo.set_hexpand(true);
-            grid.attach(&combo, 3, row as i32, 1, 1);
+            let entry = make_genre_entry(&value);
+            entry.set_hexpand(true);
+            grid.attach(&entry, 3, row as i32, 1, 1);
             right_entries.push((id.to_string(), entry));
         } else {
             let entry = Entry::new();

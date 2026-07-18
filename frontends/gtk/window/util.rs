@@ -151,59 +151,27 @@ fn format_last_played(iso_timestamp: &str) -> String {
     )
 }
 
-#[allow(deprecated)]
-fn make_genre_combo(initial_value: &str) -> (gtk4::DropDown, gtk4::Entry) {
-    // First item clears the genre; a custom (non-ID3v1) value gets its own
-    // item so the dropdown reflects what's actually in the tag. The genre
-    // list itself is shown alphabetically (ID3v1 declaration order is
-    // meaningless to a human scanning the dropdown).
-    const UNDEFINED: &str = "(undefined)";
-    let mut items: Vec<&str> = Vec::with_capacity(crate::id3_editor::ID3V1_GENRES.len() + 2);
-    items.push(UNDEFINED);
-    if !initial_value.is_empty()
-        && !crate::id3_editor::ID3V1_GENRES.contains(&initial_value)
-    {
-        items.push(initial_value);
-    }
-    let mut genres: Vec<&str> = crate::id3_editor::ID3V1_GENRES.to_vec();
-    genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
-    items.extend_from_slice(&genres);
-    let dd = DropDown::from_strings(&items);
-    // Typeahead: the open dropdown gets a search field filtering the 190+
-    // genres as you type.
-    dd.set_expression(Some(&gtk4::PropertyExpression::new(
-        gtk4::StringObject::static_type(),
-        None::<gtk4::Expression>,
-        "string",
-    )));
-    dd.set_enable_search(true);
-
-    // Hidden value carrier — the save handler reads this entry, so the
-    // dropdown mirrors every selection into it ("" for undefined).
+#[allow(deprecated)] // EntryCompletion/ListStore — no GTK4 replacement yet
+fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
+    // Free-text entry with typeahead over the predefined ID3v1 list only —
+    // matches the mac editor (D13): suggestions come from the list, but
+    // any typed value is accepted and saved verbatim.
     let entry = Entry::new();
-    entry.set_width_chars(16);
     entry.set_text(initial_value);
 
-    let selected = if initial_value.is_empty() {
-        0
-    } else {
-        items.iter().position(|g| *g == initial_value).unwrap_or(0)
-    };
-    dd.set_selected(selected as u32);
-
-    {
-        let entry_sync = entry.clone();
-        dd.connect_selected_notify(move |d| {
-            let text = d
-                .selected_item()
-                .and_then(|o| o.downcast::<gtk4::StringObject>().ok())
-                .map(|s| s.string().to_string())
-                .unwrap_or_default();
-            entry_sync.set_text(if text == UNDEFINED { "" } else { &text });
-        });
+    let mut genres: Vec<&str> = crate::id3_editor::ID3V1_GENRES.to_vec();
+    genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
+    let store = gtk4::ListStore::new(&[glib::types::Type::STRING]);
+    for g in &genres {
+        store.set(&store.append(), &[(0, g)]);
     }
-
-    (dd, entry)
+    let completion = gtk4::EntryCompletion::new();
+    completion.set_model(Some(&store));
+    completion.set_text_column(0);
+    completion.set_popup_completion(true);
+    completion.set_minimum_key_length(1);
+    entry.set_completion(Some(&completion));
+    entry
 }
 
 /// Make a sidebar/manage playlist row draggable, carrying `pl:<id>` so a drop
