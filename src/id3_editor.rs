@@ -557,10 +557,18 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
 
         match std::fs::read(&art_path) {
             Ok(img_data) => {
-                let mime = if fields.artwork_path.ends_with(".png") {
-                    "image/png"
-                } else {
-                    "image/jpeg"
+                let mime = match art_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .as_deref()
+                {
+                    Some("png") => "image/png",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    // jpg/jpeg and anything unrecognized — keep the old
+                    // default so behavior only changes where it was wrong.
+                    _ => "image/jpeg",
                 };
                 tag.add_frame(id3::frame::Picture {
                     mime_type: mime.to_string(),
@@ -960,5 +968,32 @@ mod tests {
         assert!(ID3V1_GENRES.contains(&"Rock"));
         assert!(ID3V1_GENRES.contains(&"Jazz"));
         assert!(ID3V1_GENRES.contains(&"Electronic"));
+    }
+
+    // -----------------------------------------------------------------------
+    // artwork_mime_matches_extension
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn artwork_mime_matches_extension() {
+        // Embedding a .gif/.webp must not claim image/jpeg (B5) — players
+        // decode by the declared mime and render garbage otherwise.
+        let art = std::env::temp_dir().join("sparkamp_mime_test.GIF");
+        std::fs::write(&art, b"GIF89a fake").unwrap();
+        let song = std::env::temp_dir().join("sparkamp_mime_test.mp3");
+        std::fs::write(&song, b"").unwrap();
+
+        let fields = TagFields {
+            artwork_path: art.to_string_lossy().into_owned(),
+            ..TagFields::default()
+        };
+        write_tag_fields(&song, &fields).unwrap();
+
+        let tag = id3::Tag::read_from_path(&song).unwrap();
+        let pic = tag.pictures().next().unwrap();
+        assert_eq!(pic.mime_type, "image/gif");
+
+        std::fs::remove_file(&art).ok();
+        std::fs::remove_file(&song).ok();
     }
 }
