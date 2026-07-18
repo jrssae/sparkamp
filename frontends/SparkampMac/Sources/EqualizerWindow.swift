@@ -201,8 +201,6 @@ private struct BandSliderColumn: View {
     let theme: SkinTheme
     let onChange: (Double) -> Void
 
-    @State private var labelText: String = ""
-
     var body: some View {
         VStack(spacing: 3) {
             // Vertical slider via rotation.
@@ -217,19 +215,6 @@ private struct BandSliderColumn: View {
                 .onChange(of: value) { _, newVal in
                     onChange(newVal)
                 }
-
-            // Frequency label
-            Text(labelText)
-                .font(theme.vars.bodyFont)
-                .foregroundStyle(theme.playlistDurationText)
-                .frame(width: 36)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-        }
-        .onAppear {
-            let ptr = sparkamp_eq_band_label(Int32(bandIndex))
-            labelText = ptr.map { String(cString: $0) } ?? "\(bandIndex)"
-            sparkamp_free_string(ptr)
         }
     }
 }

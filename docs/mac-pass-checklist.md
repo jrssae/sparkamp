@@ -145,3 +145,6 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       row, then play that same track again — confirm the view scrolls back
       to it (the guard resets on stop, so replaying the same track re-fires
       the scroll instead of being treated as "already scrolled there").
+
+## Phase-0 fixes: EQ frequency labels removal (D10) — mac verify
+- [ ] EQ window shows 10 unlabeled sliders matching GTK, column spacing intact.
