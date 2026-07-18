@@ -56,7 +56,8 @@ warnings inside distrobox, mac verification items appended to
 | 8 | F10 watch folders | Filesystem watching (decided above), rescan-on-startup toggle, auto-add played tracks, remove-missing toggle (default OFF), per-folder recurse toggle, compact-on-rescan | Scanner is mature (phases 1 and 4 done); watching integrates with the settled scan path |
 | 9 | F5 CD-TEXT | Read CD-TEXT (libburn `cdtext_to_v07t` path) when gnudb misses or as overlay; probe-time only, drive-contention aware | Independent disc-subsystem work; no coupling to the phases above |
 | 10 | F11 + F12 | Play-stats toggle + N-seconds / N-percent threshold feeding `record_play` (closes the 20 s open thread); remember-search-per-view, artist→album-artist fallback, skip-DB-load-at-startup | Small settings cluster; F11 touches the play path phase 2 instrumented, safer after it settles |
-| 11 | A4 album gallery | ML browse-by-album cover grid; clicking an album shows its tracks; needs album-grouping infra | Explicitly "larger, note only" in the todo — last, and re-confirm scope with the user before building |
+| 11 | A4 album gallery | ML browse-by-album cover grid; clicking an album shows its tracks; needs album-grouping infra | Explicitly "larger, note only" in the todo — re-confirm scope with the user before building |
+| 12 | F15 View/Search Lyrics | Right-click "View/Search Lyrics" on track rows in ML Files, saved playlists, disc view, device view, active playlist + affordance in the A1 panel. Has USLT → read-only lyrics window using the skin CSS font/size; none → default browser on DuckDuckGo "<artist> - <song> lyrics" (standard artist/title fallback logic). GTK + mac, TUI lyrics-as-text | User addition (2026-07-17), scheduled last; the viewer window also mitigates the phase-0 single-line-Entry lyric limitation |
 
 ## Cross-cutting rules (every phase plan inherits these)
 
