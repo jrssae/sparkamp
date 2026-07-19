@@ -69,9 +69,13 @@ pub(crate) fn days_in_month(year: u64, month: u64) -> u64 {
     }
 }
 
-/// Get current timestamp in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ, UTC).
-pub(crate) fn format_current_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
+/// Format an arbitrary `SystemTime` as ISO 8601 (YYYY-MM-DDTHH:MM:SSZ, UTC).
+/// Shared by `format_current_timestamp` (below) and the scanner's file-mtime
+/// capture, so `last_scanned`, `added_at`, and `file_mtime` all use one
+/// formatter and stay comparable.
+#[allow(dead_code)] // bin-unreachable on macOS (callers are GTK/FFI-gated)
+pub(crate) fn format_system_time(t: std::time::SystemTime) -> String {
+    let secs = t
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
@@ -87,6 +91,11 @@ pub(crate) fn format_current_timestamp() -> String {
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         year, month, day, hour, min, sec
     )
+}
+
+/// Get current timestamp in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ, UTC).
+pub(crate) fn format_current_timestamp() -> String {
+    format_system_time(std::time::SystemTime::now())
 }
 
 /// Convert days since 1970 to (year, month, day).

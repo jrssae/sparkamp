@@ -7116,6 +7116,9 @@ fn open_media_library_window(
                                 copyright: None, url: None, encoded_by: None,
                                 lyric: None, artwork_path: None,
                                 last_scanned: None,
+                                sample_rate: None, file_size: None,
+                                file_mtime: None, added_at: None,
+                                bitrate_mode: None,
                                 sort_keys: Default::default(),
                             }
                         })

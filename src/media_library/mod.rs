@@ -72,6 +72,17 @@ pub struct LibTrack {
     pub artwork_path: Option<String>,
     /// ISO-8601 datetime string of the last metadata scan, or `None` if never scanned.
     pub last_scanned: Option<String>,
+    /// Sample rate in Hz, read from the codec header by `technical_probe`.
+    pub sample_rate: Option<i64>,
+    /// File size in bytes, captured at scan time.
+    pub file_size: Option<i64>,
+    /// ISO-8601 datetime string of the file's on-disk modification time.
+    pub file_mtime: Option<String>,
+    /// ISO-8601 datetime string of the row's first INSERT. Never updated on
+    /// later upserts, so it reflects when the file entered the library.
+    pub added_at: Option<String>,
+    /// "VBR" / "CBR" for MP3 files, `None` when undetermined or non-MP3.
+    pub bitrate_mode: Option<String>,
     /// Pre-computed lowercase strings and zero-padded numbers for sort comparisons.
     /// All strings are lowercase; all numeric fields are zero-padded so string
     /// comparison gives correct numeric ordering.
@@ -449,6 +460,11 @@ impl MediaLibrary {
             ("last_scanned", "TEXT"),
             ("deleted_at", "TEXT"),
             ("rating", "INTEGER"),
+            ("sample_rate", "INTEGER"),
+            ("file_size", "INTEGER"),
+            ("file_mtime", "TEXT"),
+            ("added_at", "TEXT"),
+            ("bitrate_mode", "TEXT"),
         ];
         let existing: std::collections::HashSet<String> = {
             let mut stmt = self
@@ -523,6 +539,11 @@ impl MediaLibrary {
                 lyric: row.get::<_, Option<String>>(25)?.map(|s| sanitize(&s)),
                 artwork_path: row.get::<_, Option<String>>(26)?.map(|s| sanitize(&s)),
                 last_scanned: row.get::<_, Option<String>>(27)?,
+                sample_rate: row.get(28)?,
+                file_size: row.get(29)?,
+                file_mtime: row.get::<_, Option<String>>(30)?,
+                added_at: row.get::<_, Option<String>>(31)?,
+                bitrate_mode: row.get::<_, Option<String>>(32)?.map(|s| sanitize(&s)),
                 sort_keys: SortKeys::default(),
             };
             track.sort_keys = SortKeys::from_track(&track);

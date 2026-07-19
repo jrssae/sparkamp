@@ -377,6 +377,11 @@ mod tests {
             lyric: None,
             artwork_path: None,
             last_scanned: Some("2024-01-01T00:00:00".to_string()),
+            sample_rate: None,
+            file_size: None,
+            file_mtime: None,
+            added_at: None,
+            bitrate_mode: None,
             sort_keys: Default::default(),
         }
     }

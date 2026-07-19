@@ -35,6 +35,11 @@ fn fake_lib_track(path: &str, title: &str) -> crate::media_library::LibTrack {
         lyric: None,
         artwork_path: None,
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: Default::default(),
     }
 }

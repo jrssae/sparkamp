@@ -28,7 +28,8 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
              FROM tracks
              WHERE last_scanned IS NOT NULL
              ORDER BY LOWER(COALESCE(artist,'')), LOWER(COALESCE(title,''))";
@@ -48,7 +49,8 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
              FROM tracks
              ORDER BY {order}",
         );
@@ -113,7 +115,8 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
              FROM tracks
              WHERE {word_clauses}
              ORDER BY {order}",
@@ -153,6 +156,19 @@ impl MediaLibrary {
             "year" => format!("COALESCE(year, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "genre" => format!("LOWER(COALESCE(genre,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "bitrate" => format!("COALESCE(bitrate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "sample_rate" => format!(
+                "COALESCE(sample_rate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "file_size" => format!(
+                "COALESCE(file_size, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "added_at" => format!("LOWER(COALESCE(added_at,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "file_mtime" => format!(
+                "LOWER(COALESCE(file_mtime,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
+            "bitrate_mode" => format!(
+                "LOWER(COALESCE(bitrate_mode,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
             "num" => format!("COALESCE(track_num, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "play_count" => format!("COALESCE(play_count, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             // last_played sorts NULLs (never played) to the end regardless of direction
@@ -175,7 +191,8 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
              FROM tracks WHERE filename = ?1 LIMIT 1",
         )?;
         let mut rows = Self::collect_tracks(&mut stmt, params![filename])?;
@@ -330,7 +347,8 @@ impl MediaLibrary {
             "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned
+                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
              FROM tracks WHERE path = ?1",
         )?;
         let mut rows = Self::collect_tracks(&mut stmt, params![path])?;

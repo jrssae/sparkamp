@@ -19,6 +19,87 @@ fn temp_dir_with_files(extension: &str, count: usize) -> tempfile::TempDir {
     dir
 }
 
+// ── upsert_track: technical columns + added_at stability ───────────────
+
+/// Minimal valid PCM WAV with exactly `secs` seconds of silence. Symphonia
+/// derives duration straight from the header (data chunk size ÷ byte rate),
+/// so this is enough to make `avg_bitrate_kbps`'s >0.5s threshold trip
+/// without needing a real audio fixture.
+fn write_test_wav(path: &std::path::Path, sample_rate: u32, channels: u16, secs: f64) {
+    let bytes_per_frame = channels as u32 * 2;
+    let data_len = (sample_rate as f64 * secs) as u32 * bytes_per_frame;
+    let byte_rate = sample_rate * bytes_per_frame;
+    let block_align = channels * 2;
+    let mut buf = Vec::new();
+    buf.extend(b"RIFF");
+    buf.extend(&(36 + data_len).to_le_bytes());
+    buf.extend(b"WAVE");
+    buf.extend(b"fmt ");
+    buf.extend(&16u32.to_le_bytes());
+    buf.extend(&1u16.to_le_bytes()); // PCM
+    buf.extend(&channels.to_le_bytes());
+    buf.extend(&sample_rate.to_le_bytes());
+    buf.extend(&byte_rate.to_le_bytes());
+    buf.extend(&block_align.to_le_bytes());
+    buf.extend(&16u16.to_le_bytes()); // bits per sample
+    buf.extend(b"data");
+    buf.extend(&data_len.to_le_bytes());
+    buf.extend(std::iter::repeat(0u8).take(data_len as usize));
+    fs::write(path, buf).unwrap();
+}
+
+#[test]
+fn upsert_captures_technical_columns_and_preserves_added_at() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("song.wav");
+    write_test_wav(&file_path, 44100, 2, 1.0);
+    let path = file_path.to_str().unwrap();
+    let expected_size = fs::metadata(&file_path).unwrap().len() as i64;
+
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+
+    lib.upsert_track(folder_id, path).unwrap();
+    let track = lib.track_by_path(path).unwrap();
+
+    assert_eq!(track.sample_rate, Some(44100));
+    assert_eq!(track.channels, Some(2));
+    assert_eq!(track.file_size, Some(expected_size));
+    assert!(track.file_mtime.is_some(), "file_mtime should be populated");
+    assert!(track.added_at.is_some(), "added_at should be populated");
+    assert!(
+        track.length_secs.is_some(),
+        "duration must be known for this fixture (header-derived)"
+    );
+    assert!(
+        track.bitrate.is_some(),
+        "bitrate must be non-NULL when duration is known"
+    );
+
+    let added_at_first = track.added_at.clone();
+    let file_mtime_first = track.file_mtime.clone();
+
+    // Re-upsert the same path (as a rescan would). added_at must be stable
+    // (INSERT-only), while last_scanned/file_mtime refresh.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    lib.upsert_track(folder_id, path).unwrap();
+    let track2 = lib.track_by_path(path).unwrap();
+
+    assert_eq!(
+        track2.added_at, added_at_first,
+        "added_at must not change on re-upsert"
+    );
+    assert!(
+        track2.last_scanned.is_some(),
+        "last_scanned should be refreshed by upsert_track"
+    );
+    assert!(track2.file_mtime.is_some());
+    assert_eq!(
+        track2.file_mtime, file_mtime_first,
+        "file_mtime unchanged since the file itself was not modified"
+    );
+}
+
 // ── add_folder / remove_folder ─────────────────────────────────────────
 
 #[test]
@@ -752,6 +833,11 @@ fn sort_keys_are_precomputed_from_libtrack() {
         lyric: None,
         artwork_path: None,
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: SortKeys::default(),
     };
     let keys = SortKeys::from_track(&track);
@@ -801,6 +887,11 @@ fn sort_keys_fallback_to_filename_for_title() {
         lyric: None,
         artwork_path: None,
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: SortKeys::default(),
     };
     let keys = SortKeys::from_track(&track);
@@ -921,6 +1012,11 @@ fn read_only_track_fields_all_values_formatted() {
         lyric: None,
         artwork_path: Some("/music/cover.jpg".into()),
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: SortKeys::default(),
     };
     let path = std::path::Path::new("/music/song.mp3");
@@ -986,6 +1082,11 @@ fn read_only_track_fields_channels_mono() {
         lyric: None,
         artwork_path: None,
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: SortKeys::default(),
     };
     let path = std::path::Path::new("/test.mp3");
@@ -1024,6 +1125,11 @@ fn read_only_track_fields_channels_multi() {
         lyric: None,
         artwork_path: None,
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: SortKeys::default(),
     };
     let path = std::path::Path::new("/test.mp3");

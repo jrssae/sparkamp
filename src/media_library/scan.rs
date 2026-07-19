@@ -473,7 +473,7 @@ impl MediaLibrary {
             Some(p) => p,
             None => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, path FROM tracks WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL)"
+                    "SELECT id, path FROM tracks WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL OR sample_rate IS NULL)"
                 )?;
                 stmt.query_map(params![folder_id], |row| row.get::<_, String>(1))?
                     .filter_map(|r| r.ok())
@@ -573,6 +573,26 @@ impl MediaLibrary {
             .or_else(|| crate::duration_probe::discover_duration(p))
             .map(|d| d.as_secs_f64());
 
+        // Technical columns: codec header (sample rate / channels), file
+        // size and mtime from the filesystem, average bitrate derived from
+        // size ÷ duration, and MP3 VBR/CBR mode sniffed from the Xing/Info
+        // header. All degrade to NULL on error rather than failing the scan.
+        let tech = crate::technical_probe::probe_technical(p);
+        let fs_meta = std::fs::metadata(p).ok();
+        let file_size = fs_meta.as_ref().map(|m| m.len() as i64);
+        let file_mtime = fs_meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .map(crate::timeutil::format_system_time);
+        let bitrate = file_size
+            .zip(length_secs)
+            .and_then(|(sz, len)| crate::technical_probe::avg_bitrate_kbps(sz as u64, len));
+        let channels = tech.channels.or(tags.channels);
+        let bitrate_mode = crate::technical_probe::mp3_bitrate_mode(p).map(str::to_string);
+        // added_at is INSERT-only (see ON CONFLICT below): this value is only
+        // ever used for a row's first insert, never to overwrite it.
+        let now = crate::timeutil::format_current_timestamp();
+
         // Keep existing play_count and last_played if the row already exists.
         self.conn.execute(
             "INSERT INTO tracks
@@ -580,10 +600,12 @@ impl MediaLibrary {
                  bpm, length_secs, bitrate, channels, filetype, filename,
                  play_count, last_played,
                  comment, album_artist, disc_num, disc_total, composer, original_artist,
-                 copyright, url, encoded_by, lyric, artwork_path)
+                 copyright, url, encoded_by, lyric, artwork_path,
+                 sample_rate, file_size, file_mtime, added_at, bitrate_mode)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     0, NULL,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                    ?26, ?27, ?28, ?29, ?30)
              ON CONFLICT(path) DO UPDATE SET
                 folder_id       = excluded.folder_id,
                 artist          = excluded.artist,
@@ -608,7 +630,11 @@ impl MediaLibrary {
                 url             = excluded.url,
                 encoded_by      = excluded.encoded_by,
                 lyric           = excluded.lyric,
-                artwork_path    = excluded.artwork_path",
+                artwork_path    = excluded.artwork_path,
+                sample_rate     = excluded.sample_rate,
+                file_size       = excluded.file_size,
+                file_mtime      = excluded.file_mtime,
+                bitrate_mode    = excluded.bitrate_mode",
             params![
                 path,
                 folder_id,
@@ -620,8 +646,8 @@ impl MediaLibrary {
                 tags.year,
                 tags.bpm,
                 length_secs,
-                tags.bitrate,
-                tags.channels,
+                bitrate,
+                channels,
                 filetype,
                 filename,
                 tags.comment,
@@ -635,6 +661,11 @@ impl MediaLibrary {
                 tags.encoded_by,
                 tags.lyric,
                 tags.artwork_path,
+                tech.sample_rate,
+                file_size,
+                file_mtime,
+                now,
+                bitrate_mode,
             ],
         )?;
         // This WAS a full scan (tags + duration read above), so stamp it.

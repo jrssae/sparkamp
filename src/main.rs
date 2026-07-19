@@ -37,6 +37,7 @@ mod pathutil;
 mod shuffle;
 mod skin;
 mod tags;
+mod technical_probe;
 mod textutil;
 mod timeutil;
 

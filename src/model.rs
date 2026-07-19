@@ -1037,6 +1037,11 @@ mod tests {
             lyric: None,
             artwork_path: None,
             last_scanned: None,
+            sample_rate: None,
+            file_size: None,
+            file_mtime: None,
+            added_at: None,
+            bitrate_mode: None,
             sort_keys: SortKeys::default(),
         };
 
@@ -1083,6 +1088,11 @@ mod tests {
             lyric: None,
             artwork_path: None,
             last_scanned: None,
+            sample_rate: None,
+            file_size: None,
+            file_mtime: None,
+            added_at: None,
+            bitrate_mode: None,
             sort_keys: SortKeys::default(),
         };
 

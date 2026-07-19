@@ -74,6 +74,11 @@ pub fn read_device_track(path: &Path) -> crate::media_library::LibTrack {
         lyric: tags.lyric,
         artwork_path: tags.artwork_path,
         last_scanned: None,
+        sample_rate: None,
+        file_size: None,
+        file_mtime: None,
+        added_at: None,
+        bitrate_mode: None,
         sort_keys: SortKeys::default(),
     };
     t.sort_keys = SortKeys::from_track(&t);
