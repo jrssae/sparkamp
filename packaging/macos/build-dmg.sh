@@ -107,6 +107,13 @@ cp target/release/libsparkamp_macos.a frontends/SparkampMac/libsparkamp_macos.a
 
 echo "==> [2/6] Archiving Xcode project (${HOST_ARCH} only)…"
 rm -rf "$ARCHIVE_PATH"
+# Capture the full log and fail loudly on error: piping xcodebuild straight
+# into a grep filter (the old approach) hid compile errors — Swift errors
+# print as "File.swift:line: error:", which a "^error:" filter drops, so a
+# broken archive looked like a silent no-op and only surfaced two steps
+# later as "archive not found".
+ARCHIVE_LOG="$(mktemp -t sparkamp-archive)"
+set +e
 xcodebuild \
     -project "$XCODEPROJ" \
     -scheme "$SCHEME" \
@@ -119,7 +126,15 @@ xcodebuild \
     CODE_SIGN_IDENTITY="-" \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGNING_ALLOWED=NO \
-    2>&1 | grep -E "^error:|ARCHIVE|BUILD " | tail -10 || true
+    > "$ARCHIVE_LOG" 2>&1
+archive_rc=$?
+set -e
+if [ $archive_rc -ne 0 ] || [ ! -d "$ARCHIVE_PATH" ]; then
+    echo "ERROR: xcodebuild archive failed. Diagnostics:" >&2
+    grep -E "error:|warning: .*error|ld: " "$ARCHIVE_LOG" | tail -30 >&2 \
+        || tail -40 "$ARCHIVE_LOG" >&2
+    exit 1
+fi
 echo "    Archive complete."
 
 # ── Step 3: Export .app ──────────────────────────────────────────────────────
@@ -142,6 +157,8 @@ cat > "$EXPORT_PLIST" <<'PLIST'
 </plist>
 PLIST
 
+EXPORT_LOG="$(mktemp -t sparkamp-export)"
+set +e
 xcodebuild \
     -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
@@ -149,7 +166,15 @@ xcodebuild \
     -exportOptionsPlist "$EXPORT_PLIST" \
     CODE_SIGN_IDENTITY="-" \
     CODE_SIGNING_REQUIRED=NO \
-    2>&1 | grep -E "^error:|Exported|EXPORT" | tail -5 || true
+    > "$EXPORT_LOG" 2>&1
+export_rc=$?
+set -e
+if [ $export_rc -ne 0 ]; then
+    echo "ERROR: xcodebuild -exportArchive failed. Diagnostics:" >&2
+    grep -E "error:|EXPORT FAILED" "$EXPORT_LOG" | tail -20 >&2 \
+        || tail -30 "$EXPORT_LOG" >&2
+    exit 1
+fi
 
 APP_BUNDLE="$(find "$EXPORT_DIR" -name "*.app" -maxdepth 2 | head -1)"
 if [ -z "$APP_BUNDLE" ]; then
