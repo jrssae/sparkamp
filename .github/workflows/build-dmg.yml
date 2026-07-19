@@ -104,8 +104,50 @@ jobs:
           cargo build --release \
             --manifest-path frontends/macos/Cargo.toml
 
+      # ── Code signing (Developer ID) ──────────────────────────────────────
+      # Runs only when the signing secrets are configured; without them the
+      # build falls back to the historical ad-hoc signature (forks, PRs).
+      # The cert lives in a throwaway keychain that a cleanup step deletes
+      # even when the build fails.
+      - name: Import Developer ID certificate
+        id: import-cert
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "No signing cert configured — building ad-hoc."
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/sparkamp-signing.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 16)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Allow codesign to use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user \
+            -s "$KEYCHAIN" ~/Library/Keychains/login.keychain-db
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$identity" ]; then
+            echo "ERROR: cert imported but no 'Developer ID Application' identity found" >&2
+            exit 1
+          fi
+          echo "Signing as: $identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
       # ── Build the DMG ─────────────────────────────────────────────────────
       - name: Build DMG
+        env:
+          SPARKAMP_SIGN_IDENTITY: ${{ steps.import-cert.outputs.identity || '-' }}
         run: bash packaging/macos/build-dmg.sh
 
       # ── Find the produced DMG (filename includes MARKETING_VERSION) ──────
@@ -119,6 +161,42 @@ jobs:
           fi
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
           echo "dmg_basename=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+
+      # ── Notarize + staple (signed builds only) ────────────────────────────
+      # Apple scans the DMG and issues a notarization ticket; stapling embeds
+      # it so Gatekeeper accepts the download even offline. Requires an App
+      # Store Connect API key with the Developer role.
+      - name: Notarize and staple DMG
+        if: ${{ steps.import-cert.outputs.identity != '' }}
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          if [ -z "$NOTARY_KEY_P8" ]; then
+            echo "Signing cert present but no notary API key — DMG is signed, NOT notarized." >&2
+            echo "Gatekeeper will still warn on downloads. Configure NOTARY_* secrets." >&2
+            exit 1
+          fi
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool submit "${{ steps.locate-dmg.outputs.dmg }}" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait --timeout 30m
+          rm -f "$RUNNER_TEMP/notary.p8"
+          xcrun stapler staple "${{ steps.locate-dmg.outputs.dmg }}"
+          xcrun stapler validate "${{ steps.locate-dmg.outputs.dmg }}"
+          # Final Gatekeeper verdict, exactly what a user's Mac will run.
+          spctl --assess --type open --context context:primary-signature \
+            -v "${{ steps.locate-dmg.outputs.dmg }}"
+
+      # ── Clean up the throwaway keychain (always) ──────────────────────────
+      - name: Remove signing keychain
+        if: ${{ always() && steps.import-cert.outputs.identity != '' }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sparkamp-signing.keychain-db" || true
+          security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
 
       # ── Upload artifact ───────────────────────────────────────────────────
       - name: Upload DMG as artifact

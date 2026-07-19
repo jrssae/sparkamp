@@ -301,13 +301,50 @@ exec "$DIR/SparkampMac.bin" "$@"
 LAUNCHER
 chmod +x "$MACOS_DIR/${APP_NAME}"
 
-# ── Ad-hoc code sign ─────────────────────────────────────────────────────────
+# ── Code sign ────────────────────────────────────────────────────────────────
+#
+# SPARKAMP_SIGN_IDENTITY selects the signing mode:
+#   unset / "-"        → ad-hoc (local dev builds; Gatekeeper will block
+#                        downloads of these — the historical behavior).
+#   "Developer ID Application: … (TEAMID)"
+#                      → real signing with the hardened runtime + the
+#                        entitlements GStreamer needs, as notarization
+#                        requires. CI sets this when the cert secret is
+#                        configured; the DMG is then notarized + stapled
+#                        by the workflow after this script finishes.
+#
+# Order matters for real signatures: every Mach-O leaf (dylibs, GStreamer
+# plug-ins, the real binary) gets its own signature first, the bundle is
+# sealed last, and --deep is never used (it's deprecated and mis-signs
+# nested code; explicit inside-out signing is the supported way).
 
-echo "    Ad-hoc signing…"
-# Sign dylibs/plugins (leaves first, then the bundle)
-find "$APP_BUNDLE" \( -name "*.dylib" -o -name "*.so" \) -print0 \
-    | xargs -0 -I{} codesign --force --sign - {} 2>/dev/null || true
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+SIGN_ID="${SPARKAMP_SIGN_IDENTITY:--}"
+ENTITLEMENTS="$REPO_ROOT/packaging/macos/entitlements.plist"
+
+if [ "$SIGN_ID" = "-" ]; then
+    echo "    Ad-hoc signing…"
+    find "$APP_BUNDLE" \( -name "*.dylib" -o -name "*.so" \) -print0 \
+        | xargs -0 -I{} codesign --force --sign - {} 2>/dev/null || true
+    codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+else
+    echo "    Signing with: $SIGN_ID"
+    # Leaves: bundled dylibs + GStreamer plug-ins. Same identity as the app,
+    # so hardened-runtime library validation accepts them without a
+    # disable-library-validation entitlement.
+    find "$APP_BUNDLE" \( -name "*.dylib" -o -name "*.so" \) -print0 \
+        | xargs -0 -I{} codesign --force --timestamp --options runtime \
+            --sign "$SIGN_ID" {}
+    # The real executable (the launcher shell script is sealed as a bundle
+    # resource — scripts don't carry Mach-O signatures).
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_ID" "$MACOS_DIR/SparkampMac.bin"
+    # Seal the bundle.
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_ID" "$APP_BUNDLE"
+    codesign --verify --strict --verbose=1 "$APP_BUNDLE"
+fi
 
 # ── Step 6: Create DMG ───────────────────────────────────────────────────────
 
@@ -346,5 +383,11 @@ echo "╚═══════════════════════�
 echo
 echo "Installation:"
 echo "  1. Open the DMG and drag Sparkamp into Applications."
-echo "  2. First launch: right-click the app → Open to bypass Gatekeeper."
-echo "     Or run:  xattr -cr /Applications/SparkampMac.app"
+if [ "$SIGN_ID" = "-" ]; then
+    echo "  2. Ad-hoc build — macOS will block the first launch. Approve via"
+    echo "     System Settings → Privacy & Security → Open Anyway, or run:"
+    echo "       xattr -dr com.apple.quarantine /Applications/SparkampMac.app"
+else
+    echo "  2. Developer ID signed. After the workflow notarizes + staples"
+    echo "     the DMG, downloads open without Gatekeeper prompts."
+fi
