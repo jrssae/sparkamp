@@ -368,10 +368,17 @@ impl MediaLibrary {
     /// Clear and re-extract artwork from a track file.
     /// Updates the DB with the new cached artwork path.
     pub fn refresh_artwork(&self, track_id: i64, path: &str) -> Result<()> {
-        // Delete old cached artwork file
+        // Only delete cached extractions. artwork_path can now point at the
+        // user's own folder image (F2 fallback) — deleting that would be
+        // destroying their file, not our cache.
         if let Ok(track) = self.track_by_path(path) {
             if let Some(ref old_art) = track.artwork_path {
-                let _ = std::fs::remove_file(old_art);
+                let cache_root = dirs::cache_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("sparkamp");
+                if std::path::Path::new(old_art).starts_with(&cache_root) {
+                    let _ = std::fs::remove_file(old_art);
+                }
             }
         }
 

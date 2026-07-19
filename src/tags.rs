@@ -34,6 +34,36 @@ pub(crate) struct TrackTags {
     pub(crate) artwork_path: Option<String>,
 }
 
+/// Probe the track's directory for a conventional cover image. Winamp's
+/// source order: embedded APIC first, then folder image. Case-insensitive
+/// because rips and downloads disagree about casing.
+pub(crate) fn folder_image_fallback(track_path: &Path) -> Option<String> {
+    const NAMES: &[&str] = &[
+        "folder.jpg",
+        "folder.jpeg",
+        "folder.png",
+        "cover.jpg",
+        "cover.jpeg",
+        "cover.png",
+        "front.jpg",
+        "front.jpeg",
+        "front.png",
+    ];
+    let dir = track_path.parent()?;
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(usize, std::path::PathBuf)> = None;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if let Some(rank) = NAMES.iter().position(|n| *n == name) {
+            // Prefer folder.* over cover.* over front.* (NAMES order).
+            if best.as_ref().map(|(r, _)| rank < *r).unwrap_or(true) {
+                best = Some((rank, e.path()));
+            }
+        }
+    }
+    best.map(|(_, p)| p.to_string_lossy().into_owned())
+}
+
 /// Read metadata from an audio file.
 ///
 /// Tries ID3 tags first (works well for MP3), then falls back to Symphonia's
@@ -42,6 +72,9 @@ pub(crate) struct TrackTags {
 ///
 /// Side effect: when the ID3 tag embeds album art (APIC), the image is
 /// written to the Sparkamp cache directory and `artwork_path` points at it.
+/// When no embedded art is found (on either strategy, or when there are no
+/// tags at all), falls back to a conventional cover image file sitting next
+/// to the track (folder.jpg, cover.png, etc — see [`folder_image_fallback`]).
 pub(crate) fn read_track_tags(path: &Path) -> TrackTags {
     use id3::TagLike;
 
@@ -117,15 +150,19 @@ pub(crate) fn read_track_tags(path: &Path) -> TrackTags {
             url: get_text("WXXX"),
             encoded_by: get_text("TENC"),
             lyric: lyric_text,
-            artwork_path,
+            artwork_path: artwork_path.or_else(|| folder_image_fallback(path)),
         }
     } else {
         // Strategy 2: Symphonia generic (Vorbis Comments, FLAC, Opus, etc.).
-        if let Some(meta) = read_symphonia_tags(path) {
+        if let Some(mut meta) = read_symphonia_tags(path) {
+            meta.artwork_path = meta.artwork_path.or_else(|| folder_image_fallback(path));
             return meta;
         }
         // Fallback: no tags at all.
-        TrackTags::default()
+        TrackTags {
+            artwork_path: folder_image_fallback(path),
+            ..TrackTags::default()
+        }
     }
 }
 
@@ -334,5 +371,34 @@ mod tests {
         assert!(tags.artist.is_none());
         assert!(tags.track_num.is_none());
         assert!(tags.comment.is_none());
+    }
+
+    #[test]
+    fn folder_image_fallback_when_no_embedded_art() {
+        let dir = std::env::temp_dir().join("sparkamp_folderart_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Tagless audio file + a folder image with non-canonical casing.
+        let song = dir.join("song.mp3");
+        std::fs::write(&song, b"").unwrap();
+        let art = dir.join("Cover.JPG");
+        std::fs::write(&art, b"fake").unwrap();
+
+        let tags = read_track_tags(&song);
+        assert_eq!(
+            tags.artwork_path.as_deref(),
+            Some(art.to_string_lossy().as_ref()),
+            "case-insensitive folder image should be found"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_folder_image_means_no_artwork() {
+        let dir = std::env::temp_dir().join("sparkamp_nofolderart_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.mp3");
+        std::fs::write(&song, b"").unwrap();
+        assert!(read_track_tags(&song).artwork_path.is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
