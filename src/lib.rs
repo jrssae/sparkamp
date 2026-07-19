@@ -14,6 +14,7 @@ pub mod granite;
 pub mod id3_editor;
 pub mod media_library;
 pub mod model;
+pub mod now_playing;
 pub mod pathutil;
 pub mod shuffle;
 pub mod skin;
