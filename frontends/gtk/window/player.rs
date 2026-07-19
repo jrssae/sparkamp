@@ -1116,6 +1116,63 @@ pub fn build(
         });
     }
 
+    // rescan_library_row_on_play — refresh the playing file's LIBRARY row.
+    //
+    // Playing is the moment the user is most likely to look at a track's
+    // data (ID3 window, ML columns), so an unscanned library row is scanned
+    // and an already-scanned one re-read — files edited outside Sparkamp
+    // stay current without waiting for a folder rescan. Non-library files
+    // are skipped (rescan_track errors on unknown paths; the ID3 window
+    // probes those directly instead).
+    //
+    // Runs on its own thread with its own DB connection (SQLite is not
+    // Send). The main loop swaps in a fresh handle when done; the full ML
+    // rebuild only fires when a previously-UNSCANNED row gained data —
+    // rebuilding 36k rows on every ordinary track advance would reset the
+    // user's scroll position for no visible change.
+    fn rescan_library_row_on_play(state: &Rc<RefCell<AppState>>) {
+        let path = match state.borrow().playlist.current() {
+            Some(t) => t.path.to_string_lossy().into_owned(),
+            None => return,
+        };
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) else {
+                return;
+            };
+            let was_unscanned = match lib.track_by_path(&path) {
+                Ok(row) => row.last_scanned.is_none(),
+                Err(_) => return, // not a library file — nothing to refresh
+            };
+            if lib.rescan_track(&path).is_ok() {
+                let _ = result_tx.send(was_unscanned);
+            }
+        });
+        let result_rx = std::cell::RefCell::new(result_rx);
+        let state_for_timer = state.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            match result_rx.borrow().try_recv() {
+                Ok(was_unscanned) => {
+                    let mut s = state_for_timer.borrow_mut();
+                    s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                    let rebuild = if was_unscanned {
+                        s.rebuild_ml_callback.clone()
+                    } else {
+                        None
+                    };
+                    drop(s);
+                    if let Some(cb) = rebuild {
+                        cb();
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+            }
+        });
+    }
+
     // play_and_update — play the current track and refresh the UI labels.
     //
     // All "start playing" paths (buttons, keyboard, auto-advance) funnel
@@ -1138,6 +1195,8 @@ pub fn build(
                 // Scan metadata for the current track if it hasn't been scanned yet.
                 // This updates the marquee with "Artist - Title" once the scan completes.
                 scan_current_track_metadata(&state, current_track_meta_tx.clone());
+                // Refresh the library row for the playing file (scan-on-play).
+                rescan_library_row_on_play(&state);
                 // Scroll to make the new current track visible
                 scroll_to_row_if_needed(new_idx);
                 // Patch the new current track to ensure active styling is applied.

@@ -4416,7 +4416,13 @@ fn open_media_library_window(
                                 String::new()
                             }
                         }
-                        _ => String::new(),
+                        // Every column this match doesn't special-case falls
+                        // through to the shared renderer — the phase-1 columns
+                        // (filetype, sample rate, size, date added, mtime,
+                        // mode) silently rendered blank here while the DB had
+                        // the data, because `_ => String::new()` swallowed
+                        // them (found in the phase-1 user pass).
+                        other => ml_cell_text(&t, other),
                     };
                     lbl.set_text(&gtk_safe(&text));
                 });
