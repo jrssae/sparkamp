@@ -1205,6 +1205,45 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
+
+                // Capture the pre-play snapshot (play_count/last_played BEFORE
+                // record_play increments them at the 20s mark, see :3021 below)
+                // and build the now-playing info for A1/A6/phase-3 subscribers.
+                // Subscribers may themselves need to borrow `state` (e.g. to
+                // touch widgets), so the borrow here must be dropped before any
+                // callback runs — extract path/snapshot/subscribers first, then
+                // notify outside the borrow.
+                let (info, subs) = {
+                    let mut s = state.borrow_mut();
+                    let path_str = s
+                        .playlist
+                        .current()
+                        .map(|t| t.path.to_string_lossy().into_owned());
+                    match path_str {
+                        Some(p) => {
+                            let snap = s
+                                .media_lib
+                                .as_ref()
+                                .map(|ml| ml.play_snapshot(&p))
+                                .unwrap_or_default();
+                            s.current_snapshot = snap.clone();
+                            let lib_row = s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
+                            let info = crate::now_playing::build_now_playing_info(
+                                std::path::Path::new(&p),
+                                lib_row.as_ref(),
+                                snap,
+                            );
+                            let subs = s.now_playing_subscribers.clone();
+                            (Some(info), subs)
+                        }
+                        None => (None, Vec::new()),
+                    }
+                };
+                if let Some(info) = info {
+                    for cb in &subs {
+                        cb(&info);
+                    }
+                }
             }
         })
     };

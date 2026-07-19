@@ -59,6 +59,13 @@ struct AppState {
     play_and_update_callback: Option<Rc<dyn Fn()>>,
     /// Callback that updates the marquee with a new display string, set during build().
     set_track_callback: Option<Rc<dyn Fn(&str)>>,
+    /// Subscribers notified whenever a new track starts (A1 panel, A6 window,
+    /// phase-3 MPRIS). Fan-out only — callers must never hold a `borrow_mut()`
+    /// across the notify loop; extract the Vec under a short borrow first.
+    now_playing_subscribers: Vec<Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>>,
+    /// Pre-play snapshot (play_count/last_played) for the currently playing
+    /// track, captured at play start before `record_play` increments it.
+    current_snapshot: crate::media_library::PlaySnapshot,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -235,6 +242,8 @@ impl AppState {
             rebuild_pl_callback: None,
             play_and_update_callback: None,
             set_track_callback: None,
+            now_playing_subscribers: Vec::new(),
+            current_snapshot: Default::default(),
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
             ml_scan: None,
@@ -291,6 +300,32 @@ impl AppState {
         }
         let _ = self.player.play();
         Some(display)
+    }
+
+    /// Register a now-playing subscriber (A1 panel, A6 window, phase-3 MPRIS).
+    /// Fired once per track start, after the play-start snapshot is captured.
+    /// No caller yet — the A1 panel (T6) and A6 window (T7) register here.
+    #[allow(dead_code)]
+    pub fn subscribe_now_playing(&mut self, cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>) {
+        self.now_playing_subscribers.push(cb);
+    }
+
+    /// Fan out `info` to every subscriber.
+    ///
+    /// Takes `&self`, not `&mut self` — callers holding a `Rc<RefCell<AppState>>`
+    /// must NOT call this while a `borrow_mut()` is still live, since a
+    /// subscriber may itself need to borrow `state` (e.g. to read widgets or
+    /// re-render). Build the `NowPlayingInfo` first, drop the borrow, then call.
+    ///
+    /// The play-start seam in player.rs notifies by hand (extract subscriber
+    /// Vec under a short borrow, drop it, then loop) rather than calling this,
+    /// for the same borrow-safety reason. This method is here for phase-3
+    /// pause/resume/end re-notify, which is deferred (see task-5-report.md).
+    #[allow(dead_code)]
+    pub fn notify_now_playing(&self, info: &crate::now_playing::NowPlayingInfo) {
+        for cb in &self.now_playing_subscribers {
+            cb(info);
+        }
     }
 
     /// Advance to the next track, respecting shuffle and repeat modes.

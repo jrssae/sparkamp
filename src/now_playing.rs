@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 /// Everything a now-playing panel needs to render, assembled once per
 /// play-start so every frontend (GTK, TUI, macOS) shows identical data.
-#[allow(dead_code)] // removed when T5 wires the GTK play-start caller
+// T5 constructs and fan-outs this struct on every track start, but no
+// consumer reads its fields yet — the A1 panel (T6) and A6 window (T7) are
+// the first readers. Remove once either lands.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NowPlayingInfo {
     /// Curated ID3 label/value pairs, non-empty only, in `TagFields::field_pairs` order.
@@ -26,7 +29,6 @@ pub struct NowPlayingInfo {
 /// here, hence `snapshot` carries the pre-play numbers separately). `None`
 /// triggers the probe fallback inside `read_only_track_fields` so unindexed
 /// files (Testing dirs, ad-hoc playback) still get a technical line.
-#[allow(dead_code)] // removed when T5 wires the GTK play-start caller
 pub fn build_now_playing_info(
     path: &Path,
     lib_row: Option<&crate::media_library::LibTrack>,
