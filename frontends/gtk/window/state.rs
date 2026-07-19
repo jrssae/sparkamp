@@ -35,6 +35,12 @@ struct AppState {
     ml_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
     id3_editor_window: Option<gtk4::Window>,
+    /// The A6 standalone album-art window, once built. Unlike `ml_window` /
+    /// `id3_editor_window` this is never cleared back to `None` — it is
+    /// built once, kept alive for the app's lifetime (hidden, not destroyed,
+    /// on close), and reused on every `k` / art-click via `present()` so its
+    /// `now_playing` subscription is only ever registered once.
+    art_window: Option<gtk4::Window>,
     /// Callback to refresh the media library window, registered by the window itself.
     rebuild_ml_callback: Option<Rc<dyn Fn()>>,
     /// Callback that re-polls the ML window's disc drives, registered by the
@@ -238,6 +244,7 @@ impl AppState {
             media_lib,
             ml_window: None,
             id3_editor_window: None,
+            art_window: None,
             rebuild_ml_callback: None,
             disc_refresh_callback: None,
             pending_disc_nav: None,

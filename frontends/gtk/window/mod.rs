@@ -73,6 +73,11 @@ use disc::{disc_overview_detail_line, selected_disc_discid};
 // already-large body; player.rs calls it as `now_playing::build_panel(...)`.
 mod now_playing;
 
+// A6 standalone album-art window (`k` key / A1 art click). A child module
+// for the same reason as now_playing above; player.rs calls it as
+// `art_window::open_or_focus(...)`.
+mod art_window;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------

@@ -156,6 +156,14 @@ pub fn build(
     let open_fullscreen_fn: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
         Rc::new(RefCell::new(None));
 
+    // Deferred A6 art-window opener — same chicken-and-egg as above: the art
+    // window's own key controller needs `handle_key` for delegation, but the
+    // A1 panel (which needs an art-click callback) is built before
+    // `handle_key` exists. Declared early so the A1 panel's art-click
+    // handler and the `k` key arm can both reference it; filled in once
+    // `handle_key` is defined (see the fullscreen-opener fill site below).
+    let art_open: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+
     // ── Marquee / scrolling-title state ───────────────────────────────────────
     // The full "Title — Artist" string is stored as a Vec<char> so we can slice
     // it by character index without UTF-8 boundary arithmetic.  Each 100 ms tick
@@ -372,10 +380,16 @@ pub fn build(
     // empty — subscribe_now_playing's fan-out only fires on the *next* track
     // change, not for tracks already playing when the panel is built.
     let initial_np = state.borrow().current_now_playing();
-    let (np_panel_widget, np_panel_update) =
-        now_playing::build_panel(initial_np.as_ref(), Rc::new(|| {
-            // T7 (A6 art window) wires the real click-to-open opener here.
-        }));
+    let (np_panel_widget, np_panel_update) = now_playing::build_panel(initial_np.as_ref(), {
+        // Routed through the deferred `art_open` slot (declared above) since
+        // the real opener can't be built until `handle_key` exists.
+        let art_open = art_open.clone();
+        Rc::new(move || {
+            if let Some(f) = art_open.borrow().as_ref() {
+                f();
+            }
+        })
+    });
     state.borrow_mut().subscribe_now_playing(np_panel_update.clone());
 
     let np_stack = Stack::new();
@@ -3641,6 +3655,7 @@ pub fn build(
         let kbd_patch_row = patch_pl_row.clone();
         let kbd_scroll = scroll_to_row_if_needed.clone();
         let kbd_open_fs = open_fullscreen_fn.clone();
+        let kbd_art_open = art_open.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -3930,6 +3945,16 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
+                // ── Album-art window (k) — routed through the deferred
+                // `art_open` slot, filled in once `handle_key` (this very
+                // closure) is fully built; see the fill site below ────────
+                gdk::Key::k | gdk::Key::K => {
+                    if let Some(ref opener) = *kbd_art_open.borrow() {
+                        opener();
+                    }
+                    glib::Propagation::Stop
+                }
+
                 // ── Quit ──────────────────────────────────────────────────
                 gdk::Key::q | gdk::Key::Q => {
                     let _ = state.borrow().playlist.save_last();
@@ -3964,6 +3989,21 @@ pub fn build(
                 rebuild_jump_fs.clone(),
                 btn_info_fs.clone(),
                 fs_viz_open_fs.clone(),
+            );
+        }));
+    }
+
+    // Wire up the A6 art-window opener now that handle_key is fully defined
+    // (same chicken-and-egg as the fullscreen opener above).
+    {
+        let hk = handle_key.clone();
+        let state_art = state.clone();
+        let window_art = window.clone();
+        *art_open.borrow_mut() = Some(Rc::new(move || {
+            art_window::open_or_focus(
+                state_art.clone(),
+                hk.clone(),
+                Some(window_art.upcast_ref::<gtk4::Window>()),
             );
         }));
     }
@@ -4033,6 +4073,7 @@ pub fn build(
                 ("d",           "View/Edit ID3 tags for current track"),
                 ("u",           "Toggle equalizer window"),
                 ("w",           "Toggle now-playing panel (art, tags, links)"),
+                ("k",           "Open album-art window"),
                 ("Click logo",  "Open settings"),
             ]),
             ("Other", &[
