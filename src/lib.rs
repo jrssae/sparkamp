@@ -18,6 +18,7 @@ pub mod pathutil;
 pub mod shuffle;
 pub mod skin;
 pub mod tags;
+pub mod technical_probe;
 pub mod textutil;
 pub mod timeutil;
 
