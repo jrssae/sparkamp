@@ -1159,12 +1159,15 @@ fn read_only_track_fields_all_values_formatted() {
 
 #[test]
 fn read_only_track_fields_fallback_when_no_track() {
+    // Non-library files now probe the file directly for technical fields
+    // (phase-1 user-pass fix). A NONEXISTENT path still degrades cleanly:
+    // filetype from the extension, everything probe-derived empty.
     let path = std::path::Path::new("/unknown/file.mp3");
     let ro = read_only_track_fields(path, None);
 
     assert_eq!(ro.filename, "file.mp3");
     assert_eq!(ro.path, "/unknown/file.mp3");
-    assert_eq!(ro.filetype, "");
+    assert_eq!(ro.filetype, "mp3");
     assert_eq!(ro.bitrate, "");
     assert_eq!(ro.channels, "");
     assert_eq!(ro.duration, "-:--");
@@ -1280,6 +1283,23 @@ fn tech_summary_joins_populated_parts_only() {
     assert_eq!(tech_summary(&sparse), "3:45");
 }
 
+
+#[test]
+fn read_only_fields_probe_fallback_for_non_library_files() {
+    // A file with no LibTrack row (played from outside the library) must
+    // still get a tech line: filetype from the extension, sample rate and
+    // channels from the codec probe, duration/bitrate from the file itself.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("outside.wav");
+    write_test_wav(&p, 48000, 2, 2.0);
+
+    let ro = read_only_track_fields(&p, None);
+    assert_eq!(ro.filetype, "wav");
+    assert_eq!(ro.sample_rate, "48.0 kHz");
+    assert_eq!(ro.channels, "stereo");
+    assert_ne!(ro.duration, "-:--", "duration must come from the probe");
+    assert!(!ro.bitrate.is_empty(), "bitrate must be computed from size/duration");
+}
 
 // ── load_playlist_tracks path resolution ──────────────────────────────
 

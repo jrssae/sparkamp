@@ -207,6 +207,27 @@ pub fn read_only_track_fields(
     path: &std::path::Path,
     track: Option<&LibTrack>,
 ) -> ReadOnlyTrackFields {
+    // Files outside the library (played from the active playlist, Testing
+    // dirs, …) have no LibTrack row, but the tech line should still work:
+    // probe the file directly. One probe per editor-open — cheap enough.
+    let probed = if track.is_none() {
+        crate::technical_probe::probe_technical(path)
+    } else {
+        crate::technical_probe::TechProbe::default()
+    };
+    let probed_len = if track.is_none() {
+        crate::duration_probe::probe_duration(path)
+            .or_else(|| crate::duration_probe::discover_duration(path))
+            .map(|d| d.as_secs_f64())
+    } else {
+        None
+    };
+    let probed_size = if track.is_none() {
+        std::fs::metadata(path).ok().map(|m| m.len())
+    } else {
+        None
+    };
+
     let filename = track.map(|t| t.filename.clone()).unwrap_or_else(|| {
         path.file_name()
             .and_then(|n| n.to_str())
@@ -214,17 +235,31 @@ pub fn read_only_track_fields(
             .to_string()
     });
     let path_str = path.to_string_lossy().into_owned();
-    let filetype = track.and_then(|t| t.filetype.clone()).unwrap_or_default();
+    let filetype = track
+        .and_then(|t| t.filetype.clone())
+        .or_else(|| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+        })
+        .unwrap_or_default();
     let bitrate = track
         .and_then(|t| t.bitrate)
+        .or_else(|| {
+            probed_size
+                .zip(probed_len)
+                .and_then(|(sz, len)| crate::technical_probe::avg_bitrate_kbps(sz, len))
+        })
         .map(|b| format!("{b}k"))
         .unwrap_or_default();
     let sample_rate = track
         .and_then(|t| t.sample_rate)
+        .or(probed.sample_rate)
         .map(|s| format!("{:.1} kHz", s as f64 / 1000.0))
         .unwrap_or_default();
     let channels = track
         .and_then(|t| t.channels)
+        .or(probed.channels)
         .map(|c| match c {
             1 => "mono".to_string(),
             2 => "stereo".to_string(),
@@ -233,6 +268,7 @@ pub fn read_only_track_fields(
         .unwrap_or_default();
     let duration = track
         .and_then(|t| t.length_secs)
+        .or(probed_len)
         .map(|s| {
             let ss = s as u64;
             format!("{}:{:02}", ss / 60, ss % 60)
@@ -248,6 +284,15 @@ pub fn read_only_track_fields(
         .unwrap_or_default();
     let artwork_path = track
         .and_then(|t| t.artwork_path.clone())
+        .or_else(|| {
+            // Non-library file: extract embedded art (cached) or take the
+            // folder image, same pipeline the scanner uses.
+            if track.is_none() {
+                crate::tags::read_track_tags(path).artwork_path
+            } else {
+                None
+            }
+        })
         .unwrap_or_default();
 
     ReadOnlyTrackFields {

@@ -142,6 +142,28 @@ mod tests {
         std::fs::remove_file(&p).ok();
     }
 
+    // Full valid MPEG1 Layer3 frames (128 kbps, 44.1 kHz, stereo, silent):
+    // 417-byte frames so symphonia's mpa reader accepts the stream. Guards
+    // the `mp3` cargo feature — without it the probe rejects every MP3 and
+    // the library's technical columns stay NULL (phase-1 user-pass bug).
+    fn write_probeable_mp3(path: &std::path::Path) {
+        let mut buf = Vec::new();
+        for _ in 0..4 {
+            buf.extend(&[0xFF, 0xFB, 0x90, 0x00]);
+            buf.extend(std::iter::repeat(0u8).take(413));
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn probe_reads_sample_rate_from_mp3() {
+        let p = std::env::temp_dir().join("sparkamp_techprobe_test_probe.mp3");
+        write_probeable_mp3(&p);
+        let t = probe_technical(&p);
+        assert_eq!(t.sample_rate, Some(44100));
+        std::fs::remove_file(&p).ok();
+    }
+
     #[test]
     fn probe_survives_unreadable_file() {
         let t = probe_technical(std::path::Path::new("/nonexistent/x.mp3"));

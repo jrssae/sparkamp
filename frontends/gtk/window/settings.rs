@@ -42,6 +42,10 @@ fn open_settings_window(
         let listbox = ListBox::new();
         listbox.set_selection_mode(SelectionMode::Single);
         listbox.add_css_class("rich-list");
+        // Hand-built GtkListBox: needs .ml-col-view for the skin's
+        // selection/hover colours (house rule) — without it the selected
+        // skin row keeps GTK's default accent (phase-1 user-pass finding).
+        listbox.add_css_class("ml-col-view");
 
         let scrolled = ScrolledWindow::new();
         scrolled.set_policy(PolicyType::Never, PolicyType::Automatic);

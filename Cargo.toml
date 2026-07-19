@@ -51,7 +51,11 @@ clap = { version = "4", features = ["derive"] }
 minreq = "2"
 
 # Duration probing (reads container headers without decoding audio)
-symphonia = "0.5"
+# mp3/isomp4/aac are NOT in symphonia's default features — without them the
+# format probe rejects MP3 and M4A files, leaving sample_rate/channels NULL
+# for most of a typical library (found in the phase-1 user pass). WMA has no
+# symphonia reader at all; those files keep NULL technical columns.
+symphonia = { version = "0.5", features = ["mp3", "isomp4", "aac"] }
 
 # Parallel probing thread pool
 rayon = "1"
