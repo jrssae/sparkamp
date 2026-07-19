@@ -687,6 +687,27 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {text_dim}; font-size: {fs}px; \
     }}").unwrap();
 
+    // Generic settings-surface widgets (B8). Every Scale/DropDown/SpinButton
+    // without a dedicated class — the Settings tabs, mostly — follows the
+    // skin instead of GTK defaults. The seek/vol/eq class selectors above
+    // stay more specific and keep their dedicated chunky styling.
+    writeln!(css, "scale trough {{ \
+        background: {tbg}; border: 1px solid {border}; \
+    }}").unwrap();
+    writeln!(css, "scale highlight {{ background: {hl}; }}").unwrap();
+    writeln!(css, "scale slider {{ \
+        background: {text}; border: 1px solid {border}; \
+    }}").unwrap();
+    writeln!(css, "dropdown > button, spinbutton {{ \
+        background: {tbg}; color: {text}; border: 1px solid {border}; \
+    }}").unwrap();
+    writeln!(css, "spinbutton text {{ background: {tbg}; color: {text}; }}").unwrap();
+    writeln!(css, "popover listview row {{ color: {text}; }}").unwrap();
+    writeln!(css, "popover listview row:hover {{ background: {hl_hov}; }}").unwrap();
+    writeln!(css, "popover listview row:selected {{ \
+        background: {hl_sel}; color: {text}; \
+    }}").unwrap();
+
     // Playlist + Media Library list/columnview.
     // `.ml-sidebar` is the left-nav ListBox in the Media Library window;
     // `.rich-list` is the skin selector in Settings → Appearance. Both
@@ -1466,6 +1487,20 @@ mod tests {
         let css = render_gtk_css(&v);
         assert!(css.contains("scale.seek-scale"));
         assert!(css.contains("scale.vol-scale"));
+    }
+
+    #[test]
+    fn render_gtk_css_covers_generic_settings_widgets() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        // Generic (classless) widgets used across the Settings tabs must
+        // follow the skin: scales, dropdowns, spinbuttons, popover lists.
+        assert!(css.contains("scale trough"));
+        assert!(css.contains("scale highlight"));
+        assert!(css.contains("scale slider"));
+        assert!(css.contains("dropdown > button"));
+        assert!(css.contains("spinbutton"));
+        assert!(css.contains("popover listview row:selected"));
     }
 
     #[test]
