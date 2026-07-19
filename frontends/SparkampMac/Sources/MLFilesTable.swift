@@ -341,10 +341,10 @@ struct MLFilesTable: NSViewRepresentable {
             body = AnyView(textCell(Self.formatFileSize(track.fileSize),
                                     color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-added":
-            body = AnyView(textCell(track.addedAt,
+            body = AnyView(textCell(track.addedAtDisplay,
                                     color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-mtime":
-            body = AnyView(textCell(track.fileMtime,
+            body = AnyView(textCell(track.fileMtimeDisplay,
                                     color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-brmode":
             body = AnyView(textCell(track.bitrateMode,

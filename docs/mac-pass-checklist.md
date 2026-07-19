@@ -164,12 +164,18 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
 - [ ] Column content, once shown: Sample Rate renders "44.1 kHz" style (or
       blank when 0); Size renders "N KB" under 1 MB, "N.N MB" at/above (same
       thresholds as GTK's `format_file_size`); Date Added / File Modified
-      show the raw ISO-8601 string as-is (mac does NOT reformat to a
-      friendlier local date the way GTK's `format_last_played` does —
-      confirm this is acceptable or file a follow-up); Mode shows "VBR"/
-      "CBR" verbatim (mac does not lowercase it the way GTK's sort key
-      does — the GTK *display* also keeps it as-is, only GTK's sort key is
-      lowercased, so this should already match).
+      render as a friendly local "yyyy-MM-dd HH:mm" date, NOT the raw
+      ISO-8601 string — GTK reformats **all three** timestamp columns
+      (`last_played`, `added_at`, `file_mtime`) through the same
+      `format_last_played` (`ml_columns.rs:385-394`), so mac's
+      `MLTrack.addedAtDisplay` / `.fileMtimeDisplay` (new computed
+      properties, same `ISO8601DateFormatter` → `DateFormatter` pattern as
+      the existing `lastPlayedDisplay`) must produce output that reads the
+      same as GTK's for the same timestamp — confirm the two frontends
+      agree on a sample file; Mode shows "VBR"/"CBR" verbatim (mac does not
+      lowercase it the way GTK's sort key does — the GTK *display* also
+      keeps it as-is, only GTK's sort key is lowercased, so this should
+      already match).
 - [ ] Click each of the five new column headers: table re-sorts via
       `sortDescriptorsDidChange` → `MLFilesTable.keyPathComparator` →
       `MediaLibraryWindow.reload()`'s `colName` switch → `mlFetchTracks`
@@ -194,11 +200,15 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       entry from an unwatched folder) — confirm the line still shows at
       least the filetype (derived from the path extension client-side)
       and "-:--" for duration; bitrate/sample rate/channels should be
-      blank. NOTE: this is a deliberate mac/GTK divergence — GTK's
-      `tech_summary` shows ONLY "-:--" in this case (no filetype) because
-      its filetype comes from the (absent) library row, not the path.
-      Confirm this extra filetype text is harmless, or trim it if exact
-      byte-for-byte parity is required here.
+      blank. ACCEPTED DIVERGENCE (not an open question — no action needed):
+      GTK's `tech_summary` shows ONLY "-:--" here (no filetype), because its
+      filetype comes from the absent library row rather than the path. Mac
+      shows the extra filetype text because deriving it from the path
+      avoids adding a 7th field to the FFI struct purely to cover this rare
+      edge case (untracked file opened directly in the ID3 editor). This is
+      harmless extra information, not a bug — do not "fix" it by adding a
+      filetype field to `SparkampLibTrack` unless a real product need shows
+      up.
 - [ ] Saving ID3 tags on a file does not change/blank the tech line
       (technical fields are independent of tag fields; the editor closes
       ~0.4s after a successful save, so this is mostly a "no crash /

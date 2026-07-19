@@ -85,6 +85,31 @@ struct MLTrack: Identifiable {
         return outFmt.string(from: date)
     }
 
+    /// Human-friendly local rendering of addedAt, or "" if unknown. Same
+    /// ISO8601DateFormatter -> DateFormatter pattern as lastPlayedDisplay —
+    /// GTK's format_last_played reformats added_at too (ml_columns.rs
+    /// :385-394), not just last_played, so mac must match here as well.
+    var addedAtDisplay: String {
+        guard !addedAt.isEmpty else { return "" }
+        let inFmt = ISO8601DateFormatter()
+        guard let date = inFmt.date(from: addedAt) else { return addedAt }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        return outFmt.string(from: date)
+    }
+
+    /// Human-friendly local rendering of fileMtime, or "" if unknown. Same
+    /// pattern as lastPlayedDisplay / addedAtDisplay — GTK reformats
+    /// file_mtime through format_last_played too.
+    var fileMtimeDisplay: String {
+        guard !fileMtime.isEmpty else { return "" }
+        let inFmt = ISO8601DateFormatter()
+        guard let date = inFmt.date(from: fileMtime) else { return fileMtime }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        return outFmt.string(from: date)
+    }
+
     /// Stub init for a path that's not in the library DB.  All metadata
     /// fields default to empty / zero.  Used by drop handlers that
     /// receive raw file URLs and need a placeholder row until the next
