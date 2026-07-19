@@ -37,6 +37,12 @@ views, balance slider, gapless, ratings UI, streaming, D1) stay out of scope.
   crate) instead of Winamp-style interval polling; the startup-rescan toggle
   is still added. Interval rescan is not built.
 
+> **Design docs for phases 2-12** were pre-written 2026-07-19 (Fable→Opus
+> handoff): see `docs/superpowers/plans/2026-07-19-opus-handoff.md` (read
+> first) and `2026-07-19-phase{2..12}-*.md`. They supersede this table's
+> one-line summaries; the just-in-time step is now writing-plans expansion
+> per phase, not doc authoring.
+
 ## Phase order
 
 Each phase ends with: full `cargo build && cargo test` green with zero
