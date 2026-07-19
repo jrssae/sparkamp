@@ -670,6 +670,36 @@ impl MediaLibrary {
     // -----------------------------------------------------------------------
 }
 
+/// Pre-play snapshot of a track's play statistics, read at pipeline start
+/// BEFORE `record_play` increments. `None` fields mean the file is not in
+/// the library.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[allow(dead_code)] // no consumer in the bin build yet (wired up in a later phase task)
+pub struct PlaySnapshot {
+    pub play_count: Option<i64>,
+    pub last_played: Option<String>,
+}
+
+impl MediaLibrary {
+    /// Read `(play_count, last_played)` for the track at `path` without
+    /// mutating it. Returns an all-`None` snapshot when the path is not in
+    /// the library.
+    #[allow(dead_code)] // no consumer in the bin build yet (wired up in a later phase task)
+    pub fn play_snapshot(&self, path: &str) -> PlaySnapshot {
+        self.conn
+            .query_row(
+                "SELECT play_count, last_played FROM tracks WHERE path = ?1",
+                params![path],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .map(|(pc, lp)| PlaySnapshot {
+                play_count: Some(pc),
+                last_played: lp,
+            })
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod portal_tests {
     use super::dehydrate_portal_path;

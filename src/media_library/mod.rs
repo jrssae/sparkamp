@@ -21,6 +21,9 @@ mod scan;
 // Re-export for callers; no consumer in the bin build yet, so allow the unused-import warning.
 #[allow(unused_imports)]
 pub use devices::{DeviceRecord, PlaylistBaseline, SyncPair};
+// PlaySnapshot: pre-play stats captured before record_play's 20s timer fires.
+#[allow(unused_imports)]
+pub use playlists::PlaySnapshot;
 #[cfg(test)]
 mod tests;
 

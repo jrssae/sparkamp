@@ -1100,6 +1100,40 @@ fn record_play_noop_for_unknown_path() {
     assert!(result.is_ok());
 }
 
+// ── play_snapshot ──────────────────────────────────────────────────────
+
+#[test]
+fn play_snapshot_reads_preplay_values() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("song.mp3");
+    let path = file_path.to_str().unwrap();
+    fs::write(&file_path, b"fake").unwrap();
+
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+        .unwrap();
+
+    // Track present, never played.
+    let snap0 = lib.play_snapshot(path);
+    assert_eq!(snap0.play_count, Some(0));
+    assert_eq!(snap0.last_played, None);
+
+    // After a recorded play, the ROW advances but a snapshot taken earlier is stale.
+    lib.record_play(path).unwrap();
+    let snap1 = lib.play_snapshot(path);
+    assert_eq!(snap1.play_count, Some(1));
+    assert!(snap1.last_played.is_some());
+}
+
+#[test]
+fn play_snapshot_none_for_unknown_path() {
+    let (lib, _db) = temp_lib();
+    let snap = lib.play_snapshot("/nonexistent/x.mp3");
+    assert_eq!(snap.play_count, None);
+    assert_eq!(snap.last_played, None);
+}
+
 // -----------------------------------------------------------------------
 // read_only_track_fields
 // -----------------------------------------------------------------------
