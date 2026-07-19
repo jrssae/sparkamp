@@ -91,6 +91,21 @@ pub fn wiki_search_url(query: &str) -> Option<String> {
     ))
 }
 
+/// Deterministic cache path for a `px`-sized thumbnail of `artwork_path`.
+/// Frontends generate the PNG here on first display (gdk-pixbuf / NSImage);
+/// core only owns the path so every frontend shares one cache. Mirrors the
+/// artwork-cache hashing idiom in `tags.rs`.
+#[allow(dead_code)] // removed when T8 wires the GTK thumbnail cell
+pub fn thumb_path_for(artwork_path: &Path, px: u32) -> Option<PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    artwork_path.hash(&mut h);
+    let hash = h.finish();
+    let dir = dirs::cache_dir()?.join("sparkamp").join("thumbs");
+    Some(dir.join(format!("{:016x}-{}.png", hash, px)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +197,26 @@ mod tests {
             wiki_search_url("A-B_C.D~E"),
             Some("https://en.wikipedia.org/wiki/Special:Search?search=A-B_C.D~E".to_string())
         );
+    }
+
+    #[test]
+    fn thumb_path_is_deterministic_and_size_specific() {
+        use std::path::Path;
+        let a = thumb_path_for(Path::new("/music/cover.jpg"), 48).unwrap();
+        let b = thumb_path_for(Path::new("/music/cover.jpg"), 48).unwrap();
+        let c = thumb_path_for(Path::new("/music/cover.jpg"), 96).unwrap();
+        assert_eq!(a, b); // same inputs → same path
+        assert_ne!(a, c); // px is part of the filename
+        assert!(a.to_string_lossy().contains("/thumbs/"));
+        assert_eq!(a.extension().unwrap(), "png");
+        assert!(a.file_name().unwrap().to_string_lossy().ends_with("-48.png"));
+    }
+
+    #[test]
+    fn thumb_path_differs_by_source() {
+        use std::path::Path;
+        let a = thumb_path_for(Path::new("/music/a.jpg"), 48).unwrap();
+        let b = thumb_path_for(Path::new("/music/b.jpg"), 48).unwrap();
+        assert_ne!(a, b);
     }
 }
