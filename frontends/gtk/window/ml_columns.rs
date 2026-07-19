@@ -64,6 +64,46 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
         default_id3_visible: false,
     },
     MlColumnDef {
+        id: "sample_rate",
+        header: "Sample Rate",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "file_size",
+        header: "Size",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "added_at",
+        header: "Date Added",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: true,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "file_mtime",
+        header: "File Modified",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
+        id: "bitrate_mode",
+        header: "Mode",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
+    MlColumnDef {
         id: "duration",
         header: "Duration",
         expand: false,
@@ -301,6 +341,15 @@ fn apply_ml_columns_to(
     }
 }
 
+/// Human file size: whole KB under 1 MB, one-decimal MB above.
+fn format_file_size(bytes: i64) -> String {
+    if bytes < 1_000_000 {
+        format!("{} KB", bytes / 1_000)
+    } else {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    }
+}
+
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the
 /// device track view so it mirrors the files view's columns.
 fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str) -> String {
@@ -328,6 +377,22 @@ fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str) -> String {
             2 => "stereo".to_string(),
             n => format!("{n}ch"),
         },
+        "sample_rate" => t
+            .sample_rate
+            .map(|s| format!("{:.1} kHz", s as f64 / 1000.0))
+            .unwrap_or_default(),
+        "file_size" => t.file_size.map(format_file_size).unwrap_or_default(),
+        "added_at" => t
+            .added_at
+            .as_deref()
+            .map(format_last_played)
+            .unwrap_or_default(),
+        "file_mtime" => t
+            .file_mtime
+            .as_deref()
+            .map(format_last_played)
+            .unwrap_or_default(),
+        "bitrate_mode" => t.bitrate_mode.clone().unwrap_or_default(),
         "filetype" => t.filetype.clone().unwrap_or_default(),
         "play_count" => t.play_count.to_string(),
         "last_played" => t
@@ -385,6 +450,11 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
         "genre" => t.sort_keys.genre.clone(),
         "bitrate" => t.sort_keys.bitrate.clone(),
         "channels" => format!("{:02}", t.channels.unwrap_or(0)),
+        "sample_rate" => format!("{:010}", t.sample_rate.unwrap_or(0)),
+        "file_size" => format!("{:010}", t.file_size.unwrap_or(0)),
+        "added_at" => t.added_at.clone().unwrap_or_default(),
+        "file_mtime" => t.file_mtime.clone().unwrap_or_default(),
+        "bitrate_mode" => t.bitrate_mode.as_deref().unwrap_or("").to_lowercase(),
         "path" => t.path.to_lowercase(),
         "play_count" => format!("{:010}", t.play_count),
         "last_played" => t.last_played.clone().unwrap_or_default(),
