@@ -92,7 +92,13 @@ what it can't reach goes on the user's interactive checklist for that phase
 plus the mac checklist. Suite currently at 1015 tests — each phase should
 leave the count higher, never lower.
 
-## Known limitations (recorded during phase 0)
+## Known limitations (recorded during phases 0-1)
+
+Files whose sample rate the codec probe can never resolve (truly corrupt or
+exotic headers) keep a NULL sample_rate and are re-probed on every manual
+Rescan — bounded to that broken set, skip logic unaffected for everything
+else. Accepted 2026-07-19.
+
 
 The GTK ID3 editor renders the lyric (USLT) field in a single-line Entry:
 long lyrics are no longer truncated on save (the 256-char sanitizer cap is
