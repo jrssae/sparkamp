@@ -73,7 +73,6 @@ pub(crate) fn days_in_month(year: u64, month: u64) -> u64 {
 /// Shared by `format_current_timestamp` (below) and the scanner's file-mtime
 /// capture, so `last_scanned`, `added_at`, and `file_mtime` all use one
 /// formatter and stay comparable.
-#[allow(dead_code)] // bin-unreachable on macOS (callers are GTK/FFI-gated)
 pub(crate) fn format_system_time(t: std::time::SystemTime) -> String {
     let secs = t
         .duration_since(std::time::UNIX_EPOCH)

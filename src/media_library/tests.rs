@@ -48,6 +48,22 @@ fn write_test_wav(path: &std::path::Path, sample_rate: u32, channels: u16, secs:
     fs::write(path, buf).unwrap();
 }
 
+/// Like `temp_dir_with_files`, but writes real (parseable) minimal WAV
+/// fixtures instead of garbage bytes, so `technical_probe` gets a real
+/// `sample_rate` on the first scan. Needed for tests that scan a folder
+/// twice and assert the second pass skips on mtime alone: with garbage
+/// bytes `sample_rate` never resolves, and the scan_folder backfill net
+/// (re-read while `sample_rate IS NULL`) would keep re-scanning every
+/// pass — exactly the mtime-only behavior these tests are not testing.
+fn temp_dir_with_wav_files(count: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..count {
+        let file_path = dir.path().join(format!("track_{}.wav", i));
+        write_test_wav(&file_path, 44100, 2, 0.1);
+    }
+    dir
+}
+
 #[test]
 fn upsert_captures_technical_columns_and_preserves_added_at() {
     let (lib, _db) = temp_lib();
@@ -98,6 +114,26 @@ fn upsert_captures_technical_columns_and_preserves_added_at() {
         track2.file_mtime, file_mtime_first,
         "file_mtime unchanged since the file itself was not modified"
     );
+}
+
+// ── bitrate: computed value with tag fallback ───────────────────────────
+// Mirrors `channels`, which already does `tech.channels.or(tags.channels)`.
+// `resolve_bitrate` isolates the same combination so it's testable without
+// a real tag reader that can produce Some(bitrate) (none currently do).
+
+#[test]
+fn resolve_bitrate_prefers_computed_value_over_tag_value() {
+    assert_eq!(MediaLibrary::resolve_bitrate(Some(128), Some(320)), Some(128));
+}
+
+#[test]
+fn resolve_bitrate_falls_back_to_tag_value_when_computed_is_none() {
+    assert_eq!(MediaLibrary::resolve_bitrate(None, Some(320)), Some(320));
+}
+
+#[test]
+fn resolve_bitrate_is_none_when_neither_source_has_a_value() {
+    assert_eq!(MediaLibrary::resolve_bitrate(None, None), None);
 }
 
 // ── add_folder / remove_folder ─────────────────────────────────────────
@@ -265,6 +301,93 @@ fn rescan_folder_fast_upserts_m3u_playlists() {
     let playlists = lib.all_playlists().unwrap();
     assert_eq!(playlists.len(), 1);
     assert_eq!(playlists[0].name, "My Playlist");
+}
+
+// ── production scan flow: rescan_folder_fast + scan_all_folders ────────
+// GTK/mac "Rescan" runs the fast path-only insert first, then the mtime
+// smart-skip pass (scan_all_folders → scan_folder → needs_metadata_scan).
+// rescan_folder_metadata is test-only — it is never called by either
+// frontend — so correctness has to be proven through this real pipeline,
+// not through rescan_folder_metadata directly.
+
+#[test]
+fn production_scan_flow_stamps_added_at_and_keeps_it_stable() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 2);
+    let path = dir.path().to_str().unwrap();
+
+    let folder_id = lib.add_folder(path).unwrap().id();
+
+    // Step 1: fast path-only insert (what "Add folder" / "Rescan" do first).
+    lib.rescan_folder_fast(folder_id, path).unwrap();
+
+    // Step 2: the real background metadata pass (mtime smart-skip).
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
+
+    let tracks_first = lib.all_tracks().unwrap();
+    assert_eq!(tracks_first.len(), 2);
+    assert!(
+        tracks_first.iter().all(|t| t.added_at.is_some()),
+        "added_at must be populated by the production fast-insert + scan flow"
+    );
+    let added_at_first: std::collections::HashMap<String, Option<String>> = tracks_first
+        .iter()
+        .map(|t| (t.path.clone(), t.added_at.clone()))
+        .collect();
+
+    // A second scan pass (nothing changed on disk) must not disturb the
+    // already-set added_at — it is first-sighting-only, never overwritten.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let cancel2 = std::sync::atomic::AtomicBool::new(false);
+    lib.scan_all_folders(&cancel2, |_, _| {}).unwrap();
+
+    let tracks_second = lib.all_tracks().unwrap();
+    for t in &tracks_second {
+        assert_eq!(
+            t.added_at,
+            added_at_first[&t.path],
+            "added_at must stay stable across a second scan"
+        );
+    }
+}
+
+#[test]
+fn scan_all_folders_backfills_null_sample_rate_for_previously_scanned_row() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("song.wav");
+    write_test_wav(&file_path, 44100, 2, 1.0);
+    let path = file_path.to_str().unwrap();
+    let folder_path = dir.path().to_str().unwrap();
+
+    let folder_id = lib.add_folder(folder_path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, folder_path).unwrap();
+
+    // Simulate a row scanned before this phase shipped: last_scanned is set
+    // (mtime-skip would normally leave it alone) but sample_rate — a column
+    // this phase added — was never backfilled onto it.
+    lib.conn
+        .execute(
+            "UPDATE tracks SET last_scanned = ?1, sample_rate = NULL WHERE path = ?2",
+            rusqlite::params![crate::timeutil::format_current_timestamp(), path],
+        )
+        .unwrap();
+
+    // The production rescan entry point (what the GTK/mac "Rescan" button
+    // calls) must still pick this row up despite the unchanged mtime.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    lib.scan_all_folders(&cancel, |_, _| {}).unwrap();
+
+    let track = lib.track_by_path(path).unwrap();
+    assert!(
+        track.sample_rate.is_some(),
+        "pre-phase row with NULL sample_rate must be backfilled by scan_all_folders \
+         despite an unchanged file mtime"
+    );
+    assert!(track.file_size.is_some());
 }
 
 // ── rescan_folder_metadata ─────────────────────────────────────────────
@@ -463,7 +586,7 @@ fn scan_folder_scans_never_scanned() {
 #[test]
 fn scan_folder_skips_unchanged_files() {
     let (lib, _db) = temp_lib();
-    let dir = temp_dir_with_files("mp3", 2);
+    let dir = temp_dir_with_wav_files(2);
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
@@ -484,7 +607,7 @@ fn scan_folder_skips_unchanged_files() {
 #[test]
 fn scan_folder_rescans_changed_files() {
     let (lib, _db) = temp_lib();
-    let dir = temp_dir_with_files("mp3", 2);
+    let dir = temp_dir_with_wav_files(2);
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
@@ -1389,4 +1512,61 @@ fn search_words_all_have_to_match_and_sort_is_honored() {
     assert_eq!(sorted.len(), 3);
     assert_eq!(sorted[0].filename, "track_2.mp3");
     assert_eq!(sorted[2].filename, "track_0.mp3");
+}
+
+// ── refresh_artwork: data-safety guard ──────────────────────────────────
+// Insurance against a regression re-widening the cache-only delete guard
+// added in F2 (feat(art): folder-image fallback with cache-guarded
+// refresh). Not tied to a bug fix in this wave — locks in current, correct
+// behavior so a future edit here can't silently start deleting user files.
+
+#[test]
+fn refresh_artwork_deletes_only_cache_dir_files_not_user_images() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("song.mp3");
+    fs::write(&file_path, b"fake audio data").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.upsert_track(folder_id, path).unwrap();
+    let track_id = lib.track_by_path(path).unwrap().id;
+
+    // Case 1: artwork_path points at the user's own folder image (F2
+    // fallback) — refresh must not delete it, only our cache extractions.
+    let user_image = dir.path().join("folder.jpg");
+    fs::write(&user_image, b"fake jpg").unwrap();
+    lib.conn
+        .execute(
+            "UPDATE tracks SET artwork_path = ?1 WHERE id = ?2",
+            rusqlite::params![user_image.to_string_lossy().as_ref(), track_id],
+        )
+        .unwrap();
+    lib.refresh_artwork(track_id, path).unwrap();
+    assert!(
+        user_image.exists(),
+        "refresh_artwork must not delete a user's own folder image"
+    );
+
+    // Case 2: artwork_path points at a file inside our cache dir (a
+    // previous APIC extraction) — refresh must remove the stale cache file.
+    let cache_root = dirs::cache_dir().unwrap().join("sparkamp");
+    fs::create_dir_all(&cache_root).unwrap();
+    let cached_art = cache_root.join(format!(
+        "refresh_artwork_test_{}_{}.jpg",
+        std::process::id(),
+        line!()
+    ));
+    fs::write(&cached_art, b"stale cached art").unwrap();
+    lib.conn
+        .execute(
+            "UPDATE tracks SET artwork_path = ?1 WHERE id = ?2",
+            rusqlite::params![cached_art.to_string_lossy().as_ref(), track_id],
+        )
+        .unwrap();
+    lib.refresh_artwork(track_id, path).unwrap();
+    assert!(
+        !cached_art.exists(),
+        "refresh_artwork must delete stale cache-dir extractions"
+    );
 }

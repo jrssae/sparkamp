@@ -385,6 +385,12 @@ impl MediaLibrary {
 
         // Fast insert: just path and filename, no metadata.  Use a transaction for
         // much faster bulk inserts.
+        //
+        // added_at is stamped here, not just in upsert_track: this is a file's
+        // first sighting (the metadata pass that follows only fills in tags),
+        // so "first sighting" IS the date added. One `now` for the whole batch
+        // is fine — files discovered in the same fast-scan pass share it.
+        let now = timeutil::format_current_timestamp();
         let mut added = 0usize;
         self.conn.execute("BEGIN IMMEDIATE", [])?;
         for path in &audio_paths {
@@ -399,10 +405,10 @@ impl MediaLibrary {
                     .and_then(|e| e.to_str())
                     .map(|e| e.to_lowercase());
                 self.conn.execute(
-                    "INSERT INTO tracks (path, folder_id, filename, filetype, play_count)
-                     VALUES (?1, ?2, ?3, ?4, 0)
+                    "INSERT INTO tracks (path, folder_id, filename, filetype, play_count, added_at)
+                     VALUES (?1, ?2, ?3, ?4, 0, ?5)
                      ON CONFLICT(path) DO NOTHING",
-                    params![path, folder_id, filename, filetype],
+                    params![path, folder_id, filename, filetype, now],
                 )?;
                 added += 1;
             }
@@ -454,11 +460,16 @@ impl MediaLibrary {
     /// Checks `cancel.load(Ordering::Relaxed)` before each track; if true, returns early.
     ///
     /// When `paths` is `None`, queries tracks with missing metadata internally:
-    ///   `WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL)`
+    ///   `WHERE folder_id = ?1 AND (artist IS NULL OR length_secs IS NULL OR sample_rate IS NULL)`
     ///
     /// When `paths` is `Some(vec)`, scans only the provided paths.
     ///
-    /// This is the slow part - call after rescan_folder_fast in a background thread.
+    /// Neither GTK nor the mac frontend calls this — the real pipeline is
+    /// `rescan_folder_fast` (path-only insert) followed by `scan_all_folders`
+    /// → `scan_folder` → `needs_metadata_scan` (mtime smart-skip, with its
+    /// own `sample_rate IS NULL` backfill net). This function is exercised
+    /// only by its own tests; kept for that coverage and as a "scan just
+    /// these known-stale paths" building block should a caller need it.
     pub fn rescan_folder_metadata<F>(
         &self,
         folder_id: i64,
@@ -584,13 +595,16 @@ impl MediaLibrary {
             .as_ref()
             .and_then(|m| m.modified().ok())
             .map(crate::timeutil::format_system_time);
-        let bitrate = file_size
+        let computed_bitrate = file_size
             .zip(length_secs)
             .and_then(|(sz, len)| crate::technical_probe::avg_bitrate_kbps(sz as u64, len));
+        let bitrate = Self::resolve_bitrate(computed_bitrate, tags.bitrate);
         let channels = tech.channels.or(tags.channels);
         let bitrate_mode = crate::technical_probe::mp3_bitrate_mode(p).map(str::to_string);
-        // added_at is INSERT-only (see ON CONFLICT below): this value is only
-        // ever used for a row's first insert, never to overwrite it.
+        // added_at: used verbatim on first insert. On conflict it only heals
+        // a pre-existing NULL (row from before this column existed, or any
+        // other insert path that skipped it) — see the COALESCE in the ON
+        // CONFLICT clause below. A real added_at value is never overwritten.
         let now = crate::timeutil::format_current_timestamp();
 
         // Keep existing play_count and last_played if the row already exists.
@@ -634,7 +648,8 @@ impl MediaLibrary {
                 sample_rate     = excluded.sample_rate,
                 file_size       = excluded.file_size,
                 file_mtime      = excluded.file_mtime,
-                bitrate_mode    = excluded.bitrate_mode",
+                bitrate_mode    = excluded.bitrate_mode,
+                added_at        = COALESCE(added_at, excluded.added_at)",
             params![
                 path,
                 folder_id,
@@ -688,6 +703,13 @@ impl MediaLibrary {
         self.upsert_track(folder_id, path)?;
         self.update_last_scanned(path)?;
         Ok(())
+    }
+
+    /// Prefer the size÷duration bitrate we computed ourselves; fall back to
+    /// whatever the tag reader supplied when we couldn't derive one (e.g.
+    /// duration probing failed). Mirrors `tech.channels.or(tags.channels)`.
+    pub(super) fn resolve_bitrate(computed: Option<i64>, tag_bitrate: Option<i64>) -> Option<i64> {
+        computed.or(tag_bitrate)
     }
 
     pub(super) fn get_folder_id_for_path(&self, path: &str) -> Result<i64> {
@@ -745,8 +767,12 @@ impl MediaLibrary {
 
     /// Scan a single folder, updating metadata for files that have changed.
     ///
-    /// Uses smart skip logic: only rescans files where the file modification time
-    /// is newer than the `last_scanned` timestamp. Reports progress via
+    /// Uses smart skip logic: rescans files where the file modification time
+    /// is newer than the `last_scanned` timestamp, OR where `sample_rate` is
+    /// still NULL — a one-time backfill net for rows written before the
+    /// technical-columns phase (sample rate, file size/mtime, bitrate mode)
+    /// shipped, so the existing library gets those columns filled in on the
+    /// next Rescan instead of staying NULL forever. Reports progress via
     /// `progress(current, total)` callback on every iteration.
     ///
     /// Returns `(scanned, skipped, failed)` counts where:
@@ -763,15 +789,16 @@ impl MediaLibrary {
         F: FnMut(usize, usize),
     {
         // Get all tracks in the folder
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
-        let tracks: Vec<(i64, String, Option<String>)> = stmt
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, last_scanned, sample_rate FROM tracks WHERE folder_id = ?1",
+        )?;
+        let tracks: Vec<(i64, String, Option<String>, Option<i64>)> = stmt
             .query_map(params![folder_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
                 ))
             })?
             .filter_map(|r| r.ok())
@@ -782,10 +809,10 @@ impl MediaLibrary {
         // Separate tracks into those needing scan and those to skip
         let paths_to_scan: Vec<(i64, String)> = tracks
             .into_iter()
-            .filter(|(_, path, last_scanned)| {
-                Self::needs_metadata_scan(path, last_scanned.as_deref())
+            .filter(|(_, path, last_scanned, sample_rate)| {
+                sample_rate.is_none() || Self::needs_metadata_scan(path, last_scanned.as_deref())
             })
-            .map(|(id, path, _)| (id, path))
+            .map(|(id, path, _, _)| (id, path))
             .collect();
 
         let to_scan_count = paths_to_scan.len();
@@ -842,18 +869,22 @@ impl MediaLibrary {
         let mut total_skipped = 0usize;
         let mut total_failed = 0usize;
 
-        // First pass: count total files that need scanning (unscanned)
+        // First pass: count total files that need scanning (unscanned, or
+        // still missing the technical-columns backfill — kept in sync with
+        // scan_folder's own candidate filter below, or the progress bar's
+        // total would undercount and the callback could report done > total).
         let mut total_to_scan = 0usize;
         for (folder_id, _) in &folders {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id, path, last_scanned FROM tracks WHERE folder_id = ?1")?;
-            let tracks: Vec<(i64, String, Option<String>)> = stmt
+            let mut stmt = self.conn.prepare(
+                "SELECT id, path, last_scanned, sample_rate FROM tracks WHERE folder_id = ?1",
+            )?;
+            let tracks: Vec<(i64, String, Option<String>, Option<i64>)> = stmt
                 .query_map(params![*folder_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
                     ))
                 })?
                 .filter_map(|r| r.ok())
@@ -861,8 +892,9 @@ impl MediaLibrary {
 
             total_to_scan += tracks
                 .into_iter()
-                .filter(|(_, path, last_scanned)| {
-                    Self::needs_metadata_scan(path, last_scanned.as_deref())
+                .filter(|(_, path, last_scanned, sample_rate)| {
+                    sample_rate.is_none()
+                        || Self::needs_metadata_scan(path, last_scanned.as_deref())
                 })
                 .count();
         }
