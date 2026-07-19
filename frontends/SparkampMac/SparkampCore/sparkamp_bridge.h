@@ -354,6 +354,12 @@ typedef struct {
     int32_t  has_art;         /* 1 = cached album art exists */
     int32_t  file_missing;    /* 1 = file does not exist at recorded path */
     uint8_t  last_played[32]; /* ISO-8601 UTC ("YYYY-MM-DDTHH:MM:SSZ") or empty */
+    int32_t  sample_rate;     /* Hz, from the codec header; 0 = unknown */
+    int64_t  file_size;       /* bytes, captured at scan time; 0 = unknown */
+    uint8_t  added_at[32];    /* ISO-8601 UTC of first INSERT, or empty */
+    uint8_t  file_mtime[32];  /* ISO-8601 UTC of on-disk mtime, or empty */
+    uint8_t  bitrate_mode[8]; /* "VBR" / "CBR" or empty */
+    int32_t  channels;        /* channel count (1=mono, 2=stereo, ...); 0 = unknown */
 } SparkampLibTrack;
 
 /** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */

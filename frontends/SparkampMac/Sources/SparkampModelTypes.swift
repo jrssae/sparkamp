@@ -57,6 +57,20 @@ struct MLTrack: Identifiable {
     let fileMissing: Bool
     /// ISO-8601 UTC timestamp from the DB ("YYYY-MM-DDTHH:MM:SSZ"); empty if never played.
     let lastPlayed: String
+    // Phase-1 technical fields (Task 3/7)
+    /// Sample rate in Hz; 0 if unknown.
+    let sampleRate: Int
+    /// File size in bytes; 0 if unknown.
+    let fileSize: Int64
+    /// ISO-8601 UTC timestamp of the row's first INSERT; empty if unknown.
+    let addedAt: String
+    /// ISO-8601 UTC timestamp of the file's on-disk modification time; empty if unknown.
+    let fileMtime: String
+    /// "VBR" / "CBR" for MP3 files; empty when undetermined or non-MP3.
+    let bitrateMode: String
+    /// Channel count (1 = mono, 2 = stereo, ...); 0 if unknown. Crosses the
+    /// FFI alongside the five Task 7 fields — needed for the ID3 tech line.
+    let channels: Int
 
     var durationString: String { formatDuration(lengthSecs) }
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
@@ -97,6 +111,12 @@ struct MLTrack: Identifiable {
         hasArt = false
         fileMissing = !FileManager.default.fileExists(atPath: stubPath)
         lastPlayed = ""
+        sampleRate = 0
+        fileSize = 0
+        addedAt = ""
+        fileMtime = ""
+        bitrateMode = ""
+        channels = 0
     }
 
     init(from c: SparkampLibTrack) {
@@ -122,6 +142,12 @@ struct MLTrack: Identifiable {
         hasArt      = c.has_art != 0
         fileMissing = c.file_missing != 0
         lastPlayed  = cBytesToString(&c.last_played)
+        sampleRate  = Int(c.sample_rate)
+        fileSize    = c.file_size
+        addedAt     = cBytesToString(&c.added_at)
+        fileMtime   = cBytesToString(&c.file_mtime)
+        bitrateMode = cBytesToString(&c.bitrate_mode)
+        channels    = Int(c.channels)
     }
 }
 

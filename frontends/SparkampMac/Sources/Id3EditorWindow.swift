@@ -54,6 +54,11 @@ struct Id3EditorView: View {
     @State private var fieldValues: [String: String] = [:]
     @State private var artwork: NSImage? = nil
 
+    /// Media-library row for the open file, looked up by path (same as the
+    /// ML window does) — source of the technical fields for `techLine`.
+    /// `nil` when the file isn't indexed in the library yet.
+    @State private var mlRow: MLTrack? = nil
+
     @State private var showCustomize = false
 
     /// Field layout config — persisted as JSON in UserDefaults.
@@ -81,6 +86,31 @@ struct Id3EditorView: View {
     // Fields visible in each column, sorted by order
     private var leftFields:  [ID3FieldConfig] { fieldConfigs.filter { $0.visible && $0.column == 0 }.sorted { $0.order < $1.order } }
     private var rightFields: [ID3FieldConfig] { fieldConfigs.filter { $0.visible && $0.column == 1 }.sorted { $0.order < $1.order } }
+
+    /// One-line technical summary: uppercase filetype, bitrate, sample rate,
+    /// channels, duration — " · "-joined, skipping empty parts. Mirrors the
+    /// core's `tech_summary` (GTK reference) so both frontends read the same
+    /// for a given file. Filetype comes straight off the path extension
+    /// (that's literally how the core derives it too); the rest come off
+    /// the media-library row, so they're blank when the file isn't indexed.
+    private var techLine: String {
+        let filetype = URL(fileURLWithPath: filePath).pathExtension.uppercased()
+        let bitrate = (mlRow?.bitrate ?? 0) > 0 ? "\(mlRow!.bitrate)k" : ""
+        let sampleRate = (mlRow?.sampleRate ?? 0) > 0
+            ? String(format: "%.1f kHz", Double(mlRow!.sampleRate) / 1000)
+            : ""
+        let channels: String
+        switch mlRow?.channels ?? 0 {
+        case 0:      channels = ""
+        case 1:      channels = "mono"
+        case 2:      channels = "stereo"
+        case let n:  channels = "\(n)ch"
+        }
+        let duration = (mlRow?.lengthSecs ?? 0) > 0 ? formatDuration(mlRow!.lengthSecs) : "-:--"
+        return [filetype, bitrate, sampleRate, channels, duration]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -204,6 +234,13 @@ struct Id3EditorView: View {
                 }
                 .padding(.vertical, 8)
 
+                if !filePath.isEmpty {
+                    Text(techLine)
+                        .font(vars.smallMonospaceFont)
+                        .foregroundStyle(theme.playlistDurationText)
+                        .padding(.leading, artwork == nil ? 12 : 0)
+                        .padding(.bottom, 8)
+                }
             }
             .background(theme.lcdBackground)
 
@@ -280,10 +317,12 @@ struct Id3EditorView: View {
         guard FileManager.default.fileExists(atPath: path) else {
             fileMissing = true
             isReadOnly = false
+            mlRow = nil
             if let existing = tagCtx { sparkamp_tag_close(existing); tagCtx = nil }
             return
         }
         fileMissing = false
+        mlRow = model.mlGetTrackByPath(path)
 
         if let existing = tagCtx { sparkamp_tag_close(existing); tagCtx = nil }
         guard let newTag = path.withCString({ sparkamp_tag_open($0) }) else { return }

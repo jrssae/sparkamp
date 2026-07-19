@@ -52,6 +52,20 @@ pub struct SparkampLibTrack {
     /// ISO-8601 UTC timestamp of the last time this track was played
     /// ("YYYY-MM-DDTHH:MM:SSZ"), or empty string if never played.
     pub last_played: [u8; 32],
+    /// Sample rate in Hz, read from the codec header; 0 if unknown.
+    pub sample_rate: c_int,
+    /// File size in bytes, captured at scan time; 0 if unknown.
+    pub file_size: i64,
+    /// ISO-8601 UTC timestamp of the row's first INSERT, or empty if unknown.
+    pub added_at: [u8; 32],
+    /// ISO-8601 UTC timestamp of the file's on-disk modification time, or empty if unknown.
+    pub file_mtime: [u8; 32],
+    /// "VBR" / "CBR" for MP3 files, or empty when undetermined / non-MP3.
+    pub bitrate_mode: [u8; 8],
+    /// Channel count (1 = mono, 2 = stereo, ...); 0 if unknown. Not one of
+    /// Task 7's five listed fields, but required so the mac ID3 tech line
+    /// (Step 3) can match core `tech_summary`'s "channels" part exactly.
+    pub channels: c_int,
 }
 
 impl SparkampLibTrack {
@@ -78,6 +92,12 @@ impl SparkampLibTrack {
             has_art: if t.artwork_path.is_some() { 1 } else { 0 },
             file_missing: 0,
             last_played: [0u8; 32],
+            sample_rate: t.sample_rate.unwrap_or(0) as c_int,
+            file_size: t.file_size.unwrap_or(0),
+            added_at: [0u8; 32],
+            file_mtime: [0u8; 32],
+            bitrate_mode: [0u8; 8],
+            channels: t.channels.unwrap_or(0) as c_int,
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -98,6 +118,9 @@ impl SparkampLibTrack {
         copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
         copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
         copy_str(&mut out.last_played, t.last_played.as_deref().unwrap_or(""));
+        copy_str(&mut out.added_at, t.added_at.as_deref().unwrap_or(""));
+        copy_str(&mut out.file_mtime, t.file_mtime.as_deref().unwrap_or(""));
+        copy_str(&mut out.bitrate_mode, t.bitrate_mode.as_deref().unwrap_or(""));
         let p = std::path::Path::new(&t.path);
         out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
         out.file_missing = if p.exists() { 0 } else { 1 };

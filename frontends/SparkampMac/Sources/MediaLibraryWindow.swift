@@ -784,6 +784,12 @@ struct MediaLibraryView: View {
             columnToggle("Play Count",   bit: 14)
             columnToggle("Album Art",    bit: 15)
             columnToggle("Last Played",  bit: 16)
+            Divider()
+            columnToggle("Sample Rate",  bit: 17)
+            columnToggle("Size",         bit: 18)
+            columnToggle("Date Added",   bit: 19)
+            columnToggle("File Modified", bit: 20)
+            columnToggle("Mode",         bit: 21)
         } label: {
             Image(systemName: "tablecells")
                 .font(.system(size: 11))
@@ -830,6 +836,11 @@ struct MediaLibraryView: View {
             case \MLTrack.bitrate:     return "bitrate"
             case \MLTrack.playCount:   return "play_count"
             case \MLTrack.lastPlayed:  return "last_played"
+            case \MLTrack.sampleRate:  return "sample_rate"
+            case \MLTrack.fileSize:    return "file_size"
+            case \MLTrack.addedAt:     return "added_at"
+            case \MLTrack.fileMtime:   return "file_mtime"
+            case \MLTrack.bitrateMode: return "bitrate_mode"
             default:                   return nil
             }
         }

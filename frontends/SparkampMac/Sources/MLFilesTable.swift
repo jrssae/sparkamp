@@ -94,6 +94,12 @@ struct MLFilesTable: NSViewRepresentable {
         .init(id: "col-playcount",   title: "Play Count",  bit: 14, width:  80, sortKey: "play_count",   isSmallMono: true),
         .init(id: "col-lastplayed",  title: "Last Played", bit: 16, width: 140, sortKey: "last_played",  isSmallMono: true),
         .init(id: "col-art",         title: "Art",         bit: 15, width:  60, sortKey: nil,            isSmallMono: false),
+        // Phase-1 technical columns (Task 3/7); column ids double as GTK's sortKeys verbatim.
+        .init(id: "col-samplerate",  title: "Sample Rate", bit: 17, width:  90, sortKey: "sample_rate",  isSmallMono: true),
+        .init(id: "col-filesize",    title: "Size",        bit: 18, width:  80, sortKey: "file_size",    isSmallMono: true),
+        .init(id: "col-added",       title: "Date Added",  bit: 19, width: 130, sortKey: "added_at",     isSmallMono: true),
+        .init(id: "col-mtime",       title: "File Modified", bit: 20, width: 130, sortKey: "file_mtime", isSmallMono: true),
+        .init(id: "col-brmode",      title: "Mode",        bit: 21, width:  60, sortKey: "bitrate_mode", isSmallMono: true),
     ]
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -326,6 +332,23 @@ struct MLFilesTable: NSViewRepresentable {
         case "col-lastplayed":
             body = AnyView(textCell(track.lastPlayedDisplay,
                                     color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-samplerate":
+            body = AnyView(textCell(track.sampleRate > 0
+                                     ? String(format: "%.1f kHz", Double(track.sampleRate) / 1000)
+                                     : "",
+                                    color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-filesize":
+            body = AnyView(textCell(Self.formatFileSize(track.fileSize),
+                                    color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-added":
+            body = AnyView(textCell(track.addedAt,
+                                    color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-mtime":
+            body = AnyView(textCell(track.fileMtime,
+                                    color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-brmode":
+            body = AnyView(textCell(track.bitrateMode,
+                                    color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-art":
             let tid = track.id
             body = AnyView(
@@ -345,6 +368,17 @@ struct MLFilesTable: NSViewRepresentable {
             body = AnyView(Color.clear)
         }
         return body
+    }
+
+    /// Human file size: whole KB under 1 MB, one-decimal MB above — matches
+    /// GTK's `format_file_size` thresholds so the two frontends agree.
+    private static func formatFileSize(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "" }
+        if bytes < 1_000_000 {
+            return "\(bytes / 1_000) KB"
+        } else {
+            return String(format: "%.1f MB", Double(bytes) / 1_000_000)
+        }
     }
 
     private static func textCell(_ s: String, color: Color, spec: ColumnSpec, theme: SkinTheme) -> some View {
@@ -377,6 +411,11 @@ struct MLFilesTable: NSViewRepresentable {
         case "bitrate":      return KeyPathComparator(\MLTrack.bitrate, order: order)
         case "play_count":   return KeyPathComparator(\MLTrack.playCount, order: order)
         case "last_played":  return KeyPathComparator(\MLTrack.lastPlayed, order: order)
+        case "sample_rate":  return KeyPathComparator(\MLTrack.sampleRate, order: order)
+        case "file_size":    return KeyPathComparator(\MLTrack.fileSize, order: order)
+        case "added_at":     return KeyPathComparator(\MLTrack.addedAt, order: order)
+        case "file_mtime":   return KeyPathComparator(\MLTrack.fileMtime, order: order)
+        case "bitrate_mode": return KeyPathComparator(\MLTrack.bitrateMode, order: order)
         default:             return nil
         }
     }
@@ -397,6 +436,11 @@ struct MLFilesTable: NSViewRepresentable {
         case \MLTrack.bitrate:     return "bitrate"
         case \MLTrack.playCount:   return "play_count"
         case \MLTrack.lastPlayed:  return "last_played"
+        case \MLTrack.sampleRate:  return "sample_rate"
+        case \MLTrack.fileSize:    return "file_size"
+        case \MLTrack.addedAt:     return "added_at"
+        case \MLTrack.fileMtime:   return "file_mtime"
+        case \MLTrack.bitrateMode: return "bitrate_mode"
         default:                   return nil
         }
     }

@@ -148,3 +148,58 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
 
 ## Phase-0 fixes: EQ frequency labels removal (D10) — mac verify
 - [ ] EQ window shows 10 unlabeled sliders matching GTK, column spacing intact.
+
+## Phase-1: ML technical columns + ID3 tech line (Task 7, BLIND — Swift never compiled)
+- [ ] `xcodebuild` succeeds with zero errors/warnings against the updated
+      `sparkamp_bridge.h` — `SparkampLibTrack` grew six trailing fields
+      (`sample_rate`, `file_size`, `added_at`, `file_mtime`, `bitrate_mode`,
+      `channels`); confirm the Swift `MLTrack.init(from:)` field reads still
+      line up byte-for-byte with the Rust struct (no silent offset drift).
+- [ ] Files view column picker (toolbar icon, `MediaLibraryWindow.swift`)
+      shows five new toggles below the existing "Last Played" entry: Sample
+      Rate, Size, Date Added, File Modified, Mode — all off by default
+      (bits 17–21 aren't in the default `columnMask`), confirm each toggles
+      its column's visibility independently and the layout/divider looks
+      right.
+- [ ] Column content, once shown: Sample Rate renders "44.1 kHz" style (or
+      blank when 0); Size renders "N KB" under 1 MB, "N.N MB" at/above (same
+      thresholds as GTK's `format_file_size`); Date Added / File Modified
+      show the raw ISO-8601 string as-is (mac does NOT reformat to a
+      friendlier local date the way GTK's `format_last_played` does —
+      confirm this is acceptable or file a follow-up); Mode shows "VBR"/
+      "CBR" verbatim (mac does not lowercase it the way GTK's sort key
+      does — the GTK *display* also keeps it as-is, only GTK's sort key is
+      lowercased, so this should already match).
+- [ ] Click each of the five new column headers: table re-sorts via
+      `sortDescriptorsDidChange` → `MLFilesTable.keyPathComparator` →
+      `MediaLibraryWindow.reload()`'s `colName` switch → `mlFetchTracks`
+      with the matching `sortCol` ("sample_rate" / "file_size" /
+      "added_at" / "file_mtime" / "bitrate_mode") — confirm ascending AND
+      descending both actually reorder rows (not just flip the header
+      arrow).
+- [ ] These columns also appear in the Saved Playlist editor
+      (`MLEditorTable.swift`, which reuses `MLFilesTable.specs` /
+      `.cellContent` directly) — confirm they render there too, not just
+      in the Files view.
+- [ ] Existing columns (Title through Last Played) are visually and
+      functionally unaffected — spot-check a few sorts/toggles pre- and
+      post-change.
+- [ ] ID3 editor: open a file that IS indexed in the library (e.g. via the
+      Files view's "Edit / View ID3 Tags") — confirm a dimmed technical
+      line appears under the field grid reading uppercase filetype ·
+      bitrate ("320k" style, not "320 kbps") · sample rate · channels
+      (mono/stereo/Nch) · duration (M:SS), " · "-joined, matching what
+      GTK's ID3 editor shows for the SAME file (GTK's `tech_summary`).
+- [ ] ID3 editor: open a file NOT indexed in the library (e.g. a playlist
+      entry from an unwatched folder) — confirm the line still shows at
+      least the filetype (derived from the path extension client-side)
+      and "-:--" for duration; bitrate/sample rate/channels should be
+      blank. NOTE: this is a deliberate mac/GTK divergence — GTK's
+      `tech_summary` shows ONLY "-:--" in this case (no filetype) because
+      its filetype comes from the (absent) library row, not the path.
+      Confirm this extra filetype text is harmless, or trim it if exact
+      byte-for-byte parity is required here.
+- [ ] Saving ID3 tags on a file does not change/blank the tech line
+      (technical fields are independent of tag fields; the editor closes
+      ~0.4s after a successful save, so this is mostly a "no crash /
+      no flicker to blank" check during that window).
