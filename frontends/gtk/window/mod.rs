@@ -68,6 +68,11 @@ use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
 mod disc;
 use disc::{disc_overview_detail_line, selected_disc_discid};
 
+// A1 expandable now-playing panel (art + tags + wiki links). A child module
+// (not include!d) so its widget-building code stays out of player.rs's
+// already-large body; player.rs calls it as `now_playing::build_panel(...)`.
+mod now_playing;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------

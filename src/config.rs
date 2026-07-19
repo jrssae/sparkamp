@@ -302,6 +302,9 @@ pub struct WindowConfig {
     /// Width of the ML sidebar (left navigation panel).
     #[serde(default = "WindowConfig::default_ml_sidebar_width")]
     pub ml_sidebar_width: i32,
+    /// Whether the main window's expandable now-playing panel was open at exit.
+    #[serde(default)]
+    pub player_expanded: bool,
 }
 
 impl Default for WindowConfig {
@@ -317,6 +320,7 @@ impl Default for WindowConfig {
             ml_height: Self::default_ml_height(),
             ml_playlists_expanded: true,
             ml_sidebar_width: Self::default_ml_sidebar_width(),
+            player_expanded: false,
         }
     }
 }
@@ -1031,6 +1035,20 @@ playlist_height = 600
         // Other fields are set from TOML.
         assert_eq!(cfg.player_width, 600);
         assert_eq!(cfg.playlist_width, 500);
+    }
+
+    #[test]
+    fn window_config_defaults_player_collapsed() {
+        assert!(!WindowConfig::default().player_expanded);
+    }
+
+    #[test]
+    fn window_config_player_expanded_roundtrips() {
+        let mut c = WindowConfig::default();
+        c.player_expanded = true;
+        let s = toml::to_string(&c).unwrap();
+        let back: WindowConfig = toml::from_str(&s).unwrap();
+        assert!(back.player_expanded);
     }
 
     // ── MediaLibraryConfig::visible_columns ────────────────────────────────

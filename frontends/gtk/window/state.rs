@@ -63,9 +63,13 @@ struct AppState {
     /// phase-3 MPRIS). Fan-out only — callers must never hold a `borrow_mut()`
     /// across the notify loop; extract the Vec under a short borrow first.
     now_playing_subscribers: Vec<Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>>,
-    /// Pre-play snapshot (play_count/last_played) for the currently playing
-    /// track, captured at play start before `record_play` increments it.
-    current_snapshot: crate::media_library::PlaySnapshot,
+    /// Now-playing info for the currently loaded track, set at play-start
+    /// alongside the `now_playing_subscribers` fan-out (see `play_and_update`
+    /// in player.rs). Lets a panel built or shown mid-playback (A1 toggle,
+    /// A6 window open) populate immediately via `current_now_playing()`
+    /// instead of waiting for the *next* track change, which is the only
+    /// thing that fires the subscriber fan-out.
+    current_now_playing: Option<crate::now_playing::NowPlayingInfo>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -243,7 +247,7 @@ impl AppState {
             play_and_update_callback: None,
             set_track_callback: None,
             now_playing_subscribers: Vec::new(),
-            current_snapshot: Default::default(),
+            current_now_playing: None,
             pending_bg_ops: std::cell::Cell::new(0),
             counted_play_path: None,
             ml_scan: None,
@@ -304,10 +308,16 @@ impl AppState {
 
     /// Register a now-playing subscriber (A1 panel, A6 window, phase-3 MPRIS).
     /// Fired once per track start, after the play-start snapshot is captured.
-    /// No caller yet — the A1 panel (T6) and A6 window (T7) register here.
-    #[allow(dead_code)]
     pub fn subscribe_now_playing(&mut self, cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>) {
         self.now_playing_subscribers.push(cb);
+    }
+
+    /// The now-playing info for the currently loaded track, if any. Cloned
+    /// out (rather than returning a reference) so callers can drop the
+    /// borrow before doing any widget construction with it — see the
+    /// borrow-safety note on `notify_now_playing` below.
+    pub fn current_now_playing(&self) -> Option<crate::now_playing::NowPlayingInfo> {
+        self.current_now_playing.clone()
     }
 
     /// Fan out `info` to every subscriber.

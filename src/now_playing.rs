@@ -5,10 +5,6 @@ use std::path::{Path, PathBuf};
 
 /// Everything a now-playing panel needs to render, assembled once per
 /// play-start so every frontend (GTK, TUI, macOS) shows identical data.
-// T5 constructs and fan-outs this struct on every track start, but no
-// consumer reads its fields yet — the A1 panel (T6) and A6 window (T7) are
-// the first readers. Remove once either lands.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NowPlayingInfo {
     /// Curated ID3 label/value pairs, non-empty only, in `TagFields::field_pairs` order.

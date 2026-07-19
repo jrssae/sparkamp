@@ -94,6 +94,7 @@ pub fn build(
     // All values are mutable so the display-bounds check below can clamp them.
     let init_playlist_visible = state.borrow().config.window.playlist_visible;
     let init_ml_visible = state.borrow().config.window.ml_visible;
+    let init_player_expanded = state.borrow().config.window.player_expanded;
     let mut init_player_width = state.borrow().config.window.player_width;
     let mut init_player_height = state.borrow().config.window.player_height;
     let mut init_pl_width = state.borrow().config.window.playlist_width;
@@ -238,15 +239,25 @@ pub fn build(
 
     // Mini visualizer — a Stack holding the Cairo DrawingArea (Bars / Waveform)
     // and a Picture (Granite plasma RGBA buffer). The visible child is swapped
-    // to match the active visualizer mode.
+    // to match the active visualizer mode. It also stretches taller when the
+    // A1 now-playing panel is expanded (see `VIZ_HEIGHT_EXPANDED` below), since
+    // the marquee it normally sits beside is replaced by the wider panel.
+    const VIZ_HEIGHT_COLLAPSED: i32 = 52;
+    const VIZ_HEIGHT_EXPANDED: i32 = 200;
+    let init_viz_h = if init_player_expanded {
+        VIZ_HEIGHT_EXPANDED
+    } else {
+        VIZ_HEIGHT_COLLAPSED
+    };
+
     let viz = DrawingArea::new();
-    viz.set_content_height(52);
+    viz.set_content_height(init_viz_h);
     viz.set_valign(Align::Center);
     viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
 
     let granite_pic = Picture::new();
-    granite_pic.set_height_request(52);
+    granite_pic.set_height_request(init_viz_h);
     granite_pic.set_valign(Align::Center);
     granite_pic.set_hexpand(true);
     granite_pic.set_content_fit(ContentFit::Fill);
@@ -255,7 +266,7 @@ pub fn build(
     let viz_stack = Stack::new();
     viz_stack.set_hexpand(true);
     viz_stack.set_valign(Align::Center);
-    viz_stack.set_height_request(52);
+    viz_stack.set_height_request(init_viz_h);
     viz_stack.add_named(&viz, Some("cairo"));
     viz_stack.add_named(&granite_pic, Some("granite"));
     viz_stack.set_visible_child_name(
@@ -352,7 +363,31 @@ pub fn build(
         .build();
 
     marquee_frame.append(&title_label);
-    np_info.append(&marquee_frame);
+
+    // A1 expandable now-playing panel (`w` key / mode button) — replaces the
+    // marquee when expanded. Built once and swapped via a Stack (rather than
+    // reparented on every toggle) so its scroll position and widget identity
+    // survive repeated open/close. Seeded with whatever track is already
+    // playing (AppState::current_now_playing) so toggling mid-playback isn't
+    // empty — subscribe_now_playing's fan-out only fires on the *next* track
+    // change, not for tracks already playing when the panel is built.
+    let initial_np = state.borrow().current_now_playing();
+    let (np_panel_widget, np_panel_update) =
+        now_playing::build_panel(initial_np.as_ref(), Rc::new(|| {
+            // T7 (A6 art window) wires the real click-to-open opener here.
+        }));
+    state.borrow_mut().subscribe_now_playing(np_panel_update.clone());
+
+    let np_stack = Stack::new();
+    np_stack.set_hexpand(true);
+    np_stack.add_named(&marquee_frame, Some("collapsed"));
+    np_stack.add_named(&np_panel_widget, Some("expanded"));
+    np_stack.set_visible_child_name(if init_player_expanded {
+        "expanded"
+    } else {
+        "collapsed"
+    });
+    np_info.append(&np_stack);
 
     // Expanding spring pushes the vol row to the bottom of the column so it
     // sits on the same horizontal line as the bottom of the visualizer.
@@ -426,8 +461,14 @@ pub fn build(
     let btn_ml = Button::from_icon_name("folder-music-symbolic");
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
+    let btn_np = Button::from_icon_name("image-x-generic-symbolic");
+    btn_np.add_css_class("mode-btn");
+    btn_np.set_tooltip_text(Some("Now-playing panel (w)"));
+    if init_player_expanded {
+        btn_np.add_css_class("mode-btn-active");
+    }
 
-    // ── Vol row: [VOL] [vol_bar(half-width)] [spring] [ℹ] [ML] [EQ] [PL] ───
+    // ── Vol row: [VOL] [vol_bar(half-width)] [spring] [ℹ] [ML] [NP] [EQ] [PL] ─
     // Vol bar is fixed-width so it reads as secondary to the seek bar below.
     // PL is pushed to the far right with an expanding spacer.
     let vol_row = GtkBox::new(Orientation::Horizontal, 4);
@@ -458,6 +499,7 @@ pub fn build(
     vol_row.append(&btn_info);
     vol_row.append(&btn_jump_vol);
     vol_row.append(&btn_ml);
+    vol_row.append(&btn_np);
     vol_row.append(&btn_eq);
     vol_row.append(&btn_pl);
 
@@ -1226,13 +1268,15 @@ pub fn build(
                                 .as_ref()
                                 .map(|ml| ml.play_snapshot(&p))
                                 .unwrap_or_default();
-                            s.current_snapshot = snap.clone();
                             let lib_row = s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
                             let info = crate::now_playing::build_now_playing_info(
                                 std::path::Path::new(&p),
                                 lib_row.as_ref(),
                                 snap,
                             );
+                            // Stash for panels that populate on open (A1 toggle,
+                            // A6 window) rather than only on the next fan-out.
+                            s.current_now_playing = Some(info.clone());
                             let subs = s.now_playing_subscribers.clone();
                             (Some(info), subs)
                         }
@@ -3586,6 +3630,7 @@ pub fn build(
         let kbd_jump_entry = jump_entry.clone();
         let kbd_btn_info = btn_info.clone();
         let kbd_btn_eq = btn_eq.clone();
+        let kbd_btn_np = btn_np.clone();
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
         let kbd_repeat_icon = repeat_icon.clone();
@@ -3877,6 +3922,14 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
+                // ── Now-playing panel toggle (w) — same path as the mode
+                // button so the Stack-swap/viz-resize/persist logic stays
+                // in one place ──────────────────────────────────────────
+                gdk::Key::w | gdk::Key::W => {
+                    kbd_btn_np.emit_clicked();
+                    glib::Propagation::Stop
+                }
+
                 // ── Quit ──────────────────────────────────────────────────
                 gdk::Key::q | gdk::Key::Q => {
                     let _ = state.borrow().playlist.save_last();
@@ -3979,6 +4032,7 @@ pub fn build(
                 ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
                 ("d",           "View/Edit ID3 tags for current track"),
                 ("u",           "Toggle equalizer window"),
+                ("w",           "Toggle now-playing panel (art, tags, links)"),
                 ("Click logo",  "Open settings"),
             ]),
             ("Other", &[
@@ -4376,6 +4430,52 @@ pub fn build(
             // on subsequent visibility changes.
             btn_eq_for_notify.add_css_class("mode-btn-active");
             *eq_ref.borrow_mut() = Some(win);
+        }
+    });
+
+    // Now-playing panel button — flip config, swap the Stack, resize the
+    // mini-viz, and persist immediately (mirrors btn_pl's save-on-toggle so
+    // the panel state survives a crash, not just a clean close).
+    btn_np.connect_clicked({
+        let state = state.clone();
+        let np_stack = np_stack.clone();
+        let viz = viz.clone();
+        let viz_stack = viz_stack.clone();
+        let granite_pic = granite_pic.clone();
+        let window_wk = window.downgrade();
+        move |btn| {
+            let expanded = {
+                let mut s = state.borrow_mut();
+                let now = !s.config.window.player_expanded;
+                s.config.window.player_expanded = now;
+                now
+            };
+            let _ = state.borrow().config.save();
+
+            np_stack.set_visible_child_name(if expanded { "expanded" } else { "collapsed" });
+            if expanded {
+                btn.add_css_class("mode-btn-active");
+            } else {
+                btn.remove_css_class("mode-btn-active");
+            }
+
+            let viz_h = if expanded {
+                VIZ_HEIGHT_EXPANDED
+            } else {
+                VIZ_HEIGHT_COLLAPSED
+            };
+            viz.set_content_height(viz_h);
+            viz_stack.set_height_request(viz_h);
+            granite_pic.set_height_request(viz_h);
+
+            // `resizable(false)` windows don't auto-shrink after growing to
+            // fit the expanded panel; re-kick the default size so collapse
+            // returns to the compact natural height. This needs an
+            // interactive check on a live display — see task report.
+            if let Some(w) = window_wk.upgrade() {
+                w.set_default_size(-1, -1);
+                w.queue_resize();
+            }
         }
     });
 
