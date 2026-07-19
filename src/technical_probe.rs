@@ -55,6 +55,55 @@ pub fn avg_bitrate_kbps(file_size_bytes: u64, length_secs: f64) -> Option<i64> {
     Some(((file_size_bytes as f64 * 8.0) / length_secs / 1000.0).round() as i64)
 }
 
+/// Detect VBR vs CBR for MP3 files by the Xing/Info header convention:
+/// LAME and friends write "Xing" into the first frame for VBR files and
+/// "Info" for CBR. Absence of both means unknown — display blank rather
+/// than guessing.
+pub fn mp3_bitrate_mode(path: &Path) -> Option<&'static str> {
+    if !path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mp3"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let data = read_prefix(path, 10)?;
+    // Skip a leading ID3v2 tag: 10-byte header, syncsafe 28-bit size.
+    let audio_start = if data.starts_with(b"ID3") && data.len() >= 10 {
+        10 + (((data[6] as u64 & 0x7f) << 21)
+            | ((data[7] as u64 & 0x7f) << 14)
+            | ((data[8] as u64 & 0x7f) << 7)
+            | (data[9] as u64 & 0x7f))
+    } else {
+        0
+    };
+    // The Xing/Info block sits inside the first MPEG frame; 4 KiB past the
+    // tag comfortably covers every version/channel-mode offset.
+    let window = read_range(path, audio_start, 4096)?;
+    if window.windows(4).any(|w| w == b"Xing") {
+        Some("VBR")
+    } else if window.windows(4).any(|w| w == b"Info") {
+        Some("CBR")
+    } else {
+        None
+    }
+}
+
+fn read_prefix(path: &Path, n: usize) -> Option<Vec<u8>> {
+    read_range(path, 0, n)
+}
+
+fn read_range(path: &Path, start: u64, n: usize) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = vec![0u8; n];
+    let read = f.read(&mut buf).ok()?;
+    buf.truncate(read);
+    Some(buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +155,62 @@ mod tests {
         assert_eq!(avg_bitrate_kbps(1_000_000, 25.0), Some(320));
         assert_eq!(avg_bitrate_kbps(1_000_000, 0.0), None);
         assert_eq!(avg_bitrate_kbps(0, 25.0), Some(0));
+    }
+
+    // Build a fake MP3: optional ID3v2 header (10-byte header + payload),
+    // then bytes that contain (or don't) a Xing/Info marker.
+    fn write_fake_mp3(path: &std::path::Path, id3_payload_len: u32, marker: Option<&[u8]>) {
+        let mut buf = Vec::new();
+        if id3_payload_len > 0 {
+            buf.extend(b"ID3");
+            buf.extend(&[3u8, 0, 0]); // version 2.3, no flags
+            // Syncsafe 28-bit size, 7 bits per byte.
+            let s = id3_payload_len;
+            buf.extend(&[
+                ((s >> 21) & 0x7f) as u8,
+                ((s >> 14) & 0x7f) as u8,
+                ((s >> 7) & 0x7f) as u8,
+                (s & 0x7f) as u8,
+            ]);
+            buf.extend(std::iter::repeat(0u8).take(id3_payload_len as usize));
+        }
+        buf.extend(&[0xFF, 0xFB, 0x90, 0x00]); // MPEG1 Layer3 frame sync
+        buf.extend(std::iter::repeat(0u8).take(32));
+        if let Some(m) = marker {
+            buf.extend(m);
+        }
+        buf.extend(std::iter::repeat(0u8).take(64));
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn xing_marker_means_vbr() {
+        let p = std::env::temp_dir().join("sparkamp_vbr_test.mp3");
+        write_fake_mp3(&p, 0, Some(b"Xing"));
+        assert_eq!(mp3_bitrate_mode(&p), Some("VBR"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn info_marker_means_cbr_and_id3_is_skipped() {
+        let p = std::env::temp_dir().join("sparkamp_cbr_test.mp3");
+        // 5000-byte ID3 tag: marker sits beyond a naive fixed-window scan,
+        // so this fails unless the ID3 header size is actually honored.
+        write_fake_mp3(&p, 5000, Some(b"Info"));
+        assert_eq!(mp3_bitrate_mode(&p), Some("CBR"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn no_marker_and_non_mp3_yield_none() {
+        let p = std::env::temp_dir().join("sparkamp_nomode_test.mp3");
+        write_fake_mp3(&p, 0, None);
+        assert_eq!(mp3_bitrate_mode(&p), None);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(mp3_bitrate_mode(std::path::Path::new("/nonexistent.mp3")), None);
+        let w = std::env::temp_dir().join("sparkamp_nomode_test.wav");
+        write_test_wav(&w, 44100, 2);
+        assert_eq!(mp3_bitrate_mode(&w), None);
+        std::fs::remove_file(&w).ok();
     }
 }
