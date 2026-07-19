@@ -184,7 +184,15 @@ fi
 echo "    Found: $APP_BUNDLE"
 
 FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
-PLUGINS_DIR="$APP_BUNDLE/Contents/Frameworks/gstreamer-1.0"
+# GStreamer plug-ins live under Resources, NOT Frameworks. codesign, sealing
+# the app, treats every entry directly under Contents/Frameworks as nested
+# code and expects a dylib or a real .framework; a plain plug-in directory
+# there ("gstreamer-1.0") fails Developer ID signing with "bundle format
+# unrecognized … In subcomponent: …/Frameworks/gstreamer-1.0". Resources is
+# not auto-descended as a nested bundle, so loose plug-in dylibs there sign
+# cleanly (each is still individually signed). Dep references use
+# @executable_path/../Frameworks, which resolves the same from either dir.
+PLUGINS_DIR="$APP_BUNDLE/Contents/Resources/gstreamer-1.0"
 MACOS_DIR="$APP_BUNDLE/Contents/MacOS"
 
 mkdir -p "$FRAMEWORKS_DIR"
@@ -319,7 +327,7 @@ mv "$MACOS_DIR/${APP_NAME}" "$REAL_BIN"
 cat > "$MACOS_DIR/${APP_NAME}" <<'LAUNCHER'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
-export GST_PLUGIN_PATH="$DIR/../Frameworks/gstreamer-1.0"
+export GST_PLUGIN_PATH="$DIR/../Resources/gstreamer-1.0"
 export GST_PLUGIN_SYSTEM_PATH=""
 export GIO_EXTRA_MODULES=""
 exec "$DIR/SparkampMac.bin" "$@"
