@@ -321,6 +321,10 @@ pub enum DiscLookupMsg {
 pub struct Id3EditorState {
     /// Path to the audio file being edited.
     pub path: std::path::PathBuf,
+    /// One-line technical summary (filetype, bitrate, sample rate, channels,
+    /// duration) computed once at open time from `read_only_track_fields` +
+    /// `tech_summary`. Empty when the file isn't indexed in the media library.
+    pub tech_summary: String,
     /// Live copies of the standard tag fields — mutated as the user types.
     pub fields: TagFields,
     /// Which of the 12 default fields currently has focus (0–11).

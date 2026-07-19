@@ -369,8 +369,20 @@ impl App {
                     let fields = read_tag_fields(&path);
                     let extra_frames = read_extra_frames(&path);
                     let initial_cursor = fields.title.chars().count();
+                    // Media library lookup is best-effort: files not yet
+                    // indexed just show fewer parts (or nothing) in the
+                    // technical summary line.
+                    let lib_track = self.media_lib.as_ref().and_then(|ml| {
+                        ml.track_by_path(&path.to_string_lossy()).ok()
+                    });
+                    let ro = crate::media_library::read_only_track_fields(
+                        &path,
+                        lib_track.as_ref(),
+                    );
+                    let tech_summary = crate::media_library::tech_summary(&ro);
                     self.mode = Mode::Id3Editor(Id3EditorState {
                         path,
+                        tech_summary,
                         fields,
                         focused: 0,
                         cursor: initial_cursor,

@@ -861,6 +861,17 @@ fn open_id3_editor_window(
     // ── Check if file is read-only ───────────────────────────────────────────
     let is_read_only = crate::media_library::is_read_only(&path);
 
+    // ── Technical summary line (filetype, bitrate, sample rate, channels,
+    // duration) — Sparkamp's home for this detail; not shown on the main
+    // player window.
+    let tech_lbl = Label::builder()
+        .label(gtk_safe(&crate::media_library::tech_summary(&ro)))
+        .halign(Align::Start)
+        .css_classes(["info-desc"])
+        .build();
+    tech_lbl.set_margin_start(12);
+    tech_lbl.set_margin_bottom(4);
+
     // ── Artwork section ─────────────────────────────────────────────────────
     let artwork_vbox = GtkBox::new(Orientation::Vertical, 4);
     artwork_vbox.set_margin_start(12);
@@ -1015,6 +1026,7 @@ fn open_id3_editor_window(
     vbox.append(&path_entry);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&grid);
+    vbox.append(&tech_lbl);
     vbox.append(&artwork_vbox);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&status_lbl);

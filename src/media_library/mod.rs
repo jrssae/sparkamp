@@ -186,6 +186,7 @@ pub struct ReadOnlyTrackFields {
     pub path: String,
     pub filetype: String,
     pub bitrate: String,
+    pub sample_rate: String,
     pub channels: String,
     pub duration: String,
     pub play_count: String,
@@ -217,6 +218,10 @@ pub fn read_only_track_fields(
     let bitrate = track
         .and_then(|t| t.bitrate)
         .map(|b| format!("{b}k"))
+        .unwrap_or_default();
+    let sample_rate = track
+        .and_then(|t| t.sample_rate)
+        .map(|s| format!("{:.1} kHz", s as f64 / 1000.0))
         .unwrap_or_default();
     let channels = track
         .and_then(|t| t.channels)
@@ -250,6 +255,7 @@ pub fn read_only_track_fields(
         path: path_str,
         filetype,
         bitrate,
+        sample_rate,
         channels,
         duration,
         play_count,
@@ -257,6 +263,21 @@ pub fn read_only_track_fields(
         num,
         artwork_path,
     }
+}
+
+/// One-line technical summary for the ID3 window: uppercase filetype,
+/// bitrate, sample rate, channel layout, duration — skipping empty parts.
+/// Deliberately NOT shown on the main player window (spec deviation from
+/// Winamp): the ID3 window is Sparkamp's home for technical detail.
+#[allow(dead_code)]
+pub fn tech_summary(ro: &ReadOnlyTrackFields) -> String {
+    let ft = ro.filetype.to_uppercase();
+    [ft.as_str(), &ro.bitrate, &ro.sample_rate, &ro.channels, &ro.duration]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Check if a file is read-only by attempting to open it for writing.

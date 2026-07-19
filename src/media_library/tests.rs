@@ -1137,6 +1137,26 @@ fn read_only_track_fields_channels_multi() {
     assert_eq!(ro.channels, "6ch");
 }
 
+#[test]
+fn tech_summary_joins_populated_parts_only() {
+    let ro = ReadOnlyTrackFields {
+        filetype: "mp3".into(),
+        bitrate: "320k".into(),
+        sample_rate: "44.1 kHz".into(),
+        channels: "stereo".into(),
+        duration: "3:45".into(),
+        // fill the remaining fields with Default/empty per the struct
+        ..Default::default()
+    };
+    assert_eq!(tech_summary(&ro), "MP3 · 320k · 44.1 kHz · stereo · 3:45");
+
+    let sparse = ReadOnlyTrackFields {
+        duration: "3:45".into(),
+        ..Default::default()
+    };
+    assert_eq!(tech_summary(&sparse), "3:45");
+}
+
 
 // ── load_playlist_tracks path resolution ──────────────────────────────
 

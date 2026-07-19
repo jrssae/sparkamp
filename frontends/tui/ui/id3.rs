@@ -39,11 +39,12 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    // Split inner vertically: fields area + bottom hint line.
+    // Split inner vertically: fields area + technical summary + hint line.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // two-column field form
+            Constraint::Length(1), // technical summary line
             Constraint::Length(1), // status message (if any)
             Constraint::Length(1), // bottom hint bar
         ])
@@ -105,11 +106,23 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
         }
     }
 
+    // Technical summary line (filetype, bitrate, sample rate, channels,
+    // duration) — dimmed, same role as GTK's "info-desc" label.
+    if !state.tech_summary.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                state.tech_summary.as_str(),
+                Style::default().fg(C_DIM),
+            )),
+            rows[1],
+        );
+    }
+
     // Status / error message.
     if let Some(ref msg) = state.status {
         frame.render_widget(
             Paragraph::new(Span::styled(msg.as_str(), Style::default().fg(C_ERR))),
-            rows[1],
+            rows[2],
         );
     }
 
@@ -127,7 +140,7 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
         sep(),
         Span::styled("[Esc] cancel", Style::default().fg(C_WARN)),
     ]);
-    frame.render_widget(Paragraph::new(hints), rows[2]);
+    frame.render_widget(Paragraph::new(hints), rows[3]);
 }
 
 /// Render one column of the ID3 field form.
