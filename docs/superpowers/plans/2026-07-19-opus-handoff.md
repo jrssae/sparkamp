@@ -114,7 +114,7 @@ known-limitations updates, ledger, user interactive pass list.
     columns need BOTH.
   - Artwork: `tags.rs::read_track_tags` = embedded APIC → cache
     (`~/.cache/sparkamp/<hash>.<ext>`) → folder-image fallback
-    (folder>cover>front, case-insensitive). `refresh_artwork` deletes ONLY
+    (cover>folder>front, case-insensitive). `refresh_artwork` deletes ONLY
     under the cache dir (guarded + tested — artwork_path can be the user's
     own folder image; never weaken this).
   - Tags: `TagFields` (id3_editor.rs) carries all 18 fields; WXXX =

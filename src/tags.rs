@@ -38,13 +38,16 @@ pub(crate) struct TrackTags {
 /// source order: embedded APIC first, then folder image. Case-insensitive
 /// because rips and downloads disagree about casing.
 pub(crate) fn folder_image_fallback(track_path: &Path) -> Option<String> {
+    // Rank order = preference order: cover.* beats folder.* beats front.*
+    // (user decision 2026-07-19 — cover is the name they actually curate;
+    // folder.jpg is usually Windows-generated).
     const NAMES: &[&str] = &[
-        "folder.jpg",
-        "folder.jpeg",
-        "folder.png",
         "cover.jpg",
         "cover.jpeg",
         "cover.png",
+        "folder.jpg",
+        "folder.jpeg",
+        "folder.png",
         "front.jpg",
         "front.jpeg",
         "front.png",
@@ -55,7 +58,7 @@ pub(crate) fn folder_image_fallback(track_path: &Path) -> Option<String> {
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().to_lowercase();
         if let Some(rank) = NAMES.iter().position(|n| *n == name) {
-            // Prefer folder.* over cover.* over front.* (NAMES order).
+            // Lower rank in NAMES wins (cover > folder > front).
             if best.as_ref().map(|(r, _)| rank < *r).unwrap_or(true) {
                 best = Some((rank, e.path()));
             }
@@ -388,6 +391,27 @@ mod tests {
             tags.artwork_path.as_deref(),
             Some(art.to_string_lossy().as_ref()),
             "case-insensitive folder image should be found"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cover_image_beats_folder_image() {
+        // User decision 2026-07-19: cover.* is the curated name and must
+        // win over the (often Windows-generated) folder.*.
+        let dir = std::env::temp_dir().join("sparkamp_coverwins_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.mp3");
+        std::fs::write(&song, b"").unwrap();
+        let folder_art = dir.join("Folder.jpg");
+        std::fs::write(&folder_art, b"fake-folder").unwrap();
+        let cover_art = dir.join("cover.jpg");
+        std::fs::write(&cover_art, b"fake-cover").unwrap();
+
+        let tags = read_track_tags(&song);
+        assert_eq!(
+            tags.artwork_path.as_deref(),
+            Some(cover_art.to_string_lossy().as_ref()),
         );
         std::fs::remove_dir_all(&dir).ok();
     }
