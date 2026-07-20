@@ -402,9 +402,8 @@ pub fn build(
 
     // Inline show/hide toggle at the right end of the marquee — a borderless,
     // background-less arrow (down = reveal panel, up = hide) tinted with the
-    // skin's button colour. Clicking it is exactly the `w` key / mode-button
-    // toggle; it is wired to `btn_np` once that exists, and its icon is flipped
-    // by the same handler.
+    // skin's button colour. Clicking it runs the same shared toggle as the `w`
+    // key (wired once `toggle_np_panel` is built below), which flips its icon.
     let np_toggle = Button::from_icon_name(if init_player_expanded {
         "pan-up-symbolic"
     } else {
@@ -548,18 +547,10 @@ pub fn build(
     let btn_ml = Button::from_icon_name("folder-music-symbolic");
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
-    let btn_np = Button::from_icon_name("image-x-generic-symbolic");
-    btn_np.add_css_class("mode-btn");
-    btn_np.set_tooltip_text(Some("Now-playing panel (w)"));
-    if init_player_expanded {
-        btn_np.add_css_class("mode-btn-active");
-    }
 
     // Single source of truth for the now-playing panel toggle, shared by the
-    // `w` key, the mode button, and the inline marquee arrow so EVERY trigger
-    // runs the identical Stack-swap / viz-resize / arrow-flip / persist logic.
-    // (Previously these fanned out through btn_np.emit_clicked(), which did not
-    // reliably flip the marquee arrow.)
+    // `w` key and the inline marquee arrow so both triggers run the identical
+    // Stack-swap / viz-resize / arrow-flip / persist logic.
     let toggle_np_panel: Rc<dyn Fn()> = {
         let state = state.clone();
         let np_stack = np_stack.clone();
@@ -569,7 +560,6 @@ pub fn build(
         let left_col = left_col.clone();
         let np_toggle = np_toggle.clone();
         let granite_render_h = granite_render_h.clone();
-        let btn_np = btn_np.clone();
         let window_wk = window.downgrade();
         Rc::new(move || {
             let expanded = {
@@ -581,11 +571,6 @@ pub fn build(
             let _ = state.borrow().config.save();
 
             np_stack.set_visible_child_name(if expanded { "expanded" } else { "collapsed" });
-            if expanded {
-                btn_np.add_css_class("mode-btn-active");
-            } else {
-                btn_np.remove_css_class("mode-btn-active");
-            }
             // Flip the inline marquee arrow: down = reveal, up = hide.
             np_toggle.set_icon_name(if expanded {
                 "pan-up-symbolic"
@@ -620,13 +605,13 @@ pub fn build(
         })
     };
 
-    // The inline marquee arrow drives the same toggle as `btn_np`.
+    // The inline marquee arrow drives the shared now-playing panel toggle.
     np_toggle.connect_clicked({
         let toggle = toggle_np_panel.clone();
         move |_| toggle()
     });
 
-    // ── Vol row: [VOL] [vol_bar(half-width)] [spring] [ℹ] [ML] [NP] [EQ] [PL] ─
+    // ── Vol row: [VOL] [vol_bar(half-width)] [spring] [ℹ] [ML] [EQ] [PL] ─
     // Vol bar is fixed-width so it reads as secondary to the seek bar below.
     // PL is pushed to the far right with an expanding spacer.
     let vol_row = GtkBox::new(Orientation::Horizontal, 4);
@@ -657,7 +642,6 @@ pub fn build(
     vol_row.append(&btn_info);
     vol_row.append(&btn_jump_vol);
     vol_row.append(&btn_ml);
-    vol_row.append(&btn_np);
     vol_row.append(&btn_eq);
     vol_row.append(&btn_pl);
 
@@ -4646,13 +4630,6 @@ pub fn build(
         }
     });
 
-    // Now-playing panel button — drives the shared toggle closure (defined with
-    // btn_np above) so the button, the `w` key, and the marquee arrow all stay
-    // in lock-step.
-    btn_np.connect_clicked({
-        let toggle = toggle_np_panel.clone();
-        move |_| toggle()
-    });
 
     // ══════════════════════════════════════════════════════════════════════════
     // Jump window callbacks (wired after handle_key so the key controller can
