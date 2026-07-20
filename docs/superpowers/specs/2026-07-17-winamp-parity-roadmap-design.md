@@ -113,6 +113,33 @@ open→save round-trip — inherent to the widget, strictly better than the
 pre-phase-0 silent truncation. Full fidelity needs a multi-line TextView for
 the lyric field; fold into phase 2 (F14 touches tag display) or later.
 
+## Known limitations (recorded during phase 2 — F14 album art)
+
+- The GTK A1 now-playing panel thumbnail and the Media-Library inline
+  thumbnails render a STILL frame (loaded pre-scaled via
+  `Pixbuf::from_file_at_scale` into a fixed texture so an oversized cover can
+  never exceed its slot). Animated GIF covers do not animate there; the A6
+  standalone art window (`k`) still shows the full/animated image. Accepted
+  2026-07-20.
+- A library row whose `artwork_path` DB column is empty but whose file has an
+  embedded APIC (indexed before artwork extraction, or an art-less scan) shows
+  an empty artwork field in the ID3 editor, and saving an unrelated tag edit
+  then STRIPS the embedded art (`write_tag_fields` treats empty artwork_path as
+  "remove pictures"). Pre-existing (not introduced by phase 2); phase 2
+  deliberately kept the ID3 editor's art source off the folder/embedded probe
+  fallback (that fallback is display-only, in `build_now_playing_info`) to
+  avoid the opposite surprise — silently embedding a loose folder image on save.
+  A proper fix reads the file's own embedded art into the editor. Accepted
+  2026-07-20.
+- mac D14 (ID3 art edit) does not include GTK's "Also write folder image"
+  checkbox on embed — mac can browse/embed/clear embedded art only. Accepted
+  2026-07-20 (mac spec scope).
+- mac carousel: a manual page-dot tap does not extend the auto-cycle dwell
+  (GTK resets+doubles it); mac just jumps. Minor; accepted 2026-07-20.
+- The now-playing panel stats (play count / last played) show the PRE-play
+  snapshot and refresh on each play/track-change (incl. same-track replay);
+  they do not tick live mid-song. By design (matches the classic behavior).
+
 ## Error handling defaults
 
 Missing art → placeholder, never an error: a large Sparkamp logo at 50%
