@@ -247,47 +247,36 @@ pub fn build(
 
     // Mini visualizer — a Stack holding the Cairo DrawingArea (Bars / Waveform)
     // and a Picture (Granite plasma RGBA buffer). The visible child is swapped
-    // to match the active visualizer mode. It also stretches taller when the
-    // A1 now-playing panel is expanded (see `VIZ_HEIGHT_EXPANDED` below), since
-    // the marquee it normally sits beside is replaced by the wider panel.
+    // to match the active visualizer mode. Its height is a compact fixed value
+    // when collapsed; when the A1 panel is expanded it VEXPANDS to fill the
+    // taller row (bottom pinned to the vol row) so the time counter above it
+    // and the gap down to the seek bar stay put between the two modes.
     const VIZ_HEIGHT_COLLAPSED: i32 = 52;
-    // Matches the A1 panel art side length so the stretched visualizer lines up
-    // with the bottom of the album art when the panel is expanded.
-    const VIZ_HEIGHT_EXPANDED: i32 = 100;
-    let init_viz_h = if init_player_expanded {
-        VIZ_HEIGHT_EXPANDED
-    } else {
-        VIZ_HEIGHT_COLLAPSED
-    };
-    // Current mini-viz display height, shared with the tick loop. The Granite
-    // plasma is rendered into a texture of exactly this height so the Picture's
-    // intrinsic (natural) size matches the collapsed/expanded height — a fixed
-    // large internal height would keep the Picture ~360 px tall and refuse to
-    // let the collapsed player shrink. Updated by the panel-toggle handler.
-    let mini_viz_h = Rc::new(std::cell::Cell::new(init_viz_h));
 
     let viz = DrawingArea::new();
-    viz.set_content_height(init_viz_h);
-    viz.set_valign(Align::Center);
+    viz.set_content_height(VIZ_HEIGHT_COLLAPSED);
+    viz.set_valign(Align::Fill);
+    viz.set_vexpand(init_player_expanded);
     viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
 
     let granite_pic = Picture::new();
-    granite_pic.set_height_request(init_viz_h);
-    granite_pic.set_valign(Align::Center);
+    granite_pic.set_height_request(VIZ_HEIGHT_COLLAPSED);
+    granite_pic.set_valign(Align::Fill);
+    granite_pic.set_vexpand(init_player_expanded);
     granite_pic.set_hexpand(true);
     granite_pic.set_content_fit(ContentFit::Fill);
-    // The granite texture's intrinsic height is the fixed internal render
-    // resolution (~360 px). Without can_shrink the Picture refuses to draw
-    // below that, so the mini-viz stays tall in the collapsed player even
-    // though its height_request is 52 — let it shrink to the requested height.
+    // The granite texture's intrinsic height is the render resolution. Without
+    // can_shrink the Picture refuses to draw below it and pins the collapsed
+    // player tall; let it shrink to whatever height the row gives it.
     granite_pic.set_can_shrink(true);
     granite_pic.add_css_class("mini-viz");
 
     let viz_stack = Stack::new();
     viz_stack.set_hexpand(true);
-    viz_stack.set_valign(Align::Center);
-    viz_stack.set_height_request(init_viz_h);
+    viz_stack.set_valign(Align::Fill);
+    viz_stack.set_vexpand(init_player_expanded);
+    viz_stack.set_height_request(VIZ_HEIGHT_COLLAPSED);
     // Track the visible child's height rather than the tallest child's, so the
     // tall granite Picture never forces the row taller when Bars/Waveform is
     // showing (and vice-versa).
@@ -368,11 +357,14 @@ pub fn build(
     np_info.set_valign(Align::Fill);
 
     // The `.np-frame` border wraps ONLY the scrolling title, not the vol row.
+    // margin_start/end(8) matches the vol row so the marquee box, the carousel
+    // box, the vol slider, and the mode buttons all share the same left/right
+    // borders and the same 8px inset from the window edge.
     let marquee_frame = GtkBox::new(Orientation::Vertical, 0);
     marquee_frame.add_css_class("np-frame");
     marquee_frame.set_margin_top(4);
-    marquee_frame.set_margin_start(4);
-    marquee_frame.set_margin_end(4);
+    marquee_frame.set_margin_start(8);
+    marquee_frame.set_margin_end(8);
 
     // Marquee label — no ellipsize; we manually slide the text window each tick.
     // single_line_mode ensures overflow is hidden at the label boundary rather
@@ -427,6 +419,13 @@ pub fn build(
     // never grows/shrinks on toggle. Track the visible child's height instead,
     // so collapse is compact and expand actually enlarges the window.
     np_stack.set_vhomogeneous(false);
+    // Same 8px left/right inset as the marquee + vol row (art's left edge lines
+    // up with the VOL label), and a bottom gap so the carousel doesn't butt up
+    // against the mode-button (vol) row. Collapsed child is empty, so these
+    // only show in the expanded panel.
+    np_stack.set_margin_start(8);
+    np_stack.set_margin_end(8);
+    np_stack.set_margin_bottom(8);
     np_stack.add_named(&np_collapsed, Some("collapsed"));
     np_stack.add_named(&np_panel_widget, Some("expanded"));
     np_stack.set_visible_child_name(if init_player_expanded {
@@ -2892,7 +2891,6 @@ pub fn build(
         // Gdk-CRITICAL and (on Wayland) a segfault during gsk paint.
         let viz_stack_tick = viz_stack.downgrade();
         let granite_pic_tick = granite_pic.downgrade();
-        let mini_viz_h_tick = mini_viz_h.clone();
         let granite_buf_tick: std::rc::Rc<std::cell::RefCell<Vec<u8>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         // Last mini-Granite render instant → measured dt (in 30 fps frame
@@ -3362,11 +3360,12 @@ pub fn build(
                         let viewport_w = pic.width().max(1) as f64;
                         let viewport_h = pic.height().max(1) as f64;
                         let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
-                        // Render at the mini-viz's actual display height so the
-                        // Picture's intrinsic size stays small enough to shrink
-                        // with the collapsed player (a fixed large height would
-                        // pin the row tall). Cheap and crisp at these sizes.
-                        let h: u32 = mini_viz_h_tick.get().max(1) as u32;
+                        // Render at the mini-viz's ACTUAL allocated height so the
+                        // Picture's intrinsic size matches what the row gives it
+                        // (it vexpands to fill when expanded). A fixed large
+                        // height would pin the collapsed row tall. Cheap and
+                        // crisp at these sizes.
+                        let h: u32 = pic.height().max(VIZ_HEIGHT_COLLAPSED) as u32;
                         let w: u32 = (h as f64 * aspect).round() as u32;
                         let mut buf = granite_buf_tick.borrow_mut();
                         let need = (w as usize) * (h as usize) * 4;
@@ -4544,7 +4543,6 @@ pub fn build(
         let viz = viz.clone();
         let viz_stack = viz_stack.clone();
         let granite_pic = granite_pic.clone();
-        let mini_viz_h = mini_viz_h.clone();
         let window_wk = window.downgrade();
         move |btn| {
             let expanded = {
@@ -4562,17 +4560,11 @@ pub fn build(
                 btn.remove_css_class("mode-btn-active");
             }
 
-            let viz_h = if expanded {
-                VIZ_HEIGHT_EXPANDED
-            } else {
-                VIZ_HEIGHT_COLLAPSED
-            };
-            viz.set_content_height(viz_h);
-            viz_stack.set_height_request(viz_h);
-            granite_pic.set_height_request(viz_h);
-            // Shrink/grow the Granite render target too, so its Picture's
-            // intrinsic size follows and the collapsed row can actually shrink.
-            mini_viz_h.set(viz_h);
+            // Expanded: the viz vexpands to fill the taller row (bottom pinned
+            // to the vol row); collapsed: back to the compact fixed height.
+            viz.set_vexpand(expanded);
+            viz_stack.set_vexpand(expanded);
+            granite_pic.set_vexpand(expanded);
             // Drop the current (old-size) granite frame NOW so the window
             // measures the Picture at zero intrinsic and can shrink on
             // collapse; the tick loop refills it at the new size within a

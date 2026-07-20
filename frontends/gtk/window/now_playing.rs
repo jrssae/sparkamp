@@ -327,8 +327,14 @@ fn placeholder_widget() -> gtk4::Widget {
     }
     wrap.append(&img);
 
+    // Wrap + center so the caption stays inside the fixed 100x100 slot instead
+    // of overflowing it on one line.
     let lbl = Label::new(Some("No artwork available"));
     lbl.set_opacity(0.5);
+    lbl.set_wrap(true);
+    lbl.set_justify(gtk4::Justification::Center);
+    lbl.set_halign(Align::Center);
+    lbl.set_max_width_chars(10);
     wrap.append(&lbl);
 
     wrap.upcast()
