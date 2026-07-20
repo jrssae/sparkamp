@@ -33,11 +33,23 @@ pub fn build_now_playing_info(
     // Tags come straight off disk, curated + non-empty only — same source
     // the ID3 editor uses, so the panel and editor never disagree.
     let fields = crate::id3_editor::read_tag_fields(path);
-    let tags: Vec<(&'static str, String)> = fields
+    let mut tags: Vec<(&'static str, String)> = fields
         .field_pairs()
         .into_iter()
         .filter(|(_, v)| !v.trim().is_empty())
         .collect();
+
+    // When a file carries no usable ID3 text at all, fall back to the filename
+    // stem — mirrors the marquee's display_name (artist → album_artist →
+    // filename) so the panel never shows an empty title group.
+    if tags.is_empty() {
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        tags.push(("Title", name));
+    }
 
     // Tech line + artwork share one fusion call (library row → embedded
     // APIC → folder image) so both match the ID3 editor's window byte-for-byte.
@@ -138,6 +150,21 @@ mod tests {
         assert_eq!(info.tags.first(), Some(&("Title", "My Song".to_string())));
         assert!(info.tags.iter().any(|(l, _)| *l == "Artist"));
         assert!(!info.tags.iter().any(|(_, v)| v.is_empty()));
+    }
+
+    #[test]
+    fn info_falls_back_to_filename_when_no_tags() {
+        gstreamer::init().ok();
+        // An untagged file: every curated ID3 field is empty.
+        let f = NamedTempFile::with_suffix(".mp3").unwrap();
+        let info = build_now_playing_info(f.path(), None, PlaySnapshot::default());
+        let stem = f
+            .path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(info.tags, vec![("Title", stem)]);
     }
 
     #[test]

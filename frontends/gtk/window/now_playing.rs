@@ -1,18 +1,20 @@
-//! A1 expandable now-playing panel — art + curated tags + tech line + play
-//! stats + Wikipedia links.  Child module of [`super`] (window.rs): swapped
-//! in for the marquee frame when the panel is expanded (`w` key / mode
-//! button), built in `player.rs`.
+//! A1 expandable now-playing panel — album art on the left, and on the right
+//! an auto-cycling carousel that rotates through data groups (Tags →
+//! Technical → Stats → Links) a few seconds apart, with page dots below.
+//! Child module of [`super`] (window.rs): swapped in for the marquee frame
+//! when the panel is expanded (`w` key / mode button), built in `player.rs`.
 //!
-//! `build_panel` constructs the widget tree once; the returned update
-//! closure is registered with `AppState::subscribe_now_playing` so every
-//! track change repopulates the same widgets in place (no rebuild, no
-//! reparenting) rather than fighting the Stack's child identity.
+//! `build_panel` constructs the widget tree once and starts one cycle timer;
+//! the returned update closure is registered with
+//! `AppState::subscribe_now_playing` so every track change rebuilds the
+//! carousel's pages in place (no reparenting of the panel itself).
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, GestureClick, Image, Label, LinkButton, Orientation, Picture,
-    PolicyType, ScrolledWindow,
+    glib, Align, Box as GtkBox, GestureClick, Image, Label, LinkButton, Orientation, Picture,
+    PolicyType, ScrolledWindow, Stack, StackTransitionType,
 };
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::now_playing::NowPlayingInfo;
@@ -20,6 +22,20 @@ use crate::now_playing::NowPlayingInfo;
 /// Art / placeholder square side length. Fixed so re-population (which
 /// swaps the art widget) never nudges the panel's overall size.
 const ART_SIZE: i32 = 100;
+
+/// How long each carousel page stays up before advancing.
+const CAROUSEL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Mutable carousel state shared between the update closure (which rebuilds
+/// pages on every track change) and the cycle timer (which advances them).
+/// All access is on the GTK main thread, so borrows are always short and
+/// non-overlapping — never held across a GTK call that could re-enter.
+struct Carousel {
+    stack: Stack,
+    dots: GtkBox,
+    index: usize,
+    pages: usize,
+}
 
 /// Build the panel widget tree and its update closure.
 ///
@@ -49,66 +65,186 @@ pub(super) fn build_panel(
         art_slot.add_controller(click);
     }
 
-    // Right: scrollable column of tag / tech / stats / link rows. Track
-    // count varies (curated tags are filtered to non-empty already, links
-    // are optional), so the column can run taller than the art — scroll
-    // rather than clip.
-    let tag_col = GtkBox::new(Orientation::Vertical, 4);
-    let scroller = ScrolledWindow::builder()
-        .hscrollbar_policy(PolicyType::Never)
-        .vscrollbar_policy(PolicyType::Automatic)
+    // Right: the carousel. A crossfading Stack of data-group pages (fixed to
+    // the art height so it stays compact — each page scrolls internally if it
+    // overruns) above a centered row of page dots.
+    let stack = Stack::builder()
+        .transition_type(StackTransitionType::Crossfade)
         .hexpand(true)
         .vexpand(true)
-        .child(&tag_col)
         .build();
+    stack.set_vhomogeneous(false);
+    stack.set_size_request(-1, ART_SIZE);
+
+    let dots = GtkBox::new(Orientation::Horizontal, 4);
+    dots.set_halign(Align::Center);
+    dots.add_css_class("np-dots");
+
+    let right = GtkBox::new(Orientation::Vertical, 2);
+    right.set_hexpand(true);
+    right.set_vexpand(true);
+    right.append(&stack);
+    right.append(&dots);
 
     root.append(&art_slot);
-    root.append(&scroller);
+    root.append(&right);
+
+    let carousel = Rc::new(RefCell::new(Carousel {
+        stack,
+        dots,
+        index: 0,
+        pages: 0,
+    }));
 
     let update: Rc<dyn Fn(&NowPlayingInfo)> = {
         let art_slot = art_slot.clone();
-        let tag_col = tag_col.clone();
-        Rc::new(move |info: &NowPlayingInfo| populate(&art_slot, &tag_col, info))
+        let carousel = carousel.clone();
+        Rc::new(move |info: &NowPlayingInfo| populate(&art_slot, &carousel, info))
     };
 
     if let Some(info) = info {
         update(info);
     }
 
+    // One cycle timer for the panel's lifetime (the panel lives in np_stack
+    // and is never destroyed). Advances to the next page each interval; a
+    // no-op while fewer than two pages exist.
+    {
+        let carousel = carousel.clone();
+        glib::timeout_add_local(CAROUSEL_INTERVAL, move || {
+            advance(&carousel);
+            glib::ControlFlow::Continue
+        });
+    }
+
     (root.upcast::<gtk4::Widget>(), update)
 }
 
-/// Clear and refill `art_slot` + `tag_col` from `info`. Rows are rebuilt
-/// wholesale rather than diffed — the row count changes track to track
-/// (optional tech line, optional wiki links), and this only runs once per
-/// track change, not per frame.
-fn populate(art_slot: &GtkBox, tag_col: &GtkBox, info: &NowPlayingInfo) {
+/// Advance the carousel one page (wrapping). Borrow is dropped before the
+/// GTK calls that read/update the widgets — those never re-enter the RefCell.
+fn advance(carousel: &Rc<RefCell<Carousel>>) {
+    let (stack, dots, next) = {
+        let mut c = carousel.borrow_mut();
+        if c.pages < 2 {
+            return;
+        }
+        c.index = (c.index + 1) % c.pages;
+        (c.stack.clone(), c.dots.clone(), c.index)
+    };
+    stack.set_visible_child_name(&next.to_string());
+    set_active_dot(&dots, next);
+}
+
+/// Rebuild the art and the carousel pages from `info`. Pages are rebuilt
+/// wholesale (once per track change, not per frame); only groups with content
+/// get a page, so an empty-tag file simply shows fewer pages.
+fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayingInfo) {
     while let Some(child) = art_slot.first_child() {
         art_slot.remove(&child);
     }
-    while let Some(child) = tag_col.first_child() {
-        tag_col.remove(&child);
-    }
-
     art_slot.append(&art_or_placeholder(info));
 
-    for (label, value) in &info.tags {
-        tag_col.append(&tag_row(label, value));
+    // Build the page widgets for whichever groups have data.
+    let mut pages: Vec<(&'static str, gtk4::Widget)> = Vec::new();
+
+    if !info.tags.is_empty() {
+        let col = GtkBox::new(Orientation::Vertical, 4);
+        for (label, value) in &info.tags {
+            col.append(&tag_row(label, value));
+        }
+        pages.push(("Tags", page_scroller(&col)));
     }
     if !info.tech_line.is_empty() {
-        tag_col.append(&text_row(&info.tech_line));
+        let col = GtkBox::new(Orientation::Vertical, 4);
+        col.append(&text_row(&info.tech_line));
+        pages.push(("Technical", page_scroller(&col)));
     }
-    if let Some(count) = info.play_count {
-        tag_col.append(&tag_row("Play count", &count.to_string()));
+    if info.play_count.is_some() || info.last_played.is_some() {
+        let col = GtkBox::new(Orientation::Vertical, 4);
+        if let Some(count) = info.play_count {
+            col.append(&tag_row("Play count", &count.to_string()));
+        }
+        if let Some(ref last) = info.last_played {
+            col.append(&tag_row("Last played", &super::format_last_played(last)));
+        }
+        pages.push(("Stats", page_scroller(&col)));
     }
-    if let Some(ref last) = info.last_played {
-        tag_col.append(&tag_row("Last played", &super::format_last_played(last)));
+    if info.artist_wiki_url.is_some() || info.album_wiki_url.is_some() {
+        let col = GtkBox::new(Orientation::Vertical, 4);
+        if let Some(ref url) = info.artist_wiki_url {
+            col.append(&wiki_row("Artist on Wikipedia", url));
+        }
+        if let Some(ref url) = info.album_wiki_url {
+            col.append(&wiki_row("Album on Wikipedia", url));
+        }
+        pages.push(("Links", page_scroller(&col)));
     }
-    if let Some(ref url) = info.artist_wiki_url {
-        tag_col.append(&wiki_row("Artist on Wikipedia", url));
+
+    let mut c = carousel.borrow_mut();
+    while let Some(child) = c.stack.first_child() {
+        c.stack.remove(&child);
     }
-    if let Some(ref url) = info.album_wiki_url {
-        tag_col.append(&wiki_row("Album on Wikipedia", url));
+    while let Some(child) = c.dots.first_child() {
+        c.dots.remove(&child);
+    }
+
+    for (i, (title, page)) in pages.iter().enumerate() {
+        // Each page = a dim header ("── Tags ──") over its scrollable content.
+        let wrap = GtkBox::new(Orientation::Vertical, 2);
+        wrap.append(&page_header(title));
+        wrap.append(page);
+        c.stack.add_named(&wrap, Some(&i.to_string()));
+
+        // One dot per page; the current page's is filled.
+        let dot = Label::new(Some(if i == 0 { "●" } else { "○" }));
+        dot.add_css_class("np-dot");
+        c.dots.append(&dot);
+    }
+
+    c.pages = pages.len();
+    c.index = 0;
+    if c.pages > 0 {
+        c.stack.set_visible_child_name("0");
+    }
+    // Only worth showing dots when there is more than one page to cycle.
+    c.dots.set_visible(c.pages > 1);
+}
+
+/// Wrap a page's content column in a compact vertical scroller so a long
+/// group (many tags) scrolls inside the fixed panel height rather than
+/// stretching it.
+fn page_scroller(col: &GtkBox) -> gtk4::Widget {
+    ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .hexpand(true)
+        .vexpand(true)
+        .child(col)
+        .build()
+        .upcast()
+}
+
+/// A dim "── Title ──" group header shown above each carousel page.
+fn page_header(title: &str) -> gtk4::Widget {
+    let lbl = Label::new(Some(&format!("── {title} ──")));
+    lbl.set_halign(Align::Start);
+    lbl.set_xalign(0.0);
+    lbl.set_opacity(0.6);
+    lbl.add_css_class("np-page-header");
+    lbl.upcast()
+}
+
+/// Fill the dot at `active`, hollow the rest.
+fn set_active_dot(dots: &GtkBox, active: usize) {
+    let mut i = 0;
+    let mut child = dots.first_child();
+    while let Some(w) = child {
+        let next = w.next_sibling();
+        if let Some(lbl) = w.downcast_ref::<Label>() {
+            lbl.set_text(if i == active { "●" } else { "○" });
+        }
+        i += 1;
+        child = next;
     }
 }
 
