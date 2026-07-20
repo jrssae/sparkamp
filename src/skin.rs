@@ -590,6 +590,31 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {text_dim}; font-size: {fs}px; padding: 0px 0px 2px 0px; \
     }}").unwrap();
 
+    // Expandable now-playing panel (A1) + standalone art window (A6).
+    // The panel container and the artwork frame reuse the marquee's
+    // text-background + border so they read as one surface with the classic
+    // chrome; the placeholder (missing-art logo) is dimmed to 50%.
+    writeln!(css, ".np-panel {{ \
+        background-color: {tbg}; border: 1px solid {border}; \
+        border-radius: 4px; padding: 6px; \
+    }}").unwrap();
+    writeln!(css, ".np-art {{ \
+        background-color: {tbg}; border: 1px solid {border}; border-radius: 4px; \
+    }}").unwrap();
+    writeln!(css, ".np-placeholder {{ \
+        opacity: 0.5; color: {text_dim}; \
+    }}").unwrap();
+    writeln!(css, ".np-tag-row {{ \
+        color: {text}; font-size: {fs}px; padding: 1px 0px; \
+    }}").unwrap();
+    writeln!(css, ".np-link {{ \
+        color: {hl}; text-decoration: underline; \
+    }}").unwrap();
+    // Standalone album-art window background matches the app window chrome.
+    writeln!(css, ".art-window {{ \
+        background-color: {bg}; \
+    }}").unwrap();
+
     // Time display (hardcoded monospace)
     writeln!(css, ".time-disp {{ \
         color: {text}; background-color: {tbg}; \
@@ -1437,6 +1462,25 @@ mod tests {
         assert!(css.contains(".np-title"));
         assert!(css.contains(".np-artist"));
         assert!(css.contains("font-size: 14px")); // marquee size
+    }
+
+    #[test]
+    fn render_gtk_css_covers_now_playing_panel() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".np-panel"));
+        assert!(css.contains(".np-art"));
+        assert!(css.contains(".np-placeholder"));
+        assert!(css.contains(".np-tag-row"));
+        assert!(css.contains(".np-link"));
+        assert!(css.contains("opacity: 0.5")); // dimmed placeholder
+    }
+
+    #[test]
+    fn render_gtk_css_covers_art_window() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".art-window"));
     }
 
     #[test]
