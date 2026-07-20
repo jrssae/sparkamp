@@ -33,6 +33,9 @@ mod granite;
 mod id3_editor;
 mod media_library;
 mod model;
+// Pure MPRIS metadata-map builder (Phase 3). The gio D-Bus layer that
+// consumes it lands in a later task.
+mod mpris_meta;
 // Core module for the album-art now-playing panel (Phase 2). Wired up by the
 // GTK play-start seam (T5); `thumb_path_for` still awaits its T8 caller.
 mod now_playing;
