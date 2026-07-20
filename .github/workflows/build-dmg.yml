@@ -179,11 +179,16 @@ jobs:
             exit 1
           fi
           echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          # Apple's notary queue can sit "In Progress" well past the usual few
+          # minutes — especially for a new account's first submissions (ours
+          # timed out twice at 30m without a verdict, never Invalid). Wait up
+          # to 2h so a slow-but-valid submission finishes in one run; the poll
+          # is cheap (the runner just idles), and release builds are rare.
           xcrun notarytool submit "${{ steps.locate-dmg.outputs.dmg }}" \
             --key "$RUNNER_TEMP/notary.p8" \
             --key-id "$NOTARY_KEY_ID" \
             --issuer "$NOTARY_ISSUER_ID" \
-            --wait --timeout 30m
+            --wait --timeout 2h
           rm -f "$RUNNER_TEMP/notary.p8"
           xcrun stapler staple "${{ steps.locate-dmg.outputs.dmg }}"
           xcrun stapler validate "${{ steps.locate-dmg.outputs.dmg }}"
