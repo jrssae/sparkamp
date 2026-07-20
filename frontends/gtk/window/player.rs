@@ -251,7 +251,9 @@ pub fn build(
     // A1 now-playing panel is expanded (see `VIZ_HEIGHT_EXPANDED` below), since
     // the marquee it normally sits beside is replaced by the wider panel.
     const VIZ_HEIGHT_COLLAPSED: i32 = 52;
-    const VIZ_HEIGHT_EXPANDED: i32 = 200;
+    // Matches the A1 panel art side length so the stretched visualizer lines up
+    // with the bottom of the album art when the panel is expanded.
+    const VIZ_HEIGHT_EXPANDED: i32 = 100;
     let init_viz_h = if init_player_expanded {
         VIZ_HEIGHT_EXPANDED
     } else {
@@ -269,12 +271,21 @@ pub fn build(
     granite_pic.set_valign(Align::Center);
     granite_pic.set_hexpand(true);
     granite_pic.set_content_fit(ContentFit::Fill);
+    // The granite texture's intrinsic height is the fixed internal render
+    // resolution (~360 px). Without can_shrink the Picture refuses to draw
+    // below that, so the mini-viz stays tall in the collapsed player even
+    // though its height_request is 52 — let it shrink to the requested height.
+    granite_pic.set_can_shrink(true);
     granite_pic.add_css_class("mini-viz");
 
     let viz_stack = Stack::new();
     viz_stack.set_hexpand(true);
     viz_stack.set_valign(Align::Center);
     viz_stack.set_height_request(init_viz_h);
+    // Track the visible child's height rather than the tallest child's, so the
+    // tall granite Picture never forces the row taller when Bars/Waveform is
+    // showing (and vice-versa).
+    viz_stack.set_vhomogeneous(false);
     viz_stack.add_named(&viz, Some("cairo"));
     viz_stack.add_named(&granite_pic, Some("granite"));
     viz_stack.set_visible_child_name(

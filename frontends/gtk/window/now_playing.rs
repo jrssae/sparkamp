@@ -19,7 +19,7 @@ use crate::now_playing::NowPlayingInfo;
 
 /// Art / placeholder square side length. Fixed so re-population (which
 /// swaps the art widget) never nudges the panel's overall size.
-const ART_SIZE: i32 = 200;
+const ART_SIZE: i32 = 100;
 
 /// Build the panel widget tree and its update closure.
 ///
