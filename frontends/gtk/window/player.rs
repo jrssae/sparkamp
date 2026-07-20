@@ -387,7 +387,27 @@ pub fn build(
         .css_classes(["np-title"])
         .build();
 
-    marquee_frame.append(&title_label);
+    // Inline show/hide toggle at the right end of the marquee — a borderless,
+    // background-less arrow (down = reveal panel, up = hide) tinted with the
+    // skin's button colour. Clicking it is exactly the `w` key / mode-button
+    // toggle; it is wired to `btn_np` once that exists, and its icon is flipped
+    // by the same handler.
+    let np_toggle = Button::from_icon_name(if init_player_expanded {
+        "pan-up-symbolic"
+    } else {
+        "pan-down-symbolic"
+    });
+    np_toggle.add_css_class("flat");
+    np_toggle.add_css_class("np-collapse-btn");
+    np_toggle.set_valign(Align::Center);
+    np_toggle.set_has_frame(false);
+    np_toggle.set_tooltip_text(Some("Show/hide now-playing panel (w)"));
+
+    // The title fills the row and pushes the toggle to the far right.
+    let marquee_row = GtkBox::new(Orientation::Horizontal, 0);
+    marquee_row.append(&title_label);
+    marquee_row.append(&np_toggle);
+    marquee_frame.append(&marquee_row);
     // The scrolling "artist - title" marquee is PERSISTENT — it sits above the
     // carousel and stays put on every track / carousel-page change, in both the
     // collapsed (classic) and expanded layouts. Only the data area below it is
@@ -521,6 +541,13 @@ pub fn build(
     if init_player_expanded {
         btn_np.add_css_class("mode-btn-active");
     }
+
+    // The inline marquee arrow drives the same toggle as `btn_np` (built above,
+    // before btn_np existed — wired here now that it does).
+    np_toggle.connect_clicked({
+        let btn_np = btn_np.clone();
+        move |_| btn_np.emit_clicked()
+    });
 
     // ── Vol row: [VOL] [vol_bar(half-width)] [spring] [ℹ] [ML] [NP] [EQ] [PL] ─
     // Vol bar is fixed-width so it reads as secondary to the seek bar below.
@@ -4552,6 +4579,7 @@ pub fn build(
         let viz_stack = viz_stack.clone();
         let granite_pic = granite_pic.clone();
         let left_col = left_col.clone();
+        let np_toggle = np_toggle.clone();
         let window_wk = window.downgrade();
         move |btn| {
             let expanded = {
@@ -4568,6 +4596,12 @@ pub fn build(
             } else {
                 btn.remove_css_class("mode-btn-active");
             }
+            // Flip the inline marquee arrow: down = reveal, up = hide.
+            np_toggle.set_icon_name(if expanded {
+                "pan-up-symbolic"
+            } else {
+                "pan-down-symbolic"
+            });
 
             // Expanded: left_col fills the taller row and the viz vexpands into
             // that space (bottom pinned to the vol row); collapsed: left_col

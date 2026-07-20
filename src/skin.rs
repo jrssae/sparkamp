@@ -610,6 +610,16 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, ".np-link {{ \
         color: {hl}; text-decoration: underline; \
     }}").unwrap();
+    // Inline marquee show/hide arrow — borderless, no background, tinted with
+    // the skin's button colour; brightens to the highlight colour on hover.
+    writeln!(css, ".np-collapse-btn {{ \
+        color: {btext}; background: none; background-image: none; \
+        border: none; box-shadow: none; min-height: 0; min-width: 0; \
+        padding: 0px 4px; \
+    }}").unwrap();
+    writeln!(css, ".np-collapse-btn:hover {{ \
+        color: {hl}; background: none; background-image: none; \
+    }}").unwrap();
     // Standalone album-art window background matches the app window chrome.
     writeln!(css, ".art-window {{ \
         background-color: {bg}; \
@@ -1473,6 +1483,7 @@ mod tests {
         assert!(css.contains(".np-placeholder"));
         assert!(css.contains(".np-tag-row"));
         assert!(css.contains(".np-link"));
+        assert!(css.contains(".np-collapse-btn"));
         assert!(css.contains("opacity: 0.5")); // dimmed placeholder
     }
 
