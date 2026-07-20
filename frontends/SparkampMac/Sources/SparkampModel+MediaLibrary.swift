@@ -202,8 +202,13 @@ extension SparkampModel {
             let data = Data(bytes: dataPtr, count: Int(artLen))
             sparkamp_tag_free_artwork(dataPtr, artLen)
             if let image = NSImage(data: data) {
+                // Static zoom, not the A6 follow-current-track mode — a
+                // stale `true` here would let the next track change
+                // overwrite this specific track's art moments later.
+                artworkFollowsPlayback = false
                 artworkImage = image
                 artworkWindowVisible = true
+                artworkWindowRequest &+= 1  // re-front if already open
             }
         }
     }

@@ -84,6 +84,30 @@ final class SparkampModel: ObservableObject {
     @Published var artworkImage: NSImage? = nil
     /// When true, the artwork zoom window is open.
     @Published var artworkWindowVisible: Bool = false
+    /// When true, the artwork window (A6) tracks `nowPlaying.artworkPath` live
+    /// instead of showing a fixed image. Set by `openArtworkWindow()` (the
+    /// `k` key / A1 art tap); left false by the ID3 editor's zoom tap and the
+    /// Media Library's "View Art", which show one specific track's art.
+    @Published var artworkFollowsPlayback: Bool = false
+    /// Bumped every time the artwork window (A6) should open-or-focus.
+    /// Mirrors `id3Request`: `WindowManagerModifier` calls `openWindow` on
+    /// every change (not gated on a visibility toggle), so a repeat `k`
+    /// press re-fronts the already-open singleton instead of doing nothing.
+    @Published var artworkWindowRequest: Int = 0
+
+    /// A1 now-playing panel: expanded (art + auto-cycling tag/tech/stats/
+    /// links carousel) vs collapsed (today's compact marquee-only layout).
+    /// Persisted the same way as the other window-visibility bools
+    /// (`playlistVisible` et al.) — plain UserDefaults, restored in `init()`,
+    /// written in `saveState()` and on toggle.
+    @Published var playerExpanded: Bool = false
+    /// A1 panel data for the current track, rebuilt by `refreshNowPlaying()`
+    /// on every track-change call site (tick()'s index-change branch,
+    /// `refreshAll()`, `refreshDirtyPlaylistItems()`'s changed branch — all
+    /// funnel through `refreshCurrentTrackInfo()`). `nil` when nothing is
+    /// playing. There is no FFI push callback for this (unlike GTK's
+    /// subscriber seam) — mac polls `sparkamp_now_playing_open` instead.
+    @Published var nowPlaying: NowPlayingInfo? = nil
 
     // ── Media Library ────────────────────────────────────────────────────────
     @Published var mediaLibraryVisible: Bool = false
@@ -306,6 +330,7 @@ final class SparkampModel: ObservableObject {
         playlistVisible      = UserDefaults.standard.bool(forKey: "sparkamp.playlistVisible")
         equalizerVisible     = UserDefaults.standard.bool(forKey: "sparkamp.equalizerVisible")
         mediaLibraryVisible  = UserDefaults.standard.bool(forKey: "sparkamp.mlVisible")
+        playerExpanded       = UserDefaults.standard.bool(forKey: "sparkamp.playerExpanded")
         refreshAll()
         startTick()
         startKeyMonitor()
@@ -649,6 +674,74 @@ final class SparkampModel: ObservableObject {
             currentTitle  = ""
             currentArtist = ""
         }
+        // A1 now-playing panel data — refreshed alongside title/artist so it
+        // stays in lockstep with every track-change call site that already
+        // routes through here (tick()'s index-change branch, refreshAll(),
+        // refreshDirtyPlaylistItems()'s changed branch).
+        refreshNowPlaying()
+    }
+
+    /// Rebuild `nowPlaying` from the core's now-playing snapshot for the
+    /// current track (`sparkamp_now_playing_open` + getters). `nil` when
+    /// nothing is playing. Mac has no push callback for this (unlike GTK's
+    /// `subscribe_now_playing`); polling here on every track change is the
+    /// documented substitute (see sparkamp_bridge.h's Now Playing section).
+    func refreshNowPlaying() {
+        guard let ctx = ctx, let np = sparkamp_now_playing_open(ctx) else {
+            nowPlaying = nil
+            loadFollowedArtwork()
+            return
+        }
+        defer { sparkamp_now_playing_close(np) }
+
+        let tagCount = Int(sparkamp_now_playing_tag_count(np))
+        var tags: [(String, String)] = []
+        tags.reserveCapacity(tagCount)
+        for i in 0..<tagCount {
+            let labelPtr = sparkamp_now_playing_tag_label(np, Int32(i))
+            let valuePtr = sparkamp_now_playing_tag_value(np, Int32(i))
+            let label = labelPtr.map { String(cString: $0) } ?? ""
+            let value = valuePtr.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(labelPtr)
+            sparkamp_free_string(valuePtr)
+            if !label.isEmpty { tags.append((label, value)) }
+        }
+
+        let techPtr = sparkamp_now_playing_tech_line(np)
+        let techLine = techPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(techPtr)
+
+        let artPtr = sparkamp_now_playing_artwork_path(np)
+        let artworkPath = artPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(artPtr)
+
+        let hasPlayCount = sparkamp_now_playing_has_play_count(np) != 0
+        let playCount = sparkamp_now_playing_play_count(np)
+
+        let lastPlayedPtr = sparkamp_now_playing_last_played(np)
+        let lastPlayed = lastPlayedPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(lastPlayedPtr)
+
+        let artistWikiPtr = sparkamp_now_playing_artist_wiki_url(np)
+        let artistWikiURL = artistWikiPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(artistWikiPtr)
+
+        let albumWikiPtr = sparkamp_now_playing_album_wiki_url(np)
+        let albumWikiURL = albumWikiPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(albumWikiPtr)
+
+        nowPlaying = NowPlayingInfo(
+            tags: tags,
+            techLine: techLine,
+            artworkPath: artworkPath,
+            hasPlayCount: hasPlayCount,
+            playCount: playCount,
+            lastPlayed: lastPlayed,
+            artistWikiURL: artistWikiURL,
+            albumWikiURL: albumWikiURL
+        )
+        // Keep the A6 art window in sync if it's following playback.
+        loadFollowedArtwork()
     }
 
 }

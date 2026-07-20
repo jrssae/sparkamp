@@ -53,6 +53,11 @@ struct Id3EditorView: View {
     /// All editable field values, keyed by frame ID.
     @State private var fieldValues: [String: String] = [:]
     @State private var artwork: NSImage? = nil
+    /// D14 — buffered artwork edit, applied to the tag ctx only on Save
+    /// (mirrors how `fieldValues` buffers text-field edits): `nil` = no
+    /// change (Save must not silently strip existing embedded art), `""` =
+    /// Clear was pressed, non-empty = a Browse-picked source image path.
+    @State private var pendingArtworkPath: String? = nil
 
     /// Media-library row for the open file, looked up by path (same as the
     /// ML window does) — source of the technical fields for `techLine`.
@@ -185,26 +190,57 @@ struct Id3EditorView: View {
                     .background(Color.red.opacity(0.08))
                 }
                 HStack(alignment: .top, spacing: 0) {
-                    // Artwork
-                    if let img = artwork {
-                        Image(nsImage: img)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: 88, maxHeight: 88)
-                            .cornerRadius(4)
-                            .overlay(
+                    // Artwork — always shown (thumbnail or placeholder) so
+                    // Browse/Clear (D14) work even on a file with no embedded
+                    // art yet, not just as a zoom-view of existing art.
+                    VStack(spacing: 4) {
+                        Group {
+                            if let img = artwork {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .help("Click to view full size")
+                                    .onTapGesture {
+                                        // Static zoom, not A6 follow-mode —
+                                        // see the Media Library's
+                                        // mlViewArtForPath for the same rule.
+                                        model.artworkFollowsPlayback = false
+                                        model.artworkImage = img
+                                        model.artworkWindowVisible = true
+                                        model.artworkWindowRequest &+= 1
+                                    }
+                            } else {
                                 RoundedRectangle(cornerRadius: 4)
-                                    .stroke(theme.windowBorder, lineWidth: 1)
-                            )
-                            .padding(.top, 12)
-                            .padding(.leading, 12)
-                            .padding(.trailing, 8)
-                            .help("Click to view full size")
-                            .onTapGesture {
-                                model.artworkImage = img
-                                model.artworkWindowVisible = true
+                                    .fill(theme.lcdBackground)
+                                    .overlay(
+                                        Text("No art")
+                                            .font(vars.smallMonospaceFont)
+                                            .foregroundStyle(theme.playlistDurationText)
+                                    )
                             }
+                        }
+                        .frame(width: 88, height: 88)
+                        .cornerRadius(4)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(theme.windowBorder, lineWidth: 1)
+                        )
+
+                        if !isReadOnly && !fileMissing {
+                            HStack(spacing: 6) {
+                                Button("Browse…") { browseArtwork() }
+                                    .buttonStyle(.borderless)
+                                    .font(vars.smallMonospaceFont)
+                                Button("Clear") { clearArtwork() }
+                                    .buttonStyle(.borderless)
+                                    .font(vars.smallMonospaceFont)
+                                    .disabled(artwork == nil)
+                            }
+                        }
                     }
+                    .padding(.top, 12)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 8)
 
                     // Left column
                     VStack(alignment: .leading, spacing: 0) {
@@ -217,7 +253,6 @@ struct Id3EditorView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.leading, artwork == nil ? 12 : 0)
 
                     // Right column
                     VStack(alignment: .leading, spacing: 0) {
@@ -238,7 +273,6 @@ struct Id3EditorView: View {
                     Text(techLine)
                         .font(vars.smallMonospaceFont)
                         .foregroundStyle(theme.playlistDurationText)
-                        .padding(.leading, artwork == nil ? 12 : 0)
                         .padding(.bottom, 8)
                 }
             }
@@ -339,6 +373,7 @@ struct Id3EditorView: View {
 
         // Read artwork
         artwork = nil
+        pendingArtworkPath = nil   // discard any unsaved Browse/Clear from the previous file
         var artLen: Int32 = 0
         if let artPtr = sparkamp_tag_get_artwork_data(newTag, &artLen), artLen > 0 {
             let data = Data(bytes: artPtr, count: Int(artLen))
@@ -355,6 +390,15 @@ struct Id3EditorView: View {
 
         for cfg in fieldConfigs {
             writeField(tag: tag, frameId: cfg.id, value: fieldValues[cfg.id] ?? "")
+        }
+
+        // D14 — apply a buffered Browse/Clear, if any, before saving.
+        if let pending = pendingArtworkPath {
+            if pending.isEmpty {
+                sparkamp_tag_clear_artwork(tag)
+            } else {
+                pending.withCString { sparkamp_tag_set_artwork(tag, $0) }
+            }
         }
 
         let result = sparkamp_tag_save(tag)
@@ -391,6 +435,34 @@ struct Id3EditorView: View {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { saveStatus = "" }
+    }
+
+    // MARK: D14 — artwork edit (Browse / Clear)
+
+    /// Pick an image via NSOpenPanel and buffer it as the pending artwork
+    /// change; applied to the tag ctx in `saveTag()`. Updates the on-screen
+    /// thumbnail immediately so the user sees the pick before saving.
+    private func browseArtwork() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose artwork image"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                pendingArtworkPath = url.path
+                artwork = NSImage(contentsOfFile: url.path)
+            }
+        }
+    }
+
+    /// Buffer an artwork-clear; applied (removes all embedded pictures) in
+    /// `saveTag()`.
+    private func clearArtwork() {
+        pendingArtworkPath = ""
+        artwork = nil
     }
 
     // MARK: FFI helpers

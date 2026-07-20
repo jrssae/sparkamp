@@ -42,7 +42,7 @@ extension SparkampModel {
         // visualizer is up: the new window appears in the main Space and
         // macOS yanks focus out of fullscreen to show it. (`j` instead exits
         // fullscreen first — see its case below.)
-        if fullscreenVizVisible, ["p", "i", "u", "d"].contains(chars) {
+        if fullscreenVizVisible, ["p", "i", "u", "d", "k"].contains(chars) {
             return true
         }
 
@@ -87,6 +87,13 @@ extension SparkampModel {
         case "u": equalizerVisible.toggle(); saveState(); return true
         case "d":
             openId3Editor()  // current track
+            return true
+        case "w":
+            playerExpanded.toggle()
+            UserDefaults.standard.set(playerExpanded, forKey: "sparkamp.playerExpanded")
+            return true
+        case "k":
+            openArtworkWindow()  // A6 — open-or-focus, follows the current track
             return true
         case "\u{1B}":  // Escape — close fullscreen if open
             if fullscreenVizVisible { closeFullscreenViz(); return true }

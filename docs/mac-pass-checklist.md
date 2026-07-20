@@ -269,3 +269,180 @@ composition of `Playlist::current`, `MediaLibrary::track_by_path`,
 (all independently unit-tested in `src/now_playing.rs` and
 `src/media_library/tests.rs`). The mac checklist items above are the
 verification for the FFI wiring itself.
+
+## Phase 2 — 2026-07-20: A1 panel, A6 window, ML art column, D14 art edit, w/k shortcuts (Task 13, BLIND — Swift never compiled)
+
+Swift files touched: `PlayerWindow.swift` (A1), `ArtworkWindow.swift` (A6),
+`MLFilesTable.swift` (A2), `Id3EditorWindow.swift` (D14),
+`SparkampModel.swift` / `SparkampModelTypes.swift` (state + `NowPlayingInfo`),
+`SparkampModel+Keys.swift` (w/k), `SparkampModel+MediaLibrary.swift`
+(`mlViewArtForPath` follow-mode fix), `KeyboardShortcutsView.swift` (w/k rows).
+No FFI/bridge.h changes — Task 12's surface was already complete.
+
+### Build
+- [ ] `xcodebuild` succeeds with zero errors/warnings. This task added the
+      most speculative SwiftUI constructs of the phase — see "Unsure /
+      eyeball" below before assuming a clean build means correct behavior.
+
+### A1 — expandable now-playing panel
+- [ ] The marquee row (Row 1 of the info panel) now has a small chevron
+      button at its right edge; clicking it toggles the panel exactly like
+      pressing `w`, and the chevron flips (down = collapsed, up = expanded).
+- [ ] `playerExpanded` persists across relaunch via
+      `UserDefaults["sparkamp.playerExpanded"]` (same mechanism as
+      `playlistVisible`/`equalizerVisible`/`mediaLibraryVisible`) — restored
+      in `SparkampModel.init()`, written in both the `w`-key handler, the
+      chevron button, and `saveState()`.
+- [ ] Collapsed layout is pixel-identical to pre-Task-13 (nothing new renders
+      when `playerExpanded == false` beyond the chevron itself).
+- [ ] Expanded: art (~100×100, clamped) appears on the left of the panel row,
+      a data carousel on the right, page dots beneath the carousel when there
+      is more than one page.
+- [ ] **Window resize**: confirm the player window's height actually grows on
+      expand and shrinks back on collapse. This relies entirely on
+      `.windowResizability(.contentSize)` (`SparkampMacApp.swift`) picking up
+      the SwiftUI ideal-size change with NO extra `NSWindow` code (unlike
+      GTK's manual `set_default_size` + `queue_resize` re-kick) — this is the
+      single biggest "does the SwiftUI construct actually do what the doc
+      says" bet in this task; if the window does NOT resize, the fix is
+      almost certainly `.fixedSize()` somewhere upstream fighting it, not
+      the panel code itself.
+- [ ] Visualizer (left column, mini bars/waveform/Granite) visibly grows
+      taller when the panel expands (it relies on the same HStack-sizing
+      side effect as the resize above — the left column has no explicit
+      height, only `maxHeight: .infinity` on the `VisualizerView`).
+- [ ] Carousel pages match GTK's grouping/order for the same file: tag rows
+      chunked 4-per-page (curated order), then Technical (tech line), then
+      Stats (play count / last played — only if the track is library-indexed
+      or has a last-played value), then Links (artist/album Wikipedia) — a
+      page is omitted entirely when its data is all empty, not shown as a
+      blank page.
+- [ ] Carousel auto-advances every 6 s via `Timer.publish`; clicking a dot
+      jumps directly to that page. NOTE: unlike GTK, a manual dot click does
+      NOT push out the next auto-advance (GTK's `jump()` doubles the dwell so
+      a manual pick lingers) — the mac timer just keeps advancing on schedule
+      regardless. Confirm this reads as acceptable UX or file a follow-up.
+- [ ] Switching tracks resets the carousel to page 0 (`onChange(of: trackKey)`
+      where `trackKey == model.currentIndex`).
+- [ ] No artwork: the panel shows the dimmed app-icon + "No artwork
+      available" placeholder (matches the A6 window's placeholder wording).
+- [ ] Clicking the panel's art (or its placeholder) opens/focuses the A6
+      album-art window in follow-mode (same as pressing `k`).
+- [ ] Last-played timestamps in the Stats page render as local
+      "yyyy-MM-dd HH:mm" (same formatting as the ML table's `lastPlayedDisplay`).
+
+### A6 — standalone album-art window (singleton, follows current track)
+- [ ] `k` opens the window if closed, or brings it to front if already open
+      (open-or-focus, not toggle — repeat `k` presses never do nothing).
+- [ ] While open in follow-mode, changing tracks (next/prev/EOS/jump) updates
+      the displayed art live, including flipping to the "No artwork
+      available" placeholder when the new track has none.
+- [ ] Opening the window via the ID3 editor's artwork thumbnail tap, or the
+      Media Library's "View Art" action, shows that SPECIFIC track's art and
+      does NOT get silently replaced by the currently-playing track's art a
+      moment later (this is the `artworkFollowsPlayback` flag — verify it
+      actually stays false for these two entry points and only becomes true
+      via `k` / the A1 art tap).
+- [ ] Closing the window (Esc / red button) always resets follow-mode off,
+      so the next `k` press cleanly re-enters follow-mode rather than
+      inheriting stale state.
+- [ ] Fullscreen visualizer: `k` is inert while fullscreen is up (added to
+      the same disabled-keys list as `p`/`i`/`u`/`d`, so it doesn't yank
+      focus out of the fullscreen Space).
+
+### A2 — Media Library artwork thumbnail column
+- [ ] The "Art" column in the Files view (`MLFilesTable`) shows a small
+      (18×18) rounded thumbnail image for tracks whose `artwork_path` resolves
+      to a loadable image, instead of just a "View" text link.
+- [ ] A track marked `has_art` but whose thumbnail failed to decode falls
+      back to the pre-existing "View" text link (not a blank cell) — the
+      pre-Task-13 behavior for that edge case is unchanged.
+- [ ] Tracks with no art at all still render a blank cell.
+- [ ] Clicking the thumbnail (or the "View" fallback) still opens the
+      artwork viewer exactly as before.
+- [ ] **Performance**: scroll a large Files view (thousands of rows) with the
+      Art column visible — `NSImage(contentsOfFile:)` runs directly in the
+      cell-content builder with no caching/lazy-generation (unlike GTK's
+      Task 8, which explicitly caches + backgrounds thumbnail generation via
+      `thumb_path_for`). NSTableView only builds cells for visible rows, so
+      this should be fine in practice, but confirm there's no visible
+      scroll jank with a large, art-heavy library. If there is, the fix is a
+      small `NSImage` decode cache keyed by path — not a redesign.
+- [ ] Same column in the Saved Playlist editor (`MLEditorTable.swift`, which
+      reuses `MLFilesTable`'s specs/cellContent) — confirm the thumbnail
+      renders there too (not separately touched this task; verify the reuse
+      picked it up for free).
+
+### D14 — ID3 editor artwork Browse / Clear
+- [ ] The artwork slot in the ID3 editor now ALWAYS shows something (a
+      thumbnail, or a "No art" placeholder box) instead of collapsing to
+      nothing when a file has no embedded art — confirm the left/right field
+      columns' spacing looks right in both states (padding was hardcoded to
+      0 now that the slot is never absent).
+- [ ] "Browse…" opens an NSOpenPanel restricted to images; picking a file
+      updates the on-screen thumbnail immediately (before Save).
+- [ ] "Clear" blanks the thumbnail immediately (before Save) and is disabled
+      when there's no artwork to clear.
+- [ ] Neither Browse nor Clear touches the file on disk until "Save" is
+      pressed — `sparkamp_tag_set_artwork` / `sparkamp_tag_clear_artwork` are
+      only called from `saveTag()`, mirroring how text-field edits are
+      buffered in `fieldValues` and only pushed to the tag ctx at Save time.
+- [ ] Save with no Browse/Clear touch (`pendingArtworkPath == nil`) does NOT
+      strip existing embedded art — confirm a file's art survives an
+      edit-and-save that never touched the artwork controls.
+- [ ] Browse → Save → reopen the same file: new art is embedded (inspect
+      with GTK's ID3 editor or `id3v2 -l`) and the mac editor shows it.
+- [ ] Clear → Save → reopen: all embedded pictures are gone.
+- [ ] Browse/Clear buttons are hidden for read-only and missing files (same
+      gate as the Save button: `!isReadOnly && !fileMissing`).
+- [ ] Loading a different file (Customize… aside) resets any unsaved
+      Browse/Clear buffer from the PREVIOUS file (`pendingArtworkPath = nil`
+      in `loadTag()`) — confirm switching files via the editor's reload path
+      doesn't leak a pending change onto the wrong file.
+- [ ] Not implemented for mac (scope call, see Task 9 GTK-only): the
+      "Also write folder image" checkbox. GTK has it; mac's D14 spec only
+      asked for Browse/Embed/Clear. Flag if this asymmetry should be closed.
+
+### Shortcuts (3-file rule)
+- [ ] `KeyboardShortcutsView.swift`'s `sections` list now shows `w` → "Toggle
+      now-playing panel (art, tags, links)" and `k` → "Open album-art window"
+      under "Playlist & modes" (mac's closest analog to GTK's "View & Tags"
+      section, which mac doesn't have — GTK's `d`/`u` rows also aren't listed
+      anywhere in mac's shortcuts view; that's a pre-existing gap, not
+      something this task introduced or was asked to fix).
+- [ ] `SparkampModel+Keys.swift`'s `handleRawKey` handles lowercase `w`
+      (toggle `playerExpanded` + persist) and `k` (`openArtworkWindow()`) —
+      both no-op with modifier keys held, matching every other single-key
+      shortcut.
+- [ ] Both keys are inert while a text field has focus (covered for free by
+      the existing `NSTextView` firstResponder guard) and while the
+      Jump-to-Track overlay is showing (existing `jumpVisible` guard).
+
+### Unsure / eyeball (blind pass — flag anything that doesn't compile or look right)
+- [ ] `.windowResizability(.contentSize)` auto-growing the window on
+      `playerExpanded` toggle with zero extra `NSWindow` code — the biggest
+      "trust SwiftUI" bet in this task (see A1's resize item above).
+- [ ] `switch pages[safeIndex] { case .tags(...): ... }` written directly as
+      `@ViewBuilder` content (mirrors the existing `switch nav { ... }` in
+      `MediaLibraryWindow.swift`, so it should compile, but the carousel's
+      case bodies are new).
+- [ ] `.task(id: info?.artworkPath ?? "")` for debounced image reload,
+      `.onReceive(Timer.publish(...).autoconnect())` for the carousel timer,
+      and `.onChange(of: pages.count)` for the page-count safety clamp — all
+      standard SwiftUI, but this is their first use in this codebase; eyeball
+      that the 6 s cadence feels right and the timer doesn't drift/pile up
+      after the window has been open a long time.
+- [ ] `NowPlayingPanel` declares its own `@EnvironmentObject var model` and
+      `@EnvironmentObject var themeManager` — confirm both are actually in
+      scope where it's instantiated inside `PlayerWindow`'s body (they should
+      be, since `PlayerWindow` itself receives both via the WindowGroup's
+      `.environmentObject` calls in `SparkampMacApp.swift`, and environment
+      objects propagate to any descendant view without re-declaring them at
+      each level).
+- [ ] `Link("Artist on Wikipedia", destination: url)` — confirm it actually
+      opens the system browser from inside this app's window context (no
+      reason it wouldn't, but it's the first `Link` use found in this
+      codebase's mac sources).
+- [ ] The ID3 editor's artwork slot padding (now hardcoded `0` instead of the
+      old `artwork == nil ? 12 : 0` ternary) — eyeball the left-column
+      alignment now that the slot is never absent.

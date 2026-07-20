@@ -57,6 +57,8 @@ struct MLTrack: Identifiable {
     let fileMissing: Bool
     /// ISO-8601 UTC timestamp from the DB ("YYYY-MM-DDTHH:MM:SSZ"); empty if never played.
     let lastPlayed: String
+    /// Cached/resolved artwork file path (A2 thumbnail column); empty if `hasArt` is false.
+    let artworkPath: String
     // Phase-1 technical fields (Task 3/7)
     /// Sample rate in Hz; 0 if unknown.
     let sampleRate: Int
@@ -136,6 +138,7 @@ struct MLTrack: Identifiable {
         hasArt = false
         fileMissing = !FileManager.default.fileExists(atPath: stubPath)
         lastPlayed = ""
+        artworkPath = ""
         sampleRate = 0
         fileSize = 0
         addedAt = ""
@@ -167,6 +170,7 @@ struct MLTrack: Identifiable {
         hasArt      = c.has_art != 0
         fileMissing = c.file_missing != 0
         lastPlayed  = cBytesToString(&c.last_played)
+        artworkPath = cBytesToString(&c.artwork_path)
         sampleRate  = Int(c.sample_rate)
         fileSize    = c.file_size
         addedAt     = cBytesToString(&c.added_at)
@@ -174,6 +178,32 @@ struct MLTrack: Identifiable {
         bitrateMode = cBytesToString(&c.bitrate_mode)
         channels    = Int(c.channels)
     }
+}
+
+// MARK: - Now Playing (A1 panel / A6 art window data)
+
+/// Swift-side mirror of the core's `NowPlayingInfo` (`sparkamp_now_playing_*`
+/// FFI, `frontends/SparkampMac/SparkampCore/sparkamp_bridge.h`). Built fresh
+/// from `SparkampModel.refreshNowPlaying()` on every track change; `nil` on
+/// the model means nothing is playing (`sparkamp_now_playing_open` returned
+/// NULL).
+struct NowPlayingInfo {
+    /// Curated, non-empty tag rows in core order (title/artist/album first).
+    let tags: [(String, String)]
+    /// e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45"; empty if unprobed.
+    let techLine: String
+    /// Resolved artwork file path; empty if none.
+    let artworkPath: String
+    /// True if the track is indexed in the media library (play count known).
+    let hasPlayCount: Bool
+    /// Valid only when `hasPlayCount` is true.
+    let playCount: Int64
+    /// ISO-8601 UTC timestamp; empty if never played / unindexed.
+    let lastPlayed: String
+    /// Wikipedia search URL for the artist tag; empty if the tag is empty.
+    let artistWikiURL: String
+    /// Wikipedia search URL for the album tag; empty if the tag is empty.
+    let albumWikiURL: String
 }
 
 // MARK: - Media Library playlist item

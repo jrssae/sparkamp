@@ -350,10 +350,26 @@ struct MLFilesTable: NSViewRepresentable {
             body = AnyView(textCell(track.bitrateMode,
                                     color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-art":
+            // A2 — small thumbnail from the resolved artwork path when one's
+            // known; falls back to the pre-existing "View" text link when
+            // the row is marked has_art but the path didn't resolve (keeps
+            // that behavior working exactly as before), and a blank cell
+            // when there's no art at all.
             let tid = track.id
+            let artPath = track.artworkPath
             body = AnyView(
                 Group {
-                    if track.hasArt {
+                    if !artPath.isEmpty, let img = NSImage(contentsOfFile: artPath) {
+                        Button { onViewArt(tid) } label: {
+                            Image(nsImage: img)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 18, height: 18)
+                                .clipShape(RoundedRectangle(cornerRadius: 2))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Click to view album art")
+                    } else if track.hasArt {
                         Button("View") { onViewArt(tid) }
                             .buttonStyle(.borderless)
                             .font(theme.vars.bodyFont)

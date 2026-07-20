@@ -142,15 +142,43 @@ struct PlayerWindow: View {
                 // left column.
                 //
                 // Double-click opens the ID3 tag editor for the current track.
-                MarqueeView(text: marqueeText)
-                    .frame(height: 42)
-                    .padding(.horizontal, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(theme.lcdBackground)
-                    .padding(.top, 1)
-                    .gesture(TapGesture(count: 2).onEnded {
-                        model.openId3Editor()
-                    })
+                // A small borderless arrow at the right end toggles the A1
+                // now-playing panel below (mirrors the GTK inline marquee
+                // arrow) — same action as the `w` key.
+                HStack(spacing: 4) {
+                    MarqueeView(text: marqueeText)
+                        .frame(height: 42)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .gesture(TapGesture(count: 2).onEnded {
+                            model.openId3Editor()
+                        })
+
+                    Button {
+                        model.playerExpanded.toggle()
+                        model.saveState()
+                    } label: {
+                        Image(systemName: model.playerExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(theme.modeBtnText.opacity(0.8))
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show/hide now-playing panel (w)")
+                }
+                .padding(.horizontal, 10)
+                .background(theme.lcdBackground)
+                .padding(.top, 1)
+
+                // A1 — expandable now-playing panel: persistent marquee above
+                // (unchanged), art + auto-cycling tag/tech/stats/links
+                // carousel below when expanded. Collapsed = today's layout
+                // unchanged (nothing rendered here).
+                if model.playerExpanded {
+                    NowPlayingPanel(info: model.nowPlaying, trackKey: model.currentIndex)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 6)
+                        .padding(.bottom, 4)
+                }
 
                 Spacer(minLength: 0)
 
@@ -385,6 +413,11 @@ private struct WindowManagerModifier: ViewModifier {
             // second file selection reuses + fronts the window.
             .onChange(of: model.id3Request)               { _, _ in openWindow(id: "id3-editor") }
             .onChange(of: model.artworkWindowVisible)     { _, v in v ? openWindow(id: "artwork")           : dismissWindow(id: "artwork") }
+            // A6 open-or-focus: bumped on every "k" / art-tap / View-Art
+            // request so a repeat press re-fronts the already-open singleton
+            // (openWindow on a unique Window raises the existing instance —
+            // same idiom as id3Request just below).
+            .onChange(of: model.artworkWindowRequest)     { _, _ in openWindow(id: "artwork") }
             .onChange(of: model.mediaLibraryVisible)      { _, v in v ? openWindow(id: "media-library")     : dismissWindow(id: "media-library") }
             .onChange(of: model.dedupVisible)             { _, v in v ? openWindow(id: "deduplicator")      : dismissWindow(id: "deduplicator") }
     }
@@ -551,5 +584,198 @@ struct ThemedVolumeSlider: View {
             )
         }
         .frame(height: 14)
+    }
+}
+
+// MARK: - A1 now-playing panel (art + auto-cycling tag/tech/stats/links carousel)
+
+/// Expanded content of the A1 now-playing panel: album art (clamped ~100pt)
+/// on the left, and on the right a page of data that auto-advances every 6 s
+/// (mirrors the GTK carousel's `CAROUSEL_INTERVAL` / `ROWS_PER_TAG_PAGE`),
+/// with clickable page dots. Tapping the art opens the A6 album-art window
+/// (follow-the-track mode). `trackKey` (the model's `currentIndex`) resets
+/// the page back to 0 on every track change, same as GTK's `populate()`
+/// resetting `c.index = 0`.
+///
+/// SIMPLIFICATION vs GTK: a manually-clicked dot does not push out the next
+/// auto-advance (GTK's `jump()` doubles the dwell so a manual pick lingers);
+/// here the timer just keeps advancing on its fixed schedule. Noted in the
+/// mac checklist as a UX item to eyeball, not a correctness bug.
+private struct NowPlayingPanel: View {
+    let info: NowPlayingInfo?
+    let trackKey: Int
+
+    @EnvironmentObject var model: SparkampModel
+    @EnvironmentObject var themeManager: ThemeManager
+    @State private var pageIndex: Int = 0
+    @State private var artworkImage: NSImage? = nil
+
+    private var theme: SkinTheme { themeManager.currentTheme }
+
+    private enum Page {
+        case tags([(String, String)])
+        case tech(String)
+        case stats(count: Int64?, last: String?)
+        case links(artist: String?, album: String?)
+    }
+
+    /// Rows per tag page — matches GTK's `ROWS_PER_TAG_PAGE` so a
+    /// metadata-rich file paginates identically on both frontends.
+    private let rowsPerTagPage = 4
+
+    private var pages: [Page] {
+        guard let info else { return [] }
+        var result: [Page] = []
+        var i = 0
+        while i < info.tags.count {
+            let end = min(i + rowsPerTagPage, info.tags.count)
+            result.append(.tags(Array(info.tags[i..<end])))
+            i = end
+        }
+        if !info.techLine.isEmpty {
+            result.append(.tech(info.techLine))
+        }
+        if info.hasPlayCount || !info.lastPlayed.isEmpty {
+            result.append(.stats(
+                count: info.hasPlayCount ? info.playCount : nil,
+                last: info.lastPlayed.isEmpty ? nil : info.lastPlayed
+            ))
+        }
+        if !info.artistWikiURL.isEmpty || !info.albumWikiURL.isEmpty {
+            result.append(.links(
+                artist: info.artistWikiURL.isEmpty ? nil : info.artistWikiURL,
+                album: info.albumWikiURL.isEmpty ? nil : info.albumWikiURL
+            ))
+        }
+        return result
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            artView
+            VStack(alignment: .leading, spacing: 4) {
+                pageContent
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                if pages.count > 1 { dots }
+            }
+        }
+        .onChange(of: trackKey) { _, _ in pageIndex = 0 }
+        .onChange(of: pages.count) { _, count in
+            if pageIndex >= count { pageIndex = 0 }
+        }
+        .onReceive(Timer.publish(every: 6, on: .main, in: .common).autoconnect()) { _ in
+            guard pages.count > 1 else { return }
+            pageIndex = (pageIndex + 1) % pages.count
+        }
+        // Reload the decoded image only when the path actually changes
+        // (not on every 6 s page-advance re-render) — avoids re-hitting disk
+        // on a timer.
+        .task(id: info?.artworkPath ?? "") {
+            let path = info?.artworkPath ?? ""
+            artworkImage = path.isEmpty ? nil : NSImage(contentsOfFile: path)
+        }
+    }
+
+    @ViewBuilder
+    private var artView: some View {
+        Group {
+            if let img = artworkImage {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 100, height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else {
+                VStack(spacing: 4) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 40, height: 40)
+                        .opacity(0.5)
+                    Text("No artwork available")
+                        .font(.system(size: 9))
+                        .foregroundStyle(theme.playlistDurationText)
+                        .multilineTextAlignment(.center)
+                        .frame(width: 90)
+                }
+                .frame(width: 100, height: 100)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.openArtworkWindow()  // A6 — open-or-focus, follow-the-track mode
+        }
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        if pages.isEmpty {
+            Text("No metadata available")
+                .font(.system(size: 11))
+                .foregroundStyle(theme.playlistDurationText)
+        } else {
+            let safeIndex = pageIndex < pages.count ? pageIndex : 0
+            switch pages[safeIndex] {
+            case .tags(let rows):
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(rows, id: \.0) { row in tagRow(row.0, row.1) }
+                }
+            case .tech(let line):
+                Text(line)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistText)
+            case .stats(let count, let last):
+                VStack(alignment: .leading, spacing: 3) {
+                    if let count { tagRow("Play count", "\(count)") }
+                    if let last { tagRow("Last played", Self.formatLastPlayed(last)) }
+                }
+            case .links(let artist, let album):
+                VStack(alignment: .leading, spacing: 3) {
+                    if let artist, let url = URL(string: artist) {
+                        Link("Artist on Wikipedia", destination: url)
+                            .font(.system(size: 11))
+                    }
+                    if let album, let url = URL(string: album) {
+                        Link("Album on Wikipedia", destination: url)
+                            .font(.system(size: 11))
+                    }
+                }
+            }
+        }
+    }
+
+    private func tagRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text("\(label):")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.playlistDurationText)
+                .frame(width: 80, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11))
+                .foregroundStyle(theme.playlistText)
+                .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var dots: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<pages.count, id: \.self) { i in
+                Circle()
+                    .fill(i == pageIndex ? theme.vars.highlight : theme.playlistDurationText.opacity(0.4))
+                    .frame(width: 5, height: 5)
+                    .contentShape(Rectangle())
+                    .onTapGesture { pageIndex = i }
+            }
+        }
+    }
+
+    /// "yyyy-MM-dd HH:mm" local rendering of an ISO-8601 UTC timestamp —
+    /// same pattern as `MLTrack.lastPlayedDisplay`.
+    private static func formatLastPlayed(_ iso: String) -> String {
+        let inFmt = ISO8601DateFormatter()
+        guard let date = inFmt.date(from: iso) else { return iso }
+        let outFmt = DateFormatter()
+        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
+        return outFmt.string(from: date)
     }
 }

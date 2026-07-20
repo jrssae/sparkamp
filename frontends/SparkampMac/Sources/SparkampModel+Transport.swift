@@ -276,6 +276,7 @@ extension SparkampModel {
         UserDefaults.standard.set(playlistVisible,     forKey: "sparkamp.playlistVisible")
         UserDefaults.standard.set(equalizerVisible,    forKey: "sparkamp.equalizerVisible")
         UserDefaults.standard.set(mediaLibraryVisible, forKey: "sparkamp.mlVisible")
+        UserDefaults.standard.set(playerExpanded,      forKey: "sparkamp.playerExpanded")
     }
 
 }
