@@ -935,6 +935,13 @@ fn open_id3_editor_window(
     art_path_row.append(&btn_view);
     artwork_vbox.append(&art_path_row);
 
+    // Also-write-folder-image checkbox: unchecked by default (opt-in, no
+    // config persistence — plain per-save choice). When checked at save
+    // time, the embedded artwork is additionally copied beside the audio
+    // file as cover.<ext> for players that only look at loose folder art.
+    let also_write_folder_cb = CheckButton::with_label("Also write folder image");
+    artwork_vbox.append(&also_write_folder_cb);
+
     // Track art_path_entry in the entries HashMap
     entries
         .borrow_mut()
@@ -1042,6 +1049,7 @@ fn open_id3_editor_window(
         let status_s = status_lbl.clone();
         let win_wk = win.downgrade();
         let entries_r = entries.clone();
+        let also_write_folder_s = also_write_folder_cb.clone();
         // A field hidden via the ID3 column customizer has no entry widget,
         // so falling back to `.unwrap_or_default()` would write "" and
         // write_tag_fields treats "" as "remove this frame" — silently
@@ -1135,6 +1143,45 @@ fn open_id3_editor_window(
 
             match write_tag_fields(&path, &new_fields) {
                 Ok(()) => {
+                    // Optional: copy the artwork beside the audio file as
+                    // cover.<ext> too. Runs after the tag write succeeds and
+                    // before refresh_artwork below, so the ML thumbnail
+                    // refresh (which falls back to folder images) can see
+                    // the file it drops. Failure here is non-fatal — the
+                    // tags are already safely on disk.
+                    if also_write_folder_s.is_active() && !new_fields.artwork_path.is_empty() {
+                        // Same tilde-expansion idiom as write_tag_fields
+                        // (src/id3_editor.rs) so both paths agree on where
+                        // "~/..." artwork actually lives.
+                        let src = if new_fields.artwork_path.starts_with('~') {
+                            if let Some(home) = dirs::home_dir() {
+                                home.join(&new_fields.artwork_path[2..])
+                            } else {
+                                PathBuf::from(&new_fields.artwork_path)
+                            }
+                        } else {
+                            PathBuf::from(&new_fields.artwork_path)
+                        };
+                        let ext = src
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.to_ascii_lowercase())
+                            .unwrap_or_else(|| "jpg".to_string());
+                        if let Some(dest) = path.parent().map(|d| d.join(format!("cover.{ext}")))
+                        {
+                            // Skip when the source already IS the folder
+                            // cover (user pointed artwork_path at it) —
+                            // fs::copy errors on identical src/dest.
+                            if src != dest {
+                                if let Err(e) = std::fs::copy(&src, &dest) {
+                                    status_s.set_text(&format!(
+                                        "Saved tags; folder image failed: {e}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
                     // EVERY matching playlist row updates — a file queued
                     // more than once must not keep stale tags on later rows.
                     if let Ok(fresh) = crate::model::Track::from_path(&path) {

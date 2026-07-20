@@ -994,4 +994,32 @@ mod tests {
         std::fs::remove_file(&art).ok();
         std::fs::remove_file(&song).ok();
     }
+
+    // -----------------------------------------------------------------------
+    // APIC picture type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn embedded_artwork_is_cover_front() {
+        // Players/OSes pick the "front cover" APIC frame for thumbnails;
+        // tagging it as anything else (or leaving PictureType::Other) makes
+        // some players ignore it. Pin the type write_tag_fields uses.
+        let art = std::env::temp_dir().join("sparkamp_cover_type_test.jpg");
+        std::fs::write(&art, b"fake jpeg bytes").unwrap();
+        let song = std::env::temp_dir().join("sparkamp_cover_type_test.mp3");
+        std::fs::write(&song, b"").unwrap();
+
+        let fields = TagFields {
+            artwork_path: art.to_string_lossy().into_owned(),
+            ..TagFields::default()
+        };
+        write_tag_fields(&song, &fields).unwrap();
+
+        let tag = id3::Tag::read_from_path(&song).unwrap();
+        let pic = tag.pictures().next().unwrap();
+        assert_eq!(pic.picture_type, id3::frame::PictureType::CoverFront);
+
+        std::fs::remove_file(&art).ok();
+        std::fs::remove_file(&song).ok();
+    }
 }
