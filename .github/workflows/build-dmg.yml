@@ -173,28 +173,53 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
+          set -euo pipefail
           if [ -z "$NOTARY_KEY_P8" ]; then
             echo "Signing cert present but no notary API key — DMG is signed, NOT notarized." >&2
             echo "Gatekeeper will still warn on downloads. Configure NOTARY_* secrets." >&2
             exit 1
           fi
           echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          # Apple's notary queue can sit "In Progress" well past the usual few
-          # minutes — especially for a new account's first submissions (ours
-          # timed out twice at 30m without a verdict, never Invalid). Wait up
-          # to 2h so a slow-but-valid submission finishes in one run; the poll
-          # is cheap (the runner just idles), and release builds are rare.
-          xcrun notarytool submit "${{ steps.locate-dmg.outputs.dmg }}" \
-            --key "$RUNNER_TEMP/notary.p8" \
-            --key-id "$NOTARY_KEY_ID" \
-            --issuer "$NOTARY_ISSUER_ID" \
-            --wait --timeout 2h
+          DMG="${{ steps.locate-dmg.outputs.dmg }}"
+          AUTH=(--key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+
+          # Submit once, then poll resiliently. Every prior upload authenticated
+          # and was accepted for processing (a submission id is auth-gated), but
+          # `notarytool --wait` aborts the whole step on the first hiccup — twice
+          # a 30m wait elapsed with the ticket still "In Progress", once the
+          # runner's connection to appstoreconnect dropped mid-poll (NSURLError
+          # -1009). So: submit without waiting, then re-poll the SAME submission
+          # in a retry loop that survives transient timeouts/network blips, and
+          # read the definitive verdict with `notarytool info` at the end.
+          SUBMIT_JSON="$(xcrun notarytool submit "$DMG" "${AUTH[@]}" --output-format json)"
+          echo "$SUBMIT_JSON"
+          SUB_ID="$(printf '%s' "$SUBMIT_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+          echo "Submission id: $SUB_ID"
+
+          # Up to ~2h of patience, in blip-tolerant 10-minute polls.
+          for attempt in $(seq 1 12); do
+            if xcrun notarytool wait "$SUB_ID" "${AUTH[@]}" --timeout 10m; then
+              break
+            fi
+            echo "poll attempt $attempt did not resolve (timeout or network) — retrying in 30s…"
+            sleep 30
+          done
+
+          # Authoritative status, independent of how `wait` exited.
+          INFO_JSON="$(xcrun notarytool info "$SUB_ID" "${AUTH[@]}" --output-format json)"
+          echo "$INFO_JSON"
+          STATUS="$(printf '%s' "$INFO_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status",""))')"
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization status is '$STATUS' (not Accepted). Notary log:" >&2
+            xcrun notarytool log "$SUB_ID" "${AUTH[@]}" || true
+            exit 1
+          fi
+
           rm -f "$RUNNER_TEMP/notary.p8"
-          xcrun stapler staple "${{ steps.locate-dmg.outputs.dmg }}"
-          xcrun stapler validate "${{ steps.locate-dmg.outputs.dmg }}"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
           # Final Gatekeeper verdict, exactly what a user's Mac will run.
-          spctl --assess --type open --context context:primary-signature \
-            -v "${{ steps.locate-dmg.outputs.dmg }}"
+          spctl --assess --type open --context context:primary-signature -v "$DMG"
 
       # ── Clean up the throwaway keychain (always) ──────────────────────────
       - name: Remove signing keychain
