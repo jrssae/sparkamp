@@ -394,6 +394,14 @@ pub fn build(
 
     let np_stack = Stack::new();
     np_stack.set_hexpand(true);
+    // A GtkStack defaults to vhomogeneous = true, sizing itself to the TALLEST
+    // child regardless of which is visible — that would pin the row to the
+    // ~200 px expanded panel height even when collapsed, and (on a
+    // resizable(false) window) leave the natural height unchanged between
+    // states so the window never grows/shrinks on toggle. Track the visible
+    // child's height instead, so collapse is compact and expand actually
+    // enlarges the window.
+    np_stack.set_vhomogeneous(false);
     np_stack.add_named(&marquee_frame, Some("collapsed"));
     np_stack.add_named(&np_panel_widget, Some("expanded"));
     np_stack.set_visible_child_name(if init_player_expanded {
@@ -1229,6 +1237,54 @@ pub fn build(
         });
     }
 
+    // refresh_now_playing — rebuild the now-playing info for whatever track is
+    // CURRENT and fan it out to every subscriber (A1 panel, A6 art window,
+    // future MPRIS).  Factored out of `play_and_update` because the marquee is
+    // driven by the tick loop reading `playlist.current()`, so the Next/Prev
+    // buttons and z/b keys used to update the marquee via their own
+    // `play_next`/`play_prev` paths WITHOUT firing this fan-out — leaving the
+    // art panel/window stale on those advances.  Every track-change path now
+    // calls this so art follows the song regardless of how it changed.
+    let refresh_now_playing: Rc<dyn Fn()> = {
+        let state = state.clone();
+        Rc::new(move || {
+            // Build the info + clone the subscriber list under one short borrow,
+            // drop it, THEN invoke callbacks (subscribers may re-borrow state).
+            let (info, subs) = {
+                let mut s = state.borrow_mut();
+                let path_str = s
+                    .playlist
+                    .current()
+                    .map(|t| t.path.to_string_lossy().into_owned());
+                match path_str {
+                    Some(p) => {
+                        let snap = s
+                            .media_lib
+                            .as_ref()
+                            .map(|ml| ml.play_snapshot(&p))
+                            .unwrap_or_default();
+                        let lib_row =
+                            s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
+                        let info = crate::now_playing::build_now_playing_info(
+                            std::path::Path::new(&p),
+                            lib_row.as_ref(),
+                            snap,
+                        );
+                        s.current_now_playing = Some(info.clone());
+                        let subs = s.now_playing_subscribers.clone();
+                        (Some(info), subs)
+                    }
+                    None => (None, Vec::new()),
+                }
+            };
+            if let Some(info) = info {
+                for cb in &subs {
+                    cb(&info);
+                }
+            }
+        })
+    };
+
     // play_and_update — play the current track and refresh the UI labels.
     //
     // All "start playing" paths (buttons, keyboard, auto-advance) funnel
@@ -1241,6 +1297,7 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
+        let refresh_now_playing = refresh_now_playing.clone();
         Rc::new(move || {
             // Record which row was playing before so we can un-bold it.
             let old_idx = state.borrow().playlist.current_index;
@@ -1263,45 +1320,10 @@ pub fn build(
                 patch_pl_row(new_idx);
 
                 // Capture the pre-play snapshot (play_count/last_played BEFORE
-                // record_play increments them at the 20s mark, see :3021 below)
-                // and build the now-playing info for A1/A6/phase-3 subscribers.
-                // Subscribers may themselves need to borrow `state` (e.g. to
-                // touch widgets), so the borrow here must be dropped before any
-                // callback runs — extract path/snapshot/subscribers first, then
-                // notify outside the borrow.
-                let (info, subs) = {
-                    let mut s = state.borrow_mut();
-                    let path_str = s
-                        .playlist
-                        .current()
-                        .map(|t| t.path.to_string_lossy().into_owned());
-                    match path_str {
-                        Some(p) => {
-                            let snap = s
-                                .media_lib
-                                .as_ref()
-                                .map(|ml| ml.play_snapshot(&p))
-                                .unwrap_or_default();
-                            let lib_row = s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
-                            let info = crate::now_playing::build_now_playing_info(
-                                std::path::Path::new(&p),
-                                lib_row.as_ref(),
-                                snap,
-                            );
-                            // Stash for panels that populate on open (A1 toggle,
-                            // A6 window) rather than only on the next fan-out.
-                            s.current_now_playing = Some(info.clone());
-                            let subs = s.now_playing_subscribers.clone();
-                            (Some(info), subs)
-                        }
-                        None => (None, Vec::new()),
-                    }
-                };
-                if let Some(info) = info {
-                    for cb in &subs {
-                        cb(&info);
-                    }
-                }
+                // record_play increments them at the 20s mark) and fan the
+                // now-playing info out to A1/A6/phase-3 subscribers. Shared with
+                // the Next/Prev/z/b paths via `refresh_now_playing`.
+                refresh_now_playing();
             }
         })
     };
@@ -1766,6 +1788,7 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
+        let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_next() } {
@@ -1777,6 +1800,8 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
+                // Follow the song on the art panel / window too.
+                refresh_now_playing();
             }
         }
     });
@@ -1788,6 +1813,7 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
+        let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_prev() } {
@@ -1799,6 +1825,8 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
+                // Follow the song on the art panel / window too.
+                refresh_now_playing();
             }
         }
     });
@@ -3656,6 +3684,7 @@ pub fn build(
         let kbd_scroll = scroll_to_row_if_needed.clone();
         let kbd_open_fs = open_fullscreen_fn.clone();
         let kbd_art_open = art_open.clone();
+        let kbd_refresh_np = refresh_now_playing.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -3671,6 +3700,7 @@ pub fn build(
                         }
                         kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
+                        kbd_refresh_np();
                     }
                     glib::Propagation::Stop
                 }
@@ -3702,6 +3732,7 @@ pub fn build(
                         }
                         kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
+                        kbd_refresh_np();
                     }
                     glib::Propagation::Stop
                 }
@@ -4509,12 +4540,14 @@ pub fn build(
             viz_stack.set_height_request(viz_h);
             granite_pic.set_height_request(viz_h);
 
-            // `resizable(false)` windows don't auto-shrink after growing to
-            // fit the expanded panel; re-kick the default size so collapse
-            // returns to the compact natural height. This needs an
-            // interactive check on a live display — see task report.
+            // `resizable(false)` windows don't renegotiate their height on
+            // their own after a child's size changes. Re-kick the default
+            // size with a fixed 384 px width and a natural (-1) height so the
+            // window grows to fit the expanded panel and shrinks back to the
+            // compact marquee on collapse. (With np_stack vhomogeneous now
+            // off, natural height actually differs between the two states.)
             if let Some(w) = window_wk.upgrade() {
-                w.set_default_size(-1, -1);
+                w.set_default_size(384, -1);
                 w.queue_resize();
             }
         }
