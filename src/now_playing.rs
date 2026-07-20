@@ -55,10 +55,19 @@ pub fn build_now_playing_info(
     // APIC → folder image) so both match the ID3 editor's window byte-for-byte.
     let rof = crate::media_library::read_only_track_fields(path, lib_row);
     let tech_line = crate::media_library::tech_summary(&rof);
-    let artwork_path = if rof.artwork_path.is_empty() {
-        None
-    } else {
+    // `read_only_track_fields` only probes embedded/folder art for files
+    // OUTSIDE the library (its own `artwork_path` block gates the probe on
+    // `track.is_none()`) — probing for library rows too would leak into the
+    // ID3 editor's save path (it calls that fn directly to pre-fill its
+    // artwork entry, then embeds whatever is non-empty as APIC on save) and
+    // silently embed a loose folder image into the file on an unrelated
+    // edit. The now-playing display has no save path, so the fallback lives
+    // here instead: when the library's cached art column is empty, probe
+    // embedded APIC / folder image directly. Display-only — never mutates.
+    let artwork_path = if !rof.artwork_path.is_empty() {
         Some(PathBuf::from(&rof.artwork_path))
+    } else {
+        crate::tags::read_track_tags(path).artwork_path.map(PathBuf::from)
     };
 
     NowPlayingInfo {
@@ -195,6 +204,108 @@ mod tests {
         let f = make_tagged_mp3("S", "A");
         let info = build_now_playing_info(f.path(), None, PlaySnapshot::default());
         assert!(!info.tech_line.is_empty()); // probe fallback filled it in via extension
+    }
+
+    /// A minimal `LibTrack` stub with every optional field empty except the
+    /// ones a caller sets — mirrors the pattern in
+    /// `media_library::tests::sort_keys_are_precomputed_from_libtrack`.
+    fn stub_lib_track(path: &str, artwork_path: Option<String>) -> crate::media_library::LibTrack {
+        crate::media_library::LibTrack {
+            id: 1,
+            path: path.to_string(),
+            artist: None,
+            title: None,
+            album: None,
+            track_num: None,
+            genre: None,
+            year: None,
+            bpm: None,
+            length_secs: None,
+            bitrate: None,
+            channels: None,
+            filetype: None,
+            filename: String::new(),
+            play_count: 0,
+            last_played: None,
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path,
+            last_scanned: None,
+            sample_rate: None,
+            file_size: None,
+            file_mtime: None,
+            added_at: None,
+            bitrate_mode: None,
+            sort_keys: crate::media_library::SortKeys::default(),
+        }
+    }
+
+    /// Finding-2 regression: a LIBRARY row whose cached `artwork_path` column
+    /// is empty (never populated, or indexed before art extraction) but whose
+    /// folder carries a loose cover image must still show art on the
+    /// now-playing panel — the fallback moved from `read_only_track_fields`
+    /// (which no longer probes for library rows, see below) into
+    /// `build_now_playing_info` itself, so display keeps working.
+    #[test]
+    fn info_falls_back_to_folder_image_for_library_row_with_empty_art_column() {
+        gstreamer::init().ok();
+        let dir = tempfile::tempdir().unwrap();
+        let song_path = dir.path().join("song.mp3");
+        // `Tag::write_to_path` opens the target for read-modify-write, so the
+        // file must already exist on disk (unlike `NamedTempFile`, which
+        // creates one for us).
+        std::fs::write(&song_path, b"").unwrap();
+        let mut tag = Tag::new();
+        tag.set_title("Folder Art Song");
+        tag.write_to_path(&song_path, Version::Id3v24).unwrap();
+        // Loose cover image beside the track, no embedded APIC.
+        std::fs::write(dir.path().join("cover.jpg"), b"fake-jpeg-bytes").unwrap();
+
+        let lib_row = stub_lib_track(&song_path.to_string_lossy(), None);
+        let info = build_now_playing_info(&song_path, Some(&lib_row), PlaySnapshot::default());
+        assert!(
+            info.artwork_path.is_some(),
+            "now-playing panel should still fall back to the folder image \
+             even though the library's art column is empty"
+        );
+    }
+
+    /// Finding-2 regression: `read_only_track_fields` — called directly by the
+    /// GTK ID3 editor to pre-fill its artwork entry, then embedded verbatim
+    /// as APIC on save — must NOT probe folder/embedded art for library rows
+    /// any more. Otherwise opening the editor on a library track that only
+    /// has a loose folder image and saving any unrelated edit silently
+    /// embeds that image into the file.
+    #[test]
+    fn read_only_track_fields_does_not_probe_art_for_library_rows() {
+        gstreamer::init().ok();
+        let dir = tempfile::tempdir().unwrap();
+        let song_path = dir.path().join("song.mp3");
+        // `Tag::write_to_path` opens the target for read-modify-write, so the
+        // file must already exist on disk (unlike `NamedTempFile`, which
+        // creates one for us).
+        std::fs::write(&song_path, b"").unwrap();
+        let mut tag = Tag::new();
+        tag.set_title("Folder Art Song");
+        tag.write_to_path(&song_path, Version::Id3v24).unwrap();
+        std::fs::write(dir.path().join("cover.jpg"), b"fake-jpeg-bytes").unwrap();
+
+        let lib_row = stub_lib_track(&song_path.to_string_lossy(), None);
+        let rof = crate::media_library::read_only_track_fields(&song_path, Some(&lib_row));
+        assert!(
+            rof.artwork_path.is_empty(),
+            "read_only_track_fields must not probe folder/embedded art for \
+             indexed library rows — that would make the ID3 editor silently \
+             embed a loose folder image on save"
+        );
     }
 
     #[test]

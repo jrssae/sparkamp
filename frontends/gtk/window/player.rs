@@ -173,6 +173,16 @@ pub fn build(
     let marquee_offset = Rc::new(Cell::new(0usize));
     let marquee_tick = Rc::new(Cell::new(0u32));
 
+    // Last now-playing key (current track's path) seen by the tick loop.
+    // Keyed by path rather than index so that replacing a playlist in place
+    // (same index, different track) still triggers a refresh. Drives the A1
+    // panel / A6 art window fan-out from a single choke point in the tick
+    // loop, so EVERY path that changes the current track — Next/Prev/z/b and
+    // the ~17 Media Library / device play_current() call sites that used to
+    // bypass refresh_now_playing entirely — keeps art in sync, the same way
+    // the marquee already does.
+    let last_np_key: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
     // Helper: called whenever the playing track changes.  Updates the marquee
     // state and resets the scroll position to the beginning.
     let set_track: Rc<dyn Fn(&str)> = {
@@ -1359,12 +1369,14 @@ pub fn build(
 
     // refresh_now_playing — rebuild the now-playing info for whatever track is
     // CURRENT and fan it out to every subscriber (A1 panel, A6 art window,
-    // future MPRIS).  Factored out of `play_and_update` because the marquee is
-    // driven by the tick loop reading `playlist.current()`, so the Next/Prev
-    // buttons and z/b keys used to update the marquee via their own
-    // `play_next`/`play_prev` paths WITHOUT firing this fan-out — leaving the
-    // art panel/window stale on those advances.  Every track-change path now
-    // calls this so art follows the song regardless of how it changed.
+    // future MPRIS). Not called explicitly from play_and_update / Next / Prev
+    // / z / b any more: the tick loop's now-playing choke point (see
+    // `last_np_key` below) calls this on every tick where the current track's
+    // path changed, which covers those paths AND the ~17 Media Library /
+    // device play_current() call sites that never fanned this out at all —
+    // one choke point instead of one call site per play path, current and
+    // future. ≤1 tick (~33 ms) of latency on art vs. the old immediate call
+    // is not perceptible and matches how the marquee itself is driven.
     let refresh_now_playing: Rc<dyn Fn()> = {
         let state = state.clone();
         Rc::new(move || {
@@ -1409,15 +1421,19 @@ pub fn build(
     //
     // All "start playing" paths (buttons, keyboard, auto-advance) funnel
     // through here so the marquee and playlist stay in sync.  Label text is
-    // NOT set directly here; the 100 ms tick loop renders the marquee window
-    // each frame so the scrolling starts immediately after track change.
+    // NOT set directly here; the tick loop renders the marquee window each
+    // frame so the scrolling starts immediately after track change. The A1
+    // panel / A6 art window fan-out is likewise no longer triggered from
+    // here explicitly — the tick loop's now-playing choke point (keyed by
+    // path) picks up every current-track change within one tick, so this
+    // and every other play path (buttons, keys, Media Library, devices) stay
+    // in sync without each call site needing its own `refresh_now_playing()`.
     let play_and_update = {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
-        let refresh_now_playing = refresh_now_playing.clone();
         Rc::new(move || {
             // Record which row was playing before so we can un-bold it.
             let old_idx = state.borrow().playlist.current_index;
@@ -1438,12 +1454,6 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
-
-                // Capture the pre-play snapshot (play_count/last_played BEFORE
-                // record_play increments them at the 20s mark) and fan the
-                // now-playing info out to A1/A6/phase-3 subscribers. Shared with
-                // the Next/Prev/z/b paths via `refresh_now_playing`.
-                refresh_now_playing();
             }
         })
     };
@@ -1908,7 +1918,6 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
-        let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_next() } {
@@ -1920,8 +1929,8 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
-                // Follow the song on the art panel / window too.
-                refresh_now_playing();
+                // Art panel / window follow via the tick loop's now-playing
+                // choke point (keyed on the current track path).
             }
         }
     });
@@ -1933,7 +1942,6 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
-        let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_prev() } {
@@ -1945,8 +1953,8 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
-                // Follow the song on the art panel / window too.
-                refresh_now_playing();
+                // Art panel / window follow via the tick loop's now-playing
+                // choke point (keyed on the current track path).
             }
         }
     });
@@ -2972,6 +2980,8 @@ pub fn build(
         let marquee_chars = marquee_chars.clone();
         let marquee_offset = marquee_offset.clone();
         let marquee_tick = marquee_tick.clone();
+        let last_np_key = last_np_key.clone();
+        let refresh_now_playing_tick = refresh_now_playing.clone();
         let show_remaining = show_remaining.clone();
         let state_label = state_label.clone();
         let btn_play = btn_play.clone();
@@ -3393,6 +3403,28 @@ pub fn build(
                 }
             }
 
+            // 3b. Now-playing fan-out choke point. The marquee above already
+            // re-reads `playlist.current()` every tick to stay in sync no
+            // matter which path changed the current track; do the same for
+            // the A1 panel / A6 art window instead of relying on each play
+            // path to call `refresh_now_playing()` explicitly (the ~17 Media
+            // Library / device play_current() call sites never did, leaving
+            // art stale). Read the current path under a short borrow, drop
+            // it, then compare — never hold `state.borrow()` across the
+            // `refresh_now_playing()` call, which takes its own borrow.
+            {
+                let current_key = state
+                    .borrow()
+                    .playlist
+                    .current()
+                    .map(|t| t.path.to_string_lossy().into_owned());
+                let changed = *last_np_key.borrow() != current_key;
+                if changed {
+                    *last_np_key.borrow_mut() = current_key;
+                    refresh_now_playing_tick();
+                }
+            }
+
             // 4. State icon (left of time display) + dynamic play-button accent.
             //    The play button gains the `.transport-play` skin accent while
             //    the engine is Playing or Paused, and loses it when Stopped.
@@ -3808,7 +3840,6 @@ pub fn build(
         let kbd_scroll = scroll_to_row_if_needed.clone();
         let kbd_open_fs = open_fullscreen_fn.clone();
         let kbd_art_open = art_open.clone();
-        let kbd_refresh_np = refresh_now_playing.clone();
         let kbd_toggle_np = toggle_np_panel.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
@@ -3825,7 +3856,8 @@ pub fn build(
                         }
                         kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
-                        kbd_refresh_np();
+                        // Art panel / window follow via the tick loop's
+                        // now-playing choke point.
                     }
                     glib::Propagation::Stop
                 }
@@ -3857,7 +3889,8 @@ pub fn build(
                         }
                         kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
-                        kbd_refresh_np();
+                        // Art panel / window follow via the tick loop's
+                        // now-playing choke point.
                     }
                     glib::Propagation::Stop
                 }

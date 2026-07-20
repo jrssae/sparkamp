@@ -288,13 +288,19 @@ pub fn read_only_track_fields(
     let artwork_path = track
         .and_then(|t| t.artwork_path.clone())
         .or_else(|| {
-            // No cached artwork_path — either a file outside the library, or a
-            // library row whose art column was never populated (indexed before
-            // artwork extraction, or an art-less scan). Extract embedded art
-            // (cached) or take the folder image, the same pipeline the scanner
-            // uses, so the now-playing panel and ID3 editor still show a cover.
-            // One read per editor-open / track-change — cheap enough.
-            crate::tags::read_track_tags(path).artwork_path
+            // Only probe embedded/folder art for files OUTSIDE the library
+            // (track.is_none()). Probing for indexed library rows too made
+            // the ID3 editor (which calls this fn directly to pre-fill its
+            // artwork entry) silently embed a loose folder image into the
+            // file's APIC tag on save whenever the DB's art column was empty
+            // — an unrequested mutation. The now-playing display gets its
+            // own folder/embedded fallback in `now_playing::build_now_playing_info`
+            // instead, which is display-only and never feeds a save path.
+            if track.is_none() {
+                crate::tags::read_track_tags(path).artwork_path
+            } else {
+                None
+            }
         })
         .unwrap_or_default();
 
