@@ -89,6 +89,85 @@ fn playback_keys_work_in_help_mode() {
 }
 
 // -----------------------------------------------------------------------
+// Now-playing overlay (w) — mirrors the Help overlay's binding tests.
+// -----------------------------------------------------------------------
+
+/// 'w' opens the now-playing overlay for the current track, scroll at zero.
+#[test]
+fn w_key_enters_now_playing_mode() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::NowPlaying { scroll: 0, .. }));
+}
+
+/// 'w' with nothing to play stays in Normal mode and reports it.
+#[test]
+fn w_with_no_current_track_shows_nothing_playing() {
+    let mut app = make_app();
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(
+        app.status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Nothing playing"),
+        "expected 'Nothing playing', got: {:?}",
+        app.status_message
+    );
+}
+
+/// Esc closes the now-playing overlay.
+#[test]
+fn esc_in_now_playing_returns_to_normal() {
+    let mut app = app_with_tracks(&["A"]);
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::NowPlaying { .. }));
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Normal));
+}
+
+/// 'w' again closes the overlay (toggle-off).
+#[test]
+fn w_again_closes_now_playing() {
+    let mut app = app_with_tracks(&["A"]);
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::NowPlaying { .. }));
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Normal));
+}
+
+/// ↑/↓ scroll the now-playing overlay without closing it.
+#[test]
+fn arrow_keys_scroll_now_playing_overlay() {
+    let mut app = app_with_tracks(&["A"]);
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::NowPlaying { scroll: 1, .. }));
+    app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::NowPlaying { scroll: 0, .. }));
+    // Saturating: Up at zero stays at zero.
+    app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::NowPlaying { scroll: 0, .. }));
+}
+
+/// z/x/c/v/b pass through and keep the now-playing overlay open.
+#[test]
+fn playback_keys_work_in_now_playing_mode() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    assert!(
+        matches!(app.mode, Mode::NowPlaying { .. }),
+        "overlay should stay open after 'b'"
+    );
+    app.handle_key(KeyCode::Char('v'), KeyModifiers::NONE);
+    assert!(
+        matches!(app.mode, Mode::NowPlaying { .. }),
+        "overlay should stay open after 'v'"
+    );
+}
+
+// -----------------------------------------------------------------------
 // Comma-separated commit_add_file tests
 // -----------------------------------------------------------------------
 
