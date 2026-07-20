@@ -657,6 +657,21 @@ impl Player {
             .map(|t| Duration::from_nanos(t.nseconds()))
     }
 
+    /// Current playback position in microseconds (0 when unknown). Convenience
+    /// for MPRIS / MPNowPlayingInfoCenter, whose Position is `x` (µs) / elapsed
+    /// seconds — avoids each consumer re-deriving it from `position()`.
+    /// `dead_code` until the phase-3 MPRIS layer consumes it.
+    #[allow(dead_code)]
+    pub fn position_usecs(&self) -> i64 {
+        self.position().map(|d| d.as_micros() as i64).unwrap_or(0)
+    }
+
+    /// Total track length in microseconds (0 when unknown). MPRIS `mpris:length`.
+    #[allow(dead_code)]
+    pub fn length_usecs(&self) -> i64 {
+        self.duration().map(|d| d.as_micros() as i64).unwrap_or(0)
+    }
+
     /// Seek to an absolute position within the current track.
     ///
     /// Uses `FLUSH | KEY_UNIT` flags so GStreamer discards buffered data and
@@ -970,6 +985,17 @@ mod live_cdda_tests {
     /// Live diagnosis: play a real CD track through the full Player pipeline and
     /// log the bus events + position each 250 ms. Run:
     /// `cargo test --lib live_play_cdda -- --ignored --nocapture`
+    #[test]
+    fn position_usecs_converts_and_defaults() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        // No pipeline position yet → 0 (not a panic).
+        assert_eq!(p.position_usecs(), 0);
+        // Fake position flows through the µs conversion.
+        p.set_position_for_test(Duration::from_millis(1500));
+        assert_eq!(p.position_usecs(), 1_500_000);
+    }
+
     #[test]
     #[ignore]
     fn live_play_cdda() {
