@@ -72,7 +72,7 @@ use id3::draw_id3_editor_overlay;
 use media_library::draw_media_library;
 use overlays::{
     draw_add_file_overlay, draw_help_overlay, draw_jump_overlay,
-    draw_move_track_overlay, draw_remove_track_overlay,
+    draw_move_track_overlay, draw_nowplaying_overlay, draw_remove_track_overlay,
 };
 use settings_eq::{draw_eq_overlay, draw_settings_overlay};
 
@@ -143,6 +143,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::MoveTrack { .. } => draw_move_track_overlay(frame, app, area),
         Mode::RemoveTrack { .. } => draw_remove_track_overlay(frame, app, area),
         Mode::Help { .. } => draw_help_overlay(frame, app, area),
+        Mode::NowPlaying { .. } => draw_nowplaying_overlay(frame, app, area),
         Mode::Id3Editor(state) => draw_id3_editor_overlay(frame, state, area),
         Mode::Settings(state) => draw_settings_overlay(frame, app, state, area),
         Mode::Equalizer(state) => draw_eq_overlay(frame, app, state, area),

@@ -80,6 +80,13 @@ pub enum Mode {
     Equalizer(EqState),
     /// ML key: full-screen media library browser.
     MediaLibrary(MediaLibraryState),
+    /// w key: full-screen now-playing data (tags, technical, stats, links).
+    /// No art (TUI). `info` is built once at open, not per render frame —
+    /// mirrors how `Id3Editor` snapshots `fields` at open.
+    NowPlaying {
+        scroll: u16,
+        info: Box<crate::now_playing::NowPlayingInfo>,
+    },
 }
 
 /// State for an in-progress background add-file scan.

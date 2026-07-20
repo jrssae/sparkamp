@@ -307,6 +307,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             key("  d"),
             Span::raw("      View/Edit ID3 tags for highlighted track"),
         ]),
+        Line::from(vec![
+            key("  w"),
+            Span::raw("      Now-playing info (tags, stats, links)"),
+        ]),
         Line::from(vec![key("  i"), Span::raw("      Show this help")]),
         Line::from(vec![key("  q / Esc"), Span::raw("  Quit")]),
         Line::from(""),
@@ -347,6 +351,124 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else {
         " Keyboard Shortcuts ".to_string()
+    };
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        title,
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(C_ACCENT)),
+            )
+            .style(Style::default().fg(C_TEXT))
+            .scroll((clamped_scroll, 0)),
+        popup,
+    );
+}
+
+/// Render the now-playing data overlay (`w` key): curated tags, technical
+/// line, play stats and Wikipedia search links for the currently *playing*
+/// track. `info` is built once at open time (see `Mode::NowPlaying`), so
+/// this function only lays it out — no disk/DB access happens per frame.
+/// No album art here — that is a GTK/macOS-only capability.
+pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let (scroll, info) = if let Mode::NowPlaying { scroll, ref info } = app.mode {
+        (scroll, info)
+    } else {
+        return;
+    };
+
+    let key = |s: &'static str| {
+        Span::styled(
+            s,
+            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
+    let dim = |s: &'static str| Span::styled(s, Style::default().fg(C_DIM));
+    let sep = |s: &'static str| Line::from(dim(s));
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(sep("── Now playing ──────────────────────────────────────"));
+    if info.tags.is_empty() {
+        lines.push(Line::from(dim("  (no tags found)")));
+    } else {
+        for (label, value) in &info.tags {
+            lines.push(Line::from(vec![
+                key(label),
+                Span::raw(": "),
+                Span::raw(value.clone()),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+
+    if !info.tech_line.is_empty() {
+        lines.push(sep("── Technical ─────────────────────────────────────────"));
+        lines.push(Line::from(info.tech_line.clone()));
+        lines.push(Line::from(""));
+    }
+
+    if info.play_count.is_some() || info.last_played.is_some() {
+        lines.push(sep("── Stats ─────────────────────────────────────────────"));
+        if let Some(count) = info.play_count {
+            lines.push(Line::from(format!("Play count: {count}")));
+        }
+        if let Some(ref last) = info.last_played {
+            // No shared core/TUI formatter exists for this timestamp (GTK's
+            // `format_last_played` is private to frontends/gtk); show the
+            // raw ISO-8601 value rather than duplicate that formatting logic.
+            lines.push(Line::from(format!("Last played: {last}")));
+        }
+        lines.push(Line::from(""));
+    }
+
+    if info.artist_wiki_url.is_some() || info.album_wiki_url.is_some() {
+        lines.push(sep("── Links ─────────────────────────────────────────────"));
+        if let Some(ref url) = info.artist_wiki_url {
+            lines.push(Line::from(vec![
+                dim("Artist: "),
+                Span::raw(url.clone()),
+            ]));
+        }
+        if let Some(ref url) = info.album_wiki_url {
+            lines.push(Line::from(vec![
+                dim("Album: "),
+                Span::raw(url.clone()),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ scroll  ·  z/x/c/v/b/j work here  ·  Esc/w closes",
+        Style::default().fg(C_DIM),
+    )));
+
+    // Popup fills most of the terminal height so all content is reachable —
+    // same sizing rule as the Help overlay.
+    let popup_h = area.height.saturating_sub(4).max(6);
+    let popup = centered_popup(area, 62, popup_h);
+
+    // Visible content rows = popup height minus the two border rows.
+    let visible = popup_h.saturating_sub(2) as usize;
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(visible) as u16;
+    let clamped_scroll = scroll.min(max_scroll);
+
+    let title = if total > visible {
+        format!(
+            " Now Playing  [{}/{}] ",
+            clamped_scroll + 1,
+            max_scroll + 1
+        )
+    } else {
+        " Now Playing ".to_string()
     };
 
     frame.render_widget(Clear, popup);

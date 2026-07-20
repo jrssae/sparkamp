@@ -210,6 +210,48 @@ impl App {
             Mode::Settings(..) => self.handle_settings(code, modifiers),
             Mode::Equalizer(..) => self.handle_equalizer(code),
             Mode::MediaLibrary(..) => self.handle_media_library(code, modifiers),
+            Mode::NowPlaying { ref mut scroll, .. } => {
+                match code {
+                    // Scroll the overlay.
+                    KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Down => *scroll = scroll.saturating_add(1),
+
+                    // Playback pass-throughs — stay in now-playing mode.
+                    KeyCode::Char('z') => self.play_prev(),
+                    KeyCode::Char('x') => {
+                        if *self.player.state() == PlayerState::Stopped {
+                            self.play_current();
+                        } else {
+                            let _ = self.player.play();
+                        }
+                    }
+                    KeyCode::Char('c') => {
+                        let _ = self.player.toggle_pause();
+                    }
+                    KeyCode::Char('v') => {
+                        let _ = self.player.stop();
+                    }
+                    KeyCode::Char('b') => self.play_next(),
+
+                    // Jump — switches mode (closes now-playing implicitly).
+                    KeyCode::Char('j') | KeyCode::Char('J') => {
+                        let results = (0..self.playlist.len()).collect();
+                        self.mode = Mode::Jump {
+                            query: String::new(),
+                            results,
+                            selected: 0,
+                            from_media_library: false,
+                        };
+                    }
+
+                    // Close the overlay.
+                    KeyCode::Esc | KeyCode::Char('w') | KeyCode::Char('W') => {
+                        self.mode = Mode::Normal;
+                    }
+
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -417,6 +459,37 @@ impl App {
             // m / M — open the media library full-screen view.
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.open_media_library();
+            }
+
+            // w / W — full-screen now-playing data (tags, technical, stats,
+            // links). "Now playing" = the track actually playing
+            // (current_index), not the playlist cursor, since the two can
+            // diverge while browsing.
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                if let Some(track) = self.playlist.tracks.get(self.playlist.current_index) {
+                    let path = track.path.clone();
+                    let path_str = path.to_string_lossy();
+                    let lib_track = self
+                        .media_lib
+                        .as_ref()
+                        .and_then(|ml| ml.track_by_path(&path_str).ok());
+                    let snapshot = self
+                        .media_lib
+                        .as_ref()
+                        .map(|ml| ml.play_snapshot(&path_str))
+                        .unwrap_or_default();
+                    let info = crate::now_playing::build_now_playing_info(
+                        &path,
+                        lib_track.as_ref(),
+                        snapshot,
+                    );
+                    self.mode = Mode::NowPlaying {
+                        scroll: 0,
+                        info: Box::new(info),
+                    };
+                } else {
+                    self.set_status("Nothing playing");
+                }
             }
 
             _ => {}
