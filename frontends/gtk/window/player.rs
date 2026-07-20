@@ -197,8 +197,16 @@ pub fn build(
     np_row.set_margin_bottom(2);
 
     // ── Left column: [state icon | time display] ABOVE the mini visualizer ────
+    // Collapsed: center the compact time+viz block in the row. Expanded: FILL
+    // the taller row so the viz (which vexpands) has space to grow into and its
+    // bottom pins to the vol row. Without Fill here left_col stays at its
+    // natural height and the viz can never expand.
     let left_col = GtkBox::new(Orientation::Vertical, 2);
-    left_col.set_valign(Align::Center);
+    left_col.set_valign(if init_player_expanded {
+        Align::Fill
+    } else {
+        Align::Center
+    });
 
     // Small play/pause/stop indicator — sits inside the same dark box as
     // the time display. Class-less label inherits styling from the parent.
@@ -4543,6 +4551,7 @@ pub fn build(
         let viz = viz.clone();
         let viz_stack = viz_stack.clone();
         let granite_pic = granite_pic.clone();
+        let left_col = left_col.clone();
         let window_wk = window.downgrade();
         move |btn| {
             let expanded = {
@@ -4560,8 +4569,10 @@ pub fn build(
                 btn.remove_css_class("mode-btn-active");
             }
 
-            // Expanded: the viz vexpands to fill the taller row (bottom pinned
-            // to the vol row); collapsed: back to the compact fixed height.
+            // Expanded: left_col fills the taller row and the viz vexpands into
+            // that space (bottom pinned to the vol row); collapsed: left_col
+            // re-centers the compact block and the viz drops to fixed height.
+            left_col.set_valign(if expanded { Align::Fill } else { Align::Center });
             viz.set_vexpand(expanded);
             viz_stack.set_vexpand(expanded);
             granite_pic.set_vexpand(expanded);
