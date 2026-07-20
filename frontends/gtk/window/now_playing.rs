@@ -24,7 +24,7 @@ use crate::now_playing::NowPlayingInfo;
 const ART_SIZE: i32 = 100;
 
 /// How long each carousel page stays up before advancing.
-const CAROUSEL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const CAROUSEL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Mutable carousel state shared between the update closure (which rebuilds
 /// pages on every track change) and the cycle timer (which advances them).
@@ -135,6 +135,21 @@ fn advance(carousel: &Rc<RefCell<Carousel>>) {
     set_active_dot(&dots, next);
 }
 
+/// Jump directly to page `to` (clicked dot). Same borrow discipline as
+/// `advance`: read what's needed, drop the borrow, then touch the widgets.
+fn jump(carousel: &Rc<RefCell<Carousel>>, to: usize) {
+    let (stack, dots) = {
+        let mut c = carousel.borrow_mut();
+        if to >= c.pages {
+            return;
+        }
+        c.index = to;
+        (c.stack.clone(), c.dots.clone())
+    };
+    stack.set_visible_child_name(&to.to_string());
+    set_active_dot(&dots, to);
+}
+
 /// Rebuild the art and the carousel pages from `info`. Pages are rebuilt
 /// wholesale (once per track change, not per frame); only groups with content
 /// get a page, so an empty-tag file simply shows fewer pages.
@@ -195,9 +210,14 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         wrap.append(page);
         c.stack.add_named(&wrap, Some(&i.to_string()));
 
-        // One dot per page; the current page's is filled.
+        // One dot per page; the current page's is filled. Clicking a dot
+        // jumps straight to that page (the auto-cycle timer keeps running).
         let dot = Label::new(Some(if i == 0 { "●" } else { "○" }));
         dot.add_css_class("np-dot");
+        let click = GestureClick::new();
+        let carousel_click = carousel.clone();
+        click.connect_released(move |_, _, _, _| jump(&carousel_click, i));
+        dot.add_controller(click);
         c.dots.append(&dot);
     }
 
