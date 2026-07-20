@@ -1379,10 +1379,11 @@ pub fn build(
     // is not perceptible and matches how the marquee itself is driven.
     let refresh_now_playing: Rc<dyn Fn()> = {
         let state = state.clone();
+        let last_np_key = last_np_key.clone();
         Rc::new(move || {
             // Build the info + clone the subscriber list under one short borrow,
             // drop it, THEN invoke callbacks (subscribers may re-borrow state).
-            let (info, subs) = {
+            let (info, subs, key) = {
                 let mut s = state.borrow_mut();
                 let path_str = s
                     .playlist
@@ -1404,11 +1405,17 @@ pub fn build(
                         );
                         s.current_now_playing = Some(info.clone());
                         let subs = s.now_playing_subscribers.clone();
-                        (Some(info), subs)
+                        (Some(info), subs, Some(p))
                     }
-                    None => (None, Vec::new()),
+                    None => (None, Vec::new(), None),
                 }
             };
+            // Mark the track we just refreshed so the tick-loop choke point
+            // doesn't fire a redundant second time for the same track. Explicit
+            // callers (play/next/prev/z/b) thus get an immediate refresh AND a
+            // fresh pre-play snapshot even when they REPLAY the same path
+            // (Repeat-Song loop, Prev-restart ≥5s) where the path is unchanged.
+            *last_np_key.borrow_mut() = key;
             if let Some(info) = info {
                 for cb in &subs {
                     cb(&info);
@@ -1422,18 +1429,21 @@ pub fn build(
     // All "start playing" paths (buttons, keyboard, auto-advance) funnel
     // through here so the marquee and playlist stay in sync.  Label text is
     // NOT set directly here; the tick loop renders the marquee window each
-    // frame so the scrolling starts immediately after track change. The A1
-    // panel / A6 art window fan-out is likewise no longer triggered from
-    // here explicitly — the tick loop's now-playing choke point (keyed by
-    // path) picks up every current-track change within one tick, so this
-    // and every other play path (buttons, keys, Media Library, devices) stay
-    // in sync without each call site needing its own `refresh_now_playing()`.
+    // frame so the scrolling starts immediately after track change.
+    //
+    // The A1 panel / A6 art-window fan-out fires explicitly here (and from the
+    // other button/key play paths) for an immediate, snapshot-fresh refresh —
+    // including REPLAYS of the same track (Repeat-Song, play-from-stopped),
+    // where the tick loop's path-keyed choke point alone would not re-fire.
+    // The tick loop remains the catch-all for the ~17 Media-Library / device
+    // paths that call `play_current()` directly and have no explicit call.
     let play_and_update = {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
+        let refresh_now_playing = refresh_now_playing.clone();
         Rc::new(move || {
             // Record which row was playing before so we can un-bold it.
             let old_idx = state.borrow().playlist.current_index;
@@ -1454,6 +1464,9 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
+                // Follow the song on the art panel / window (immediate + covers
+                // same-path replay, which the tick-loop choke point would skip).
+                refresh_now_playing();
             }
         })
     };
@@ -1918,6 +1931,7 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
+        let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_next() } {
@@ -1929,8 +1943,7 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
-                // Art panel / window follow via the tick loop's now-playing
-                // choke point (keyed on the current track path).
+                refresh_now_playing();
             }
         }
     });
@@ -1942,6 +1955,7 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
+        let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_prev() } {
@@ -1953,8 +1967,9 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
-                // Art panel / window follow via the tick loop's now-playing
-                // choke point (keyed on the current track path).
+                // Explicit so a Prev-restart (≥5s → replays the SAME track) still
+                // refreshes; the tick's path-keyed choke point would skip it.
+                refresh_now_playing();
             }
         }
     });
@@ -3841,6 +3856,7 @@ pub fn build(
         let kbd_open_fs = open_fullscreen_fn.clone();
         let kbd_art_open = art_open.clone();
         let kbd_toggle_np = toggle_np_panel.clone();
+        let kbd_refresh_np = refresh_now_playing.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -3856,8 +3872,8 @@ pub fn build(
                         }
                         kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
-                        // Art panel / window follow via the tick loop's
-                        // now-playing choke point.
+                        // Explicit so a Prev-restart (same track) refreshes too.
+                        kbd_refresh_np();
                     }
                     glib::Propagation::Stop
                 }
@@ -3889,8 +3905,7 @@ pub fn build(
                         }
                         kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
-                        // Art panel / window follow via the tick loop's
-                        // now-playing choke point.
+                        kbd_refresh_np();
                     }
                     glib::Propagation::Stop
                 }
