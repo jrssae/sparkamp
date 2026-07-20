@@ -555,11 +555,75 @@ pub fn build(
         btn_np.add_css_class("mode-btn-active");
     }
 
-    // The inline marquee arrow drives the same toggle as `btn_np` (built above,
-    // before btn_np existed — wired here now that it does).
-    np_toggle.connect_clicked({
+    // Single source of truth for the now-playing panel toggle, shared by the
+    // `w` key, the mode button, and the inline marquee arrow so EVERY trigger
+    // runs the identical Stack-swap / viz-resize / arrow-flip / persist logic.
+    // (Previously these fanned out through btn_np.emit_clicked(), which did not
+    // reliably flip the marquee arrow.)
+    let toggle_np_panel: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let np_stack = np_stack.clone();
+        let viz = viz.clone();
+        let viz_stack = viz_stack.clone();
+        let granite_pic = granite_pic.clone();
+        let left_col = left_col.clone();
+        let np_toggle = np_toggle.clone();
+        let granite_render_h = granite_render_h.clone();
         let btn_np = btn_np.clone();
-        move |_| btn_np.emit_clicked()
+        let window_wk = window.downgrade();
+        Rc::new(move || {
+            let expanded = {
+                let mut s = state.borrow_mut();
+                let now = !s.config.window.player_expanded;
+                s.config.window.player_expanded = now;
+                now
+            };
+            let _ = state.borrow().config.save();
+
+            np_stack.set_visible_child_name(if expanded { "expanded" } else { "collapsed" });
+            if expanded {
+                btn_np.add_css_class("mode-btn-active");
+            } else {
+                btn_np.remove_css_class("mode-btn-active");
+            }
+            // Flip the inline marquee arrow: down = reveal, up = hide.
+            np_toggle.set_icon_name(if expanded {
+                "pan-up-symbolic"
+            } else {
+                "pan-down-symbolic"
+            });
+
+            // Expanded: left_col fills the taller row and the viz vexpands into
+            // that space (bottom pinned to the vol row); collapsed: left_col
+            // re-centers the compact block and the viz drops to fixed height.
+            left_col.set_valign(if expanded { Align::Fill } else { Align::Center });
+            viz.set_vexpand(expanded);
+            viz_stack.set_vexpand(expanded);
+            granite_pic.set_vexpand(expanded);
+            granite_render_h.set(if expanded {
+                GRANITE_RENDER_EXPANDED
+            } else {
+                VIZ_HEIGHT_COLLAPSED
+            });
+            // Drop the current (old-size) granite frame NOW so the window
+            // measures the Picture at zero intrinsic and can shrink on collapse;
+            // the tick loop refills it at the new size within a frame.
+            granite_pic.set_paintable(gtk4::gdk::Paintable::NONE);
+
+            // `resizable(false)` windows don't renegotiate height on their own;
+            // re-kick a fixed 384px width / natural height so the window grows
+            // to fit the expanded panel and shrinks back on collapse.
+            if let Some(w) = window_wk.upgrade() {
+                w.set_default_size(384, -1);
+                w.queue_resize();
+            }
+        })
+    };
+
+    // The inline marquee arrow drives the same toggle as `btn_np`.
+    np_toggle.connect_clicked({
+        let toggle = toggle_np_panel.clone();
+        move |_| toggle()
     });
 
     // ── Vol row: [VOL] [vol_bar(half-width)] [spring] [ℹ] [ML] [NP] [EQ] [PL] ─
@@ -3749,7 +3813,6 @@ pub fn build(
         let kbd_jump_entry = jump_entry.clone();
         let kbd_btn_info = btn_info.clone();
         let kbd_btn_eq = btn_eq.clone();
-        let kbd_btn_np = btn_np.clone();
         // Clones for r/s key handlers to update button visuals.
         let kbd_btn_repeat = btn_repeat.clone();
         let kbd_repeat_icon = repeat_icon.clone();
@@ -3762,6 +3825,7 @@ pub fn build(
         let kbd_open_fs = open_fullscreen_fn.clone();
         let kbd_art_open = art_open.clone();
         let kbd_refresh_np = refresh_now_playing.clone();
+        let kbd_toggle_np = toggle_np_panel.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -4049,7 +4113,7 @@ pub fn build(
                 // button so the Stack-swap/viz-resize/persist logic stays
                 // in one place ──────────────────────────────────────────
                 gdk::Key::w | gdk::Key::W => {
-                    kbd_btn_np.emit_clicked();
+                    kbd_toggle_np();
                     glib::Propagation::Stop
                 }
 
@@ -4582,71 +4646,12 @@ pub fn build(
         }
     });
 
-    // Now-playing panel button — flip config, swap the Stack, resize the
-    // mini-viz, and persist immediately (mirrors btn_pl's save-on-toggle so
-    // the panel state survives a crash, not just a clean close).
+    // Now-playing panel button — drives the shared toggle closure (defined with
+    // btn_np above) so the button, the `w` key, and the marquee arrow all stay
+    // in lock-step.
     btn_np.connect_clicked({
-        let state = state.clone();
-        let np_stack = np_stack.clone();
-        let viz = viz.clone();
-        let viz_stack = viz_stack.clone();
-        let granite_pic = granite_pic.clone();
-        let left_col = left_col.clone();
-        let np_toggle = np_toggle.clone();
-        let granite_render_h = granite_render_h.clone();
-        let window_wk = window.downgrade();
-        move |btn| {
-            let expanded = {
-                let mut s = state.borrow_mut();
-                let now = !s.config.window.player_expanded;
-                s.config.window.player_expanded = now;
-                now
-            };
-            let _ = state.borrow().config.save();
-
-            np_stack.set_visible_child_name(if expanded { "expanded" } else { "collapsed" });
-            if expanded {
-                btn.add_css_class("mode-btn-active");
-            } else {
-                btn.remove_css_class("mode-btn-active");
-            }
-            // Flip the inline marquee arrow: down = reveal, up = hide.
-            np_toggle.set_icon_name(if expanded {
-                "pan-up-symbolic"
-            } else {
-                "pan-down-symbolic"
-            });
-
-            // Expanded: left_col fills the taller row and the viz vexpands into
-            // that space (bottom pinned to the vol row); collapsed: left_col
-            // re-centers the compact block and the viz drops to fixed height.
-            left_col.set_valign(if expanded { Align::Fill } else { Align::Center });
-            viz.set_vexpand(expanded);
-            viz_stack.set_vexpand(expanded);
-            granite_pic.set_vexpand(expanded);
-            granite_render_h.set(if expanded {
-                GRANITE_RENDER_EXPANDED
-            } else {
-                VIZ_HEIGHT_COLLAPSED
-            });
-            // Drop the current (old-size) granite frame NOW so the window
-            // measures the Picture at zero intrinsic and can shrink on
-            // collapse; the tick loop refills it at the new size within a
-            // frame. Without this, collapsing while Granite is active leaves
-            // the window stuck at the taller expanded height.
-            granite_pic.set_paintable(gtk4::gdk::Paintable::NONE);
-
-            // `resizable(false)` windows don't renegotiate their height on
-            // their own after a child's size changes. Re-kick the default
-            // size with a fixed 384 px width and a natural (-1) height so the
-            // window grows to fit the expanded panel and shrinks back to the
-            // compact marquee on collapse. (With np_stack vhomogeneous now
-            // off, natural height actually differs between the two states.)
-            if let Some(w) = window_wk.upgrade() {
-                w.set_default_size(384, -1);
-                w.queue_resize();
-            }
-        }
+        let toggle = toggle_np_panel.clone();
+        move |_| toggle()
     });
 
     // ══════════════════════════════════════════════════════════════════════════
