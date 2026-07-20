@@ -118,6 +118,88 @@ pub fn build_metadata(m: &MprisMeta) -> Vec<(&'static str, MetaValue)> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Command + property mappers (pure — make the D-Bus layer table-testable
+// without a session bus).
+// ---------------------------------------------------------------------------
+
+/// An MPRIS `org.mpris.MediaPlayer2.Player` / root method resolved to the
+/// controller action it should trigger. `Seek`/`SetPosition` carry the raw
+/// microsecond argument the method was called with.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub enum MprisAction {
+    Play,
+    Pause,
+    PlayPause,
+    Stop,
+    Next,
+    Previous,
+    /// Player.Seek(x): relative offset in microseconds (may be negative).
+    Seek(i64),
+    /// Player.SetPosition(o, x): absolute position in microseconds.
+    SetPosition(i64),
+    /// Root MediaPlayer2.Raise / .Quit.
+    Raise,
+    Quit,
+}
+
+/// Map an MPRIS method name to its action, or `None` for an unknown method.
+/// `Seek`/`SetPosition` default their argument to 0 — the D-Bus layer replaces
+/// it with the parsed call argument (this keeps the name→action mapping a pure,
+/// bus-free table).
+#[allow(dead_code)]
+pub fn mpris_command_action(method: &str) -> Option<MprisAction> {
+    Some(match method {
+        "Play" => MprisAction::Play,
+        "Pause" => MprisAction::Pause,
+        "PlayPause" => MprisAction::PlayPause,
+        "Stop" => MprisAction::Stop,
+        "Next" => MprisAction::Next,
+        "Previous" => MprisAction::Previous,
+        "Seek" => MprisAction::Seek(0),
+        "SetPosition" => MprisAction::SetPosition(0),
+        "Raise" => MprisAction::Raise,
+        "Quit" => MprisAction::Quit,
+        _ => return None,
+    })
+}
+
+/// MPRIS `PlaybackStatus` string for an engine [`crate::engine::PlayerState`].
+#[allow(dead_code)]
+pub fn playback_status_str(state: &crate::engine::PlayerState) -> &'static str {
+    use crate::engine::PlayerState;
+    match state {
+        PlayerState::Playing => "Playing",
+        PlayerState::Paused => "Paused",
+        PlayerState::Stopped => "Stopped",
+    }
+}
+
+/// MPRIS `LoopStatus` string → Sparkamp [`crate::shuffle::RepeatMode`], or
+/// `None` for an unrecognized value (the setter should then ignore it).
+#[allow(dead_code)]
+pub fn loop_status_to_repeat(status: &str) -> Option<crate::shuffle::RepeatMode> {
+    use crate::shuffle::RepeatMode;
+    match status {
+        "None" => Some(RepeatMode::Off),
+        "Track" => Some(RepeatMode::Song),
+        "Playlist" => Some(RepeatMode::Playlist),
+        _ => None,
+    }
+}
+
+/// Sparkamp [`crate::shuffle::RepeatMode`] → MPRIS `LoopStatus` string.
+#[allow(dead_code)]
+pub fn repeat_to_loop_status(mode: crate::shuffle::RepeatMode) -> &'static str {
+    use crate::shuffle::RepeatMode;
+    match mode {
+        RepeatMode::Off => "None",
+        RepeatMode::Song => "Track",
+        RepeatMode::Playlist => "Playlist",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +337,43 @@ mod tests {
 
         assert_ne!(id_a, id_b);
         assert_eq!(id_a, id_a_again);
+    }
+
+    #[test]
+    fn command_action_maps_every_method_and_rejects_unknown() {
+        use MprisAction::*;
+        assert_eq!(mpris_command_action("Play"), Some(Play));
+        assert_eq!(mpris_command_action("Pause"), Some(Pause));
+        assert_eq!(mpris_command_action("PlayPause"), Some(PlayPause));
+        assert_eq!(mpris_command_action("Stop"), Some(Stop));
+        assert_eq!(mpris_command_action("Next"), Some(Next));
+        assert_eq!(mpris_command_action("Previous"), Some(Previous));
+        assert_eq!(mpris_command_action("Seek"), Some(Seek(0)));
+        assert_eq!(mpris_command_action("SetPosition"), Some(SetPosition(0)));
+        assert_eq!(mpris_command_action("Raise"), Some(Raise));
+        assert_eq!(mpris_command_action("Quit"), Some(Quit));
+        assert_eq!(mpris_command_action("Nonsense"), None);
+        assert_eq!(mpris_command_action("play"), None); // case-sensitive
+    }
+
+    #[test]
+    fn playback_status_strings() {
+        use crate::engine::PlayerState;
+        assert_eq!(playback_status_str(&PlayerState::Playing), "Playing");
+        assert_eq!(playback_status_str(&PlayerState::Paused), "Paused");
+        assert_eq!(playback_status_str(&PlayerState::Stopped), "Stopped");
+    }
+
+    #[test]
+    fn loop_status_repeat_round_trip() {
+        use crate::shuffle::RepeatMode;
+        assert_eq!(loop_status_to_repeat("None"), Some(RepeatMode::Off));
+        assert_eq!(loop_status_to_repeat("Track"), Some(RepeatMode::Song));
+        assert_eq!(loop_status_to_repeat("Playlist"), Some(RepeatMode::Playlist));
+        assert_eq!(loop_status_to_repeat("bogus"), None);
+
+        for m in [RepeatMode::Off, RepeatMode::Song, RepeatMode::Playlist] {
+            assert_eq!(loop_status_to_repeat(repeat_to_loop_status(m)), Some(m));
+        }
     }
 }
