@@ -3995,6 +3995,14 @@ fn open_media_library_window(
         // (connect_bind fires each time an item is shown after a scroll).
         let connected_artwork: Rc<RefCell<std::collections::HashSet<glib::Object>>> =
             Rc::new(RefCell::new(std::collections::HashSet::new()));
+        // Source artwork paths with a lazy thumbnail generation already in
+        // flight, so a rebind during a scroll (ColumnView recycles cells)
+        // doesn't spawn a second decode of the same file.
+        let thumb_inflight: Rc<RefCell<std::collections::HashSet<PathBuf>>> =
+            Rc::new(RefCell::new(std::collections::HashSet::new()));
+        // 36k-row library: never decode a full-size image on the render
+        // path. This is the on-disk cached-thumbnail edge length.
+        const ML_ARTWORK_THUMB_PX: i32 = 40;
 
         // Capture store_ref before factory so it's available for the factory's right-click handler
         let store_for_ctx = track_store.clone();
@@ -4074,6 +4082,7 @@ fn open_media_library_window(
                 let id_str = id.to_string();
                 let is_artwork = id_str == "artwork_path";
                 let connected = connected_artwork.clone();
+                let inflight = thumb_inflight.clone();
                 let ctx_multi_sel = multi_sel.clone();
                 let ctx_col_view = col_view.clone();
                 let _ctx_store = store_for_ctx.clone();
@@ -4093,8 +4102,14 @@ fn open_media_library_window(
                     let child: gtk4::Widget;
 
                     if is_artwork {
+                        // Thumbnail image, blank until the cached PNG exists
+                        // (connect_bind fills it in, generating it lazily
+                        // off-thread the first time a row is shown).
+                        let img = Image::builder()
+                            .pixel_size(ML_ARTWORK_THUMB_PX)
+                            .build();
                         let btn = Button::builder()
-                            .label("View")
+                            .child(&img)
                             .halign(Align::Start)
                             .margin_start(6)
                             .margin_end(6)
@@ -4105,7 +4120,6 @@ fn open_media_library_window(
                             .halign(Align::Fill)
                             .valign(Align::Fill)
                             .build();
-                        btn.add_css_class("link");
                         child = btn.upcast::<gtk4::Widget>();
                     } else {
                         let lbl = Label::builder()
@@ -4331,7 +4345,6 @@ fn open_media_library_window(
                             if let Some(ref art_path) = t.artwork_path {
                                 btn.set_visible(true);
                                 btn.set_sensitive(true);
-                                btn.set_label("View");
                                 // Only connect once per button instance.
                                 if !connected.borrow().contains(&btn_obj) {
                                     let art_clone = art_path.clone();
@@ -4339,6 +4352,76 @@ fn open_media_library_window(
                                     btn.connect_clicked(move |_| {
                                         open_image_viewer(&art_clone);
                                     });
+                                }
+
+                                // Thumbnail: paint the cached PNG if it's
+                                // already on disk; otherwise leave the cell
+                                // blank and generate it off the main thread.
+                                if let Some(img) = btn.child().and_then(|c| c.downcast::<Image>().ok()) {
+                                    let src = PathBuf::from(art_path.as_str());
+                                    if let Some(thumb) = crate::now_playing::thumb_path_for(
+                                        &src,
+                                        ML_ARTWORK_THUMB_PX as u32,
+                                    ) {
+                                        if thumb.exists() {
+                                            img.set_from_file(Some(&thumb));
+                                        } else {
+                                            img.clear(); // don't show a stale/recycled thumbnail
+                                            if inflight.borrow_mut().insert(src.clone()) {
+                                                let inflight2 = inflight.clone();
+                                                let img_wk = img.downgrade();
+                                                let li_wk = li.downgrade();
+                                                let src2 = src.clone();
+                                                let thumb2 = thumb.clone();
+                                                glib::spawn_future_local(async move {
+                                                    let src_blk = src2.clone();
+                                                    let thumb_blk = thumb2.clone();
+                                                    let ok = gio::spawn_blocking(move || -> Result<(), ()> {
+                                                        if let Some(parent) = thumb_blk.parent() {
+                                                            let _ = std::fs::create_dir_all(parent);
+                                                        }
+                                                        let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(
+                                                            &src_blk,
+                                                            ML_ARTWORK_THUMB_PX,
+                                                            ML_ARTWORK_THUMB_PX,
+                                                            true,
+                                                        )
+                                                        .map_err(|_| ())?;
+                                                        pixbuf.savev(&thumb_blk, "png", &[]).map_err(|_| ())
+                                                    })
+                                                    .await;
+
+                                                    // Generation is done (success or not) — the
+                                                    // source is no longer in flight either way.
+                                                    inflight2.borrow_mut().remove(&src2);
+
+                                                    if !matches!(ok, Ok(Ok(()))) {
+                                                        return; // decode/encode failed — leave it blank
+                                                    }
+
+                                                    // ColumnView recycles cells: by the time the
+                                                    // decode finished this row may have scrolled
+                                                    // on to a different track. Only paint if the
+                                                    // ListItem still shows the same artwork path.
+                                                    let (Some(li), Some(img)) = (li_wk.upgrade(), img_wk.upgrade()) else {
+                                                        return;
+                                                    };
+                                                    let still_same = li
+                                                        .item()
+                                                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                                                        .map(|b| {
+                                                            let cur = b.borrow::<crate::media_library::LibTrack>();
+                                                            cur.artwork_path.as_deref()
+                                                                == src2.to_str()
+                                                        })
+                                                        .unwrap_or(false);
+                                                    if still_same {
+                                                        img.set_from_file(Some(&thumb2));
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 btn.set_visible(false);

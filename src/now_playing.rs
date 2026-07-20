@@ -93,7 +93,6 @@ pub fn wiki_search_url(query: &str) -> Option<String> {
 /// Frontends generate the PNG here on first display (gdk-pixbuf / NSImage);
 /// core only owns the path so every frontend shares one cache. Mirrors the
 /// artwork-cache hashing idiom in `tags.rs`.
-#[allow(dead_code)] // removed when T8 wires the GTK thumbnail cell
 pub fn thumb_path_for(artwork_path: &Path, px: u32) -> Option<PathBuf> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
