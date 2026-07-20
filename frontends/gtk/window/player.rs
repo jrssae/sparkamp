@@ -260,6 +260,19 @@ pub fn build(
     // taller row (bottom pinned to the vol row) so the time counter above it
     // and the gap down to the seek bar stay put between the two modes.
     const VIZ_HEIGHT_COLLAPSED: i32 = 52;
+    // Granite render-texture height. FIXED per mode — deliberately NOT the
+    // Picture's live allocation: feeding the allocation back into the texture
+    // size creates an intrinsic-size loop that grows the Picture unbounded
+    // (full-size when collapsed, taller than Bars/Waveform when expanded).
+    // content_fit=Fill upscales this into whatever height the vexpanded row
+    // gives it, so a small fixed value stays crisp enough and never over-drives
+    // the layout.
+    const GRANITE_RENDER_EXPANDED: i32 = 100;
+    let granite_render_h = Rc::new(std::cell::Cell::new(if init_player_expanded {
+        GRANITE_RENDER_EXPANDED
+    } else {
+        VIZ_HEIGHT_COLLAPSED
+    }));
 
     let viz = DrawingArea::new();
     viz.set_content_height(VIZ_HEIGHT_COLLAPSED);
@@ -2926,6 +2939,7 @@ pub fn build(
         // Gdk-CRITICAL and (on Wayland) a segfault during gsk paint.
         let viz_stack_tick = viz_stack.downgrade();
         let granite_pic_tick = granite_pic.downgrade();
+        let granite_render_h_tick = granite_render_h.clone();
         let granite_buf_tick: std::rc::Rc<std::cell::RefCell<Vec<u8>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         // Last mini-Granite render instant → measured dt (in 30 fps frame
@@ -3395,12 +3409,11 @@ pub fn build(
                         let viewport_w = pic.width().max(1) as f64;
                         let viewport_h = pic.height().max(1) as f64;
                         let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
-                        // Render at the mini-viz's ACTUAL allocated height so the
-                        // Picture's intrinsic size matches what the row gives it
-                        // (it vexpands to fill when expanded). A fixed large
-                        // height would pin the collapsed row tall. Cheap and
-                        // crisp at these sizes.
-                        let h: u32 = pic.height().max(VIZ_HEIGHT_COLLAPSED) as u32;
+                        // Fixed per-mode render height (see GRANITE_RENDER_*),
+                        // NOT the live allocation — content_fit=Fill upscales it
+                        // to fill the row. Using the allocation here loops the
+                        // Picture's intrinsic size and grows it unbounded.
+                        let h: u32 = granite_render_h_tick.get().max(1) as u32;
                         let w: u32 = (h as f64 * aspect).round() as u32;
                         let mut buf = granite_buf_tick.borrow_mut();
                         let need = (w as usize) * (h as usize) * 4;
@@ -4580,6 +4593,7 @@ pub fn build(
         let granite_pic = granite_pic.clone();
         let left_col = left_col.clone();
         let np_toggle = np_toggle.clone();
+        let granite_render_h = granite_render_h.clone();
         let window_wk = window.downgrade();
         move |btn| {
             let expanded = {
@@ -4610,6 +4624,11 @@ pub fn build(
             viz.set_vexpand(expanded);
             viz_stack.set_vexpand(expanded);
             granite_pic.set_vexpand(expanded);
+            granite_render_h.set(if expanded {
+                GRANITE_RENDER_EXPANDED
+            } else {
+                VIZ_HEIGHT_COLLAPSED
+            });
             // Drop the current (old-size) granite frame NOW so the window
             // measures the Picture at zero intrinsic and can shrink on
             // collapse; the tick loop refills it at the new size within a
