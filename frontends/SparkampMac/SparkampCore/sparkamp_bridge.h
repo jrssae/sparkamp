@@ -16,6 +16,7 @@
 /* ── Opaque context ──────────────────────────────────────────────────────── */
 
 typedef struct SparkampCtx SparkampCtx;
+typedef struct SparkampNowPlaying SparkampNowPlaying;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
@@ -326,6 +327,45 @@ char           *sparkamp_tag_frame_value(SparkampTagCtx *tag, int index);
 int             sparkamp_tag_save(SparkampTagCtx *tag);
 uint8_t        *sparkamp_tag_get_artwork_data(SparkampTagCtx *tag, int *len_out);
 void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
+/** Set the artwork source path; embedded as APIC on the next sparkamp_tag_save.
+    Passing NULL clears artwork, same as sparkamp_tag_clear_artwork. */
+void            sparkamp_tag_set_artwork(SparkampTagCtx *tag, const char *path);
+/** Clear the artwork source path; sparkamp_tag_save then removes all embedded pictures. */
+void            sparkamp_tag_clear_artwork(SparkampTagCtx *tag);
+
+// ---------------------------------------------------------------------------
+// Now Playing — A1 panel data for the CURRENT playlist track
+// ---------------------------------------------------------------------------
+
+/** Build a now-playing snapshot for the current track. Returns NULL if
+    nothing is playing / no current track. Free with sparkamp_now_playing_close.
+    Poll on the existing track-change notification (no new callback bridge). */
+SparkampNowPlaying *sparkamp_now_playing_open(SparkampCtx *ctx);
+void                 sparkamp_now_playing_close(SparkampNowPlaying *np);
+
+/** Number of curated, non-empty tag rows. */
+int32_t sparkamp_now_playing_tag_count(const SparkampNowPlaying *np);
+/** Label of tag row i (e.g. "Title", "Artist"); "" if out of range.
+    Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_tag_label(const SparkampNowPlaying *np, int32_t i);
+/** Value of tag row i; "" if out of range. Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_tag_value(const SparkampNowPlaying *np, int32_t i);
+/** e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45"; "" if nothing probed.
+    Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_tech_line(const SparkampNowPlaying *np);
+/** Resolved artwork file path, or "" if none. Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_artwork_path(const SparkampNowPlaying *np);
+/** 1 if the track is indexed in the media library (has a play count); 0 otherwise. */
+int32_t sparkamp_now_playing_has_play_count(const SparkampNowPlaying *np);
+/** Play count; 0 when sparkamp_now_playing_has_play_count is 0. */
+int64_t sparkamp_now_playing_play_count(const SparkampNowPlaying *np);
+/** ISO-8601 UTC last-played timestamp, or "" if never played / unindexed.
+    Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_last_played(const SparkampNowPlaying *np);
+/** Wikipedia search URL for the artist tag, or "" if empty. Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_artist_wiki_url(const SparkampNowPlaying *np);
+/** Wikipedia search URL for the album tag, or "" if empty. Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_album_wiki_url(const SparkampNowPlaying *np);
 
 // ---------------------------------------------------------------------------
 // Media Library
@@ -352,6 +392,7 @@ typedef struct {
     uint8_t  composer[256];
     int32_t  read_only;       /* 1 = file is read-only on disk */
     int32_t  has_art;         /* 1 = cached album art exists */
+    uint8_t  artwork_path[512]; /* cached/resolved artwork file path, or empty if has_art is 0 */
     int32_t  file_missing;    /* 1 = file does not exist at recorded path */
     uint8_t  last_played[32]; /* ISO-8601 UTC ("YYYY-MM-DDTHH:MM:SSZ") or empty */
     int32_t  sample_rate;     /* Hz, from the codec header; 0 = unknown */

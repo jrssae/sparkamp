@@ -47,6 +47,9 @@ pub struct SparkampLibTrack {
     pub read_only: c_int,
     /// 1 if cached album artwork exists for this track; 0 otherwise.
     pub has_art: c_int,
+    /// Path to the cached/resolved artwork file for this track, or empty if
+    /// `has_art` is 0. Same source as the ID3 editor / now-playing panel.
+    pub artwork_path: [u8; 512],
     /// 1 if the file no longer exists at its recorded path; 0 otherwise.
     pub file_missing: c_int,
     /// ISO-8601 UTC timestamp of the last time this track was played
@@ -90,6 +93,7 @@ impl SparkampLibTrack {
             composer: [0u8; 256],
             read_only: 0,
             has_art: if t.artwork_path.is_some() { 1 } else { 0 },
+            artwork_path: [0u8; 512],
             file_missing: 0,
             last_played: [0u8; 32],
             sample_rate: t.sample_rate.unwrap_or(0) as c_int,
@@ -106,6 +110,7 @@ impl SparkampLibTrack {
             dst[n] = 0;
         }
         copy_str(&mut out.path, &t.path);
+        copy_str(&mut out.artwork_path, t.artwork_path.as_deref().unwrap_or(""));
         copy_str(
             &mut out.title,
             t.title.as_deref().unwrap_or(&t.filename),

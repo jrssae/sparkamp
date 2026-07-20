@@ -35,6 +35,7 @@ mod eq;
 mod granite;
 mod id3;
 mod media_library;
+mod now_playing;
 mod playback;
 mod playlist;
 mod settings;

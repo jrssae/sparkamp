@@ -213,3 +213,59 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       (technical fields are independent of tag fields; the editor closes
       ~0.4s after a successful save, so this is mostly a "no crash /
       no flicker to blank" check during that window).
+
+## Phase 2 — 2026-07-20: now-playing FFI + artwork set/clear + ML art path (Task 12, BLIND — Swift never compiled)
+- [ ] `xcodebuild` succeeds with zero errors/warnings against the updated
+      `sparkamp_bridge.h` (new: opaque `SparkampNowPlaying` + its 10
+      `sparkamp_now_playing_*` functions; new: `sparkamp_tag_set_artwork`,
+      `sparkamp_tag_clear_artwork`; changed: `SparkampLibTrack` gained
+      `artwork_path[512]` right after `has_art` — verify every existing
+      field read by Swift after `has_art` still lines up positionally).
+- [ ] Now-playing panel (A1): on each track-change notification, call
+      `sparkamp_now_playing_open`, read all fields, then
+      `sparkamp_now_playing_close` — confirm it returns NULL gracefully
+      when nothing is playing (panel should show its empty state, not crash).
+- [ ] Panel's curated tag rows (`sparkamp_now_playing_tag_count` /
+      `_tag_label` / `_tag_value`) match GTK's A1 panel for the SAME file:
+      same labels, same order, only non-empty fields shown, filename-stem
+      fallback title when a file has no usable ID3 text at all.
+- [ ] `sparkamp_now_playing_tech_line` matches the ID3 editor's tech line
+      for the same file (shared `tech_summary` under the hood).
+- [ ] `sparkamp_now_playing_artwork_path` resolves to the same file GTK's
+      A1 panel shows (embedded APIC dump / folder image / library cache),
+      and is "" when there is no art — panel shows its no-art placeholder,
+      not a broken image.
+- [ ] `sparkamp_now_playing_has_play_count` / `_play_count` / `_last_played`:
+      an indexed (media-library-scanned) track shows real stats; a track
+      played from outside the library (e.g. Testing dir, ad-hoc file) shows
+      the "not yet played" / no-stats state instead of 0 or garbage.
+- [ ] `sparkamp_now_playing_artist_wiki_url` / `_album_wiki_url` open the
+      correct Wikipedia search page (percent-encoded, spaces as `%20`) for
+      the current artist/album; empty tag → link is hidden/disabled, not a
+      broken URL.
+- [ ] ID3 editor: setting a new cover image now calls
+      `sparkamp_tag_set_artwork` + `sparkamp_tag_save` — confirm the saved
+      file actually embeds the APIC frame (inspect with GTK or `id3v2 -l`)
+      and the mac editor's art preview updates immediately after save.
+- [ ] ID3 editor: clearing/removing the cover now calls
+      `sparkamp_tag_clear_artwork` + `sparkamp_tag_save` — confirm ALL
+      embedded pictures are gone afterward, not just hidden in the UI.
+- [ ] Set-then-clear-then-set-again on the same file round-trips cleanly
+      (no leftover/duplicate APIC frames after repeated saves).
+- [ ] Media Library table: add an art thumbnail/indicator column driven by
+      `SparkampLibTrack.artwork_path` (fall back to `has_art` alone if no
+      thumbnail rendering is wired yet) — confirm it populates for scanned
+      tracks with cached art and stays blank for tracks without any.
+- [ ] Saved Playlist editor's track rows (same `SparkampLibTrack` source)
+      also reflect `artwork_path` correctly, matching the Files/ML view for
+      the same track.
+
+**Deferred, not a gap**: no Rust unit test exercises
+`sparkamp_now_playing_open` directly — building a full `SparkampCtx`
+requires GStreamer init + a real `Player`, which the existing FFI test
+suite does not construct anywhere; the function is a thin, already-covered
+composition of `Playlist::current`, `MediaLibrary::track_by_path`,
+`MediaLibrary::play_snapshot`, and `crate::now_playing::build_now_playing_info`
+(all independently unit-tested in `src/now_playing.rs` and
+`src/media_library/tests.rs`). The mac checklist items above are the
+verification for the FFI wiring itself.

@@ -211,6 +211,34 @@ pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
     0
 }
 
+/// Set the artwork source path for the tag ctx. The image at `path` is
+/// embedded as an APIC frame on the next `sparkamp_tag_save`. Passing null
+/// is equivalent to `sparkamp_tag_clear_artwork`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_set_artwork(tag: *mut SparkampTagCtx, path: *const c_char) {
+    if tag.is_null() {
+        return;
+    }
+    let tag = &mut *tag;
+    let path_str = if path.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(path).to_str().unwrap_or("")
+    };
+    tag.fields.artwork_path = path_str.to_owned();
+}
+
+/// Clear the artwork source path so the next `sparkamp_tag_save` removes all
+/// embedded pictures from the file.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_clear_artwork(tag: *mut SparkampTagCtx) {
+    if tag.is_null() {
+        return;
+    }
+    let tag = &mut *tag;
+    tag.fields.artwork_path = String::new();
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_tag_get_artwork_data(
     tag: *const SparkampTagCtx,
@@ -291,6 +319,56 @@ mod tests {
             super::sparkamp_tag_close(ctx2);
         }
         std::fs::remove_file(&path).ok();
+    }
+
+    // Roundtrip sparkamp_tag_set_artwork / sparkamp_tag_clear_artwork through
+    // the raw FFI surface (Piece B): set embeds an APIC on save; clear
+    // removes all pictures on the next save.
+    #[test]
+    fn ffi_set_then_clear_artwork_roundtrips() {
+        let path = std::env::temp_dir().join("sparkamp_ffi_artwork_test.mp3");
+        std::fs::write(&path, b"").unwrap();
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // A tiny 1x1 PNG to embed as artwork.
+        let img_path = std::env::temp_dir().join("sparkamp_ffi_artwork_test.png");
+        #[rustfmt::skip]
+        let png_bytes: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+            0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+            0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+            0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+            0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+            0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&img_path, png_bytes).unwrap();
+        let c_img_path = CString::new(img_path.to_str().unwrap()).unwrap();
+
+        unsafe {
+            let ctx = super::sparkamp_tag_open(c_path.as_ptr());
+            assert!(!ctx.is_null());
+
+            super::sparkamp_tag_set_artwork(ctx, c_img_path.as_ptr());
+            assert_eq!(super::sparkamp_tag_save(ctx), 0);
+            super::sparkamp_tag_close(ctx);
+
+            let tag = id3::Tag::read_from_path(&path).unwrap();
+            assert!(tag.pictures().next().is_some());
+
+            let ctx2 = super::sparkamp_tag_open(c_path.as_ptr());
+            assert!(!ctx2.is_null());
+            super::sparkamp_tag_clear_artwork(ctx2);
+            assert_eq!(super::sparkamp_tag_save(ctx2), 0);
+            super::sparkamp_tag_close(ctx2);
+
+            let tag2 = id3::Tag::read_from_path(&path).unwrap();
+            assert!(tag2.pictures().next().is_none());
+        }
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&img_path).ok();
     }
 }
 
