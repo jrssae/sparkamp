@@ -11,11 +11,12 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    glib, Align, Box as GtkBox, GestureClick, Image, Label, LinkButton, Orientation, Picture,
-    PolicyType, ScrolledWindow, Stack, StackTransitionType,
+    gdk, gdk_pixbuf, glib, Align, Box as GtkBox, GestureClick, Image, Label, LinkButton,
+    Orientation, Picture, PolicyType, ScrolledWindow, Stack, StackTransitionType,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::now_playing::NowPlayingInfo;
 
@@ -24,7 +25,17 @@ use crate::now_playing::NowPlayingInfo;
 const ART_SIZE: i32 = 100;
 
 /// How long each carousel page stays up before advancing.
-const CAROUSEL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6);
+const CAROUSEL_INTERVAL: Duration = Duration::from_secs(6);
+
+/// How often the cycle timer checks whether it is time to advance. A poll
+/// (rather than a fixed advance interval) lets a dot click push the next
+/// advance out without tearing down and rebuilding the timer source.
+const CAROUSEL_POLL: Duration = Duration::from_secs(1);
+
+/// How many tag rows fit on one carousel page before spilling onto the next,
+/// so a metadata-rich file (comment, composer, …) gets extra pages/dots
+/// instead of a single scrolling wall of text.
+const ROWS_PER_TAG_PAGE: usize = 4;
 
 /// Mutable carousel state shared between the update closure (which rebuilds
 /// pages on every track change) and the cycle timer (which advances them).
@@ -35,6 +46,9 @@ struct Carousel {
     dots: GtkBox,
     index: usize,
     pages: usize,
+    /// When the timer should next auto-advance. A dot click pushes this out
+    /// (reset + doubled dwell) so a manual pick lingers.
+    next_advance: Instant,
 }
 
 /// Build the panel widget tree and its update closure.
@@ -94,6 +108,7 @@ pub(super) fn build_panel(
         dots,
         index: 0,
         pages: 0,
+        next_advance: Instant::now() + CAROUSEL_INTERVAL,
     }));
 
     let update: Rc<dyn Fn(&NowPlayingInfo)> = {
@@ -107,12 +122,12 @@ pub(super) fn build_panel(
     }
 
     // One cycle timer for the panel's lifetime (the panel lives in np_stack
-    // and is never destroyed). Advances to the next page each interval; a
-    // no-op while fewer than two pages exist.
+    // and is never destroyed). Polls once a second and advances when the
+    // dwell has elapsed; a no-op while fewer than two pages exist.
     {
         let carousel = carousel.clone();
-        glib::timeout_add_local(CAROUSEL_INTERVAL, move || {
-            advance(&carousel);
+        glib::timeout_add_local(CAROUSEL_POLL, move || {
+            tick(&carousel);
             glib::ControlFlow::Continue
         });
     }
@@ -120,15 +135,17 @@ pub(super) fn build_panel(
     (root.upcast::<gtk4::Widget>(), update)
 }
 
-/// Advance the carousel one page (wrapping). Borrow is dropped before the
-/// GTK calls that read/update the widgets — those never re-enter the RefCell.
-fn advance(carousel: &Rc<RefCell<Carousel>>) {
+/// Auto-advance the carousel once its dwell has elapsed. Borrow is dropped
+/// before the GTK calls that read/update the widgets — those never re-enter
+/// the RefCell.
+fn tick(carousel: &Rc<RefCell<Carousel>>) {
     let (stack, dots, next) = {
         let mut c = carousel.borrow_mut();
-        if c.pages < 2 {
+        if c.pages < 2 || Instant::now() < c.next_advance {
             return;
         }
         c.index = (c.index + 1) % c.pages;
+        c.next_advance = Instant::now() + CAROUSEL_INTERVAL;
         (c.stack.clone(), c.dots.clone(), c.index)
     };
     stack.set_visible_child_name(&next.to_string());
@@ -144,6 +161,9 @@ fn jump(carousel: &Rc<RefCell<Carousel>>, to: usize) {
             return;
         }
         c.index = to;
+        // A manual pick resets the dwell and doubles it, so the chosen page
+        // lingers instead of flipping away a moment later.
+        c.next_advance = Instant::now() + CAROUSEL_INTERVAL * 2;
         (c.stack.clone(), c.dots.clone())
     };
     stack.set_visible_child_name(&to.to_string());
@@ -159,20 +179,22 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
     }
     art_slot.append(&art_or_placeholder(info));
 
-    // Build the page widgets for whichever groups have data.
-    let mut pages: Vec<(&'static str, gtk4::Widget)> = Vec::new();
+    // Build the page widgets for whichever groups have data. Tags spill onto
+    // extra pages (ROWS_PER_TAG_PAGE each) so a metadata-rich file shows all
+    // its fields across multiple dots rather than one scrolling page.
+    let mut pages: Vec<gtk4::Widget> = Vec::new();
 
-    if !info.tags.is_empty() {
+    for chunk in info.tags.chunks(ROWS_PER_TAG_PAGE) {
         let col = GtkBox::new(Orientation::Vertical, 4);
-        for (label, value) in &info.tags {
+        for (label, value) in chunk {
             col.append(&tag_row(label, value));
         }
-        pages.push(("Tags", page_scroller(&col)));
+        pages.push(page_scroller(&col));
     }
     if !info.tech_line.is_empty() {
         let col = GtkBox::new(Orientation::Vertical, 4);
         col.append(&text_row(&info.tech_line));
-        pages.push(("Technical", page_scroller(&col)));
+        pages.push(page_scroller(&col));
     }
     if info.play_count.is_some() || info.last_played.is_some() {
         let col = GtkBox::new(Orientation::Vertical, 4);
@@ -182,7 +204,7 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         if let Some(ref last) = info.last_played {
             col.append(&tag_row("Last played", &super::format_last_played(last)));
         }
-        pages.push(("Stats", page_scroller(&col)));
+        pages.push(page_scroller(&col));
     }
     if info.artist_wiki_url.is_some() || info.album_wiki_url.is_some() {
         let col = GtkBox::new(Orientation::Vertical, 4);
@@ -192,7 +214,7 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         if let Some(ref url) = info.album_wiki_url {
             col.append(&wiki_row("Album on Wikipedia", url));
         }
-        pages.push(("Links", page_scroller(&col)));
+        pages.push(page_scroller(&col));
     }
 
     let mut c = carousel.borrow_mut();
@@ -203,15 +225,11 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         c.dots.remove(&child);
     }
 
-    for (i, (title, page)) in pages.iter().enumerate() {
-        // Each page = a dim header ("── Tags ──") over its scrollable content.
-        let wrap = GtkBox::new(Orientation::Vertical, 2);
-        wrap.append(&page_header(title));
-        wrap.append(page);
-        c.stack.add_named(&wrap, Some(&i.to_string()));
+    for (i, page) in pages.iter().enumerate() {
+        c.stack.add_named(page, Some(&i.to_string()));
 
         // One dot per page; the current page's is filled. Clicking a dot
-        // jumps straight to that page (the auto-cycle timer keeps running).
+        // jumps straight to that page (and lingers there — see `jump`).
         let dot = Label::new(Some(if i == 0 { "●" } else { "○" }));
         dot.add_css_class("np-dot");
         let click = GestureClick::new();
@@ -223,6 +241,7 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
 
     c.pages = pages.len();
     c.index = 0;
+    c.next_advance = Instant::now() + CAROUSEL_INTERVAL;
     if c.pages > 0 {
         c.stack.set_visible_child_name("0");
     }
@@ -230,9 +249,10 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
     c.dots.set_visible(c.pages > 1);
 }
 
-/// Wrap a page's content column in a compact vertical scroller so a long
-/// group (many tags) scrolls inside the fixed panel height rather than
-/// stretching it.
+/// Wrap a page's content column in a compact vertical scroller so a page
+/// scrolls inside the fixed panel height rather than stretching it (a safety
+/// net — tag pages are chunked to fit, but a long wrapped value can still
+/// overrun).
 fn page_scroller(col: &GtkBox) -> gtk4::Widget {
     ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
@@ -242,16 +262,6 @@ fn page_scroller(col: &GtkBox) -> gtk4::Widget {
         .child(col)
         .build()
         .upcast()
-}
-
-/// A dim "── Title ──" group header shown above each carousel page.
-fn page_header(title: &str) -> gtk4::Widget {
-    let lbl = Label::new(Some(&format!("── {title} ──")));
-    lbl.set_halign(Align::Start);
-    lbl.set_xalign(0.0);
-    lbl.set_opacity(0.6);
-    lbl.add_css_class("np-page-header");
-    lbl.upcast()
 }
 
 /// Fill the dot at `active`, hollow the rest.
@@ -273,16 +283,26 @@ fn set_active_dot(dots: &GtkBox, active: usize) {
 /// Exposed for T7 (A6 art window) to reuse the identical placeholder.
 pub(super) fn art_or_placeholder(info: &NowPlayingInfo) -> gtk4::Widget {
     match info.artwork_path.as_ref() {
-        Some(path) => {
-            let pic = Picture::new();
-            pic.set_width_request(ART_SIZE);
-            pic.set_height_request(ART_SIZE);
-            pic.set_can_shrink(true);
-            pic.set_content_fit(gtk4::ContentFit::Contain);
-            pic.set_filename(Some(path));
-            pic.add_css_class("np-art");
-            pic.upcast()
-        }
+        // Load the cover pre-scaled into a fixed-size texture. A plain
+        // `Picture::set_filename` keeps the file's full intrinsic size as its
+        // natural size (height_request is only a MINIMUM), so a large cover
+        // blows past the 100x100 slot. Scaling to ART_SIZE up front caps the
+        // texture — and therefore the Picture's natural size — at the slot.
+        // (Trade-off: the panel thumbnail is a still frame; the A6 window
+        // still shows the full/animated image via set_filename.)
+        Some(path) => match gdk_pixbuf::Pixbuf::from_file_at_scale(path, ART_SIZE, ART_SIZE, true) {
+            Ok(pb) => {
+                let texture = gdk::Texture::for_pixbuf(&pb);
+                let pic = Picture::for_paintable(&texture);
+                pic.set_can_shrink(true);
+                pic.set_content_fit(gtk4::ContentFit::Contain);
+                pic.set_valign(Align::Start);
+                pic.set_halign(Align::Start);
+                pic.add_css_class("np-art");
+                pic.upcast()
+            }
+            Err(_) => placeholder_widget(),
+        },
         None => placeholder_widget(),
     }
 }

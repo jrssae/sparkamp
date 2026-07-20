@@ -4573,6 +4573,12 @@ pub fn build(
             // Shrink/grow the Granite render target too, so its Picture's
             // intrinsic size follows and the collapsed row can actually shrink.
             mini_viz_h.set(viz_h);
+            // Drop the current (old-size) granite frame NOW so the window
+            // measures the Picture at zero intrinsic and can shrink on
+            // collapse; the tick loop refills it at the new size within a
+            // frame. Without this, collapsing while Granite is active leaves
+            // the window stuck at the taller expanded height.
+            granite_pic.set_paintable(gtk4::gdk::Paintable::NONE);
 
             // `resizable(false)` windows don't renegotiate their height on
             // their own after a child's size changes. Re-kick the default
