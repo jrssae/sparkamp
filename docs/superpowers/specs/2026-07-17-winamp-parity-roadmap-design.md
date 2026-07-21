@@ -140,6 +140,15 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   snapshot and refresh on each play/track-change (incl. same-track replay);
   they do not tick live mid-song. By design (matches the classic behavior).
 
+## Known limitations (recorded during phase 4 — F7 ReplayGain)
+
+- ReplayGain tag write-back is MP3-only (id3 `TXXX REPLAYGAIN_*` frames). M4A,
+  WMA, FLAC, OGG, WAV keep their analysis values in the library DB (column /
+  display / playback via `rgvolume` if the file already carries native RG tags)
+  but Sparkamp does not write RG tags into them — writing native tags for those
+  formats would need a multi-format tag writer Sparkamp doesn't use (lofty was
+  considered and declined). Accepted 2026-07-21.
+
 ## Known limitations (recorded during phase 3 — F6 MPRIS + mac Now Playing)
 
 - Setting LoopStatus / Shuffle / Volume over D-Bus (playerctl / GNOME widget)

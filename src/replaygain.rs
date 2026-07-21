@@ -306,6 +306,7 @@ pub fn needs_analysis(t: &LibTrack) -> bool {
 pub fn analyze_and_store(
     lib: &crate::media_library::MediaLibrary,
     tracks: &[LibTrack],
+    write_tags: bool,
     cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(RgJobProgress),
 ) -> anyhow::Result<usize> {
@@ -334,7 +335,14 @@ pub fn analyze_and_store(
                     } else {
                         analyzed += 1;
                     }
-                    // P4-T5: optional MP3 tag write-back hook
+                    // Optional MP3 tag write-back (non-MP3 silently skipped).
+                    if write_tags {
+                        if let Err(e) =
+                            write_mp3_replaygain_tags(std::path::Path::new(&track.path), r)
+                        {
+                            eprintln!("replaygain: tag write-back failed for {}: {e}", track.path);
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -349,6 +357,58 @@ pub fn analyze_and_store(
     }
 
     Ok(analyzed)
+}
+
+/// Outcome of a ReplayGain tag write-back attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteBackOutcome {
+    /// TXXX frames written to the MP3.
+    Written,
+    /// Non-MP3 file — Sparkamp only writes ReplayGain tags to MP3 (id3 path).
+    /// Non-MP3 formats keep DB values only (phase-4 known limitation).
+    SkippedNonMp3,
+}
+
+/// Write the four `REPLAYGAIN_*` TXXX (user-defined text) frames to an MP3,
+/// preserving every other frame. Values use the Winamp-compatible formats
+/// (`-6.20 dB` / `0.988123`). Existing REPLAYGAIN_* frames with the same
+/// description are replaced (not duplicated).
+///
+/// MP3 ONLY: other formats (M4A/WMA/FLAC/OGG/WAV) return `SkippedNonMp3` and are
+/// left untouched — Sparkamp writes tags via the `id3` crate, which is MP3-only.
+pub fn write_mp3_replaygain_tags(
+    path: &std::path::Path,
+    r: &RgResult,
+) -> anyhow::Result<WriteBackOutcome> {
+    let is_mp3 = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mp3"))
+        .unwrap_or(false);
+    if !is_mp3 {
+        return Ok(WriteBackOutcome::SkippedNonMp3);
+    }
+
+    use id3::frame::ExtendedText;
+    use id3::{TagLike, Version};
+    let mut tag = id3::Tag::read_from_path(path).unwrap_or_default();
+    let pairs = [
+        ("REPLAYGAIN_TRACK_GAIN", format_gain_db(r.track_gain)),
+        ("REPLAYGAIN_TRACK_PEAK", format_peak(r.track_peak)),
+        ("REPLAYGAIN_ALBUM_GAIN", format_gain_db(r.album_gain)),
+        ("REPLAYGAIN_ALBUM_PEAK", format_peak(r.album_peak)),
+    ];
+    for (desc, value) in pairs {
+        // Drop any prior frame with this description so we replace, not stack.
+        tag.remove_extended_text(Some(desc), None);
+        tag.add_frame(ExtendedText {
+            description: desc.to_string(),
+            value,
+        });
+    }
+    tag.write_to_path(path, Version::Id3v23)
+        .map_err(|e| anyhow::anyhow!("write REPLAYGAIN tags to {}: {e}", path.display()))?;
+    Ok(WriteBackOutcome::Written)
 }
 
 #[cfg(test)]
@@ -558,5 +618,68 @@ mod tests {
         // Both results are from the same batch → same album gain/peak.
         assert_eq!(results[0].album_gain, results[1].album_gain);
         assert_eq!(results[0].album_peak, results[1].album_peak);
+    }
+
+    #[test]
+    fn mp3_write_back_roundtrips_and_preserves_other_frames() {
+        use id3::{TagLike, Version};
+        let dir = tempfile::tempdir().unwrap();
+        let mp3 = dir.path().join("song.mp3");
+        // Seed the file with a title so we can prove it survives write-back.
+        std::fs::write(&mp3, b"").unwrap();
+        let mut seed = id3::Tag::new();
+        seed.set_title("Keep Me");
+        seed.write_to_path(&mp3, Version::Id3v23).unwrap();
+
+        let r = RgResult {
+            track_gain: -6.20,
+            track_peak: 0.988123,
+            album_gain: -7.10,
+            album_peak: 0.995,
+        };
+        assert_eq!(
+            write_mp3_replaygain_tags(&mp3, &r).unwrap(),
+            WriteBackOutcome::Written
+        );
+
+        let tag = id3::Tag::read_from_path(&mp3).unwrap();
+        assert_eq!(tag.title(), Some("Keep Me"), "existing frames preserved");
+        let get = |desc: &str| {
+            tag.extended_texts()
+                .find(|e| e.description == desc)
+                .map(|e| e.value.clone())
+        };
+        assert_eq!(get("REPLAYGAIN_TRACK_GAIN").as_deref(), Some("-6.20 dB"));
+        assert_eq!(get("REPLAYGAIN_TRACK_PEAK").as_deref(), Some("0.988123"));
+        assert_eq!(get("REPLAYGAIN_ALBUM_GAIN").as_deref(), Some("-7.10 dB"));
+        assert_eq!(get("REPLAYGAIN_ALBUM_PEAK").as_deref(), Some("0.995000"));
+
+        // Re-writing replaces (no duplicate REPLAYGAIN_TRACK_GAIN frames).
+        write_mp3_replaygain_tags(&mp3, &r).unwrap();
+        let tag2 = id3::Tag::read_from_path(&mp3).unwrap();
+        let count = tag2
+            .extended_texts()
+            .filter(|e| e.description == "REPLAYGAIN_TRACK_GAIN")
+            .count();
+        assert_eq!(count, 1, "replace, not stack");
+    }
+
+    #[test]
+    fn write_back_skips_non_mp3_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let flac = dir.path().join("song.flac");
+        std::fs::write(&flac, b"not really flac").unwrap();
+        let before = std::fs::read(&flac).unwrap();
+        let r = RgResult {
+            track_gain: -6.2,
+            track_peak: 0.9,
+            album_gain: -6.2,
+            album_peak: 0.9,
+        };
+        assert_eq!(
+            write_mp3_replaygain_tags(&flac, &r).unwrap(),
+            WriteBackOutcome::SkippedNonMp3
+        );
+        assert_eq!(std::fs::read(&flac).unwrap(), before, "non-MP3 left untouched");
     }
 }
