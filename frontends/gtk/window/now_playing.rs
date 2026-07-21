@@ -192,18 +192,17 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         pages.push(page_scroller(&col));
     }
     // Technical tab: discrete format/bitrate/sample-rate/channels rows (label/
-    // value, like the tags) followed by the play stats — play count, last
-    // played (as of this play's start), and last scanned. The length is
-    // omitted (the seek bar shows it).
-    let has_technical = !info.technical.is_empty()
-        || info.play_count.is_some()
-        || info.last_played.is_some()
-        || info.last_scanned.is_some();
-    if has_technical {
+    // value, like the tags). The length is omitted (the seek bar shows it).
+    if !info.technical.is_empty() {
         let col = GtkBox::new(Orientation::Vertical, 4);
         for (label, value) in &info.technical {
             col.append(&tag_row(label, value));
         }
+        pages.push(page_scroller(&col));
+    }
+    // Stats tab: play count, last played (as of this play's start), last scanned.
+    if info.play_count.is_some() || info.last_played.is_some() || info.last_scanned.is_some() {
+        let col = GtkBox::new(Orientation::Vertical, 4);
         if let Some(count) = info.play_count {
             col.append(&tag_row("Play count", &count.to_string()));
         }
