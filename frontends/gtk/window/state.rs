@@ -208,7 +208,45 @@ fn update_scan_ui_elements(
     }
 }
 
+/// Build the engine's ReplayGain chain shape from config. Shared by startup
+/// and the settings-change apply path so they never drift.
+fn rg_chain(cfg: &Config) -> crate::engine::RgChain {
+    let rg = &cfg.playback.replaygain;
+    crate::engine::RgChain {
+        enabled: rg.enabled,
+        clip_protection: rg.clip_protection,
+        fallback_db: rg.fallback_db as f64,
+    }
+}
+
 impl AppState {
+    /// Re-apply the ReplayGain chain from config (settings changed). Reshapes
+    /// the pipeline now if Stopped, else defers to the next track (engine).
+    /// Also refreshes album-mode from the current source + shuffle state.
+    /// `dead_code` until the P4-T6 settings rows call it.
+    #[allow(dead_code)]
+    pub(crate) fn apply_replaygain(&mut self) {
+        self.player.set_replaygain(rg_chain(&self.config));
+        self.apply_rg_album_mode();
+    }
+
+    /// Live fallback-gain change (slider) — no pipeline rebuild.
+    #[allow(dead_code)]
+    pub(crate) fn set_rg_fallback_db(&mut self, db: f64) {
+        self.config.playback.replaygain.fallback_db = db as f32;
+        self.player.set_rg_fallback_db(db);
+    }
+
+    /// Set rgvolume album-mode from the ReplayGain source + shuffle state.
+    /// Automatic → album when playing sequentially, track when shuffling.
+    pub(crate) fn apply_rg_album_mode(&mut self) {
+        let album = crate::config::rg_album_mode(
+            self.config.playback.replaygain.source,
+            self.shuffle_state.enabled,
+        );
+        self.player.set_rg_album_mode(album);
+    }
+
     /// Initialise `AppState` from the given playlist and config.
     ///
     /// Creates a new GStreamer player and immediately applies the configured
@@ -220,6 +258,13 @@ impl AppState {
         // Apply the saved EQ config so the correct settings are active from
         // the very first track — even before the user opens the EQ window.
         player.apply_eq_bands(&config.equalizer.effective_bands());
+        // Apply the saved ReplayGain chain from the first track. The player is
+        // Stopped here, so this reshapes the pipeline immediately.
+        player.set_replaygain(rg_chain(&config));
+        player.set_rg_album_mode(crate::config::rg_album_mode(
+            config.playback.replaygain.source,
+            config.playback.shuffle_enabled,
+        ));
         let media_lib = crate::media_library::MediaLibrary::open().ok();
 
         // Startup cleanup: purge any soft-deleted records from previous sessions

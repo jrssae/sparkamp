@@ -1464,6 +1464,9 @@ pub fn build(
                     patch_pl_row(old_idx);
                 }
                 patch_pl_row(new_idx);
+                // Refresh ReplayGain album-mode for this track (Automatic
+                // source tracks the shuffle state; a live property, no rebuild).
+                state.borrow_mut().apply_rg_album_mode();
                 // Follow the song on the art panel / window (immediate + covers
                 // same-path replay, which the tick-loop choke point would skip).
                 refresh_now_playing();
