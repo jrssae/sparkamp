@@ -63,6 +63,18 @@ pub enum PlayerState {
     Paused,
 }
 
+/// The chain-shape subset of the ReplayGain config: the two flags that decide
+/// WHICH elements sit in the pipeline plus the fallback gain applied at build.
+/// `album-mode` and live fallback-gain changes are set as element properties,
+/// deliberately NOT part of this struct — changing them must not trigger a
+/// pipeline rebuild.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RgChain {
+    pub enabled: bool,
+    pub clip_protection: bool,
+    pub fallback_db: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------
@@ -129,6 +141,16 @@ pub struct Player {
     /// cdda URI has no device syntax: `load()` strips the `?device=` suffix
     /// off the pseudo-URI and stashes it here.
     cdda_device: Arc<Mutex<Option<String>>>,
+    /// ReplayGain in-chain elements (present only while active).
+    rg_volume: Option<gst::Element>,
+    rg_limiter: Option<gst::Element>,
+    /// The chain shape currently linked into the pipeline.
+    rg_applied: RgChain,
+    /// A desired chain shape requested mid-track, applied at the next Null
+    /// window (see `load()`); relinking only happens at `gst::State::Null`.
+    rg_pending: Option<RgChain>,
+    /// Last-set album-mode, re-applied to a freshly built rgvolume.
+    rg_album_mode: bool,
     /// Fake position for testing (overrides real position when set).
     #[cfg(test)]
     fake_position: Option<Duration>,
@@ -382,6 +404,18 @@ impl Player {
             has_spectrum,
             granite: None,
             cdda_device,
+            // ReplayGain starts inactive — the chain is exactly as built above.
+            // The first real shape is applied via `set_replaygain` (config load)
+            // before the first play.
+            rg_volume: None,
+            rg_limiter: None,
+            rg_applied: RgChain {
+                enabled: false,
+                clip_protection: false,
+                fallback_db: 0.0,
+            },
+            rg_pending: None,
+            rg_album_mode: false,
             #[cfg(test)]
             fake_position: None,
         })
@@ -492,6 +526,12 @@ impl Player {
         // buffers, releases the audio device, etc.) so the new URI starts
         // clean.
         self.pipeline.set_state(gst::State::Null)?;
+
+        // The Null window is the only safe moment to reshape the ReplayGain
+        // segment; a config change made mid-track lands here.
+        if let Some(cfg) = self.rg_pending.take() {
+            let _ = self.apply_rg_chain(cfg);
+        }
 
         // CD-audio pseudo-URIs carry the target drive as a query suffix
         // (`cdda://3?device=/dev/sr0`) because the GStreamer cdda scheme has
@@ -692,6 +732,137 @@ impl Player {
         self.user_volume = vol.clamp(0.0, 1.0);
         self.volume_elem
             .set_property("volume", self.user_volume * self.user_preamp);
+    }
+
+    // -----------------------------------------------------------------------
+    // ReplayGain (rgvolume / rglimiter)
+    //
+    // The pipeline is static (built once in `new()`) and `load()` sets it to
+    // `gst::State::Null` on every track change — Null is the only safe relink
+    // window, so the RG segment is inserted/removed ONLY at Null. Config
+    // changes mid-track defer to the next `load()` (see `set_replaygain` +
+    // `rg_pending`); changes while Stopped apply immediately. No dynamic
+    // pad-blocking anywhere. The RG segment sits entirely between the upstream
+    // element (spectrum or audioconvert) and `volume_elem`:
+    //   audioconvert → [spectrum] → rgvolume → [rglimiter] → volume → [eq] → sink
+    // rgvolume runs BEFORE Sparkamp's own volume/preamp so user volume stacks
+    // on top of normalization; rgvolume's own `pre-amp` stays at 0.
+    // -----------------------------------------------------------------------
+
+    /// True when the GStreamer `rgvolume` element is installed (`rglimiter`
+    /// ships in the same plugin). The feature silently no-ops without it.
+    #[allow(dead_code)]
+    pub fn rg_available() -> bool {
+        gst::ElementFactory::find("rgvolume").is_some()
+    }
+
+    /// The element the RG segment hangs off: spectrum when present, else
+    /// audioconvert (mirrors the link logic in `new()`).
+    fn rg_upstream(&self) -> &gst::Element {
+        self.spectrum_elem.as_ref().unwrap_or(&self.audioconvert)
+    }
+
+    /// Request a ReplayGain chain shape. Applies immediately when the pipeline
+    /// is Null (Stopped); otherwise defers to the next `load()` — mid-track
+    /// toggles take effect on the next track by design.
+    #[allow(dead_code)]
+    pub fn set_replaygain(&mut self, cfg: RgChain) {
+        if cfg == self.rg_applied {
+            self.rg_pending = None;
+            return;
+        }
+        if self.state == PlayerState::Stopped {
+            // stop()/pre-first-load pipelines are already Null; the extra
+            // set_state is belt-and-suspenders and a no-op when so.
+            let _ = self.pipeline.set_state(gst::State::Null);
+            let _ = self.apply_rg_chain(cfg);
+        } else {
+            self.rg_pending = Some(cfg);
+        }
+    }
+
+    /// Live album/track-mode switch (Automatic source sets this at each track
+    /// start from the shuffle state). Never rebuilds the chain.
+    #[allow(dead_code)]
+    pub fn set_rg_album_mode(&mut self, album: bool) {
+        self.rg_album_mode = album;
+        if let Some(ref rgv) = self.rg_volume {
+            rgv.set_property("album-mode", album);
+        }
+    }
+
+    /// Live fallback-gain change (dB applied to untagged files). Never rebuilds
+    /// the chain — updates the property on the in-chain rgvolume if present.
+    #[allow(dead_code)]
+    pub fn set_rg_fallback_db(&mut self, db: f64) {
+        if let Some(ref rgv) = self.rg_volume {
+            rgv.set_property("fallback-gain", db);
+        }
+        self.rg_applied.fallback_db = db;
+    }
+
+    /// Rebuild the RG segment. CALLER CONTRACT: pipeline state is Null. Never
+    /// call from Playing/Paused — that is what `rg_pending` is for.
+    fn apply_rg_chain(&mut self, cfg: RgChain) -> Result<()> {
+        // ── 1. Tear out whatever RG segment is currently linked. ──
+        let upstream = self.rg_upstream().clone();
+        if let Some(rgv) = self.rg_volume.take() {
+            upstream.unlink(&rgv);
+            if let Some(rgl) = self.rg_limiter.take() {
+                rgv.unlink(&rgl);
+                rgl.unlink(&self.volume_elem);
+                self.pipeline.remove(&rgl)?;
+            } else {
+                rgv.unlink(&self.volume_elem);
+            }
+            self.pipeline.remove(&rgv)?;
+        } else {
+            // Today's direct link (also the disabled shape).
+            upstream.unlink(&self.volume_elem);
+        }
+
+        // ── 2. Build the requested segment. ──
+        if cfg.enabled {
+            if let Ok(rgv) = gst::ElementFactory::make("rgvolume").name("rgvol").build() {
+                rgv.set_property("fallback-gain", cfg.fallback_db);
+                rgv.set_property("album-mode", self.rg_album_mode);
+                self.pipeline.add(&rgv)?;
+                upstream.link(&rgv)?;
+
+                let tail = if cfg.clip_protection {
+                    match gst::ElementFactory::make("rglimiter").name("rglim").build() {
+                        Ok(rgl) => {
+                            self.pipeline.add(&rgl)?;
+                            rgv.link(&rgl)?;
+                            self.rg_limiter = Some(rgl.clone());
+                            rgl
+                        }
+                        // Limiter missing but rgvolume present: degrade to
+                        // gain-without-limiting rather than no RG at all.
+                        Err(_) => rgv.clone(),
+                    }
+                } else {
+                    rgv.clone()
+                };
+                tail.link(&self.volume_elem)?;
+                self.rg_volume = Some(rgv);
+                self.rg_applied = RgChain {
+                    clip_protection: self.rg_limiter.is_some(),
+                    ..cfg
+                };
+                return Ok(());
+            }
+            // rgvolume missing entirely → fall through to the direct link
+            // (house rule: silent no-op when plugins are absent).
+        }
+
+        upstream.link(&self.volume_elem)?;
+        self.rg_applied = RgChain {
+            enabled: false,
+            clip_protection: false,
+            fallback_db: cfg.fallback_db,
+        };
+        Ok(())
     }
 
     /// Returns `true` if the `equalizer-10bands` element was successfully
@@ -1014,5 +1185,119 @@ mod live_cdda_tests {
                 p.state()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod rg_tests {
+    use super::*;
+
+    /// Init GStreamer, then build a Player — but only when the ReplayGain
+    /// plugin is present (returns None to skip in plugin-less environments).
+    /// `rg_available` needs gst initialized, so init MUST come first.
+    fn rg_player() -> Option<Player> {
+        gst::init().unwrap();
+        if !Player::rg_available() {
+            return None;
+        }
+        Some(Player::new().unwrap())
+    }
+
+    /// Peer-check helper: element A's src pad must feed element B's sink.
+    fn feeds(a: &gst::Element, b: &gst::Element) -> bool {
+        a.static_pad("src")
+            .and_then(|p| p.peer())
+            .map(|peer| peer.parent_element().as_ref() == Some(b))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn rg_chain_full_shape() {
+        let Some(mut p) = rg_player() else {
+            return;
+        };
+        p.set_replaygain(RgChain {
+            enabled: true,
+            clip_protection: true,
+            fallback_db: -6.0,
+        });
+        let rgv = p.pipeline.by_name("rgvol").expect("rgvolume inserted");
+        let rgl = p.pipeline.by_name("rglim").expect("rglimiter inserted");
+        assert!(feeds(&rgv, &rgl));
+        assert!(feeds(&rgl, &p.volume_elem));
+        assert_eq!(rgv.property::<f64>("fallback-gain"), -6.0);
+    }
+
+    #[test]
+    fn rg_chain_no_limiter_shape() {
+        let Some(mut p) = rg_player() else {
+            return;
+        };
+        p.set_replaygain(RgChain {
+            enabled: true,
+            clip_protection: false,
+            fallback_db: 0.0,
+        });
+        let rgv = p.pipeline.by_name("rgvol").expect("rgvolume inserted");
+        assert!(p.pipeline.by_name("rglim").is_none());
+        assert!(feeds(&rgv, &p.volume_elem));
+    }
+
+    #[test]
+    fn rg_disable_restores_direct_link() {
+        let Some(mut p) = rg_player() else {
+            return;
+        };
+        p.set_replaygain(RgChain {
+            enabled: true,
+            clip_protection: true,
+            fallback_db: -6.0,
+        });
+        p.set_replaygain(RgChain {
+            enabled: false,
+            clip_protection: false,
+            fallback_db: -6.0,
+        });
+        assert!(p.pipeline.by_name("rgvol").is_none());
+        assert!(p.pipeline.by_name("rglim").is_none());
+        let up = p.rg_upstream().clone();
+        assert!(feeds(&up, &p.volume_elem));
+    }
+
+    #[test]
+    fn rg_mid_play_change_defers_to_load() {
+        let Some(mut p) = rg_player() else {
+            return;
+        };
+        p.set_state_for_test(PlayerState::Playing);
+        p.set_replaygain(RgChain {
+            enabled: true,
+            clip_protection: true,
+            fallback_db: -6.0,
+        });
+        assert!(
+            p.pipeline.by_name("rgvol").is_none(),
+            "must not relink while playing"
+        );
+        p.set_state_for_test(PlayerState::Stopped);
+        let _ = p.load("file:///nonexistent.mp3"); // Null window applies pending
+        assert!(p.pipeline.by_name("rgvol").is_some());
+    }
+
+    #[test]
+    fn rg_album_mode_is_live_no_rebuild() {
+        let Some(mut p) = rg_player() else {
+            return;
+        };
+        p.set_replaygain(RgChain {
+            enabled: true,
+            clip_protection: false,
+            fallback_db: 0.0,
+        });
+        let rgv = p.pipeline.by_name("rgvol").unwrap();
+        p.set_rg_album_mode(true);
+        assert!(rgv.property::<bool>("album-mode"));
+        p.set_rg_album_mode(false);
+        assert!(!rgv.property::<bool>("album-mode"));
     }
 }
