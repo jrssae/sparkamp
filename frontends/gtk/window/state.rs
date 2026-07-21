@@ -93,6 +93,13 @@ struct AppState {
     ml_scan: Option<ScanState>,
     /// Scan state for playlist operations.
     playlist_scan: Option<ScanState>,
+    /// Progress/cancel state for a background ReplayGain analysis job (the
+    /// Files-view bulk "Analyze ReplayGain" button, or the per-selection
+    /// "Calculate ReplayGain" force action). Kept separate from `ml_scan`
+    /// rather than reusing it: the existing `ml_scan` UI pollers hard-code
+    /// "Reading tags…" status text, which would be the wrong label while
+    /// analysis is running.
+    rg_job: Option<RgJobState>,
 }
 
 /// State for tracking background scan operations.
@@ -115,6 +122,18 @@ enum ScanType {
     AddFolder,
     AddFiles,
     Rescan,
+}
+
+/// Progress/cancel state for a background ReplayGain analysis job. Shape
+/// mirrors `ScanState` (minus `scan_type` — there's only one kind of job
+/// here) but lives in its own `AppState.rg_job` field; see that field's doc
+/// comment for why it isn't folded into `ml_scan`.
+#[derive(Clone)]
+struct RgJobState {
+    /// Tracks analyzed so far (see `crate::replaygain::RgJobProgress::done`).
+    current: usize,
+    total: usize,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Shared helper: start an ML scan with the given scan type and total count.
@@ -181,6 +200,53 @@ fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
     }
 }
 
+/// Start a ReplayGain analysis job. Refuses (returns `None`) if one is
+/// already running, or a metadata scan (`ml_scan`) is in flight — both spin
+/// up a worker-local `MediaLibrary` writer, and while SQLite's WAL mode
+/// tolerates the concurrent writes just fine, running two background jobs
+/// against the library at once is confusing UI-wise for no benefit.
+fn start_rg_job(
+    state: &Rc<RefCell<AppState>>,
+    total: usize,
+) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    let mut s = state.borrow_mut();
+    if s.rg_job.is_some() || s.ml_scan.is_some() {
+        return None;
+    }
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    s.rg_job = Some(RgJobState {
+        current: 0,
+        total,
+        cancel: cancel_flag.clone(),
+    });
+    s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+    Some(cancel_flag)
+}
+
+/// Shared helper: update RG analysis job progress.
+fn update_rg_job_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
+    let mut s = state.borrow_mut();
+    if let Some(ref mut job) = s.rg_job {
+        job.current = current;
+        job.total = total;
+    }
+}
+
+/// Shared helper: complete an RG analysis job.
+fn complete_rg_job(state: &Rc<RefCell<AppState>>) {
+    let mut s = state.borrow_mut();
+    s.rg_job = None;
+    s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+}
+
+/// Shared helper: signal cancellation of the running RG analysis job.
+fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
+    let s = state.borrow();
+    if let Some(ref job) = s.rg_job {
+        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Shared helper: update scan UI elements based on current ml_scan state.
 /// Returns true if scanning is in progress.
 #[allow(dead_code)]
@@ -223,15 +289,12 @@ impl AppState {
     /// Re-apply the ReplayGain chain from config (settings changed). Reshapes
     /// the pipeline now if Stopped, else defers to the next track (engine).
     /// Also refreshes album-mode from the current source + shuffle state.
-    /// `dead_code` until the P4-T6 settings rows call it.
-    #[allow(dead_code)]
     pub(crate) fn apply_replaygain(&mut self) {
         self.player.set_replaygain(rg_chain(&self.config));
         self.apply_rg_album_mode();
     }
 
     /// Live fallback-gain change (slider) — no pipeline rebuild.
-    #[allow(dead_code)]
     pub(crate) fn set_rg_fallback_db(&mut self, db: f64) {
         self.config.playback.replaygain.fallback_db = db as f32;
         self.player.set_rg_fallback_db(db);
@@ -310,6 +373,7 @@ impl AppState {
             counted_play_path: None,
             ml_scan: None,
             playlist_scan: None,
+            rg_job: None,
         })
     }
 

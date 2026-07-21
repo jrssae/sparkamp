@@ -3622,6 +3622,29 @@ fn open_media_library_window(
             })
         };
 
+        // Live "currently selected" reader that hands back full `LibTrack`s
+        // rather than bare paths — the "Calculate ReplayGain" context action
+        // needs the row's `id` (to call `set_replaygain`) and album/artist
+        // (to batch the analysis), not just a path. Mirrors
+        // `ml_live_selected_paths` above for the same live-vs-stale reason.
+        let ml_live_selected_lib_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
+            let sel = multi_sel.clone();
+            Rc::new(move || {
+                let mut out = Vec::new();
+                for i in 0..sel.n_items() {
+                    if sel.is_selected(i) {
+                        if let Some(obj) = sel
+                            .item(i)
+                            .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                        {
+                            out.push(obj.borrow::<crate::media_library::LibTrack>().clone());
+                        }
+                    }
+                }
+                out
+            })
+        };
+
         // Append to Playlist action
         let ml_action_append_state = state.clone();
         let _ml_action_append_sel = multi_sel.clone();
@@ -3861,6 +3884,41 @@ fn open_media_library_window(
             });
         });
         ml_action_group.add_action(&action_rescan);
+
+        // Calculate ReplayGain action — force-analyzes the current
+        // selection (skips the missing-or-stale filter; "Calculate" always
+        // re-measures exactly what the user picked). Shares the
+        // `analyze_job` worker/progress plumbing with the bulk "Analyze
+        // ReplayGain" button defined further down. `files_status` isn't
+        // built yet at this point in the function, so — like `action_rescan`
+        // above reaches for `rebuild_ml_callback` instead of the not-yet-
+        // built `rebuild_files` — this reads the label out of
+        // `files_status_holder`, populated once the button row is built.
+        let ml_action_calc_rg_state = state.clone();
+        let ml_action_calc_rg_tracks = ml_live_selected_lib_tracks.clone();
+        let ml_action_calc_rg_status = files_status_holder.clone();
+        let action_calc_rg = gio::SimpleAction::new("calc-rg", None);
+        action_calc_rg.connect_activate(move |_, _| {
+            if !crate::replaygain::rg_analysis_available() {
+                return; // feature silently unavailable (house rule)
+            }
+            let tracks = ml_action_calc_rg_tracks();
+            let Some(status_label) = ml_action_calc_rg_status.borrow().clone() else {
+                return;
+            };
+            let state_rc = ml_action_calc_rg_state.clone();
+            let rebuild: Rc<dyn Fn()> = {
+                let state_for_rb = state_rc.clone();
+                Rc::new(move || {
+                    let cb = state_for_rb.borrow().rebuild_ml_callback.clone();
+                    if let Some(cb) = cb {
+                        cb();
+                    }
+                })
+            };
+            analyze_job(&state_rc, tracks, true, &status_label, rebuild);
+        });
+        ml_action_group.add_action(&action_calc_rg);
 
         // Remove from Media Library action
         let ml_action_remove_tracks = ml_selected_tracks.clone();
@@ -4282,6 +4340,10 @@ fn open_media_library_window(
                             Some("ml.rescan"),
                         ));
                         menu.append_item(&gio::MenuItem::new(
+                            Some("Calculate ReplayGain"),
+                            Some("ml.calc-rg"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
                             Some("Remove from Media Library"),
                             Some("ml.remove"),
                         ));
@@ -4699,6 +4761,23 @@ fn open_media_library_window(
         btn_rm_from_ml.add_css_class("pl-btn");
         btn_rm_from_ml.add_css_class("destructive");
 
+        // Bulk ReplayGain analysis (missing-or-stale set only — the forced,
+        // "analyze exactly this selection" variant lives in the row context
+        // menu as "Calculate ReplayGain", ml.calc-rg). Disabled with a
+        // tooltip when the `rganalysis` GStreamer element isn't installed —
+        // silently-unavailable rather than an error dialog (house rule).
+        let btn_analyze_rg = Button::with_label("Analyze ReplayGain");
+        btn_analyze_rg.add_css_class("pl-btn");
+        let rg_available = crate::replaygain::rg_analysis_available();
+        if !rg_available {
+            btn_analyze_rg.set_sensitive(false);
+            btn_analyze_rg.set_tooltip_text(Some("rganalysis plugin not installed"));
+        }
+        let btn_cancel_rg = Button::with_label("✕ Cancel Analysis");
+        btn_cancel_rg.add_css_class("pl-btn");
+        btn_cancel_rg.add_css_class("destructive");
+        btn_cancel_rg.set_visible(false);
+
         // Button row: send-to on the left, management buttons on the right.
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
@@ -4709,6 +4788,8 @@ fn open_media_library_window(
         btn_row.append(&btn_add_folder);
         btn_row.append(&btn_rescan);
         btn_row.append(&btn_cancel);
+        btn_row.append(&btn_analyze_rg);
+        btn_row.append(&btn_cancel_rg);
         files_vbox.append(&btn_row);
 
         // Add selected tracks to playlist.
@@ -5118,6 +5199,34 @@ fn open_media_library_window(
             });
         }
 
+        // Bulk "Analyze ReplayGain" handler — analyzes the missing-or-stale
+        // set across the whole library (not just the current selection/
+        // search filter). Shares `analyze_job` with the context action.
+        {
+            let state_rc = state.clone();
+            let rebuild_ref = rebuild_files.clone();
+            let status_ref = files_status.clone();
+            btn_analyze_rg.connect_clicked(move |_| {
+                if !crate::replaygain::rg_analysis_available() {
+                    return; // button is disabled in this case; defensive only
+                }
+                let tracks: Vec<crate::media_library::LibTrack> = state_rc
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|lib| lib.all_tracks().ok())
+                    .unwrap_or_default();
+                // `rebuild_files` returns the new row count (for the "N
+                // tracks" search-result label); `analyze_job` just wants a
+                // refresh signal, so discard it here.
+                let rebuild_ref2 = rebuild_ref.clone();
+                let rebuild: Rc<dyn Fn()> = Rc::new(move || {
+                    rebuild_ref2();
+                });
+                analyze_job(&state_rc, tracks, false, &status_ref, rebuild);
+            });
+        }
+
         // Cancel scan handler
         {
             let state_rc = state.clone();
@@ -5132,30 +5241,61 @@ fn open_media_library_window(
             });
         }
 
-        // Polling timer to sync scan state with UI.
+        // Cancel ReplayGain analysis handler.
+        {
+            let state_rc = state.clone();
+            let status_ref = files_status.clone();
+            btn_cancel_rg.connect_clicked(move |_| {
+                cancel_rg_job(&state_rc);
+                status_ref.set_text("Cancelling…");
+            });
+        }
+
+        // Polling timer to sync scan/analysis state with UI. Single timer
+        // owns all these buttons + the shared status label so a metadata
+        // scan (`ml_scan`) and an RG analysis job (`rg_job`) — which are
+        // mutually exclusive, see `start_rg_job` — can't fight over the same
+        // widgets from two independent tickers.
         {
             let state_rc = state.clone();
             let cancel_ref = btn_cancel.clone();
             let rescan_ref = btn_rescan.clone();
             let add_folder_ref = btn_add_folder.clone();
+            let analyze_ref = btn_analyze_rg.clone();
+            let cancel_rg_ref = btn_cancel_rg.clone();
             let status_ref = files_status.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                let scan_state = state_rc.borrow().ml_scan.clone();
+                let (scan_state, rg_state) = {
+                    let s = state_rc.borrow();
+                    (s.ml_scan.clone(), s.rg_job.clone())
+                };
+                let busy = scan_state.is_some() || rg_state.is_some();
+                rescan_ref.set_sensitive(!busy);
+                add_folder_ref.set_sensitive(!busy);
+                analyze_ref.set_sensitive(!busy && rg_available);
                 if let Some(scan) = scan_state {
                     cancel_ref.set_visible(true);
-                    rescan_ref.set_sensitive(false);
-                    // Disable Add Folder so a second concurrent scan cannot be started.
-                    add_folder_ref.set_sensitive(false);
+                    cancel_rg_ref.set_visible(false);
                     if scan.total > 0 {
                         status_ref
                             .set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
                     } else {
                         status_ref.set_text("Reading tags…");
                     }
+                } else if let Some(rg) = rg_state {
+                    cancel_ref.set_visible(false);
+                    cancel_rg_ref.set_visible(true);
+                    if rg.total > 0 {
+                        status_ref.set_text(&format!(
+                            "Analyzing ReplayGain {}/{}…",
+                            rg.current, rg.total
+                        ));
+                    } else {
+                        status_ref.set_text("Analyzing ReplayGain…");
+                    }
                 } else {
                     cancel_ref.set_visible(false);
-                    rescan_ref.set_sensitive(true);
-                    add_folder_ref.set_sensitive(true);
+                    cancel_rg_ref.set_visible(false);
                 }
                 glib::ControlFlow::Continue
             });
@@ -10455,5 +10595,113 @@ fn open_media_library_window(
 
     win.present();
     win
+}
+
+// ---------------------------------------------------------------------------
+// ReplayGain analysis job — shared by the bulk "Analyze ReplayGain" button
+// and the Files-view "Calculate ReplayGain" context action.
+// ---------------------------------------------------------------------------
+
+/// Spawn the single background ReplayGain analysis worker over `tracks`.
+///
+/// `force`:
+/// - `true` (the per-selection "Calculate ReplayGain" context action):
+///   analyze every track in `tracks` unconditionally.
+/// - `false` (the bulk "Analyze ReplayGain" button): filter `tracks` down to
+///   [`crate::replaygain::needs_analysis`] first — missing or stale only.
+///
+/// Refuses (and leaves `status_label` untouched by us, but sets a short
+/// explanatory message on it) if `tracks` is empty, the media library isn't
+/// open, or [`start_rg_job`] reports a scan/analysis already in flight.
+///
+/// The worker opens its OWN `MediaLibrary` via `MediaLibrary::open_at`
+/// (SQLite isn't `Send` — the `AppState.media_lib` connection can't cross
+/// the thread boundary). Progress crosses back over an mpsc channel drained
+/// by a `glib::timeout_add_local` on the main loop, which is also the only
+/// place `rg_job`/`AppState.media_lib` get touched again — never from the
+/// worker thread.
+fn analyze_job(
+    state: &Rc<RefCell<AppState>>,
+    tracks: Vec<crate::media_library::LibTrack>,
+    force: bool,
+    status_label: &Label,
+    rebuild: Rc<dyn Fn()>,
+) -> bool {
+    if tracks.is_empty() {
+        status_label.set_text("Nothing to analyze");
+        return false;
+    }
+    let has_lib = state.borrow().media_lib.is_some();
+    if !has_lib {
+        status_label.set_text("Media library not available");
+        return false;
+    }
+    let Some(cancel_flag) = start_rg_job(state, 0) else {
+        status_label.set_text("A scan or analysis is already in progress");
+        return false;
+    };
+    status_label.set_text("Analyzing ReplayGain…");
+
+    let write_tags = state.borrow().config.playback.replaygain.write_tags;
+    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+    let (progress_tx, progress_rx) =
+        std::sync::mpsc::channel::<crate::replaygain::RgJobProgress>();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<usize, String>>();
+    let cancel_thread = cancel_flag.clone();
+    std::thread::spawn(move || {
+        let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+            Ok(l) => l,
+            Err(e) => {
+                let _ = result_tx.send(Err(format!("DB error: {e}")));
+                return;
+            }
+        };
+        let targets: Vec<crate::media_library::LibTrack> = if force {
+            tracks
+        } else {
+            tracks
+                .into_iter()
+                .filter(crate::replaygain::needs_analysis)
+                .collect()
+        };
+        let result = crate::replaygain::analyze_and_store(
+            &lib,
+            &targets,
+            write_tags,
+            &cancel_thread,
+            |p| {
+                let _ = progress_tx.send(p);
+            },
+        )
+        .map_err(|e| e.to_string());
+        let _ = result_tx.send(result);
+    });
+
+    let progress_rx = std::cell::RefCell::new(progress_rx);
+    let result_rx = std::cell::RefCell::new(result_rx);
+    let state2 = state.clone();
+    let status2 = status_label.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+        while let Ok(p) = progress_rx.borrow().try_recv() {
+            update_rg_job_progress(&state2, p.done, p.total);
+        }
+        if let Ok(result) = result_rx.borrow().try_recv() {
+            {
+                let mut s = state2.borrow_mut();
+                s.media_lib = crate::media_library::MediaLibrary::open().ok();
+            }
+            complete_rg_job(&state2);
+            match result {
+                Err(e) => status2.set_text(&format!("ReplayGain analysis error: {e}")),
+                Ok(n) => {
+                    rebuild();
+                    status2.set_text(&format!("Analyzed {n} track(s)"));
+                }
+            }
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+    true
 }
 

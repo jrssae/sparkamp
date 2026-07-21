@@ -6,8 +6,6 @@
 //! Analysis decodes whole files, so callers run it on a single background
 //! worker (never per-track in parallel — decoding is CPU-bound).
 
-#![allow(dead_code)] // wired by P4-T6 (library actions) / P4-T9 (auto-analyze).
-
 use gstreamer as gst;
 use gstreamer::prelude::*;
 

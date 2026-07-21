@@ -143,6 +143,18 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
         default_ml_visible: false,
         default_id3_visible: false,
     },
+    // Opt-in (phase 4): empty until a track is analyzed, via the bulk
+    // "Analyze ReplayGain" button or the row context menu's "Calculate
+    // ReplayGain". Off by default like the other read-only technical
+    // columns above — most users never need to see it.
+    MlColumnDef {
+        id: "rg_gain",
+        header: "ReplayGain",
+        expand: false,
+        id3_editable: false,
+        default_ml_visible: false,
+        default_id3_visible: false,
+    },
     // ── Editable ID3 fields ────────────────────────────────────────────────
     MlColumnDef {
         id: "title",
@@ -434,6 +446,12 @@ fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str) -> String {
                 String::new()
             }
         }
+        // Empty until the track's been through ReplayGain analysis (never
+        // falls back to album gain here — that would silently mislabel an
+        // unanalyzed track as having a track gain). One decimal place for
+        // on-screen brevity; the two-decimal Winamp-compatible format
+        // (`format_gain_db`) is for the written tag, not this column.
+        "rg_gain" => t.rg_track_gain.map(|g| format!("{g:.1} dB")).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -471,6 +489,20 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
         "bpm" => t.bpm.as_deref().unwrap_or("").to_lowercase(),
         "lyric" => t.lyric.as_deref().unwrap_or("").to_lowercase(),
         "artwork_path" => t.artwork_path.as_deref().unwrap_or("").to_lowercase(),
+        // Unanalyzed tracks ("0" prefix) sort before every real gain ("1"
+        // prefix) regardless of direction — same convention as the other
+        // "no data yet" columns above, which key off `unwrap_or_default()`
+        // landing before real text. A plain `{:012.4}` zero-pad on the raw
+        // (possibly negative) dB value would NOT sort correctly here: Rust's
+        // sign-aware zero-padding keeps the `-` in front and pads after it,
+        // so e.g. -12.5 ("-000012.5000") sorts AFTER -6.2 ("-000006.2000")
+        // lexically — backwards. Shifting by +1000 first keeps every
+        // realistic gain positive, where fixed-width zero-padding sorts
+        // correctly.
+        "rg_gain" => t
+            .rg_track_gain
+            .map(|g| format!("1{:012.4}", g + 1000.0))
+            .unwrap_or_else(|| "0".to_string()),
         _ => String::new(),
     }
 }

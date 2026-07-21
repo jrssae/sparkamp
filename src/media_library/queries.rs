@@ -180,6 +180,15 @@ impl MediaLibrary {
                 "CASE WHEN last_played IS NULL OR last_played = '' THEN 1 ELSE 0 END ASC, \
                  last_played {dir}, LOWER(COALESCE(artist,'')) ASC"
             ),
+            // Unanalyzed tracks (rg_track_gain IS NULL) sort to the end
+            // regardless of direction, same convention as last_played above —
+            // SQLite's native NULL ordering doesn't need a COALESCE fallback
+            // (unlike bitrate/file_size, 0 dB is a real, meaningful gain, so
+            // blending "not yet analyzed" into it would be misleading).
+            "rg_gain" => format!(
+                "CASE WHEN rg_track_gain IS NULL THEN 1 ELSE 0 END ASC, \
+                 rg_track_gain {dir}, LOWER(COALESCE(artist,'')) ASC"
+            ),
             // Default: artist → album → track number
             _ => format!(
                 "LOWER(COALESCE(artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"

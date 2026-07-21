@@ -497,6 +497,111 @@ fn open_settings_window(
         }
         grid.attach(&chk_verify, 1, 6, 1, 1);
 
+        // ── ReplayGain (phase 4) — no dedicated "Playback" tab exists, so
+        // these live here alongside the other playback-adjacent toggles.
+        // Each row applies live to the engine on change (never just the
+        // config file), per `AppState::apply_replaygain` /
+        // `set_rg_fallback_db`.
+        let sep_rg = gtk4::Separator::new(Orientation::Horizontal);
+        sep_rg.set_margin_top(8);
+        sep_rg.set_margin_bottom(4);
+        grid.attach(&sep_rg, 0, 7, 2, 1);
+
+        let hdr_rg = Label::new(Some("ReplayGain"));
+        hdr_rg.set_halign(Align::Start);
+        hdr_rg.add_css_class("heading");
+        grid.attach(&hdr_rg, 0, 8, 2, 1);
+
+        // Master enable — reshapes the rgvolume/rglimiter chain immediately.
+        let lbl_rg_enable = Label::new(Some("Use ReplayGain"));
+        lbl_rg_enable.set_halign(Align::Start);
+        grid.attach(&lbl_rg_enable, 0, 9, 1, 1);
+        let chk_rg_enable = CheckButton::new();
+        chk_rg_enable.set_active(state.borrow().config.playback.replaygain.enabled);
+        {
+            let state_rc = state.clone();
+            chk_rg_enable.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.replaygain.enabled = c.is_active();
+                let _ = s.config.save();
+                s.apply_replaygain();
+            });
+        }
+        grid.attach(&chk_rg_enable, 1, 9, 1, 1);
+
+        // Source: Track / Album / Automatic (index order matches RgSource).
+        let lbl_rg_source = Label::new(Some("ReplayGain source"));
+        lbl_rg_source.set_halign(Align::Start);
+        grid.attach(&lbl_rg_source, 0, 10, 1, 1);
+        let dd_rg_source = DropDown::from_strings(&["Track", "Album", "Automatic"]);
+        {
+            use crate::config::RgSource;
+            let cur = state.borrow().config.playback.replaygain.source;
+            dd_rg_source.set_selected(match cur {
+                RgSource::Track => 0,
+                RgSource::Album => 1,
+                RgSource::Automatic => 2,
+            });
+        }
+        {
+            use crate::config::RgSource;
+            let state_rc = state.clone();
+            dd_rg_source.connect_selected_notify(move |d| {
+                let source = match d.selected() {
+                    0 => RgSource::Track,
+                    1 => RgSource::Album,
+                    _ => RgSource::Automatic,
+                };
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.replaygain.source = source;
+                let _ = s.config.save();
+                s.apply_replaygain();
+            });
+        }
+        grid.attach(&dd_rg_source, 1, 10, 1, 1);
+
+        // Clipping protection — inserts rglimiter after rgvolume.
+        let lbl_rg_clip = Label::new(Some("Clipping protection"));
+        lbl_rg_clip.set_halign(Align::Start);
+        grid.attach(&lbl_rg_clip, 0, 11, 1, 1);
+        let chk_rg_clip = CheckButton::new();
+        chk_rg_clip.set_active(state.borrow().config.playback.replaygain.clip_protection);
+        {
+            let state_rc = state.clone();
+            chk_rg_clip.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.replaygain.clip_protection = c.is_active();
+                let _ = s.config.save();
+                s.apply_replaygain();
+            });
+        }
+        grid.attach(&chk_rg_clip, 1, 11, 1, 1);
+
+        // Fallback gain for files carrying no ReplayGain info. Live slider —
+        // `set_rg_fallback_db` nudges rgvolume's property directly, no
+        // pipeline rebuild (and it already updates the config field itself).
+        let lbl_rg_fallback = Label::new(Some("Fallback gain (no RG info)"));
+        lbl_rg_fallback.set_halign(Align::Start);
+        grid.attach(&lbl_rg_fallback, 0, 12, 1, 1);
+        let rg_fallback_adj = Adjustment::new(
+            state.borrow().config.playback.replaygain.fallback_db as f64,
+            -12.0, 0.0, 0.5, 1.0, 0.0,
+        );
+        let scale_rg_fallback = Scale::new(Orientation::Horizontal, Some(&rg_fallback_adj));
+        scale_rg_fallback.set_hexpand(true);
+        scale_rg_fallback.set_digits(1);
+        scale_rg_fallback.set_draw_value(true);
+        {
+            let state_rc = state.clone();
+            rg_fallback_adj.connect_value_changed(move |a| {
+                let db = a.value().clamp(-12.0, 0.0);
+                let mut s = state_rc.borrow_mut();
+                s.set_rg_fallback_db(db);
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&scale_rg_fallback, 1, 12, 1, 1);
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
@@ -1669,6 +1774,44 @@ fn open_settings_window(
             });
         }
         grid.attach(&btn_dedupe, 0, 5, 4, 1);
+
+        // Row 6/7: ReplayGain analysis (phase 4). These are library-scan
+        // behavior, not the playback chain itself — that lives on the
+        // Behavior tab — so config-save only, no `apply_replaygain()` call.
+        let sep_row6 = gtk4::Separator::new(Orientation::Horizontal);
+        sep_row6.set_margin_top(4);
+        sep_row6.set_margin_bottom(4);
+        grid.attach(&sep_row6, 0, 6, 4, 1);
+
+        let lbl_rg_auto = Label::new(Some("Analyze ReplayGain on add/scan"));
+        lbl_rg_auto.set_halign(Align::Start);
+        grid.attach(&lbl_rg_auto, 0, 7, 1, 1);
+        let chk_rg_auto = CheckButton::new();
+        chk_rg_auto.set_active(state.borrow().config.playback.replaygain.auto_analyze);
+        {
+            let state_rc = state.clone();
+            chk_rg_auto.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.replaygain.auto_analyze = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_rg_auto, 1, 7, 1, 1);
+
+        let lbl_rg_write = Label::new(Some("Write ReplayGain tags to files (MP3)"));
+        lbl_rg_write.set_halign(Align::Start);
+        grid.attach(&lbl_rg_write, 0, 8, 1, 1);
+        let chk_rg_write = CheckButton::new();
+        chk_rg_write.set_active(state.borrow().config.playback.replaygain.write_tags);
+        {
+            let state_rc = state.clone();
+            chk_rg_write.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.replaygain.write_tags = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_rg_write, 1, 8, 1, 1);
 
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
