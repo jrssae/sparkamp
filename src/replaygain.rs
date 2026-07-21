@@ -170,46 +170,80 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
         });
     }
 
+    // Force a real re-analysis even for files that already carry (possibly
+    // wrong) REPLAYGAIN tags — analysis must measure the audio, not trust the
+    // file. Default is already true; set it explicitly so a future default
+    // change can't silently make us pass stale tags through.
+    rganalysis.set_property("forced", true);
+
+    // Read the RECOMPUTED gains from rganalysis's OWN src pad — NOT the bus.
+    // The file's pre-existing REPLAYGAIN tags (which may be bogus, e.g. 0.00 dB
+    // on a loud track) are also posted to the bus by decodebin; picking those
+    // up gave wrong results. rganalysis strips the incoming RG tags and emits
+    // its computed track/album gain+peak as downstream tag events on its src
+    // pad, one per track in concat order. The probe runs on the streaming
+    // thread, so collect into a shared buffer read after EOS.
+    #[derive(Default)]
+    struct Collected {
+        tracks: Vec<(f64, f64)>,
+        album_gain: Option<f64>,
+        album_peak: Option<f64>,
+    }
+    let collected: std::sync::Arc<std::sync::Mutex<Collected>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Collected::default()));
+    if let Some(src) = rganalysis.static_pad("src") {
+        let collected = collected.clone();
+        src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+            if let Some(gst::PadProbeData::Event(ev)) = &info.data {
+                if let gst::EventView::Tag(tag_ev) = ev.view() {
+                    let tags = tag_ev.tag();
+                    // rganalysis stamps its OWN computed tag event with the
+                    // reference level (89 dB); the file's pass-through original
+                    // REPLAYGAIN tags (which arrive first and may be bogus, e.g.
+                    // 0.00 dB) do not. Gate on it so we only ever read
+                    // rganalysis's freshly-measured values.
+                    if tags.get::<gst::tags::ReferenceLevel>().is_none() {
+                        return gst::PadProbeReturn::Ok;
+                    }
+                    let mut c = collected.lock().unwrap();
+                    if let Some(g) = tags.get::<gst::tags::TrackGain>() {
+                        let peak = tags
+                            .get::<gst::tags::TrackPeak>()
+                            .map(|v| v.get())
+                            .unwrap_or(1.0);
+                        c.tracks.push((g.get(), peak));
+                    }
+                    if let Some(ag) = tags.get::<gst::tags::AlbumGain>() {
+                        c.album_gain = Some(ag.get());
+                    }
+                    if let Some(ap) = tags.get::<gst::tags::AlbumPeak>() {
+                        c.album_peak = Some(ap.get());
+                    }
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
+    }
+
     pipeline.set_state(gst::State::Playing)?;
 
     let bus = pipeline
         .bus()
         .ok_or_else(|| anyhow::anyhow!("pipeline has no bus"))?;
 
-    // Per-track (gain, peak) in ARRIVAL order — rganalysis posts one TAG
-    // message per finished track, in concat order, so arrival order already
-    // matches input order (see the pad-ordering comment above).
-    let mut track_results: Vec<(f64, f64)> = Vec::new();
-    let mut album_gain: Option<f64> = None;
-    let mut album_peak: Option<f64> = None;
     let mut pipeline_err: Option<String> = None;
 
     // Bus-message watchdog (mirrors disc/rip.rs's stall guard, but keyed on
     // bus activity rather than pipeline position — there's no single
     // "position" that spans multiple concatenated files here). 500ms poll,
-    // 60s of total silence means something's wedged.
+    // 60s of total silence means something's wedged. Gains come from the pad
+    // probe above; the bus is only for EOS / errors here.
     let mut last_activity = std::time::Instant::now();
     loop {
         match bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
             Some(msg) => {
                 last_activity = std::time::Instant::now();
                 match msg.view() {
-                    gst::MessageView::Tag(tag_msg) => {
-                        let tags = tag_msg.tags();
-                        if let Some(g) = tags.get::<gst::tags::TrackGain>() {
-                            let peak = tags
-                                .get::<gst::tags::TrackPeak>()
-                                .map(|v| v.get())
-                                .unwrap_or(1.0);
-                            track_results.push((g.get(), peak));
-                        }
-                        if let Some(ag) = tags.get::<gst::tags::AlbumGain>() {
-                            album_gain = Some(ag.get());
-                        }
-                        if let Some(ap) = tags.get::<gst::tags::AlbumPeak>() {
-                            album_peak = Some(ap.get());
-                        }
-                    }
                     gst::MessageView::Eos(..) => break,
                     gst::MessageView::Error(e) => {
                         pipeline_err =
@@ -234,6 +268,11 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
     if let Some(e) = pipeline_err {
         eprintln!("replaygain: analyze_batch pipeline error: {e}");
     }
+
+    let collected = collected.lock().unwrap();
+    let track_results = &collected.tracks;
+    let album_gain = collected.album_gain;
+    let album_peak = collected.album_peak;
 
     // Missing tags (undecodable file, or the error path above cut playback
     // short) fall back to sensible neutral values rather than panicking.
@@ -681,3 +720,4 @@ mod tests {
         assert_eq!(std::fs::read(&flac).unwrap(), before, "non-MP3 left untouched");
     }
 }
+
