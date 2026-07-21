@@ -200,8 +200,13 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         }
         pages.push(page_scroller(&col));
     }
-    // Stats tab: play count, last played (as of this play's start), last scanned.
-    if info.play_count.is_some() || info.last_played.is_some() || info.last_scanned.is_some() {
+    // Stats tab: play count, last played (as of this play's start), last
+    // scanned, added to library.
+    if info.play_count.is_some()
+        || info.last_played.is_some()
+        || info.last_scanned.is_some()
+        || info.added_at.is_some()
+    {
         let col = GtkBox::new(Orientation::Vertical, 4);
         if let Some(count) = info.play_count {
             col.append(&tag_row("Play count", &count.to_string()));
@@ -211,6 +216,9 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         }
         if let Some(ref scanned) = info.last_scanned {
             col.append(&tag_row("Last scanned", &super::format_last_played(scanned)));
+        }
+        if let Some(ref added) = info.added_at {
+            col.append(&tag_row("Added to library", &super::format_last_played(added)));
         }
         pages.push(page_scroller(&col));
     }

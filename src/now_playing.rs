@@ -23,6 +23,9 @@ pub struct NowPlayingInfo {
     /// ISO-8601 timestamp of the last metadata scan, or `None` when the file
     /// isn't in the library.
     pub last_scanned: Option<String>,
+    /// ISO-8601 timestamp the file first entered the library, or `None` when
+    /// it isn't indexed.
+    pub added_at: Option<String>,
     pub artist_wiki_url: Option<String>,
     pub album_wiki_url: Option<String>,
 }
@@ -79,6 +82,20 @@ pub fn build_now_playing_info(
     if !rof.channels.is_empty() {
         technical.push(("Channels", rof.channels.clone()));
     }
+    // Bitrate mode (VBR/CBR) is only recorded for indexed MP3s.
+    if let Some(mode) = lib_row.and_then(|t| t.bitrate_mode.as_deref()) {
+        if !mode.is_empty() {
+            technical.push(("Bitrate mode", mode.to_string()));
+        }
+    }
+    // File size — from the library row, else stat the file directly so
+    // non-library playback still shows it.
+    let file_size = lib_row
+        .and_then(|t| t.file_size)
+        .or_else(|| std::fs::metadata(path).ok().map(|m| m.len() as i64));
+    if let Some(bytes) = file_size.filter(|b| *b > 0) {
+        technical.push(("File size", format_bytes(bytes)));
+    }
     // `read_only_track_fields` only probes embedded/folder art for files
     // OUTSIDE the library (its own `artwork_path` block gates the probe on
     // `track.is_none()`) — probing for library rows too would leak into the
@@ -102,6 +119,7 @@ pub fn build_now_playing_info(
         play_count: snapshot.play_count,
         last_played: snapshot.last_played,
         last_scanned: lib_row.and_then(|t| t.last_scanned.clone()),
+        added_at: lib_row.and_then(|t| t.added_at.clone()),
         artist_wiki_url: wiki_search_url(&fields.artist),
         album_wiki_url: wiki_search_url(&fields.album),
     }
@@ -122,6 +140,18 @@ fn percent_encode_query(s: &str) -> String {
         }
     }
     out
+}
+
+/// Human-readable byte size (MB / KB / B) for the Technical panel row.
+fn format_bytes(bytes: i64) -> String {
+    let b = bytes as f64;
+    if b >= 1_048_576.0 {
+        format!("{:.1} MB", b / 1_048_576.0)
+    } else if b >= 1024.0 {
+        format!("{:.0} KB", b / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Wikipedia Special:Search URL for `query`, or `None` when it is empty or
