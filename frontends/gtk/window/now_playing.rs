@@ -191,18 +191,27 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
         }
         pages.push(page_scroller(&col));
     }
-    if !info.tech_line.is_empty() {
+    // Technical tab: discrete format/bitrate/sample-rate/channels rows (label/
+    // value, like the tags) followed by the play stats — play count, last
+    // played (as of this play's start), and last scanned. The length is
+    // omitted (the seek bar shows it).
+    let has_technical = !info.technical.is_empty()
+        || info.play_count.is_some()
+        || info.last_played.is_some()
+        || info.last_scanned.is_some();
+    if has_technical {
         let col = GtkBox::new(Orientation::Vertical, 4);
-        col.append(&text_row(&info.tech_line));
-        pages.push(page_scroller(&col));
-    }
-    if info.play_count.is_some() || info.last_played.is_some() {
-        let col = GtkBox::new(Orientation::Vertical, 4);
+        for (label, value) in &info.technical {
+            col.append(&tag_row(label, value));
+        }
         if let Some(count) = info.play_count {
             col.append(&tag_row("Play count", &count.to_string()));
         }
         if let Some(ref last) = info.last_played {
             col.append(&tag_row("Last played", &super::format_last_played(last)));
+        }
+        if let Some(ref scanned) = info.last_scanned {
+            col.append(&tag_row("Last scanned", &super::format_last_played(scanned)));
         }
         pages.push(page_scroller(&col));
     }
@@ -358,21 +367,6 @@ fn tag_row(label: &str, value: &str) -> gtk4::Widget {
 
     row.append(&key);
     row.append(&val);
-    row.upcast()
-}
-
-/// A single full-width line (the tech-summary string).
-fn text_row(text: &str) -> gtk4::Widget {
-    let row = GtkBox::new(Orientation::Horizontal, 0);
-    row.add_css_class("np-tag-row");
-
-    let lbl = Label::new(Some(text));
-    lbl.set_halign(Align::Start);
-    lbl.set_xalign(0.0);
-    lbl.set_hexpand(true);
-    lbl.set_wrap(true);
-
-    row.append(&lbl);
     row.upcast()
 }
 

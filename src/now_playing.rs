@@ -9,11 +9,20 @@ use std::path::{Path, PathBuf};
 pub struct NowPlayingInfo {
     /// Curated ID3 label/value pairs, non-empty only, in `TagFields::field_pairs` order.
     pub tags: Vec<(&'static str, String)>,
-    /// e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45" — may be empty if nothing probed.
+    /// e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45" — may be empty if nothing
+    /// probed. Kept for the TUI / mac / MPRIS single-line display; the GTK panel
+    /// renders `technical` (below) as discrete label/value rows instead.
     pub tech_line: String,
+    /// Discrete technical fields as label/value pairs (Format / Bitrate /
+    /// Sample rate / Channels), non-empty only — the length is deliberately
+    /// omitted (shown by the seek bar). Same rendering as `tags`.
+    pub technical: Vec<(&'static str, String)>,
     pub artwork_path: Option<PathBuf>,
     pub play_count: Option<i64>,
     pub last_played: Option<String>,
+    /// ISO-8601 timestamp of the last metadata scan, or `None` when the file
+    /// isn't in the library.
+    pub last_scanned: Option<String>,
     pub artist_wiki_url: Option<String>,
     pub album_wiki_url: Option<String>,
 }
@@ -55,6 +64,21 @@ pub fn build_now_playing_info(
     // APIC → folder image) so both match the ID3 editor's window byte-for-byte.
     let rof = crate::media_library::read_only_track_fields(path, lib_row);
     let tech_line = crate::media_library::tech_summary(&rof);
+    // Discrete technical rows (label/value) — same fields as `tech_line` minus
+    // the length. Uppercased filetype matches `tech_summary`'s formatting.
+    let mut technical: Vec<(&'static str, String)> = Vec::new();
+    if !rof.filetype.is_empty() {
+        technical.push(("Format", rof.filetype.to_uppercase()));
+    }
+    if !rof.bitrate.is_empty() {
+        technical.push(("Bitrate", rof.bitrate.clone()));
+    }
+    if !rof.sample_rate.is_empty() {
+        technical.push(("Sample rate", rof.sample_rate.clone()));
+    }
+    if !rof.channels.is_empty() {
+        technical.push(("Channels", rof.channels.clone()));
+    }
     // `read_only_track_fields` only probes embedded/folder art for files
     // OUTSIDE the library (its own `artwork_path` block gates the probe on
     // `track.is_none()`) — probing for library rows too would leak into the
@@ -73,9 +97,11 @@ pub fn build_now_playing_info(
     NowPlayingInfo {
         tags,
         tech_line,
+        technical,
         artwork_path,
         play_count: snapshot.play_count,
         last_played: snapshot.last_played,
+        last_scanned: lib_row.and_then(|t| t.last_scanned.clone()),
         artist_wiki_url: wiki_search_url(&fields.artist),
         album_wiki_url: wiki_search_url(&fields.album),
     }
@@ -174,6 +200,18 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(info.tags, vec![("Title", stem)]);
+    }
+
+    #[test]
+    fn info_technical_has_discrete_rows_without_length() {
+        let f = make_tagged_mp3("S", "A");
+        let info = build_now_playing_info(f.path(), None, PlaySnapshot::default());
+        // Format is derived from the extension even for an unprobeable fake file.
+        assert!(info.technical.iter().any(|(l, _)| *l == "Format"));
+        // Length is never a technical row — the seek bar shows it.
+        assert!(!info.technical.iter().any(|(l, _)| *l == "Length"));
+        // Not-in-library file → no scan timestamp.
+        assert_eq!(info.last_scanned, None);
     }
 
     #[test]
