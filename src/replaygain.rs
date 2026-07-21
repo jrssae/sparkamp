@@ -8,6 +8,9 @@
 
 #![allow(dead_code)] // wired by P4-T6 (library actions) / P4-T9 (auto-analyze).
 
+use gstreamer as gst;
+use gstreamer::prelude::*;
+
 use crate::media_library::LibTrack;
 
 /// One track's ReplayGain result: gains in dB, peaks linear (0..~1).
@@ -72,6 +75,280 @@ pub fn album_batches(tracks: &[LibTrack]) -> Vec<Vec<usize>> {
         }
     }
     batches
+}
+
+/// `true` when the GStreamer `rganalysis` element is installed. Callers
+/// (library actions / auto-analyze) should gate the whole feature on this
+/// before offering it, mirroring `Player::rg_available` for playback.
+pub fn rg_analysis_available() -> bool {
+    let _ = gst::init(); // idempotent; ElementFactory::find needs init first.
+    gst::ElementFactory::find("rganalysis").is_some()
+}
+
+/// Analyze one album batch (a group of file paths sharing an album, or a
+/// single album-less file) with ONE `rganalysis` pass so the album gain is
+/// computed across the whole group. Returns one [`RgResult`] per input path,
+/// IN THE SAME ORDER, each carrying the shared album gain/peak.
+///
+/// Pipeline shape:
+/// ```text
+/// filesrc ! decodebin ─┐
+/// filesrc ! decodebin ─┼─ concat ! audioconvert ! audioresample ! rganalysis ! fakesink
+/// filesrc ! decodebin ─┘
+/// ```
+/// One `filesrc ! decodebin` pair per file, each feeding a concat sink pad
+/// requested UP FRONT in input order (concat plays sink pads back in request
+/// order), so track order through `rganalysis` — and hence which result goes
+/// with which input path — is deterministic regardless of decode timing.
+/// `rganalysis`'s `num-tracks` is set to the batch size so it emits the album
+/// gain/peak tags once the last track finishes.
+///
+/// Runs synchronously on the calling thread (GStreamer elements aren't
+/// `Send`, and analysis is CPU-bound decode anyway — callers already run this
+/// off a single background worker). Always tears the pipeline down to `Null`
+/// before returning, success or failure.
+///
+/// Returns an error if `rganalysis` isn't installed — callers should gate on
+/// [`rg_analysis_available`] first; this is the defensive fallback.
+pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResult>> {
+    let _ = gst::init();
+    if gst::ElementFactory::find("rganalysis").is_none() {
+        anyhow::bail!("rganalysis element not available (gst-plugins-good missing?)");
+    }
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pipeline = gst::Pipeline::new();
+    let concat = gst::ElementFactory::make("concat").build()?;
+    let audioconvert = gst::ElementFactory::make("audioconvert").build()?;
+    let audioresample = gst::ElementFactory::make("audioresample").build()?;
+    let rganalysis = gst::ElementFactory::make("rganalysis").build()?;
+    rganalysis.set_property("num-tracks", paths.len() as i32);
+    let fakesink = gst::ElementFactory::make("fakesink").build()?;
+    // Analysis has no audience — don't throttle decode to wall-clock playback
+    // speed the way a real sink would.
+    fakesink.set_property("sync", false);
+
+    pipeline.add_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
+    gst::Element::link_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
+
+    // Request concat's sink pads UP FRONT, in input order — concat forwards
+    // from its request-ordered sink pads sequentially, so pad i's stream is
+    // always track i regardless of which decodebin finishes typefinding
+    // first.
+    let mut sink_pads = Vec::with_capacity(paths.len());
+    for _ in paths {
+        let pad = concat
+            .request_pad_simple("sink_%u")
+            .ok_or_else(|| anyhow::anyhow!("concat: failed to request a sink pad"))?;
+        sink_pads.push(pad);
+    }
+
+    // One filesrc ! decodebin per file, each wired (once decodebin's async
+    // pad-added fires) to its pre-requested concat pad. Mirrors the
+    // decodebin pad-added pattern in engine.rs (guard already-linked +
+    // filter to audio caps — a file with embedded cover art can make
+    // decodebin emit a second, video, pad).
+    for (path, sink_pad) in paths.iter().zip(sink_pads.iter()) {
+        let filesrc = gst::ElementFactory::make("filesrc").build()?;
+        filesrc.set_property("location", path.to_string_lossy().as_ref());
+        let decodebin = gst::ElementFactory::make("decodebin").build()?;
+        pipeline.add_many([&filesrc, &decodebin])?;
+        filesrc.link(&decodebin)?;
+
+        let sink_pad = sink_pad.clone();
+        decodebin.connect_pad_added(move |_dbin, src_pad| {
+            if sink_pad.is_linked() {
+                return;
+            }
+            let is_audio = src_pad
+                .current_caps()
+                .map(|c| c.to_string().contains("audio"))
+                .unwrap_or(true); // caps not ready yet: try anyway, same as engine.rs
+            if is_audio {
+                let _ = src_pad.link(&sink_pad);
+            }
+        });
+    }
+
+    pipeline.set_state(gst::State::Playing)?;
+
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| anyhow::anyhow!("pipeline has no bus"))?;
+
+    // Per-track (gain, peak) in ARRIVAL order — rganalysis posts one TAG
+    // message per finished track, in concat order, so arrival order already
+    // matches input order (see the pad-ordering comment above).
+    let mut track_results: Vec<(f64, f64)> = Vec::new();
+    let mut album_gain: Option<f64> = None;
+    let mut album_peak: Option<f64> = None;
+    let mut pipeline_err: Option<String> = None;
+
+    // Bus-message watchdog (mirrors disc/rip.rs's stall guard, but keyed on
+    // bus activity rather than pipeline position — there's no single
+    // "position" that spans multiple concatenated files here). 500ms poll,
+    // 60s of total silence means something's wedged.
+    let mut last_activity = std::time::Instant::now();
+    loop {
+        match bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
+            Some(msg) => {
+                last_activity = std::time::Instant::now();
+                match msg.view() {
+                    gst::MessageView::Tag(tag_msg) => {
+                        let tags = tag_msg.tags();
+                        if let Some(g) = tags.get::<gst::tags::TrackGain>() {
+                            let peak = tags
+                                .get::<gst::tags::TrackPeak>()
+                                .map(|v| v.get())
+                                .unwrap_or(1.0);
+                            track_results.push((g.get(), peak));
+                        }
+                        if let Some(ag) = tags.get::<gst::tags::AlbumGain>() {
+                            album_gain = Some(ag.get());
+                        }
+                        if let Some(ap) = tags.get::<gst::tags::AlbumPeak>() {
+                            album_peak = Some(ap.get());
+                        }
+                    }
+                    gst::MessageView::Eos(..) => break,
+                    gst::MessageView::Error(e) => {
+                        pipeline_err =
+                            Some(format!("{} ({})", e.error(), e.debug().unwrap_or_default()));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            None => {
+                if last_activity.elapsed() > std::time::Duration::from_secs(60) {
+                    pipeline_err = Some("stalled: no bus activity for 60s".to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Always tear down, success or failure.
+    let _ = pipeline.set_state(gst::State::Null);
+
+    if let Some(e) = pipeline_err {
+        eprintln!("replaygain: analyze_batch pipeline error: {e}");
+    }
+
+    // Missing tags (undecodable file, or the error path above cut playback
+    // short) fall back to sensible neutral values rather than panicking.
+    let album_gain = album_gain.unwrap_or(0.0);
+    let album_peak = album_peak.unwrap_or(1.0);
+
+    let results = (0..paths.len())
+        .map(|i| {
+            let (track_gain, track_peak) = track_results.get(i).copied().unwrap_or_else(|| {
+                eprintln!(
+                    "replaygain: no track tag for {} (index {i}); using fallback gain",
+                    paths[i].display()
+                );
+                (0.0, 1.0)
+            });
+            RgResult {
+                track_gain,
+                track_peak,
+                album_gain,
+                album_peak,
+            }
+        })
+        .collect();
+
+    Ok(results)
+}
+
+/// Progress snapshot for [`analyze_and_store`], reported after each batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RgJobProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// `true` when `t` should be (re-)analyzed: no stored track gain yet, or the
+/// file has been modified since the last scan. Both `file_mtime` and
+/// `last_scanned` are ISO-8601 strings, which compare lexically — no parsing
+/// needed. A pure helper so the "missing OR stale" selection logic (P4-T6's
+/// job) has one tested rule to call instead of re-deriving it at each UI
+/// entry point.
+pub fn needs_analysis(t: &LibTrack) -> bool {
+    if t.rg_track_gain.is_none() {
+        return true;
+    }
+    match (&t.file_mtime, &t.last_scanned) {
+        (Some(mtime), Some(scanned)) => mtime.as_str() > scanned.as_str(),
+        _ => false,
+    }
+}
+
+/// Analyze `tracks` (already the exact set to process — the caller applies
+/// the missing-OR-stale/force filter via [`needs_analysis`]) and store each
+/// result via [`crate::media_library::MediaLibrary::set_replaygain`].
+///
+/// Runs on the CALLER's thread — callers are responsible for spawning a
+/// single background worker (analysis is CPU-bound decode; running two in
+/// parallel just contends for the same cores). `cancel` is polled between
+/// batches (not mid-batch — a batch is one atomic `analyze_batch` call) and,
+/// when set, stops early without analyzing remaining batches. `progress` is
+/// invoked once per completed batch, whether or not that batch's analysis
+/// succeeded.
+///
+/// Returns the count of tracks actually analyzed (not merely attempted —
+/// batches are attempted regardless, but see below: a batch-level pipeline
+/// error still yields fallback `RgResult`s that get stored, so "analyzed"
+/// here means "a batch containing this track ran", matching what the UI
+/// progress bar should count).
+pub fn analyze_and_store(
+    lib: &crate::media_library::MediaLibrary,
+    tracks: &[LibTrack],
+    cancel: &std::sync::atomic::AtomicBool,
+    mut progress: impl FnMut(RgJobProgress),
+) -> anyhow::Result<usize> {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let batches = album_batches(tracks);
+    let total = tracks.len();
+    let mut analyzed = 0usize;
+
+    for batch in &batches {
+        if cancel.load(Relaxed) {
+            break;
+        }
+
+        let paths: Vec<std::path::PathBuf> =
+            batch.iter().map(|&i| std::path::PathBuf::from(&tracks[i].path)).collect();
+
+        match analyze_batch(&paths) {
+            Ok(results) => {
+                for (&idx, r) in batch.iter().zip(results.iter()) {
+                    let track = &tracks[idx];
+                    if let Err(e) =
+                        lib.set_replaygain(track.id, r.track_gain, r.track_peak, r.album_gain, r.album_peak)
+                    {
+                        eprintln!("replaygain: store failed for track {}: {e}", track.id);
+                    } else {
+                        analyzed += 1;
+                    }
+                    // P4-T5: optional MP3 tag write-back hook
+                }
+            }
+            Err(e) => {
+                eprintln!("replaygain: batch analysis failed: {e}");
+            }
+        }
+
+        progress(RgJobProgress {
+            done: analyzed,
+            total,
+        });
+    }
+
+    Ok(analyzed)
 }
 
 #[cfg(test)]
@@ -163,5 +440,123 @@ mod tests {
         ];
         let b = album_batches(&tracks);
         assert_eq!(b, vec![vec![0], vec![1], vec![2]]);
+    }
+
+    // ── needs_analysis ──────────────────────────────────────────────────
+
+    #[test]
+    fn needs_analysis_when_never_analyzed() {
+        let mut t = track("/x.mp3", None, None, None);
+        t.rg_track_gain = None;
+        assert!(needs_analysis(&t));
+    }
+
+    #[test]
+    fn needs_analysis_when_file_touched_after_last_scan() {
+        let mut t = track("/x.mp3", None, None, None);
+        t.rg_track_gain = Some(-3.0);
+        t.last_scanned = Some("2026-01-01T00:00:00Z".to_string());
+        t.file_mtime = Some("2026-01-02T00:00:00Z".to_string()); // touched after scan
+        assert!(needs_analysis(&t));
+    }
+
+    #[test]
+    fn no_reanalysis_when_gain_present_and_file_unchanged() {
+        let mut t = track("/x.mp3", None, None, None);
+        t.rg_track_gain = Some(-3.0);
+        t.last_scanned = Some("2026-01-02T00:00:00Z".to_string());
+        t.file_mtime = Some("2026-01-01T00:00:00Z".to_string()); // scanned after the file was last touched
+        assert!(!needs_analysis(&t));
+    }
+
+    // ── analyze_batch (GStreamer end-to-end) ────────────────────────────
+
+    /// A minimal PCM WAV containing a low-amplitude sine tone rather than
+    /// silence — `rganalysis` reports gain as ±infinity dB on pure silence
+    /// (zero RMS), which would make the "finite" assertions below meaningless.
+    /// Mirrors `write_test_wav` in `media_library/tests.rs`, but fills the
+    /// data chunk with a tone instead of zeros.
+    fn write_tone_wav(path: &std::path::Path, sample_rate: u32, secs: f64, freq: f64) {
+        let channels: u16 = 2;
+        let bytes_per_frame = channels as u32 * 2;
+        let n_frames = (sample_rate as f64 * secs) as u32;
+        let data_len = n_frames * bytes_per_frame;
+        let byte_rate = sample_rate * bytes_per_frame;
+        let block_align = channels * 2;
+
+        let mut buf = Vec::new();
+        buf.extend(b"RIFF");
+        buf.extend(&(36 + data_len).to_le_bytes());
+        buf.extend(b"WAVE");
+        buf.extend(b"fmt ");
+        buf.extend(&16u32.to_le_bytes());
+        buf.extend(&1u16.to_le_bytes()); // PCM
+        buf.extend(&channels.to_le_bytes());
+        buf.extend(&sample_rate.to_le_bytes());
+        buf.extend(&byte_rate.to_le_bytes());
+        buf.extend(&block_align.to_le_bytes());
+        buf.extend(&16u16.to_le_bytes()); // bits per sample
+        buf.extend(b"data");
+        buf.extend(&data_len.to_le_bytes());
+
+        // Low amplitude (~25% full scale) so it's audible-loudness-finite
+        // without risking clipping-related edge behavior.
+        let amp = i16::MAX as f64 * 0.25;
+        for n in 0..n_frames {
+            let t = n as f64 / sample_rate as f64;
+            let sample = (amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16;
+            buf.extend(&sample.to_le_bytes()); // left
+            buf.extend(&sample.to_le_bytes()); // right
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn analyze_batch_single_file_returns_finite_result() {
+        let _ = gst::init();
+        if gst::ElementFactory::find("rganalysis").is_none() {
+            eprintln!("skipping: rganalysis element not available");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tone.wav");
+        write_tone_wav(&p, 44100, 1.0, 440.0);
+
+        let results = analyze_batch(&[p]).expect("analysis should succeed");
+        assert_eq!(results.len(), 1);
+        let r = results[0];
+        assert!(r.track_gain.is_finite(), "track_gain = {}", r.track_gain);
+        assert!(r.track_peak.is_finite(), "track_peak = {}", r.track_peak);
+        assert!(r.album_gain.is_finite(), "album_gain = {}", r.album_gain);
+        assert!(r.album_peak.is_finite(), "album_peak = {}", r.album_peak);
+    }
+
+    #[test]
+    fn analyze_batch_two_files_share_one_album_gain() {
+        let _ = gst::init();
+        if gst::ElementFactory::find("rganalysis").is_none() {
+            eprintln!("skipping: rganalysis element not available");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("a.wav");
+        let p2 = dir.path().join("b.wav");
+        // Different tones/lengths so the two tracks aren't identical inputs.
+        write_tone_wav(&p1, 44100, 1.0, 440.0);
+        write_tone_wav(&p2, 44100, 1.5, 220.0);
+
+        let results = analyze_batch(&[p1, p2]).expect("analysis should succeed");
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert!(r.track_gain.is_finite());
+            assert!(r.track_peak.is_finite());
+            assert!(r.album_gain.is_finite());
+            assert!(r.album_peak.is_finite());
+        }
+        // Both results are from the same batch → same album gain/peak.
+        assert_eq!(results[0].album_gain, results[1].album_gain);
+        assert_eq!(results[0].album_peak, results[1].album_peak);
     }
 }
