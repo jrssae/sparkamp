@@ -84,27 +84,20 @@ pub fn rg_analysis_available() -> bool {
 }
 
 /// Analyze one album batch (a group of file paths sharing an album, or a
-/// single album-less file) with ONE `rganalysis` pass so the album gain is
-/// computed across the whole group. Returns one [`RgResult`] per input path,
-/// IN THE SAME ORDER, each carrying the shared album gain/peak.
+/// single album-less file). Returns one [`RgResult`] per input path, IN THE
+/// SAME ORDER.
 ///
-/// Pipeline shape:
-/// ```text
-/// filesrc ! decodebin ─┐
-/// filesrc ! decodebin ─┼─ concat ! audioconvert ! audioresample ! rganalysis ! fakesink
-/// filesrc ! decodebin ─┘
-/// ```
-/// One `filesrc ! decodebin` pair per file, each feeding a concat sink pad
-/// requested UP FRONT in input order (concat plays sink pads back in request
-/// order), so track order through `rganalysis` — and hence which result goes
-/// with which input path — is deterministic regardless of decode timing.
-/// `rganalysis`'s `num-tracks` is set to the batch size so it emits the album
-/// gain/peak tags once the last track finishes.
+/// Track gain/peak comes from a SEPARATE single-file `rganalysis` pass per
+/// file. `concat` merges several files into one continuous stream, so a
+/// shared pass emits only ONE computed gain (concat swallows the per-file EOS
+/// that would mark a track boundary) — every track after the first otherwise
+/// stored a neutral 0.0 dB (the album-batch bug). Album gain/peak: a
+/// multi-track batch runs one extra concat pass to measure the whole album's
+/// loudness as a single stream; a single-track batch reuses its own pass.
 ///
 /// Runs synchronously on the calling thread (GStreamer elements aren't
 /// `Send`, and analysis is CPU-bound decode anyway — callers already run this
-/// off a single background worker). Always tears the pipeline down to `Null`
-/// before returning, success or failure.
+/// off a single background worker).
 ///
 /// Returns an error if `rganalysis` isn't installed — callers should gate on
 /// [`rg_analysis_available`] first; this is the defensive fallback.
@@ -117,12 +110,61 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
         return Ok(Vec::new());
     }
 
+    // Per-track gain/peak — one pass per file, never a shared concat pass.
+    let mut track_results: Vec<(f64, f64)> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let gp = analyze_lump(std::slice::from_ref(path))?.unwrap_or_else(|| {
+            eprintln!(
+                "replaygain: no computed gain for {}; storing neutral 0.0 dB",
+                path.display()
+            );
+            (0.0, 1.0)
+        });
+        track_results.push(gp);
+    }
+
+    // Album gain/peak — single-track batch reuses its pass; multi-track batch
+    // measures the whole album as one concatenated stream.
+    let (album_gain, album_peak) = if paths.len() == 1 {
+        track_results[0]
+    } else {
+        analyze_lump(paths)?.unwrap_or((0.0, 1.0))
+    };
+
+    Ok(track_results
+        .into_iter()
+        .map(|(track_gain, track_peak)| RgResult {
+            track_gain,
+            track_peak,
+            album_gain,
+            album_peak,
+        })
+        .collect())
+}
+
+/// Run ONE `rganalysis` pass over `paths` (concatenated in input order) and
+/// return the single reference-level-stamped (gain, peak) it computes for the
+/// whole stream — the track's own value for a single path, or the combined
+/// (album) loudness for several. `None` when nothing decodable produced a
+/// computed tag. Always tears the pipeline down to `Null` before returning.
+///
+/// Pipeline shape:
+/// ```text
+/// filesrc ! decodebin ─┐
+/// filesrc ! decodebin ─┼─ concat ! audioconvert ! audioresample ! rganalysis ! fakesink
+/// filesrc ! decodebin ─┘
+/// ```
+/// Each `filesrc ! decodebin` feeds a concat sink pad requested UP FRONT in
+/// input order, so stream order through `rganalysis` is deterministic
+/// regardless of decode timing.
+fn analyze_lump(paths: &[std::path::PathBuf]) -> anyhow::Result<Option<(f64, f64)>> {
     let pipeline = gst::Pipeline::new();
     let concat = gst::ElementFactory::make("concat").build()?;
     let audioconvert = gst::ElementFactory::make("audioconvert").build()?;
     let audioresample = gst::ElementFactory::make("audioresample").build()?;
     let rganalysis = gst::ElementFactory::make("rganalysis").build()?;
-    rganalysis.set_property("num-tracks", paths.len() as i32);
+    // One computed value for the whole (possibly concatenated) stream.
+    rganalysis.set_property("num-tracks", 1i32);
     let fakesink = gst::ElementFactory::make("fakesink").build()?;
     // Analysis has no audience — don't throttle decode to wall-clock playback
     // speed the way a real sink would.
@@ -186,8 +228,6 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
     #[derive(Default)]
     struct Collected {
         tracks: Vec<(f64, f64)>,
-        album_gain: Option<f64>,
-        album_peak: Option<f64>,
     }
     let collected: std::sync::Arc<std::sync::Mutex<Collected>> =
         std::sync::Arc::new(std::sync::Mutex::new(Collected::default()));
@@ -212,12 +252,6 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
                             .map(|v| v.get())
                             .unwrap_or(1.0);
                         c.tracks.push((g.get(), peak));
-                    }
-                    if let Some(ag) = tags.get::<gst::tags::AlbumGain>() {
-                        c.album_gain = Some(ag.get());
-                    }
-                    if let Some(ap) = tags.get::<gst::tags::AlbumPeak>() {
-                        c.album_peak = Some(ap.get());
                     }
                 }
             }
@@ -270,34 +304,9 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
     }
 
     let collected = collected.lock().unwrap();
-    let track_results = &collected.tracks;
-    let album_gain = collected.album_gain;
-    let album_peak = collected.album_peak;
-
-    // Missing tags (undecodable file, or the error path above cut playback
-    // short) fall back to sensible neutral values rather than panicking.
-    let album_gain = album_gain.unwrap_or(0.0);
-    let album_peak = album_peak.unwrap_or(1.0);
-
-    let results = (0..paths.len())
-        .map(|i| {
-            let (track_gain, track_peak) = track_results.get(i).copied().unwrap_or_else(|| {
-                eprintln!(
-                    "replaygain: no track tag for {} (index {i}); using fallback gain",
-                    paths[i].display()
-                );
-                (0.0, 1.0)
-            });
-            RgResult {
-                track_gain,
-                track_peak,
-                album_gain,
-                album_peak,
-            }
-        })
-        .collect();
-
-    Ok(results)
+    // Exactly one reference-level-stamped value for the whole stream (or none,
+    // if nothing decoded). Extras shouldn't occur with num-tracks=1.
+    Ok(collected.tracks.first().copied())
 }
 
 /// Progress snapshot for [`analyze_and_store`], reported after each batch.
@@ -655,6 +664,15 @@ mod tests {
         // Both results are from the same batch → same album gain/peak.
         assert_eq!(results[0].album_gain, results[1].album_gain);
         assert_eq!(results[0].album_peak, results[1].album_peak);
+
+        // Regression (concat-lump bug): each track gets its OWN analysis pass,
+        // so a track's gain is independent of its batch position. Analyzing
+        // the 2nd file alone must reproduce its in-batch track gain bit-for-
+        // bit. Before the fix, index 1 got a neutral 0.0 fallback because
+        // concat emitted only one computed gain for the whole concatenation.
+        let alone = analyze_batch(&[dir.path().join("b.wav")]).expect("solo analysis");
+        assert_eq!(results[1].track_gain, alone[0].track_gain);
+        assert_ne!(results[1].track_gain, 0.0, "index-1 track fell back to 0.0");
     }
 
     #[test]
