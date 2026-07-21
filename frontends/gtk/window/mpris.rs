@@ -86,14 +86,22 @@ struct PlayerCache {
     status: String,
     loop_status: String,
     shuffle: bool,
+    volume: f64,
     metadata: glib::Variant,
+    /// `mpris:length` baked into the cached `metadata`. GStreamer resolves the
+    /// duration ~50–300ms AFTER play starts, so the track-change rebuild often
+    /// captures 0; when this is still <= 0 but the engine now reports a real
+    /// length, the poll rebuilds Metadata so the widget scrubber gets a total.
+    meta_length: i64,
 }
 
-/// Keeps the MPRIS bus-name ownership + object registration alive for the app's
-/// lifetime. GLib owns the registered closures, but we park the ids (and the
-/// connection) here both to hold the option to unown/unregister on quit and to
-/// give P3-T5 a handle to the live connection for the Player interface.
-/// `#[allow(dead_code)]` — the fields exist to own lifetimes, not to be read.
+/// Parks the MPRIS bus-name owner id, object registration ids, and the live
+/// connection on AppState. GLib owns the registered closures for the process
+/// lifetime, and `OwnerId`/`RegistrationId` have no `Drop`, so this is not
+/// load-bearing for keeping the service exported — it exists to hold the
+/// connection (the Player interface / signal emission hang off it) and to keep
+/// the option of an explicit unown/unregister on quit.
+/// `#[allow(dead_code)]` — most fields are held, not read.
 #[allow(dead_code)]
 pub(super) struct MprisGuard {
     owner: gio::OwnerId,
@@ -121,7 +129,9 @@ pub(super) fn init(
         status: "Stopped".to_string(),
         loop_status: "None".to_string(),
         shuffle: false,
+        volume: state.borrow().config.playback.volume,
         metadata: glib::VariantDict::new(None).end(),
+        meta_length: 0,
     }));
 
     let owner = gio::bus_own_name(
@@ -393,6 +403,9 @@ fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::
             if let Some(s) = value.get::<String>() {
                 if let Some(mode) = crate::mpris_meta::loop_status_to_repeat(&s) {
                     state.borrow_mut().config.playback.repeat_mode = mode;
+                    // Persist — a D-Bus-only change would otherwise be lost on
+                    // restart (the GTK toggles save; this path must too).
+                    let _ = state.borrow().config.save();
                     return true;
                 }
             }
@@ -400,10 +413,13 @@ fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::
         }
         "Shuffle" => {
             if let Some(on) = value.get::<bool>() {
-                let mut s = state.borrow_mut();
-                s.shuffle_state.enabled = on;
-                s.shuffle_state.reset();
-                s.config.playback.shuffle_enabled = on;
+                {
+                    let mut s = state.borrow_mut();
+                    s.shuffle_state.enabled = on;
+                    s.shuffle_state.reset();
+                    s.config.playback.shuffle_enabled = on;
+                }
+                let _ = state.borrow().config.save();
                 return true;
             }
             false
@@ -411,9 +427,12 @@ fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::
         "Volume" => {
             if let Some(v) = value.get::<f64>() {
                 let v = v.clamp(0.0, 1.0);
-                let mut s = state.borrow_mut();
-                s.player.set_volume(v);
-                s.config.playback.volume = v;
+                {
+                    let mut s = state.borrow_mut();
+                    s.player.set_volume(v);
+                    s.config.playback.volume = v;
+                }
+                let _ = state.borrow().config.save();
                 return true;
             }
             false
@@ -432,13 +451,15 @@ fn start_poll(
     cache: Rc<RefCell<PlayerCache>>,
 ) {
     glib::timeout_add_local(Duration::from_millis(500), move || {
-        let (path, status, loop_status, shuffle) = {
+        let (path, status, loop_status, shuffle, volume, length) = {
             let s = state.borrow();
             (
                 s.playlist.current().map(|t| t.path.to_string_lossy().into_owned()),
                 playback_status_str(s.player.state()).to_string(),
                 repeat_to_loop_status(s.config.playback.repeat_mode).to_string(),
                 s.shuffle_state.enabled,
+                s.config.playback.volume,
+                s.player.length_usecs(),
             )
         };
 
@@ -454,11 +475,23 @@ fn start_poll(
             if shuffle != c.shuffle {
                 changed.push(("Shuffle", shuffle.to_variant()));
             }
+            if (volume - c.volume).abs() > f64::EPSILON {
+                changed.push(("Volume", volume.to_variant()));
+            }
         }
+        // Rebuild Metadata on a track change, OR when the duration finally
+        // resolves for the current track (the track-change rebuild often runs
+        // before GStreamer knows the length, which would otherwise leave
+        // mpris:length absent for the whole track).
         let track_changed = cache.borrow().path != path;
-        if track_changed {
-            let meta = build_current_meta(&state);
-            cache.borrow_mut().metadata = meta.clone();
+        let length_resolved = cache.borrow().meta_length <= 0 && length > 0;
+        if track_changed || length_resolved {
+            let (meta, meta_length) = build_current_meta(&state);
+            {
+                let mut c = cache.borrow_mut();
+                c.metadata = meta.clone();
+                c.meta_length = meta_length;
+            }
             changed.push(("Metadata", meta));
         }
 
@@ -467,6 +500,7 @@ fn start_poll(
             c.status = status;
             c.loop_status = loop_status;
             c.shuffle = shuffle;
+            c.volume = volume;
             c.path = path;
         }
 
@@ -477,12 +511,14 @@ fn start_poll(
     });
 }
 
-/// Build the `a{sv}` Metadata variant for the current track (empty dict when
-/// nothing is playing). Reads tags off disk — called only on track change.
-fn build_current_meta(state: &Rc<RefCell<AppState>>) -> glib::Variant {
+/// Build the `a{sv}` Metadata variant for the current track (empty dict + 0
+/// length when nothing is playing). Returns the `mpris:length` (µs) it baked in
+/// so the poll can tell when a later duration resolution needs a rebuild. Reads
+/// tags off disk — called only on track change / length resolution.
+fn build_current_meta(state: &Rc<RefCell<AppState>>) -> (glib::Variant, i64) {
     let path = match state.borrow().playlist.current().map(|t| t.path.clone()) {
         Some(p) => p,
-        None => return glib::VariantDict::new(None).end(),
+        None => return (glib::VariantDict::new(None).end(), 0),
     };
     let fields = crate::id3_editor::read_tag_fields(&path);
     let length = state.borrow().player.length_usecs();
@@ -503,7 +539,7 @@ fn build_current_meta(state: &Rc<RefCell<AppState>>) -> glib::Variant {
         genre: fields.genre,
         track_number: fields.track_number.parse::<i64>().ok(),
     };
-    meta_to_variant(&build_metadata(&meta))
+    (meta_to_variant(&build_metadata(&meta)), length)
 }
 
 /// Convert the pure builder's typed pairs into an `a{sv}` variant.
