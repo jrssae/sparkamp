@@ -4857,6 +4857,10 @@ pub fn build(
         });
     }
 
+    // Stand up the MPRIS D-Bus service (media keys / GNOME widget / playerctl).
+    // Degrades silently if there is no session bus or the name is already owned.
+    mpris::init(app, &window, state.clone());
+
     window.present();
     if init_playlist_visible {
         // Delay the playlist window slightly so the Wayland compositor has

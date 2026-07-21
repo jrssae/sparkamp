@@ -77,6 +77,7 @@ mod now_playing;
 // for the same reason as now_playing above; player.rs calls it as
 // `art_window::open_or_focus(...)`.
 mod art_window;
+mod mpris;
 
 // ---------------------------------------------------------------------------
 // AppState

@@ -41,6 +41,11 @@ struct AppState {
     /// on close), and reused on every `k` / art-click via `present()` so its
     /// `now_playing` subscription is only ever registered once.
     art_window: Option<gtk4::Window>,
+    /// Owns the MPRIS D-Bus bus-name + object registration for the app's
+    /// lifetime (dropping it would unexport the service). Set once by
+    /// `mpris::init`; `#[allow(dead_code)]` — held only to own the lifetime.
+    #[allow(dead_code)]
+    mpris_guard: Option<mpris::MprisGuard>,
     /// Callback to refresh the media library window, registered by the window itself.
     rebuild_ml_callback: Option<Rc<dyn Fn()>>,
     /// Callback that re-polls the ML window's disc drives, registered by the
@@ -245,6 +250,7 @@ impl AppState {
             ml_window: None,
             id3_editor_window: None,
             art_window: None,
+            mpris_guard: None,
             rebuild_ml_callback: None,
             disc_refresh_callback: None,
             pending_disc_nav: None,
