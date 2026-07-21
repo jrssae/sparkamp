@@ -5265,41 +5265,33 @@ fn open_media_library_window(
             let cancel_rg_ref = btn_cancel_rg.clone();
             let status_ref = files_status.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                let (scan_state, rg_state) = {
-                    let s = state_rc.borrow();
-                    (s.ml_scan.clone(), s.rg_job.clone())
-                };
-                let busy = scan_state.is_some() || rg_state.is_some();
-                let rg_running = rg_state.is_some();
+                let scan_state = state_rc.borrow().ml_scan.clone();
+                let scan_busy = scan_state.is_some();
+                // RG buttons + status: shared with the Settings window via
+                // `sync_rg_ui`. A running metadata scan owns the status label
+                // this tick, so render_status = !scan_busy.
+                let rg_running = sync_rg_ui(
+                    &state_rc,
+                    &analyze_ref,
+                    &cancel_rg_ref,
+                    &status_ref,
+                    rg_available,
+                    scan_busy,
+                    !scan_busy,
+                );
+                let busy = scan_busy || rg_running;
                 rescan_ref.set_sensitive(!busy);
                 add_folder_ref.set_sensitive(!busy);
-                // Toggle Analyze ⇄ Cancel: while the RG job runs, hide Analyze
-                // and show Cancel in its place (never both at once).
-                analyze_ref.set_visible(!rg_running);
-                analyze_ref.set_sensitive(!busy && rg_available);
                 if let Some(scan) = scan_state {
                     cancel_ref.set_visible(true);
-                    cancel_rg_ref.set_visible(false);
                     if scan.total > 0 {
                         status_ref
                             .set_text(&format!("Reading tags {}/{}…", scan.current, scan.total));
                     } else {
                         status_ref.set_text("Reading tags…");
                     }
-                } else if let Some(rg) = rg_state {
-                    cancel_ref.set_visible(false);
-                    cancel_rg_ref.set_visible(true);
-                    if rg.total > 0 {
-                        status_ref.set_text(&format!(
-                            "Analyzing ReplayGain {}/{}…",
-                            rg.current, rg.total
-                        ));
-                    } else {
-                        status_ref.set_text("Analyzing ReplayGain…");
-                    }
                 } else {
                     cancel_ref.set_visible(false);
-                    cancel_rg_ref.set_visible(false);
                 }
                 glib::ControlFlow::Continue
             });
@@ -10684,7 +10676,6 @@ fn analyze_job(
     let progress_rx = std::cell::RefCell::new(progress_rx);
     let result_rx = std::cell::RefCell::new(result_rx);
     let state2 = state.clone();
-    let status2 = status_label.clone();
     glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
         while let Ok(p) = progress_rx.borrow().try_recv() {
             update_rg_job_progress(&state2, p.done, p.total);
@@ -10694,14 +10685,19 @@ fn analyze_job(
                 let mut s = state2.borrow_mut();
                 s.media_lib = crate::media_library::MediaLibrary::open().ok();
             }
-            complete_rg_job(&state2);
-            match result {
-                Err(e) => status2.set_text(&format!("ReplayGain analysis error: {e}")),
-                Ok(n) => {
-                    rebuild();
-                    status2.set_text(&format!("Analyzed {n} track(s)"));
-                }
+            // Hand the result to the shared UI state — each view's poller
+            // (`sync_rg_ui`) renders the completion text and flips the
+            // Cancel button back to Analyze. Don't write the status label
+            // here: two writers (this + the poller) raced and left the Files
+            // view stuck on "Analyzing N/M" after completion.
+            let msg = match &result {
+                Err(e) => format!("ReplayGain analysis error: {e}"),
+                Ok(n) => format!("Analyzed {n} track(s)"),
+            };
+            if result.is_ok() {
+                rebuild();
             }
+            complete_rg_job(&state2, msg);
             return glib::ControlFlow::Break;
         }
         glib::ControlFlow::Continue

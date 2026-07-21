@@ -1813,6 +1813,107 @@ fn open_settings_window(
         }
         grid.attach(&chk_rg_write, 1, 8, 1, 1);
 
+        // Row 9/10: on-demand whole-library ReplayGain analysis. One button
+        // drives both modes; the "Force recalculate" checkbox picks which:
+        //   unchecked → analyze only tracks missing or stale (needs_analysis)
+        //   checked   → recompute every track regardless.
+        // Shares the `analyze_job` worker/progress plumbing with the Files
+        // view's bulk button and context action.
+        let rg_available = crate::replaygain::rg_analysis_available();
+
+        // Analyze and Cancel share one cell — `sync_rg_ui` shows exactly one
+        // at a time (Analyze idle, Cancel while running), matching the Files
+        // view's Analyze⇄Cancel toggle.
+        let rg_btn_box = gtk4::Box::new(Orientation::Horizontal, 8);
+        rg_btn_box.set_halign(Align::Start);
+
+        let btn_rg_analyze = Button::with_label("Analyze ReplayGain");
+        btn_rg_analyze.set_tooltip_text(Some(
+            "Analyze the whole library. Without 'Force recalculate' only \
+             tracks missing a value or changed since the last scan are done.",
+        ));
+        if !rg_available {
+            btn_rg_analyze.set_sensitive(false);
+            btn_rg_analyze
+                .set_tooltip_text(Some("rganalysis GStreamer element not available"));
+        }
+        rg_btn_box.append(&btn_rg_analyze);
+
+        let btn_rg_cancel = Button::with_label("✕ Cancel Analysis");
+        btn_rg_cancel.add_css_class("destructive");
+        btn_rg_cancel.set_visible(false);
+        rg_btn_box.append(&btn_rg_cancel);
+        grid.attach(&rg_btn_box, 0, 9, 1, 1);
+
+        let chk_rg_force = CheckButton::with_label("Force recalculate");
+        chk_rg_force.set_halign(Align::Start);
+        chk_rg_force.set_tooltip_text(Some(
+            "Recompute ReplayGain for every track, even ones already analyzed",
+        ));
+        grid.attach(&chk_rg_force, 1, 9, 1, 1);
+
+        let lbl_rg_status = Label::new(None);
+        lbl_rg_status.set_halign(Align::Start);
+        lbl_rg_status.add_css_class("dim-label");
+        grid.attach(&lbl_rg_status, 0, 10, 4, 1);
+
+        {
+            let state_rc = state.clone();
+            let force_chk = chk_rg_force.clone();
+            let status = lbl_rg_status.clone();
+            btn_rg_analyze.connect_clicked(move |_| {
+                // Snapshot every track first — drop the borrow before
+                // `analyze_job` (it borrows AppState internally).
+                let tracks = {
+                    let s = state_rc.borrow();
+                    match s.media_lib.as_ref() {
+                        Some(lib) => lib.all_tracks().unwrap_or_default(),
+                        None => Vec::new(),
+                    }
+                };
+                let force = force_chk.is_active();
+                // Settings has no track view to rebuild; the Files view picks
+                // up new values on its next open. No-op rebuild.
+                let rebuild: Rc<dyn Fn()> = Rc::new(|| {});
+                analyze_job(&state_rc, tracks, force, &status, rebuild);
+            });
+        }
+        {
+            let state_rc = state.clone();
+            let status = lbl_rg_status.clone();
+            btn_rg_cancel.connect_clicked(move |_| {
+                cancel_rg_job(&state_rc);
+                status.set_text("Cancelling…");
+            });
+        }
+        // Poll timer drives progress / completion / Analyze⇄Cancel toggle via
+        // the same `sync_rg_ui` the Files view uses, so both windows stay in
+        // lock-step (even for a job started from the other one). Weak window
+        // ref so closing Settings ends the timer instead of ticking on dead
+        // widgets forever.
+        {
+            let state_rc = state.clone();
+            let analyze_ref = btn_rg_analyze.clone();
+            let cancel_ref = btn_rg_cancel.clone();
+            let status_ref = lbl_rg_status.clone();
+            let win_weak = win.downgrade();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                if win_weak.upgrade().is_none() {
+                    return glib::ControlFlow::Break;
+                }
+                sync_rg_ui(
+                    &state_rc,
+                    &analyze_ref,
+                    &cancel_ref,
+                    &status_ref,
+                    rg_available,
+                    false,
+                    true,
+                );
+                glib::ControlFlow::Continue
+            });
+        }
+
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }

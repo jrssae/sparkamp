@@ -100,6 +100,12 @@ struct AppState {
     /// "Reading tags…" status text, which would be the wrong label while
     /// analysis is running.
     rg_job: Option<RgJobState>,
+    /// One-shot completion/error message for the last ReplayGain job, set when
+    /// the job finishes and consumed (taken) by whichever view's poller
+    /// renders it next. Lets the Settings window and the Files view show the
+    /// same "Analyzed N track(s)" result without either one writing the shared
+    /// status label directly (which raced the progress poller).
+    rg_ui_msg: Option<String>,
 }
 
 /// State for tracking background scan operations.
@@ -219,6 +225,9 @@ fn start_rg_job(
         total,
         cancel: cancel_flag.clone(),
     });
+    // Drop any stale completion message from a previous run so pollers don't
+    // flash last time's "Analyzed N" while this job is spinning up.
+    s.rg_ui_msg = None;
     s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
     Some(cancel_flag)
 }
@@ -232,10 +241,12 @@ fn update_rg_job_progress(state: &Rc<RefCell<AppState>>, current: usize, total: 
     }
 }
 
-/// Shared helper: complete an RG analysis job.
-fn complete_rg_job(state: &Rc<RefCell<AppState>>) {
+/// Shared helper: complete an RG analysis job, stashing the one-shot result
+/// message (`msg`) for whichever view's poller renders it next.
+fn complete_rg_job(state: &Rc<RefCell<AppState>>, msg: String) {
     let mut s = state.borrow_mut();
     s.rg_job = None;
+    s.rg_ui_msg = Some(msg);
     s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
 }
 
@@ -245,6 +256,45 @@ fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
     if let Some(ref job) = s.rg_job {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Sync the ReplayGain analyze/cancel buttons + status label to the shared
+/// `rg_job` / `rg_ui_msg` state. Called from every view's poll timer (the
+/// Settings window and the Files view) so both render identical progress,
+/// completion, and Analyze⇄Cancel toggling. Returns `true` while a job runs.
+///
+/// - `other_busy`: a non-RG background op (e.g. an `ml_scan`) is also running;
+///   keeps Analyze disabled even though no RG job holds it.
+/// - `render_status`: when `false` the caller owns the status label this tick
+///   (e.g. a metadata scan is writing "Reading tags…"), so we touch neither
+///   the label nor the one-shot message.
+fn sync_rg_ui(
+    state: &Rc<RefCell<AppState>>,
+    analyze_btn: &gtk4::Button,
+    cancel_btn: &gtk4::Button,
+    status: &gtk4::Label,
+    rg_available: bool,
+    other_busy: bool,
+    render_status: bool,
+) -> bool {
+    let rg_state = state.borrow().rg_job.clone();
+    let running = rg_state.is_some();
+    // Analyze ⇄ Cancel: never both visible at once.
+    analyze_btn.set_visible(!running);
+    analyze_btn.set_sensitive(!running && !other_busy && rg_available);
+    cancel_btn.set_visible(running);
+    if render_status {
+        if let Some(rg) = rg_state {
+            if rg.total > 0 {
+                status.set_text(&format!("Analyzing ReplayGain {}/{}…", rg.current, rg.total));
+            } else {
+                status.set_text("Analyzing ReplayGain…");
+            }
+        } else if let Some(msg) = state.borrow_mut().rg_ui_msg.take() {
+            status.set_text(&msg);
+        }
+    }
+    running
 }
 
 /// Shared helper: update scan UI elements based on current ml_scan state.
@@ -408,6 +458,7 @@ impl AppState {
             ml_scan: None,
             playlist_scan: None,
             rg_job: None,
+            rg_ui_msg: None,
         })
     }
 
