@@ -74,19 +74,28 @@ pub fn build_now_playing_info(
         technical.push(("Format", rof.filetype.to_uppercase()));
     }
     if !rof.bitrate.is_empty() {
-        technical.push(("Bitrate", rof.bitrate.clone()));
+        // The bitrate value is size×8/duration — exact for CBR, the honest
+        // average for VBR. Flag VBR inline (e.g. "192k VBR") rather than as a
+        // separate row. Mode comes from the indexed row, else a direct Xing/
+        // Info-header sniff so non-library MP3s are flagged too.
+        let is_vbr = lib_row
+            .and_then(|t| t.bitrate_mode.clone())
+            .filter(|m| !m.is_empty())
+            .or_else(|| crate::technical_probe::mp3_bitrate_mode(path).map(str::to_string))
+            .as_deref()
+            == Some("VBR");
+        let value = if is_vbr {
+            format!("{} VBR", rof.bitrate)
+        } else {
+            rof.bitrate.clone()
+        };
+        technical.push(("Bitrate", value));
     }
     if !rof.sample_rate.is_empty() {
         technical.push(("Sample rate", rof.sample_rate.clone()));
     }
     if !rof.channels.is_empty() {
         technical.push(("Channels", rof.channels.clone()));
-    }
-    // Bitrate mode (VBR/CBR) is only recorded for indexed MP3s.
-    if let Some(mode) = lib_row.and_then(|t| t.bitrate_mode.as_deref()) {
-        if !mode.is_empty() {
-            technical.push(("Bitrate mode", mode.to_string()));
-        }
     }
     // File size — from the library row, else stat the file directly so
     // non-library playback still shows it.
