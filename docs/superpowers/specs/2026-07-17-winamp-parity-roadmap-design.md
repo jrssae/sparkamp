@@ -140,6 +140,29 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   snapshot and refresh on each play/track-change (incl. same-track replay);
   they do not tick live mid-song. By design (matches the classic behavior).
 
+## Known limitations (recorded during phase 3 — F6 MPRIS + mac Now Playing)
+
+- Setting LoopStatus / Shuffle / Volume over D-Bus (playerctl / GNOME widget)
+  updates the engine + config (and persists) but does NOT re-render the GTK
+  repeat/shuffle button or volume slider until the user next touches that
+  control. Behavior is correct; only the on-screen widget lags. Accepted
+  2026-07-21.
+- MPRIS status/loop/shuffle/volume/track PropertiesChanged signals are driven
+  by a 500ms poll (no per-change hook into the GTK transport handlers), so a
+  widget can lag a change by up to ~500ms. Position is not signalled at all —
+  MPRIS consumers poll it (spec-conformant). Accepted 2026-07-21.
+- `Seeked` fires only on D-Bus-initiated seeks (Seek / SetPosition); dragging
+  the in-app seek bar does not emit it (the widget's shown position may lag one
+  poll). `SetPosition` does not verify its TrackId argument against the current
+  track, and `Seek` clamps to >= 0 but not to the track length (no skip-to-next
+  on overshoot). Accepted 2026-07-21.
+- Metadata assembly reads the track's tags off disk on the GLib main loop once
+  per track change (duplicating the now-playing snapshot's read). Fine for local
+  files; a slow/network mount could micro-stall. Accepted 2026-07-21.
+- mac Now Playing elapsed time is set on track/state change + on Control Center
+  scrub; macOS extrapolates from the rate between updates, so an in-app seek-bar
+  drag may lag the card by one update. Accepted 2026-07-21.
+
 ## Error handling defaults
 
 Missing art → placeholder, never an error: a large Sparkamp logo at 50%
