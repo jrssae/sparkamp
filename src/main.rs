@@ -39,6 +39,7 @@ mod mpris_meta;
 // Core module for the album-art now-playing panel (Phase 2). Wired up by the
 // GTK play-start seam (T5); `thumb_path_for` still awaits its T8 caller.
 mod now_playing;
+mod replaygain;
 mod pathutil;
 mod shuffle;
 mod skin;
