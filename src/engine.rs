@@ -781,6 +781,15 @@ impl Player {
         }
     }
 
+    /// True when a ReplayGain chain reshape is queued for the next Null window
+    /// (a `set_replaygain` made while Playing/Paused). The controller uses this
+    /// to decide whether it must reload the current track to apply the change
+    /// live, vs. an album-mode/fallback tweak that needs no reload.
+    #[allow(dead_code)]
+    pub fn rg_reload_pending(&self) -> bool {
+        self.rg_pending.is_some()
+    }
+
     /// Live album/track-mode switch (Automatic source sets this at each track
     /// start from the shuffle state). Never rebuilds the chain.
     #[allow(dead_code)]

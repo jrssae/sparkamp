@@ -5270,8 +5270,12 @@ fn open_media_library_window(
                     (s.ml_scan.clone(), s.rg_job.clone())
                 };
                 let busy = scan_state.is_some() || rg_state.is_some();
+                let rg_running = rg_state.is_some();
                 rescan_ref.set_sensitive(!busy);
                 add_folder_ref.set_sensitive(!busy);
+                // Toggle Analyze ⇄ Cancel: while the RG job runs, hide Analyze
+                // and show Cancel in its place (never both at once).
+                analyze_ref.set_visible(!rg_running);
                 analyze_ref.set_sensitive(!busy && rg_available);
                 if let Some(scan) = scan_state {
                     cancel_ref.set_visible(true);

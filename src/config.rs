@@ -179,7 +179,10 @@ impl Default for ReplayGainConfig {
             enabled: true,
             source: RgSource::Automatic,
             clip_protection: true,
-            fallback_db: -6.0,
+            // 0 = leave files without ReplayGain info at their natural level
+            // (a non-zero fallback silently attenuates un-analyzed files, which
+            // surprises users). Opt in via the fallback slider.
+            fallback_db: 0.0,
             auto_analyze: false,
             write_tags: false,
         }
@@ -1264,7 +1267,7 @@ rescan_interval_mins = 60
         assert!(rg.enabled);
         assert_eq!(rg.source, RgSource::Automatic);
         assert!(rg.clip_protection);
-        assert_eq!(rg.fallback_db, -6.0);
+        assert_eq!(rg.fallback_db, 0.0);
         assert!(!rg.auto_analyze);
         assert!(!rg.write_tags);
         // Reachable through the full Config default.

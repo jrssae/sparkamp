@@ -292,6 +292,40 @@ impl AppState {
     pub(crate) fn apply_replaygain(&mut self) {
         self.player.set_replaygain(rg_chain(&self.config));
         self.apply_rg_album_mode();
+        // A chain reshape (enable / clip-protection) needs a Null pipeline, so
+        // the engine deferred it while Playing. Reload the current track at its
+        // position so the toggle takes effect on what the user is hearing now.
+        if self.player.rg_reload_pending()
+            && *self.player.state() == crate::engine::PlayerState::Playing
+        {
+            self.reload_current_at_position();
+        }
+    }
+
+    /// Reload the current track and resume near its previous position — the
+    /// only way to apply a ReplayGain chain reshape (which needs a Null
+    /// pipeline) without waiting for the next track. `load()` applies the
+    /// pending chain at Null; the pending-seek machinery (see `play_current`)
+    /// restores the position on the next tick.
+    fn reload_current_at_position(&mut self) {
+        let (pos, dur) = (self.player.position(), self.player.duration());
+        let Some(track) = self.playlist.current() else {
+            return;
+        };
+        let uri = track.uri();
+        if let (Some(p), Some(d)) = (pos, dur) {
+            let secs = d.as_secs_f64();
+            if secs > 0.0 {
+                self.pending_seek = Some((p.as_secs_f64() / secs).clamp(0.0, 1.0));
+            }
+        }
+        let _ = self.player.load(&uri); // applies the pending RG chain at Null
+        if self.pending_seek.is_some() {
+            // Mute the brief position-0 audio until the tick applies the seek.
+            self.mute_pending = Some(self.config.playback.volume);
+            self.player.set_volume(0.0);
+        }
+        let _ = self.player.play();
     }
 
     /// Live fallback-gain change (slider) — no pipeline rebuild.

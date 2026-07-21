@@ -105,6 +105,10 @@ pub fn build_now_playing_info(
     if let Some(bytes) = file_size.filter(|b| *b > 0) {
         technical.push(("File size", format_bytes(bytes)));
     }
+    // ReplayGain track gain from analysis (library rows only, once analyzed).
+    if let Some(gain) = lib_row.and_then(|t| t.rg_track_gain) {
+        technical.push(("ReplayGain", format!("{gain:.2} dB")));
+    }
     // `read_only_track_fields` only probes embedded/folder art for files
     // OUTSIDE the library (its own `artwork_path` block gates the probe on
     // `track.is_none()`) — probing for library rows too would leak into the
