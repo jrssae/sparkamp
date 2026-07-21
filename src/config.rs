@@ -128,6 +128,75 @@ pub struct PlaybackConfig {
     /// user's last setting is restored on the next launch.
     #[serde(default)]
     pub shuffle_enabled: bool,
+    /// ReplayGain (volume normalization) settings.
+    #[serde(default)]
+    pub replaygain: ReplayGainConfig,
+}
+
+// ---------------------------------------------------------------------------
+// ReplayGain
+// ---------------------------------------------------------------------------
+
+/// Which ReplayGain gain to apply on playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RgSource {
+    /// Always use the per-track gain.
+    Track,
+    /// Always use the per-album gain (consistent level across an album).
+    Album,
+    /// Album gain when playing sequentially, track gain when shuffling.
+    #[default]
+    Automatic,
+}
+
+/// ReplayGain configuration (volume normalization). Lives under
+/// `[playback.replaygain]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplayGainConfig {
+    /// Master toggle — apply ReplayGain on playback. Default on.
+    pub enabled: bool,
+    /// Track / Album / Automatic gain source.
+    pub source: RgSource,
+    /// Insert `rglimiter` after `rgvolume` to prevent clipping on positive
+    /// gain. Default on.
+    pub clip_protection: bool,
+    /// Gain (dB) applied to files that carry NO ReplayGain info, `-12.0..=0.0`;
+    /// `0.0` disables the fallback. Default `-6.0`.
+    pub fallback_db: f32,
+    /// Analyze newly added / scanned files in the background (never a full
+    /// re-scan of the library). Default off.
+    pub auto_analyze: bool,
+    /// Write REPLAYGAIN_* tags back to the file after analysis (MP3 only).
+    /// Default off.
+    pub write_tags: bool,
+}
+
+impl Default for ReplayGainConfig {
+    fn default() -> Self {
+        ReplayGainConfig {
+            enabled: true,
+            source: RgSource::Automatic,
+            clip_protection: true,
+            fallback_db: -6.0,
+            auto_analyze: false,
+            write_tags: false,
+        }
+    }
+}
+
+/// Whether `rgvolume` should run in album mode for the given source + shuffle
+/// state. Pure — the controller calls this at each track start (Automatic
+/// resolves to album when playing sequentially, track when shuffling).
+/// `dead_code` until the phase-4 controller wiring (P4-T9) consumes it.
+#[allow(dead_code)]
+pub fn rg_album_mode(source: RgSource, shuffle_enabled: bool) -> bool {
+    match source {
+        RgSource::Track => false,
+        RgSource::Album => true,
+        RgSource::Automatic => !shuffle_enabled,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +828,7 @@ impl Default for Config {
                 start_paused: false,
                 repeat_mode: RepeatMode::Off,
                 shuffle_enabled: false,
+                replaygain: ReplayGainConfig::default(),
             },
             visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),
@@ -1186,5 +1256,48 @@ rescan_interval_mins = 60
             back.id3_column_position.get("artist"),
             Some(&"left".to_string())
         );
+    }
+
+    #[test]
+    fn replaygain_defaults() {
+        let rg = ReplayGainConfig::default();
+        assert!(rg.enabled);
+        assert_eq!(rg.source, RgSource::Automatic);
+        assert!(rg.clip_protection);
+        assert_eq!(rg.fallback_db, -6.0);
+        assert!(!rg.auto_analyze);
+        assert!(!rg.write_tags);
+        // Reachable through the full Config default.
+        assert!(Config::default().playback.replaygain.enabled);
+    }
+
+    #[test]
+    fn replaygain_toml_roundtrip() {
+        let mut cfg = ReplayGainConfig::default();
+        cfg.enabled = false;
+        cfg.source = RgSource::Album;
+        cfg.fallback_db = -3.5;
+        cfg.write_tags = true;
+        let s = toml::to_string(&cfg).expect("serialize");
+        let back: ReplayGainConfig = toml::from_str(&s).expect("deserialize");
+        assert!(!back.enabled);
+        assert_eq!(back.source, RgSource::Album);
+        assert_eq!(back.fallback_db, -3.5);
+        assert!(back.write_tags);
+        // A missing [replaygain] section falls back to defaults.
+        let none: ReplayGainConfig = toml::from_str("").expect("empty deserialize");
+        assert!(none.enabled);
+        assert_eq!(none.source, RgSource::Automatic);
+    }
+
+    #[test]
+    fn rg_album_mode_decision() {
+        // Track/Album ignore shuffle; Automatic = album when NOT shuffling.
+        assert!(!rg_album_mode(RgSource::Track, false));
+        assert!(!rg_album_mode(RgSource::Track, true));
+        assert!(rg_album_mode(RgSource::Album, false));
+        assert!(rg_album_mode(RgSource::Album, true));
+        assert!(rg_album_mode(RgSource::Automatic, false)); // sequential → album
+        assert!(!rg_album_mode(RgSource::Automatic, true)); // shuffling → track
     }
 }
