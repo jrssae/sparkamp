@@ -961,6 +961,10 @@ fn sort_keys_are_precomputed_from_libtrack() {
         file_mtime: None,
         added_at: None,
         bitrate_mode: None,
+        rg_track_gain: None,
+        rg_track_peak: None,
+        rg_album_gain: None,
+        rg_album_peak: None,
         sort_keys: SortKeys::default(),
     };
     let keys = SortKeys::from_track(&track);
@@ -1015,6 +1019,10 @@ fn sort_keys_fallback_to_filename_for_title() {
         file_mtime: None,
         added_at: None,
         bitrate_mode: None,
+        rg_track_gain: None,
+        rg_track_peak: None,
+        rg_album_gain: None,
+        rg_album_peak: None,
         sort_keys: SortKeys::default(),
     };
     let keys = SortKeys::from_track(&track);
@@ -1174,6 +1182,10 @@ fn read_only_track_fields_all_values_formatted() {
         file_mtime: None,
         added_at: None,
         bitrate_mode: None,
+        rg_track_gain: None,
+        rg_track_peak: None,
+        rg_album_gain: None,
+        rg_album_peak: None,
         sort_keys: SortKeys::default(),
     };
     let path = std::path::Path::new("/music/song.mp3");
@@ -1247,6 +1259,10 @@ fn read_only_track_fields_channels_mono() {
         file_mtime: None,
         added_at: None,
         bitrate_mode: None,
+        rg_track_gain: None,
+        rg_track_peak: None,
+        rg_album_gain: None,
+        rg_album_peak: None,
         sort_keys: SortKeys::default(),
     };
     let path = std::path::Path::new("/test.mp3");
@@ -1290,6 +1306,10 @@ fn read_only_track_fields_channels_multi() {
         file_mtime: None,
         added_at: None,
         bitrate_mode: None,
+        rg_track_gain: None,
+        rg_track_peak: None,
+        rg_album_gain: None,
+        rg_album_peak: None,
         sort_keys: SortKeys::default(),
     };
     let path = std::path::Path::new("/test.mp3");
@@ -1623,4 +1643,30 @@ fn refresh_artwork_deletes_only_cache_dir_files_not_user_images() {
         !cached_art.exists(),
         "refresh_artwork must delete stale cache-dir extractions"
     );
+}
+
+#[test]
+fn set_replaygain_roundtrips() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("song.wav");
+    write_test_wav(&file_path, 44100, 2, 1.0);
+    let path = file_path.to_str().unwrap();
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.upsert_track(folder_id, path).unwrap();
+
+    // A freshly scanned track carries no ReplayGain values.
+    let t = lib.track_by_path(path).unwrap();
+    assert_eq!(t.rg_track_gain, None);
+    assert_eq!(t.rg_track_peak, None);
+    assert_eq!(t.rg_album_gain, None);
+    assert_eq!(t.rg_album_peak, None);
+
+    // Analysis results round-trip through the DB.
+    lib.set_replaygain(t.id, -6.20, 0.988123, -7.10, 0.995).unwrap();
+    let t2 = lib.track_by_path(path).unwrap();
+    assert_eq!(t2.rg_track_gain, Some(-6.20));
+    assert_eq!(t2.rg_track_peak, Some(0.988123));
+    assert_eq!(t2.rg_album_gain, Some(-7.10));
+    assert_eq!(t2.rg_album_peak, Some(0.995));
 }

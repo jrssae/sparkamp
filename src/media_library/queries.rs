@@ -29,7 +29,8 @@ impl MediaLibrary {
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
              FROM tracks
              WHERE last_scanned IS NOT NULL
              ORDER BY LOWER(COALESCE(artist,'')), LOWER(COALESCE(title,''))";
@@ -50,7 +51,8 @@ impl MediaLibrary {
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
              FROM tracks
              ORDER BY {order}",
         );
@@ -116,7 +118,8 @@ impl MediaLibrary {
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
              FROM tracks
              WHERE {word_clauses}
              ORDER BY {order}",
@@ -192,7 +195,8 @@ impl MediaLibrary {
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
              FROM tracks WHERE filename = ?1 LIMIT 1",
         )?;
         let mut rows = Self::collect_tracks(&mut stmt, params![filename])?;
@@ -348,7 +352,8 @@ impl MediaLibrary {
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode
+                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
              FROM tracks WHERE path = ?1",
         )?;
         let mut rows = Self::collect_tracks(&mut stmt, params![path])?;

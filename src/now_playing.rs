@@ -321,6 +321,10 @@ mod tests {
             file_mtime: None,
             added_at: None,
             bitrate_mode: None,
+            rg_track_gain: None,
+            rg_track_peak: None,
+            rg_album_gain: None,
+            rg_album_peak: None,
             sort_keys: crate::media_library::SortKeys::default(),
         }
     }

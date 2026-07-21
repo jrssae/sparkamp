@@ -40,6 +40,10 @@ fn fake_lib_track(path: &str, title: &str) -> crate::media_library::LibTrack {
         file_mtime: None,
         added_at: None,
         bitrate_mode: None,
+        rg_track_gain: None,
+        rg_track_peak: None,
+        rg_album_gain: None,
+        rg_album_peak: None,
         sort_keys: Default::default(),
     }
 }

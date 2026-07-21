@@ -86,6 +86,12 @@ pub struct LibTrack {
     pub added_at: Option<String>,
     /// "VBR" / "CBR" for MP3 files, `None` when undetermined or non-MP3.
     pub bitrate_mode: Option<String>,
+    /// ReplayGain values from analysis, in dB (gains) / linear peak (0..~1).
+    /// `None` until the track has been analyzed.
+    pub rg_track_gain: Option<f64>,
+    pub rg_track_peak: Option<f64>,
+    pub rg_album_gain: Option<f64>,
+    pub rg_album_peak: Option<f64>,
     /// Pre-computed lowercase strings and zero-padded numbers for sort comparisons.
     /// All strings are lowercase; all numeric fields are zero-padded so string
     /// comparison gives correct numeric ordering.
@@ -540,6 +546,10 @@ impl MediaLibrary {
             ("file_mtime", "TEXT"),
             ("added_at", "TEXT"),
             ("bitrate_mode", "TEXT"),
+            ("rg_track_gain", "REAL"),
+            ("rg_track_peak", "REAL"),
+            ("rg_album_gain", "REAL"),
+            ("rg_album_peak", "REAL"),
         ];
         let existing: std::collections::HashSet<String> = {
             let mut stmt = self
@@ -619,12 +629,36 @@ impl MediaLibrary {
                 file_mtime: row.get::<_, Option<String>>(30)?,
                 added_at: row.get::<_, Option<String>>(31)?,
                 bitrate_mode: row.get::<_, Option<String>>(32)?.map(|s| sanitize(&s)),
+                rg_track_gain: row.get(33)?,
+                rg_track_peak: row.get(34)?,
+                rg_album_gain: row.get(35)?,
+                rg_album_peak: row.get(36)?,
                 sort_keys: SortKeys::default(),
             };
             track.sort_keys = SortKeys::from_track(&track);
             tracks.push(track);
         }
         Ok(tracks)
+    }
+
+    /// Store ReplayGain analysis results for a track (gains in dB, peaks
+    /// linear 0..~1). Written by the analysis job; the scan/upsert path leaves
+    /// these NULL. `#[allow(dead_code)]` until P4-T4 wires the analyzer.
+    #[allow(dead_code)]
+    pub fn set_replaygain(
+        &self,
+        id: i64,
+        track_gain: f64,
+        track_peak: f64,
+        album_gain: f64,
+        album_peak: f64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tracks SET rg_track_gain = ?1, rg_track_peak = ?2, \
+             rg_album_gain = ?3, rg_album_peak = ?4 WHERE id = ?5",
+            rusqlite::params![track_gain, track_peak, album_gain, album_peak, id],
+        )?;
+        Ok(())
     }
 }
 
