@@ -446,3 +446,21 @@ No FFI/bridge.h changes — Task 12's surface was already complete.
 - [ ] The ID3 editor's artwork slot padding (now hardcoded `0` instead of the
       old `artwork == nil ? 12 : 0` ternary) — eyeball the left-column
       alignment now that the slot is never absent.
+
+## Phase 3 — 2026-07-21: Now Playing + remote commands (P3-T6, BLIND)
+
+New file `SparkampModel+NowPlaying.swift` (added to project.pbxproj: fileRef AA4…00A1 / buildFile AA5…00A1) + hooks in SparkampModel.swift (updateNowPlayingCenter from refreshCurrentTrackInfo + tick play-state change). Verify on hardware:
+
+- [ ] Control Center / lock-screen Now Playing card shows title, artist, album, artwork, duration for the playing track.
+- [ ] Card updates on track change (title/art) and on play/pause/stop (state/rate).
+- [ ] Elapsed time advances (macOS extrapolates from rate); pausing freezes it.
+- [ ] Hardware media keys (play/pause, next, previous) work with the app unfocused.
+- [ ] AirPods play/pause tap + double-tap next / triple-tap previous act on Sparkamp.
+- [ ] Control Center scrubber seeks; the app seek bar reflects it (and vice-versa — app seek elapsed may lag one card update, accepted).
+- [ ] No-track / stopped → card clears (nowPlayingInfo nil, playbackState .stopped).
+
+**Unsure / eyeball (blind, no Xcode here):**
+- New Swift file compiles + is actually in the build target (pbxproj entries added by hand — confirm Xcode sees it; IDs AA4…00A1 / AA5…00A1 chosen unused).
+- `import MediaPlayer` on macOS + MPRemoteCommandCenter with no explicit audio-session entitlement (macOS doesn't require the iOS AVAudioSession; confirm commands fire).
+- `MPMediaItemArtwork(boundsSize:) { _ in image }` closure returns the NSImage at any requested size (returns the full image regardless of size — verify it renders, not blank).
+- Album extracted from `nowPlaying.tags` where label == "Album" (matches the core curated label).

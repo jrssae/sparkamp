@@ -33,6 +33,7 @@
 		AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000032 /* SparkampModel+Dedupe.swift */; };
 		AA5000000000000000000028 /* SparkampModel+MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */; };
 		AA5000000000000000000027 /* SparkampModel+Transport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000030 /* SparkampModel+Transport.swift */; };
+		AA50000000000000000000A1 /* SparkampModel+NowPlaying.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40000000000000000000A1 /* SparkampModel+NowPlaying.swift */; };
 		AA5000000000000000000026 /* SparkampModelTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000029 /* SparkampModelTypes.swift */; };
 		AA5000000000000000000025 /* MLFilesTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000028 /* MLFilesTable.swift */; };
 		AA5000000000000000000024 /* MLPlaylistEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000027 /* MLPlaylistEditor.swift */; };
@@ -80,6 +81,7 @@
 		AA4000000000000000000032 /* SparkampModel+Dedupe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Dedupe.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+MediaLibrary.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000030 /* SparkampModel+Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Transport.swift"; sourceTree = "<group>"; };
+		AA40000000000000000000A1 /* SparkampModel+NowPlaying.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+NowPlaying.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000029 /* SparkampModelTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampModelTypes.swift; sourceTree = "<group>"; };
 		AA4000000000000000000028 /* MLFilesTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLFilesTable.swift; sourceTree = "<group>"; };
 		AA4000000000000000000027 /* MLPlaylistEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLPlaylistEditor.swift; sourceTree = "<group>"; };
@@ -154,6 +156,7 @@
 				AA4000000000000000000032 /* SparkampModel+Dedupe.swift */,
 				AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */,
 				AA4000000000000000000030 /* SparkampModel+Transport.swift */,
+				AA40000000000000000000A1 /* SparkampModel+NowPlaying.swift */,
 				AA4000000000000000000029 /* SparkampModelTypes.swift */,
 				AA4000000000000000000028 /* MLFilesTable.swift */,
 				AA4000000000000000000027 /* MLPlaylistEditor.swift */,
@@ -317,6 +320,7 @@
 				AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */,
 				AA5000000000000000000028 /* SparkampModel+MediaLibrary.swift in Sources */,
 				AA5000000000000000000027 /* SparkampModel+Transport.swift in Sources */,
+				AA50000000000000000000A1 /* SparkampModel+NowPlaying.swift in Sources */,
 				AA5000000000000000000026 /* SparkampModelTypes.swift in Sources */,
 				AA5000000000000000000025 /* MLFilesTable.swift in Sources */,
 				AA5000000000000000000024 /* MLPlaylistEditor.swift in Sources */,

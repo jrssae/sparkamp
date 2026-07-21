@@ -109,6 +109,10 @@ final class SparkampModel: ObservableObject {
     /// subscriber seam) — mac polls `sparkamp_now_playing_open` instead.
     @Published var nowPlaying: NowPlayingInfo? = nil
 
+    /// One-time guard: MPRemoteCommandCenter handlers are registered on the
+    /// first `updateNowPlayingCenter()` call (see SparkampModel+NowPlaying).
+    var nowPlayingConfigured = false
+
     // ── Media Library ────────────────────────────────────────────────────────
     @Published var mediaLibraryVisible: Bool = false
     /// Tracks currently shown in the ML window (all or filtered by query).
@@ -393,8 +397,12 @@ final class SparkampModel: ObservableObject {
         let state = sparkamp_get_state(ctx)
         let playing = (state == 1)
         let paused = (state == 2)
+        let playStateChanged = (isPlaying != playing) || (isPaused != paused)
         if isPlaying != playing { isPlaying = playing }
         if isPaused != paused { isPaused = paused }
+        // Refresh the macOS Now Playing card's rate/state on a play/pause/stop
+        // transition (track changes are covered by refreshCurrentTrackInfo).
+        if playStateChanged { updateNowPlayingCenter() }
         let pos = sparkamp_get_position(ctx)
         let dur = sparkamp_get_duration(ctx)
         // While the fullscreen visualizer owns the screen, keep the 10 Hz
@@ -679,6 +687,9 @@ final class SparkampModel: ObservableObject {
         // routes through here (tick()'s index-change branch, refreshAll(),
         // refreshDirtyPlaylistItems()'s changed branch).
         refreshNowPlaying()
+        // Push title/artist/album/art/duration to the macOS Now Playing card
+        // (Control Center, media keys, AirPods) — see SparkampModel+NowPlaying.
+        updateNowPlayingCenter()
     }
 
     /// Rebuild `nowPlaying` from the core's now-playing snapshot for the
