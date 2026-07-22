@@ -825,6 +825,9 @@ pub fn build(
     btn_save_active.set_tooltip_text(Some("Save active playlist to an M3U8 file"));
     let btn_remove = Button::with_label("✕ Remove"); // remove selected row(s)
     let btn_clear_all = Button::with_label("✕ All"); // clear entire playlist
+    let btn_queue_mgr = Button::with_label("⯈ Queue");
+    btn_queue_mgr.add_css_class("pl-btn");
+    btn_queue_mgr.set_tooltip_text(Some("Open the play queue manager"));
     let btn_cancel = Button::with_label("✕ Cancel Scan");
     btn_cancel.add_css_class("pl-btn");
     btn_cancel.add_css_class("destructive");
@@ -842,6 +845,7 @@ pub fn build(
     pl_btn_row.append(&btn_add_files);
     pl_btn_row.append(&btn_add_dir);
     pl_btn_row.append(&btn_save_active);
+    pl_btn_row.append(&btn_queue_mgr);
     let spacer = GtkBox::new(Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     pl_btn_row.append(&spacer);
@@ -4282,6 +4286,24 @@ pub fn build(
                 Some(window_art.upcast_ref::<gtk4::Window>()),
             );
         }));
+    }
+
+    // Open the Play Queue Manager from the playlist button bar.
+    {
+        let state_qm = state.clone();
+        let refresh_main = rebuild_playlist.clone();
+        let play_qm = play_and_update.clone();
+        let handle_key_qm = handle_key.clone();
+        let parent_qm = playlist_win.clone();
+        btn_queue_mgr.connect_clicked(move |_| {
+            open_or_focus_queue_manager(
+                state_qm.clone(),
+                refresh_main.clone(),
+                play_qm.clone(),
+                handle_key_qm.clone(),
+                Some(parent_qm.upcast_ref::<gtk4::Window>()),
+            );
+        });
     }
 
     // Attach the shared handler to the main player window.

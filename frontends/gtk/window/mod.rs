@@ -128,6 +128,7 @@ include!("devices.rs");
 
 // open_media_library_window(): files/playlists/devices/discs pages
 include!("media_library.rs");
+include!("queue_manager.rs");
 
 // unit tests (#[cfg(test)] mod tests)
 include!("tests.rs");
