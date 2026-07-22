@@ -4825,7 +4825,11 @@ pub fn build(
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let jb = jump_box.clone();
         let jw_wk = jump_win.downgrade();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| match key {
+        let state_jq = state.clone();
+        let jump_indices_jq = jump_indices.clone();
+        let rebuild_jump_jq = rebuild_jump.clone();
+        let rebuild_pl_jq = rebuild_playlist.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, modifier| match key {
             gdk::Key::Escape => {
                 if let Some(w) = jw_wk.upgrade() {
                     w.close();
@@ -4843,6 +4847,29 @@ pub fn build(
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(-1);
                 if let Some(row) = jb.row_at_index(cur + 1) {
                     jb.select_row(Some(&row));
+                }
+                glib::Propagation::Stop
+            }
+            // Ctrl+Q queues the highlighted match (plain `q` stays a search
+            // character in the entry). Updates both the jump and playlist
+            // badges.
+            gdk::Key::q | gdk::Key::Q
+                if modifier.contains(gdk::ModifierType::CONTROL_MASK) =>
+            {
+                let sel = jb.selected_row().map(|r| r.index() as usize);
+                if let Some(list_pos) = sel {
+                    let track_idx = jump_indices_jq.borrow().get(list_pos).copied();
+                    if let Some(track_idx) = track_idx {
+                        {
+                            let mut s = state_jq.borrow_mut();
+                            s.playlist.ensure_ids();
+                            if let Some(id) = s.playlist.tracks.get(track_idx).map(|t| t.id) {
+                                s.queue.toggle(id);
+                            }
+                        }
+                        rebuild_jump_jq();
+                        rebuild_pl_jq();
+                    }
                 }
                 glib::Propagation::Stop
             }
