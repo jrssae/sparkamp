@@ -405,6 +405,7 @@ private struct WindowManagerModifier: ViewModifier {
                 }
             }
             .onChange(of: model.jumpToTrackVisible)       { _, v in v ? openWindow(id: "jump-to-track")     : dismissWindow(id: "jump-to-track") }
+            .onChange(of: model.queueVisible)             { _, v in v ? openWindow(id: "queue")            : dismissWindow(id: "queue") }
             .onChange(of: model.equalizerVisible)         { _, v in v ? openWindow(id: "equalizer")         : dismissWindow(id: "equalizer") }
             .onChange(of: model.settingsVisible)          { _, v in v ? openWindow(id: "settings")          : dismissWindow(id: "settings") }
             .onChange(of: model.id3EditorVisible)         { _, v in if !v { dismissWindow(id: "id3-editor") } }

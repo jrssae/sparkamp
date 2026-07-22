@@ -38,6 +38,7 @@ mod media_library;
 mod now_playing;
 mod playback;
 mod playlist;
+mod queue;
 mod settings;
 mod viz;
 

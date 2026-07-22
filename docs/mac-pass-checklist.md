@@ -519,3 +519,52 @@ Verify on hardware:
 - Known limitation (matches GTK/TUI): sort by ReplayGain treats un-analyzed
   tracks as 0.0 dB (no sort-key shift like GTK's), so they interleave with
   reference-level tracks. Cosmetic.
+
+## Phase 5 — 2026-07-22: Manual play queue (P5-T8, BLIND)
+
+Rust FFI (built + tested on Linux: 494 lib + 699 bin, 0 warnings) — 8 queue
+symbols in `src/ffi/queue.rs`, mirrored into `sparkamp_bridge.h`. The queue
+lives in `ctx.queue`; the FFI advance seam (`sparkamp_nav_next` /
+`sparkamp_advance_after_eos`) already drains it ahead of shuffle/linear, so
+`next()` / `handleEOS()` → `refreshAll()` → `refreshPlaylist()` renumber the
+badges automatically.
+
+Swift edits are all in EXISTING files (no new source → **no project.pbxproj
+change**): `SparkampModelTypes.swift` (PlaylistItem.queuePos + queueBadge),
+`SparkampModel.swift` (queueVisible, refreshQueueBadges, queuePos in the two
+playlist refresh sites), `SparkampModel+MediaLibrary.swift` (queuedItems +
+queueToggle/Move/Clear/Shuffle/PlayNow), `PlaylistView.swift` (badge prefix +
+"Queue / Dequeue" context item), `SparkampModel+Keys.swift` (`q`), `SparkampMacApp.swift`
+(Queue window scene), `PlayerWindow.swift` (queueVisible → open/dismiss),
+`JumpToTrackView.swift` (new `QueueView`), `KeyboardShortcutsView.swift`.
+
+Verify on hardware:
+
+- [ ] `q` opens the Play Queue window; `q` again (or Esc) closes it.
+- [ ] Right-click one or more playlist rows → "Queue / Dequeue" adds/removes
+      them; the `[n]` badge appears/updates on the playlist rows immediately.
+- [ ] Badges renumber as the queue drains during playback (queued tracks play
+      before shuffle/linear, then playback resumes from that position).
+- [ ] Queue window: rows listed in order "1. Artist — Title"; Up / Down reorder
+      the selected entry; Remove dequeues it; Clear empties; Randomize shuffles.
+- [ ] Double-click a Queue-window row → plays it now (dequeues + jumps + plays).
+- [ ] Queue survives shuffle toggling; a queued track still wins, then shuffle
+      resumes.
+- [ ] Removing a queued track from the playlist drops it from the queue
+      (badge disappears; queue count decreases).
+
+**Unsure / eyeball (blind, no Xcode here):**
+- `QueueView` uses `List(selection:)` with `PlaylistItem.ID` (= Int playlist
+  index), `.onTapGesture(count: 2)` for play-now, `.onExitCommand` for Esc,
+  `.scrollContentBackground(.hidden)` (macOS 13+). Confirm selection, double-
+  click, and Esc all work and the theme colours apply.
+- Enqueue on mac is via the row **context menu** (the app-wide key monitor in
+  `SparkampModel+Keys.swift` guards `!hasModifiers`, so a global Ctrl+Q can't be
+  routed, and the playlist selection lives in the view, not the model). If a
+  Ctrl+Q shortcut is wanted later, lift the playlist `selection: Set<Int>` into
+  the model or add a focused-view key handler. Not a regression — GTK/TUI keep
+  Ctrl+Q; mac uses the context menu + Queue window.
+- New Window scene id "queue" wired through `queueVisible` exactly like
+  "jump-to-track" — confirm it opens/closes and doesn't fight fullscreen focus.
+- `refreshQueueBadges()` mutates `playlistItems` only when a badge changed;
+  confirm it doesn't churn SwiftUI re-renders during idle playback.

@@ -65,6 +65,8 @@ final class SparkampModel: ObservableObject {
     @Published var fullscreenFpsVisible: Bool = false
     /// When true, the jump-to-track overlay is open.
     @Published var jumpToTrackVisible: Bool = false
+    /// Manual play-queue manager window visibility (opened with `q`).
+    @Published var queueVisible: Bool = false
     /// When true, the equalizer window is open.
     @Published var equalizerVisible: Bool = false
     /// When true, the settings window is open.
@@ -576,7 +578,8 @@ final class SparkampModel: ObservableObject {
                     duration: newDuration,
                     broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
                     readOnly: item.readOnly,        // read-only status doesn't change mid-scan
-                    fileMissing: item.fileMissing   // idem
+                    fileMissing: item.fileMissing,  // idem
+                    queuePos: item.queuePos         // queue badge unchanged by a metadata patch
                 )
                 changed = true
             }
@@ -685,9 +688,26 @@ final class SparkampModel: ObservableObject {
                 duration: sparkamp_playlist_get_duration(ctx, Int32(i)),
                 broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
                 readOnly: sparkamp_playlist_is_read_only(ctx, Int32(i)) != 0,
-                fileMissing: sparkamp_playlist_file_missing(ctx, Int32(i)) != 0
+                fileMissing: sparkamp_playlist_file_missing(ctx, Int32(i)) != 0,
+                queuePos: Int(sparkamp_queue_position(ctx, Int32(i)))
             )
         }
+    }
+
+    /// Re-read every row's queue-position badge after a queue change (toggle /
+    /// clear / shuffle / play-now / advance drain) without a full rebuild.
+    func refreshQueueBadges() {
+        guard let ctx = ctx else { return }
+        var items = playlistItems
+        var changed = false
+        for i in items.indices {
+            let pos = Int(sparkamp_queue_position(ctx, Int32(i)))
+            if items[i].queuePos != pos {
+                items[i].queuePos = pos
+                changed = true
+            }
+        }
+        if changed { playlistItems = items }
     }
 
     func refreshCurrentTrackInfo() {

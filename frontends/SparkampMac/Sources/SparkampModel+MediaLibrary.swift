@@ -344,6 +344,48 @@ extension SparkampModel {
         return String(cString: cstr)
     }
 
+    // MARK: - Manual play queue
+
+    /// Playlist rows currently in the queue, in queue order (for the Queue view).
+    var queuedItems: [PlaylistItem] {
+        playlistItems.filter { $0.queuePos > 0 }.sorted { $0.queuePos < $1.queuePos }
+    }
+
+    /// Toggle the queue membership of the playlist entries at `indices`
+    /// (Ctrl+Q on the selection / context menu), then refresh the badges.
+    func queueToggle(indices: [Int]) {
+        guard let ctx = ctx, !indices.isEmpty else { return }
+        for i in indices { sparkamp_queue_toggle(ctx, Int32(i)) }
+        refreshQueueBadges()
+    }
+
+    /// Reorder a queued entry: `delta` −1 = up, +1 = down (by queue position).
+    func queueMove(pos: Int, delta: Int) {
+        guard let ctx = ctx else { return }
+        sparkamp_queue_move(ctx, Int32(pos), Int32(delta))
+        refreshQueueBadges()
+    }
+
+    func queueClear() {
+        guard let ctx = ctx else { return }
+        sparkamp_queue_clear(ctx)
+        refreshQueueBadges()
+    }
+
+    func queueShuffle() {
+        guard let ctx = ctx else { return }
+        sparkamp_queue_shuffle(ctx)
+        refreshQueueBadges()
+    }
+
+    /// Play the queued entry at queue position `pos` now (dequeue + jump + play).
+    func queuePlayNow(pos: Int) {
+        guard let ctx = ctx else { return }
+        sparkamp_queue_play_now(ctx, Int32(pos))
+        refreshPlaylist()          // current index changed
+        refreshCurrentTrackInfo()
+    }
+
     /// Append raw track paths to a saved playlist's file on disk (.m3u8 or
     /// legacy .m3u).  The core emits an `#EXTINF` line for every entry,
     /// looking up duration / artist / title from the library where known.

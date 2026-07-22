@@ -283,11 +283,17 @@ struct PlaylistItem: Identifiable, Equatable {
     let broken: Bool
     let readOnly: Bool
     let fileMissing: Bool
+    /// 1-based manual-queue position, or 0 if this entry is not queued.
+    /// Populated from sparkamp_queue_position during the playlist refresh.
+    var queuePos: Int = 0
 
     var durationString: String { formatDuration(duration) }
 
     /// Single-line display string: "Artist — Title" with album_artist fallback.
     var displayName: String { trackDisplayName(title: title, artist: artist, albumArtist: albumArtist) }
+
+    /// The `[n] ` queue badge prefix, or "" when not queued.
+    var queueBadge: String { queuePos > 0 ? "[\(queuePos)] " : "" }
 }
 
 /// Shared display-name logic used by both the playlist and the marquee.

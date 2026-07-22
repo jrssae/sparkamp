@@ -51,6 +51,7 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "p",          action: "Toggle playlist window"),
                 ShortcutEntry(key: "i",          action: "Toggle this shortcuts window"),
                 ShortcutEntry(key: "j",          action: "Jump to track (search)"),
+                ShortcutEntry(key: "q",          action: "Play queue manager (right-click a track → Queue / Dequeue to add)"),
                 ShortcutEntry(key: "w",          action: "Toggle now-playing panel (art, tags, links)"),
                 ShortcutEntry(key: "k",          action: "Open album-art window"),
             ]

@@ -149,6 +149,16 @@ struct SparkampMacApp: App {
         .windowResizability(.contentMinSize)
         .defaultSize(width: 480, height: 360)
 
+        // ── Play Queue ──────────────────────────────────────────────────────────
+        Window("Play Queue", id: "queue") {
+            QueueView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+                .themedRoot(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 420, height: 420)
+
         // ── Equalizer ─────────────────────────────────────────────────────────
         Window("Equalizer", id: "equalizer") {
             EqualizerView()

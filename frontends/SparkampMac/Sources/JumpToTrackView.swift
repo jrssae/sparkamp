@@ -188,3 +188,93 @@ struct JumpToTrackView: View {
         selectedPlaylistIndex = filteredItems[next].id
     }
 }
+
+// MARK: - Play Queue window
+
+/// The manual play-queue manager (opened with `q`): the queue in order with
+/// reorder / remove / clear / randomize controls and double-click play-now.
+/// Mirrors the GTK Queue view. Esc closes.
+struct QueueView: View {
+    @EnvironmentObject var model: SparkampModel
+    @EnvironmentObject var themeManager: ThemeManager
+
+    /// Selected row — a PlaylistItem.ID, i.e. the entry's playlist index.
+    @State private var selection: PlaylistItem.ID?
+
+    private var theme: SkinTheme { themeManager.currentTheme }
+
+    var body: some View {
+        let vars = themeManager.currentVars
+        let items = model.queuedItems
+        return VStack(spacing: 0) {
+            HStack {
+                let n = items.count
+                Text("\(n) queued track\(n == 1 ? "" : "s")")
+                    .font(vars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(theme.playlistBg.opacity(0.7))
+
+            Divider().background(theme.windowBorder)
+
+            List(selection: $selection) {
+                ForEach(items) { item in
+                    HStack {
+                        Text("\(item.queuePos). \(item.displayName)")
+                            .font(vars.bodyFont)
+                            .foregroundStyle(theme.playlistText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer()
+                        Text(item.durationString)
+                            .font(vars.smallMonospaceFont)
+                            .foregroundStyle(theme.playlistDurationText)
+                    }
+                    .contentShape(Rectangle())
+                    .tag(item.id)
+                    .onTapGesture(count: 2) {
+                        model.queuePlayNow(pos: item.queuePos - 1)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(theme.playlistBg)
+
+            Divider().background(theme.windowBorder)
+
+            HStack(spacing: 6) {
+                Button("↑ Up")   { moveSelected(-1) }.disabled(selection == nil)
+                Button("↓ Down") { moveSelected(1) }.disabled(selection == nil)
+                Button("Remove") { removeSelected() }.disabled(selection == nil)
+                Spacer()
+                Button("Clear")     { model.queueClear() }.disabled(items.isEmpty)
+                Button("Randomize") { model.queueShuffle() }.disabled(items.isEmpty)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(theme.playlistBg.opacity(0.7))
+        }
+        .frame(minWidth: 380, minHeight: 320)
+        .onExitCommand { model.queueVisible = false }
+    }
+
+    /// Queue position (0-based) of the selected row, or nil.
+    private func selectedPos() -> Int? {
+        guard let id = selection,
+              let item = model.queuedItems.first(where: { $0.id == id })
+        else { return nil }
+        return item.queuePos - 1
+    }
+
+    private func moveSelected(_ delta: Int) {
+        if let pos = selectedPos() { model.queueMove(pos: pos, delta: delta) }
+    }
+
+    /// Remove the selected entry by toggling its underlying playlist index off.
+    private func removeSelected() {
+        if let id = selection { model.queueToggle(indices: [id]) }
+    }
+}

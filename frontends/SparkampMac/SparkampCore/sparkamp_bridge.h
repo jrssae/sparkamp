@@ -74,6 +74,20 @@ int32_t sparkamp_playlist_is_broken(const SparkampCtx *ctx, int32_t index);
 int32_t sparkamp_playlist_is_read_only(const SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_jump(SparkampCtx *ctx, int32_t index);
 
+/* ── Manual play queue (phase 5) ─────────────────────────────────────────────
+ * A session-only ordered list of playlist entries drained ahead of shuffle/
+ * linear advance. toggle/position work by playlist index; the Queue view uses
+ * entry_index to resolve queue order → playlist rows. play_now dequeues + jumps
+ * + plays. Badge: sparkamp_queue_position returns the 1-based [n] or -1. */
+void    sparkamp_queue_toggle(SparkampCtx *ctx, int32_t index);
+int32_t sparkamp_queue_position(const SparkampCtx *ctx, int32_t index);
+int32_t sparkamp_queue_count(const SparkampCtx *ctx);
+int32_t sparkamp_queue_entry_index(const SparkampCtx *ctx, int32_t queue_pos);
+void    sparkamp_queue_clear(SparkampCtx *ctx);
+void    sparkamp_queue_shuffle(SparkampCtx *ctx);
+void    sparkamp_queue_move(SparkampCtx *ctx, int32_t queue_pos, int32_t delta);
+void    sparkamp_queue_play_now(SparkampCtx *ctx, int32_t queue_pos);
+
 /* ── Navigation ──────────────────────────────────────────────────────────── */
 
 void sparkamp_nav_next(SparkampCtx *ctx);

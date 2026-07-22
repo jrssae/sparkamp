@@ -579,6 +579,12 @@ struct PlaylistView: View {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
         })
 
+        // Queue / Dequeue the selection (manual play queue). Toggles each
+        // selected row's queue membership; the [n] badges update in place.
+        menu.addItem(BlockMenuItem(title: "Queue / Dequeue", enabled: !sorted.isEmpty) {
+            model.queueToggle(indices: sorted)
+        })
+
         menu.addItem(.separator())
 
         menu.addItem(BlockMenuItem(title: "Remove", enabled: !sorted.isEmpty) {
@@ -645,8 +651,8 @@ struct PlaylistRow: View {
             }
             .frame(width: 12)
 
-            // Single-line display: "Artist — Title"
-            Text(item.displayName)
+            // Single-line display with the manual-queue [n] badge prefix.
+            Text(item.queueBadge + item.displayName)
                 .font(vars.bodyFont)
                 .foregroundStyle(
                     isCurrent ? theme.playlistCurrentText
