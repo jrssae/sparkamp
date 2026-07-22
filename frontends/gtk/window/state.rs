@@ -267,7 +267,16 @@ fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
 ///   keeps Analyze disabled even though no RG job holds it.
 /// - `render_status`: when `false` the caller owns the status label this tick
 ///   (e.g. a metadata scan is writing "Reading tags…"), so we touch neither
-///   the label nor the one-shot message.
+///   the label nor the completion message.
+/// - `prev_running`: this poller's own view of whether a job was running on
+///   its *previous* tick. The completion message is rendered only on the
+///   running→idle edge, and PEEKED (not consumed) — so every view that was
+///   watching the job renders it exactly once. A shared one-shot `take()`
+///   let whichever poller ticked first swallow the message, leaving the
+///   other view stuck on its last "Analyzing N/M" (notably after Cancel).
+///
+/// Returns the current running state; callers store it for next tick's
+/// `prev_running`.
 fn sync_rg_ui(
     state: &Rc<RefCell<AppState>>,
     analyze_btn: &gtk4::Button,
@@ -276,8 +285,12 @@ fn sync_rg_ui(
     rg_available: bool,
     other_busy: bool,
     render_status: bool,
+    prev_running: bool,
 ) -> bool {
-    let rg_state = state.borrow().rg_job.clone();
+    let (rg_state, msg) = {
+        let s = state.borrow();
+        (s.rg_job.clone(), s.rg_ui_msg.clone())
+    };
     let running = rg_state.is_some();
     // Analyze ⇄ Cancel: never both visible at once.
     analyze_btn.set_visible(!running);
@@ -290,8 +303,13 @@ fn sync_rg_ui(
             } else {
                 status.set_text("Analyzing ReplayGain…");
             }
-        } else if let Some(msg) = state.borrow_mut().rg_ui_msg.take() {
-            status.set_text(&msg);
+        } else if prev_running {
+            // Just finished (from this view's perspective) — render the shared
+            // completion message once. Peek, don't take: the other view's
+            // poller needs it too.
+            if let Some(m) = msg {
+                status.set_text(&m);
+            }
         }
     }
     running

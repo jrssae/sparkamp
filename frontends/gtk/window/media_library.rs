@@ -5264,6 +5264,7 @@ fn open_media_library_window(
             let analyze_ref = btn_analyze_rg.clone();
             let cancel_rg_ref = btn_cancel_rg.clone();
             let status_ref = files_status.clone();
+            let rg_was_running = std::cell::Cell::new(false);
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 let scan_state = state_rc.borrow().ml_scan.clone();
                 let scan_busy = scan_state.is_some();
@@ -5278,7 +5279,9 @@ fn open_media_library_window(
                     rg_available,
                     scan_busy,
                     !scan_busy,
+                    rg_was_running.get(),
                 );
+                rg_was_running.set(rg_running);
                 let busy = scan_busy || rg_running;
                 rescan_ref.set_sensitive(!busy);
                 add_folder_ref.set_sensitive(!busy);

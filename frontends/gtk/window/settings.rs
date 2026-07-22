@@ -1897,11 +1897,12 @@ fn open_settings_window(
             let cancel_ref = btn_rg_cancel.clone();
             let status_ref = lbl_rg_status.clone();
             let win_weak = win.downgrade();
+            let rg_was_running = std::cell::Cell::new(false);
             glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 if win_weak.upgrade().is_none() {
                     return glib::ControlFlow::Break;
                 }
-                sync_rg_ui(
+                let running = sync_rg_ui(
                     &state_rc,
                     &analyze_ref,
                     &cancel_ref,
@@ -1909,7 +1910,9 @@ fn open_settings_window(
                     rg_available,
                     false,
                     true,
+                    rg_was_running.get(),
                 );
+                rg_was_running.set(running);
                 glib::ControlFlow::Continue
             });
         }
