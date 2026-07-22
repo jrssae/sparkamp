@@ -4443,7 +4443,14 @@ pub fn build(
             if matches!(key, gdk::Key::q | gdk::Key::Q)
                 && modifier.contains(gdk::ModifierType::CONTROL_MASK)
             {
-                toggle();
+                // Defer to idle: `toggle` rebuilds pl_view's model, and doing
+                // that while this SAME window is mid key-event dispatch leaves
+                // the TreeView unpainted until a later frame. Running it after
+                // the event unwinds repaints the badges immediately. (The jump
+                // window rebuilds pl_view from a different window, so it has no
+                // such problem and updates inline.)
+                let t = toggle.clone();
+                glib::idle_add_local_once(move || t());
                 return glib::Propagation::Stop;
             }
             if key == gdk::Key::Escape {
