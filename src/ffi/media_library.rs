@@ -69,6 +69,18 @@ pub struct SparkampLibTrack {
     /// Task 7's five listed fields, but required so the mac ID3 tech line
     /// (Step 3) can match core `tech_summary`'s "channels" part exactly.
     pub channels: c_int,
+    /// ReplayGain track/album gain (dB) and peak (linear). Meaningful only
+    /// when `rg_analyzed` is 1; all four are 0.0 otherwise. Peaks are the
+    /// sample peak in [0.0, ~1.0]; gains are typically negative for loud
+    /// tracks.
+    pub rg_track_gain: f64,
+    pub rg_track_peak: f64,
+    pub rg_album_gain: f64,
+    pub rg_album_peak: f64,
+    /// 1 if a ReplayGain track gain has been computed/stored; 0 otherwise.
+    /// Frontends should gate any gain display on this rather than testing the
+    /// gain value (0.0 dB is a legitimate result for a reference-level track).
+    pub rg_analyzed: c_int,
 }
 
 impl SparkampLibTrack {
@@ -102,6 +114,11 @@ impl SparkampLibTrack {
             file_mtime: [0u8; 32],
             bitrate_mode: [0u8; 8],
             channels: t.channels.unwrap_or(0) as c_int,
+            rg_track_gain: t.rg_track_gain.unwrap_or(0.0),
+            rg_track_peak: t.rg_track_peak.unwrap_or(0.0),
+            rg_album_gain: t.rg_album_gain.unwrap_or(0.0),
+            rg_album_peak: t.rg_album_peak.unwrap_or(0.0),
+            rg_analyzed: if t.rg_track_gain.is_some() { 1 } else { 0 },
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -401,6 +418,167 @@ pub unsafe extern "C" fn sparkamp_ml_scan_progress(
         return;
     }
     let packed = (*ctx).ml_progress.load(Ordering::Relaxed);
+    *done_out = (packed & 0xFFFF_FFFF) as c_int;
+    *total_out = (packed >> 32) as c_int;
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — ReplayGain analysis (background)
+// ---------------------------------------------------------------------------
+//
+// Mirrors the metadata-scan background pattern (rg_progress / rg_running /
+// rg_cancel atomics, rayon::spawn, separate DB connection) but computes and
+// stores ReplayGain instead of reading tags. Analysis decodes whole files, so
+// it always runs off the main thread. `write_tags` is taken from config
+// (MP3-only tag write-back, non-MP3 silently skipped). Only one RG job runs at
+// a time — a second call while `rg_running` is set is ignored.
+
+/// Shared worker: analyze `tracks` (already the exact set) and report progress
+/// through the `rg_*` atomics + optional callbacks. Consumes the atomics/flags
+/// (cloned Arcs) so it is `Send` for `rayon::spawn`.
+unsafe fn rg_spawn_analysis(
+    ctx: &mut SparkampCtx,
+    tracks: Vec<crate::media_library::LibTrack>,
+    progress_cb: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int)>,
+    done_cb: Option<unsafe extern "C" fn(*mut c_void)>,
+    userdata: *mut c_void,
+) {
+    // Refuse a second job (matches sparkamp_ml_add_folder's implicit
+    // single-job model, but explicit here since the caller may spam it).
+    if ctx.rg_running.load(Ordering::Relaxed) {
+        return;
+    }
+    if !crate::replaygain::rg_analysis_available() {
+        // rganalysis plugin missing — report an immediate "done" so the UI
+        // doesn't wait on a job that will never start.
+        if let Some(cb) = done_cb {
+            cb(userdata);
+        }
+        return;
+    }
+    let write_tags = ctx.config.playback.replaygain.write_tags;
+    let cancel = Arc::clone(&ctx.rg_cancel);
+    let running = Arc::clone(&ctx.rg_running);
+    let progress_atomic = Arc::clone(&ctx.rg_progress);
+    cancel.store(false, Ordering::Relaxed);
+    running.store(true, Ordering::Relaxed);
+    progress_atomic.store(0, Ordering::Relaxed);
+
+    // usize so the closure is Send (raw pointers are not).
+    let ud_addr = userdata as usize;
+
+    rayon::spawn(move || {
+        let ud: *mut c_void = ud_addr as *mut c_void;
+        match MediaLibrary::open_at(&MediaLibrary::db_path_pub()) {
+            Ok(bg_ml) => {
+                let atomic = &progress_atomic;
+                let _ = crate::replaygain::analyze_and_store(
+                    &bg_ml,
+                    &tracks,
+                    write_tags,
+                    &cancel,
+                    |p| {
+                        let packed = ((p.total as u64) << 32) | (p.done as u64);
+                        atomic.store(packed, Ordering::Relaxed);
+                        if let Some(cb) = progress_cb {
+                            unsafe { cb(ud, p.done as c_int, p.total as c_int) };
+                        }
+                    },
+                );
+            }
+            Err(e) => eprintln!("[sparkamp_rg_analyze] DB open: {e}"),
+        }
+        running.store(false, Ordering::Relaxed);
+        if let Some(cb) = done_cb {
+            unsafe { cb(ud) };
+        }
+    });
+}
+
+/// Analyze every track that is missing a ReplayGain value or whose file has
+/// changed since its last scan (the "Analyze ReplayGain" bulk action). Skips
+/// already-analyzed, unchanged tracks. No-op if the library isn't open or an
+/// RG job is already running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_rg_analyze_missing(
+    ctx: *mut SparkampCtx,
+    progress_cb: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int)>,
+    done_cb: Option<unsafe extern "C" fn(*mut c_void)>,
+    userdata: *mut c_void,
+) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let tracks: Vec<crate::media_library::LibTrack> = ml
+        .all_tracks()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(crate::replaygain::needs_analysis)
+        .collect();
+    rg_spawn_analysis(ctx, tracks, progress_cb, done_cb, userdata);
+}
+
+/// Force a ReplayGain recompute of the tracks whose DB ids are in
+/// `ids` (length `count`) — the per-selection "Calculate ReplayGain" action.
+/// Recomputes regardless of any stored value. No-op if the library isn't open,
+/// an RG job is already running, or `ids` is null/empty.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_rg_analyze_selection(
+    ctx: *mut SparkampCtx,
+    ids: *const i64,
+    count: c_int,
+    progress_cb: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int)>,
+    done_cb: Option<unsafe extern "C" fn(*mut c_void)>,
+    userdata: *mut c_void,
+) {
+    if ctx.is_null() || ids.is_null() || count <= 0 {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let id_slice = std::slice::from_raw_parts(ids, count as usize);
+    let want: std::collections::HashSet<i64> = id_slice.iter().copied().collect();
+    let tracks: Vec<crate::media_library::LibTrack> = ml
+        .all_tracks()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| want.contains(&t.id))
+        .collect();
+    rg_spawn_analysis(ctx, tracks, progress_cb, done_cb, userdata);
+}
+
+/// Cancel a running ReplayGain analysis. No-op if none is running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_rg_analyze_cancel(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).rg_cancel.store(true, Ordering::Relaxed);
+}
+
+/// Returns 1 if a ReplayGain analysis is running, 0 otherwise.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_rg_analyze_is_running(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    (*ctx).rg_running.load(Ordering::Relaxed) as c_int
+}
+
+/// Reads ReplayGain analysis progress atomically. `done_out`/`total_out` get
+/// the number of tracks analyzed and the total to analyze; both 0 if idle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_rg_analyze_progress(
+    ctx: *const SparkampCtx,
+    done_out: *mut c_int,
+    total_out: *mut c_int,
+) {
+    if ctx.is_null() || done_out.is_null() || total_out.is_null() {
+        return;
+    }
+    let packed = (*ctx).rg_progress.load(Ordering::Relaxed);
     *done_out = (packed & 0xFFFF_FFFF) as c_int;
     *total_out = (packed >> 32) as c_int;
 }

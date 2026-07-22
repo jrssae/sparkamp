@@ -129,6 +129,37 @@ extension SparkampModel {
         sparkamp_ml_cancel_scan(ctx)
     }
 
+    // MARK: - ReplayGain analysis
+
+    /// Analyze every track missing a ReplayGain value or changed since its last
+    /// scan (bulk "Analyze ReplayGain"). Progress polled by `tick()`.
+    func rgAnalyzeMissing() {
+        guard let ctx = ctx else { return }
+        sparkamp_rg_analyze_missing(ctx, nil, nil, nil)
+        rgRunning = true
+        rgDone = 0
+        rgTotal = 0
+    }
+
+    /// Force a ReplayGain recompute of `ids` (the per-selection "Calculate
+    /// ReplayGain" action), regardless of any stored value.
+    func rgAnalyzeSelection(ids: [Int64]) {
+        guard let ctx = ctx, !ids.isEmpty else { return }
+        var idArray = ids
+        idArray.withUnsafeBufferPointer { buf in
+            sparkamp_rg_analyze_selection(ctx, buf.baseAddress, Int32(ids.count), nil, nil, nil)
+        }
+        rgRunning = true
+        rgDone = 0
+        rgTotal = 0
+    }
+
+    /// Request cancellation of the running ReplayGain analysis.
+    func rgCancelAnalyze() {
+        guard let ctx = ctx else { return }
+        sparkamp_rg_analyze_cancel(ctx)
+    }
+
     func mlAddToPlaylist(ids: [Int64]) {
         guard let ctx = ctx else { return }
         var idArray = ids

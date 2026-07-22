@@ -281,6 +281,12 @@ private struct PlaybackPane: View {
     @State private var addBehavior: Int    = 0    // 0=Append, 1=Replace
     @State private var playlistFormat: Int = 0    // 0=m3u8, 1=m3u
 
+    // ReplayGain (playback normalization).
+    @State private var rgEnabled: Bool     = true
+    @State private var rgSource: Int       = 2    // 0=Track, 1=Album, 2=Automatic
+    @State private var rgClip: Bool        = true
+    @State private var rgFallback: Double  = 0.0
+
     var body: some View {
         Form {
             Section("Playlists") {
@@ -318,6 +324,51 @@ private struct PlaybackPane: View {
                     sparkamp_save_config(ctx)
                 }
             }
+
+            Section("ReplayGain") {
+                Toggle("Use ReplayGain volume normalization", isOn: $rgEnabled)
+                    .onChange(of: rgEnabled) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_rg_enabled(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+
+                Picker("Gain source", selection: $rgSource) {
+                    Text("Track").tag(0)
+                    Text("Album").tag(1)
+                    Text("Automatic").tag(2)
+                }
+                .onChange(of: rgSource) { _, newValue in
+                    guard let ctx = model.ctx else { return }
+                    sparkamp_set_rg_source(ctx, Int32(newValue))
+                    sparkamp_save_config(ctx)
+                }
+                .disabled(!rgEnabled)
+
+                Toggle("Prevent clipping (limiter)", isOn: $rgClip)
+                    .onChange(of: rgClip) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_rg_clip_protection(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                    .disabled(!rgEnabled)
+
+                Stepper(
+                    "Fallback gain: \(rgFallback, specifier: "%.1f") dB",
+                    value: $rgFallback, in: -15...15, step: 0.5
+                )
+                .onChange(of: rgFallback) { _, newValue in
+                    guard let ctx = model.ctx else { return }
+                    sparkamp_set_rg_fallback_db(ctx, Float(newValue))
+                    sparkamp_save_config(ctx)
+                }
+                .disabled(!rgEnabled)
+
+                Text("Applied to tracks that have no ReplayGain value. Automatic uses album gain unless shuffle is on.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -325,6 +376,10 @@ private struct PlaybackPane: View {
             autoplayOnAdd  = sparkamp_get_autoplay_on_add(ctx)
             addBehavior    = Int(sparkamp_get_playlist_add_behavior(ctx))
             playlistFormat = Int(sparkamp_get_playlist_format(ctx))
+            rgEnabled      = sparkamp_get_rg_enabled(ctx)
+            rgSource       = Int(sparkamp_get_rg_source(ctx))
+            rgClip         = sparkamp_get_rg_clip_protection(ctx)
+            rgFallback     = Double(sparkamp_get_rg_fallback_db(ctx))
         }
     }
 }
@@ -594,6 +649,10 @@ private struct MediaLibraryPane: View {
     @State private var burnVerify: Bool = true
     /// Auto-open the library to a drive when it receives an audio CD (default on).
     @State private var autoShowInsertedCd: Bool = true
+    /// Analyze ReplayGain for newly added/scanned files automatically.
+    @State private var rgAutoAnalyze: Bool = false
+    /// Write computed ReplayGain values back into MP3 tags (non-MP3 skipped).
+    @State private var rgWriteTags: Bool = false
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -613,6 +672,52 @@ private struct MediaLibraryPane: View {
                     }
                     .buttonStyle(.bordered)
                 }
+            }
+
+            // ── ReplayGain analysis ────────────────────────────────────────
+            Section("ReplayGain") {
+                HStack {
+                    if model.rgRunning {
+                        Button("Cancel Analysis") { model.rgCancelAnalyze() }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("Analyze ReplayGain") {
+                            model.openMediaLibrary()
+                            model.rgAnalyzeMissing()
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Force Recalculate") {
+                            model.openMediaLibrary()
+                            let ids = model.mlAllTracks().map(\.id)
+                            model.rgAnalyzeSelection(ids: ids)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                if model.rgRunning {
+                    ProgressView(
+                        value: model.rgTotal > 0
+                            ? Double(model.rgDone) / Double(model.rgTotal) : 0
+                    )
+                    Text(model.rgTotal > 0
+                         ? "Analyzing \(model.rgDone)/\(model.rgTotal)…"
+                         : "Analyzing ReplayGain…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Toggle("Analyze new files on add/scan", isOn: $rgAutoAnalyze)
+                    .onChange(of: rgAutoAnalyze) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_rg_auto_analyze(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Write ReplayGain tags to files (MP3 only)", isOn: $rgWriteTags)
+                    .onChange(of: rgWriteTags) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_rg_write_tags(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
             }
 
             // ── Watched folders ────────────────────────────────────────────
@@ -736,6 +841,8 @@ private struct MediaLibraryPane: View {
                 gnudbSubmitTest = sparkamp_get_gnudb_submit_test(ctx)
                 burnVerify = sparkamp_get_burn_verify(ctx)
                 autoShowInsertedCd = sparkamp_get_auto_show_inserted_cd(ctx)
+                rgAutoAnalyze = sparkamp_get_rg_auto_analyze(ctx)
+                rgWriteTags = sparkamp_get_rg_write_tags(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }

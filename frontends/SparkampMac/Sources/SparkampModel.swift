@@ -125,6 +125,11 @@ final class SparkampModel: ObservableObject {
     @Published var mlScanRunning: Bool = false
     @Published var mlScanDone: Int = 0
     @Published var mlScanTotal: Int = 0
+    /// True while a background ReplayGain analysis is running, plus its
+    /// progress (tracks analyzed / total). Polled by `tick()` like the scan.
+    @Published var rgRunning: Bool = false
+    @Published var rgDone: Int = 0
+    @Published var rgTotal: Int = 0
     /// Bumps every time the model writes back to the library DB (e.g. a
     /// play_count increment from `record_play`).  The Media Library window
     /// observes this and re-runs its own filtered/sorted fetch so the
@@ -508,6 +513,21 @@ final class SparkampModel: ObservableObject {
                 mlScanRunning = false
                 mlScanTickCount = 0
                 mlRefreshFolders()
+                mlFetchTracks()
+            }
+        }
+
+        // Poll ReplayGain analysis progress (if running).
+        if rgRunning {
+            let stillRunning = sparkamp_rg_analyze_is_running(ctx) != 0
+            var done: Int32 = 0, total: Int32 = 0
+            sparkamp_rg_analyze_progress(ctx, &done, &total)
+            rgDone  = Int(done)
+            rgTotal = Int(total)
+            if !stillRunning {
+                rgRunning = false
+                // Values changed on disk — refresh the visible rows so the
+                // ReplayGain column updates.
                 mlFetchTracks()
             }
         }

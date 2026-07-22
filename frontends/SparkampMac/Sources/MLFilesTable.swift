@@ -100,6 +100,9 @@ struct MLFilesTable: NSViewRepresentable {
         .init(id: "col-added",       title: "Date Added",  bit: 19, width: 130, sortKey: "added_at",     isSmallMono: true),
         .init(id: "col-mtime",       title: "File Modified", bit: 20, width: 130, sortKey: "file_mtime", isSmallMono: true),
         .init(id: "col-brmode",      title: "Mode",        bit: 21, width:  60, sortKey: "bitrate_mode", isSmallMono: true),
+        // ReplayGain track gain (phase-4 F7); hidden by default like GTK's
+        // opt-in rg_gain column. sortKey mirrors GTK's "rg_gain".
+        .init(id: "col-rggain",      title: "ReplayGain",  bit: 22, width:  90, sortKey: "rg_gain",      isSmallMono: true),
     ]
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -349,6 +352,9 @@ struct MLFilesTable: NSViewRepresentable {
         case "col-brmode":
             body = AnyView(textCell(track.bitrateMode,
                                     color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-rggain":
+            body = AnyView(textCell(track.rgGainDisplay,
+                                    color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-art":
             // A2 — small thumbnail from the resolved artwork path when one's
             // known; falls back to the pre-existing "View" text link when
@@ -432,6 +438,7 @@ struct MLFilesTable: NSViewRepresentable {
         case "added_at":     return KeyPathComparator(\MLTrack.addedAt, order: order)
         case "file_mtime":   return KeyPathComparator(\MLTrack.fileMtime, order: order)
         case "bitrate_mode": return KeyPathComparator(\MLTrack.bitrateMode, order: order)
+        case "rg_gain":      return KeyPathComparator(\MLTrack.rgTrackGain, order: order)
         default:             return nil
         }
     }
@@ -457,6 +464,7 @@ struct MLFilesTable: NSViewRepresentable {
         case \MLTrack.addedAt:     return "added_at"
         case \MLTrack.fileMtime:   return "file_mtime"
         case \MLTrack.bitrateMode: return "bitrate_mode"
+        case \MLTrack.rgTrackGain: return "rg_gain"
         default:                   return nil
         }
     }
@@ -628,6 +636,16 @@ struct MLFilesTable: NSViewRepresentable {
             })
             menu.addItem(BlockMenuItem(title: "View Album Art", enabled: ids.count == 1) {
                 if let first = ids.first { self.parent.onEvent(.viewArt(first)) }
+            })
+            // Force a ReplayGain recompute of the selected rows (mirrors the
+            // GTK "Calculate ReplayGain" context action). Disabled while an
+            // analysis is already running.
+            menu.addItem(BlockMenuItem(
+                title: "Calculate ReplayGain",
+                enabled: !ids.isEmpty && !self.parent.model.rgRunning
+            ) {
+                self.parent.model.openMediaLibrary()
+                self.parent.model.rgAnalyzeSelection(ids: ids)
             })
             menu.addItem(.separator())
             menu.addItem(BlockMenuItem(title: "Remove from Library", enabled: !ids.isEmpty) {

@@ -73,8 +73,20 @@ struct MLTrack: Identifiable {
     /// Channel count (1 = mono, 2 = stereo, ...); 0 if unknown. Crosses the
     /// FFI alongside the five Task 7 fields — needed for the ID3 tech line.
     let channels: Int
+    /// ReplayGain track gain in dB; meaningful only when `rgAnalyzed` is true.
+    let rgTrackGain: Double
+    /// True once a ReplayGain value has been computed/stored for this track.
+    /// Gate any gain display on this — 0.0 dB is a valid measured result.
+    let rgAnalyzed: Bool
 
     var durationString: String { formatDuration(lengthSecs) }
+
+    /// ReplayGain gain column text ("−6.2 dB" or "" when not analyzed).
+    /// One decimal, matching the GTK ml_columns rg_gain column.
+    var rgGainDisplay: String {
+        guard rgAnalyzed else { return "" }
+        return String(format: "%.1f dB", rgTrackGain)
+    }
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
 
     /// Human-friendly local "YYYY-MM-DD HH:MM" rendering of lastPlayed, or "" if never played.
@@ -145,6 +157,8 @@ struct MLTrack: Identifiable {
         fileMtime = ""
         bitrateMode = ""
         channels = 0
+        rgTrackGain = 0
+        rgAnalyzed = false
     }
 
     init(from c: SparkampLibTrack) {
@@ -177,6 +191,8 @@ struct MLTrack: Identifiable {
         fileMtime   = cBytesToString(&c.file_mtime)
         bitrateMode = cBytesToString(&c.bitrate_mode)
         channels    = Int(c.channels)
+        rgTrackGain = c.rg_track_gain
+        rgAnalyzed  = c.rg_analyzed != 0
     }
 }
 

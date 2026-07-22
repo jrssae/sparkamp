@@ -285,6 +285,26 @@ bool    sparkamp_get_autoplay_on_add(SparkampCtx *ctx);
 void    sparkamp_set_autoplay_on_add(SparkampCtx *ctx, bool value);
 int     sparkamp_get_ml_rescan_interval(SparkampCtx *ctx);
 void    sparkamp_set_ml_rescan_interval(SparkampCtx *ctx, int mins);
+
+/* ── ReplayGain (playback normalization) ─────────────────────────────────────
+   enabled/source/clip/fallback rebuild the engine's rgvolume/rglimiter chain
+   immediately if stopped, else the engine defers to the next track. source:
+   0 = Track, 1 = Album, 2 = Automatic (album unless shuffle is on). fallback
+   is the gain (dB) applied to tracks without ReplayGain tags. auto_analyze /
+   write_tags are library-side flags (config only). Persist via
+   sparkamp_save_config. */
+bool    sparkamp_get_rg_enabled(const SparkampCtx *ctx);
+void    sparkamp_set_rg_enabled(SparkampCtx *ctx, bool value);
+int     sparkamp_get_rg_source(const SparkampCtx *ctx);
+void    sparkamp_set_rg_source(SparkampCtx *ctx, int value);
+bool    sparkamp_get_rg_clip_protection(const SparkampCtx *ctx);
+void    sparkamp_set_rg_clip_protection(SparkampCtx *ctx, bool value);
+float   sparkamp_get_rg_fallback_db(const SparkampCtx *ctx);
+void    sparkamp_set_rg_fallback_db(SparkampCtx *ctx, float db);
+bool    sparkamp_get_rg_auto_analyze(const SparkampCtx *ctx);
+void    sparkamp_set_rg_auto_analyze(SparkampCtx *ctx, bool value);
+bool    sparkamp_get_rg_write_tags(const SparkampCtx *ctx);
+void    sparkamp_set_rg_write_tags(SparkampCtx *ctx, bool value);
 /* gnudb hello/submission email. Getter returns a heap string — free with
    sparkamp_free_string. Setter ignores empty values. */
 char   *sparkamp_get_gnudb_email(SparkampCtx *ctx);
@@ -401,6 +421,11 @@ typedef struct {
     uint8_t  file_mtime[32];  /* ISO-8601 UTC of on-disk mtime, or empty */
     uint8_t  bitrate_mode[8]; /* "VBR" / "CBR" or empty */
     int32_t  channels;        /* channel count (1=mono, 2=stereo, ...); 0 = unknown */
+    double   rg_track_gain;   /* ReplayGain track gain (dB); valid only if rg_analyzed */
+    double   rg_track_peak;   /* ReplayGain track peak (linear ~0..1); valid only if rg_analyzed */
+    double   rg_album_gain;   /* ReplayGain album gain (dB); valid only if rg_analyzed */
+    double   rg_album_peak;   /* ReplayGain album peak (linear ~0..1); valid only if rg_analyzed */
+    int32_t  rg_analyzed;     /* 1 = a ReplayGain value has been computed/stored */
 } SparkampLibTrack;
 
 /** Open (or create) the media library DB.  Must be called before any sparkamp_ml_* function. */
@@ -464,6 +489,31 @@ void    sparkamp_ml_cancel_scan(SparkampCtx *ctx);
 int32_t sparkamp_ml_scan_is_running(const SparkampCtx *ctx);
 /** Writes current scan progress into *done_out and *total_out. */
 void    sparkamp_ml_scan_progress(const SparkampCtx *ctx, int32_t *done_out, int32_t *total_out);
+
+/* ── ReplayGain analysis (background) ────────────────────────────────────────
+ * Compute + store ReplayGain for library tracks off the main thread (analysis
+ * decodes whole files). progress_cb(userdata, done, total) fires per completed
+ * batch; done_cb(userdata) fires when the job ends (both may be null). Only one
+ * RG job runs at a time; a call while one is running is ignored. write_tags is
+ * taken from config (MP3-only write-back). */
+void    sparkamp_rg_analyze_missing(
+    SparkampCtx *ctx,
+    void (*progress_cb)(void *userdata, int32_t done, int32_t total),
+    void (*done_cb)(void *userdata),
+    void        *userdata);
+void    sparkamp_rg_analyze_selection(
+    SparkampCtx *ctx,
+    const int64_t *ids,
+    int32_t        count,
+    void (*progress_cb)(void *userdata, int32_t done, int32_t total),
+    void (*done_cb)(void *userdata),
+    void        *userdata);
+/** Request cancellation of the current ReplayGain analysis. */
+void    sparkamp_rg_analyze_cancel(SparkampCtx *ctx);
+/** Returns 1 while a ReplayGain analysis is running, 0 otherwise. */
+int32_t sparkamp_rg_analyze_is_running(const SparkampCtx *ctx);
+/** Writes current analysis progress into *done_out and *total_out. */
+void    sparkamp_rg_analyze_progress(const SparkampCtx *ctx, int32_t *done_out, int32_t *total_out);
 
 /** Number of tracks matching query ("" = all). */
 int32_t sparkamp_ml_track_count(const SparkampCtx *ctx, const char *query);

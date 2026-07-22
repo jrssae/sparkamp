@@ -293,3 +293,145 @@ pub unsafe extern "C" fn sparkamp_set_ml_rescan_interval(ctx: *mut SparkampCtx, 
     };
 }
 
+// ---------------------------------------------------------------------------
+// ReplayGain (playback normalization) — mirrors the GTK/TUI settings surface.
+// Playback-affecting setters (enabled/source/clip/fallback) rebuild the
+// engine's rgvolume/rglimiter chain immediately if stopped, else the engine
+// defers to the next track. auto_analyze/write_tags are library-side flags
+// with no live playback effect (config only). Callers persist via
+// `sparkamp_save_config`.
+// ---------------------------------------------------------------------------
+
+/// Rebuild + reapply the ReplayGain chain and album-vs-track mode from the
+/// current config. Values are copied out before touching `ctx.player` so no
+/// `ctx.config` borrow is held across the `&mut` player calls.
+unsafe fn ffi_apply_replaygain(ctx: &mut SparkampCtx) {
+    let chain = crate::engine::RgChain {
+        enabled: ctx.config.playback.replaygain.enabled,
+        clip_protection: ctx.config.playback.replaygain.clip_protection,
+        fallback_db: ctx.config.playback.replaygain.fallback_db as f64,
+    };
+    let album = crate::config::rg_album_mode(
+        ctx.config.playback.replaygain.source,
+        ctx.config.playback.shuffle_enabled,
+    );
+    ctx.player.set_replaygain(chain);
+    ctx.player.set_rg_album_mode(album);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rg_enabled(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    (*ctx).config.playback.replaygain.enabled
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rg_enabled(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.replaygain.enabled = value;
+    ffi_apply_replaygain(ctx);
+}
+
+/// ReplayGain source: 0 = Track, 1 = Album, 2 = Automatic (album unless
+/// shuffle is on).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rg_source(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return 2;
+    }
+    match (*ctx).config.playback.replaygain.source {
+        crate::config::RgSource::Track => 0,
+        crate::config::RgSource::Album => 1,
+        crate::config::RgSource::Automatic => 2,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rg_source(ctx: *mut SparkampCtx, value: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.replaygain.source = match value {
+        0 => crate::config::RgSource::Track,
+        1 => crate::config::RgSource::Album,
+        _ => crate::config::RgSource::Automatic,
+    };
+    ffi_apply_replaygain(ctx);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rg_clip_protection(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    (*ctx).config.playback.replaygain.clip_protection
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rg_clip_protection(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.replaygain.clip_protection = value;
+    ffi_apply_replaygain(ctx);
+}
+
+/// Fallback gain (dB) applied to tracks that carry no ReplayGain tags.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rg_fallback_db(ctx: *const SparkampCtx) -> f32 {
+    if ctx.is_null() {
+        return 0.0;
+    }
+    (*ctx).config.playback.replaygain.fallback_db
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rg_fallback_db(ctx: *mut SparkampCtx, db: f32) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.replaygain.fallback_db = db;
+    // Fallback is a live one-liner on the engine — no chain rebuild needed.
+    ctx.player.set_rg_fallback_db(db as f64);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rg_auto_analyze(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    (*ctx).config.playback.replaygain.auto_analyze
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rg_auto_analyze(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).config.playback.replaygain.auto_analyze = value;
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rg_write_tags(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    (*ctx).config.playback.replaygain.write_tags
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rg_write_tags(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).config.playback.replaygain.write_tags = value;
+}
+

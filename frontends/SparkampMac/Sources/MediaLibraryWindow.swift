@@ -790,6 +790,7 @@ struct MediaLibraryView: View {
             columnToggle("Date Added",   bit: 19)
             columnToggle("File Modified", bit: 20)
             columnToggle("Mode",         bit: 21)
+            columnToggle("ReplayGain",   bit: 22)
         } label: {
             Image(systemName: "tablecells")
                 .font(.system(size: 11))
@@ -841,6 +842,7 @@ struct MediaLibraryView: View {
             case \MLTrack.addedAt:     return "added_at"
             case \MLTrack.fileMtime:   return "file_mtime"
             case \MLTrack.bitrateMode: return "bitrate_mode"
+            case \MLTrack.rgTrackGain: return "rg_gain"
             default:                   return nil
             }
         }

@@ -99,6 +99,12 @@ pub struct SparkampCtx {
     ml_scanning: Arc<AtomicBool>,
     /// Set to true to request scan cancellation.
     ml_cancel: Arc<AtomicBool>,
+    /// ReplayGain analysis background-job progress (packed done/total like
+    /// `ml_progress`), running flag, and cancel flag. A separate set from the
+    /// metadata-scan atomics so an RG analysis and a scan report independently.
+    rg_progress: Arc<AtomicU64>,
+    rg_running: Arc<AtomicBool>,
+    rg_cancel: Arc<AtomicBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +159,24 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         ml_progress: Arc::new(AtomicU64::new(0)),
         ml_scanning: Arc::new(AtomicBool::new(false)),
         ml_cancel: Arc::new(AtomicBool::new(false)),
+        rg_progress: Arc::new(AtomicU64::new(0)),
+        rg_running: Arc::new(AtomicBool::new(false)),
+        rg_cancel: Arc::new(AtomicBool::new(false)),
     });
+
+    // Apply the saved ReplayGain chain + album-vs-track mode so the first
+    // track is normalized correctly from the start (mirrors GTK/TUI startup).
+    {
+        let rg = &ctx.config.playback.replaygain;
+        let chain = crate::engine::RgChain {
+            enabled: rg.enabled,
+            clip_protection: rg.clip_protection,
+            fallback_db: rg.fallback_db as f64,
+        };
+        let album = crate::config::rg_album_mode(rg.source, ctx.config.playback.shuffle_enabled);
+        ctx.player.set_replaygain(chain);
+        ctx.player.set_rg_album_mode(album);
+    }
 
     // Apply persisted volume to the player.
     let vol = ctx.config.playback.volume;

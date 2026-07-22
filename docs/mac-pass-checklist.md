@@ -464,3 +464,58 @@ New file `SparkampModel+NowPlaying.swift` (added to project.pbxproj: fileRef AA4
 - `import MediaPlayer` on macOS + MPRemoteCommandCenter with no explicit audio-session entitlement (macOS doesn't require the iOS AVAudioSession; confirm commands fire).
 - `MPMediaItemArtwork(boundsSize:) { _ in image }` closure returns the NSImage at any requested size (returns the full image regardless of size — verify it renders, not blank).
 - Album extracted from `nowPlaying.tags` where label == "Album" (matches the core curated label).
+
+## Phase 4 — 2026-07-22: ReplayGain (P4-T8, BLIND)
+
+Rust FFI (built + tested on Linux: 481 lib + 685 bin, 0 warnings) — 6 config
+get/set pairs + a background analysis trigger, mirrored into
+`sparkamp_bridge.h`. Swift edits are all in EXISTING files (no new source →
+**no project.pbxproj changes needed**, unlike phases 2/3):
+`SparkampModelTypes.swift`, `SparkampModel.swift`, `SparkampModel+MediaLibrary.swift`,
+`SettingsWindow.swift`, `MLFilesTable.swift`, `MediaLibraryWindow.swift`.
+
+Verify on hardware:
+
+- [ ] Settings → Playback → ReplayGain: "Use ReplayGain", Gain source
+      (Track/Album/Automatic), "Prevent clipping", "Fallback gain" stepper all
+      load current values on open and persist across a relaunch.
+- [ ] Toggling "Use ReplayGain" (or changing source/clip) while **stopped**
+      reshapes the chain immediately; while **playing** it takes effect on the
+      next track (engine defers — expected, matches GTK/TUI).
+- [ ] Loud vs quiet tracks even out in perceived volume with ReplayGain on;
+      turning it off restores raw levels.
+- [ ] Settings → Media Library → ReplayGain: "Analyze ReplayGain" runs a
+      background job; progress bar shows "Analyzing N/M…"; "Cancel Analysis"
+      replaces the buttons while running and stops the job.
+- [ ] "Force Recalculate" reanalyzes every track (ignores stored values).
+- [ ] "Analyze new files on add/scan" and "Write ReplayGain tags to files
+      (MP3 only)" toggles load + persist.
+- [ ] With write-tags ON, analyzing an MP3 writes REPLAYGAIN_* TXXX frames to
+      the file (visible to other taggers); non-MP3 files silently keep DB-only
+      values.
+- [ ] Media Library Files view → columns menu (tablecells icon) has a
+      "ReplayGain" entry (off by default); enabling it shows a "ReplayGain"
+      column with e.g. "-6.2 dB", empty for un-analyzed tracks.
+- [ ] Sorting by the ReplayGain column works (server-side "rg_gain" order).
+- [ ] Right-click one or more Files rows → "Calculate ReplayGain" force-
+      analyzes the selection; the column updates when the job finishes;
+      the item is disabled while an analysis is already running.
+
+**Unsure / eyeball (blind, no Xcode here):**
+- SparkampLibTrack struct field order in `sparkamp_bridge.h` must match the
+  Rust `#[repr(C)]` exactly — the 5 new fields (rg_track_gain/peak,
+  rg_album_gain/peak as `double`, rg_analyzed as `int32_t`) were appended
+  AFTER `channels` in both; confirm no misalignment (wrong gains/garbage would
+  signal a mismatch).
+- `Stepper("Fallback gain: \(rgFallback, specifier: "%.1f") dB", ...)` — first
+  interpolated-specifier Stepper title in this file; confirm it renders.
+- RG progress polling was added to `SparkampModel.tick()` alongside the scan
+  poll; confirm `rgRunning`/`rgDone`/`rgTotal` drive the Settings progress row
+  and clear on completion, refreshing the column.
+- Column bit 22 (ReplayGain) is beyond the previous max bit 21; `columnMask` is
+  a plain `Int` (AppStorage) so bit 22 is fine — confirm the toggle persists.
+- `sparkamp_rg_analyze_selection` takes an `int64_t *ids` array; Swift passes
+  it via `withUnsafeBufferPointer`. Confirm large selections analyze correctly.
+- Known limitation (matches GTK/TUI): sort by ReplayGain treats un-analyzed
+  tracks as 0.0 dB (no sort-key shift like GTK's), so they interleave with
+  reference-level tracks. Cosmetic.
