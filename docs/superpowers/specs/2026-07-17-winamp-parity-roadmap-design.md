@@ -149,6 +149,25 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   formats would need a multi-format tag writer Sparkamp doesn't use (lofty was
   considered and declined). Accepted 2026-07-21.
 
+- ReplayGain analysis decodes whole files (rganalysis measures the full audio),
+  so a bulk analyze over a large library is minutes of CPU-bound work. It runs
+  on a single cancelable background worker with progress; per-track passes plus
+  one extra concat pass per multi-track album (album gain) mean a track in an
+  N-track album is decoded twice. Accepted 2026-07-22.
+
+- ReplayGain playback changes (enable/disable, source, clip protection) reshape
+  the GStreamer chain only at `State::Null`, so a change made mid-track applies
+  from the NEXT `load()` (next track / restart), not instantly. The engine
+  defers via `rg_pending`; GTK re-applies immediately when Stopped and reloads
+  the current track at position when Playing, but TUI/mac only defer. The
+  fallback-gain value is the one live exception (a one-liner on `rgvolume`).
+  Accepted 2026-07-22.
+
+- Sorting the ReplayGain library column treats un-analyzed tracks as 0.0 dB
+  (GTK shifts its sort key to group them; TUI has no column; mac does not
+  shift), so on mac un-analyzed rows interleave with reference-level tracks.
+  Cosmetic. Accepted 2026-07-22.
+
 ## Known limitations (recorded during phase 3 — F6 MPRIS + mac Now Playing)
 
 - Setting LoopStatus / Shuffle / Volume over D-Bus (playerctl / GNOME widget)
