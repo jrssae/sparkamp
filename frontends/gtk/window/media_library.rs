@@ -8807,6 +8807,7 @@ fn open_media_library_window(
                     duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
                     broken: false,
                     read_only: true, // disc media is never writable in place
+                    id: 0,
                 });
             }
             rebuild();

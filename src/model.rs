@@ -97,6 +97,13 @@ pub struct Track {
     /// Used to display a lock indicator in the UI.
     #[serde(skip)]
     pub read_only: bool,
+    /// Session-only stable identity for the manual play queue (phase 5).
+    /// Distinct even for duplicate paths; reassigned at load. Never persisted
+    /// (`serde(skip)`) — the queue it keys is session-only (Winamp behavior).
+    /// `0` is the unstamped sentinel; the owning `Playlist` stamps a real id
+    /// via `add` / `assign_ids` / `ensure_ids`.
+    #[serde(skip)]
+    pub id: u64,
 }
 
 impl Track {
@@ -124,6 +131,7 @@ impl Track {
             duration: None,
             broken: false,
             read_only,
+            id: 0,
         })
     }
 
@@ -199,6 +207,7 @@ impl Track {
             duration: None,
             broken: false,
             read_only,
+            id: 0,
         })
     }
 
@@ -276,6 +285,7 @@ impl From<&crate::media_library::LibTrack> for Track {
                 .and_then(|s| Duration::try_from_secs_f64(s).ok()),
             broken: !exists,
             read_only,
+            id: 0,
         }
     }
 }
@@ -313,6 +323,11 @@ pub struct Playlist {
     /// playing).  Always within `[0, tracks.len())` when `tracks` is
     /// non-empty; fixed at `0` when the playlist is empty.
     pub current_index: usize,
+    /// Monotonic counter handing out `Track.id` values for the play queue.
+    /// Session-only; never persisted (starts at 0 each run, ids reassigned at
+    /// load via `assign_ids`).
+    #[serde(skip)]
+    next_entry_id: u64,
 }
 
 impl Playlist {
@@ -321,9 +336,41 @@ impl Playlist {
         Playlist::default()
     }
 
-    /// Append a track to the end of the playlist.
-    pub fn add(&mut self, track: Track) {
+    /// Append a track to the end of the playlist, stamping it with a fresh
+    /// queue id. This is the canonical single-append path; bulk paths that
+    /// push straight into `tracks` should call [`ensure_ids`](Self::ensure_ids)
+    /// afterward so no entry keeps the id-0 sentinel.
+    pub fn add(&mut self, mut track: Track) {
+        self.next_entry_id += 1;
+        track.id = self.next_entry_id;
         self.tracks.push(track);
+    }
+
+    /// Reassign a fresh queue id to EVERY entry. Call after any bulk load or
+    /// wholesale replacement of `tracks` (e.g. `load_last`, opening a saved
+    /// playlist, replace-current-with). The queue is session-only, so ids do
+    /// not need to survive across a load.
+    pub fn assign_ids(&mut self) {
+        for t in &mut self.tracks {
+            self.next_entry_id += 1;
+            t.id = self.next_entry_id;
+        }
+    }
+
+    /// Stamp a fresh queue id onto any entry still holding the id-0 sentinel,
+    /// leaving already-stamped entries (and their queue membership) untouched.
+    /// Cheap idempotent safety net for insertion sites that push straight into
+    /// `tracks` without going through [`add`](Self::add); frontends call this
+    /// in their playlist-rebuild seam before reading `Track.id` for the queue.
+    // Consumed by the frontend queue wiring (phase-5 tasks 5/7/8).
+    #[allow(dead_code)]
+    pub fn ensure_ids(&mut self) {
+        for t in &mut self.tracks {
+            if t.id == 0 {
+                self.next_entry_id += 1;
+                t.id = self.next_entry_id;
+            }
+        }
     }
 
     /// Clear all tracks from the playlist, resetting current_index to 0.
@@ -560,6 +607,9 @@ impl Playlist {
             track.read_only =
                 is_disc_uri(&track.path) || crate::media_library::is_read_only(&track.path);
         }
+        // Stamp fresh queue ids — `id` is serde(skip) so every loaded entry
+        // arrives with the id-0 sentinel.
+        playlist.assign_ids();
         Ok(playlist)
     }
 
@@ -1122,7 +1172,42 @@ mod tests {
             duration: None,
             broken: false,
             read_only: false,
+            id: 0,
         }
+    }
+
+    #[test]
+    fn add_assigns_distinct_ids_even_for_duplicate_paths() {
+        let mut pl = Playlist::new();
+        pl.add(make_track("same"));
+        pl.add(make_track("same"));
+        assert_eq!(pl.tracks.len(), 2);
+        assert_ne!(pl.tracks[0].id, pl.tracks[1].id, "duplicates get distinct ids");
+        assert_ne!(pl.tracks[0].id, 0, "id 0 is the unstamped sentinel");
+    }
+
+    #[test]
+    fn assign_ids_restamps_all_entries_uniquely() {
+        let mut pl = Playlist::new();
+        for _ in 0..3 {
+            pl.tracks.push(make_track("raw")); // raw push, unstamped (id 0)
+        }
+        pl.assign_ids();
+        let ids: std::collections::HashSet<u64> = pl.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(ids.len(), 3, "all ids distinct");
+        assert!(!ids.contains(&0), "no unstamped entries remain");
+    }
+
+    #[test]
+    fn ensure_ids_only_stamps_zero_id_entries() {
+        let mut pl = Playlist::new();
+        pl.add(make_track("kept"));          // stamped id 1
+        let kept_id = pl.tracks[0].id;
+        pl.tracks.push(make_track("raw"));   // unstamped id 0
+        pl.ensure_ids();
+        assert_eq!(pl.tracks[0].id, kept_id, "already-stamped id untouched");
+        assert_ne!(pl.tracks[1].id, 0, "zero-id entry stamped");
+        assert_ne!(pl.tracks[1].id, kept_id, "new id is distinct");
     }
 
     fn playlist_of(titles: &[&str]) -> Playlist {

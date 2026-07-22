@@ -23,6 +23,7 @@ pub(super) fn fake_track(title: &str) -> Track {
         duration: None,
         broken: false,
         read_only: false,
+        id: 0,
     }
 }
 
@@ -36,6 +37,7 @@ pub(super) fn named_track(title: &str, artist: &str) -> Track {
         duration: None,
         broken: false,
         read_only: false,
+        id: 0,
     }
 }
 

@@ -48,6 +48,7 @@ fn probe_new_tracks_applies_cached_duration() {
         duration: None,
         broken: false,
         read_only: false,
+        id: 0,
     };
     let before = app.playlist.tracks.len();
     app.playlist.add(t);

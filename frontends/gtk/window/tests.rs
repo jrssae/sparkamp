@@ -22,6 +22,7 @@ mod tests {
             duration: None,
             broken: false,
             read_only: false,
+            id: 0,
         }
     }
 
@@ -35,6 +36,7 @@ mod tests {
             duration: None,
             broken: false,
             read_only: false,
+            id: 0,
         }
     }
 

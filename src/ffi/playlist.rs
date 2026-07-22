@@ -105,6 +105,7 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
             .then(|| std::time::Duration::from_secs(duration_secs as u64)),
         broken: false,
         read_only: true, // disc media is never writable in place
+        id: 0,
     };
     let idx = ctx.playlist.tracks.len() as c_int;
     ctx.playlist.add(track);
@@ -505,6 +506,7 @@ mod tests {
             duration: None,
             broken: false,
             read_only: false,
+            id: 0,
         };
         let mut tracks = vec![make_row(), make_row()];
 
