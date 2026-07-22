@@ -394,7 +394,7 @@ pub struct EqState {
 
 /// Returns the number of configurable items for the given settings tab index.
 ///
-/// Tabs: 0=Behavior, 1=Visualizer, 2=Filetypes, 3=Media Library.
+/// Tabs: 0=Behavior, 1=Visualizer, 2=Media Library, 3=ReplayGain.
 pub(super) fn settings_tab_len(tab: usize) -> usize {
     match tab {
         // Behavior: 2 items (autoplay_on_add, playlist_add_behavior)
@@ -403,6 +403,8 @@ pub(super) fn settings_tab_len(tab: usize) -> usize {
         1 => 1,
         // Media Library: 3 items (rescan_on_startup, periodic_rescan, rescan_interval_mins)
         2 => 3,
+        // ReplayGain: 6 items (enabled, source, clip, fallback, auto_analyze, write_tags)
+        3 => 6,
         _ => 0,
     }
 }
@@ -544,6 +546,21 @@ impl App {
         let mut player = Player::new()?;
         let eq_bands = config.equalizer.effective_bands();
         player.apply_eq_bands(&eq_bands);
+
+        // Apply saved ReplayGain config so the first track is normalized with
+        // the correct gain/clip/fallback + album-vs-track mode from the start.
+        {
+            let rg = &config.playback.replaygain;
+            player.set_replaygain(crate::engine::RgChain {
+                enabled: rg.enabled,
+                clip_protection: rg.clip_protection,
+                fallback_db: rg.fallback_db as f64,
+            });
+            player.set_rg_album_mode(crate::config::rg_album_mode(
+                rg.source,
+                config.playback.shuffle_enabled,
+            ));
+        }
 
         // Open the media library DB (best-effort; silently ignore errors so a
         // missing or corrupt DB never prevents the app from starting).

@@ -94,6 +94,7 @@ mod imports {
         MediaLibraryTab, MetaField, Mode, RipSetupState, SettingsState,
     };
     pub(super) use crate::config::VisualizerMode;
+    pub(super) use crate::config::RgSource;
     pub(super) use super::{
         centered_popup, hint, sep, tail_chars, C_ACCENT, C_DIM, C_ERR, C_PLAYING,
         C_TEXT, C_WARN,

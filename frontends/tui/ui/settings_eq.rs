@@ -4,10 +4,11 @@
 use super::imports::*;
 
 /// Names for the settings tabs, shown in the tab bar.
-const SETTINGS_TABS: [&str; 3] = [
+const SETTINGS_TABS: [&str; 4] = [
     "Behavior",
     "Visualizer",
     "Media Lib",
+    "ReplayGain",
 ];
 
 /// Render the full settings overlay with four tabs.
@@ -206,6 +207,41 @@ pub(super) fn settings_rows_for_tab<'a>(
                 ("Rescan on startup", startup_val),
                 ("Periodic rescan", periodic_val),
                 ("Rescan interval", interval_val),
+            ]
+        }
+
+        // ── ReplayGain ────────────────────────────────────────────────────
+        3 => {
+            let rg = &app.config.playback.replaygain;
+            let on_off = |b: bool| {
+                if b {
+                    "[ On  / Off ]  ●  On".to_string()
+                } else {
+                    "[ On  / Off ]  ●  Off".to_string()
+                }
+            };
+            let source_val = match rg.source {
+                RgSource::Track => "[ Track / Album / Auto ]  ●  Track".to_string(),
+                RgSource::Album => "[ Track / Album / Auto ]  ●  Album".to_string(),
+                RgSource::Automatic => "[ Track / Album / Auto ]  ●  Automatic".to_string(),
+            };
+            // Fallback shows the live edit buffer while its row is being typed.
+            let fallback_val = if state.cursor == 3 {
+                if let Some(buf) = &state.edit_buf {
+                    format!("{buf}▌ dB")
+                } else {
+                    format!("{:.1} dB", rg.fallback_db)
+                }
+            } else {
+                format!("{:.1} dB", rg.fallback_db)
+            };
+            vec![
+                ("Use ReplayGain", on_off(rg.enabled)),
+                ("Gain source", source_val),
+                ("Clip protection", on_off(rg.clip_protection)),
+                ("Fallback gain", fallback_val),
+                ("Analyze on scan", on_off(rg.auto_analyze)),
+                ("Write tags (MP3)", on_off(rg.write_tags)),
             ]
         }
 
