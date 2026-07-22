@@ -5,14 +5,14 @@
 
 use std::collections::HashSet;
 
-// Wired into the controller advance seam + frontends in phase-5 tasks 3/5/7/8.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct Queue {
     /// Queued entry ids in play order. Front is next.
     order: Vec<u64>,
 }
 
+// Manager/frontend ops (move/shuffle/clear/ids) are consumed by the GTK, TUI,
+// and mac queue UIs (phase-5 tasks 5/6/7/8); keep the full API available.
 #[allow(dead_code)]
 impl Queue {
     pub fn new() -> Self {

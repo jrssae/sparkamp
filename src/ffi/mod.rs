@@ -67,6 +67,9 @@ pub struct SparkampCtx {
     playlist: Playlist,
     config: Config,
     shuffle_state: ShuffleState,
+    /// Manual play queue (session-only). Drained ahead of shuffle/linear
+    /// advance via the shared `Controller`; manipulated by the mac queue FFI.
+    queue: crate::queue::Queue,
     /// Sender half kept in the ctx so `sparkamp_scan_metadata` can clone it for
     /// each Rayon task.  Receiver half is polled in `sparkamp_tick`.
     meta_tx: mpsc::Sender<(usize, String, String, String)>,
@@ -143,6 +146,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         playlist,
         config,
         shuffle_state,
+        queue: crate::queue::Queue::new(),
         meta_tx,
         meta_rx,
         duration_tx,

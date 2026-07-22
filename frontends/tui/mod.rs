@@ -439,6 +439,9 @@ pub struct App {
     /// Tracks which songs have been played this pass and the full playback
     /// history so the previous button works correctly in shuffle mode.
     pub shuffle_state: ShuffleState,
+    /// Manual play queue (session-only; not persisted). Drained ahead of
+    /// shuffle/linear advance via the shared `Controller`.
+    pub queue: crate::queue::Queue,
     /// Receiving end of the async duration-probe channel.
     /// The tick loop drains this every 100 ms and writes results back to the playlist.
     probe_rx: mpsc::Receiver<(PathBuf, Duration)>,
@@ -596,6 +599,7 @@ impl App {
                 s.enabled = shuffle_enabled;
                 s
             },
+            queue: crate::queue::Queue::new(),
             probe_rx,
             probe_tx,
             broken_rx,
@@ -696,6 +700,7 @@ impl App {
             playlist: &mut self.playlist,
             config: &mut self.config,
             shuffle_state: &mut self.shuffle_state,
+            queue: &mut self.queue,
         }
     }
 

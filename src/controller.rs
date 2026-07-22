@@ -98,6 +98,9 @@ pub struct Controller<'a> {
     pub playlist: &'a mut Playlist,
     pub config: &'a mut Config,
     pub shuffle_state: &'a mut ShuffleState,
+    /// Manual play queue — drained ahead of shuffle/linear advance. Session
+    /// state owned by the frontend; borrowed here for its lifetime.
+    pub queue: &'a mut crate::queue::Queue,
 }
 
 impl Controller<'_> {
@@ -164,6 +167,21 @@ impl Controller<'_> {
     /// pressing Forward after Back replays the same track), then falls back
     /// to a fresh shuffle pick when at the head of history.  Fresh picks
     /// are recorded into `ShuffleState` here; history walks are not.
+    /// Pop the next still-present queued entry and return its current playlist
+    /// index, or `None` when the queue is empty (or only holds ids no longer
+    /// in the playlist — those are popped and skipped). On a hit the queue has
+    /// already been drained of that id. The manual queue takes precedence over
+    /// shuffle/linear advance.
+    // phase 6: stop-after-current guards ABOVE the callers of this.
+    fn queue_next_index(&mut self) -> Option<usize> {
+        while let Some(id) = self.queue.pop_next() {
+            if let Some(idx) = self.playlist.tracks.iter().position(|t| t.id == id) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
     pub fn nav_next(&mut self) -> NavResult {
         let was_playing = matches!(
             *self.player.state(),
@@ -171,6 +189,14 @@ impl Controller<'_> {
         );
         let total = self.playlist.len();
         let current = self.playlist.current_index;
+
+        // Manual queue wins over shuffle/linear. A queued hit sets the resume
+        // point to that entry's position (jump_to) and is NOT recorded into
+        // shuffle history — queue playback is manual, not a shuffle pick.
+        if let Some(idx) = self.queue_next_index() {
+            self.playlist.jump_to(idx);
+            return NavResult::Target { was_playing };
+        }
 
         // In shuffle mode, try walking forward through existing history
         // first.  This is what makes Back-then-Forward replay the same
@@ -288,6 +314,20 @@ impl Controller<'_> {
         let total = self.playlist.len();
         let current = self.playlist.current_index;
         let repeat = self.config.playback.repeat_mode;
+
+        // Manual queue wins over shuffle/linear on auto-advance too. Play the
+        // queued entry directly; on load/play failure mark it broken and fall
+        // through to the normal advance. Not recorded into shuffle history.
+        // phase 6: stop-after-current guards ABOVE this.
+        if let Some(idx) = self.queue_next_index() {
+            self.playlist.jump_to(idx);
+            let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
+            if self.player.load(&uri).is_ok() && self.player.play().is_ok() {
+                return AdvanceResult::Playing { new_index: idx };
+            }
+            self.playlist.tracks[idx].broken = true;
+            // fall through to shuffle/linear advance below
+        }
 
         let Some(mut idx) = self.shuffle_state.next_index(current, total, repeat) else {
             let _ = self.player.stop();
@@ -455,6 +495,7 @@ mod tests {
         playlist: Playlist,
         config: Config,
         shuffle: ShuffleState,
+        queue: crate::queue::Queue,
     }
 
     impl Fixture {
@@ -479,6 +520,7 @@ mod tests {
                 playlist,
                 config: Config::default(),
                 shuffle: ShuffleState::new(),
+                queue: crate::queue::Queue::new(),
             }
         }
 
@@ -488,8 +530,57 @@ mod tests {
                 playlist: &mut self.playlist,
                 config: &mut self.config,
                 shuffle_state: &mut self.shuffle,
+                queue: &mut self.queue,
             }
         }
+    }
+
+    #[test]
+    fn queued_entries_play_before_linear_then_resume_from_position() {
+        // playlist [T0,T1,T2,T3]; queue T2 then T0.
+        let mut f = Fixture::new(4);
+        let id_t0 = f.playlist.tracks[0].id;
+        let id_t2 = f.playlist.tracks[2].id;
+        f.queue.enqueue(id_t2);
+        f.queue.enqueue(id_t0);
+
+        // Drain T2.
+        assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
+        assert_eq!(f.playlist.current_index, 2, "queued T2 plays first");
+        // Drain T0.
+        assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
+        assert_eq!(f.playlist.current_index, 0, "queued T0 plays next");
+        assert!(f.queue.is_empty(), "queue drained");
+        // Queue empty → linear resumes from T0's position → T1.
+        assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
+        assert_eq!(f.playlist.current_index, 1, "linear resumes from last-queued position");
+    }
+
+    #[test]
+    fn queue_wins_over_shuffle() {
+        let mut f = Fixture::new(4);
+        f.shuffle.enabled = true;
+        let id_t3 = f.playlist.tracks[3].id;
+        f.queue.enqueue(id_t3);
+        // Even with shuffle on, the queued entry is what plays next.
+        assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
+        assert_eq!(f.playlist.current_index, 3, "queue beats shuffle");
+        assert!(f.queue.is_empty());
+    }
+
+    #[test]
+    fn queue_next_index_skips_ids_no_longer_present() {
+        let mut f = Fixture::new(3);
+        let id_gone = f.playlist.tracks[1].id;
+        let id_t2 = f.playlist.tracks[2].id;
+        f.queue.enqueue(id_gone);
+        f.queue.enqueue(id_t2);
+        // Remove the first-queued track from the playlist.
+        f.playlist.tracks.remove(1);
+        // nav_next pops the missing id, skips it, lands on T2 (now index 1).
+        assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
+        assert_eq!(f.playlist.tracks[f.playlist.current_index].id, id_t2);
+        assert!(f.queue.is_empty());
     }
 
     #[test]
