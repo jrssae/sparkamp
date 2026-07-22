@@ -140,6 +140,29 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   snapshot and refresh on each play/track-change (incl. same-track replay);
   they do not tick live mid-song. By design (matches the classic behavior).
 
+## Known limitations (recorded during phase 5 — F8 Manual Play Queue)
+
+- The queue is SESSION-ONLY: cleared on quit, never persisted (Winamp JTFE
+  behavior; user decision 2026-07-22). Playlist-entry ids (`Track.id`) are
+  reassigned at load, so the queue cannot survive a restart by design.
+- The `[n]` badge is a TEXT PREFIX on the row label (playlist + jump/queue
+  views), not a separate sortable column. Accepted 2026-07-22.
+- GTK interaction (evolved from the plan during user testing, 2026-07-22):
+  `q` opens the Jump/Queue window in Queue mode; `j` opens Jump mode; a
+  Jump/Queue radio switches; `Esc` = Quit on the main window (child windows
+  keep Esc = close); `Ctrl+Q` = queue/dequeue the selection (playlist rows or
+  jump highlight); the standalone Queue Manager window was folded into the jump
+  window. GTK playlist badge updates use in-place row patches (a model-swap
+  rebuild from the playlist window's own key handler doesn't repaint until a
+  later frame).
+- macOS enqueue is via the playlist row CONTEXT MENU ("Queue / Dequeue"), not a
+  global Ctrl+Q: the app-wide key monitor guards `!hasModifiers`, and the
+  playlist selection lives in the view, not the model. `q` opens the Play Queue
+  window. Not a regression — GTK/TUI keep Ctrl+Q. Accepted 2026-07-22.
+- The GTK Queue Manager (Queue mode) and MPRIS Next live-refresh the queue/
+  playlist badges via a thread_local hook; an open Queue view left up during
+  playback stays in sync. Accepted 2026-07-22.
+
 ## Known limitations (recorded during phase 4 — F7 ReplayGain)
 
 - ReplayGain tag write-back is MP3-only (id3 `TXXX REPLAYGAIN_*` frames). M4A,
