@@ -1198,12 +1198,19 @@ pub fn build(
                     PlayerState::Playing | PlayerState::Paused
                 );
                 let is_active = is_playing && idx == s.playlist.current_index;
+                // Manual-queue position badge (prefix) — kept in sync here so
+                // in-place patches (z/b, queue toggle) don't erase it.
+                let badge = s
+                    .queue
+                    .position_of(t.id)
+                    .map(|p| format!("[{}] ", p + 1))
+                    .unwrap_or_default();
                 let display = if t.broken {
-                    format!("⚠ {}", name)
+                    format!("{}⚠ {}", badge, name)
                 } else if is_active {
-                    format!("▶ {}", name)
+                    format!("{}▶ {}", badge, name)
                 } else {
-                    name
+                    format!("{}{}", badge, name)
                 };
                 let weight: i32 = if is_active { 700 } else { 400 };
                 (display, fmt_duration(t.duration), weight, is_active)
@@ -1542,12 +1549,15 @@ pub fn build(
     };
 
     // Toggle the play-queue membership of every selected playlist row, then
-    // rebuild so the [n] badges update. Shared by the context-menu action and
-    // the `q` key (capture phase on the playlist window).
+    // repaint the badges. Shared by the context-menu action and Ctrl+Q on the
+    // playlist window. Uses in-place row patches (pl_store.set) rather than the
+    // model-swap rebuild: swapping the model from the playlist window's own key
+    // handler doesn't repaint until a later frame, which made the badge lag.
+    // A toggle renumbers every queued row, so patch the whole list.
     let queue_toggle_selection: Rc<dyn Fn()> = {
         let state = state.clone();
         let pl_view = pl_view.clone();
-        let rebuild = rebuild_playlist.clone();
+        let patch_row = patch_pl_row.clone();
         Rc::new(move || {
             #[allow(deprecated)]
             let (sel_paths, _) = pl_view.selection().selected_rows();
@@ -1559,7 +1569,7 @@ pub fn build(
             if indices.is_empty() {
                 return;
             }
-            {
+            let n = {
                 let mut s = state.borrow_mut();
                 s.playlist.ensure_ids();
                 let ids: Vec<u64> = indices
@@ -1569,8 +1579,11 @@ pub fn build(
                 for id in ids {
                     s.queue.toggle(id);
                 }
+                s.playlist.tracks.len()
+            };
+            for i in 0..n {
+                patch_row(i);
             }
-            rebuild();
             refresh_queue_manager();
         })
     };
@@ -4443,14 +4456,7 @@ pub fn build(
             if matches!(key, gdk::Key::q | gdk::Key::Q)
                 && modifier.contains(gdk::ModifierType::CONTROL_MASK)
             {
-                // Defer to idle: `toggle` rebuilds pl_view's model, and doing
-                // that while this SAME window is mid key-event dispatch leaves
-                // the TreeView unpainted until a later frame. Running it after
-                // the event unwinds repaints the badges immediately. (The jump
-                // window rebuilds pl_view from a different window, so it has no
-                // such problem and updates inline.)
-                let t = toggle.clone();
-                glib::idle_add_local_once(move || t());
+                toggle();
                 return glib::Propagation::Stop;
             }
             if key == gdk::Key::Escape {
