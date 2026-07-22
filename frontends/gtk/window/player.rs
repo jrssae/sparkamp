@@ -1052,6 +1052,10 @@ pub fn build(
         let accent_rgba = accent_rgba.clone();
         let text_rgba = text_rgba.clone();
         Rc::new(move || {
+            // Stamp any unstamped entries so queue badges have stable ids to
+            // look up (idempotent; a no-op once every entry is stamped). Needs
+            // its own mut borrow before the read-only borrow below.
+            state.borrow_mut().playlist.ensure_ids();
             let s = state.borrow();
             let current = s.playlist.current_index;
             let is_playing = matches!(
@@ -1078,12 +1082,18 @@ pub fn build(
                 let pos = format!("{}.{}", i + 1, lock_suffix);
                 let name = t.display_name();
                 let is_active = is_playing && i == current;
+                // Manual-queue position badge (prefix, Winamp JTFE style).
+                let badge = s
+                    .queue
+                    .position_of(t.id)
+                    .map(|p| format!("[{}] ", p + 1))
+                    .unwrap_or_default();
                 let display = if t.broken {
-                    format!("⚠ {}", name)
+                    format!("{}⚠ {}", badge, name)
                 } else if is_active {
-                    format!("▶ {}", name)
+                    format!("{}▶ {}", badge, name)
                 } else {
-                    name
+                    format!("{}{}", badge, name)
                 };
                 let weight: i32 = if is_active { 700 } else { 400 };
                 // Compute foreground color.  Active (playing) rows get the
@@ -1516,6 +1526,8 @@ pub fn build(
             if let Some(display) = last_nowplaying {
                 set_track_rm(&display);
             }
+            // Drop any now-removed entries from the play queue.
+            state.borrow_mut().sync_queue_to_playlist();
             // Save and restore the scroll position around the rebuild so the
             // visible region doesn't jump after a removal.
             let adj = pl_scroll.vadjustment();
@@ -1526,6 +1538,39 @@ pub fn build(
             glib::idle_add_local_once(move || {
                 adj.set_value(saved_scroll);
             });
+        })
+    };
+
+    // Toggle the play-queue membership of every selected playlist row, then
+    // rebuild so the [n] badges update. Shared by the context-menu action and
+    // the `q` key (capture phase on the playlist window).
+    let queue_toggle_selection: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let pl_view = pl_view.clone();
+        let rebuild = rebuild_playlist.clone();
+        Rc::new(move || {
+            #[allow(deprecated)]
+            let (sel_paths, _) = pl_view.selection().selected_rows();
+            let indices: Vec<usize> = sel_paths
+                .iter()
+                .filter_map(|p| p.indices().first().copied())
+                .map(|i| i as usize)
+                .collect();
+            if indices.is_empty() {
+                return;
+            }
+            {
+                let mut s = state.borrow_mut();
+                s.playlist.ensure_ids();
+                let ids: Vec<u64> = indices
+                    .iter()
+                    .filter_map(|i| s.playlist.tracks.get(*i).map(|t| t.id))
+                    .collect();
+                for id in ids {
+                    s.queue.toggle(id);
+                }
+            }
+            rebuild();
         })
     };
 
@@ -2148,6 +2193,16 @@ pub fn build(
         });
         pl_action_group.add_action(&action_remove);
 
+        // Queue / Dequeue the selected rows (manual play queue). Toggles each
+        // selected entry's queue membership, then rebuilds so the [n] badges
+        // update. Also bound to `q` on the playlist window (capture phase).
+        let action_queue_toggle = gio::SimpleAction::new("queue-toggle", None);
+        {
+            let toggle = queue_toggle_selection.clone();
+            action_queue_toggle.connect_activate(move |_, _| toggle());
+        }
+        pl_action_group.add_action(&action_queue_toggle);
+
         // Seed a brand new saved playlist from the current selection.
         // Opens the standard playlist save dialog so the user picks the
         // filename + folder; the resulting M3U8 contains EXTINF metadata
@@ -2539,6 +2594,10 @@ pub fn build(
                 ));
             }
             menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));
+            menu.append_item(&gio::MenuItem::new(
+                Some("⯈ Queue / Dequeue"),
+                Some("pl.queue-toggle"),
+            ));
             let send = build_send_to_menu(
                 &state_menu_pl,
                 &SendToActions {
@@ -2628,6 +2687,7 @@ pub fn build(
                 let mut s = state.borrow_mut();
                 let _ = s.player.stop();
                 s.playlist.tracks.clear();
+                s.queue.clear();
                 s.playlist.current_index = 0;
                 s.last_duration = None;
                 s.pending_seek = None;
@@ -3137,6 +3197,7 @@ pub fn build(
                     {
                         let mut s = state.borrow_mut();
                         s.playlist.tracks.clear();
+                        s.queue.clear();
                         s.playlist.current_index = 0;
                         s.last_duration = None;
                         s.pending_seek = None;
@@ -4224,6 +4285,24 @@ pub fn build(
         let handler = handle_key.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, _| handler(key));
         window.add_controller(key_ctrl);
+    }
+
+    // `q` on the playlist window = queue/dequeue the selection (Winamp). Added
+    // BEFORE the shared handler's controller so, in Capture phase, it fires
+    // first and returns Stop — the shared handler's `q` = Quit never sees it.
+    // The main window keeps `q` = Quit (this controller is playlist-only).
+    {
+        let key_ctrl = EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let toggle = queue_toggle_selection.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if matches!(key, gdk::Key::q | gdk::Key::Q) {
+                toggle();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        playlist_win.add_controller(key_ctrl);
     }
 
     // Attach the same handler to the playlist window so all shortcuts work

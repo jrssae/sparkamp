@@ -11,6 +11,9 @@ struct AppState {
     /// Session-only shuffle and playback-history state.
     /// Not persisted — reset on each launch.
     shuffle_state: ShuffleState,
+    /// Manual play queue (session-only). Drained ahead of shuffle/linear in
+    /// `play_next`; keyed on `Track.id`.
+    pub(crate) queue: crate::queue::Queue,
     /// Seek fraction [0, 1] to apply on the first tick after the pipeline starts
     /// playing.  Set when the user scrubs the seek bar while the player is
     /// Stopped (pipeline not loaded), so the desired position is remembered and
@@ -452,6 +455,7 @@ impl AppState {
             playlist,
             config,
             shuffle_state,
+            queue: crate::queue::Queue::new(),
             pending_seek: None,
             last_duration: None,
             mute_pending: None,
@@ -573,10 +577,42 @@ impl AppState {
     /// back to a fresh random pick.  When stopped, fresh picks are still
     /// recorded into shuffle history so a subsequent Back can return to the
     /// original track instead of falling through to linear-prev.
+    /// Pop the next still-present queued entry's playlist index (draining any
+    /// ids no longer present), or `None`. Mirrors `Controller::queue_next_index`
+    /// — GTK runs its own advance loop rather than the shared controller.
+    fn queue_next_index(&mut self) -> Option<usize> {
+        while let Some(id) = self.queue.pop_next() {
+            if let Some(idx) = self.playlist.tracks.iter().position(|t| t.id == id) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Drop queued ids whose entries no longer exist (playlist remove/clear).
+    pub(crate) fn sync_queue_to_playlist(&mut self) {
+        let live: std::collections::HashSet<u64> =
+            self.playlist.tracks.iter().map(|t| t.id).collect();
+        self.queue.retain_ids(&live);
+    }
+
     fn play_next(&mut self) -> Option<String> {
         let total = self.playlist.len();
         let current = self.playlist.current_index;
         let repeat = self.config.playback.repeat_mode;
+
+        // Manual queue wins over shuffle/linear. Jump to the queued entry's
+        // position (resume point) and play without recording into shuffle
+        // history — queue playback is manual, not a shuffle pick.
+        // phase 6: stop-after-current guards ABOVE this.
+        if let Some(idx) = self.queue_next_index() {
+            self.playlist.jump_to(idx);
+            return if *self.player.state() != PlayerState::Stopped {
+                self.play_current_no_record()
+            } else {
+                self.playlist.current().map(|t| t.display_name())
+            };
+        }
 
         // Try walking forward through existing shuffle history first.
         // Seed history with the current track so even a fresh stopped-state
