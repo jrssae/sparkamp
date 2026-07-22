@@ -11,6 +11,24 @@ thread_local! {
     /// The single Queue Manager window, kept alive (hidden, not destroyed) for
     /// the app's lifetime so repeated open/close cycles reuse it.
     static QUEUE_MANAGER_WIN: StdRefCell<Option<gtk4::Window>> = const { StdRefCell::new(None) };
+    /// The open window's list-rebuild closure, so advance paths that drain the
+    /// queue during playback can live-refresh it (see `refresh_queue_manager`).
+    static QUEUE_MANAGER_REFRESH: StdRefCell<Option<Rc<dyn Fn()>>> = const { StdRefCell::new(None) };
+}
+
+/// Rebuild the Queue Manager's list if the window is currently open. Called
+/// from the GTK advance paths (Next / b / EOS / MPRIS) after a queued entry is
+/// consumed, so an open manager renumbers alongside the playlist badges.
+fn refresh_queue_manager() {
+    let visible = QUEUE_MANAGER_WIN
+        .with(|w| w.borrow().as_ref().map(|win| win.is_visible()).unwrap_or(false));
+    if !visible {
+        return;
+    }
+    let cb = QUEUE_MANAGER_REFRESH.with(|r| r.borrow().clone());
+    if let Some(cb) = cb {
+        cb();
+    }
 }
 
 /// Open the Queue Manager (or present it if already open).
@@ -111,6 +129,8 @@ fn open_or_focus_queue_manager(
         })
     };
     rebuild();
+    // Expose the rebuild closure so external queue drains can live-refresh us.
+    QUEUE_MANAGER_REFRESH.with(|r| *r.borrow_mut() = Some(rebuild.clone()));
 
     // Selected queue position (0-based), or None.
     let selected_pos = {

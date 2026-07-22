@@ -1996,6 +1996,7 @@ pub fn build(
                 // A queued entry was consumed → renumber every badge.
                 if state.borrow().queue.len() != q_before {
                     rebuild_playlist();
+                    refresh_queue_manager();
                 } else {
                     if old_idx != new_idx {
                         patch_pl_row(old_idx);
@@ -3335,6 +3336,7 @@ pub fn build(
                     // otherwise just de-highlight the finished row.
                     if state.borrow().queue.len() != q_before {
                         rebuild_playlist_tick();
+                        refresh_queue_manager();
                     } else {
                         let new_idx = state.borrow().playlist.current_index;
                         if pre_advance_idx != new_idx {
@@ -4003,6 +4005,7 @@ pub fn build(
                         // (positions shift), not just the two changed rows.
                         if state.borrow().queue.len() != q_before {
                             kbd_rebuild();
+                            refresh_queue_manager();
                         } else {
                             if old_idx != new_idx {
                                 kbd_patch_row(old_idx);

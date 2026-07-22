@@ -339,7 +339,17 @@ fn dispatch_method(
         MprisAction::Next => {
             // The 100ms tick loop's now-playing choke point + marquee render
             // pick up the track change (same as the GTK Next button path).
+            let q_before = state.borrow().queue.len();
             let _ = state.borrow_mut().play_next();
+            // If a queued entry was consumed, renumber the playlist badges and
+            // the Queue Manager (the tick loop doesn't rebuild the playlist).
+            if state.borrow().queue.len() != q_before {
+                let cb = state.borrow().rebuild_pl_callback.clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+                super::refresh_queue_manager();
+            }
         }
         MprisAction::Previous => {
             let _ = state.borrow_mut().play_prev();
