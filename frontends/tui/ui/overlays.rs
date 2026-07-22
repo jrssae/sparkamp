@@ -51,7 +51,12 @@ pub(super) fn draw_jump_overlay(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, &idx)| {
             let track = &app.playlist.tracks[idx];
-            let text = format!("{}. {}", idx + 1, track.display_name());
+            let badge = app
+                .queue
+                .position_of(track.id)
+                .map(|p| format!("[{}] ", p + 1))
+                .unwrap_or_default();
+            let text = format!("{}{}. {}", badge, idx + 1, track.display_name());
             let style = if i == *selected {
                 Style::default().fg(Color::Black).bg(C_WARN)
             } else {
@@ -79,6 +84,82 @@ pub(super) fn draw_jump_overlay(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::default().fg(Color::Black).bg(C_WARN));
 
     frame.render_stateful_widget(results_list, chunks[1], &mut list_state);
+}
+
+/// Render the play-queue manager overlay (`Mode::Queue`): the queue in order
+/// with reorder / remove / clear / randomize / play-now controls.
+pub(super) fn draw_queue_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let Mode::Queue { selected } = &app.mode else {
+        return;
+    };
+
+    let h = area.height.saturating_sub(4).min(22).max(8);
+    let popup = Rect {
+        height: h,
+        ..centered_popup(area, 70, h)
+    };
+    frame.render_widget(Clear, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(popup);
+
+    let ids = app.queue.ids();
+    let items: Vec<ListItem> = if ids.is_empty() {
+        vec![ListItem::new("Queue is empty — Ctrl+Q on a playlist track to add")
+            .style(Style::default().fg(C_DIM))]
+    } else {
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let name = app
+                    .playlist
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == *id)
+                    .map(|t| t.display_name())
+                    .unwrap_or_else(|| "(missing)".to_string());
+                let text = format!("{}. {}", i + 1, name);
+                let style = if i == *selected {
+                    Style::default().fg(Color::Black).bg(C_WARN)
+                } else {
+                    Style::default().fg(C_TEXT)
+                };
+                ListItem::new(text).style(style)
+            })
+            .collect()
+    };
+
+    let mut list_state = ListState::default();
+    if !ids.is_empty() {
+        list_state.select(Some((*selected).min(ids.len() - 1)));
+    }
+
+    let title = format!(
+        " Play Queue  ({} track{}) ",
+        ids.len(),
+        if ids.len() == 1 { "" } else { "s" }
+    );
+    let block = Block::default()
+        .title(Span::styled(title, Style::default().fg(C_WARN)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_WARN));
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().fg(Color::Black).bg(C_WARN));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let hint = Paragraph::new(
+        "↑↓/kj cursor · [ ] reorder · Enter play now · Del/x remove · c clear · r randomize · Esc/q close",
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_DIM)),
+    )
+    .style(Style::default().fg(C_DIM));
+    frame.render_widget(hint, chunks[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +330,8 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("      Clear all tracks"),
         ]),
         Line::from(vec![key("  j"), Span::raw("      Jump / search")]),
+        Line::from(vec![key("  q"), Span::raw("      Play queue manager")]),
+        Line::from(vec![key("  Ctrl+Q"), Span::raw(" Queue / dequeue highlighted track")]),
         Line::from(vec![key("  ↑  k"), Span::raw("    Browse up")]),
         Line::from(vec![key("  ↓  l"), Span::raw("    Browse down")]),
         Line::from(vec![key("  Enter"), Span::raw("   Play selected")]),
@@ -312,7 +395,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("      Now-playing info (tags, stats, links)"),
         ]),
         Line::from(vec![key("  i"), Span::raw("      Show this help")]),
-        Line::from(vec![key("  q / Esc"), Span::raw("  Quit")]),
+        Line::from(vec![key("  Esc"), Span::raw("     Quit")]),
         Line::from(""),
         sep("── Hidden shortcuts ──────────────────────────────────"),
         Line::from(vec![

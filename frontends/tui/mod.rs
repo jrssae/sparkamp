@@ -87,6 +87,12 @@ pub enum Mode {
         scroll: u16,
         info: Box<crate::now_playing::NowPlayingInfo>,
     },
+    /// q key: manual play-queue manager. Lists the queue in order; reorder /
+    /// remove / clear / randomize / play-now. `selected` is the highlighted
+    /// queue position.
+    Queue {
+        selected: usize,
+    },
 }
 
 /// State for an in-progress background add-file scan.

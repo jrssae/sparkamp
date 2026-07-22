@@ -158,9 +158,19 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // Ctrl+Q = queue/dequeue the highlighted track — same enqueue hotkey
+        // as the GTK frontend. Works in Normal (playlist cursor) and Jump
+        // (highlighted result); ignored elsewhere.
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('q') | KeyCode::Char('Q'))
+        {
+            self.queue_toggle_highlighted();
+            return;
+        }
         match self.mode {
             Mode::Normal => self.handle_normal(code),
             Mode::Jump { .. } => self.handle_jump(code),
+            Mode::Queue { .. } => self.handle_queue(code),
             Mode::AddFile { .. } => self.handle_add_file(code),
             Mode::MoveTrack { .. } => self.handle_move_track(code),
             Mode::RemoveTrack { .. } => self.handle_remove_track(code),
@@ -257,7 +267,12 @@ impl App {
 
     pub(super) fn handle_normal(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => self.should_quit = true,
+            // Esc quits; q opens the play-queue manager (Ctrl+Q, handled in
+            // handle_key, enqueues the highlighted track).
+            KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.mode = Mode::Queue { selected: 0 };
+            }
 
             // Winamp bindings
             KeyCode::Char('z') => self.play_prev(),
@@ -585,6 +600,84 @@ impl App {
                 self.apply_jump_query(new_query);
             }
 
+            _ => {}
+        }
+    }
+
+    /// Ctrl+Q: toggle the queue membership of the highlighted track — the
+    /// playlist cursor in Normal mode, or the selected result in Jump mode.
+    pub(super) fn queue_toggle_highlighted(&mut self) {
+        let track_idx = match self.mode {
+            Mode::Jump {
+                ref results,
+                selected,
+                ..
+            } => results.get(selected).copied(),
+            Mode::Normal if !self.playlist.is_empty() => Some(self.playlist_cursor),
+            _ => None,
+        };
+        if let Some(idx) = track_idx {
+            self.playlist.ensure_ids();
+            if let Some(id) = self.playlist.tracks.get(idx).map(|t| t.id) {
+                self.queue.toggle(id);
+                let n = self.queue.len();
+                self.set_status(format!("Queue: {n} track{}", if n == 1 { "" } else { "s" }));
+            }
+        }
+    }
+
+    /// Set the Queue overlay's highlighted position (no-op outside Queue mode).
+    fn set_queue_selected(&mut self, v: usize) {
+        if let Mode::Queue { ref mut selected } = self.mode {
+            *selected = v;
+        }
+    }
+
+    /// Key handling for the play-queue manager overlay (`Mode::Queue`).
+    ///   ↑/k ↓/j  navigate      [ ]  move selected up / down
+    ///   Enter    play now       Del/x  remove       c clear   r randomize
+    ///   Esc/q    close
+    pub(super) fn handle_queue(&mut self, code: KeyCode) {
+        let sel = if let Mode::Queue { selected } = self.mode {
+            selected
+        } else {
+            return;
+        };
+        let qlen = self.queue.len();
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.set_queue_selected(sel.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.set_queue_selected((sel + 1).min(qlen.saturating_sub(1)));
+            }
+            KeyCode::Char('[') => {
+                self.queue.move_up(sel);
+                self.set_queue_selected(sel.saturating_sub(1));
+            }
+            KeyCode::Char(']') => {
+                self.queue.move_down(sel);
+                self.set_queue_selected((sel + 1).min(self.queue.len().saturating_sub(1)));
+            }
+            KeyCode::Delete | KeyCode::Char('x') => {
+                if let Some(id) = self.queue.ids().get(sel).copied() {
+                    self.queue.dequeue(id);
+                }
+                self.set_queue_selected(sel.min(self.queue.len().saturating_sub(1)));
+            }
+            KeyCode::Char('c') => self.queue.clear(),
+            KeyCode::Char('r') => self.queue.shuffle(),
+            KeyCode::Enter => {
+                if let Some(id) = self.queue.ids().get(sel).copied() {
+                    self.queue.dequeue(id);
+                    if let Some(idx) = self.playlist.tracks.iter().position(|t| t.id == id) {
+                        self.playlist.jump_to(idx);
+                        self.play_current();
+                    }
+                }
+                self.mode = Mode::Normal;
+            }
             _ => {}
         }
     }

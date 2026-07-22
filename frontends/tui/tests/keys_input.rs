@@ -30,10 +30,22 @@ fn esc_in_jump_mode_returns_to_normal_without_quitting() {
 }
 
 #[test]
-fn q_in_normal_mode_quits() {
+fn q_in_normal_mode_opens_queue_manager() {
     let mut app = make_app();
     app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
-    assert!(app.should_quit);
+    assert!(!app.should_quit);
+    assert!(matches!(app.mode, Mode::Queue { .. }));
+}
+
+#[test]
+fn ctrl_q_enqueues_highlighted_track() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.playlist_cursor = 1;
+    app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL);
+    // B's entry id is now queued.
+    let id_b = app.playlist.tracks[1].id;
+    assert!(app.queue.contains(id_b));
+    assert!(matches!(app.mode, Mode::Normal));
 }
 
 #[test]
