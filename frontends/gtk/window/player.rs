@@ -3808,6 +3808,8 @@ pub fn build(
         let jump_indices = jump_indices.clone();
         let jump_status = jump_status.clone();
         Rc::new(move || {
+            // Stamp any unstamped entries so queue badges resolve (idempotent).
+            state.borrow_mut().playlist.ensure_ids();
             // remove_all() is a single GTK call instead of O(n) individual removes.
             jump_box.remove_all();
             let mut indices = jump_indices.borrow_mut();
@@ -3832,10 +3834,16 @@ pub fn build(
             let s = state.borrow();
             for &idx in all_matches.iter().take(MAX_JUMP_RESULTS) {
                 let track = &s.playlist.tracks[idx];
+                // Manual-queue position badge (prefix), mirroring the playlist.
+                let badge = s
+                    .queue
+                    .position_of(track.id)
+                    .map(|p| format!("[{}] ", p + 1))
+                    .unwrap_or_default();
                 let label_text = if track.artist.is_empty() {
-                    format!("{:2}. {}", idx + 1, track.title)
+                    format!("{}{:2}. {}", badge, idx + 1, track.title)
                 } else {
-                    format!("{:2}. {} — {}", idx + 1, track.artist, track.title)
+                    format!("{}{:2}. {} — {}", badge, idx + 1, track.artist, track.title)
                 };
                 let row_label = gtk4::Label::builder()
                     .label(&label_text)
