@@ -1981,20 +1981,27 @@ pub fn build(
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
+        let rebuild_playlist = rebuild_playlist.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         let refresh_now_playing = refresh_now_playing.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
+            let q_before = state.borrow().queue.len();
             if let Some(display) = { state.borrow_mut().play_next() } {
                 let new_idx = state.borrow().playlist.current_index;
                 set_track(&display);
                 scan_current_track_metadata(&state, current_track_meta_tx.clone());
                 scroll_to_row_if_needed(new_idx);
-                if old_idx != new_idx {
-                    patch_pl_row(old_idx);
+                // A queued entry was consumed → renumber every badge.
+                if state.borrow().queue.len() != q_before {
+                    rebuild_playlist();
+                } else {
+                    if old_idx != new_idx {
+                        patch_pl_row(old_idx);
+                    }
+                    patch_pl_row(new_idx);
                 }
-                patch_pl_row(new_idx);
                 refresh_now_playing();
             }
         }
@@ -3274,40 +3281,49 @@ pub fn build(
                         t.broken = true;
                     }
                 }
-                // Advance to the next track via shuffle/repeat logic.
-                // Skips over tracks already marked broken.
+                // Advance to the next track. The manual queue wins over
+                // shuffle/repeat; otherwise fall back to the shuffle engine,
+                // skipping tracks already marked broken.
+                let q_before = state.borrow().queue.len();
                 let advanced = {
                     let mut s = state.borrow_mut();
-                    let total = s.playlist.len();
-                    let repeat = s.config.playback.repeat_mode;
-                    let current = s.playlist.current_index;
 
-                    // Ask the shuffle engine for the next index.
-                    let mut found = false;
-                    if let Some(mut next_idx) = s.shuffle_state.next_index(current, total, repeat) {
-                        // Skip broken tracks (up to `total` attempts to avoid infinite loop).
-                        for _ in 0..total {
-                            if s.playlist
-                                .tracks
-                                .get(next_idx)
-                                .map(|t| t.broken)
-                                .unwrap_or(false)
-                            {
-                                s.shuffle_state.record_played(next_idx);
-                                match s.shuffle_state.next_index(next_idx, total, repeat) {
-                                    Some(i) => {
-                                        next_idx = i;
+                    // Manual queue takes precedence on auto-advance too.
+                    if let Some(idx) = s.queue_next_index() {
+                        s.playlist.jump_to(idx);
+                        true
+                    } else {
+                        let total = s.playlist.len();
+                        let repeat = s.config.playback.repeat_mode;
+                        let current = s.playlist.current_index;
+
+                        // Ask the shuffle engine for the next index.
+                        let mut found = false;
+                        if let Some(mut next_idx) = s.shuffle_state.next_index(current, total, repeat) {
+                            // Skip broken tracks (bounded to avoid an infinite loop).
+                            for _ in 0..total {
+                                if s.playlist
+                                    .tracks
+                                    .get(next_idx)
+                                    .map(|t| t.broken)
+                                    .unwrap_or(false)
+                                {
+                                    s.shuffle_state.record_played(next_idx);
+                                    match s.shuffle_state.next_index(next_idx, total, repeat) {
+                                        Some(i) => {
+                                            next_idx = i;
+                                        }
+                                        None => break,
                                     }
-                                    None => break,
+                                } else {
+                                    s.playlist.jump_to(next_idx);
+                                    found = true;
+                                    break;
                                 }
-                            } else {
-                                s.playlist.jump_to(next_idx);
-                                found = true;
-                                break;
                             }
                         }
+                        found
                     }
-                    found
                 };
                 if advanced {
                     // play_update (play_and_update) patches the new current track.
@@ -3315,9 +3331,15 @@ pub fn build(
                     // updated current_index before play_and_update runs, so
                     // play_and_update won't know the finished track is different.
                     play_update();
-                    let new_idx = state.borrow().playlist.current_index;
-                    if pre_advance_idx != new_idx {
-                        patch_pl_row(pre_advance_idx);
+                    // A queued entry was consumed → renumber every badge;
+                    // otherwise just de-highlight the finished row.
+                    if state.borrow().queue.len() != q_before {
+                        rebuild_playlist_tick();
+                    } else {
+                        let new_idx = state.borrow().playlist.current_index;
+                        if pre_advance_idx != new_idx {
+                            patch_pl_row(pre_advance_idx);
+                        }
                     }
                 }
             }
@@ -3972,14 +3994,21 @@ pub fn build(
                 }
                 gdk::Key::b => {
                     let old_idx = state.borrow().playlist.current_index;
+                    let q_before = state.borrow().queue.len();
                     let result = { state.borrow_mut().play_next() };
                     if let Some(d) = result {
                         kbd_set_track(&d);
                         let new_idx = state.borrow().playlist.current_index;
-                        if old_idx != new_idx {
-                            kbd_patch_row(old_idx);
+                        // A queued entry was consumed → renumber every badge
+                        // (positions shift), not just the two changed rows.
+                        if state.borrow().queue.len() != q_before {
+                            kbd_rebuild();
+                        } else {
+                            if old_idx != new_idx {
+                                kbd_patch_row(old_idx);
+                            }
+                            kbd_patch_row(new_idx);
                         }
-                        kbd_patch_row(new_idx);
                         kbd_scroll(new_idx);
                         kbd_refresh_np();
                     }
