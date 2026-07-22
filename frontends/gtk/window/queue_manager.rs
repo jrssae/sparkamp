@@ -1,76 +1,48 @@
-// Play Queue Manager — a singleton window listing the manual play queue in
-// order with reorder / remove / clear / randomize controls and double-click
-// "play now". Mirrors the `art_window::open_or_focus` singleton idiom, but
-// keeps its one window in a `thread_local` (the queue has no `AppState`
-// subscription to register, so it needs no field there).
+// Play-queue panel — the "Queue mode" content of the combined Jump/Queue
+// window (player.rs). Lists the manual play queue in order with reorder /
+// remove / clear / randomize controls and double-click "play now". Built once
+// and embedded in the jump window; its rebuild closure is stashed in a
+// thread_local so advance paths that drain the queue during playback can
+// live-refresh it (see `refresh_queue_manager`).
 // (include!d into window/mod.rs, so no module-level `//!` docs here.)
 
 use std::cell::RefCell as StdRefCell;
 
 thread_local! {
-    /// The single Queue Manager window, kept alive (hidden, not destroyed) for
-    /// the app's lifetime so repeated open/close cycles reuse it.
-    static QUEUE_MANAGER_WIN: StdRefCell<Option<gtk4::Window>> = const { StdRefCell::new(None) };
-    /// The open window's list-rebuild closure, so advance paths that drain the
-    /// queue during playback can live-refresh it (see `refresh_queue_manager`).
+    /// The embedded queue panel's list-rebuild closure, so external queue
+    /// drains (Next / b / EOS / MPRIS) can renumber it alongside the playlist
+    /// badges. Set when the panel is built.
     static QUEUE_MANAGER_REFRESH: StdRefCell<Option<Rc<dyn Fn()>>> = const { StdRefCell::new(None) };
 }
 
-/// Rebuild the Queue Manager's list if the window is currently open. Called
-/// from the GTK advance paths (Next / b / EOS / MPRIS) after a queued entry is
-/// consumed, so an open manager renumbers alongside the playlist badges.
+/// Rebuild the queue panel's list if one has been built. Called from the GTK
+/// advance paths after a queued entry is consumed so an open Queue view stays
+/// in sync with the playlist badges. Cheap (reads `state.queue`); a no-op if no
+/// panel exists yet.
 fn refresh_queue_manager() {
-    let visible = QUEUE_MANAGER_WIN
-        .with(|w| w.borrow().as_ref().map(|win| win.is_visible()).unwrap_or(false));
-    if !visible {
-        return;
-    }
     let cb = QUEUE_MANAGER_REFRESH.with(|r| r.borrow().clone());
     if let Some(cb) = cb {
         cb();
     }
 }
 
-/// Open the Queue Manager (or present it if already open).
+/// Build the queue-management panel: an ordered list of queued tracks plus
+/// Up / Down / Remove / Clear / Randomize controls and double-click play-now.
 ///
 /// - `refresh_main`: the playlist rebuild closure — called after any queue
 ///   mutation so the main playlist's `[n]` badges stay in sync.
 /// - `play_and_update`: the shared "start playing current track" closure, used
 ///   by double-click "play now".
-/// - `handle_key`: shared shortcut handler so transport keys keep working while
-///   this window has focus (Esc hides locally).
-fn open_or_focus_queue_manager(
+///
+/// Returns the panel widget (to embed in the jump window) and its list-rebuild
+/// closure (also stashed in `QUEUE_MANAGER_REFRESH`).
+fn build_queue_panel(
     state: Rc<RefCell<AppState>>,
     refresh_main: Rc<dyn Fn()>,
     play_and_update: Rc<dyn Fn()>,
-    handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation>,
-    parent: Option<&gtk4::Window>,
-) {
-    // Singleton fast path.
-    if QUEUE_MANAGER_WIN.with(|w| {
-        if let Some(win) = w.borrow().as_ref() {
-            win.present();
-            true
-        } else {
-            false
-        }
-    }) {
-        return;
-    }
-
-    let win = gtk4::Window::builder()
-        .title("Play Queue — Sparkamp")
-        .default_width(360)
-        .default_height(420)
-        .resizable(true)
-        .build();
-    if let Some(p) = parent {
-        win.set_transient_for(Some(p));
-    }
-    win.set_hide_on_close(true);
-
+) -> (gtk4::Box, Rc<dyn Fn()>) {
     let root = GtkBox::new(Orientation::Vertical, 6);
-    root.set_margin_top(8);
+    root.set_margin_top(4);
     root.set_margin_bottom(8);
     root.set_margin_start(8);
     root.set_margin_end(8);
@@ -83,13 +55,14 @@ fn open_or_focus_queue_manager(
         .hscrollbar_policy(gtk4::PolicyType::Never)
         .vscrollbar_policy(gtk4::PolicyType::Automatic)
         .vexpand(true)
+        .min_content_height(240)
         .child(&list)
         .build();
     root.append(&scroll);
 
     let status = Label::new(None);
     status.set_halign(Align::Start);
-    status.add_css_class("dim-label");
+    status.add_css_class("status-label");
     root.append(&status);
 
     // Rebuild the list from the current queue order.
@@ -129,7 +102,6 @@ fn open_or_focus_queue_manager(
         })
     };
     rebuild();
-    // Expose the rebuild closure so external queue drains can live-refresh us.
     QUEUE_MANAGER_REFRESH.with(|r| *r.borrow_mut() = Some(rebuild.clone()));
 
     // Selected queue position (0-based), or None.
@@ -146,6 +118,7 @@ fn open_or_focus_queue_manager(
     let btn_clear = Button::with_label("Clear");
     let btn_random = Button::with_label("Randomize");
     for b in [&btn_up, &btn_down, &btn_remove, &btn_clear, &btn_random] {
+        b.add_css_class("pl-btn");
         btn_row.append(b);
     }
     root.append(&btn_row);
@@ -248,24 +221,5 @@ fn open_or_focus_queue_manager(
         });
     }
 
-    // Esc hides; every other key delegates to the shared handler.
-    {
-        let key_ctrl = EventControllerKey::new();
-        let handler = handle_key.clone();
-        let win_wk = win.downgrade();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk::Key::Escape {
-                if let Some(w) = win_wk.upgrade() {
-                    w.hide();
-                }
-                return glib::Propagation::Stop;
-            }
-            handler(key)
-        });
-        win.add_controller(key_ctrl);
-    }
-
-    win.set_child(Some(&root));
-    QUEUE_MANAGER_WIN.with(|w| *w.borrow_mut() = Some(win.clone()));
-    win.present();
+    (root, rebuild)
 }

@@ -825,9 +825,6 @@ pub fn build(
     btn_save_active.set_tooltip_text(Some("Save active playlist to an M3U8 file"));
     let btn_remove = Button::with_label("✕ Remove"); // remove selected row(s)
     let btn_clear_all = Button::with_label("✕ All"); // clear entire playlist
-    let btn_queue_mgr = Button::with_label("⯈ Queue");
-    btn_queue_mgr.add_css_class("pl-btn");
-    btn_queue_mgr.set_tooltip_text(Some("Open the play queue manager"));
     let btn_cancel = Button::with_label("✕ Cancel Scan");
     btn_cancel.add_css_class("pl-btn");
     btn_cancel.add_css_class("destructive");
@@ -845,7 +842,6 @@ pub fn build(
     pl_btn_row.append(&btn_add_files);
     pl_btn_row.append(&btn_add_dir);
     pl_btn_row.append(&btn_save_active);
-    pl_btn_row.append(&btn_queue_mgr);
     let spacer = GtkBox::new(Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     pl_btn_row.append(&spacer);
@@ -1575,6 +1571,7 @@ pub fn build(
                 }
             }
             rebuild();
+            refresh_queue_manager();
         })
     };
 
@@ -3793,13 +3790,68 @@ pub fn build(
         .build();
     jump_status.add_css_class("status-label");
 
+    // Mode selector (radio): Jump (search + jump-to) vs Queue (manage the play
+    // queue). The window hosts both panes and shows one at a time.
+    let radio_jump = gtk4::CheckButton::with_label("Jump");
+    let radio_queue = gtk4::CheckButton::with_label("Queue");
+    radio_queue.set_group(Some(&radio_jump));
+    radio_jump.set_active(true);
+    let jump_mode_row = GtkBox::new(Orientation::Horizontal, 8);
+    jump_mode_row.set_margin_top(6);
+    jump_mode_row.set_margin_start(8);
+    jump_mode_row.set_margin_end(8);
+    jump_mode_row.append(&radio_jump);
+    jump_mode_row.append(&radio_queue);
+
+    // Jump-mode content, wrapped so it can be shown/hidden as one unit.
+    let jump_pane = GtkBox::new(Orientation::Vertical, 0);
+    jump_pane.set_vexpand(true);
+    jump_pane.append(&jump_search_row);
+    jump_pane.append(&jump_scroll);
+    jump_pane.append(&jump_status);
+
+    // Queue-mode content (the former standalone Queue Manager, folded in here).
+    let (queue_pane, queue_rebuild) = build_queue_panel(
+        state.clone(),
+        rebuild_playlist.clone(),
+        play_and_update.clone(),
+    );
+    queue_pane.set_visible(false);
+
+    // Shared "am I in queue mode?" flag so the jump-window key controller knows
+    // whether arrow/Enter/Ctrl+Q keys belong to the search list or the queue.
+    let jump_queue_mode = Rc::new(Cell::new(false));
+
     let jump_root = gtk4::Box::new(Orientation::Vertical, 0);
-    jump_root.append(&jump_search_row);
-    jump_root.append(&jump_scroll);
-    jump_root.append(&jump_status);
+    jump_root.append(&jump_mode_row);
+    jump_root.append(&jump_pane);
+    jump_root.append(&queue_pane);
+
+    // Switch panes. `queue_mode = true` shows the queue; false shows search.
+    let apply_jump_mode: Rc<dyn Fn(bool)> = {
+        let jump_pane = jump_pane.clone();
+        let queue_pane = queue_pane.clone();
+        let jump_entry = jump_entry.clone();
+        let queue_rebuild = queue_rebuild.clone();
+        let flag = jump_queue_mode.clone();
+        Rc::new(move |queue_mode: bool| {
+            flag.set(queue_mode);
+            jump_pane.set_visible(!queue_mode);
+            queue_pane.set_visible(queue_mode);
+            if queue_mode {
+                queue_rebuild();
+            } else {
+                jump_entry.grab_focus();
+            }
+        })
+    };
+    {
+        let apply = apply_jump_mode.clone();
+        radio_queue.connect_toggled(move |b| apply(b.is_active()));
+    }
 
     let jump_win = gtk4::Window::builder()
-        .title("Jump to Track")
+        .title("Jump / Queue")
         .default_width(380)
         .default_height(360)
         .modal(false)
@@ -3820,6 +3872,27 @@ pub fn build(
             }
         }
     });
+
+    // Open the window in a specific mode: `j` / find-button → Jump,
+    // `q` → Queue. Present() also (re)runs the visible-notify + entry-change
+    // seams below that refresh the active pane.
+    let open_jump_mode: Rc<dyn Fn(bool)> = {
+        let jump_win = jump_win.clone();
+        let radio_jump = radio_jump.clone();
+        let radio_queue = radio_queue.clone();
+        let apply = apply_jump_mode.clone();
+        Rc::new(move |queue_mode: bool| {
+            if queue_mode {
+                radio_queue.set_active(true);
+            } else {
+                radio_jump.set_active(true);
+            }
+            // Apply explicitly too: set_active is a no-op (no toggle signal) if
+            // the radio was already in that state.
+            apply(queue_mode);
+            jump_win.present();
+        })
+    };
 
     // Maps each visible row in jump_box → the original track index in the playlist.
     let jump_indices: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
@@ -3935,7 +4008,7 @@ pub fn build(
         let playlist_win_wk = playlist_win.downgrade();
         // Strong reference: keeps the window alive even when hidden, so
         // repeated open/close cycles work without recreating the widget tree.
-        let kbd_jump_win = jump_win.clone();
+        let kbd_open_jump = open_jump_mode.clone();
         let window_weak = window.downgrade();
         let remove_sel = remove_selected.clone();
         let kbd_probe_tx = probe_tx.clone();
@@ -4097,8 +4170,9 @@ pub fn build(
                 gdk::Key::j | gdk::Key::J => {
                     kbd_jump_entry.set_text("");
                     kbd_rebuild_jump();
-                    kbd_jump_win.present();
-                    kbd_jump_entry.grab_focus();
+                    // Open in Jump mode (sets the radio, shows the search pane,
+                    // focuses the entry, presents the window).
+                    kbd_open_jump(false);
                     glib::Propagation::Stop
                 }
 
@@ -4267,8 +4341,17 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
-                // ── Quit ──────────────────────────────────────────────────
+                // ── Open the Jump/Queue window in Queue mode ───────────────
                 gdk::Key::q | gdk::Key::Q => {
+                    kbd_open_jump(true);
+                    glib::Propagation::Stop
+                }
+
+                // ── Quit (Esc) ─────────────────────────────────────────────
+                // On the main window this quits; child windows install their
+                // own Esc handler (hide/close) that fires first, so this arm
+                // only ever runs for the main player window.
+                gdk::Key::Escape => {
                     let _ = state.borrow().playlist.save_last();
                     if let Some(w) = window_weak.upgrade() {
                         // Closing the main window triggers connect_close_request
@@ -4320,24 +4403,6 @@ pub fn build(
         }));
     }
 
-    // Open the Play Queue Manager from the playlist button bar.
-    {
-        let state_qm = state.clone();
-        let refresh_main = rebuild_playlist.clone();
-        let play_qm = play_and_update.clone();
-        let handle_key_qm = handle_key.clone();
-        let parent_qm = playlist_win.clone();
-        btn_queue_mgr.connect_clicked(move |_| {
-            open_or_focus_queue_manager(
-                state_qm.clone(),
-                refresh_main.clone(),
-                play_qm.clone(),
-                handle_key_qm.clone(),
-                Some(parent_qm.upcast_ref::<gtk4::Window>()),
-            );
-        });
-    }
-
     // Attach the shared handler to the main player window.
     // Capture phase ensures keys reach the handler even when a child widget
     // (e.g. the visualizer DrawingArea) has keyboard focus.
@@ -4349,17 +4414,30 @@ pub fn build(
         window.add_controller(key_ctrl);
     }
 
-    // `q` on the playlist window = queue/dequeue the selection (Winamp). Added
-    // BEFORE the shared handler's controller so, in Capture phase, it fires
-    // first and returns Stop — the shared handler's `q` = Quit never sees it.
-    // The main window keeps `q` = Quit (this controller is playlist-only).
+    // Playlist-window-only key overrides, added BEFORE the shared handler so
+    // they fire first in Capture phase:
+    //   Ctrl+Q → queue/dequeue the selected rows (same enqueue hotkey as the
+    //            Jump window; plain `q` falls through to the shared handler =
+    //            open the Jump/Queue window in Queue mode).
+    //   Esc    → hide the playlist window (a child window; the shared handler's
+    //            Esc = Quit is thereby suppressed here and only fires on the
+    //            main window).
     {
         let key_ctrl = EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let toggle = queue_toggle_selection.clone();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| {
-            if matches!(key, gdk::Key::q | gdk::Key::Q) {
+        let plwin_wk = playlist_win.downgrade();
+        key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
+            if matches!(key, gdk::Key::q | gdk::Key::Q)
+                && modifier.contains(gdk::ModifierType::CONTROL_MASK)
+            {
                 toggle();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Escape {
+                if let Some(w) = plwin_wk.upgrade() {
+                    w.set_visible(false);
+                }
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -4408,6 +4486,8 @@ pub fn build(
             ("Playlist", &[
                 ("n",          "Add file(s) or folder(s)"),
                 ("j",          "Jump / search"),
+                ("q",          "Play queue (Jump/Queue window, Queue mode)"),
+                ("Ctrl+Q",     "Queue / dequeue selection (playlist or jump)"),
                 ("↑ ↓",        "Browse up / down"),
                 ("Enter",      "Play selected track"),
                 ("Del",        "Remove highlighted track"),
@@ -4426,7 +4506,7 @@ pub fn build(
             ]),
             ("Other", &[
                 ("i",          "Toggle this help"),
-                ("q",          "Quit"),
+                ("Esc",        "Quit (main window) / close child window"),
             ]),
         ];
 
@@ -4527,11 +4607,12 @@ pub fn build(
         }
     });
 
-    // J button — toggle jump window.
+    // Find button — toggle the Jump/Queue window (opens in Jump mode).
     btn_jump_vol.connect_clicked({
         let jump_win_wk = jump_win.downgrade();
         let entry = jump_entry.clone();
         let rebuild = rebuild_jump.clone();
+        let open_jump = open_jump_mode.clone();
         move |_| {
             if let Some(w) = jump_win_wk.upgrade() {
                 if w.is_visible() {
@@ -4539,8 +4620,7 @@ pub fn build(
                 } else {
                     entry.set_text("");
                     rebuild();
-                    w.present();
-                    entry.grab_focus();
+                    open_jump(false);
                 }
             }
         }
@@ -4883,32 +4963,36 @@ pub fn build(
         let jump_indices_jq = jump_indices.clone();
         let rebuild_jump_jq = rebuild_jump.clone();
         let rebuild_pl_jq = rebuild_playlist.clone();
+        let qmode = jump_queue_mode.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| match key {
+            // Esc closes the window in either mode.
             gdk::Key::Escape => {
                 if let Some(w) = jw_wk.upgrade() {
                     w.close();
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Up => {
+            // Arrow nav drives the search-results list — Jump mode only; in
+            // Queue mode the queue ListBox handles Up/Down natively.
+            gdk::Key::Up if !qmode.get() => {
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(1);
                 if let Some(row) = jb.row_at_index((cur - 1).max(0)) {
                     jb.select_row(Some(&row));
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Down => {
+            gdk::Key::Down if !qmode.get() => {
                 let cur = jb.selected_row().map(|r| r.index()).unwrap_or(-1);
                 if let Some(row) = jb.row_at_index(cur + 1) {
                     jb.select_row(Some(&row));
                 }
                 glib::Propagation::Stop
             }
-            // Ctrl+Q queues the highlighted match (plain `q` stays a search
-            // character in the entry). Updates both the jump and playlist
-            // badges.
+            // Ctrl+Q queues the highlighted match (Jump mode only — plain `q`
+            // stays a search character in the entry). Updates the jump,
+            // playlist, and queue-panel badges.
             gdk::Key::q | gdk::Key::Q
-                if modifier.contains(gdk::ModifierType::CONTROL_MASK) =>
+                if !qmode.get() && modifier.contains(gdk::ModifierType::CONTROL_MASK) =>
             {
                 let sel = jb.selected_row().map(|r| r.index() as usize);
                 if let Some(list_pos) = sel {
@@ -4923,6 +5007,7 @@ pub fn build(
                         }
                         rebuild_jump_jq();
                         rebuild_pl_jq();
+                        refresh_queue_manager();
                     }
                 }
                 glib::Propagation::Stop
