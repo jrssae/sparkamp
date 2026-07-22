@@ -3980,6 +3980,8 @@ pub fn build(
             }
         })
     };
+    // Let queue changes renumber the Jump-mode search-list badges too.
+    set_jump_refresh(rebuild_jump.clone());
 
     // Wire up the jump-window clear button now that rebuild_jump is in scope.
     {
@@ -4405,28 +4407,38 @@ pub fn build(
 
     // Attach the shared handler to the main player window.
     // Capture phase ensures keys reach the handler even when a child widget
-    // (e.g. the visualizer DrawingArea) has keyboard focus.
+    // (e.g. the visualizer DrawingArea) has keyboard focus. Ctrl+Q is swallowed
+    // here (no playlist selection on the main window) so it doesn't fall into
+    // the plain-`q` = open-queue arm — enqueue happens from the playlist/jump.
     {
         let key_ctrl = EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let handler = handle_key.clone();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| handler(key));
+        key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
+            if matches!(key, gdk::Key::q | gdk::Key::Q)
+                && modifier.contains(gdk::ModifierType::CONTROL_MASK)
+            {
+                return glib::Propagation::Stop;
+            }
+            handler(key)
+        });
         window.add_controller(key_ctrl);
     }
 
-    // Playlist-window-only key overrides, added BEFORE the shared handler so
-    // they fire first in Capture phase:
-    //   Ctrl+Q → queue/dequeue the selected rows (same enqueue hotkey as the
-    //            Jump window; plain `q` falls through to the shared handler =
-    //            open the Jump/Queue window in Queue mode).
-    //   Esc    → hide the playlist window (a child window; the shared handler's
-    //            Esc = Quit is thereby suppressed here and only fires on the
-    //            main window).
+    // Single Capture-phase controller on the playlist window (one controller,
+    // so there is no ordering race between a Ctrl+Q override and the shared
+    // handler). It intercepts the playlist-specific keys and delegates the rest
+    // to `handle_key`:
+    //   Ctrl+Q → queue/dequeue the selected rows (the enqueue hotkey; must be
+    //            caught BEFORE the shared handler's plain-`q` = open queue).
+    //   Esc    → hide the playlist window (a child window — not Quit).
+    //   else   → shared handler (plain `q` opens the queue window, j, transport…).
     {
         let key_ctrl = EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let toggle = queue_toggle_selection.clone();
         let plwin_wk = playlist_win.downgrade();
+        let handler = handle_key.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
             if matches!(key, gdk::Key::q | gdk::Key::Q)
                 && modifier.contains(gdk::ModifierType::CONTROL_MASK)
@@ -4440,19 +4452,8 @@ pub fn build(
                 }
                 return glib::Propagation::Stop;
             }
-            glib::Propagation::Proceed
+            handler(key)
         });
-        playlist_win.add_controller(key_ctrl);
-    }
-
-    // Attach the same handler to the playlist window so all shortcuts work
-    // even when the playlist window has keyboard focus.  Use Capture phase so
-    // the ListBox cannot swallow keys (e.g. 'j') before they reach this handler.
-    {
-        let key_ctrl = EventControllerKey::new();
-        key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        let handler = handle_key.clone();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| handler(key));
         playlist_win.add_controller(key_ctrl);
     }
 
@@ -4961,7 +4962,6 @@ pub fn build(
         let jw_wk = jump_win.downgrade();
         let state_jq = state.clone();
         let jump_indices_jq = jump_indices.clone();
-        let rebuild_jump_jq = rebuild_jump.clone();
         let rebuild_pl_jq = rebuild_playlist.clone();
         let qmode = jump_queue_mode.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| match key {
@@ -5005,7 +5005,8 @@ pub fn build(
                                 s.queue.toggle(id);
                             }
                         }
-                        rebuild_jump_jq();
+                        // refresh_queue_manager rebuilds the jump list + queue
+                        // panel; rebuild the playlist badges separately.
                         rebuild_pl_jq();
                         refresh_queue_manager();
                     }

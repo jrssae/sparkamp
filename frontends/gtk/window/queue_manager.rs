@@ -13,15 +13,28 @@ thread_local! {
     /// drains (Next / b / EOS / MPRIS) can renumber it alongside the playlist
     /// badges. Set when the panel is built.
     static QUEUE_MANAGER_REFRESH: StdRefCell<Option<Rc<dyn Fn()>>> = const { StdRefCell::new(None) };
+    /// The jump-window search-list rebuild closure, so queue changes also
+    /// renumber the `[n]` badges on an open Jump-mode search list. Set by
+    /// `set_jump_refresh` once `rebuild_jump` exists.
+    static JUMP_LIST_REFRESH: StdRefCell<Option<Rc<dyn Fn()>>> = const { StdRefCell::new(None) };
 }
 
-/// Rebuild the queue panel's list if one has been built. Called from the GTK
-/// advance paths after a queued entry is consumed so an open Queue view stays
-/// in sync with the playlist badges. Cheap (reads `state.queue`); a no-op if no
-/// panel exists yet.
+/// Register the jump-window search-list rebuild closure (see `JUMP_LIST_REFRESH`).
+fn set_jump_refresh(cb: Rc<dyn Fn()>) {
+    JUMP_LIST_REFRESH.with(|r| *r.borrow_mut() = Some(cb));
+}
+
+/// Rebuild every queue-position-aware list after a queue change: the embedded
+/// queue panel AND the Jump-mode search list (both show `[n]` badges). Called
+/// from the GTK advance paths after a queued entry is consumed and from the
+/// enqueue actions. Cheap (reads `state.queue`); a no-op for lists not built.
 fn refresh_queue_manager() {
-    let cb = QUEUE_MANAGER_REFRESH.with(|r| r.borrow().clone());
-    if let Some(cb) = cb {
+    let panel = QUEUE_MANAGER_REFRESH.with(|r| r.borrow().clone());
+    if let Some(cb) = panel {
+        cb();
+    }
+    let jump = JUMP_LIST_REFRESH.with(|r| r.borrow().clone());
+    if let Some(cb) = jump {
         cb();
     }
 }
