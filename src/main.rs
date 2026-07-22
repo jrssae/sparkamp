@@ -41,6 +41,7 @@ mod mpris_meta;
 mod now_playing;
 mod replaygain;
 mod pathutil;
+mod queue;
 mod shuffle;
 mod skin;
 mod tags;

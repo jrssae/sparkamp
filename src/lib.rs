@@ -18,6 +18,7 @@ pub mod mpris_meta;
 pub mod now_playing;
 pub mod replaygain;
 pub mod pathutil;
+pub mod queue;
 pub mod shuffle;
 pub mod skin;
 pub mod tags;
