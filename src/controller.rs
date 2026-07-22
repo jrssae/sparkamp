@@ -182,6 +182,17 @@ impl Controller<'_> {
         None
     }
 
+    /// Drop any queued ids whose entries no longer exist in the playlist.
+    /// Call after any playlist removal / clear (reorder needs no call — ids are
+    /// stable across reorder).
+    // Consumed by the frontend playlist remove/clear seams (phase-5 tasks 5/7/8).
+    #[allow(dead_code)]
+    pub fn sync_queue_to_playlist(&mut self) {
+        let live: std::collections::HashSet<u64> =
+            self.playlist.tracks.iter().map(|t| t.id).collect();
+        self.queue.retain_ids(&live);
+    }
+
     pub fn nav_next(&mut self) -> NavResult {
         let was_playing = matches!(
             *self.player.state(),
@@ -565,6 +576,18 @@ mod tests {
         // Even with shuffle on, the queued entry is what plays next.
         assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
         assert_eq!(f.playlist.current_index, 3, "queue beats shuffle");
+        assert!(f.queue.is_empty());
+    }
+
+    #[test]
+    fn removing_a_queued_track_dequeues_it() {
+        let mut f = Fixture::new(3);
+        let id_t1 = f.playlist.tracks[1].id;
+        f.queue.enqueue(id_t1);
+        // Remove T1 from the playlist, then sync.
+        f.playlist.tracks.remove(1);
+        f.ctrl().sync_queue_to_playlist();
+        assert!(!f.queue.contains(id_t1), "removed track leaves the queue");
         assert!(f.queue.is_empty());
     }
 
