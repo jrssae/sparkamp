@@ -361,12 +361,16 @@ fn tag_row(label: &str, value: &str) -> gtk4::Widget {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.add_css_class("np-tag-row");
 
-    let key = Label::new(Some(&format!("{label}:")));
+    // Metadata can carry interior NUL bytes; `Label::new` maps to a C string
+    // and panics on them (and this runs inside a GTK signal trampoline that
+    // cannot unwind, so the panic aborts the process). Strip NULs like every
+    // other tag surface does — see the gtk_safe() rule in CLAUDE.md.
+    let key = Label::new(Some(&super::gtk_safe(&format!("{label}:"))));
     key.set_halign(Align::Start);
     key.set_xalign(0.0);
     key.set_width_chars(12);
 
-    let val = Label::new(Some(value));
+    let val = Label::new(Some(&super::gtk_safe(value)));
     val.set_halign(Align::Start);
     val.set_xalign(0.0);
     val.set_hexpand(true);
