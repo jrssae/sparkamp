@@ -1,3 +1,52 @@
+/// Bottom status bar for a Media Library list view: `N tracks · MM:SS total ·
+/// MM:SS selected`, matching the active playlist. Works over any MultiSelection
+/// whose items are BoxedAnyObject<LibTrack>. Returns the Label (append it to the
+/// view's page box) and a refresh closure (already wired to selection + model
+/// changes; also call it once after the store is first populated).
+fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
+    let label = Label::builder()
+        .halign(Align::Start)
+        .css_classes(["status-label"])
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(2)
+        .margin_bottom(5)
+        .build();
+    let refresh: std::rc::Rc<dyn Fn()> = {
+        let label = label.clone();
+        let selection = selection.clone();
+        std::rc::Rc::new(move || {
+            let n = selection.n_items();
+            let (mut count, mut total, mut sel_n, mut sel_secs) = (0usize, 0u64, 0usize, 0u64);
+            for i in 0..n {
+                let Some(obj) = selection.item(i) else { continue };
+                let Ok(bx) = obj.downcast::<glib::BoxedAnyObject>() else { continue };
+                let t = bx.borrow::<crate::media_library::LibTrack>();
+                let secs = t.length_secs.unwrap_or(0.0).max(0.0) as u64;
+                count += 1;
+                total += secs;
+                if selection.is_selected(i) {
+                    sel_n += 1;
+                    sel_secs += secs;
+                }
+            }
+            let sel = if sel_n > 0 { Some(sel_secs) } else { None };
+            label.set_text(&crate::playlist_status::playlist_status_line(count, total, sel));
+        })
+    };
+    selection.connect_selection_changed({
+        let r = refresh.clone();
+        move |_, _, _| r()
+    });
+    selection.connect_items_changed({
+        let r = refresh.clone();
+        move |_, _, _, _| r()
+    });
+    refresh();
+    (label, refresh)
+}
+
 fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -4791,6 +4840,15 @@ fn open_media_library_window(
         btn_row.append(&btn_analyze_rg);
         btn_row.append(&btn_cancel_rg);
         files_vbox.append(&btn_row);
+
+        // ── Files view status bar ───────────────────────────────────────────
+        // `rebuild_files()` (above) already populated `track_store` once, and
+        // every later mutation (rescan, add-folder, search debounce, ID3
+        // save, remove) goes through the same `track_store.splice(...)`, so
+        // the helper's `items_changed` wiring keeps this live without extra
+        // refresh calls at each call site.
+        let (files_status_bar, _) = ml_status_bar(&multi_sel);
+        files_vbox.append(&files_status_bar);
 
         // Add selected tracks to playlist.
         let add_selected: Rc<dyn Fn()> = {
