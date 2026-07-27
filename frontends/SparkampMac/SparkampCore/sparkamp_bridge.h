@@ -61,6 +61,11 @@ int32_t sparkamp_playlist_rescan_path(SparkampCtx *ctx, const char *path);
 void    sparkamp_playlist_clear(SparkampCtx *ctx);
 void    sparkamp_playlist_remove(SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_move(SparkampCtx *ctx, int32_t from, int32_t to);
+/* Active-playlist reorder ops (phase 7). sort kind: 0=Title 1=Artist 2=Album
+   3=Filename 4=Path. Playing track stays current; shuffle history resets. */
+void    sparkamp_playlist_sort(SparkampCtx *ctx, int32_t kind);
+void    sparkamp_playlist_reverse(SparkampCtx *ctx);
+void    sparkamp_playlist_randomize(SparkampCtx *ctx);
 int32_t sparkamp_playlist_len(const SparkampCtx *ctx);
 int32_t sparkamp_playlist_current_index(const SparkampCtx *ctx);
 char   *sparkamp_playlist_get_title(const SparkampCtx *ctx, int32_t index);

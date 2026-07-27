@@ -241,6 +241,46 @@ pub unsafe extern "C" fn sparkamp_playlist_move(
     (*ctx).playlist.move_track(from as usize, to as usize);
 }
 
+/// Sort the active playlist (phase 7). kind: 0=Title 1=Artist 2=Album
+/// 3=Filename 4=Path. Keeps the playing track current; resets shuffle history.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_sort(ctx: *mut SparkampCtx, kind: c_int) {
+    if ctx.is_null() {
+        return;
+    }
+    let key = match kind {
+        0 => crate::model::SortKey::Title,
+        1 => crate::model::SortKey::Artist,
+        2 => crate::model::SortKey::Album,
+        3 => crate::model::SortKey::Filename,
+        _ => crate::model::SortKey::Path,
+    };
+    (*ctx).playlist.sort_by(key);
+    (*ctx).shuffle_state.reset();
+}
+
+/// Reverse the active playlist (phase 7). Keeps the playing track current;
+/// resets shuffle history.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_reverse(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).playlist.reverse();
+    (*ctx).shuffle_state.reset();
+}
+
+/// Randomize the active playlist order (phase 7). Keeps the playing track
+/// current; resets shuffle history.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_randomize(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).playlist.randomize();
+    (*ctx).shuffle_state.reset();
+}
+
 /// Return the number of tracks in the playlist.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_playlist_len(ctx: *const SparkampCtx) -> c_int {
