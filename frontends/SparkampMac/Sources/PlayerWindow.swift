@@ -275,6 +275,16 @@ struct PlayerWindow: View {
             SkinButton(id: "prev",  icon: "backward.end.fill",  iconSize: 14) { model.prev() }
             SkinButton(id: "play",  icon: "play.fill",          iconSize: 16,
                        isHighlighted: model.isPlaying)  { model.play() }
+                .overlay(alignment: .bottomTrailing) {
+                    // Stop-after-current badge (phase 6): small stop-square on
+                    // the play button's bottom-right corner while armed.
+                    if model.stopAfterCurrent {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 8))
+                            .foregroundColor(.primary)
+                            .padding(1)
+                    }
+                }
             SkinButton(id: "pause", icon: "pause.fill",         iconSize: 14,
                        isHighlighted: model.isPaused)   { model.pause() }
             SkinButton(id: "stop",  icon: "stop.fill",          iconSize: 14) { model.stop() }

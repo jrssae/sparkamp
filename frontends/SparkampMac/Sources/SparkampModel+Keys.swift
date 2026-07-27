@@ -62,6 +62,13 @@ extension SparkampModel {
             return true
         case "i": toggleKeyboardShortcuts();  return true
         case "q": queueVisible.toggle();      return true
+        case "m":
+            // Toggle the Media Library window (mirror the ML mode button).
+            if mediaLibraryVisible { mediaLibraryVisible = false } else { openMediaLibrary() }
+            return true
+        case "t": toggleStopAfterCurrent();   return true
+        case "n": openFilePicker();           return true
+        case "N": openFolderPicker();         return true
         case "a": cycleVizMode();             return true
         case "e": graniteRandomEffect();      return true
         case "f": openFullscreenViz();        return true  // toggles open/close

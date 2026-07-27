@@ -286,8 +286,11 @@ struct SparkampCommands: Commands {
 
             Button("Equalizer") { model.equalizerVisible.toggle() }
             Button("Settings")  { model.settingsVisible.toggle() }
+                .keyboardShortcut(",", modifiers: .command)
             Button("Media Library") { model.openMediaLibrary() }
                 .keyboardShortcut("l", modifiers: .command)
+            Button("Stop After Current Track") { model.toggleStopAfterCurrent() }
+                .keyboardShortcut("t", modifiers: [])
             Button("Find Duplicates") { model.dedupVisible = true }
 
             Button("Keyboard Shortcuts") { model.keyboardShortcutsVisible.toggle() }

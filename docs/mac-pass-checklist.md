@@ -568,3 +568,41 @@ Verify on hardware:
   "jump-to-track" — confirm it opens/closes and doesn't fight fullscreen focus.
 - `refreshQueueBadges()` mutates `playlistItems` only when a badge changed;
   confirm it doesn't churn SwiftUI re-renders during idle playback.
+
+---
+
+## Phase 6 — F9 shortcuts + dialog sweep (2026-07-26, blind)
+
+New keys wired in `SparkampModel+Keys.swift` (raw handler) and the app
+`Commands` menu (`SparkampMacApp.swift`). Stop-after-current is an engine flag
+reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
+`@Published var stopAfterCurrent`.
+
+- [ ] `m` toggles the Media Library window (open when hidden, close when shown).
+- [ ] `t` arms stop-after-current: a small stop-square badge appears on the
+      bottom-right of the play button; the "Stop After Current Track" menu item
+      (Playback menu) toggles the same state.
+- [ ] With `t` armed, the current track finishes → playback stops, badge clears.
+- [ ] `t` twice = toggles off (playback continues to the next track).
+- [ ] `t` armed with queued tracks → stops before the queue; next play resumes
+      the queue.
+- [ ] Manual stop (`v`), next (`b`), prev (`z`) clear the arming + badge.
+- [ ] `n` opens the file picker (add file[s]); `Shift+N` opens the folder picker
+      (add folder) — same as the playlist bottom-bar "Add Files"/"Add Folder".
+- [ ] `⌘S` saves the active playlist (same as the bottom-bar Save button).
+- [ ] `⌘,` opens Settings; `⌘I` inverts the playlist selection.
+- [ ] `↑ ↓` still adjust volume; `← →` still seek (unchanged).
+- [ ] Keyboard Shortcuts window (`i`) lists every new binding and each line is
+      true (matches the GTK dialog content).
+
+**Unsure / eyeball (blind, no Xcode here):**
+- Play-button badge is a `.overlay(alignment: .bottomTrailing)` `Image("stop.fill")`
+  at 8pt on the `SkinButton(id: "play")`. Confirm it sits in the corner without
+  clipping and uses a visible colour against the skin.
+- `⌘I` invert is a zero-size hidden `Button` in `PlaylistView.bottomBar` that
+  sets `selection = Set(playlistItems.map { $0.id }).subtracting(selection)`.
+  Confirm the shortcut fires while the playlist window is key and the table
+  reflects the new selection.
+- `⌘,` is attached to the "Settings" command button (toggles `settingsVisible`).
+  Confirm it opens the Settings window and doesn't collide with a system pref.
+- Stop-after-current is NOT persisted (transient), matching GTK/TUI.

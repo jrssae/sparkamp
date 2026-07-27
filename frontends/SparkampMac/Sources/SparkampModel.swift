@@ -71,6 +71,9 @@ final class SparkampModel: ObservableObject {
     @Published var equalizerVisible: Bool = false
     /// When true, the settings window is open.
     @Published var settingsVisible: Bool = false
+    /// Stop-after-current-track flag (phase 6, key `t`). Transient — mirrors the
+    /// engine flag over FFI; drives the play-button stop badge.
+    @Published var stopAfterCurrent: Bool = false
     /// When true, the ID3 tag editor window is open.
     @Published var id3EditorVisible: Bool = false
     /// Playlist index to open in the ID3 editor; -1 means the current track.

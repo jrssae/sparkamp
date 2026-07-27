@@ -516,7 +516,18 @@ struct PlaylistView: View {
             }
             .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .disabled(model.playlistItems.isEmpty)
-            .help("Save active playlist to an M3U8 file")
+            .keyboardShortcut("s", modifiers: .command)
+            .help("Save active playlist to an M3U8 file (⌘S)")
+
+            // Invert selection (⌘I) — flip which rows are selected. Hidden
+            // control: the shortcut is the interface, matching GTK's Ctrl+I.
+            Button("") {
+                selection = Set(model.playlistItems.map { $0.id }).subtracting(selection)
+            }
+            .keyboardShortcut("i", modifiers: .command)
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
 
             Spacer()
 

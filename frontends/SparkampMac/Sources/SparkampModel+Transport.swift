@@ -9,14 +9,32 @@ extension SparkampModel {
 
     func play()  { if let ctx = ctx { sparkamp_play(ctx);  tick(); announceNowPlaying() } }
     func pause() { if let ctx = ctx { sparkamp_pause(ctx); tick() } }
-    func stop()  { if let ctx = ctx { sparkamp_stop(ctx);  tick() } }
+    func stop()  { if let ctx = ctx { setStopAfterCurrent(false); sparkamp_stop(ctx); tick() } }
 
     func togglePlay() {
         if isPlaying { pause() } else { play() }
     }
 
+    // MARK: Stop after current (phase 6)
+
+    /// Set the engine stop-after-current flag and mirror it to the published
+    /// property that drives the play-button badge.
+    func setStopAfterCurrent(_ v: Bool) {
+        guard let ctx = ctx else { return }
+        sparkamp_set_stop_after_current(ctx, v)
+        stopAfterCurrent = v
+    }
+
+    /// Toggle stop-after-current (key `t`).
+    func toggleStopAfterCurrent() {
+        guard let ctx = ctx else { return }
+        setStopAfterCurrent(!sparkamp_get_stop_after_current(ctx))
+    }
+
     func next() {
         guard let ctx = ctx else { return }
+        // Manual skip cancels a pending stop-after-current.
+        setStopAfterCurrent(false)
         sparkamp_nav_next(ctx)
         refreshAll()
         saveState()
@@ -25,6 +43,8 @@ extension SparkampModel {
 
     func prev() {
         guard let ctx = ctx else { return }
+        // Manual skip cancels a pending stop-after-current.
+        setStopAfterCurrent(false)
         sparkamp_nav_prev(ctx)
         refreshAll()
         saveState()
