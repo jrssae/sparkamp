@@ -50,6 +50,7 @@ mod tags;
 mod technical_probe;
 mod textutil;
 mod timeutil;
+mod watch;
 
 // GTK4 frontend — Linux only. On macOS the SwiftUI app bundle replaces it.
 #[cfg(target_os = "linux")]

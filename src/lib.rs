@@ -26,6 +26,7 @@ pub mod tags;
 pub mod technical_probe;
 pub mod textutil;
 pub mod timeutil;
+pub mod watch;
 
 // C FFI layer for the macOS Swift bridge. Always compiled; the functions are
 // dead code on Linux but are pub extern "C" so the compiler doesn't warn.
