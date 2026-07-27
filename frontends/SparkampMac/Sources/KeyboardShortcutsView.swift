@@ -28,6 +28,7 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "v",          action: "Stop"),
                 ShortcutEntry(key: "z",          action: "Previous track"),
                 ShortcutEntry(key: "b",          action: "Next track"),
+                ShortcutEntry(key: "t",          action: "Stop after current track"),
             ]
         ),
         (
@@ -49,11 +50,17 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "r",          action: "Cycle repeat (Off → One → All)"),
                 ShortcutEntry(key: "s",          action: "Toggle shuffle"),
                 ShortcutEntry(key: "p",          action: "Toggle playlist window"),
+                ShortcutEntry(key: "m",          action: "Toggle Media Library window"),
                 ShortcutEntry(key: "i",          action: "Toggle this shortcuts window"),
                 ShortcutEntry(key: "j",          action: "Jump to track (search)"),
                 ShortcutEntry(key: "q",          action: "Play queue manager (right-click a track → Queue / Dequeue to add)"),
                 ShortcutEntry(key: "w",          action: "Toggle now-playing panel (art, tags, links)"),
                 ShortcutEntry(key: "k",          action: "Open album-art window"),
+                ShortcutEntry(key: "n",          action: "Add file(s)"),
+                ShortcutEntry(key: "⇧N",         action: "Add folder"),
+                ShortcutEntry(key: "⌘S",         action: "Save playlist"),
+                ShortcutEntry(key: "⌘I",         action: "Invert selection"),
+                ShortcutEntry(key: "⌘,",         action: "Open settings"),
             ]
         ),
         (

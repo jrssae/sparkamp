@@ -140,6 +140,24 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   snapshot and refresh on each play/track-change (incl. same-track replay);
   they do not tick live mid-song. By design (matches the classic behavior).
 
+## Known limitations (recorded during phase 6 — F9 Shortcuts + dialog sweep)
+
+- Stop-after-current (`t`) is a TRANSIENT engine flag — never persisted (fires
+  once at the next EOS, then clears; manual play/stop/skip cancel it). Accepted
+  2026-07-26.
+- TUI has NO separate `Shift+N`: the `n` add-file prompt already accepts folder
+  paths via the typed-path parser (`commit_add_file` → `path.is_dir()`), so
+  file+folder parity is met through one key. GTK/mac keep the distinct
+  `n`/`Shift+N` file-vs-folder pickers. Accepted 2026-07-26.
+- GTK `Enter` = play selected row is the TreeView's native `row_activated`
+  (also fires on double-click); phase 6 adds no GTK handler for it. mac uses
+  `Return`/double-click in the track-list tables.
+- macOS `⌘S` (save) and `⌘I` (invert selection) are wired in `PlaylistView`
+  (bottom-bar Save button + a hidden invert button) because the playlist
+  selection lives in the view, not the model — deferred to hardware
+  verification (`docs/mac-pass-checklist.md` phase-6 section). Accepted
+  2026-07-26 (blind).
+
 ## Known limitations (recorded during phase 5 — F8 Manual Play Queue)
 
 - The queue is SESSION-ONLY: cleared on quit, never persisted (Winamp JTFE
