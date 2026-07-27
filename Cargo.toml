@@ -69,6 +69,12 @@ rand = "0.8"
 # Media library database (SQLite, bundled so no system dep needed)
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+# Filesystem watching (F10 watch folders). notify is cross-platform (inotify on
+# Linux, FSEvents on macOS); the debouncer coalesces bursty events so a bulk
+# copy of many files does not trigger a per-file rescan storm.
+notify = "6"
+notify-debouncer-mini = "0.4"
+
 # GTK4 GUI — Linux only; not needed on macOS where SwiftUI replaces it.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
