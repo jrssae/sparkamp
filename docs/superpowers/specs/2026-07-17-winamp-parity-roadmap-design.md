@@ -140,6 +140,21 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   snapshot and refresh on each play/track-change (incl. same-track replay);
   they do not tick live mid-song. By design (matches the classic behavior).
 
+## Media Library status bars (2026-07-27 consistency pass)
+
+- All four Media Library views (Files, Playlists-tracks, Devices, Discs data-files)
+  now carry the same bottom status bar as the active playlist — `N tracks · MM:SS
+  total · MM:SS selected` — via the shared core formatter (`playlist_status_line`
+  on GTK; `PlaylistStatus.swift::playlistStatusLine` on mac). Plus a 1px spacing
+  bump on the active-playlist header count + status bar. GTK: `ml_status_bar_for<T>`
+  helper (Files/Devices box `LibTrack`, Discs box `DiscFile`, Playlists box
+  `EditorEntry`). mac blind-verified via checklist.
+- OPEN placement calls (eyeball on the interactive/Xcode pass): the GTK Disc bar
+  sits directly under the file list (not the absolute bottom of the shared
+  disc/burn container); the mac playlist-editor bar sits below the button row
+  (not directly under the table). Both are one-line moves if a different spot is
+  preferred.
+
 ## Known limitations (recorded during phase 7 — F1 playlist ops)
 
 - Full Winamp menu-bar consolidation (user decision 2026-07-27): the flat GTK/mac
