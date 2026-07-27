@@ -871,6 +871,7 @@ pub fn build(
         .label("Playlist — 0 tracks")
         .halign(Align::Start)
         .css_classes(["pl-count-label"])
+        .margin_top(1)
         .build();
     pl_root.append(&pl_count_label);
 
@@ -1123,7 +1124,7 @@ pub fn build(
         .build();
     pl_status_label.set_margin_start(8);
     pl_status_label.set_margin_end(8);
-    pl_status_label.set_margin_bottom(4);
+    pl_status_label.set_margin_bottom(5);
     pl_root.append(&pl_status_label);
 
     // Refresh the playlist status line: count · total · (selected when ≥1 row).
