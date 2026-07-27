@@ -371,31 +371,7 @@ impl MediaLibrary {
                     );
                     return Ok(());
                 };
-
-                let folder_id = self.owning_folder_id(path)?;
-
-                let filename = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let filetype = Path::new(path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.to_lowercase());
-                let now = timeutil::format_current_timestamp();
-                self.conn.execute(
-                    "INSERT INTO tracks (path, folder_id, filename, filetype, play_count, added_at)
-                     VALUES (?1, ?2, ?3, ?4, 0, ?5)
-                     ON CONFLICT(path) DO NOTHING",
-                    params![path, folder_id, filename, filetype, now],
-                )?;
-
-                match folder_id {
-                    Some(fid) => self.upsert_track(fid, path)?,
-                    None => self.update_track_metadata_only(path)?,
-                }
-                Ok(())
+                self.upsert_path(path)
             }
             WatchAction::Remove(path) => {
                 if !remove_missing {
@@ -413,6 +389,64 @@ impl MediaLibrary {
                 Ok(())
             }
         }
+    }
+
+    /// Shared body for "get this UTF-8 path into the `tracks` table": resolve
+    /// the owning watched folder (or `None`), fast-insert the row if it's
+    /// not already present, then fill in metadata. Factored out of
+    /// `apply_watch_action`'s `Upsert` arm so it has exactly one
+    /// implementation, reused by [`Self::add_played_track`] (auto-add on
+    /// first play) — a played file must land in the library the same way a
+    /// fs watch event would, NULL-folder_id bucket included.
+    fn upsert_path(&self, path: &str) -> Result<()> {
+        let folder_id = self.owning_folder_id(path)?;
+
+        let filename = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let filetype = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+        let now = timeutil::format_current_timestamp();
+        self.conn.execute(
+            "INSERT INTO tracks (path, folder_id, filename, filetype, play_count, added_at)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5)
+             ON CONFLICT(path) DO NOTHING",
+            params![path, folder_id, filename, filetype, now],
+        )?;
+
+        match folder_id {
+            Some(fid) => self.upsert_track(fid, path)?,
+            None => self.update_track_metadata_only(path)?,
+        }
+        Ok(())
+    }
+
+    /// Auto-add-played core method (Phase 8): make sure a file that just
+    /// played is in the library. Unconditional — gating on the
+    /// `auto_add_played` config setting is the caller's job (frontend
+    /// playback call sites, wired in later tasks), not this method's.
+    ///
+    /// No-ops and returns `Ok(false)` if `path` already has a `tracks` row —
+    /// playback of an already-known file must never re-upsert or touch
+    /// anything (play-count bumping happens elsewhere, on its own path).
+    /// Otherwise inserts the row via [`Self::upsert_path`] (same
+    /// folder-resolution rules as `apply_watch_action`'s `Upsert` arm) and
+    /// returns `Ok(true)`.
+    pub fn add_played_track(&self, path: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
+        if count > 0 {
+            return Ok(false);
+        }
+        self.upsert_path(path)?;
+        Ok(true)
     }
 
     /// Return all track IDs in a folder, for soft-delete UI updates.

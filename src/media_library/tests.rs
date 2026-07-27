@@ -1912,3 +1912,106 @@ fn apply_remove_deletes_row_when_flag_on() {
         "row must be hard-deleted when remove_missing is true"
     );
 }
+
+// ── add_played_track: auto-add-played core method (Phase 8 Task 7) ─────
+//
+// Frontend call-site wiring (playback hook, `auto_add_played` config gate)
+// is deliberately out of scope — later GTK/TUI/mac tasks own that. This
+// method only needs to get a played file into the `tracks` table using the
+// exact same folder-resolution rules as a fs watch event, and to be a
+// true no-op for a file the library already knows about.
+
+#[test]
+fn add_played_outside_library_creates_null_folder_row() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    // No folders registered at all, mirroring
+    // apply_upsert_outside_folders_gets_null_folder_id: a played file with
+    // no watched folder above it must still land in the library, in the
+    // NULL-folder_id bucket the Files view already knows how to show.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().canonicalize().unwrap().join("track.mp3");
+    fs::write(&file_path, b"fake audio data").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    let created = lib.add_played_track(path).unwrap();
+
+    assert!(created, "first play of an unknown file must return Ok(true)");
+    assert!(track_row_exists(&lib, path));
+    let folder_id: Option<i64> = lib
+        .conn
+        .query_row(
+            "SELECT folder_id FROM tracks WHERE path = ?1",
+            rusqlite::params![path],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        folder_id, None,
+        "path outside every watched folder should get a NULL folder_id"
+    );
+    assert!(
+        lib.all_tracks_sorted("filename", false)
+            .unwrap()
+            .iter()
+            .any(|t| t.path == path),
+        "the NULL-bucket row must be visible in the Files view (all_tracks_sorted)"
+    );
+}
+
+#[test]
+fn add_played_existing_is_noop() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let folder_path = dir.path().canonicalize().unwrap();
+    let folder_id = lib.add_folder(folder_path.to_str().unwrap()).unwrap().id();
+    let file_path = folder_path.join("track_0.mp3");
+    let path = file_path.to_str().unwrap();
+    lib.upsert_track(folder_id, path).unwrap();
+    assert!(track_row_exists(&lib, path));
+
+    let created = lib.add_played_track(path).unwrap();
+
+    assert!(
+        !created,
+        "playing a file already in the library must return Ok(false)"
+    );
+    let count: i64 = lib
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM tracks WHERE path = ?1",
+            rusqlite::params![path],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "must not duplicate the row");
+}
+
+#[test]
+fn add_played_inside_library_attaches_to_folder() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let folder_path = dir.path().canonicalize().unwrap();
+    let folder_id = lib.add_folder(folder_path.to_str().unwrap()).unwrap().id();
+    let file_path = folder_path.join("track_0.mp3");
+    let path = file_path.to_str().unwrap();
+
+    let created = lib.add_played_track(path).unwrap();
+
+    assert!(created);
+    let got_folder_id: Option<i64> = lib
+        .conn
+        .query_row(
+            "SELECT folder_id FROM tracks WHERE path = ?1",
+            rusqlite::params![path],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        got_folder_id,
+        Some(folder_id),
+        "a played file under a watched folder must be attached to it, not NULL"
+    );
+}
