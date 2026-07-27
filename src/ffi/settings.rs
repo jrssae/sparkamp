@@ -158,6 +158,26 @@ pub unsafe extern "C" fn sparkamp_set_gnudb_submit_test(ctx: *mut SparkampCtx, v
     ctx.config.disc.gnudb_submit_mode_test = value;
 }
 
+/// Stop-after-current-track flag (phase 6, transient — not persisted). Lives on
+/// the engine Player so the mac key `t` and any menu item share one source.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_stop_after_current(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.player.stop_after_current()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_stop_after_current(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.player.set_stop_after_current(value);
+}
+
 /// Last chosen rip destination directory ("" when unset — the UI then
 /// defaults to the first watched folder and prompts before the first rip).
 /// Heap C string — free with `sparkamp_free_string`.

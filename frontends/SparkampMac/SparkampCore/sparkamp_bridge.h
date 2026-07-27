@@ -327,6 +327,10 @@ void    sparkamp_set_gnudb_email(SparkampCtx *ctx, const char *email);
    is turned off. */
 bool    sparkamp_get_gnudb_submit_test(SparkampCtx *ctx);
 void    sparkamp_set_gnudb_submit_test(SparkampCtx *ctx, bool value);
+/* Stop-after-current-track flag (phase 6, transient — not persisted). Shared by
+   the mac key `t` and any menu item so both reflect one engine flag. */
+bool    sparkamp_get_stop_after_current(const SparkampCtx *ctx);
+void    sparkamp_set_stop_after_current(SparkampCtx *ctx, bool value);
 /* Rip destination ("" = unset; free with sparkamp_free_string) + MP3 preset
    (0 = VBR V0, 1 = VBR V2 default, 2 = 320 CBR). */
 char   *sparkamp_get_rip_dest(SparkampCtx *ctx);
