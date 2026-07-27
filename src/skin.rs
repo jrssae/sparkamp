@@ -651,6 +651,12 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {btext}; border: 1px solid {hl}; \
     }}").unwrap();
 
+    // Stop-after-current badge — tiny stop-square pinned to the bottom-right
+    // corner of the play/pause/stop state indicator while armed (phase 6, `t`).
+    writeln!(css, "label.stop-after-badge {{ \
+        color: {hl}; font-size: 7px; margin: 0; padding: 0; \
+    }}").unwrap();
+
 
     // Mode toggle buttons (shuffle / repeat / PL / Info)
     writeln!(css, "button.mode-btn {{ \

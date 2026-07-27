@@ -275,12 +275,10 @@ impl App {
             }
 
             // Winamp bindings
-            KeyCode::Char('z') => {
-                self.player.set_stop_after_current(false);
-                self.play_prev();
-            }
+            KeyCode::Char('z') => self.play_prev(),
             KeyCode::Char('x') => {
-                self.player.set_stop_after_current(false);
+                // Stopped → fresh play (play_current clears the flag); Paused/
+                // Playing → resume via play(), which must NOT clear it.
                 if *self.player.state() == PlayerState::Stopped {
                     self.play_current();
                 } else {
@@ -288,20 +286,19 @@ impl App {
                 }
             }
             KeyCode::Char('c') => {
+                // Pause / resume must keep stop-after-current armed.
                 if let Err(e) = self.player.toggle_pause() {
                     self.set_status(format!("Error: {e}"));
                 }
             }
             KeyCode::Char('v') => {
+                // Manual stop cancels a pending stop-after-current.
                 self.player.set_stop_after_current(false);
                 if let Err(e) = self.player.stop() {
                     self.set_status(format!("Error: {e}"));
                 }
             }
-            KeyCode::Char('b') => {
-                self.player.set_stop_after_current(false);
-                self.play_next();
-            }
+            KeyCode::Char('b') => self.play_next(),
 
             // t — toggle stop-after-current (phase 6). Fires at the next EOS,
             // then clears; the combined ▶⏹ header glyph shows it is armed.

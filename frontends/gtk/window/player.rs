@@ -289,6 +289,18 @@ pub fn build(
         .xalign(0.5)
         .build();
 
+    // Stop-after-current (phase 6, key `t`): a small stop-square badged on the
+    // bottom-right corner of the play/pause/stop indicator (next to the time
+    // index) while armed. An Overlay pins it to the state glyph.
+    let state_overlay = gtk4::Overlay::new();
+    state_overlay.set_child(Some(&state_label));
+    let state_stop_badge = Label::new(Some("⏹"));
+    state_stop_badge.add_css_class("stop-after-badge");
+    state_stop_badge.set_halign(Align::End);
+    state_stop_badge.set_valign(Align::End);
+    state_stop_badge.set_visible(false);
+    state_overlay.add_overlay(&state_stop_badge);
+
     // Time display label — single-line, monospace, centered.
     // Clicking toggles between elapsed and remaining time.
     // Reserve 7 character widths so "0:00", "12:34", and "-123:45" all
@@ -309,7 +321,7 @@ pub fn build(
     let time_row = GtkBox::new(Orientation::Horizontal, 4);
     time_row.set_halign(Align::Fill);
     time_row.add_css_class("time-disp");
-    time_row.append(&state_label);
+    time_row.append(&state_overlay);
     time_row.append(&time_disp_label);
     {
         let show_rem = show_remaining.clone();
@@ -3197,6 +3209,7 @@ pub fn build(
         // Tick-side handle on the shutdown flag declared above.
         let viz_shut_for_tick = viz_shutting_down.clone();
         let fs_viz_open_tick = fs_viz_open.clone();
+        let state_stop_badge_tick = state_stop_badge.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
@@ -3647,17 +3660,16 @@ pub fn build(
             //    the engine is Playing or Paused, and loses it when Stopped.
             {
                 let s = state.borrow();
-                // Stop-after-current (phase 6): while playing and armed, show a
-                // combined ▶⏹ on the state indicator next to the time index —
-                // NOT on the play button. Mirrors the TUI header glyph.
-                let armed = s.player.stop_after_current();
-                let icon = match (s.player.state(), armed) {
-                    (PlayerState::Playing, true) => "▶⏹",
-                    (PlayerState::Playing, false) => "▶",
-                    (PlayerState::Paused, _) => "⏸",
-                    (PlayerState::Stopped, _) => "⏹",
+                let icon = match s.player.state() {
+                    PlayerState::Playing => "▶",
+                    PlayerState::Paused => "⏸",
+                    PlayerState::Stopped => "⏹",
                 };
                 state_label.set_text(icon);
+                // Stop-after-current (phase 6): small stop-square badge on the
+                // corner of the state indicator while armed — survives pause/
+                // resume, cleared only by next/prev/jump/replay/stop.
+                state_stop_badge_tick.set_visible(s.player.stop_after_current());
                 match s.player.state() {
                     PlayerState::Playing | PlayerState::Paused => {
                         if !btn_play.has_css_class("transport-play") {
@@ -4192,11 +4204,12 @@ pub fn build(
                 gdk::Key::x => {
                     let ps = state.borrow().player.state().clone();
                     match ps {
+                        // (Re)starting a track clears stop-after-current via
+                        // play_current; a no-op play while already Playing must
+                        // NOT clear it, and pause/resume goes through `c`.
                         PlayerState::Stopped | PlayerState::Paused => play_and_update(),
                         PlayerState::Playing => {}
                     }
-                    // Manual play cancels a pending stop-after-current.
-                    state.borrow_mut().player.set_stop_after_current(false);
                     glib::Propagation::Stop
                 }
                 gdk::Key::c => {

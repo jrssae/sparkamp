@@ -169,6 +169,9 @@ extension SparkampModel {
 
     func jumpTo(index: Int) {
         guard let ctx = ctx else { return }
+        // Jumping to / replaying a track clears a pending stop-after-current
+        // (pause/resume via togglePlay does not).
+        setStopAfterCurrent(false)
         sparkamp_playlist_jump(ctx, Int32(index))
         refreshAll()
         saveState()

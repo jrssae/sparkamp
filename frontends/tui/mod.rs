@@ -776,6 +776,8 @@ impl App {
     /// Navigation and repeat/shuffle logic is handled by the shared controller;
     /// this wrapper updates TUI-specific state after the move.
     pub fn play_next(&mut self) {
+        // Manual skip cancels a pending stop-after-current (phase 6).
+        self.player.set_stop_after_current(false);
         match self.ctrl().nav_next() {
             crate::controller::NavResult::Target { was_playing: true } => {
                 self.play_current_no_record();
@@ -792,6 +794,8 @@ impl App {
     /// Navigation and repeat/shuffle logic is handled by the shared controller;
     /// this wrapper updates TUI-specific state after the move.
     pub fn play_prev(&mut self) {
+        // Manual skip cancels a pending stop-after-current (phase 6).
+        self.player.set_stop_after_current(false);
         match self.ctrl().nav_prev() {
             crate::controller::NavResult::Target { was_playing: true } => {
                 self.play_current_no_record();

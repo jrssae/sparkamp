@@ -143,8 +143,12 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
 ## Known limitations (recorded during phase 6 — F9 Shortcuts + dialog sweep)
 
 - Stop-after-current (`t`) is a TRANSIENT engine flag — never persisted (fires
-  once at the next EOS, then clears; manual play/stop/skip cancel it). Accepted
-  2026-07-26.
+  once at the next EOS, then clears). Cleared by next / prev / jump-to-track /
+  replay-current / stop; NOT cleared by pause+resume (the armed state survives a
+  pause). Indicator = a small stop-square badge on the bottom-right corner of
+  the play/pause/stop state glyph next to the time index (GTK `state_label`
+  Overlay, mac `stateIcon` overlay); TUI shows a combined `▶⏹` header glyph
+  (no corner-overlay in a terminal). User-decided 2026-07-26.
 - TUI has NO separate `Shift+N`: the `n` add-file prompt already accepts folder
   paths via the typed-path parser (`commit_add_file` → `path.is_dir()`), so
   file+folder parity is met through one key. GTK/mac keep the distinct
