@@ -114,6 +114,11 @@ pub struct Player {
     /// Our local view of the pipeline state, updated synchronously on every
     /// transport method call.
     state: PlayerState,
+    /// Transient "stop after the current track ends" flag (phase 6, key `t`).
+    /// Not persisted: it governs a single automatic EOS advance, then clears.
+    /// Manual transport (next/prev/play/stop) also clears it — see the
+    /// accessors below and the advance seams that consult it.
+    stop_after_current: bool,
     /// The GStreamer `equalizer-10bands` element, or `None` if unavailable.
     eq: Option<gst::Element>,
     /// A GStreamer `volume` element for pre-amplification.
@@ -394,6 +399,7 @@ impl Player {
             audioconvert,
             spectrum_elem,
             state: PlayerState::Stopped,
+            stop_after_current: false,
             eq,
             volume_elem,
             eq_bands: [0.0; 10],
@@ -652,6 +658,22 @@ impl Player {
     /// Return the current [`PlayerState`] without changing it.
     pub fn state(&self) -> &PlayerState {
         &self.state
+    }
+
+    /// Whether playback should stop when the current track reaches EOS.
+    pub fn stop_after_current(&self) -> bool {
+        self.stop_after_current
+    }
+
+    /// Arm/disarm the stop-after-current flag (key `t` toggles it).
+    pub fn set_stop_after_current(&mut self, v: bool) {
+        self.stop_after_current = v;
+    }
+
+    /// Read the flag and clear it in one step — the advance seam calls this
+    /// so a single EOS consumes the arming and the next track auto-advances.
+    pub fn take_stop_after_current(&mut self) -> bool {
+        std::mem::replace(&mut self.stop_after_current, false)
     }
 
     /// Force the player into a specific state without touching GStreamer.
@@ -1174,6 +1196,18 @@ mod live_cdda_tests {
         // Fake position flows through the µs conversion.
         p.set_position_for_test(Duration::from_millis(1500));
         assert_eq!(p.position_usecs(), 1_500_000);
+    }
+
+    #[test]
+    fn stop_after_current_flag_arms_and_takes_once() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        assert!(!p.stop_after_current());
+        p.set_stop_after_current(true);
+        assert!(p.stop_after_current());
+        assert!(p.take_stop_after_current()); // fires
+        assert!(!p.stop_after_current()); // cleared by take
+        assert!(!p.take_stop_after_current()); // already clear
     }
 
     #[test]
