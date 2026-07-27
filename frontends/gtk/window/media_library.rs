@@ -1,9 +1,16 @@
 /// Bottom status bar for a Media Library list view: `N tracks · MM:SS total ·
 /// MM:SS selected`, matching the active playlist. Works over any MultiSelection
-/// whose items are BoxedAnyObject<LibTrack>. Returns the Label (append it to the
-/// view's page box) and a refresh closure (already wired to selection + model
-/// changes; also call it once after the store is first populated).
-fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
+/// whose items are `BoxedAnyObject<T>`; `secs_of` pulls each row's duration out
+/// of its `T` (e.g. `LibTrack::length_secs`, `disc::mount::DiscFile::
+/// duration_secs`) since the Devices/Files/Playlists views box `LibTrack` rows
+/// but the Discs data-file browser boxes `DiscFile` rows instead. Returns the
+/// Label (append it to the view's page box) and a refresh closure (already
+/// wired to selection + model changes; also call it once after the store is
+/// first populated).
+fn ml_status_bar_for<T: 'static>(
+    selection: &MultiSelection,
+    secs_of: impl Fn(&T) -> Option<f64> + 'static,
+) -> (Label, std::rc::Rc<dyn Fn()>) {
     let label = Label::builder()
         .halign(Align::Start)
         .css_classes(["status-label"])
@@ -22,8 +29,8 @@ fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
             for i in 0..n {
                 let Some(obj) = selection.item(i) else { continue };
                 let Ok(bx) = obj.downcast::<glib::BoxedAnyObject>() else { continue };
-                let t = bx.borrow::<crate::media_library::LibTrack>();
-                let secs = t.length_secs.unwrap_or(0.0).max(0.0) as u64;
+                let t = bx.borrow::<T>();
+                let secs = secs_of(&t).unwrap_or(0.0).max(0.0) as u64;
                 count += 1;
                 total += secs;
                 if selection.is_selected(i) {
@@ -45,6 +52,11 @@ fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
     });
     refresh();
     (label, refresh)
+}
+
+/// LibTrack-boxed views (Files, Devices, Playlists) — the common case.
+fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
+    ml_status_bar_for::<crate::media_library::LibTrack>(selection, |t| t.length_secs)
 }
 
 fn open_media_library_window(
@@ -2089,6 +2101,15 @@ fn open_media_library_window(
     dev_status.add_css_class("status-label");
     dev_detail.append(&dev_status);
 
+    // ── Device view status bar ──────────────────────────────────────────────
+    // `dev_store` is remove_all()'d and re-appended in place (reload_device_
+    // store / apply_pl_filter above) rather than swapped for a new ListStore,
+    // and it's the same store wrapped (via dev_filter/dev_sort_model) by
+    // `dev_selection`, so the helper's items_changed wiring keeps this live
+    // without extra refresh calls at each load/filter site.
+    let (dev_status_bar, _) = ml_status_bar(&dev_selection);
+    dev_detail.append(&dev_status_bar);
+
     // Collect the currently-selected device track rows (full LibTrack, so
     // already-known metadata like duration carries into the active playlist).
     let selected_device_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
@@ -3024,6 +3045,20 @@ fn open_media_library_window(
         .build();
     disc_files_scroll.set_visible(false);
     disc_detail.append(&disc_files_scroll);
+
+    // ── Disc data-file browser status bar ───────────────────────────────────
+    // Rows are `BoxedAnyObject<DiscFile>` (not LibTrack), so this goes through
+    // `ml_status_bar_for` with a `DiscFile::duration_secs` extractor. Only
+    // meaningful for a data disc's file list, so it hides/shows in lockstep
+    // with `disc_files_scroll` (populate_disc_detail, below) rather than
+    // living at the literal bottom of `disc_detail` — the audio-CD branch of
+    // that same container has no file list for it to describe.
+    let (disc_status_bar, _) =
+        ml_status_bar_for::<crate::disc::mount::DiscFile>(&disc_files_selection, |f| {
+            f.duration_secs.map(|s| s as f64)
+        });
+    disc_status_bar.set_visible(false);
+    disc_detail.append(&disc_status_bar);
 
     // Currently-selected data-disc file rows, read fresh on every Send-to /
     // Add-to-Library dispatch (mirrors `selected_device_tracks`).
@@ -7461,6 +7496,20 @@ fn open_media_library_window(
         edit_vbox.append(&ed_status);
         edit_vbox.append(&edit_btn_row);
 
+        // ── Playlist editor status bar ──────────────────────────────────────
+        // Rows are `BoxedAnyObject<EditorEntry>` (a LibTrack + its canonical
+        // play-order index, not a bare LibTrack — see EditorEntry's doc
+        // comment above), so this goes through `ml_status_bar_for` with an
+        // extractor into `.track.length_secs`. `rebuild_track_list` (above)
+        // always `edit_store.splice(...)`s the SAME store on load/reorder/
+        // save-revert rather than swapping in a new one, and it's the store
+        // `edit_multi_sel` wraps (via edit_filter_model/edit_sort_model), so
+        // items_changed keeps this live without an explicit refresh call.
+        let (pl_status_bar, _) = ml_status_bar_for::<EditorEntry>(&edit_multi_sel, |e| {
+            e.track.length_secs
+        });
+        edit_vbox.append(&pl_status_bar);
+
         // Whole playlist (files + .m3u8) to a device — the old flat
         // "Send to…" popover's only action, now a target-parameterised
         // action so it can live inside the standard Send-to ▾ menu as an
@@ -8915,6 +8964,7 @@ fn open_media_library_window(
         let burn_ui = burn_ui.clone();
         // Task 9 — data-disc file browser.
         let files_scroll = disc_files_scroll.clone();
+        let status_bar = disc_status_bar.clone();
         let files_store = disc_files_store.clone();
         let add_all_btn = disc_add_all_btn.clone();
         let load_files = load_disc_files.clone();
@@ -8933,6 +8983,7 @@ fn open_media_library_window(
             // left the stale file browser visible under the new track list,
             // its rows still pointing at the now-unmounted data disc.
             files_scroll.set_visible(false);
+            status_bar.set_visible(false);
             add_all_btn.set_visible(false);
             files_store.remove_all();
             // Header icon reflects the loaded media (badge included).
@@ -9098,6 +9149,7 @@ fn open_media_library_window(
                 banner.set_text(msg);
                 banner.set_visible(true);
                 files_scroll.set_visible(is_data_disc);
+                status_bar.set_visible(is_data_disc);
                 add_all_btn.set_visible(is_data_disc);
                 if is_data_disc {
                     load_files(drive.clone());
