@@ -655,7 +655,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // of the play/pause/stop state indicator while armed (phase 6, `t`). Same
     // colour as the state glyph (`.time-disp` uses `{text}`).
     writeln!(css, "label.stop-after-badge {{ \
-        color: {text}; font-size: 20px; margin: 0; padding: 0; \
+        color: {text}; font-size: 16px; margin: 0; padding: 0; \
     }}").unwrap();
 
 
