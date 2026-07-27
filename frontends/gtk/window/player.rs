@@ -4071,7 +4071,6 @@ pub fn build(
         let play_and_update = play_and_update.clone();
         let rebuild_playlist = rebuild_playlist.clone();
         let status_label = status_label.clone();
-        let pl_status = pl_status_label.clone();
         let kbd_set_track = set_track.clone();
         let kbd_rebuild = rebuild_playlist.clone();
         let kbd_seek_bar = seek_bar.clone();
@@ -4081,8 +4080,6 @@ pub fn build(
         let kbd_open_jump = open_jump_mode.clone();
         let window_weak = window.downgrade();
         let remove_sel = remove_selected.clone();
-        let kbd_probe_tx = probe_tx.clone();
-        let kbd_broken_tx = broken_tx.clone();
         let kbd_rebuild_jump = rebuild_jump.clone();
         let kbd_jump_entry = jump_entry.clone();
         let kbd_btn_info = btn_info.clone();
@@ -4102,6 +4099,8 @@ pub fn build(
         let kbd_refresh_np = refresh_now_playing.clone();
         let kbd_stop_status = status_label.clone();
         let kbd_btn_ml = btn_ml.clone();
+        let kbd_btn_add_files = btn_add_files.clone();
+        let kbd_btn_add_dir = btn_add_dir.clone();
         let kbd_step_volume = step_volume.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
@@ -4235,67 +4234,17 @@ pub fn build(
                     glib::Propagation::Stop
                 }
 
-                // ── Add file (single file via desktop file browser) ────────
+                // ── Add file(s) (n) — same multi-select + background scan as
+                // the "+ Files" button so the two paths stay identical ────────
                 gdk::Key::n => {
-                    // Build a reusable audio filter for all common formats.
-                    let filter = gtk4::FileFilter::new();
-                    filter.set_name(Some("Audio files"));
-                    for mime in &[
-                        "audio/mpeg",
-                        "audio/flac",
-                        "audio/ogg",
-                        "audio/opus",
-                        "audio/wav",
-                        "audio/aac",
-                        "audio/mp4",
-                        "audio/x-m4a",
-                    ] {
-                        filter.add_mime_type(mime);
-                    }
-                    for pat in &[
-                        "*.mp3", "*.flac", "*.ogg", "*.opus", "*.wav", "*.aac", "*.m4a",
-                    ] {
-                        filter.add_pattern(pat);
-                    }
-                    let filters = gio::ListStore::new::<gtk4::FileFilter>();
-                    filters.append(&filter);
+                    kbd_btn_add_files.emit_clicked();
+                    glib::Propagation::Stop
+                }
 
-                    let dialog = gtk4::FileDialog::builder().title("Add Audio File").build();
-                    dialog.set_filters(Some(&filters));
-
-                    let state_cb = state.clone();
-                    let rebuild_cb = rebuild_playlist.clone();
-                    let status_cb = status_label.clone();
-                    let pl_stat_cb = pl_status.clone();
-                    let probe_tx_cb = kbd_probe_tx.clone();
-                    let broken_tx_cb = kbd_broken_tx.clone();
-                    let parent = window_weak.upgrade();
-                    dialog.open(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
-                        if let Ok(file) = result {
-                            if let Some(path) = file.path() {
-                                let before = state_cb.borrow().playlist.tracks.len();
-                                let outcome = state_cb.borrow_mut().add_path(&path);
-                                match outcome {
-                                    Ok(msg) => {
-                                        status_cb.set_text(&msg);
-                                        pl_stat_cb.set_text(&msg);
-                                        rebuild_cb();
-                                        let paths = state_cb.borrow().uncached_paths_from(before);
-                                        if !paths.is_empty() {
-                                            duration_probe::spawn_probes(
-                                                paths,
-                                                probe_tx_cb.clone(),
-                                                broken_tx_cb.clone(),
-                                            );
-                                        }
-                                    }
-                                    Err(msg) => {
-                                        status_cb.set_text(&msg);
-                                    }
-                                }
-                            }
-                        }
-                    });
+                // ── Add folder (Shift+N) — same folder picker + background scan
+                // as the "+ Folder" button. GTK delivers Shift+n as `N`. ───────
+                gdk::Key::N => {
+                    kbd_btn_add_dir.emit_clicked();
                     glib::Propagation::Stop
                 }
 
