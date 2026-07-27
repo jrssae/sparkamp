@@ -4,7 +4,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -318,6 +318,187 @@ pub unsafe extern "C" fn sparkamp_ml_remove_folder(
             eprintln!("[sparkamp_ml_remove_folder] {e}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — per-folder recurse
+// ---------------------------------------------------------------------------
+
+/// Whether the watched folder at `path` is scanned recursively into
+/// subdirectories. Returns `true` (the schema default) if the ML isn't
+/// open, `path` is null, or no folder matches `path`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_folder_recurse(
+    ctx: *const SparkampCtx,
+    path: *const c_char,
+) -> bool {
+    if ctx.is_null() || path.is_null() {
+        return true;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return true };
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else { return true };
+    let folders = ml.list_folders().unwrap_or_default();
+    match folders.into_iter().find(|(_, p)| p == path_str) {
+        Some((id, _)) => ml.folder_recurse(id).unwrap_or(true),
+        None => true,
+    }
+}
+
+/// Set whether the watched folder at `path` is scanned recursively. No-op
+/// if the ML isn't open, `path` is null, or no folder matches `path`.
+///
+/// Does NOT rebuild the live watcher itself — call
+/// `sparkamp_ml_watch_rebuild` afterward so a running watch picks up the
+/// new recurse mode (mirrors the add/remove-folder contract).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_set_folder_recurse(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+    recurse: bool,
+) {
+    if ctx.is_null() || path.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let Some(ml) = &ctx.media_library else { return };
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else { return };
+    let folders = ml.list_folders().unwrap_or_default();
+    if let Some((id, _)) = folders.into_iter().find(|(_, p)| p == path_str) {
+        if let Err(e) = ml.set_folder_recurse(id, recurse) {
+            eprintln!("[sparkamp_ml_set_folder_recurse] {path_str}: {e}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Media Library — filesystem watcher lifecycle (Phase 8 Task 9)
+// ---------------------------------------------------------------------------
+//
+// The watcher itself (`crate::watch::FolderWatcher`) is pure OS-notify
+// plumbing; this section is the only place that knows how to turn "current
+// config + folder list" into a running watcher, and how to drain its event
+// channel into library DB writes. Kept in this file (not settings.rs)
+// because it needs `MediaLibrary::{list_folders, folder_recurse}` and
+// `apply_watch_action`, all of which live in this FFI domain.
+
+/// (Re)build the folder watcher from the current `watch_folders` config flag
+/// and folder list, or tear it down if watching is off / the library isn't
+/// open. Always drops any existing watcher first (its `Drop` stops the
+/// debouncer thread) before possibly starting a new one, so this is safe to
+/// call repeatedly (e.g. after every folder add/remove).
+///
+/// Never panics: a watcher-start failure (e.g. inotify watch limit) is
+/// logged and degrades to `None` — callers keep working via manual/interval
+/// rescans, exactly like a platform with no watcher support at all.
+///
+/// `pub(super)` so `settings::sparkamp_set_watch_folders` (the toggle) can
+/// call it too; not `#[no_mangle]` itself, only the two public entry points
+/// below (the toggle setter and `sparkamp_ml_watch_rebuild`) are.
+pub(super) unsafe fn rebuild_watcher(ctx: &mut SparkampCtx) {
+    // Drop any existing watcher unconditionally — cheapest way to guarantee
+    // no stale watch survives a config/folder-list change.
+    ctx.watch = None;
+    ctx.watch_rx = None;
+
+    if !ctx.config.media_library.watch_folders {
+        return;
+    }
+    let Some(ml) = &ctx.media_library else { return };
+
+    let folder_rows = ml.list_folders().unwrap_or_default();
+    let folders: Vec<(PathBuf, bool)> = folder_rows
+        .iter()
+        .map(|(id, path)| {
+            let recurse = ml.folder_recurse(*id).unwrap_or(true);
+            (PathBuf::from(path), recurse)
+        })
+        .collect();
+
+    let audio_exts: Vec<String> = crate::model::AUDIO_EXTENSIONS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // Same cache directory tag/artwork writers use (tags.rs, now_playing.rs)
+    // — the watcher filters out paths under this prefix so it never treats
+    // Sparkamp's own cached artwork as a library change.
+    let cache_prefix = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("sparkamp");
+
+    match crate::watch::FolderWatcher::start(folders, audio_exts, cache_prefix) {
+        Ok((watcher, rx)) => {
+            ctx.watch = Some(watcher);
+            ctx.watch_rx = Some(rx);
+        }
+        Err(e) => {
+            eprintln!("[sparkamp] watch start failed (degraded to manual rescan): {e}");
+            ctx.watch = None;
+            ctx.watch_rx = None;
+        }
+    }
+}
+
+/// Public entry point for the mac frontend to call after any folder
+/// add/remove (or recurse change) so the watch set stays current. The
+/// `watch_folders` toggle itself calls `rebuild_watcher` directly (see
+/// `sparkamp_set_watch_folders`); everything else that can invalidate the
+/// watch set goes through this symbol instead.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_watch_rebuild(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    rebuild_watcher(ctx);
+}
+
+/// Drain ONE pending filesystem-watch event, apply it to the library DB, and
+/// return the affected path so the UI can refresh its row.
+///
+/// Returns NULL if no watcher is running or no event is queued right now —
+/// callers should poll this in a timer/tick loop the same way `sparkamp_tick`
+/// drains the metadata/duration channels. On success, `*out_kind` is set to
+/// 0 (file added/changed) or 1 (file removed) and the return value is a heap
+/// C string (free with `sparkamp_free_string`) holding the absolute path.
+///
+/// A DB-apply error is logged, not surfaced — the path is still returned so
+/// the frontend can react (e.g. refresh) even if the underlying library
+/// write failed; this mirrors every other FFI function's "never block Swift
+/// on a library error" convention.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_poll_watch_event(
+    ctx: *mut SparkampCtx,
+    out_kind: *mut c_int,
+) -> *mut c_char {
+    if ctx.is_null() || out_kind.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &mut *ctx;
+    let Some(rx) = &ctx.watch_rx else {
+        return std::ptr::null_mut();
+    };
+    let action = match rx.try_recv() {
+        Ok(a) => a,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let (kind, path) = match &action {
+        crate::watch::WatchAction::Upsert(p) => (0, p.clone()),
+        crate::watch::WatchAction::Remove(p) => (1, p.clone()),
+    };
+
+    if let Some(ml) = &ctx.media_library {
+        let remove_missing = ctx.config.media_library.remove_missing_on_rescan;
+        if let Err(e) = ml.apply_watch_action(&action, remove_missing) {
+            eprintln!("[sparkamp] apply_watch_action {}: {e}", path.display());
+        }
+    }
+
+    *out_kind = kind;
+    CString::new(path.to_string_lossy().into_owned())
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Remove a single track from the media library by its database ID.

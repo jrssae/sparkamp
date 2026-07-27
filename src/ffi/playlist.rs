@@ -638,6 +638,8 @@ mod tests {
             rg_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             rg_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             rg_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            watch: None,
+            watch_rx: None,
         };
 
         unsafe {

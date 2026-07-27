@@ -305,6 +305,22 @@ void    sparkamp_set_autoplay_on_add(SparkampCtx *ctx, bool value);
 int     sparkamp_get_ml_rescan_interval(SparkampCtx *ctx);
 void    sparkamp_set_ml_rescan_interval(SparkampCtx *ctx, int mins);
 
+/* ── Watch folders (Phase 8 Task 9) ──────────────────────────────────────────
+   sparkamp_set_watch_folders also starts/stops the live background
+   filesystem watcher immediately (see sparkamp_ml_watch_rebuild below); the
+   other four are plain config flags with no live side effect here. None of
+   these persist automatically — call sparkamp_save_config as usual. */
+bool    sparkamp_get_watch_folders(const SparkampCtx *ctx);
+void    sparkamp_set_watch_folders(SparkampCtx *ctx, bool value);
+bool    sparkamp_get_auto_add_played(const SparkampCtx *ctx);
+void    sparkamp_set_auto_add_played(SparkampCtx *ctx, bool value);
+bool    sparkamp_get_remove_missing_on_rescan(const SparkampCtx *ctx);
+void    sparkamp_set_remove_missing_on_rescan(SparkampCtx *ctx, bool value);
+bool    sparkamp_get_compact_on_rescan(const SparkampCtx *ctx);
+void    sparkamp_set_compact_on_rescan(SparkampCtx *ctx, bool value);
+bool    sparkamp_get_rescan_on_startup(const SparkampCtx *ctx);
+void    sparkamp_set_rescan_on_startup(SparkampCtx *ctx, bool value);
+
 /* ── ReplayGain (playback normalization) ─────────────────────────────────────
    enabled/source/clip/fallback rebuild the engine's rgvolume/rglimiter chain
    immediately if stopped, else the engine defers to the next track. source:
@@ -474,6 +490,29 @@ void    sparkamp_ml_add_folder(
 
 /** Remove a watched folder (matched by path) and all its tracks. */
 void    sparkamp_ml_remove_folder(SparkampCtx *ctx, const char *path);
+
+/* ── Per-folder recurse ───────────────────────────────────────────────────
+   Whether a watched folder is scanned into subdirectories. Returns/defaults
+   to true if the folder isn't found. Setter does NOT rebuild the live
+   watcher itself — call sparkamp_ml_watch_rebuild afterward. */
+bool    sparkamp_ml_folder_recurse(const SparkampCtx *ctx, const char *path);
+void    sparkamp_ml_set_folder_recurse(SparkampCtx *ctx, const char *path, bool recurse);
+
+/* ── Filesystem watcher lifecycle (Phase 8 Task 9) ───────────────────────
+   Call sparkamp_ml_watch_rebuild after any folder add/remove/recurse change
+   so the live watch set stays current (sparkamp_set_watch_folders already
+   rebuilds on its own when the toggle itself changes). A start failure
+   degrades silently to manual/interval rescans — never fatal. */
+void    sparkamp_ml_watch_rebuild(SparkampCtx *ctx);
+
+/** Drain ONE pending watch event and apply it to the library DB. Returns
+    NULL if no watcher is running or no event is queued. On success writes
+    0 (added/changed) or 1 (removed) to *out_kind and returns the affected
+    absolute path as a heap string — free with sparkamp_free_string. Poll
+    this from a timer/tick loop, same pattern as the metadata/duration
+    channels drained in sparkamp_tick. */
+char   *sparkamp_ml_poll_watch_event(SparkampCtx *ctx, int *out_kind);
+
 void    sparkamp_ml_remove_track(SparkampCtx *ctx, int64_t track_id);
 
 /**

@@ -109,6 +109,14 @@ pub struct SparkampCtx {
     rg_progress: Arc<AtomicU64>,
     rg_running: Arc<AtomicBool>,
     rg_cancel: Arc<AtomicBool>,
+
+    /// Live background filesystem watcher (Phase 8 Task 9). `None` when
+    /// `watch_folders` is off, the library isn't open, or the last start
+    /// attempt failed (degraded to manual rescan — see `rebuild_watcher`).
+    watch: Option<crate::watch::FolderWatcher>,
+    /// Receiver half of `watch`'s event channel. Always `Some` exactly when
+    /// `watch` is `Some` — both are set/cleared together by `rebuild_watcher`.
+    watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +175,8 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         rg_progress: Arc::new(AtomicU64::new(0)),
         rg_running: Arc::new(AtomicBool::new(false)),
         rg_cancel: Arc::new(AtomicBool::new(false)),
+        watch: None,
+        watch_rx: None,
     });
 
     // Apply the saved ReplayGain chain + album-vs-track mode so the first

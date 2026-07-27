@@ -314,6 +314,121 @@ pub unsafe extern "C" fn sparkamp_set_ml_rescan_interval(ctx: *mut SparkampCtx, 
 }
 
 // ---------------------------------------------------------------------------
+// Watch folders (Phase 8 Task 9) — live background filesystem watcher.
+// Plain config mutators, mirroring the sparkamp_get/set_stop_after_current
+// idiom, EXCEPT sparkamp_set_watch_folders which also starts/stops the
+// watcher (see `media_library::rebuild_watcher`) since that flag has a live
+// side effect the others don't. None of these call `sparkamp_save_config`
+// themselves — persistence happens wherever the frontend already persists
+// other settings.
+// ---------------------------------------------------------------------------
+
+/// Whether Sparkamp watches library folders for filesystem changes and
+/// auto-applies them (add/remove tracks) instead of relying on manual or
+/// interval rescans.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_watch_folders(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.watch_folders
+}
+
+/// Setting this also (re)builds or tears down the live watcher immediately
+/// — see `media_library::rebuild_watcher`. A failed watcher start degrades
+/// gracefully (logged, not fatal); it never panics or blocks Swift.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_watch_folders(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.watch_folders = value;
+    super::media_library::rebuild_watcher(ctx);
+}
+
+/// Whether playing a file not yet in the library auto-adds it (first-play
+/// auto-add). Gating only — `MediaLibrary::add_played_track` does the work;
+/// wiring the playback call site is a separate task.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_auto_add_played(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.auto_add_played
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_auto_add_played(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.auto_add_played = value;
+}
+
+/// Whether a rescan (manual, interval, or a watch `Remove` event) hard-deletes
+/// library rows for files that no longer exist on disk, vs. leaving them in
+/// place (e.g. for temporarily-offline removable media).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_remove_missing_on_rescan(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.remove_missing_on_rescan
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_remove_missing_on_rescan(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.remove_missing_on_rescan = value;
+}
+
+/// Whether the library DB is compacted (VACUUM) after a rescan.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_compact_on_rescan(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.compact_on_rescan
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_compact_on_rescan(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.compact_on_rescan = value;
+}
+
+/// Whether the library rescans all watched folders automatically at startup.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_rescan_on_startup(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.rescan_on_startup
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_rescan_on_startup(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.rescan_on_startup = value;
+}
+
+// ---------------------------------------------------------------------------
 // ReplayGain (playback normalization) — mirrors the GTK/TUI settings surface.
 // Playback-affecting setters (enabled/source/clip/fallback) rebuild the
 // engine's rgvolume/rglimiter chain immediately if stopped, else the engine
@@ -453,5 +568,123 @@ pub unsafe extern "C" fn sparkamp_set_rg_write_tags(ctx: *mut SparkampCtx, value
         return;
     }
     (*ctx).config.playback.replaygain.write_tags = value;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a real `SparkampCtx` for exercising `sparkamp_get/set_*` through
+    /// the actual FFI functions (not just the config layer), mirroring the
+    /// direct-construction pattern in `playlist.rs`'s
+    /// `playlist_sort_resets_shuffle_history` test. `media_library` stays
+    /// `None`, so `sparkamp_set_watch_folders`'s call into
+    /// `media_library::rebuild_watcher` is a guaranteed no-op here (it
+    /// returns before touching `FolderWatcher::start`) — this exercises the
+    /// config round-trip and the call path, not the live OS watcher, per the
+    /// task's instruction not to unit-test the live watcher through FFI.
+    fn test_ctx() -> SparkampCtx {
+        gstreamer::init().expect("GStreamer must be available for tests");
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (duration_tx, duration_rx) = std::sync::mpsc::channel();
+        SparkampCtx {
+            player: crate::engine::Player::new().expect("Player::new"),
+            playlist: crate::model::Playlist::new(),
+            config: crate::config::Config::default(),
+            shuffle_state: crate::shuffle::ShuffleState::new(),
+            queue: crate::queue::Queue::new(),
+            meta_tx,
+            meta_rx,
+            duration_tx,
+            duration_rx,
+            dirty_count: 0,
+            last_known_duration: None,
+            eos_cb: None,
+            eos_userdata: std::ptr::null_mut(),
+            error_cb: None,
+            error_userdata: std::ptr::null_mut(),
+            position_cb: None,
+            position_userdata: std::ptr::null_mut(),
+            media_library: None,
+            ml_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ml_scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ml_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rg_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            watch: None,
+            watch_rx: None,
+        }
+    }
+
+    #[test]
+    fn watch_folders_round_trips_and_rebuild_is_a_safe_noop_without_ml() {
+        let mut ctx = test_ctx();
+        // Default is true (MediaLibraryConfig::default_watch_folders).
+        assert!(unsafe { sparkamp_get_watch_folders(&ctx) });
+        unsafe { sparkamp_set_watch_folders(&mut ctx, false) };
+        assert!(!unsafe { sparkamp_get_watch_folders(&ctx) });
+        assert!(ctx.watch.is_none());
+        assert!(ctx.watch_rx.is_none());
+        unsafe { sparkamp_set_watch_folders(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_watch_folders(&ctx) });
+        // media_library is None, so rebuild_watcher must still leave both
+        // fields cleared rather than attempting to start a real watcher.
+        assert!(ctx.watch.is_none());
+        assert!(ctx.watch_rx.is_none());
+    }
+
+    #[test]
+    fn auto_add_played_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_auto_add_played(&ctx) });
+        unsafe { sparkamp_set_auto_add_played(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_auto_add_played(&ctx) });
+    }
+
+    #[test]
+    fn remove_missing_on_rescan_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_remove_missing_on_rescan(&ctx) });
+        unsafe { sparkamp_set_remove_missing_on_rescan(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_remove_missing_on_rescan(&ctx) });
+    }
+
+    #[test]
+    fn compact_on_rescan_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_compact_on_rescan(&ctx) });
+        unsafe { sparkamp_set_compact_on_rescan(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_compact_on_rescan(&ctx) });
+    }
+
+    #[test]
+    fn rescan_on_startup_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_rescan_on_startup(&ctx) });
+        unsafe { sparkamp_set_rescan_on_startup(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_rescan_on_startup(&ctx) });
+        unsafe { sparkamp_set_rescan_on_startup(&mut ctx, false) };
+        assert!(!unsafe { sparkamp_get_rescan_on_startup(&ctx) });
+    }
+
+    #[test]
+    fn folder_recurse_defaults_true_without_ml() {
+        let ctx = test_ctx();
+        let path = std::ffi::CString::new("/no/such/folder").unwrap();
+        assert!(unsafe {
+            crate::ffi::media_library::sparkamp_ml_folder_recurse(&ctx, path.as_ptr())
+        });
+    }
+
+    #[test]
+    fn poll_watch_event_returns_null_without_a_running_watcher() {
+        let mut ctx = test_ctx();
+        let mut kind: c_int = -1;
+        let out = unsafe {
+            crate::ffi::media_library::sparkamp_ml_poll_watch_event(&mut ctx, &mut kind)
+        };
+        assert!(out.is_null());
+    }
 }
 
