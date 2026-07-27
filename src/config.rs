@@ -655,6 +655,7 @@ pub struct MediaLibraryConfig {
 
     /// When `true`, rescan watched folders on a timer while the app is running.
     /// The interval is controlled by [`rescan_interval_mins`].
+    /// Deprecated: superseded by [`watch_folders`].
     #[serde(default)]
     pub periodic_rescan: bool,
 
@@ -693,6 +694,26 @@ pub struct MediaLibraryConfig {
     /// device send). Existing playlists keep their own extension. Default m3u8.
     #[serde(default)]
     pub playlist_format: PlaylistFormat,
+
+    /// When true, watch library folders for filesystem changes and update the
+    /// library live. Supersedes the (now-deprecated) periodic-rescan option.
+    #[serde(default = "MediaLibraryConfig::default_watch_folders")]
+    pub watch_folders: bool,
+
+    /// When true, a track played from outside every watched folder is added to
+    /// the library (folder_id NULL bucket).
+    #[serde(default)]
+    pub auto_add_played: bool,
+
+    /// When true, a rescan (and the live watcher) removes library rows whose
+    /// file no longer exists. When false (default), such rows are kept so
+    /// entries persist for temporarily-offline media.
+    #[serde(default)]
+    pub remove_missing_on_rescan: bool,
+
+    /// When true, run VACUUM after a full rescan completes to reclaim space.
+    #[serde(default)]
+    pub compact_on_rescan: bool,
 }
 
 impl MediaLibraryConfig {
@@ -742,6 +763,12 @@ impl MediaLibraryConfig {
         }
         map
     }
+
+    /// Watch folders is on by default: it supersedes the old interval-polling
+    /// option and gives a live library out of the box.
+    pub fn default_watch_folders() -> bool {
+        true
+    }
 }
 
 impl Default for MediaLibraryConfig {
@@ -756,6 +783,10 @@ impl Default for MediaLibraryConfig {
             ml_file_col_order: Vec::new(),
             ml_file_col_widths: std::collections::HashMap::new(),
             playlist_format: PlaylistFormat::default(),
+            watch_folders: Self::default_watch_folders(),
+            auto_add_played: false,
+            remove_missing_on_rescan: false,
+            compact_on_rescan: false,
         }
     }
 }
@@ -1259,6 +1290,51 @@ rescan_interval_mins = 60
             back.id3_column_position.get("artist"),
             Some(&"left".to_string())
         );
+    }
+
+    // ── MediaLibraryConfig::watch_folders, auto_add_played, etc ──────────────
+
+    #[test]
+    fn watch_folders_defaults_true() {
+        let cfg = MediaLibraryConfig::default();
+        assert!(cfg.watch_folders);
+        assert!(!cfg.auto_add_played);
+        assert!(!cfg.remove_missing_on_rescan);
+        assert!(!cfg.compact_on_rescan);
+    }
+
+    #[test]
+    fn media_library_toml_omitting_new_fields_uses_defaults() {
+        // A config written before these four fields were added should deserialize cleanly
+        // with proper defaults: watch_folders=true, others=false.
+        let toml_str = r#"
+rescan_on_startup = true
+rescan_interval_mins = 60
+visible_columns = ["title", "artist"]
+"#;
+        let cfg: MediaLibraryConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(cfg.watch_folders);
+        assert!(!cfg.auto_add_played);
+        assert!(!cfg.remove_missing_on_rescan);
+        assert!(!cfg.compact_on_rescan);
+        assert!(cfg.rescan_on_startup);
+        assert_eq!(cfg.rescan_interval_mins, 60);
+    }
+
+    #[test]
+    fn media_library_new_fields_round_trip() {
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.watch_folders = false;
+        cfg.auto_add_played = true;
+        cfg.remove_missing_on_rescan = true;
+        cfg.compact_on_rescan = true;
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert!(!back.watch_folders);
+        assert!(back.auto_add_played);
+        assert!(back.remove_missing_on_rescan);
+        assert!(back.compact_on_rescan);
     }
 
     #[test]
