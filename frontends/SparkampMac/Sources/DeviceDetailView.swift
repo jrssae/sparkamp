@@ -570,9 +570,12 @@ struct DeviceDetailView: View {
     private var filesStatusLine: String {
         let rows = sortedTracks
         let total = rows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
-        let sel = selection.isEmpty ? nil :
-            rows.filter { selection.contains($0.path) }
-                .reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
+        // Guard on the DISPLAYED selected rows, not the raw selection set —
+        // a search filter can hide every currently-selected row while
+        // `selection` still holds their ids, which must omit the "selected"
+        // clause rather than show "· 0:00 selected".
+        let selRows = rows.filter { selection.contains($0.path) }
+        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
         return playlistStatusLine(count: rows.count, totalSecs: total, selectedSecs: sel)
     }
 
@@ -580,7 +583,7 @@ struct DeviceDetailView: View {
     private var filesBottomBar: some View {
         HStack(spacing: 12) {
             Text(filesStatusLine)
-                .font(.system(size: 11))
+                .font(vars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
             Spacer()
             Button(role: .destructive) {

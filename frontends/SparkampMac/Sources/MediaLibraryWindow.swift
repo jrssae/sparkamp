@@ -711,9 +711,12 @@ struct MediaLibraryView: View {
     /// playlist's status line (`playlistStatusLine` / src/playlist_status.rs).
     private var filesStatusLine: String {
         let total = model.mlTracks.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
-        let sel = selection.isEmpty ? nil :
-            model.mlTracks.filter { selection.contains($0.id) }
-                .reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
+        // Guard on the DISPLAYED selected rows, not the raw selection set —
+        // a search/playlist-chip filter can hide every currently-selected
+        // row while `selection` still holds their ids, which must omit the
+        // "selected" clause rather than show "· 0:00 selected".
+        let selRows = model.mlTracks.filter { selection.contains($0.id) }
+        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
         return playlistStatusLine(count: model.mlTracks.count, totalSecs: total, selectedSecs: sel)
     }
 

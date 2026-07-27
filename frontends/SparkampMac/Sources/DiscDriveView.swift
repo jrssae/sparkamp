@@ -831,7 +831,7 @@ struct DiscDriveView: View {
     private var bottomBar: some View {
         HStack(spacing: 10) {
             Text("\(model.discTracks.count) track\(model.discTracks.count == 1 ? "" : "s")")
-                .font(.system(size: 11))
+                .font(vars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
             Spacer()
             Button("Add Selected") { addSelected(selection) }
@@ -863,9 +863,12 @@ struct DiscDriveView: View {
     private var discFilesStatusLine: String {
         let files = model.discFiles
         let total = files.reduce(0) { $0 + Int($1.durationSecs ?? 0) }
-        let sel = discFilesSelection.isEmpty ? nil :
-            files.filter { discFilesSelection.contains($0.id) }
-                .reduce(0) { $0 + Int($1.durationSecs ?? 0) }
+        // No search filter on this view, but guard on the DISPLAYED selected
+        // rows for consistency with the other ML status bars (a selection
+        // whose ids no longer match `files` must omit the "selected" clause
+        // rather than show "· 0:00 selected").
+        let selRows = files.filter { discFilesSelection.contains($0.id) }
+        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + Int($1.durationSecs ?? 0) }
         return playlistStatusLine(count: files.count, totalSecs: total, selectedSecs: sel)
     }
 
@@ -936,7 +939,7 @@ struct DiscDriveView: View {
                 // ── Status bar: "N tracks · MM:SS total · MM:SS selected" ──────
                 HStack {
                     Text(discFilesStatusLine)
-                        .font(.system(size: 11))
+                        .font(vars.bodyFont)
                         .foregroundStyle(theme.playlistDurationText)
                     Spacer()
                 }

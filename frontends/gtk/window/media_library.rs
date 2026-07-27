@@ -17,7 +17,6 @@ fn ml_status_bar_for<T: 'static>(
         .ellipsize(gtk4::pango::EllipsizeMode::End)
         .margin_start(8)
         .margin_end(8)
-        .margin_top(2)
         .margin_bottom(5)
         .build();
     let refresh: std::rc::Rc<dyn Fn()> = {

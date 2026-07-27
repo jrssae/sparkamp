@@ -193,7 +193,7 @@ struct MLPlaylistEditor: View {
             // displayed (searched/sorted) rows, same as `sortedRows` drives the table.
             HStack {
                 Text(statusLine)
-                    .font(.system(size: 11))
+                    .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
             }
@@ -395,9 +395,12 @@ struct MLPlaylistEditor: View {
         let rows = sortedRows
         let count = rows.count
         let total = rows.reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) }
-        let sel = trackSelection.isEmpty ? nil :
-            rows.filter { trackSelection.contains($0.id) }
-                .reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) }
+        // Guard on the DISPLAYED selected rows, not the raw selection set —
+        // a search filter can hide every currently-selected row while
+        // `trackSelection` still holds their ids, which must omit the
+        // "selected" clause rather than show "· 0:00 selected".
+        let selRows = rows.filter { trackSelection.contains($0.id) }
+        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) }
         return playlistStatusLine(count: count, totalSecs: total, selectedSecs: sel)
     }
 
