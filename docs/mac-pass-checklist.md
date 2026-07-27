@@ -579,9 +579,10 @@ reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
 `@Published var stopAfterCurrent`.
 
 - [ ] `m` toggles the Media Library window (open when hidden, close when shown).
-- [ ] `t` arms stop-after-current: a small stop-square badge appears on the
-      bottom-right of the play button; the "Stop After Current Track" menu item
-      (Playback menu) toggles the same state.
+- [ ] `t` arms stop-after-current: a small stop-square appears on the
+      play/pause/stop indicator next to the time index (NOT on the play button);
+      the "Stop After Current Track" menu item (Playback menu) toggles the same
+      state.
 - [ ] With `t` armed, the current track finishes → playback stops, badge clears.
 - [ ] `t` twice = toggles off (playback continues to the next track).
 - [ ] `t` armed with queued tracks → stops before the queue; next play resumes
@@ -597,8 +598,9 @@ reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
 
 **Unsure / eyeball (blind, no Xcode here):**
 - Play-button badge is a `.overlay(alignment: .bottomTrailing)` `Image("stop.fill")`
-  at 8pt on the `SkinButton(id: "play")`. Confirm it sits in the corner without
-  clipping and uses a visible colour against the skin.
+  as a `.overlay(alignment: .bottomTrailing)` on the state-icon `Image` beside
+  the time display (`stateIcon`). Confirm it reads as a small badge on that
+  indicator without clipping the time text, and uses `stateColor`.
 - `⌘I` invert is a zero-size hidden `Button` in `PlaylistView.bottomBar` that
   sets `selection = Set(playlistItems.map { $0.id }).subtracting(selection)`.
   Confirm the shortcut fires while the playlist window is key and the table

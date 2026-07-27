@@ -94,6 +94,17 @@ struct PlayerWindow: View {
                         Image(systemName: stateIcon)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(stateColor)
+                            .overlay(alignment: .bottomTrailing) {
+                                // Stop-after-current (phase 6): small stop-square
+                                // on the play/pause/stop indicator next to the
+                                // time index while armed (not on the play button).
+                                if model.stopAfterCurrent {
+                                    Image(systemName: "stop.fill")
+                                        .font(.system(size: 5, weight: .bold))
+                                        .foregroundStyle(stateColor)
+                                        .offset(x: 2, y: 2)
+                                }
+                            }
                         Text(timeDisplay)
                             .font(vars.largeMonospaceFont)
                             .foregroundStyle(theme.timeText)
@@ -275,16 +286,6 @@ struct PlayerWindow: View {
             SkinButton(id: "prev",  icon: "backward.end.fill",  iconSize: 14) { model.prev() }
             SkinButton(id: "play",  icon: "play.fill",          iconSize: 16,
                        isHighlighted: model.isPlaying)  { model.play() }
-                .overlay(alignment: .bottomTrailing) {
-                    // Stop-after-current badge (phase 6): small stop-square on
-                    // the play button's bottom-right corner while armed.
-                    if model.stopAfterCurrent {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 8))
-                            .foregroundColor(.primary)
-                            .padding(1)
-                    }
-                }
             SkinButton(id: "pause", icon: "pause.fill",         iconSize: 14,
                        isHighlighted: model.isPaused)   { model.pause() }
             SkinButton(id: "stop",  icon: "stop.fill",          iconSize: 14) { model.stop() }

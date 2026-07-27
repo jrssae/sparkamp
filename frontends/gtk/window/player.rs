@@ -760,23 +760,6 @@ pub fn build(
     btn_stop.add_css_class("sparkamp-button-stop");
     btn_next.add_css_class("sparkamp-button-next");
 
-    // Stop-after-current (phase 6, key `t`): a small stop-square badged on the
-    // play button's bottom-right corner while armed. An Overlay keeps the badge
-    // pinned to the button without disturbing the transport row's layout.
-    let play_overlay = gtk4::Overlay::new();
-    play_overlay.set_child(Some(&btn_play));
-    let stop_badge = Label::new(Some("⏹"));
-    stop_badge.add_css_class("stop-after-badge");
-    stop_badge.set_halign(Align::End);
-    stop_badge.set_valign(Align::End);
-    stop_badge.set_visible(false);
-    play_overlay.add_overlay(&stop_badge);
-    // Toggle the badge from key/EOS handlers; a single Rc shared by all sites.
-    let set_play_stop_badge: Rc<dyn Fn(bool)> = {
-        let stop_badge = stop_badge.clone();
-        Rc::new(move |armed: bool| stop_badge.set_visible(armed))
-    };
-
     // Load logo at ~42 px (50 % larger than the transport buttons).
     // If the PNG fails to load (e.g. asset missing), the image slot stays blank.
     const LOGO_PX: i32 = 42;
@@ -804,7 +787,7 @@ pub fn build(
     btn_shuffle.set_valign(Align::Center);
 
     transport.append(&btn_prev);
-    transport.append(&play_overlay);
+    transport.append(&btn_play);
     transport.append(&btn_pause);
     transport.append(&btn_stop);
     transport.append(&btn_next);
@@ -3214,7 +3197,6 @@ pub fn build(
         // Tick-side handle on the shutdown flag declared above.
         let viz_shut_for_tick = viz_shutting_down.clone();
         let fs_viz_open_tick = fs_viz_open.clone();
-        let set_play_stop_badge_tick = set_play_stop_badge.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
@@ -3226,10 +3208,6 @@ pub fn build(
             if viz_shut_for_tick.get() {
                 return ControlFlow::Break;
             }
-            // Stop-after-current badge (phase 6) tracks the engine flag: the tick
-            // is the single display authority, so every arm/clear site only has
-            // to flip the flag and the badge follows within a frame.
-            set_play_stop_badge_tick(state.borrow().player.stop_after_current());
             // 0. Drain probe results from background threads.
             // patch_pl_row is O(1) per call (updates a single TreeView store row).
             // Cap to 50 per tick so we never block the main thread for long when
@@ -3669,10 +3647,15 @@ pub fn build(
             //    the engine is Playing or Paused, and loses it when Stopped.
             {
                 let s = state.borrow();
-                let icon = match s.player.state() {
-                    PlayerState::Playing => "▶",
-                    PlayerState::Paused => "⏸",
-                    PlayerState::Stopped => "⏹",
+                // Stop-after-current (phase 6): while playing and armed, show a
+                // combined ▶⏹ on the state indicator next to the time index —
+                // NOT on the play button. Mirrors the TUI header glyph.
+                let armed = s.player.stop_after_current();
+                let icon = match (s.player.state(), armed) {
+                    (PlayerState::Playing, true) => "▶⏹",
+                    (PlayerState::Playing, false) => "▶",
+                    (PlayerState::Paused, _) => "⏸",
+                    (PlayerState::Stopped, _) => "⏹",
                 };
                 state_label.set_text(icon);
                 match s.player.state() {
