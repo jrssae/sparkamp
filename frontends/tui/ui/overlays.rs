@@ -298,6 +298,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![key("  c"), Span::raw("      Pause / resume")]),
         Line::from(vec![key("  v"), Span::raw("      Stop")]),
         Line::from(vec![key("  b"), Span::raw("      Next track")]),
+        Line::from(vec![key("  t"), Span::raw("      Stop after current track")]),
         Line::from(vec![key("  ← →"), Span::raw("    Seek −5 s / +5 s")]),
         Line::from(vec![
             key("  r"),
