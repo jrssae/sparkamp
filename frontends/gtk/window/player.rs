@@ -1126,6 +1126,37 @@ pub fn build(
     pl_status_label.set_margin_bottom(4);
     pl_root.append(&pl_status_label);
 
+    // Refresh the playlist status line: count · total · (selected when ≥1 row).
+    let refresh_pl_status: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let pl_status_label = pl_status_label.clone();
+        let pl_view = pl_view.clone();
+        Rc::new(move || {
+            let (count, total) = {
+                let s = state.borrow();
+                let total: u64 = s.playlist.tracks.iter()
+                    .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
+                    .sum();
+                (s.playlist.tracks.len(), total)
+            };
+            // Selected duration — sum durations of selected TreeView rows.
+            #[allow(deprecated)]
+            let (sel_paths, _) = pl_view.selection().selected_rows();
+            let selected = if sel_paths.is_empty() {
+                None
+            } else {
+                let s = state.borrow();
+                let sum: u64 = sel_paths.iter()
+                    .filter_map(|p| p.indices().first().copied())
+                    .filter_map(|i| s.playlist.tracks.get(i as usize))
+                    .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
+                    .sum();
+                Some(sum)
+            };
+            pl_status_label.set_text(&crate::playlist_status::playlist_status_line(count, total, selected));
+        })
+    };
+
     // ── Playlist button bar: Add / Remove (pinned to the bottom) ─────────────
     // Mirrors the layout of classic Winamp where the playlist action buttons
     // sit below the track list rather than above it.
@@ -1175,6 +1206,7 @@ pub fn build(
         let pl_active_idx = pl_active_idx.clone();
         let accent_rgba = accent_rgba.clone();
         let text_rgba = text_rgba.clone();
+        let refresh_pl_status = refresh_pl_status.clone();
         Rc::new(move || {
             // Stamp any unstamped entries so queue badges have stable ids to
             // look up (idempotent; a no-op once every entry is stamped). Needs
@@ -1262,6 +1294,7 @@ pub fn build(
                 n,
                 if n == 1 { "" } else { "s" },
             ));
+            refresh_pl_status();
         })
     };
     *rebuild_pl_holder.borrow_mut() = Some(rebuild_playlist.clone());
@@ -2931,6 +2964,7 @@ pub fn build(
         let state     = state.clone();
         let pl_status = pl_status_label.clone();
         let pl_view_sc = pl_view.clone();
+        let refresh_pl_status = refresh_pl_status.clone();
         move |_| {
             // set_model(None) during a bulk rebuild fires this signal with a null
             // model; selected_rows() would then panic.  Bail early if no model.
@@ -2939,11 +2973,11 @@ pub fn build(
             #[allow(deprecated)]
             let (paths, _) = pl_view_sc.selection().selected_rows();
             let Some(path) = paths.first() else {
-                pl_status.set_text("");
+                refresh_pl_status();
                 return;
             };
             let Some(&idx) = path.indices().first() else {
-                pl_status.set_text("");
+                refresh_pl_status();
                 return;
             };
             let idx = idx as usize;
@@ -2961,7 +2995,7 @@ pub fn build(
                     path_hint
                 ));
             } else {
-                pl_status.set_text("");
+                refresh_pl_status();
             }
         }
     });

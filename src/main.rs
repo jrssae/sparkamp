@@ -41,9 +41,7 @@ mod mpris_meta;
 mod now_playing;
 mod replaygain;
 mod pathutil;
-// Shared active-playlist status-line formatter (phase 7). Wired up by later
-// frontend tasks; the bin target doesn't call it yet.
-#[allow(dead_code)]
+// Shared active-playlist status-line formatter (phase 7).
 mod playlist_status;
 mod queue;
 mod shuffle;
