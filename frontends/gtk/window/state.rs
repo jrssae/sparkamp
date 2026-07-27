@@ -490,6 +490,9 @@ impl AppState {
     /// `None` if the playlist is empty.  Load / play errors surface on the
     /// next `poll_bus()` call in the tick loop.
     fn play_current(&mut self) -> Option<String> {
+        // Manual play cancels a pending stop-after-current (phase 6). The EOS
+        // auto-advance in the tick uses play_current_no_record, not this seam.
+        self.player.set_stop_after_current(false);
         let track = self.playlist.current()?;
         let uri = track.uri();
         let display = track.display_name();
@@ -597,6 +600,8 @@ impl AppState {
     }
 
     fn play_next(&mut self) -> Option<String> {
+        // Manual skip cancels a pending stop-after-current (phase 6).
+        self.player.set_stop_after_current(false);
         let total = self.playlist.len();
         let current = self.playlist.current_index;
         let repeat = self.config.playback.repeat_mode;
@@ -652,6 +657,8 @@ impl AppState {
     ///
     /// Returns `Some(display_name)` of the track that will now play.
     fn play_prev(&mut self) -> Option<String> {
+        // Manual skip cancels a pending stop-after-current (phase 6).
+        self.player.set_stop_after_current(false);
         let pos = self.player.position().unwrap_or(Duration::ZERO);
         let do_play = *self.player.state() != PlayerState::Stopped;
 

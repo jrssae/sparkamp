@@ -703,6 +703,23 @@ pub fn build(
     btn_stop.add_css_class("sparkamp-button-stop");
     btn_next.add_css_class("sparkamp-button-next");
 
+    // Stop-after-current (phase 6, key `t`): a small stop-square badged on the
+    // play button's bottom-right corner while armed. An Overlay keeps the badge
+    // pinned to the button without disturbing the transport row's layout.
+    let play_overlay = gtk4::Overlay::new();
+    play_overlay.set_child(Some(&btn_play));
+    let stop_badge = Label::new(Some("⏹"));
+    stop_badge.add_css_class("stop-after-badge");
+    stop_badge.set_halign(Align::End);
+    stop_badge.set_valign(Align::End);
+    stop_badge.set_visible(false);
+    play_overlay.add_overlay(&stop_badge);
+    // Toggle the badge from key/EOS handlers; a single Rc shared by all sites.
+    let set_play_stop_badge: Rc<dyn Fn(bool)> = {
+        let stop_badge = stop_badge.clone();
+        Rc::new(move |armed: bool| stop_badge.set_visible(armed))
+    };
+
     // Load logo at ~42 px (50 % larger than the transport buttons).
     // If the PNG fails to load (e.g. asset missing), the image slot stays blank.
     const LOGO_PX: i32 = 42;
@@ -730,7 +747,7 @@ pub fn build(
     btn_shuffle.set_valign(Align::Center);
 
     transport.append(&btn_prev);
-    transport.append(&btn_play);
+    transport.append(&play_overlay);
     transport.append(&btn_pause);
     transport.append(&btn_stop);
     transport.append(&btn_next);
@@ -1979,7 +1996,12 @@ pub fn build(
         let patch_pl_row = patch_pl_row.clone();
         move |_| {
             let old_idx = state.borrow().playlist.current_index;
-            let _ = state.borrow_mut().player.stop();
+            {
+                let mut s = state.borrow_mut();
+                let _ = s.player.stop();
+                // Manual stop cancels a pending stop-after-current (phase 6).
+                s.player.set_stop_after_current(false);
+            }
             seek_bar.set_value(0.0);
             // Remove the bold/arrow from the now-stopped track.
             patch_pl_row(old_idx);
@@ -3108,6 +3130,7 @@ pub fn build(
         // Tick-side handle on the shutdown flag declared above.
         let viz_shut_for_tick = viz_shutting_down.clone();
         let fs_viz_open_tick = fs_viz_open.clone();
+        let set_play_stop_badge_tick = set_play_stop_badge.clone();
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
@@ -3119,6 +3142,10 @@ pub fn build(
             if viz_shut_for_tick.get() {
                 return ControlFlow::Break;
             }
+            // Stop-after-current badge (phase 6) tracks the engine flag: the tick
+            // is the single display authority, so every arm/clear site only has
+            // to flip the flag and the badge follows within a frame.
+            set_play_stop_badge_tick(state.borrow().player.stop_after_current());
             // 0. Drain probe results from background threads.
             // patch_pl_row is O(1) per call (updates a single TreeView store row).
             // Cap to 50 per tick so we never block the main thread for long when
@@ -3279,6 +3306,17 @@ pub fn build(
                 }
             }
             if let Some(event) = bus_event {
+                // Stop-after-current (phase 6): consume the flag on a normal EOS
+                // and halt instead of advancing. Errors still fall through to the
+                // broken-skip advance below (a failed track isn't "the current
+                // track finishing"). Manual next/prev never enter this block.
+                if matches!(event, BusEvent::Eos)
+                    && state.borrow_mut().player.take_stop_after_current()
+                {
+                    let _ = state.borrow_mut().player.stop();
+                    seek_bar.set_value(0.0);
+                    return ControlFlow::Continue;
+                }
                 // Record which track just finished so we can de-highlight it
                 // after the advance changes current_index.
                 let pre_advance_idx = state.borrow().playlist.current_index;
@@ -4045,6 +4083,8 @@ pub fn build(
         let kbd_art_open = art_open.clone();
         let kbd_toggle_np = toggle_np_panel.clone();
         let kbd_refresh_np = refresh_now_playing.clone();
+        let kbd_stop_status = status_label.clone();
+        let kbd_btn_ml = btn_ml.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -4071,6 +4111,8 @@ pub fn build(
                         PlayerState::Stopped | PlayerState::Paused => play_and_update(),
                         PlayerState::Playing => {}
                     }
+                    // Manual play cancels a pending stop-after-current.
+                    state.borrow_mut().player.set_stop_after_current(false);
                     glib::Propagation::Stop
                 }
                 gdk::Key::c => {
@@ -4080,6 +4122,8 @@ pub fn build(
                 gdk::Key::v => {
                     let _ = state.borrow_mut().player.stop();
                     kbd_seek_bar.set_value(0.0);
+                    // Manual stop cancels a pending stop-after-current.
+                    state.borrow_mut().player.set_stop_after_current(false);
                     glib::Propagation::Stop
                 }
                 gdk::Key::b => {
@@ -4303,6 +4347,30 @@ pub fn build(
                     } else {
                         kbd_btn_shuffle.remove_css_class("mode-btn-active");
                     }
+                    glib::Propagation::Stop
+                }
+
+                // ── Stop after current track (t) — toggle the engine flag and
+                // badge the play button. Fires once at the next EOS, then clears. ─
+                gdk::Key::t | gdk::Key::T => {
+                    let armed = {
+                        let mut s = state.borrow_mut();
+                        let now = !s.player.stop_after_current();
+                        s.player.set_stop_after_current(now);
+                        now
+                    };
+                    kbd_stop_status.set_text(if armed {
+                        "Stopping after current track"
+                    } else {
+                        "Stop-after-current cancelled"
+                    });
+                    glib::Propagation::Stop
+                }
+
+                // ── Media Library window toggle (m) — routed through the ML
+                // button so the open/focus logic stays in one place ──────────
+                gdk::Key::m | gdk::Key::M => {
+                    kbd_btn_ml.emit_clicked();
                     glib::Propagation::Stop
                 }
 

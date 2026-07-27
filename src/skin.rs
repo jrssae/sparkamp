@@ -651,6 +651,13 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {btext}; border: 1px solid {hl}; \
     }}").unwrap();
 
+    // Stop-after-current badge — small high-contrast square pinned to the play
+    // button's bottom-right corner while the flag is armed (phase 6, key `t`).
+    writeln!(css, "label.stop-after-badge {{ \
+        background-color: {hl}; color: {btext}; \
+        font-size: 8px; margin: 0 1px 1px 0; padding: 0 1px; border-radius: 2px; \
+    }}").unwrap();
+
     // Mode toggle buttons (shuffle / repeat / PL / Info)
     writeln!(css, "button.mode-btn {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
