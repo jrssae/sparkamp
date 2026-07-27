@@ -179,6 +179,28 @@ impl MediaLibrary {
             .context("list_folders query")
     }
 
+    /// Whether a watched folder should be scanned recursively into its
+    /// subdirectories. Defaults to `true` (the column's SQL default) for
+    /// every folder added before this setting existed.
+    pub fn folder_recurse(&self, folder_id: i64) -> Result<bool> {
+        let recurse: i64 = self.conn.query_row(
+            "SELECT recurse FROM folders WHERE id = ?1",
+            params![folder_id],
+            |row| row.get(0),
+        )?;
+        Ok(recurse != 0)
+    }
+
+    /// Set whether a watched folder scans recursively. Takes effect on the
+    /// next rescan (fast-path or full).
+    pub fn set_folder_recurse(&self, folder_id: i64, recurse: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE folders SET recurse = ?1 WHERE id = ?2",
+            params![recurse as i64, folder_id],
+        )?;
+        Ok(())
+    }
+
     /// Add a list of audio file paths to the library DB.  For each path,
     /// finds the deepest watched folder whose path is a prefix of the
     /// file's path and upserts the track under that folder.  Paths that
@@ -260,6 +282,7 @@ impl MediaLibrary {
             AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
+            self.folder_recurse(folder_id).unwrap_or(true),
         );
 
         // Use paths as-is for fast insert. Canonicalization adds a stat call per file,
@@ -352,6 +375,7 @@ impl MediaLibrary {
             AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
+            self.folder_recurse(folder_id).unwrap_or(true),
         );
 
         // Use paths as-is for fast insert. Skipping canonicalize() removes a stat
@@ -518,8 +542,10 @@ impl MediaLibrary {
         Ok(updated)
     }
 
-    /// Recursively walk `dir`, partitioning entries into audio files
-    /// (`audio_files`) and M3U playlists (`m3u_files`).
+    /// Walk `dir`, partitioning entries into audio files (`audio_files`) and
+    /// M3U playlists (`m3u_files`). Descends into subdirectories only when
+    /// `recurse` is true — a folder configured non-recursive stops at its
+    /// top level.
     ///
     /// Errors reading a directory are silently skipped so one permission
     /// problem does not abort the whole scan.
@@ -528,6 +554,7 @@ impl MediaLibrary {
         audio_exts: &[&str],
         audio_files: &mut Vec<PathBuf>,
         m3u_files: &mut Vec<PathBuf>,
+        recurse: bool,
     ) {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
@@ -540,7 +567,9 @@ impl MediaLibrary {
 
         for path in entries {
             if path.is_dir() {
-                Self::walk_dir(&path, audio_exts, audio_files, m3u_files);
+                if recurse {
+                    Self::walk_dir(&path, audio_exts, audio_files, m3u_files, recurse);
+                }
             } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let lower = ext.to_lowercase();
                 if lower == "m3u" || lower == "m3u8" {

@@ -568,6 +568,25 @@ impl MediaLibrary {
             }
         }
 
+        // Same additive-migration pattern for `folders`: DBs created before
+        // per-folder recurse existed need the column backfilled, defaulting
+        // to 1 (recurse) so existing watched folders keep scanning exactly
+        // as they did before this column existed.
+        let folder_cols: std::collections::HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT name FROM pragma_table_info('folders')")?;
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        if !folder_cols.contains("recurse") {
+            self.conn.execute(
+                "ALTER TABLE folders ADD COLUMN recurse INTEGER NOT NULL DEFAULT 1",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 

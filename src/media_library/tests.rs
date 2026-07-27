@@ -1645,6 +1645,81 @@ fn refresh_artwork_deletes_only_cache_dir_files_not_user_images() {
     );
 }
 
+// ── folders.recurse column + per-folder recursive walk ─────────────────
+
+#[test]
+fn folders_recurse_column_added_once_default_1() {
+    let db_file = NamedTempFile::with_suffix(".db").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let folder_id;
+    {
+        let lib = MediaLibrary::open_at(db_file.path()).unwrap();
+        let cols: std::collections::HashSet<String> = {
+            let mut stmt = lib
+                .conn
+                .prepare("SELECT name FROM pragma_table_info('folders')")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert!(
+            cols.contains("recurse"),
+            "folders table must gain a recurse column via the additive migration"
+        );
+
+        folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+        assert!(
+            lib.folder_recurse(folder_id).unwrap(),
+            "new folders default to recurse = true (column DEFAULT 1)"
+        );
+
+        lib.set_folder_recurse(folder_id, false).unwrap();
+        assert!(!lib.folder_recurse(folder_id).unwrap());
+    } // `lib` dropped here, closing the connection.
+
+    // Re-opening the same DB file must not error: the ALTER TABLE guard
+    // has to be idempotent once the column already exists.
+    let lib2 = MediaLibrary::open_at(db_file.path()).unwrap();
+    assert!(
+        !lib2.folder_recurse(folder_id).unwrap(),
+        "recurse flag must persist across reopen"
+    );
+}
+
+#[test]
+fn walk_dir_non_recursive_skips_subdir() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.mp3"), b"fake audio data").unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("b.mp3"), b"fake audio data").unwrap();
+
+    let mut audio: Vec<std::path::PathBuf> = Vec::new();
+    let mut m3u: Vec<std::path::PathBuf> = Vec::new();
+    MediaLibrary::walk_dir(
+        dir.path(),
+        crate::model::AUDIO_EXTENSIONS,
+        &mut audio,
+        &mut m3u,
+        false,
+    );
+    assert_eq!(audio.len(), 1, "non-recursive walk must not descend into sub/");
+    assert_eq!(audio[0].file_name().unwrap(), "a.mp3");
+
+    let mut audio_rec: Vec<std::path::PathBuf> = Vec::new();
+    let mut m3u_rec: Vec<std::path::PathBuf> = Vec::new();
+    MediaLibrary::walk_dir(
+        dir.path(),
+        crate::model::AUDIO_EXTENSIONS,
+        &mut audio_rec,
+        &mut m3u_rec,
+        true,
+    );
+    assert_eq!(audio_rec.len(), 2, "recursive walk must find files in sub/");
+}
+
 #[test]
 fn set_replaygain_roundtrips() {
     let (lib, _db) = temp_lib();
