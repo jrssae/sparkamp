@@ -587,7 +587,9 @@ reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
 - [ ] `t` twice = toggles off (playback continues to the next track).
 - [ ] `t` armed with queued tracks → stops before the queue; next play resumes
       the queue.
-- [ ] Manual stop (`v`), next (`b`), prev (`z`) clear the arming + badge.
+- [ ] Manual stop (`v`), next (`b`), prev (`z`), and jumping to another track
+      (double-click a row / jump window) clear the arming + badge.
+- [ ] Pause then resume (`c`) KEEPS the arming + badge (must not clear).
 - [ ] `n` opens the file picker (add file[s]); `Shift+N` opens the folder picker
       (add folder) — same as the playlist bottom-bar "Add Files"/"Add Folder".
 - [ ] `⌘S` saves the active playlist (same as the bottom-bar Save button).
