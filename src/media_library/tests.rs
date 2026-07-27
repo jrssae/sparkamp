@@ -1745,3 +1745,105 @@ fn set_replaygain_roundtrips() {
     assert_eq!(t2.rg_album_gain, Some(-7.10));
     assert_eq!(t2.rg_album_peak, Some(0.995));
 }
+
+// ── apply_watch_action: routes fs watch events through the scan seam ───
+
+fn track_row_exists(lib: &MediaLibrary, path: &str) -> bool {
+    lib.conn
+        .query_row(
+            "SELECT 1 FROM tracks WHERE path = ?1",
+            rusqlite::params![path],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
+#[test]
+fn apply_upsert_inserts_row() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    // Canonicalize the folder path up front and derive the file path from
+    // it, so the registered folder path is a literal string prefix of the
+    // watch-event path regardless of tempdir symlinking (e.g. /tmp on some
+    // platforms) — the deepest-prefix folder match is a plain string
+    // comparison, not a filesystem-aware one.
+    let folder_path = dir.path().canonicalize().unwrap();
+    lib.add_folder(folder_path.to_str().unwrap()).unwrap();
+    let file_path = folder_path.join("track_0.mp3");
+
+    let action = crate::watch::WatchAction::Upsert(file_path.clone());
+    lib.apply_watch_action(&action, false).unwrap();
+
+    // The fixture is dummy bytes (not a parseable audio file), so tags stay
+    // empty — assert the row exists, not that metadata was populated.
+    assert!(track_row_exists(&lib, file_path.to_str().unwrap()));
+}
+
+#[test]
+fn apply_upsert_outside_folders_gets_null_folder_id() {
+    let (lib, _db) = temp_lib();
+    // No folder registered at all — the path lives outside every watched
+    // folder, exercising the NULL-folder_id bucket apply_watch_action must
+    // support (Task 7 relies on the same bucket).
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().canonicalize().unwrap().join("track.mp3");
+    fs::write(&file_path, b"fake audio data").unwrap();
+
+    let action = crate::watch::WatchAction::Upsert(file_path.clone());
+    lib.apply_watch_action(&action, false).unwrap();
+
+    let path = file_path.to_str().unwrap();
+    assert!(track_row_exists(&lib, path));
+    let folder_id: Option<i64> = lib
+        .conn
+        .query_row(
+            "SELECT folder_id FROM tracks WHERE path = ?1",
+            rusqlite::params![path],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        folder_id, None,
+        "path outside every watched folder should get a NULL folder_id"
+    );
+}
+
+#[test]
+fn apply_remove_keeps_row_when_flag_off() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let folder_path = dir.path().canonicalize().unwrap();
+    let folder_id = lib.add_folder(folder_path.to_str().unwrap()).unwrap().id();
+    let file_path = folder_path.join("track_0.mp3");
+    let path = file_path.to_str().unwrap();
+    lib.upsert_track(folder_id, path).unwrap();
+    assert!(track_row_exists(&lib, path));
+
+    let action = crate::watch::WatchAction::Remove(file_path.clone());
+    lib.apply_watch_action(&action, false).unwrap();
+
+    assert!(
+        track_row_exists(&lib, path),
+        "row must be kept (Winamp parity: offline media persists) when remove_missing is false"
+    );
+}
+
+#[test]
+fn apply_remove_deletes_row_when_flag_on() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let folder_path = dir.path().canonicalize().unwrap();
+    let folder_id = lib.add_folder(folder_path.to_str().unwrap()).unwrap().id();
+    let file_path = folder_path.join("track_0.mp3");
+    let path = file_path.to_str().unwrap();
+    lib.upsert_track(folder_id, path).unwrap();
+    assert!(track_row_exists(&lib, path));
+
+    let action = crate::watch::WatchAction::Remove(file_path.clone());
+    lib.apply_watch_action(&action, true).unwrap();
+
+    assert!(
+        !track_row_exists(&lib, path),
+        "row must be hard-deleted when remove_missing is true"
+    );
+}

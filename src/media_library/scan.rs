@@ -7,10 +7,89 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::AUDIO_EXTENSIONS;
-use crate::tags::read_track_tags;
+use crate::tags::{read_track_tags, TrackTags};
 use crate::timeutil;
 
 use super::{AddFolderResult, MediaLibrary};
+
+/// Everything derived from tags/probes for one file, independent of
+/// `folder_id` — factored out of `upsert_track` so the folder_id-bearing
+/// INSERT path (`upsert_track`) and the folder_id-agnostic UPDATE path
+/// (`update_track_metadata_only`, used for tracks outside every watched
+/// folder) share one probing pass instead of duplicating the tag/duration/
+/// technical-probe calls.
+struct ProbedTrackMetadata {
+    filename: String,
+    filetype: Option<String>,
+    tags: TrackTags,
+    length_secs: Option<f64>,
+    bitrate: Option<i64>,
+    channels: Option<i64>,
+    bitrate_mode: Option<String>,
+    sample_rate: Option<i64>,
+    file_size: Option<i64>,
+    file_mtime: Option<String>,
+    /// Current timestamp, stamped as `added_at` on first insert. On update
+    /// it only heals a pre-existing NULL (see the COALESCE at each call
+    /// site) — a real `added_at` value is never overwritten.
+    now: String,
+}
+
+impl ProbedTrackMetadata {
+    fn probe(p: &Path) -> Self {
+        let filename = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let filetype = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+
+        // Try ID3 first (MP3 and some other formats).  Fall back to Symphonia.
+        let tags = read_track_tags(p);
+
+        // Probe duration: Symphonia fast-path, then GStreamer Discoverer fallback
+        // for CBR MP3 and formats Symphonia can't measure from headers alone.
+        let length_secs = crate::duration_probe::probe_duration(p)
+            .or_else(|| crate::duration_probe::discover_duration(p))
+            .map(|d| d.as_secs_f64());
+
+        // Technical columns: codec header (sample rate / channels), file
+        // size and mtime from the filesystem, average bitrate derived from
+        // size ÷ duration, and MP3 VBR/CBR mode sniffed from the Xing/Info
+        // header. All degrade to NULL on error rather than failing the scan.
+        let tech = crate::technical_probe::probe_technical(p);
+        let fs_meta = std::fs::metadata(p).ok();
+        let file_size = fs_meta.as_ref().map(|m| m.len() as i64);
+        let file_mtime = fs_meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .map(crate::timeutil::format_system_time);
+        let computed_bitrate = file_size
+            .zip(length_secs)
+            .and_then(|(sz, len)| crate::technical_probe::avg_bitrate_kbps(sz as u64, len));
+        let bitrate = MediaLibrary::resolve_bitrate(computed_bitrate, tags.bitrate);
+        let channels = tech.channels.or(tags.channels);
+        let bitrate_mode = crate::technical_probe::mp3_bitrate_mode(p).map(str::to_string);
+        let now = crate::timeutil::format_current_timestamp();
+
+        Self {
+            filename,
+            filetype,
+            tags,
+            length_secs,
+            bitrate,
+            channels,
+            bitrate_mode,
+            sample_rate: tech.sample_rate,
+            file_size,
+            file_mtime,
+            now,
+        }
+    }
+}
 
 // Bin build on macOS gates out GTK, leaving these FFI/GTK-reachable
 // methods unused there; mirrors the allow on the original impl block.
@@ -201,6 +280,34 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Find the deepest watched folder whose path is a prefix of `path`
+    /// (nested watched folders resolve to the more specific one), given an
+    /// already-fetched folder list. Pure lookup — no I/O — so callers that
+    /// process many paths (e.g. `add_files_to_library`) can fetch
+    /// `list_folders()` once and reuse it instead of requerying per path.
+    fn best_matching_folder(path: &str, folders: &[(i64, String)]) -> Option<i64> {
+        let mut best: Option<(i64, &str)> = None;
+        for (fid, fpath) in folders {
+            if path.starts_with(fpath.as_str())
+                && (best.is_none() || fpath.len() > best.unwrap().1.len())
+            {
+                best = Some((*fid, fpath.as_str()));
+            }
+        }
+        best.map(|(fid, _)| fid)
+    }
+
+    /// Resolve the folder that owns `path` (deepest watched-folder prefix
+    /// match — see [`Self::best_matching_folder`]), or `None` if `path`
+    /// lives outside every watched folder. Single-path convenience for
+    /// `apply_watch_action`, which handles one filesystem event at a time
+    /// so a fresh `list_folders()` query per call is not a hot loop the way
+    /// `add_files_to_library`'s per-path resolution would be.
+    fn owning_folder_id(&self, path: &str) -> Result<Option<i64>> {
+        let folders = self.list_folders()?;
+        Ok(Self::best_matching_folder(path, &folders))
+    }
+
     /// Add a list of audio file paths to the library DB.  For each path,
     /// finds the deepest watched folder whose path is a prefix of the
     /// file's path and upserts the track under that folder.  Paths that
@@ -214,16 +321,9 @@ impl MediaLibrary {
         let folders = self.list_folders()?;
         let mut added = 0;
         for path in paths {
-            // Deepest matching folder wins (handles nested watched folders).
-            let mut best: Option<(i64, &str)> = None;
-            for (fid, fpath) in &folders {
-                if path.starts_with(fpath.as_str())
-                    && (best.is_none() || fpath.len() > best.unwrap().1.len())
-                {
-                    best = Some((*fid, fpath.as_str()));
-                }
-            }
-            let Some((folder_id, _)) = best else { continue };
+            let Some(folder_id) = Self::best_matching_folder(path, &folders) else {
+                continue;
+            };
             // upsert_track is fallible per-file (probe failure, IO, etc.);
             // log and continue so one bad file doesn't abort the batch.
             if let Err(e) = self.upsert_track(folder_id, path) {
@@ -233,6 +333,86 @@ impl MediaLibrary {
             added += 1;
         }
         Ok(added)
+    }
+
+    /// Route a filesystem watch event (from `FolderWatcher`) through the
+    /// same DB write paths a manual scan uses, so a background fs change
+    /// ends up identical to what a Rescan would have produced.
+    ///
+    /// `Upsert(path)`: resolves the owning folder the same way
+    /// `add_files_to_library` does (deepest watched-folder prefix match, or
+    /// `None` if `path` sits outside every watched folder — e.g. a file
+    /// under some ancestor directory Sparkamp isn't watching). Fast-inserts
+    /// the path row if it's not already present (mirrors
+    /// `rescan_folder_fast`'s single-row insert), then fills in metadata:
+    /// `upsert_track` for a resolved folder, or `update_track_metadata_only`
+    /// for the no-folder case, since `upsert_track`'s ON CONFLICT clause
+    /// always overwrites folder_id and there is no real id to give it.
+    ///
+    /// `Remove(path)`: semantics are a deliberate product decision (locked
+    /// 2026-07-27), not an oversight. `remove_missing == true` hard-deletes
+    /// the row. `remove_missing == false` is a no-op — the row is kept so
+    /// temporarily-offline media (unmounted drives, network shares) keeps
+    /// its metadata, matching Winamp. This schema has no "mark broken"
+    /// state to fall back to; do not invent one here.
+    pub fn apply_watch_action(
+        &self,
+        action: &crate::watch::WatchAction,
+        remove_missing: bool,
+    ) -> Result<()> {
+        use crate::watch::WatchAction;
+
+        match action {
+            WatchAction::Upsert(path) => {
+                let Some(path) = path.to_str() else {
+                    eprintln!(
+                        "apply_watch_action: skipping non-UTF8 path: {}",
+                        path.to_string_lossy()
+                    );
+                    return Ok(());
+                };
+
+                let folder_id = self.owning_folder_id(path)?;
+
+                let filename = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let filetype = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase());
+                let now = timeutil::format_current_timestamp();
+                self.conn.execute(
+                    "INSERT INTO tracks (path, folder_id, filename, filetype, play_count, added_at)
+                     VALUES (?1, ?2, ?3, ?4, 0, ?5)
+                     ON CONFLICT(path) DO NOTHING",
+                    params![path, folder_id, filename, filetype, now],
+                )?;
+
+                match folder_id {
+                    Some(fid) => self.upsert_track(fid, path)?,
+                    None => self.update_track_metadata_only(path)?,
+                }
+                Ok(())
+            }
+            WatchAction::Remove(path) => {
+                if !remove_missing {
+                    return Ok(());
+                }
+                let Some(path) = path.to_str() else {
+                    eprintln!(
+                        "apply_watch_action: skipping non-UTF8 path: {}",
+                        path.to_string_lossy()
+                    );
+                    return Ok(());
+                };
+                self.conn
+                    .execute("DELETE FROM tracks WHERE path = ?1", params![path])?;
+                Ok(())
+            }
+        }
     }
 
     /// Return all track IDs in a folder, for soft-delete UI updates.
@@ -592,49 +772,7 @@ impl MediaLibrary {
     /// re-scanning an already-indexed file refreshes its metadata.
     pub(super) fn upsert_track(&self, folder_id: i64, path: &str) -> Result<()> {
         let p = Path::new(path);
-
-        // Derive filename and filetype from the path.
-        let filename = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        let filetype = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase());
-
-        // Try ID3 first (MP3 and some other formats).  Fall back to Symphonia.
-        let tags = read_track_tags(p);
-
-        // Probe duration: Symphonia fast-path, then GStreamer Discoverer fallback
-        // for CBR MP3 and formats Symphonia can't measure from headers alone.
-        let length_secs = crate::duration_probe::probe_duration(p)
-            .or_else(|| crate::duration_probe::discover_duration(p))
-            .map(|d| d.as_secs_f64());
-
-        // Technical columns: codec header (sample rate / channels), file
-        // size and mtime from the filesystem, average bitrate derived from
-        // size ÷ duration, and MP3 VBR/CBR mode sniffed from the Xing/Info
-        // header. All degrade to NULL on error rather than failing the scan.
-        let tech = crate::technical_probe::probe_technical(p);
-        let fs_meta = std::fs::metadata(p).ok();
-        let file_size = fs_meta.as_ref().map(|m| m.len() as i64);
-        let file_mtime = fs_meta
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .map(crate::timeutil::format_system_time);
-        let computed_bitrate = file_size
-            .zip(length_secs)
-            .and_then(|(sz, len)| crate::technical_probe::avg_bitrate_kbps(sz as u64, len));
-        let bitrate = Self::resolve_bitrate(computed_bitrate, tags.bitrate);
-        let channels = tech.channels.or(tags.channels);
-        let bitrate_mode = crate::technical_probe::mp3_bitrate_mode(p).map(str::to_string);
-        // added_at: used verbatim on first insert. On conflict it only heals
-        // a pre-existing NULL (row from before this column existed, or any
-        // other insert path that skipped it) — see the COALESCE in the ON
-        // CONFLICT clause below. A real added_at value is never overwritten.
-        let now = crate::timeutil::format_current_timestamp();
+        let m = ProbedTrackMetadata::probe(p);
 
         // Keep existing play_count and last_played if the row already exists.
         self.conn.execute(
@@ -682,40 +820,98 @@ impl MediaLibrary {
             params![
                 path,
                 folder_id,
-                tags.artist,
-                tags.title,
-                tags.album,
-                tags.track_num,
-                tags.genre,
-                tags.year,
-                tags.bpm,
-                length_secs,
-                bitrate,
-                channels,
-                filetype,
-                filename,
-                tags.comment,
-                tags.album_artist,
-                tags.disc_num,
-                tags.disc_total,
-                tags.composer,
-                tags.original_artist,
-                tags.copyright,
-                tags.url,
-                tags.encoded_by,
-                tags.lyric,
-                tags.artwork_path,
-                tech.sample_rate,
-                file_size,
-                file_mtime,
-                now,
-                bitrate_mode,
+                m.tags.artist,
+                m.tags.title,
+                m.tags.album,
+                m.tags.track_num,
+                m.tags.genre,
+                m.tags.year,
+                m.tags.bpm,
+                m.length_secs,
+                m.bitrate,
+                m.channels,
+                m.filetype,
+                m.filename,
+                m.tags.comment,
+                m.tags.album_artist,
+                m.tags.disc_num,
+                m.tags.disc_total,
+                m.tags.composer,
+                m.tags.original_artist,
+                m.tags.copyright,
+                m.tags.url,
+                m.tags.encoded_by,
+                m.tags.lyric,
+                m.tags.artwork_path,
+                m.sample_rate,
+                m.file_size,
+                m.file_mtime,
+                m.now,
+                m.bitrate_mode,
             ],
         )?;
         // This WAS a full scan (tags + duration read above), so stamp it.
         // Without the stamp, freshly imported rows (ripped CDs, drag-imports)
         // keep a NULL last_scanned and wear the "not yet scanned" clock icon
         // until some later folder rescan happens to touch them.
+        self.update_last_scanned(path)?;
+        Ok(())
+    }
+
+    /// Fill in metadata for a track outside every watched folder (a NULL
+    /// `folder_id`), without touching `folder_id` at all — used by
+    /// `apply_watch_action` after its NULL-folder fast-insert. Can't reuse
+    /// `upsert_track` for this: its ON CONFLICT clause unconditionally sets
+    /// `folder_id = excluded.folder_id`, and there is no real folder id to
+    /// give it, so we'd either clobber the intended NULL or a legitimate
+    /// pre-existing value. Assumes the row already exists (the caller's
+    /// fast-insert guarantees this); a no-op if it doesn't.
+    fn update_track_metadata_only(&self, path: &str) -> Result<()> {
+        let p = Path::new(path);
+        let m = ProbedTrackMetadata::probe(p);
+
+        self.conn.execute(
+            "UPDATE tracks SET
+                artist = ?1, title = ?2, album = ?3, track_num = ?4, genre = ?5, year = ?6,
+                bpm = ?7, length_secs = ?8, bitrate = ?9, channels = ?10, filetype = ?11,
+                filename = ?12, comment = ?13, album_artist = ?14, disc_num = ?15,
+                disc_total = ?16, composer = ?17, original_artist = ?18, copyright = ?19,
+                url = ?20, encoded_by = ?21, lyric = ?22, artwork_path = ?23,
+                sample_rate = ?24, file_size = ?25, file_mtime = ?26, bitrate_mode = ?27,
+                added_at = COALESCE(added_at, ?28)
+             WHERE path = ?29",
+            params![
+                m.tags.artist,
+                m.tags.title,
+                m.tags.album,
+                m.tags.track_num,
+                m.tags.genre,
+                m.tags.year,
+                m.tags.bpm,
+                m.length_secs,
+                m.bitrate,
+                m.channels,
+                m.filetype,
+                m.filename,
+                m.tags.comment,
+                m.tags.album_artist,
+                m.tags.disc_num,
+                m.tags.disc_total,
+                m.tags.composer,
+                m.tags.original_artist,
+                m.tags.copyright,
+                m.tags.url,
+                m.tags.encoded_by,
+                m.tags.lyric,
+                m.tags.artwork_path,
+                m.sample_rate,
+                m.file_size,
+                m.file_mtime,
+                m.bitrate_mode,
+                m.now,
+                path,
+            ],
+        )?;
         self.update_last_scanned(path)?;
         Ok(())
     }
