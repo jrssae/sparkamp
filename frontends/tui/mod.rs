@@ -583,9 +583,10 @@ impl App {
         // If startup rescan is enabled, run it now in a background thread
         // so the TUI becomes interactive immediately.
         if config.media_library.rescan_on_startup {
-            std::thread::spawn(|| {
+            let remove_missing = config.media_library.remove_missing_on_rescan;
+            std::thread::spawn(move || {
                 if let Ok(lib) = crate::media_library::MediaLibrary::open() {
-                    let _ = lib.rescan_all();
+                    let _ = lib.rescan_all(remove_missing);
                 }
             });
         }

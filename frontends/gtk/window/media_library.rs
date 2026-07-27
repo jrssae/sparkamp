@@ -5122,6 +5122,10 @@ fn open_media_library_window(
                             std::sync::mpsc::channel::<Result<usize, String>>();
 
                         let cancel_thread = cancel_flag.clone();
+                        // Read the config bool on the GTK thread before handing off —
+                        // AppState (holds Player/GStreamer state) isn't Send.
+                        let remove_missing =
+                            state_inner.borrow().config.media_library.remove_missing_on_rescan;
                         std::thread::spawn(move || {
                             let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
@@ -5139,7 +5143,9 @@ fn open_media_library_window(
                                 Ok(r) => r.id(),
                             };
                             // Phase 1: insert file paths into DB (fast).
-                            if let Err(e) = lib.rescan_folder_fast(folder_id, &path_str) {
+                            if let Err(e) =
+                                lib.rescan_folder_fast(folder_id, &path_str, remove_missing)
+                            {
                                 let _ = fast_tx
                                     .send(Err(format!("Scan error for '{}': {e}", path_str)));
                                 return;

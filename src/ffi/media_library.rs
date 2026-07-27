@@ -254,7 +254,11 @@ pub unsafe extern "C" fn sparkamp_ml_add_folder(
             return;
         }
     };
-    if let Err(e) = ml.rescan_folder_fast(folder_id, &path_str) {
+    if let Err(e) = ml.rescan_folder_fast(
+        folder_id,
+        &path_str,
+        ctx.config.media_library.remove_missing_on_rescan,
+    ) {
         eprintln!("[sparkamp_ml_add_folder] rescan_fast: {e}");
         return;
     }
@@ -348,9 +352,10 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_all(
     let Some(ml) = &ctx.media_library else { return };
 
     // Fast phase: re-discover any new files in all folders.
+    let remove_missing = ctx.config.media_library.remove_missing_on_rescan;
     let folders = ml.list_folders().unwrap_or_default();
     for (folder_id, folder_path) in &folders {
-        if let Err(e) = ml.rescan_folder_fast(*folder_id, folder_path) {
+        if let Err(e) = ml.rescan_folder_fast(*folder_id, folder_path, remove_missing) {
             eprintln!("[sparkamp_ml_rescan_all] fast rescan {folder_path}: {e}");
         }
     }

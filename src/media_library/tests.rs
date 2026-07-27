@@ -212,7 +212,7 @@ fn remove_folder_deletes_tracks() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    let (added, _) = lib.rescan_folder_fast(folder_id, path).unwrap();
+    let (added, _) = lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     assert_eq!(added, 3, "fast scan should have added 3 files");
     assert_eq!(lib.all_tracks().unwrap().len(), 3);
@@ -235,7 +235,7 @@ fn rescan_folder_fast_inserts_audio_files() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    let (added, _) = lib.rescan_folder_fast(folder_id, path).unwrap();
+    let (added, _) = lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     assert_eq!(added, 3);
     let tracks = lib.all_tracks().unwrap();
@@ -252,7 +252,7 @@ fn rescan_folder_fast_handles_multiple_extensions() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    let (added, _) = lib.rescan_folder_fast(folder_id, path).unwrap();
+    let (added, _) = lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     assert_eq!(added, 4);
 }
@@ -261,7 +261,7 @@ fn rescan_folder_fast_handles_multiple_extensions() {
 fn rescan_folder_fast_skips_nonexistent_paths() {
     let (lib, _db) = temp_lib();
     let folder_id = lib.add_folder("/nonexistent/path/xyz").unwrap().id();
-    let result = lib.rescan_folder_fast(folder_id, "/nonexistent/path/xyz");
+    let result = lib.rescan_folder_fast(folder_id, "/nonexistent/path/xyz", true);
     assert!(result.is_ok());
 }
 
@@ -277,15 +277,80 @@ fn rescan_folder_fast_removes_deleted_files() {
     fs::write(dir.path().join("a.mp3"), b"x").unwrap();
     fs::write(dir.path().join("b.mp3"), b"x").unwrap();
     fs::write(dir.path().join("c.mp3"), b"x").unwrap();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
     assert_eq!(lib.all_tracks().unwrap().len(), 3);
 
     // Delete one file and rescan.
     fs::remove_file(dir.path().join("b.mp3")).unwrap();
-    let (_, removed) = lib.rescan_folder_fast(folder_id, path).unwrap();
+    let (_, removed) = lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     assert_eq!(removed, 1);
     assert_eq!(lib.all_tracks().unwrap().len(), 2);
+}
+
+// ── remove_missing gating (Phase 8 Task 6) ──────────────────────────────
+// USER-DECIDED 2026-07-27: remove_missing=false is the new production
+// default and KEEPS rows for files that vanished from disk (Winamp
+// offline-media parity); remove_missing=true reproduces today's
+// unconditional hard-delete. Both rescan_folder and rescan_folder_fast
+// share the identical gated loop; rescan_folder_fast is exercised here
+// since the rest of this test module already does.
+
+#[test]
+fn rescan_remove_missing_off_keeps_row() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let path = dir.path().to_str().unwrap();
+    let file_path = dir.path().join("track_0.mp3");
+
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    assert_eq!(lib.all_tracks().unwrap().len(), 1);
+
+    fs::remove_file(&file_path).unwrap();
+    let (_, removed) = lib.rescan_folder_fast(folder_id, path, false).unwrap();
+
+    assert_eq!(removed, 0, "removed count must be 0 when remove_missing is off");
+    assert_eq!(
+        lib.all_tracks().unwrap().len(),
+        1,
+        "row for the missing file must be kept (offline-media parity)"
+    );
+}
+
+#[test]
+fn rescan_remove_missing_on_deletes_row() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let path = dir.path().to_str().unwrap();
+    let file_path = dir.path().join("track_0.mp3");
+
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    assert_eq!(lib.all_tracks().unwrap().len(), 1);
+
+    fs::remove_file(&file_path).unwrap();
+    let (_, removed) = lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    assert_eq!(removed, 1);
+    assert_eq!(
+        lib.all_tracks().unwrap().len(),
+        0,
+        "row for the missing file must be deleted when remove_missing is on"
+    );
+}
+
+#[test]
+fn compact_runs_without_error() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let path = dir.path().to_str().unwrap();
+
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    lib.remove_folder(folder_id).unwrap();
+
+    assert!(lib.compact().is_ok());
 }
 
 #[test]
@@ -296,7 +361,7 @@ fn rescan_folder_fast_upserts_m3u_playlists() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let playlists = lib.all_playlists().unwrap();
     assert_eq!(playlists.len(), 1);
@@ -320,7 +385,7 @@ fn production_scan_flow_stamps_added_at_and_keeps_it_stable() {
     let folder_id = lib.add_folder(path).unwrap().id();
 
     // Step 1: fast path-only insert (what "Add folder" / "Rescan" do first).
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Step 2: the real background metadata pass (mtime smart-skip).
     let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -364,7 +429,7 @@ fn scan_all_folders_backfills_null_sample_rate_for_previously_scanned_row() {
     let folder_path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(folder_path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, folder_path).unwrap();
+    lib.rescan_folder_fast(folder_id, folder_path, true).unwrap();
 
     // Simulate a row scanned before this phase shipped: last_scanned is set
     // (mtime-skip would normally leave it alone) but sample_rate — a column
@@ -401,7 +466,7 @@ fn rescan_folder_metadata_reports_progress() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let progress_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
@@ -432,7 +497,7 @@ fn rescan_folder_metadata_respects_cancel() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -451,7 +516,7 @@ fn rescan_folder_metadata_sets_last_scanned() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Verify tracks have no last_scanned yet
     let tracks_before = lib.all_tracks().unwrap();
@@ -476,7 +541,7 @@ fn rescan_track_updates_metadata() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Get first track path
     let tracks = lib.all_tracks().unwrap();
@@ -559,7 +624,7 @@ fn scan_folder_scans_never_scanned() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap(); // Add tracks
+    lib.rescan_folder_fast(folder_id, path, true).unwrap(); // Add tracks
 
     // Verify tracks have no last_scanned yet
     let tracks_before = lib.all_tracks().unwrap();
@@ -590,7 +655,7 @@ fn scan_folder_skips_unchanged_files() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Scan once
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -611,7 +676,7 @@ fn scan_folder_rescans_changed_files() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Scan once
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -636,7 +701,7 @@ fn scan_folder_respects_cancel() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -658,9 +723,9 @@ fn scan_all_folders_processes_all_folders() {
     let folder_id1 = lib.add_folder(dir1.path().to_str().unwrap()).unwrap().id();
     let folder_id2 = lib.add_folder(dir2.path().to_str().unwrap()).unwrap().id();
 
-    lib.rescan_folder_fast(folder_id1, dir1.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id1, dir1.path().to_str().unwrap(), true)
         .unwrap();
-    lib.rescan_folder_fast(folder_id2, dir2.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id2, dir2.path().to_str().unwrap(), true)
         .unwrap();
 
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -681,9 +746,9 @@ fn scan_all_folders_cumulative_progress() {
     let folder_id1 = lib.add_folder(dir1.path().to_str().unwrap()).unwrap().id();
     let folder_id2 = lib.add_folder(dir2.path().to_str().unwrap()).unwrap().id();
 
-    lib.rescan_folder_fast(folder_id1, dir1.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id1, dir1.path().to_str().unwrap(), true)
         .unwrap();
-    lib.rescan_folder_fast(folder_id2, dir2.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id2, dir2.path().to_str().unwrap(), true)
         .unwrap();
 
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -721,7 +786,7 @@ fn remove_track_deletes_from_db() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let tracks = lib.all_tracks().unwrap();
     assert_eq!(tracks.len(), 2);
@@ -753,7 +818,7 @@ fn remove_tracks_streaming_sends_ids_and_returns_count() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let tracks = lib.all_tracks().unwrap();
     assert_eq!(tracks.len(), 5);
@@ -789,7 +854,7 @@ fn remove_tracks_streaming_large_batch_chunks_correctly() {
     }
     let path = dir.path().to_str().unwrap();
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let ids: Vec<i64> = lib.all_tracks().unwrap().iter().map(|t| t.id).collect();
     assert_eq!(ids.len(), BATCH);
@@ -820,7 +885,7 @@ fn soft_delete_marks_tracks_with_timestamp() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let tracks = lib.all_tracks().unwrap();
     let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
@@ -842,7 +907,7 @@ fn purge_deleted_removes_marked_tracks() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let tracks = lib.all_tracks().unwrap();
     let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
@@ -866,7 +931,7 @@ fn purge_keeps_active_tracks() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let tracks = lib.all_tracks().unwrap();
     let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
@@ -888,7 +953,7 @@ fn cleanup_on_startup_purges_deleted() {
     let path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     let tracks = lib.all_tracks().unwrap();
     let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
@@ -1041,7 +1106,7 @@ fn record_play_increments_play_count() {
     fs::write(&file_path, b"fake").unwrap();
 
     let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true)
         .unwrap();
 
     // play_count starts at 0.
@@ -1064,7 +1129,7 @@ fn record_play_accumulates_multiple_calls() {
     fs::write(&file_path, b"fake").unwrap();
 
     let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true)
         .unwrap();
 
     for i in 1..=5 {
@@ -1083,7 +1148,7 @@ fn record_play_updates_last_played_timestamp() {
     fs::write(&file_path, b"fake").unwrap();
 
     let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true)
         .unwrap();
 
     lib.record_play(path).unwrap();
@@ -1119,7 +1184,7 @@ fn play_snapshot_reads_preplay_values() {
     fs::write(&file_path, b"fake").unwrap();
 
     let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap())
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true)
         .unwrap();
 
     // Track present, never played.
@@ -1371,7 +1436,7 @@ fn load_playlist_prefers_accessible_path_over_stale_catalogue_row() {
     let stale_dir = tempfile::tempdir().unwrap();
     fs::write(stale_dir.path().join("song.mp3"), b"x").unwrap();
     let fid = lib.add_folder(stale_dir.path().to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(fid, stale_dir.path().to_str().unwrap()).unwrap();
+    lib.rescan_folder_fast(fid, stale_dir.path().to_str().unwrap(), true).unwrap();
     fs::remove_file(stale_dir.path().join("song.mp3")).unwrap();
 
     // A different, accessible "song.mp3" referenced by the playlist file.
@@ -1545,7 +1610,7 @@ fn search_tracks_matches_case_insensitive_substrings() {
     let dir = temp_dir_with_files("mp3", 3);
     let path = dir.path().to_str().unwrap();
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     assert_eq!(lib.search_tracks("TRACK_").unwrap().len(), 3);
     let one = lib.search_tracks("track_1").unwrap();
@@ -1560,7 +1625,7 @@ fn search_tracks_with_empty_query_returns_nothing() {
     let dir = temp_dir_with_files("mp3", 2);
     let path = dir.path().to_str().unwrap();
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Consistent with the jump window: empty (or whitespace) query = empty
     // result, not "everything".
@@ -1574,7 +1639,7 @@ fn search_words_all_have_to_match_and_sort_is_honored() {
     let dir = temp_dir_with_files("mp3", 3);
     let path = dir.path().to_str().unwrap();
     let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path).unwrap();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
 
     // Two words AND together: "track" hits all, "_2" narrows to one.
     let hits = lib.search_tracks("track _2").unwrap();

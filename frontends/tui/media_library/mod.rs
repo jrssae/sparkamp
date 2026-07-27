@@ -552,12 +552,14 @@ impl App {
             self.open_media_library();
             return;
         }
+        let remove_missing = self.config.media_library.remove_missing_on_rescan;
         let result = if let Some(ref lib) = self.media_lib {
             match lib.add_folder(&path_str) {
                 Ok(add_result) => {
                     let is_new = matches!(add_result, AddFolderResult::New(_));
                     let folder_id = add_result.id();
-                    lib.rescan_folder(folder_id, &path_str).map(|r| (r, is_new))
+                    lib.rescan_folder(folder_id, &path_str, remove_missing)
+                        .map(|r| (r, is_new))
                 }
                 Err(e) => Err(e),
             }

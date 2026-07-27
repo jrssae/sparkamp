@@ -432,14 +432,16 @@ impl MediaLibrary {
     /// Rescan all watched folders.
     ///
     /// Calls [`rescan_folder`] for each folder in the `folders` table.
-    /// Returns the total `(added, removed)` counts across all folders.
-    pub fn rescan_all(&self) -> Result<(usize, usize)> {
+    /// `remove_missing` is threaded to every call — see [`rescan_folder`]
+    /// for what it gates. Returns the total `(added, removed)` counts
+    /// across all folders.
+    pub fn rescan_all(&self, remove_missing: bool) -> Result<(usize, usize)> {
         // Snapshot folders first to avoid re-borrowing conn inside the loop.
         let folders = self.list_folders()?;
         let mut total_added = 0usize;
         let mut total_removed = 0usize;
         for (id, path) in folders {
-            let (a, r) = self.rescan_folder(id, &path)?;
+            let (a, r) = self.rescan_folder(id, &path, remove_missing)?;
             total_added += a;
             total_removed += r;
         }
@@ -452,9 +454,20 @@ impl MediaLibrary {
     /// - Audio files (by extension) → upsert into `tracks`.
     /// - `.m3u8` / `.m3u` files → upsert into `playlists`.
     ///
-    /// Tracks that were previously in the DB but whose file no longer exists
-    /// on disk are removed.  Returns `(added, removed)` counts.
-    pub fn rescan_folder(&self, folder_id: i64, folder_path: &str) -> Result<(usize, usize)> {
+    /// `remove_missing` gates whether tracks previously in the DB but whose
+    /// file no longer exists on disk are deleted. USER-DECIDED (2026-07-27):
+    /// `false` (the new production default) KEEPS those rows — Winamp
+    /// offline-media parity, letting a temporarily-unmounted drive or
+    /// removable media come back without losing library metadata. `true`
+    /// reproduces the prior unconditional-delete behavior. Returns
+    /// `(added, removed)` counts; `removed` is always 0 when the flag is
+    /// off.
+    pub fn rescan_folder(
+        &self,
+        folder_id: i64,
+        folder_path: &str,
+        remove_missing: bool,
+    ) -> Result<(usize, usize)> {
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
         Self::walk_dir(
@@ -523,22 +536,26 @@ impl MediaLibrary {
             }
         }
 
-        // Remove tracks that belong to this folder but whose files no longer exist.
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
-        let existing: Vec<(i64, String)> = stmt
-            .query_map(params![folder_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        // Remove tracks that belong to this folder but whose files no longer
+        // exist — gated on remove_missing (see doc comment above): off keeps
+        // offline-media rows, so skip the query and DELETE loop entirely.
         let mut removed = 0usize;
-        for (id, path) in existing {
-            if !std::path::Path::new(&path).exists() {
-                self.conn
-                    .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
-                removed += 1;
+        if remove_missing {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
+            let existing: Vec<(i64, String)> = stmt
+                .query_map(params![folder_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            for (id, path) in existing {
+                if !std::path::Path::new(&path).exists() {
+                    self.conn
+                        .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
+                    removed += 1;
+                }
             }
         }
         Ok((added, removed))
@@ -547,7 +564,14 @@ impl MediaLibrary {
     /// Fast path: insert file paths only (no metadata).
     /// This returns immediately after collecting paths and inserting them into DB.
     /// Call `rescan_folder_metadata` after this to update metadata asynchronously.
-    pub fn rescan_folder_fast(&self, folder_id: i64, folder_path: &str) -> Result<(usize, usize)> {
+    /// `remove_missing` gates the same deletion loop as [`rescan_folder`] —
+    /// see its doc comment for the offline-media-parity rationale.
+    pub fn rescan_folder_fast(
+        &self,
+        folder_id: i64,
+        folder_path: &str,
+        remove_missing: bool,
+    ) -> Result<(usize, usize)> {
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
         Self::walk_dir(
@@ -637,22 +661,25 @@ impl MediaLibrary {
             }
         }
 
-        // Remove tracks that no longer exist.
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
-        let existing: Vec<(i64, String)> = stmt
-            .query_map(params![folder_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        // Remove tracks that no longer exist — gated on remove_missing, same
+        // rationale as rescan_folder's identical loop (offline-media parity).
         let mut removed = 0usize;
-        for (id, path) in existing {
-            if !std::path::Path::new(&path).exists() {
-                self.conn
-                    .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
-                removed += 1;
+        if remove_missing {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
+            let existing: Vec<(i64, String)> = stmt
+                .query_map(params![folder_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            for (id, path) in existing {
+                if !std::path::Path::new(&path).exists() {
+                    self.conn
+                        .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
+                    removed += 1;
+                }
             }
         }
         Ok((added, removed))
@@ -1139,5 +1166,15 @@ impl MediaLibrary {
         }
 
         Ok((total_scanned, total_skipped, total_failed))
+    }
+
+    /// Compact the database file with `VACUUM`, reclaiming space left by
+    /// deleted rows (e.g. from remove_missing rescans or folder removal).
+    /// Callers should run this after a full rescan when `compact_on_rescan`
+    /// is enabled — that wiring is a later task; this method just provides
+    /// the operation.
+    pub fn compact(&self) -> Result<()> {
+        self.conn.execute("VACUUM", [])?;
+        Ok(())
     }
 }

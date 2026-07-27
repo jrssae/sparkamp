@@ -1335,6 +1335,10 @@ fn open_settings_window(
                         );
                         let (fast_tx, fast_rx) =
                             std::sync::mpsc::channel::<Result<(), String>>();
+                        // Read the config bool on the GTK thread before handing off —
+                        // AppState (holds Player/GStreamer state) isn't Send.
+                        let remove_missing =
+                            state_rc.borrow().config.media_library.remove_missing_on_rescan;
                         std::thread::spawn(move || {
                             let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
@@ -1350,7 +1354,9 @@ fn open_settings_window(
                                     return;
                                 }
                             };
-                            if let Err(e) = lib.rescan_folder_fast(folder_id, &path_for_thread) {
+                            if let Err(e) =
+                                lib.rescan_folder_fast(folder_id, &path_for_thread, remove_missing)
+                            {
                                 let _ = fast_tx.send(Err(format!("Fast scan error: {e}")));
                                 return;
                             }
@@ -1408,6 +1414,10 @@ fn open_settings_window(
                     let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
                     let (result_tx, result_rx) =
                         std::sync::mpsc::channel::<Result<(bool, usize), String>>();
+                    // Read the config bool on the GTK thread before handing off —
+                    // AppState (holds Player/GStreamer state) isn't Send.
+                    let remove_missing =
+                        state_rc.borrow().config.media_library.remove_missing_on_rescan;
 
                     std::thread::spawn(move || {
                         let lib = match crate::media_library::MediaLibrary::open_at(
@@ -1429,7 +1439,9 @@ fn open_settings_window(
                         };
 
                         // Phase 1: fast scan
-                        if let Err(e) = lib.rescan_folder_fast(folder_id, &path_for_thread) {
+                        if let Err(e) =
+                            lib.rescan_folder_fast(folder_id, &path_for_thread, remove_missing)
+                        {
                             let _ = fast_tx.send(Err(format!("Fast scan error: {e}")));
                             return;
                         }
