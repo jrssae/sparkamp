@@ -143,6 +143,9 @@ impl Controller<'_> {
     /// track, pressing Next).  For back navigation and restarts use
     /// [`play_current_no_record`][Self::play_current_no_record] instead.
     pub fn play_current(&mut self) -> PlayResult {
+        // Explicit user-initiated playback cancels a pending stop-after-current
+        // (phase 6). Auto-advance uses play_current_no_record, so it is unaffected.
+        self.player.set_stop_after_current(false);
         let idx = self.playlist.current_index;
         self.shuffle_state.record_played(idx);
         self.play_current_no_record()
@@ -326,10 +329,17 @@ impl Controller<'_> {
         let current = self.playlist.current_index;
         let repeat = self.config.playback.repeat_mode;
 
+        // Stop-after-current (phase 6, key `t`) wins over queue/shuffle/linear
+        // on automatic EOS advance only. `take_` clears the arming so the very
+        // next EOS advances normally. Manual next/prev never reach this method.
+        if self.player.take_stop_after_current() {
+            let _ = self.player.stop();
+            return AdvanceResult::Stopped;
+        }
+
         // Manual queue wins over shuffle/linear on auto-advance too. Play the
         // queued entry directly; on load/play failure mark it broken and fall
         // through to the normal advance. Not recorded into shuffle history.
-        // phase 6: stop-after-current guards ABOVE this.
         if let Some(idx) = self.queue_next_index() {
             self.playlist.jump_to(idx);
             let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
@@ -565,6 +575,31 @@ mod tests {
         // Queue empty → linear resumes from T0's position → T1.
         assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
         assert_eq!(f.playlist.current_index, 1, "linear resumes from last-queued position");
+    }
+
+    #[test]
+    fn stop_after_current_halts_eos_advance_before_queue() {
+        // playlist [T0,T1,T2]; queue T2, arm stop-after-current.
+        let mut f = Fixture::new(3);
+        let id_t2 = f.playlist.tracks[2].id;
+        f.queue.enqueue(id_t2);
+        f.player.set_stop_after_current(true);
+
+        let result = f.ctrl().advance_to_next_playable();
+        assert!(matches!(result, AdvanceResult::Stopped), "armed EOS stops");
+        assert!(!f.player.stop_after_current(), "flag cleared after firing");
+        // Queue NOT consumed by the halt — the guard returns before
+        // queue_next_index, so the queued entry is still pending for next play.
+        assert_eq!(f.queue.len(), 1, "stop-after-current wins over the queue");
+        assert!(f.queue.contains(id_t2), "queued track still present");
+    }
+
+    #[test]
+    fn play_current_clears_stop_after_current() {
+        let mut f = Fixture::new(2);
+        f.player.set_stop_after_current(true);
+        let _ = f.ctrl().play_current();
+        assert!(!f.player.stop_after_current(), "manual play cancels the arming");
     }
 
     #[test]
