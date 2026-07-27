@@ -4048,6 +4048,24 @@ pub fn build(
     // Keyboard shortcuts — shared handler applied to player + playlist windows.
     // ══════════════════════════════════════════════════════════════════════════
 
+    // Shared volume step used by the -/= keys and the main-window ↑/↓ keys.
+    let step_volume: Rc<dyn Fn(f64)> = {
+        let state = state.clone();
+        let vol_bar = vol_bar.clone();
+        Rc::new(move |delta: f64| {
+            let new_vol = {
+                let s = state.borrow();
+                (s.config.playback.volume + delta).clamp(0.0, 1.0)
+            };
+            {
+                let mut s = state.borrow_mut();
+                s.config.playback.volume = new_vol;
+                s.player.set_volume(new_vol);
+            }
+            vol_bar.set_value(new_vol);
+        })
+    };
+
     let handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation> = {
         let state = state.clone();
         let play_and_update = play_and_update.clone();
@@ -4056,7 +4074,6 @@ pub fn build(
         let pl_status = pl_status_label.clone();
         let kbd_set_track = set_track.clone();
         let kbd_rebuild = rebuild_playlist.clone();
-        let kbd_vol_bar = vol_bar.clone();
         let kbd_seek_bar = seek_bar.clone();
         let playlist_win_wk = playlist_win.downgrade();
         // Strong reference: keeps the window alive even when hidden, so
@@ -4085,6 +4102,7 @@ pub fn build(
         let kbd_refresh_np = refresh_now_playing.clone();
         let kbd_stop_status = status_label.clone();
         let kbd_btn_ml = btn_ml.clone();
+        let kbd_step_volume = step_volume.clone();
 
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
@@ -4166,29 +4184,11 @@ pub fn build(
                 // GTK fires key-repeat while the key is held, so volume
                 // continues to ramp as long as the key is held down.
                 gdk::Key::minus => {
-                    let new_vol = {
-                        let s = state.borrow();
-                        (s.config.playback.volume - 0.05).clamp(0.0, 1.0)
-                    };
-                    {
-                        let mut s = state.borrow_mut();
-                        s.config.playback.volume = new_vol;
-                        s.player.set_volume(new_vol);
-                    }
-                    kbd_vol_bar.set_value(new_vol);
+                    kbd_step_volume(-0.05);
                     glib::Propagation::Stop
                 }
                 gdk::Key::equal | gdk::Key::plus => {
-                    let new_vol = {
-                        let s = state.borrow();
-                        (s.config.playback.volume + 0.05).clamp(0.0, 1.0)
-                    };
-                    {
-                        let mut s = state.borrow_mut();
-                        s.config.playback.volume = new_vol;
-                        s.player.set_volume(new_vol);
-                    }
-                    kbd_vol_bar.set_value(new_vol);
+                    kbd_step_volume(0.05);
                     glib::Propagation::Stop
                 }
 
@@ -4495,11 +4495,25 @@ pub fn build(
         let key_ctrl = EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let handler = handle_key.clone();
+        let wrap_step_volume = step_volume.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
             if matches!(key, gdk::Key::q | gdk::Key::Q)
                 && modifier.contains(gdk::ModifierType::CONTROL_MASK)
             {
                 return glib::Propagation::Stop;
+            }
+            // Main-window ↑/↓ = volume. The playlist window's own controller
+            // does NOT do this, so its TreeView keeps native row browse.
+            match key {
+                gdk::Key::Up => {
+                    wrap_step_volume(0.05);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Down => {
+                    wrap_step_volume(-0.05);
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
             }
             handler(key)
         });
