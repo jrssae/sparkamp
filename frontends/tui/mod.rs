@@ -93,6 +93,11 @@ pub enum Mode {
     Queue {
         selected: usize,
     },
+    /// o key: active-playlist ops popup (sort / randomize / reverse).
+    /// `selected` is the highlighted menu entry.
+    PlaylistOps {
+        selected: usize,
+    },
 }
 
 /// State for an in-progress background add-file scan.
@@ -805,6 +810,32 @@ impl App {
             }
             crate::controller::NavResult::NoTarget => {}
         }
+    }
+
+    /// Sort the active playlist by `key` (phase 7 playlist-ops popup).
+    ///
+    /// Mirrors the cursor-fix idiom used by move/remove: after the core op,
+    /// shuffle history is stale (positions changed under it) and the cursor
+    /// must be re-derived from `current_index` so it stays on the still-
+    /// playing track rather than whatever now occupies the old row.
+    pub(super) fn playlist_sort(&mut self, key: crate::model::SortKey) {
+        self.playlist.sort_by(key);
+        self.shuffle_state.reset();
+        self.playlist_cursor = self.playlist.current_index;
+    }
+
+    /// Reverse the active playlist order (phase 7 playlist-ops popup).
+    pub(super) fn playlist_reverse(&mut self) {
+        self.playlist.reverse();
+        self.shuffle_state.reset();
+        self.playlist_cursor = self.playlist.current_index;
+    }
+
+    /// Randomize the active playlist order (phase 7 playlist-ops popup).
+    pub(super) fn playlist_randomize(&mut self) {
+        self.playlist.randomize();
+        self.shuffle_state.reset();
+        self.playlist_cursor = self.playlist.current_index;
     }
 
     /// Seek forward (`secs` > 0) or backward (`secs` < 0) by that many seconds.

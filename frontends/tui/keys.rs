@@ -171,6 +171,7 @@ impl App {
             Mode::Normal => self.handle_normal(code),
             Mode::Jump { .. } => self.handle_jump(code),
             Mode::Queue { .. } => self.handle_queue(code),
+            Mode::PlaylistOps { .. } => self.handle_playlist_ops(code),
             Mode::AddFile { .. } => self.handle_add_file(code),
             Mode::MoveTrack { .. } => self.handle_move_track(code),
             Mode::RemoveTrack { .. } => self.handle_remove_track(code),
@@ -272,6 +273,11 @@ impl App {
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('q') | KeyCode::Char('Q') => {
                 self.mode = Mode::Queue { selected: 0 };
+            }
+
+            // o — playlist ops popup (sort / randomize / reverse).
+            KeyCode::Char('o') => {
+                self.mode = Mode::PlaylistOps { selected: 0 };
             }
 
             // Winamp bindings
@@ -692,6 +698,64 @@ impl App {
                         self.playlist.jump_to(idx);
                         self.play_current();
                     }
+                }
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    /// The active-playlist ops popup's menu entries, in display order.
+    /// Kept as a single source of truth for both the key handler (which
+    /// dispatches by index) and the overlay (which renders the labels).
+    pub(super) const PLAYLIST_OPS_LABELS: [&'static str; 7] = [
+        "Sort: Title",
+        "Sort: Artist",
+        "Sort: Album",
+        "Sort: Filename",
+        "Sort: Path",
+        "Randomize",
+        "Reverse",
+    ];
+
+    /// Set the PlaylistOps overlay's highlighted position (no-op outside
+    /// PlaylistOps mode).
+    fn set_playlist_ops_selected(&mut self, v: usize) {
+        if let Mode::PlaylistOps { ref mut selected } = self.mode {
+            *selected = v;
+        }
+    }
+
+    /// Key handling for the active-playlist ops popup (`Mode::PlaylistOps`).
+    ///   ↑/k ↓/j  navigate      Enter  run highlighted op & close
+    ///   Esc/o    close
+    pub(super) fn handle_playlist_ops(&mut self, code: KeyCode) {
+        let sel = if let Mode::PlaylistOps { selected } = self.mode {
+            selected
+        } else {
+            return;
+        };
+        let len = Self::PLAYLIST_OPS_LABELS.len();
+        match code {
+            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('O') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.set_playlist_ops_selected(sel.saturating_sub(1));
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.set_playlist_ops_selected((sel + 1).min(len.saturating_sub(1)));
+            }
+            KeyCode::Enter => {
+                match sel {
+                    0 => self.playlist_sort(crate::model::SortKey::Title),
+                    1 => self.playlist_sort(crate::model::SortKey::Artist),
+                    2 => self.playlist_sort(crate::model::SortKey::Album),
+                    3 => self.playlist_sort(crate::model::SortKey::Filename),
+                    4 => self.playlist_sort(crate::model::SortKey::Path),
+                    5 => self.playlist_randomize(),
+                    6 => self.playlist_reverse(),
+                    _ => {}
                 }
                 self.mode = Mode::Normal;
             }

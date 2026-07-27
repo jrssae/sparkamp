@@ -162,6 +162,47 @@ pub(super) fn draw_queue_overlay(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(hint, chunks[1]);
 }
 
+/// Render the active-playlist ops popup (`Mode::PlaylistOps`): a short menu
+/// of Sort / Randomize / Reverse operations run against the active playlist.
+pub(super) fn draw_playlist_ops_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let Mode::PlaylistOps { selected } = &app.mode else {
+        return;
+    };
+
+    let labels = App::PLAYLIST_OPS_LABELS;
+    let h = (labels.len() as u16 + 2).min(area.height.saturating_sub(4)).max(5);
+    let popup = Rect {
+        height: h,
+        ..centered_popup(area, 40, h)
+    };
+    frame.render_widget(Clear, popup);
+
+    let items: Vec<ListItem> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let style = if i == *selected {
+                Style::default().fg(Color::Black).bg(C_WARN)
+            } else {
+                Style::default().fg(C_TEXT)
+            };
+            ListItem::new(*label).style(style)
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(*selected));
+
+    let block = Block::default()
+        .title(Span::styled(" Playlist Ops ", Style::default().fg(C_WARN)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(C_WARN));
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().fg(Color::Black).bg(C_WARN));
+    frame.render_stateful_widget(list, popup, &mut list_state);
+}
+
 // ---------------------------------------------------------------------------
 // Add-file overlay
 // ---------------------------------------------------------------------------
@@ -333,6 +374,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![key("  j"), Span::raw("      Jump / search")]),
         Line::from(vec![key("  q"), Span::raw("      Play queue manager")]),
         Line::from(vec![key("  Ctrl+Q"), Span::raw(" Queue / dequeue highlighted track")]),
+        Line::from(vec![
+            key("  o"),
+            Span::raw("      Playlist ops (sort / randomize / reverse)"),
+        ]),
         Line::from(vec![key("  ↑  k"), Span::raw("    Browse up")]),
         Line::from(vec![key("  ↓  l"), Span::raw("    Browse down")]),
         Line::from(vec![key("  Enter"), Span::raw("   Play selected")]),
