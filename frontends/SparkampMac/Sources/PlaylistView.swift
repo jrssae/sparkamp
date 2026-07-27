@@ -442,7 +442,7 @@ struct PlaylistView: View {
     var body: some View {
         let vars = themeManager.currentVars
         return VStack(spacing: 0) {
-            // Status line: "N tracks · MM:SS total · MM:SS selected"
+            // Status line: "N tracks · MM:SS total · K selected · MM:SS"
             HStack {
                 Text(statusLine)
                     .font(vars.bodyFont)
@@ -545,10 +545,10 @@ struct PlaylistView: View {
     private var statusLine: String {
         let count = model.playlistItems.count
         let total = model.playlistItems.reduce(0) { $0 + max(Int($1.duration), 0) }
-        let sel = selection.isEmpty ? nil :
-            model.playlistItems.filter { selection.contains($0.id) }
-                 .reduce(0) { $0 + max(Int($1.duration), 0) }
-        return playlistStatusLine(count: count, totalSecs: total, selectedSecs: sel)
+        let selRows = model.playlistItems.filter { selection.contains($0.id) }
+        let sel: (count: Int, secs: Int)? = selRows.isEmpty ? nil :
+            (selRows.count, selRows.reduce(0) { $0 + max(Int($1.duration), 0) })
+        return playlistStatusLine(count: count, totalSecs: total, selected: sel)
     }
 
     /// Builds the right-click context menu shown when the user opens it

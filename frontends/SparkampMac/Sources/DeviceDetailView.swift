@@ -564,7 +564,7 @@ struct DeviceDetailView: View {
         .customizationID("col-syncedfrom")
     }
 
-    /// "N tracks · MM:SS total · MM:SS selected" — reflects `sortedTracks`
+    /// "N tracks · MM:SS total · K selected · MM:SS" — reflects `sortedTracks`
     /// (the playlist-chip + search-filtered, sorted rows actually shown in
     /// `filesTable`), same as `dev_status_bar` reads the filtered store in GTK.
     private var filesStatusLine: String {
@@ -575,8 +575,9 @@ struct DeviceDetailView: View {
         // `selection` still holds their ids, which must omit the "selected"
         // clause rather than show "· 0:00 selected".
         let selRows = rows.filter { selection.contains($0.path) }
-        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
-        return playlistStatusLine(count: rows.count, totalSecs: total, selectedSecs: sel)
+        let sel: (count: Int, secs: Int)? = selRows.isEmpty ? nil :
+            (selRows.count, selRows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) })
+        return playlistStatusLine(count: rows.count, totalSecs: total, selected: sel)
     }
 
     @ViewBuilder

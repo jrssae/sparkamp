@@ -707,7 +707,7 @@ struct MediaLibraryView: View {
         )
     }
 
-    /// "N tracks · MM:SS total · MM:SS selected" — mirrors the active
+    /// "N tracks · MM:SS total · K selected · MM:SS" — mirrors the active
     /// playlist's status line (`playlistStatusLine` / src/playlist_status.rs).
     private var filesStatusLine: String {
         let total = model.mlTracks.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
@@ -716,8 +716,9 @@ struct MediaLibraryView: View {
         // row while `selection` still holds their ids, which must omit the
         // "selected" clause rather than show "· 0:00 selected".
         let selRows = model.mlTracks.filter { selection.contains($0.id) }
-        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
-        return playlistStatusLine(count: model.mlTracks.count, totalSecs: total, selectedSecs: sel)
+        let sel: (count: Int, secs: Int)? = selRows.isEmpty ? nil :
+            (selRows.count, selRows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) })
+        return playlistStatusLine(count: model.mlTracks.count, totalSecs: total, selected: sel)
     }
 
     @ViewBuilder

@@ -856,7 +856,7 @@ struct DiscDriveView: View {
         model.discFiles.filter { ids.contains($0.id) }.map(\.path)
     }
 
-    /// "N tracks · MM:SS total · MM:SS selected" for the disc-files browser —
+    /// "N tracks · MM:SS total · K selected · MM:SS" for the disc-files browser —
     /// mirrors GTK's `disc_status_bar` (DiscFile-boxed rows, extracted via
     /// `duration_secs`). `durationSecs` is `nil` for a file whose length
     /// couldn't be read; it's treated as 0 seconds, same as GTK's `.unwrap_or(0.0)`.
@@ -868,8 +868,9 @@ struct DiscDriveView: View {
         // whose ids no longer match `files` must omit the "selected" clause
         // rather than show "· 0:00 selected").
         let selRows = files.filter { discFilesSelection.contains($0.id) }
-        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + Int($1.durationSecs ?? 0) }
-        return playlistStatusLine(count: files.count, totalSecs: total, selectedSecs: sel)
+        let sel: (count: Int, secs: Int)? = selRows.isEmpty ? nil :
+            (selRows.count, selRows.reduce(0) { $0 + Int($1.durationSecs ?? 0) })
+        return playlistStatusLine(count: files.count, totalSecs: total, selected: sel)
     }
 
     /// Browsable file list for a non-blank, non-audio disc (a burned data
@@ -936,7 +937,7 @@ struct DiscDriveView: View {
                     model.addFiles(pathsFor(ids).map { URL(fileURLWithPath: $0) })
                 }
 
-                // ── Status bar: "N tracks · MM:SS total · MM:SS selected" ──────
+                // ── Status bar: "N tracks · MM:SS total · K selected · MM:SS" ──
                 HStack {
                     Text(discFilesStatusLine)
                         .font(vars.bodyFont)

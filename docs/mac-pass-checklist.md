@@ -684,7 +684,7 @@ by a single status line mirroring core `playlist_status_line`
 ## Task 3 — 2026-07-27: status bar on the four Media Library views (BLIND — Swift never compiled)
 
 `PlaylistView.formatStatus` (phase 7, `static` on `PlaylistView`) was lifted
-into a free top-level function `playlistStatusLine(count:totalSecs:selectedSecs:)`
+into a free top-level function `playlistStatusLine(count:totalSecs:selected:)`
 in a new `PlaylistStatus.swift`, byte-for-byte identical to the old body and
 to core `playlist_status_line` (`src/playlist_status.rs`). `PlaylistView`'s
 own status line now calls the free function instead of `Self.formatStatus`;
@@ -697,10 +697,10 @@ used at the bottom of all four Media Library list views, mirroring the GTK
   narrowing this array — `searchQuery` re-fetches from the DB), selected sum
   from `selection: Set<Int64>` matched against `MLTrack.id`. Duration field:
   `MLTrack.lengthSecs` (`Double`).
-- **Playlist editor** (`MLPlaylistEditor`, new bar appended as the LAST
-  element in the view, below the Save/Enqueue/Play button row — matches
-  where GTK's `pl_status_bar` was appended, i.e. bottom of the whole view,
-  not just under the table) — count/total from `sortedRows` (the
+- **Playlist editor** (`MLPlaylistEditor`, bar moved to sit directly BELOW
+  the track `Table` and ABOVE the Save/Enqueue/Play button row — matches
+  the active-playlist window's placement rather than GTK's literal
+  bottom-of-view append order) — count/total from `sortedRows` (the
   currently-displayed, search-filtered + sorted rows — same rows the table
   renders), selected sum from `trackSelection: Set<Int>` matched against
   `MLEditingRow.id`. Duration field: `MLEditingRow.track.lengthSecs`
@@ -725,10 +725,11 @@ used at the bottom of all four Media Library list views, mirroring the GTK
   was removed since the new bottom bar now shows count + duration +
   selection in one place.
 
-- [ ] Each of the four views shows `N tracks · MM:SS total` at the bottom
-      with nothing selected.
-- [ ] Each adds `· MM:SS selected` the moment ≥1 row is selected, and drops
-      it again back to no selected-clause when selection clears.
+- [ ] Each of the four views shows `N tracks · MM:SS total`, directly below
+      its list/table and above its control-button row, with nothing selected.
+- [ ] Each adds `· K selected · MM:SS` (selected COUNT + duration) the
+      moment ≥1 row is selected, and drops it again back to no
+      selected-clause when selection clears.
 - [ ] Format matches the active playlist exactly: singular "1 track" with
       exactly one row, `M:SS` under an hour, `H:MM:SS` at/above an hour, for
       both the total and the selected clause independently.
@@ -752,12 +753,10 @@ used at the bottom of all four Media Library list views, mirroring the GTK
   filter to double-check — the displayed array IS the query result. Should
   be a non-issue, but flag if the Files view's count ever looks like it's
   counting a stale pre-search array.
-- Placement choice for the playlist editor's bar (bottom of the WHOLE view,
-  below the button row, rather than immediately under the table) was picked
-  to mirror GTK's literal `edit_vbox.append(&pl_status_bar)` ordering (after
-  `edit_btn_row`). If this reads oddly in Xcode (buttons, then a stray status
-  line below them), moving the `HStack` up to directly follow `MLEditorTable`
-  is a trivial one-block move.
+- Playlist editor's bar was subsequently moved (per explicit follow-up
+  request) from bottom-of-view to directly under `MLEditorTable`, above the
+  button row — now matches the active-playlist window's placement instead of
+  GTK's literal `edit_vbox.append(&pl_status_bar)` order.
 - Disc-files status bar placement (between the table and the "Add
   Selected/Add All" row) is a judgment call — GTK's own layout for that
   region doesn't map cleanly onto Mac's existing button placement, so this

@@ -108,6 +108,19 @@ struct MLPlaylistEditor: View {
             )
             .background(theme.playlistBg)
 
+            // ── Status bar: "N tracks · MM:SS total · K selected · MM:SS" ──────
+            // Mirrors the active playlist's status line; reflects the currently
+            // displayed (searched/sorted) rows, same as `sortedRows` drives the table.
+            HStack {
+                Text(statusLine)
+                    .font(theme.vars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(theme.background)
+
             Divider().background(theme.windowBorder)
 
             // ── Controls ───────────────────────────────────────────────────────
@@ -186,19 +199,6 @@ struct MLPlaylistEditor: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(theme.background)
-
-            // ── Status bar: "N tracks · MM:SS total · MM:SS selected" ──────────
-            // Mirrors the active playlist's status line; reflects the currently
-            // displayed (searched/sorted) rows, same as `sortedRows` drives the table.
-            HStack {
-                Text(statusLine)
-                    .font(theme.vars.bodyFont)
-                    .foregroundStyle(theme.playlistDurationText)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
             .background(theme.background)
         }
         .background(theme.playlistBg)
@@ -387,7 +387,7 @@ struct MLPlaylistEditor: View {
         }
     }
 
-    /// "N tracks · MM:SS total · MM:SS selected" for the status bar. Uses
+    /// "N tracks · MM:SS total · K selected · MM:SS" for the status bar. Uses
     /// `sortedRows` (not the canonical `editingRows`) so the count/total
     /// reflect whatever the user's search filter currently shows in the
     /// table — matches GTK's status bar, which reads the filtered store.
@@ -400,8 +400,9 @@ struct MLPlaylistEditor: View {
         // `trackSelection` still holds their ids, which must omit the
         // "selected" clause rather than show "· 0:00 selected".
         let selRows = rows.filter { trackSelection.contains($0.id) }
-        let sel: Int? = selRows.isEmpty ? nil : selRows.reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) }
-        return playlistStatusLine(count: count, totalSecs: total, selectedSecs: sel)
+        let sel: (count: Int, secs: Int)? = selRows.isEmpty ? nil :
+            (selRows.count, selRows.reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) })
+        return playlistStatusLine(count: count, totalSecs: total, selected: sel)
     }
 
     /// 1-based play-order position for a row id.  Returns 0 if the id
