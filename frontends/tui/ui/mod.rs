@@ -267,11 +267,24 @@ pub(super) fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
 /// scrolled to `app.marquee_offset` so it slides left when the text is wider
 /// than the available area.  The second line shows the playback state icon and
 /// track index.  The outer block carries the app title and playlist hints.
+/// Header state glyph. While *playing* and stop-after-current is armed, show a
+/// combined ▶⏹ so the armed flag is glanceable (parity with the GTK/mac play-
+/// button badge). Paused/stopped ignore the flag — it only fires from playback.
+pub(crate) fn state_glyph(state: PlayerState, stop_after_current: bool) -> &'static str {
+    match (state, stop_after_current) {
+        (PlayerState::Playing, true) => "▶⏹",
+        (PlayerState::Playing, false) => "▶",
+        (PlayerState::Paused, _) => "⏸",
+        (PlayerState::Stopped, _) => "⏹",
+    }
+}
+
 pub(super) fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
+    let armed = app.player.stop_after_current();
     let (state_icon, state_color) = match app.player.state() {
-        PlayerState::Playing => ("▶", C_PLAYING),
-        PlayerState::Paused => ("⏸", C_WARN),
-        PlayerState::Stopped => ("⏹", C_DIM),
+        PlayerState::Playing => (state_glyph(PlayerState::Playing, armed), C_PLAYING),
+        PlayerState::Paused => (state_glyph(PlayerState::Paused, armed), C_WARN),
+        PlayerState::Stopped => (state_glyph(PlayerState::Stopped, armed), C_DIM),
     };
 
     // Reserve 2 chars for the block borders; the inner width drives the
@@ -831,3 +844,17 @@ pub(super) fn sep() -> Span<'static> {
 // ---------------------------------------------------------------------------
 // Media library full-screen view
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod state_glyph_tests {
+    use super::{state_glyph, PlayerState};
+
+    #[test]
+    fn header_glyph_combines_play_and_stop_when_armed() {
+        assert_eq!(state_glyph(PlayerState::Playing, false), "▶");
+        assert_eq!(state_glyph(PlayerState::Playing, true), "▶⏹");
+        // Armed only matters while playing.
+        assert_eq!(state_glyph(PlayerState::Paused, true), "⏸");
+        assert_eq!(state_glyph(PlayerState::Stopped, true), "⏹");
+    }
+}

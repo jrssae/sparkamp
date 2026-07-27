@@ -275,8 +275,12 @@ impl App {
             }
 
             // Winamp bindings
-            KeyCode::Char('z') => self.play_prev(),
+            KeyCode::Char('z') => {
+                self.player.set_stop_after_current(false);
+                self.play_prev();
+            }
             KeyCode::Char('x') => {
+                self.player.set_stop_after_current(false);
                 if *self.player.state() == PlayerState::Stopped {
                     self.play_current();
                 } else {
@@ -289,11 +293,27 @@ impl App {
                 }
             }
             KeyCode::Char('v') => {
+                self.player.set_stop_after_current(false);
                 if let Err(e) = self.player.stop() {
                     self.set_status(format!("Error: {e}"));
                 }
             }
-            KeyCode::Char('b') => self.play_next(),
+            KeyCode::Char('b') => {
+                self.player.set_stop_after_current(false);
+                self.play_next();
+            }
+
+            // t — toggle stop-after-current (phase 6). Fires at the next EOS,
+            // then clears; the combined ▶⏹ header glyph shows it is armed.
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                let now = !self.player.stop_after_current();
+                self.player.set_stop_after_current(now);
+                self.set_status(if now {
+                    "Stopping after current track".to_string()
+                } else {
+                    "Stop-after-current cancelled".to_string()
+                });
+            }
 
             // Playlist editing
             // n — add file(s) or folder(s); supports comma-separated list.
