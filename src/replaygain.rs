@@ -454,6 +454,10 @@ pub fn write_mp3_replaygain_tags(
     }
     tag.write_to_path(path, Version::Id3v23)
         .map_err(|e| anyhow::anyhow!("write REPLAYGAIN tags to {}: {e}", path.display()))?;
+
+    // Suppress the watcher: this is Sparkamp's own write, not an external change.
+    crate::watch::register_self_write(path);
+
     Ok(WriteBackOutcome::Written)
 }
 

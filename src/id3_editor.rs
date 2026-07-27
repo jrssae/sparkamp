@@ -589,7 +589,13 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
 
     // Write to disk using ID3v2.3 for broad compatibility.
     tag.write_to_path(path, Version::Id3v23)
-        .with_context(|| format!("Failed to write ID3 tag to {}", path.display()))
+        .with_context(|| format!("Failed to write ID3 tag to {}", path.display()))?;
+
+    // Suppress the watcher: this is Sparkamp's own write, not an external
+    // change. Covers both tag edits and APIC artwork embedded above.
+    crate::watch::register_self_write(path);
+
+    Ok(())
 }
 
 /// Write a single extra frame (from the "Customize" panel) to the tag.
@@ -603,7 +609,12 @@ pub fn write_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()>
         tag.set_text(frame_id, value);
     }
     tag.write_to_path(path, Version::Id3v23)
-        .with_context(|| format!("Failed to write frame {} to {}", frame_id, path.display()))
+        .with_context(|| format!("Failed to write frame {} to {}", frame_id, path.display()))?;
+
+    // Suppress the watcher: this is Sparkamp's own write, not an external change.
+    crate::watch::register_self_write(path);
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +883,19 @@ mod tests {
             .unwrap_or("");
         assert_eq!(isrc, "US-ABC-12-34567");
         assert_eq!(tag_after.title().unwrap_or(""), "Updated");
+    }
+
+    #[test]
+    fn write_tag_fields_registers_self_write() {
+        let file = make_tagged_mp3("Old Title", "Old Artist", "Old Album");
+        let fields = TagFields {
+            title: "New Title".into(),
+            ..Default::default()
+        };
+
+        write_tag_fields(file.path(), &fields).unwrap();
+
+        assert!(crate::watch::is_path_suppressed(file.path()));
     }
 
     #[test]
