@@ -548,22 +548,7 @@ struct PlaylistView: View {
         let sel = selection.isEmpty ? nil :
             model.playlistItems.filter { selection.contains($0.id) }
                  .reduce(0) { $0 + max(Int($1.duration), 0) }
-        return Self.formatStatus(count: count, totalSecs: total, selectedSecs: sel)
-    }
-
-    /// Mirrors core `playlist_status_line` (src/playlist_status.rs) EXACTLY —
-    /// keep in sync. "N tracks · MM:SS total · MM:SS selected"; the selected
-    /// clause is present only when `selectedSecs` is non-nil.
-    static func formatStatus(count: Int, totalSecs: Int, selectedSecs: Int?) -> String {
-        func hms(_ s: Int) -> String {
-            let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
-            return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec)
-                         : String(format: "%d:%02d", m, sec)
-        }
-        let noun = count == 1 ? "track" : "tracks"
-        var line = "\(count) \(noun) · \(hms(totalSecs)) total"
-        if let sel = selectedSecs { line += " · \(hms(sel)) selected" }
-        return line
+        return playlistStatusLine(count: count, totalSecs: total, selectedSecs: sel)
     }
 
     /// Builds the right-click context menu shown when the user opens it

@@ -187,6 +187,19 @@ struct MLPlaylistEditor: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(theme.background)
+
+            // ── Status bar: "N tracks · MM:SS total · MM:SS selected" ──────────
+            // Mirrors the active playlist's status line; reflects the currently
+            // displayed (searched/sorted) rows, same as `sortedRows` drives the table.
+            HStack {
+                Text(statusLine)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.playlistDurationText)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(theme.background)
         }
         .background(theme.playlistBg)
         .onAppear { loadPlaylist() }
@@ -372,6 +385,20 @@ struct MLPlaylistEditor: View {
                 || t.genre.localizedCaseInsensitiveContains(searchText)
                 || t.filename.localizedCaseInsensitiveContains(searchText)
         }
+    }
+
+    /// "N tracks · MM:SS total · MM:SS selected" for the status bar. Uses
+    /// `sortedRows` (not the canonical `editingRows`) so the count/total
+    /// reflect whatever the user's search filter currently shows in the
+    /// table — matches GTK's status bar, which reads the filtered store.
+    private var statusLine: String {
+        let rows = sortedRows
+        let count = rows.count
+        let total = rows.reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) }
+        let sel = trackSelection.isEmpty ? nil :
+            rows.filter { trackSelection.contains($0.id) }
+                .reduce(0) { $0 + max(Int($1.track.lengthSecs), 0) }
+        return playlistStatusLine(count: count, totalSecs: total, selectedSecs: sel)
     }
 
     /// 1-based play-order position for a row id.  Returns 0 if the id

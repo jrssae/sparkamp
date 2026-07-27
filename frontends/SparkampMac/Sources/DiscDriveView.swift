@@ -856,6 +856,19 @@ struct DiscDriveView: View {
         model.discFiles.filter { ids.contains($0.id) }.map(\.path)
     }
 
+    /// "N tracks · MM:SS total · MM:SS selected" for the disc-files browser —
+    /// mirrors GTK's `disc_status_bar` (DiscFile-boxed rows, extracted via
+    /// `duration_secs`). `durationSecs` is `nil` for a file whose length
+    /// couldn't be read; it's treated as 0 seconds, same as GTK's `.unwrap_or(0.0)`.
+    private var discFilesStatusLine: String {
+        let files = model.discFiles
+        let total = files.reduce(0) { $0 + Int($1.durationSecs ?? 0) }
+        let sel = discFilesSelection.isEmpty ? nil :
+            files.filter { discFilesSelection.contains($0.id) }
+                .reduce(0) { $0 + Int($1.durationSecs ?? 0) }
+        return playlistStatusLine(count: files.count, totalSecs: total, selectedSecs: sel)
+    }
+
     /// Browsable file list for a non-blank, non-audio disc (a burned data
     /// disc, or any pressed/appended data media) — shown above the burn
     /// panel so its erase/reuse controls stay reachable for rewritable media.
@@ -872,9 +885,6 @@ struct DiscDriveView: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
-                Text("\(model.discFiles.count) file\(model.discFiles.count == 1 ? "" : "s")")
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.playlistDurationText)
             }
             .padding(.horizontal, 16)
             .padding(.top, 10)
@@ -922,6 +932,16 @@ struct DiscDriveView: View {
                     // autoplay semantics as any other ordinary file add.
                     model.addFiles(pathsFor(ids).map { URL(fileURLWithPath: $0) })
                 }
+
+                // ── Status bar: "N tracks · MM:SS total · MM:SS selected" ──────
+                HStack {
+                    Text(discFilesStatusLine)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.playlistDurationText)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
 
                 HStack(spacing: 10) {
                     Spacer()

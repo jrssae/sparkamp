@@ -707,17 +707,24 @@ struct MediaLibraryView: View {
         )
     }
 
+    /// "N tracks · MM:SS total · MM:SS selected" — mirrors the active
+    /// playlist's status line (`playlistStatusLine` / src/playlist_status.rs).
+    private var filesStatusLine: String {
+        let total = model.mlTracks.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
+        let sel = selection.isEmpty ? nil :
+            model.mlTracks.filter { selection.contains($0.id) }
+                .reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
+        return playlistStatusLine(count: model.mlTracks.count, totalSecs: total, selectedSecs: sel)
+    }
+
     @ViewBuilder
     private var filesBottomBar: some View {
         HStack {
-            Text("\(model.mlTracks.count) tracks")
+            Text(filesStatusLine)
                 .font(themeManager.currentVars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
             Spacer()
             if !selection.isEmpty {
-                Text("\(selection.count) selected")
-                    .font(themeManager.currentVars.bodyFont)
-                    .foregroundStyle(theme.playlistDurationText)
                 // GTK's "Send to ▾" MenuButton equivalent — same spec as the
                 // right-click "Send to" submenu, just as a top-level button
                 // (so it isn't nested under another "Send to" label).

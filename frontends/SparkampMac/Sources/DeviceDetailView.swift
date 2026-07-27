@@ -564,17 +564,24 @@ struct DeviceDetailView: View {
         .customizationID("col-syncedfrom")
     }
 
+    /// "N tracks · MM:SS total · MM:SS selected" — reflects `sortedTracks`
+    /// (the playlist-chip + search-filtered, sorted rows actually shown in
+    /// `filesTable`), same as `dev_status_bar` reads the filtered store in GTK.
+    private var filesStatusLine: String {
+        let rows = sortedTracks
+        let total = rows.reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
+        let sel = selection.isEmpty ? nil :
+            rows.filter { selection.contains($0.path) }
+                .reduce(0) { $0 + max(Int($1.lengthSecs), 0) }
+        return playlistStatusLine(count: rows.count, totalSecs: total, selectedSecs: sel)
+    }
+
     @ViewBuilder
     private var filesBottomBar: some View {
         HStack(spacing: 12) {
-            Text("\(model.deviceTracks.count) files")
+            Text(filesStatusLine)
                 .font(.system(size: 11))
                 .foregroundStyle(theme.playlistDurationText)
-            if !selection.isEmpty {
-                Text("\(selection.count) selected")
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.playlistDurationText)
-            }
             Spacer()
             Button(role: .destructive) {
                 requestDelete(paths(for: selection))

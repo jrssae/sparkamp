@@ -680,3 +680,86 @@ by a single status line mirroring core `playlist_status_line`
   open a menu whose every item would be a no-op — confirm this reads as
   correct UX rather than surprising (Add is never disabled, matching the
   old always-enabled Add buttons).
+
+## Task 3 — 2026-07-27: status bar on the four Media Library views (BLIND — Swift never compiled)
+
+`PlaylistView.formatStatus` (phase 7, `static` on `PlaylistView`) was lifted
+into a free top-level function `playlistStatusLine(count:totalSecs:selectedSecs:)`
+in a new `PlaylistStatus.swift`, byte-for-byte identical to the old body and
+to core `playlist_status_line` (`src/playlist_status.rs`). `PlaylistView`'s
+own status line now calls the free function instead of `Self.formatStatus`;
+the old `static func` is gone (was the only copy). The same function is now
+used at the bottom of all four Media Library list views, mirroring the GTK
+`ml_status_bar`/`ml_status_bar_for` change:
+
+- **Files view** (`MediaLibraryWindow.filesBottomBar`) — count/total from
+  `model.mlTracks` (all rows in the table; there's no live search-filter
+  narrowing this array — `searchQuery` re-fetches from the DB), selected sum
+  from `selection: Set<Int64>` matched against `MLTrack.id`. Duration field:
+  `MLTrack.lengthSecs` (`Double`).
+- **Playlist editor** (`MLPlaylistEditor`, new bar appended as the LAST
+  element in the view, below the Save/Enqueue/Play button row — matches
+  where GTK's `pl_status_bar` was appended, i.e. bottom of the whole view,
+  not just under the table) — count/total from `sortedRows` (the
+  currently-displayed, search-filtered + sorted rows — same rows the table
+  renders), selected sum from `trackSelection: Set<Int>` matched against
+  `MLEditingRow.id`. Duration field: `MLEditingRow.track.lengthSecs`
+  (`Double`).
+- **Device detail** (`DeviceDetailView.filesBottomBar`, already the last
+  element in the view — unchanged position) — count/total from
+  `sortedTracks` (playlist-chip-filtered + search-filtered + sorted, the
+  rows `filesTable` actually shows), selected sum from
+  `selection: Set<String>` matched against `DeviceTrack.path`. Duration
+  field: `DeviceTrack.lengthSecs` (`Double`). The old separate "N files" /
+  "N selected" texts were merged into the one status line; the destructive
+  action button to its right is unchanged.
+- **Disc drive — disc-files browser** (`DiscDriveView.dataDiscView`, new bar
+  inserted directly below the file `Table`, above the "Add Selected/Add All
+  to Library" button row — the audio-CD track list/`bottomBar` was
+  deliberately NOT touched, matching GTK: `ml_status_bar_for` was only wired
+  to the disc's DATA-file browser, never the audio-track table) — count/total
+  from `model.discFiles` (no search filter on this list), selected sum from
+  `discFilesSelection: Set<String>` matched against `DiscFile.path`. Duration
+  field: `DiscFile.durationSecs` (`UInt32?`, nil treated as 0 seconds, same
+  as GTK's `.unwrap_or(0.0)`). The header's old redundant "N file(s)" text
+  was removed since the new bottom bar now shows count + duration +
+  selection in one place.
+
+- [ ] Each of the four views shows `N tracks · MM:SS total` at the bottom
+      with nothing selected.
+- [ ] Each adds `· MM:SS selected` the moment ≥1 row is selected, and drops
+      it again back to no selected-clause when selection clears.
+- [ ] Format matches the active playlist exactly: singular "1 track" with
+      exactly one row, `M:SS` under an hour, `H:MM:SS` at/above an hour, for
+      both the total and the selected clause independently.
+- [ ] The bar updates live on selection change (click/⌘-click/shift-click)
+      and on list reload (rescan, add/remove tracks, playlist Save/Revert,
+      device sync, disc swap) — no stale count/duration lingering after any
+      of these.
+- [ ] Playlist editor: confirm the status bar reflects the SEARCH-FILTERED
+      view (type in "Search this playlist…" and confirm the count drops to
+      match only matching rows), not the full unsearched playlist.
+- [ ] Device detail: confirm the status bar reflects the selected playlist
+      chip filter too (switch from "All files" to a device playlist chip and
+      confirm the count matches just that playlist's entries).
+- [ ] Disc-files browser: confirm the bar is only present for a non-blank
+      data disc (hidden/absent state matches whenever `dataDiscView` itself
+      isn't shown — blank disc, audio CD, no disc).
+
+**Blind uncertainties:**
+- Files view's `model.mlTracks` is DB-query-backed (search re-fetches via
+  `mlFetchTracks`), so unlike the other three views there's no client-side
+  filter to double-check — the displayed array IS the query result. Should
+  be a non-issue, but flag if the Files view's count ever looks like it's
+  counting a stale pre-search array.
+- Placement choice for the playlist editor's bar (bottom of the WHOLE view,
+  below the button row, rather than immediately under the table) was picked
+  to mirror GTK's literal `edit_vbox.append(&pl_status_bar)` ordering (after
+  `edit_btn_row`). If this reads oddly in Xcode (buttons, then a stray status
+  line below them), moving the `HStack` up to directly follow `MLEditorTable`
+  is a trivial one-block move.
+- Disc-files status bar placement (between the table and the "Add
+  Selected/Add All" row) is a judgment call — GTK's own layout for that
+  region doesn't map cleanly onto Mac's existing button placement, so this
+  wasn't a literal port; confirm it reads correctly, doesn't crowd the
+  buttons below it.
