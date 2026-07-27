@@ -515,8 +515,21 @@ pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.playlist_cursor));
     }
 
-    // Title shows track count; [p] is in the Sparkamp player box (lower right).
-    let title = format!(" Playlist  ({} tracks) ", app.playlist.len());
+    // Title shows track count + total duration; [p] is in the Sparkamp player
+    // box (lower right). The TUI has no multi-select model, so `selected` is
+    // always `None`.
+    let total_secs: u64 = app
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
+        .sum();
+    let status = crate::playlist_status::playlist_status_line(
+        app.playlist.tracks.len(),
+        total_secs,
+        None,
+    );
+    let title = format!(" Playlist  ({}) ", status);
     let block = Block::default()
         .title(Span::styled(title, Style::default().fg(C_DIM)))
         .borders(Borders::ALL)
