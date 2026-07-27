@@ -549,6 +549,30 @@ impl Playlist {
         }
     }
 
+    /// Reverse the active playlist; the playing track stays current.
+    // Consumed by the frontend Sort menus (phase-7, later tasks).
+    #[allow(dead_code)]
+    pub fn reverse(&mut self) {
+        let playing = self.current_id();
+        self.tracks.reverse();
+        if let Some(id) = playing {
+            self.repoint_current_to(id);
+        }
+    }
+
+    /// Randomly permute the active playlist once (a one-shot reorder, distinct
+    /// from shuffle PLAYBACK). The playing track stays current.
+    // Consumed by the frontend Sort menus (phase-7, later tasks).
+    #[allow(dead_code)]
+    pub fn randomize(&mut self) {
+        use rand::seq::SliceRandom;
+        let playing = self.current_id();
+        self.tracks.shuffle(&mut rand::thread_rng());
+        if let Some(id) = playing {
+            self.repoint_current_to(id);
+        }
+    }
+
     /// Return the indices of all tracks whose `title`, `artist`, or `album`
     /// contain `query` (case-insensitive substring match).
     ///
@@ -1331,6 +1355,46 @@ mod tests {
         pl.sort_by(SortKey::Title);
         assert_eq!(pl.current_id(), Some(1), "still on banana after sort");
         assert_eq!(pl.current_index, 1, "banana moved to the end");
+    }
+
+    // -----------------------------------------------------------------------
+    // reverse() / randomize()
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reverse_twice_is_identity_and_keeps_current() {
+        let mut pl = Playlist::new();
+        for i in 0..4 {
+            pl.add(track_named(i, &format!("t{i}"), &format!("/{i}.mp3")));
+        }
+        pl.jump_to(1);
+        // `Playlist::add` stamps a fresh sequential id on append (ignoring the
+        // id passed into `track_named`), so capture the real playing id here
+        // rather than assuming it equals the loop index.
+        let playing = pl.current_id();
+        let before: Vec<u64> = pl.tracks.iter().map(|t| t.id).collect();
+        pl.reverse();
+        pl.reverse();
+        let after: Vec<u64> = pl.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(before, after);
+        assert_eq!(pl.current_id(), playing);
+    }
+
+    #[test]
+    fn randomize_preserves_membership_and_current() {
+        let mut pl = Playlist::new();
+        for i in 0..20 {
+            pl.add(track_named(i, &format!("t{i}"), &format!("/{i}.mp3")));
+        }
+        pl.jump_to(7);
+        // Same rationale as reverse_twice_is_identity_and_keeps_current: the
+        // playing id is whatever `add` actually stamped, not the loop index.
+        let playing = pl.current_id();
+        let before: std::collections::HashSet<u64> = pl.tracks.iter().map(|t| t.id).collect();
+        pl.randomize();
+        let after: std::collections::HashSet<u64> = pl.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(before, after, "same multiset of tracks");
+        assert_eq!(pl.current_id(), playing, "playing track still current");
     }
 
     // -----------------------------------------------------------------------

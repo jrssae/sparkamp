@@ -603,6 +603,18 @@ mod tests {
     }
 
     #[test]
+    fn reorder_leaves_the_queue_intact() {
+        let mut f = Fixture::new(4);
+        let id2 = f.playlist.tracks[2].id;
+        f.queue.enqueue(id2);
+        f.playlist.reverse();
+        // Queue still holds id2; it now resolves to a different index but the
+        // same track.
+        assert!(f.queue.contains(id2));
+        assert!(f.playlist.tracks.iter().any(|t| t.id == id2));
+    }
+
+    #[test]
     fn queue_wins_over_shuffle() {
         let mut f = Fixture::new(4);
         f.shuffle.enabled = true;
