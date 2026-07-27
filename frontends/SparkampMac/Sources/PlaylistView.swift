@@ -502,7 +502,6 @@ struct PlaylistView: View {
             } label: {
                 Text("Select").font(vars.bodyFont)
             }
-            .disabled(model.playlistItems.isEmpty)
             .help("Change the current selection")
 
             Menu {
