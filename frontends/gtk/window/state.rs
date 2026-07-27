@@ -918,6 +918,26 @@ impl AppState {
         }
     }
 
+    /// Sort the active playlist by `key`. Resets shuffle history since the
+    /// track order (and therefore what "already played" means) has changed.
+    pub(crate) fn sort_playlist(&mut self, key: crate::model::SortKey) {
+        self.playlist.sort_by(key);
+        self.shuffle_state.reset();
+    }
+
+    /// Reverse the active playlist. Resets shuffle history (see `sort_playlist`).
+    pub(crate) fn reverse_playlist(&mut self) {
+        self.playlist.reverse();
+        self.shuffle_state.reset();
+    }
+
+    /// Randomly permute the active playlist once. Resets shuffle history
+    /// (see `sort_playlist`).
+    pub(crate) fn randomize_playlist(&mut self) {
+        self.playlist.randomize();
+        self.shuffle_state.reset();
+    }
+
     /// Add a single audio file from a raw path string.
     ///
     /// Leading and trailing whitespace is trimmed before the path is

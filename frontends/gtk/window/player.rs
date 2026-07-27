@@ -907,16 +907,44 @@ pub fn build(
         btn.add_css_class("destructive");
     }
 
-    // Left-align the add buttons; right-align destructive buttons with a flexible spacer.
-    pl_btn_row.append(&btn_add_files);
-    pl_btn_row.append(&btn_add_dir);
-    pl_btn_row.append(&btn_save_active);
-    let spacer = GtkBox::new(Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    pl_btn_row.append(&spacer);
-    pl_btn_row.append(&btn_remove);
-    pl_btn_row.append(&btn_clear_all);
-    pl_btn_row.append(&btn_cancel);
+    // The flat buttons above stay constructed (their connect_clicked handlers
+    // are wired further down, unchanged) but are no longer appended directly
+    // to the row — they're invoked from the Winamp-style menus built below
+    // instead. `btn_cancel` is the exception: it's appended on its own once
+    // the menus are in place, since it toggles visibility during scans.
+
+    // Build a Winamp-style menu button: a labelled MenuButton whose popover is
+    // a vertical list of action buttons. `items` are (label, Some(callback))
+    // for an action row or (label, None) for a separator. Each action button
+    // closes the popover after running its callback, so it behaves like a
+    // real menu instead of a panel that stays open.
+    fn menu_button(label: &str, items: Vec<(&str, Option<Rc<dyn Fn()>>)>) -> gtk4::MenuButton {
+        let vbox = GtkBox::new(Orientation::Vertical, 2);
+        let popover = gtk4::Popover::new();
+        for (text, cb) in items {
+            match cb {
+                None => {
+                    vbox.append(&Separator::new(Orientation::Horizontal));
+                }
+                Some(cb) => {
+                    let b = Button::with_label(text);
+                    b.add_css_class("flat");
+                    b.set_halign(Align::Fill);
+                    let pop = popover.clone();
+                    b.connect_clicked(move |_| {
+                        cb();
+                        pop.popdown();
+                    });
+                    vbox.append(&b);
+                }
+            }
+        }
+        popover.set_child(Some(&vbox));
+        let mb = gtk4::MenuButton::new();
+        mb.set_label(label);
+        mb.set_popover(Some(&popover));
+        mb
+    }
 
     // ── Playlist TreeView + ListStore ─────────────────────────────────────────
     // GtkTreeView uses virtual scrolling — only visible rows create cell renderers,
@@ -1683,6 +1711,150 @@ pub fn build(
             refresh_queue_manager();
         })
     };
+
+    // ── Winamp-style playlist menu bar (Add▸ / Select▸ / Sort▸ / List▸) ──────
+    //
+    // Run a reorder op, then rebuild the playlist view (which also repaints
+    // queue badges — see rebuild_playlist above). The op mutates AppState
+    // (which resets shuffle history); the playing track stays current by id,
+    // so playback continues and its highlight follows.
+    let apply_reorder: Rc<dyn Fn(&dyn Fn(&mut AppState))> = {
+        let state = state.clone();
+        let rebuild_playlist = rebuild_playlist.clone();
+        Rc::new(move |op: &dyn Fn(&mut AppState)| {
+            {
+                let mut s = state.borrow_mut();
+                op(&mut s);
+            }
+            rebuild_playlist();
+        })
+    };
+
+    // Add▸
+    let add_menu = menu_button(
+        "Add ▾",
+        vec![
+            (
+                "Add Files…",
+                Some({
+                    let b = btn_add_files.clone();
+                    Rc::new(move || b.emit_clicked()) as Rc<dyn Fn()>
+                }),
+            ),
+            (
+                "Add Folder…",
+                Some({
+                    let b = btn_add_dir.clone();
+                    Rc::new(move || b.emit_clicked()) as Rc<dyn Fn()>
+                }),
+            ),
+        ],
+    );
+    // Select▸
+    let select_menu = menu_button(
+        "Select ▾",
+        vec![
+            (
+                "Select All",
+                Some({
+                    let pv = pl_view.clone();
+                    let cb: Rc<dyn Fn()> = Rc::new(move || {
+                        #[allow(deprecated)]
+                        pv.selection().select_all();
+                    });
+                    cb
+                }),
+            ),
+            (
+                "Select None",
+                Some({
+                    let pv = pl_view.clone();
+                    let cb: Rc<dyn Fn()> = Rc::new(move || {
+                        #[allow(deprecated)]
+                        pv.selection().unselect_all();
+                    });
+                    cb
+                }),
+            ),
+            (
+                "Invert Selection",
+                Some({
+                    let inv = invert_selection.clone();
+                    Rc::new(move || inv()) as Rc<dyn Fn()>
+                }),
+            ),
+        ],
+    );
+    // Sort▸
+    let sort_item = |label: &'static str, key: crate::model::SortKey| {
+        let ar = apply_reorder.clone();
+        (
+            label,
+            Some(Rc::new(move || ar(&move |s: &mut AppState| s.sort_playlist(key))) as Rc<dyn Fn()>),
+        )
+    };
+    let sort_menu = menu_button(
+        "Sort ▾",
+        vec![
+            sort_item("Title", crate::model::SortKey::Title),
+            sort_item("Artist", crate::model::SortKey::Artist),
+            sort_item("Album", crate::model::SortKey::Album),
+            sort_item("Filename", crate::model::SortKey::Filename),
+            sort_item("Path", crate::model::SortKey::Path),
+            ("", None),
+            (
+                "Randomize",
+                Some({
+                    let ar = apply_reorder.clone();
+                    Rc::new(move || ar(&|s: &mut AppState| s.randomize_playlist())) as Rc<dyn Fn()>
+                }),
+            ),
+            (
+                "Reverse",
+                Some({
+                    let ar = apply_reorder.clone();
+                    Rc::new(move || ar(&|s: &mut AppState| s.reverse_playlist())) as Rc<dyn Fn()>
+                }),
+            ),
+        ],
+    );
+    // List▸
+    let list_menu = menu_button(
+        "List ▾",
+        vec![
+            (
+                "Save Playlist…",
+                Some({
+                    let b = btn_save_active.clone();
+                    Rc::new(move || b.emit_clicked()) as Rc<dyn Fn()>
+                }),
+            ),
+            ("", None),
+            (
+                "Remove Selected",
+                Some({
+                    let rs = remove_selected.clone();
+                    Rc::new(move || rs()) as Rc<dyn Fn()>
+                }),
+            ),
+            (
+                "Remove All",
+                Some({
+                    let b = btn_clear_all.clone();
+                    Rc::new(move || b.emit_clicked()) as Rc<dyn Fn()>
+                }),
+            ),
+        ],
+    );
+
+    pl_btn_row.append(&add_menu);
+    pl_btn_row.append(&select_menu);
+    pl_btn_row.append(&sort_menu);
+    let pl_menu_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    pl_menu_spacer.set_hexpand(true);
+    pl_btn_row.append(&pl_menu_spacer);
+    pl_btn_row.append(&list_menu);
+    pl_btn_row.append(&btn_cancel); // scan-cancel button, hidden unless a scan is running
 
     // ── Initial state ─────────────────────────────────────────────────────────
 
