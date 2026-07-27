@@ -572,4 +572,81 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `sparkamp_playlist_sort` (and reverse/randomize) must reset shuffle
+    /// history at the FFI seam — the mac frontend has no other place to do
+    /// this, unlike GTK/TUI which reset through the shared `Controller`.
+    /// Locks in the phase 7 behaviour: after a sort, stale shuffle history
+    /// (which would otherwise describe positions that no longer match the
+    /// reordered rows) must be gone.
+    #[test]
+    fn playlist_sort_resets_shuffle_history() {
+        gstreamer::init().expect("GStreamer must be available for tests");
+
+        let mut playlist = crate::model::Playlist::new();
+        for i in 0..3 {
+            playlist.add(Track {
+                path: std::path::PathBuf::from(format!("/fake/{i}.mp3")),
+                title: format!("T{i}"),
+                artist: String::new(),
+                album_artist: String::new(),
+                album: String::new(),
+                duration: None,
+                broken: false,
+                read_only: false,
+                id: 0,
+            });
+        }
+
+        // Seed non-empty shuffle history the same way real playback does
+        // (`sparkamp_playlist_jump` → `ShuffleState::record_played`), but
+        // directly here since we don't have a loadable URI for a fake path.
+        let mut shuffle_state = crate::shuffle::ShuffleState::new();
+        shuffle_state.enabled = true;
+        shuffle_state.record_played(0);
+        shuffle_state.record_played(2);
+        assert!(
+            shuffle_state.has_history(),
+            "fixture must start with non-empty shuffle history"
+        );
+
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (duration_tx, duration_rx) = std::sync::mpsc::channel();
+
+        let mut ctx = SparkampCtx {
+            player: crate::engine::Player::new().expect("Player::new"),
+            playlist,
+            config: crate::config::Config::default(),
+            shuffle_state,
+            queue: crate::queue::Queue::new(),
+            meta_tx,
+            meta_rx,
+            duration_tx,
+            duration_rx,
+            dirty_count: 0,
+            last_known_duration: None,
+            eos_cb: None,
+            eos_userdata: std::ptr::null_mut(),
+            error_cb: None,
+            error_userdata: std::ptr::null_mut(),
+            position_cb: None,
+            position_userdata: std::ptr::null_mut(),
+            media_library: None,
+            ml_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ml_scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ml_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rg_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        unsafe {
+            sparkamp_playlist_sort(&mut ctx as *mut SparkampCtx, 0);
+        }
+
+        assert!(
+            !ctx.shuffle_state.has_history(),
+            "sort must reset shuffle history"
+        );
+    }
 }

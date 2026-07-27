@@ -626,9 +626,13 @@ by a single status line mirroring core `playlist_status_line`
 
 - [ ] **Add** menu opens; "Add Files…" / "Add Folder…" behave exactly as the
       old buttons (same file/folder pickers).
-- [ ] **Select** menu opens (disabled when playlist empty); "Select All" /
-      "Select None" / "Invert Selection" set `selection` correctly against
-      the currently loaded playlist.
+- [ ] **Select** menu opens (NOT disabled on an empty playlist — deliberately
+      left enabled so its nested ⌘I keeps firing; only Sort and List are
+      disabled-on-empty); "Select All" / "Select None" / "Invert Selection" set
+      `selection` correctly against the currently loaded playlist.
+- [ ] After a Sort/Randomize/Reverse, the selection is CLEARED (the index-based
+      `selection` set would otherwise highlight whatever tracks landed on the old
+      rows) — matches GTK, which clears selection on rebuild.
 - [ ] **Sort** menu opens (disabled when playlist empty); Title / Artist /
       Album / Filename / Path each call `sparkamp_playlist_sort` with the
       matching `kind` (0–4) and the table re-renders in the new order.

@@ -505,14 +505,14 @@ struct PlaylistView: View {
             .help("Change the current selection")
 
             Menu {
-                Button("Title")    { model.sortPlaylist(.title) }
-                Button("Artist")   { model.sortPlaylist(.artist) }
-                Button("Album")    { model.sortPlaylist(.album) }
-                Button("Filename") { model.sortPlaylist(.filename) }
-                Button("Path")     { model.sortPlaylist(.path) }
+                Button("Title")    { model.sortPlaylist(.title); selection.removeAll() }
+                Button("Artist")   { model.sortPlaylist(.artist); selection.removeAll() }
+                Button("Album")    { model.sortPlaylist(.album); selection.removeAll() }
+                Button("Filename") { model.sortPlaylist(.filename); selection.removeAll() }
+                Button("Path")     { model.sortPlaylist(.path); selection.removeAll() }
                 Divider()
-                Button("Randomize") { model.randomizePlaylist() }
-                Button("Reverse")   { model.reversePlaylist() }
+                Button("Randomize") { model.randomizePlaylist(); selection.removeAll() }
+                Button("Reverse")   { model.reversePlaylist(); selection.removeAll() }
             } label: {
                 Text("Sort").font(vars.bodyFont)
             }
