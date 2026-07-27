@@ -1124,6 +1124,7 @@ pub fn build(
         .build();
     pl_status_label.set_margin_start(8);
     pl_status_label.set_margin_end(8);
+    pl_status_label.set_margin_top(1);
     pl_status_label.set_margin_bottom(5);
     pl_root.append(&pl_status_label);
 
@@ -1152,7 +1153,7 @@ pub fn build(
                     .filter_map(|i| s.playlist.tracks.get(i as usize))
                     .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
                     .sum();
-                Some(sum)
+                Some((sel_paths.len(), sum))
             };
             pl_status_label.set_text(&crate::playlist_status::playlist_status_line(count, total, selected));
         })

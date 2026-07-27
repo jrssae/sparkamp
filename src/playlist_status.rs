@@ -1,7 +1,7 @@
-//! Shared formatter for the active-playlist status line (phase 7).
-//! `N tracks · MM:SS total · MM:SS selected` — the selected clause is present
-//! only when `selected_secs` is `Some` (frontends pass it when ≥1 row is
-//! selected). Durations roll over to H:MM:SS above one hour.
+//! Shared formatter for the active-playlist / Media Library status line.
+//! `N tracks · MM:SS total · K selected · MM:SS` — the selected clause (count +
+//! duration) is present only when `selected` is `Some` (frontends pass it when
+//! ≥1 row is selected). Durations roll over to H:MM:SS above one hour.
 
 /// Format a duration as `M:SS` under an hour, `H:MM:SS` at/above an hour.
 fn fmt_hms(secs: u64) -> String {
@@ -15,11 +15,17 @@ fn fmt_hms(secs: u64) -> String {
     }
 }
 
-pub fn playlist_status_line(count: usize, total_secs: u64, selected_secs: Option<u64>) -> String {
+/// `selected`: `Some((count, secs))` for the selected rows, or `None` when
+/// nothing is selected. The clause shows both the count and the duration.
+pub fn playlist_status_line(
+    count: usize,
+    total_secs: u64,
+    selected: Option<(usize, u64)>,
+) -> String {
     let noun = if count == 1 { "track" } else { "tracks" };
     let mut line = format!("{count} {noun} · {} total", fmt_hms(total_secs));
-    if let Some(sel) = selected_secs {
-        line.push_str(&format!(" · {} selected", fmt_hms(sel)));
+    if let Some((sel_count, sel_secs)) = selected {
+        line.push_str(&format!(" · {sel_count} selected · {}", fmt_hms(sel_secs)));
     }
     line
 }
@@ -35,10 +41,14 @@ mod tests {
     }
 
     #[test]
-    fn selected_clause_and_hour_rollover() {
+    fn selected_clause_has_count_and_duration_plus_hour_rollover() {
         assert_eq!(
-            playlist_status_line(12, 3665, Some(664)),
-            "12 tracks · 1:01:05 total · 11:04 selected"
+            playlist_status_line(12, 3665, Some((3, 664))),
+            "12 tracks · 1:01:05 total · 3 selected · 11:04"
+        );
+        assert_eq!(
+            playlist_status_line(5, 100, Some((1, 65))),
+            "5 tracks · 1:40 total · 1 selected · 1:05"
         );
         assert_eq!(playlist_status_line(0, 0, None), "0 tracks · 0:00 total");
     }

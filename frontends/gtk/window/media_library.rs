@@ -17,6 +17,7 @@ fn ml_status_bar_for<T: 'static>(
         .ellipsize(gtk4::pango::EllipsizeMode::End)
         .margin_start(8)
         .margin_end(8)
+        .margin_top(1)
         .margin_bottom(5)
         .build();
     let refresh: std::rc::Rc<dyn Fn()> = {
@@ -37,7 +38,7 @@ fn ml_status_bar_for<T: 'static>(
                     sel_secs += secs;
                 }
             }
-            let sel = if sel_n > 0 { Some(sel_secs) } else { None };
+            let sel = if sel_n > 0 { Some((sel_n, sel_secs)) } else { None };
             label.set_text(&crate::playlist_status::playlist_status_line(count, total, sel));
         })
     };
@@ -2108,6 +2109,9 @@ fn open_media_library_window(
     // without extra refresh calls at each load/filter site.
     let (dev_status_bar, _) = ml_status_bar(&dev_selection);
     dev_detail.append(&dev_status_bar);
+    // Directly below the device file list (above the action buttons), matching
+    // the active playlist window.
+    dev_detail.reorder_child_after(&dev_status_bar, Some(&dev_tracks_scroll));
 
     // Collect the currently-selected device track rows (full LibTrack, so
     // already-known metadata like duration carries into the active playlist).
@@ -4883,6 +4887,9 @@ fn open_media_library_window(
         // refresh calls at each call site.
         let (files_status_bar, _) = ml_status_bar(&multi_sel);
         files_vbox.append(&files_status_bar);
+        // Sit directly below the file list (above the button row), matching the
+        // active playlist window.
+        files_vbox.reorder_child_after(&files_status_bar, Some(&track_scroll));
 
         // Add selected tracks to playlist.
         let add_selected: Rc<dyn Fn()> = {
@@ -7508,6 +7515,9 @@ fn open_media_library_window(
             e.track.length_secs
         });
         edit_vbox.append(&pl_status_bar);
+        // Directly below the playlist track list (above the button row), matching
+        // the active playlist window.
+        edit_vbox.reorder_child_after(&pl_status_bar, Some(&track_scroll));
 
         // Whole playlist (files + .m3u8) to a device — the old flat
         // "Send to…" popover's only action, now a target-parameterised
