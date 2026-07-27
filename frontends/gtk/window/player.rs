@@ -902,17 +902,16 @@ pub fn build(
     let rebuild_pl_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
         Rc::new(RefCell::new(None));
 
-    // ── Left-click on the logo → open settings window ────────────────────────
-    {
+    // Shared "open settings window" action — used by the logo click and the
+    // Ctrl+. keyboard shortcut (phase 6) so both go through one path.
+    let open_settings: Rc<dyn Fn()> = {
         let state_rc = state.clone();
         let win_wk = window.downgrade();
         let provider_for_lclick = provider_for_settings.clone();
         let text_rgba_for_lclick = text_rgba.clone();
         let accent_rgba_for_lclick = accent_rgba.clone();
         let rebuild_pl_holder_lclick = rebuild_pl_holder.clone();
-        let lclick = GestureClick::new();
-        lclick.set_button(1); // primary button only
-        lclick.connect_released(move |_, _, _, _| {
+        Rc::new(move || {
             let parent_win = win_wk.upgrade();
             // Fall back to a no-op if rebuild_playlist hasn't been assigned
             // yet (should never happen post-init).
@@ -929,7 +928,15 @@ pub fn build(
                 accent_rgba_for_lclick.clone(),
                 rebuild_pl,
             );
-        });
+        })
+    };
+
+    // ── Left-click on the logo → open settings window ────────────────────────
+    {
+        let open_settings = open_settings.clone();
+        let lclick = GestureClick::new();
+        lclick.set_button(1); // primary button only
+        lclick.connect_released(move |_, _, _, _| open_settings());
         logo_img.add_controller(lclick);
     }
 
@@ -951,6 +958,26 @@ pub fn build(
     pl_view.add_css_class("playlist");
     #[allow(deprecated)]
     pl_view.selection().set_mode(gtk4::SelectionMode::Multiple);
+
+    // Invert the playlist's multi-selection (Ctrl+I, phase 6). TreeSelection
+    // has no "invert", so walk every row (bounded by the playlist length) and
+    // flip each row's selected state.
+    let invert_selection: Rc<dyn Fn()> = {
+        let pl_view = pl_view.clone();
+        let state = state.clone();
+        Rc::new(move || {
+            let sel = pl_view.selection();
+            let n = state.borrow().playlist.tracks.len();
+            for i in 0..n {
+                let path = gtk4::TreePath::from_indices(&[i as i32]);
+                if sel.path_is_selected(&path) {
+                    sel.unselect_path(&path);
+                } else {
+                    sel.select_path(&path);
+                }
+            }
+        })
+    };
 
     // Position column — narrow, right-aligned, monospace.
     #[allow(deprecated)]
@@ -4445,11 +4472,23 @@ pub fn build(
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let handler = handle_key.clone();
         let wrap_step_volume = step_volume.clone();
+        let wrap_open_settings = open_settings.clone();
+        let wrap_save_active = btn_save_active.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
-            if matches!(key, gdk::Key::q | gdk::Key::Q)
-                && modifier.contains(gdk::ModifierType::CONTROL_MASK)
-            {
-                return glib::Propagation::Stop;
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
+                match key {
+                    gdk::Key::q | gdk::Key::Q => return glib::Propagation::Stop,
+                    // Ctrl+. → settings; Ctrl+S → save active playlist.
+                    gdk::Key::period => {
+                        wrap_open_settings();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::s | gdk::Key::S => {
+                        wrap_save_active.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
             }
             // Main-window ↑/↓ = volume. The playlist window's own controller
             // does NOT do this, so its TreeView keeps native row browse.
@@ -4483,12 +4522,26 @@ pub fn build(
         let toggle = queue_toggle_selection.clone();
         let plwin_wk = playlist_win.downgrade();
         let handler = handle_key.clone();
+        let wrap_invert_selection = invert_selection.clone();
+        let wrap_save_active = btn_save_active.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
-            if matches!(key, gdk::Key::q | gdk::Key::Q)
-                && modifier.contains(gdk::ModifierType::CONTROL_MASK)
-            {
-                toggle();
-                return glib::Propagation::Stop;
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
+                match key {
+                    gdk::Key::q | gdk::Key::Q => {
+                        toggle();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+S → save active playlist; Ctrl+I → invert selection.
+                    gdk::Key::s | gdk::Key::S => {
+                        wrap_save_active.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::i | gdk::Key::I => {
+                        wrap_invert_selection();
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
             }
             if key == gdk::Key::Escape {
                 if let Some(w) = plwin_wk.upgrade() {
