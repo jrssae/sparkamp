@@ -520,14 +520,12 @@ impl Playlist {
     /// Id of the current track, if any — used to keep the playing track
     /// selected across a reorder.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
-    #[allow(dead_code)]
     pub fn current_id(&self) -> Option<u64> {
         self.tracks.get(self.current_index).map(|t| t.id)
     }
 
     /// Point `current_index` at the track with `id`; unchanged if not found.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
-    #[allow(dead_code)]
     pub fn repoint_current_to(&mut self, id: u64) {
         if let Some(pos) = self.tracks.iter().position(|t| t.id == id) {
             self.current_index = pos;
@@ -538,7 +536,6 @@ impl Playlist {
     /// stays current (re-pointed by id afterwards). Blank sort fields fall
     /// back to the filename so untitled rows sort by their visible label.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
-    #[allow(dead_code)]
     pub fn sort_by(&mut self, key: SortKey) {
         let playing = self.current_id();
         // Precompute a lowercase key per track so the comparator is cheap and
@@ -551,7 +548,6 @@ impl Playlist {
 
     /// Reverse the active playlist; the playing track stays current.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
-    #[allow(dead_code)]
     pub fn reverse(&mut self) {
         let playing = self.current_id();
         self.tracks.reverse();
@@ -563,7 +559,6 @@ impl Playlist {
     /// Randomly permute the active playlist once (a one-shot reorder, distinct
     /// from shuffle PLAYBACK). The playing track stays current.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
-    #[allow(dead_code)]
     pub fn randomize(&mut self) {
         use rand::seq::SliceRandom;
         let playing = self.current_id();
@@ -934,7 +929,6 @@ impl Playlist {
 /// back to the filename when blank (mirrors the row display fallback).
 // Consumed by `Playlist::sort_by` only; unused warning until the frontend
 // Sort menus land (phase-7, later tasks) and exercise it end-to-end.
-#[allow(dead_code)]
 fn sort_field(t: &Track, key: SortKey) -> String {
     let filename = || {
         t.path

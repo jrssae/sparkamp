@@ -140,6 +140,26 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   snapshot and refresh on each play/track-change (incl. same-track replay);
   they do not tick live mid-song. By design (matches the classic behavior).
 
+## Known limitations (recorded during phase 7 — F1 playlist ops)
+
+- Full Winamp menu-bar consolidation (user decision 2026-07-27): the flat GTK/mac
+  playlist buttons (+Files/+Folder/Save/Remove/Remove All) were replaced by four
+  menu buttons — Add▸ / Select▸ / Sort▸ / List▸. The old GTK `btn_remove` is now
+  vestigial (constructed+wired but unappended); mac's `PlaylistControlButtonStyle`
+  is now unreferenced — both are dead-code cleanups for a later pass.
+- TUI has NO active-playlist multi-select, so: the ops popup (`o`) omits Select
+  All/None/Invert (Sort×5 + Randomize + Reverse only), and the TUI status line
+  passes `selected = None` (shows `N tracks · MM:SS total`, never a selected clause).
+  Accepted 2026-07-27.
+- Randomize uses the process `rand::thread_rng` (same as shuffle playback) — no
+  seed control / reproducibility. Accepted.
+- Sort uses `path.file_name()` (with extension) for the blank-title / Filename
+  fallback, vs the codebase's usual `file_stem()` — dormant (titles are rarely
+  blank in normal use). Flagged for a later cleanup.
+- macOS `⌘S`/`⌘I` shortcuts live on `Menu`-nested `Button`s; whether SwiftUI
+  hoists a menu-nested `.keyboardShortcut` into the window command set is a BLIND
+  bet — verify on the Xcode/hardware pass (`docs/mac-pass-checklist.md` phase-7).
+
 ## Known limitations (recorded during phase 6 — F9 Shortcuts + dialog sweep)
 
 - Stop-after-current (`t`) is a TRANSIENT engine flag — never persisted (fires
