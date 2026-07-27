@@ -63,6 +63,22 @@ pub fn is_disc_uri(path: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// SortKey
+// ---------------------------------------------------------------------------
+
+/// Sort criterion for the active-playlist Sort menu (phase 7).
+// Consumed by the frontend Sort menus (phase-7, later tasks).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Title,
+    Artist,
+    Album,
+    Filename,
+    Path,
+}
+
+// ---------------------------------------------------------------------------
 // Track
 // ---------------------------------------------------------------------------
 
@@ -501,6 +517,38 @@ impl Playlist {
         true
     }
 
+    /// Id of the current track, if any — used to keep the playing track
+    /// selected across a reorder.
+    // Consumed by the frontend Sort menus (phase-7, later tasks).
+    #[allow(dead_code)]
+    pub fn current_id(&self) -> Option<u64> {
+        self.tracks.get(self.current_index).map(|t| t.id)
+    }
+
+    /// Point `current_index` at the track with `id`; unchanged if not found.
+    // Consumed by the frontend Sort menus (phase-7, later tasks).
+    #[allow(dead_code)]
+    pub fn repoint_current_to(&mut self, id: u64) {
+        if let Some(pos) = self.tracks.iter().position(|t| t.id == id) {
+            self.current_index = pos;
+        }
+    }
+
+    /// Case-insensitive, stable sort of the active playlist. The playing track
+    /// stays current (re-pointed by id afterwards). Blank sort fields fall
+    /// back to the filename so untitled rows sort by their visible label.
+    // Consumed by the frontend Sort menus (phase-7, later tasks).
+    #[allow(dead_code)]
+    pub fn sort_by(&mut self, key: SortKey) {
+        let playing = self.current_id();
+        // Precompute a lowercase key per track so the comparator is cheap and
+        // the sort stays stable (sort_by_key is stable in std).
+        self.tracks.sort_by(|a, b| sort_field(a, key).cmp(&sort_field(b, key)));
+        if let Some(id) = playing {
+            self.repoint_current_to(id);
+        }
+    }
+
     /// Return the indices of all tracks whose `title`, `artist`, or `album`
     /// contain `query` (case-insensitive substring match).
     ///
@@ -855,6 +903,33 @@ impl Playlist {
         }
 
         (added, errors)
+    }
+}
+
+/// The lowercase string a track sorts on for `key`. Title/Artist/Album fall
+/// back to the filename when blank (mirrors the row display fallback).
+// Consumed by `Playlist::sort_by` only; unused warning until the frontend
+// Sort menus land (phase-7, later tasks) and exercise it end-to-end.
+#[allow(dead_code)]
+fn sort_field(t: &Track, key: SortKey) -> String {
+    let filename = || {
+        t.path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    match key {
+        SortKey::Title => {
+            if t.title.trim().is_empty() { filename() } else { t.title.to_lowercase() }
+        }
+        SortKey::Artist => {
+            if t.artist.trim().is_empty() { filename() } else { t.artist.to_lowercase() }
+        }
+        SortKey::Album => {
+            if t.album.trim().is_empty() { filename() } else { t.album.to_lowercase() }
+        }
+        SortKey::Filename => filename(),
+        SortKey::Path => t.path.to_string_lossy().to_lowercase(),
     }
 }
 
@@ -1216,6 +1291,46 @@ mod tests {
             p.add(make_track(t));
         }
         p
+    }
+
+    fn track_named(id: u64, title: &str, path: &str) -> Track {
+        Track {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sort_by()
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sort_by_title_is_case_insensitive_and_stable_with_filename_fallback() {
+        let mut pl = Playlist::new();
+        pl.add(track_named(1, "banana", "/z/1.mp3"));
+        pl.add(track_named(2, "Apple", "/a/2.mp3"));
+        pl.add(track_named(3, "", "/m/aaa.mp3")); // blank title → "aaa.mp3"
+        pl.sort_by(SortKey::Title);
+        let order: Vec<u64> = pl.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, vec![3, 2, 1]); // aaa.mp3, apple, banana
+    }
+
+    #[test]
+    fn sort_keeps_the_playing_track_current() {
+        let mut pl = Playlist::new();
+        pl.add(track_named(1, "banana", "/1.mp3"));
+        pl.add(track_named(2, "apple", "/2.mp3"));
+        pl.jump_to(0); // playing "banana"
+        pl.sort_by(SortKey::Title);
+        assert_eq!(pl.current_id(), Some(1), "still on banana after sort");
+        assert_eq!(pl.current_index, 1, "banana moved to the end");
     }
 
     // -----------------------------------------------------------------------
