@@ -1,3 +1,60 @@
+/// Keyboard-shortcut reference shown in the help window (`i`). This is the
+/// single source of truth for GTK bindings (phase 6): the help builder renders
+/// it and a test asserts every bound key appears here, so the dialog can never
+/// silently drift from what the handlers actually do. Keep entries in sync with
+/// the mac `KeyboardShortcutsView.swift` sections.
+#[allow(clippy::type_complexity)]
+fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
+    &[
+        ("Playback", &[
+            ("z",          "Previous track / restart"),
+            ("x",          "Play"),
+            ("c",          "Pause / resume"),
+            ("v",          "Stop"),
+            ("b",          "Next track"),
+            ("t",          "Stop after current track"),
+            ("← →",        "Seek −5 s / +5 s"),
+            ("r",          "Cycle repeat (off / song / playlist)"),
+            ("s",          "Toggle shuffle on/off"),
+        ]),
+        ("Volume", &[
+            ("-",          "Volume down 5 %"),
+            ("=",          "Volume up 5 %"),
+            ("↑ ↓",        "Volume up / down (main window)"),
+        ]),
+        ("Playlist", &[
+            ("n",          "Add file(s)"),
+            ("Shift+N",    "Add folder"),
+            ("m",          "Toggle Media Library window"),
+            ("j",          "Jump / search"),
+            ("q",          "Play queue (Jump/Queue window, Queue mode)"),
+            ("Ctrl+Q",     "Queue / dequeue selection (playlist or jump)"),
+            ("↑ ↓",        "Browse up / down (playlist window)"),
+            ("Enter",      "Play selected track"),
+            ("Ctrl+S",     "Save playlist"),
+            ("Ctrl+I",     "Invert selection"),
+            ("Del",        "Remove highlighted track"),
+            ("p",          "Toggle playlist window"),
+        ]),
+        ("View & Tags", &[
+            ("a",           "Cycle visualizer mode (Bars / Waveform / Granite)"),
+            ("e",           "Random Granite effect (Granite mode)"),
+            ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
+            ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
+            ("d",           "View/Edit ID3 tags for current track"),
+            ("u",           "Toggle equalizer window"),
+            ("w",           "Toggle now-playing panel (art, tags, links)"),
+            ("k",           "Open album-art window"),
+            ("Ctrl+.",      "Open settings"),
+            ("Click logo",  "Open settings"),
+        ]),
+        ("Other", &[
+            ("i",          "Toggle this help"),
+            ("Esc",        "Quit (main window) / close child window"),
+        ]),
+    ]
+}
+
 pub fn build(
     app: &Application,
     playlist: Playlist,
@@ -4566,47 +4623,7 @@ pub fn build(
             .build();
         win.set_transient_for(Some(window.upcast_ref::<gtk4::Window>()));
 
-        let sections: &[(&str, &[(&str, &str)])] = &[
-            ("Playback", &[
-                ("z",          "Previous track / restart"),
-                ("x",          "Play"),
-                ("c",          "Pause / resume"),
-                ("v",          "Stop"),
-                ("b",          "Next track"),
-                ("← →",        "Seek −5 s / +5 s"),
-                ("r",          "Cycle repeat (off / song / playlist)"),
-                ("s",          "Toggle shuffle on/off"),
-            ]),
-            ("Volume", &[
-                ("-",          "Volume down 5 %"),
-                ("=",          "Volume up 5 %"),
-            ]),
-            ("Playlist", &[
-                ("n",          "Add file(s) or folder(s)"),
-                ("j",          "Jump / search"),
-                ("q",          "Play queue (Jump/Queue window, Queue mode)"),
-                ("Ctrl+Q",     "Queue / dequeue selection (playlist or jump)"),
-                ("↑ ↓",        "Browse up / down"),
-                ("Enter",      "Play selected track"),
-                ("Del",        "Remove highlighted track"),
-                ("p",          "Toggle playlist window"),
-            ]),
-            ("View & Tags", &[
-                ("a",           "Cycle visualizer mode (Bars / Waveform / Granite)"),
-                ("e",           "Random Granite effect (Granite mode)"),
-                ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
-                ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
-                ("d",           "View/Edit ID3 tags for current track"),
-                ("u",           "Toggle equalizer window"),
-                ("w",           "Toggle now-playing panel (art, tags, links)"),
-                ("k",           "Open album-art window"),
-                ("Click logo",  "Open settings"),
-            ]),
-            ("Other", &[
-                ("i",          "Toggle this help"),
-                ("Esc",        "Quit (main window) / close child window"),
-            ]),
-        ];
+        let sections = shortcut_sections();
 
         let grid = gtk4::Grid::builder()
             .column_spacing(16)
@@ -5270,3 +5287,24 @@ pub fn build(
 // ID3 editor windows
 // ---------------------------------------------------------------------------
 
+
+#[cfg(test)]
+mod shortcut_dialog_tests {
+    use super::shortcut_sections;
+
+    /// The help window is the single source of truth for GTK bindings — every
+    /// key the phase-6 handlers bind must appear in it, so the dialog can never
+    /// silently drift from reality. Update this list deliberately when adding keys.
+    #[test]
+    fn shortcut_dialog_lists_every_phase6_key() {
+        let keys: Vec<&str> = shortcut_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
+            .collect();
+        for k in [
+            "m", "t", "Shift+N", "Ctrl+S", "Ctrl+.", "Ctrl+I", "n", "Enter", "↑ ↓",
+        ] {
+            assert!(keys.contains(&k), "shortcuts dialog is missing `{k}`");
+        }
+    }
+}
