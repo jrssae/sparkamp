@@ -610,3 +610,69 @@ reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
 - `⌘,` is attached to the "Settings" command button (toggles `settingsVisible`).
   Confirm it opens the Settings window and doesn't collide with a system pref.
 - Stop-after-current is NOT persisted (transient), matching GTK/TUI.
+
+---
+
+## Phase 7 — Task 10: Winamp playlist menu bar + status line (2026-07-27, BLIND — Swift never compiled)
+
+`PlaylistView.bottomBar` replaced the five flat buttons (Add Files, Add
+Folder, Save, Remove, Remove All) with four SwiftUI `Menu`s — Add / Select /
+Sort / List — over the same underlying actions plus the new phase-7 reorder
+FFI (`sparkamp_playlist_sort/reverse/randomize`, wrapped as
+`model.sortPlaylist(_:)` / `reversePlaylist()` / `randomizePlaylist()` in
+`SparkampModel+Transport.swift`). The old count/duration header was replaced
+by a single status line mirroring core `playlist_status_line`
+(`src/playlist_status.rs`) via `PlaylistView.formatStatus`.
+
+- [ ] **Add** menu opens; "Add Files…" / "Add Folder…" behave exactly as the
+      old buttons (same file/folder pickers).
+- [ ] **Select** menu opens (disabled when playlist empty); "Select All" /
+      "Select None" / "Invert Selection" set `selection` correctly against
+      the currently loaded playlist.
+- [ ] **Sort** menu opens (disabled when playlist empty); Title / Artist /
+      Album / Filename / Path each call `sparkamp_playlist_sort` with the
+      matching `kind` (0–4) and the table re-renders in the new order.
+- [ ] Randomize / Reverse (below the divider in Sort) reorder the playlist;
+      in all five sort cases AND Randomize/Reverse, confirm:
+      - the currently PLAYING track (waveform icon row) stays the same
+        logical track after reorder — core keeps `current` pointed at the
+        same entry across the shuffle-history reset, so this should hold,
+        but verify visually since Swift is blind here;
+      - queue `[n]` badges follow their tracks to the new row positions
+        (`refreshAll()` → `refreshPlaylist()` re-reads `queuePos` per index
+        from the ctx after the reorder, so badges should track correctly).
+- [ ] **List** menu opens (disabled when playlist empty); "Save Playlist…"
+      behaves exactly as the old Save button (same NSSavePanel flow);
+      "Remove Selected" is disabled with an empty selection and removes
+      exactly the selected rows; "Remove All" clears the playlist and the
+      selection.
+- [ ] Status line (top of the playlist window, where the old count/duration
+      header sat) reads `"N tracks · MM:SS total"` with 0 selected rows, and
+      `"N tracks · MM:SS total · MM:SS selected"` once ≥1 row is selected —
+      confirm singular "1 track" with exactly one row, and H:MM:SS rollover
+      once total (or selected) duration reaches an hour.
+- [ ] `⌘S` (Save Playlist) and `⌘I` (Invert Selection) still work with the
+      playlist window key — both `keyboardShortcut` modifiers now live on the
+      `Button`s *inside* the List/Select `Menu` content (moved off the old
+      hidden zero-size buttons) rather than as standalone bottom-bar buttons.
+
+**Unsure / eyeball (blind, no Xcode here):**
+- `.keyboardShortcut` on a `Button` nested inside `Menu { ... }` content is
+  expected to register the shortcut globally (SwiftUI hoists it into the
+  window's command set) exactly like a standalone button did before — this
+  is the one behavioral bet in this task; if `⌘S`/`⌘I` stop firing, move
+  those two modifiers back onto small hidden top-level buttons in
+  `bottomBar` (the pre-phase-7 pattern) instead of inside the menus.
+- `Menu`'s trigger/label styling: previously every bottom-bar control used
+  `PlaylistControlButtonStyle` (rounded-rect, skin-tinted). `Menu` doesn't
+  honor `.buttonStyle` the same way a plain `Button` does, so the four new
+  triggers are plain `Text(...).font(vars.bodyFont)` labels inside a default
+  system `Menu` (pull-down) appearance instead of the old boxed button look —
+  eyeball whether this reads as visually consistent with the rest of the
+  bar, or whether it needs an explicit `.menuStyle`/custom label treatment.
+  `PlaylistControlButtonStyle` itself is left defined but now unused.
+- Whole-menu `.disabled(model.playlistItems.isEmpty)` was added to
+  Select/Sort/List (not explicitly specified) so an empty playlist can't
+  open a menu whose every item would be a no-op — confirm this reads as
+  correct UX rather than surprising (Add is never disabled, matching the
+  old always-enabled Add buttons).

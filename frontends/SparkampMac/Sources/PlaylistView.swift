@@ -442,17 +442,12 @@ struct PlaylistView: View {
     var body: some View {
         let vars = themeManager.currentVars
         return VStack(spacing: 0) {
-            // Track count header
+            // Status line: "N tracks · MM:SS total · MM:SS selected"
             HStack {
-                Text("\(model.playlistItems.count) track\(model.playlistItems.count == 1 ? "" : "s")")
+                Text(statusLine)
                     .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
-                if let total = totalDuration {
-                    Text(total)
-                        .font(vars.smallMonospaceFont)
-                        .foregroundStyle(theme.playlistDurationText)
-                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -489,69 +484,57 @@ struct PlaylistView: View {
     private var bottomBar: some View {
         let vars = themeManager.currentVars
         return HStack(spacing: 6) {
-            // Left side: Add Files, Add Folder
-            Button {
-                model.openFilePicker()
+            Menu {
+                Button("Add Files…")  { model.openFilePicker() }
+                Button("Add Folder…") { model.openFolderPicker() }
             } label: {
-                Label("Add Files", systemImage: "plus")
-                    .font(vars.bodyFont)
+                Text("Add").font(vars.bodyFont)
             }
-            .buttonStyle(PlaylistControlButtonStyle(theme: theme))
-            .help("Add audio files to playlist")
+            .help("Add audio files or a folder to the playlist")
 
-            Button {
-                model.openFolderPicker()
+            Menu {
+                Button("Select All")       { selection = Set(model.playlistItems.map { $0.id }) }
+                Button("Select None")      { selection.removeAll() }
+                Button("Invert Selection") {
+                    selection = Set(model.playlistItems.map { $0.id }).subtracting(selection)
+                }
+                .keyboardShortcut("i", modifiers: .command)
             } label: {
-                Label("Add Folder", systemImage: "folder.badge.plus")
-                    .font(vars.bodyFont)
+                Text("Select").font(vars.bodyFont)
             }
-            .buttonStyle(PlaylistControlButtonStyle(theme: theme))
-            .help("Add all audio files in a folder")
-
-            Button {
-                saveActivePlaylistAs()
-            } label: {
-                Label("Save", systemImage: "square.and.arrow.down")
-                    .font(vars.bodyFont)
-            }
-            .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .disabled(model.playlistItems.isEmpty)
-            .keyboardShortcut("s", modifiers: .command)
-            .help("Save active playlist to an M3U8 file (⌘S)")
+            .help("Change the current selection")
 
-            // Invert selection (⌘I) — flip which rows are selected. Hidden
-            // control: the shortcut is the interface, matching GTK's Ctrl+I.
-            Button("") {
-                selection = Set(model.playlistItems.map { $0.id }).subtracting(selection)
+            Menu {
+                Button("Title")    { model.sortPlaylist(.title) }
+                Button("Artist")   { model.sortPlaylist(.artist) }
+                Button("Album")    { model.sortPlaylist(.album) }
+                Button("Filename") { model.sortPlaylist(.filename) }
+                Button("Path")     { model.sortPlaylist(.path) }
+                Divider()
+                Button("Randomize") { model.randomizePlaylist() }
+                Button("Reverse")   { model.reversePlaylist() }
+            } label: {
+                Text("Sort").font(vars.bodyFont)
             }
-            .keyboardShortcut("i", modifiers: .command)
-            .frame(width: 0, height: 0)
-            .opacity(0)
-            .accessibilityHidden(true)
+            .disabled(model.playlistItems.isEmpty)
+            .help("Sort, randomize, or reverse the playlist")
 
             Spacer()
 
-            // Right side: Remove Selected, Remove All
-            Button {
-                removeIndices(Array(selection).sorted())
+            Menu {
+                Button("Save Playlist…") { saveActivePlaylistAs() }
+                    .keyboardShortcut("s", modifiers: .command)
+                Divider()
+                Button("Remove Selected") { removeIndices(Array(selection).sorted()) }
+                    .disabled(selection.isEmpty)
+                Button("Remove All") { model.clearPlaylist(); selection.removeAll() }
+                    .disabled(model.playlistItems.isEmpty)
             } label: {
-                Label("Remove", systemImage: "minus")
-                    .font(vars.bodyFont)
+                Text("List").font(vars.bodyFont)
             }
-            .buttonStyle(PlaylistControlButtonStyle(theme: theme))
-            .disabled(selection.isEmpty)
-            .help("Remove selected track(s)")
-
-            Button {
-                model.clearPlaylist()
-                selection.removeAll()
-            } label: {
-                Label("Remove All", systemImage: "trash")
-                    .font(vars.bodyFont)
-            }
-            .buttonStyle(PlaylistControlButtonStyle(theme: theme))
             .disabled(model.playlistItems.isEmpty)
-            .help("Clear entire playlist")
+            .help("Save or clear the playlist")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -560,10 +543,28 @@ struct PlaylistView: View {
 
     // MARK: Helpers
 
-    private var totalDuration: String? {
-        let total = model.playlistItems.reduce(0.0) { $0 + max($1.duration, 0) }
-        guard total > 0 else { return nil }
-        return formatDuration(total)
+    private var statusLine: String {
+        let count = model.playlistItems.count
+        let total = model.playlistItems.reduce(0) { $0 + max(Int($1.duration), 0) }
+        let sel = selection.isEmpty ? nil :
+            model.playlistItems.filter { selection.contains($0.id) }
+                 .reduce(0) { $0 + max(Int($1.duration), 0) }
+        return Self.formatStatus(count: count, totalSecs: total, selectedSecs: sel)
+    }
+
+    /// Mirrors core `playlist_status_line` (src/playlist_status.rs) EXACTLY —
+    /// keep in sync. "N tracks · MM:SS total · MM:SS selected"; the selected
+    /// clause is present only when `selectedSecs` is non-nil.
+    static func formatStatus(count: Int, totalSecs: Int, selectedSecs: Int?) -> String {
+        func hms(_ s: Int) -> String {
+            let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
+            return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec)
+                         : String(format: "%d:%02d", m, sec)
+        }
+        let noun = count == 1 ? "track" : "tracks"
+        var line = "\(count) \(noun) · \(hms(totalSecs)) total"
+        if let sel = selectedSecs { line += " · \(hms(sel)) selected" }
+        return line
     }
 
     /// Builds the right-click context menu shown when the user opens it

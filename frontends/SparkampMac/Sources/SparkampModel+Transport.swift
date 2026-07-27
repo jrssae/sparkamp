@@ -264,6 +264,26 @@ extension SparkampModel {
         saveState()
     }
 
+    // MARK: Playlist reorder (phase 7)
+
+    enum PlaylistSortKey: Int32 { case title = 0, artist = 1, album = 2, filename = 3, path = 4 }
+
+    func sortPlaylist(_ key: PlaylistSortKey) {
+        guard let ctx = ctx else { return }
+        sparkamp_playlist_sort(ctx, key.rawValue)
+        refreshAll(); saveState()
+    }
+
+    func reversePlaylist() {
+        guard let ctx = ctx else { return }
+        sparkamp_playlist_reverse(ctx); refreshAll(); saveState()
+    }
+
+    func randomizePlaylist() {
+        guard let ctx = ctx else { return }
+        sparkamp_playlist_randomize(ctx); refreshAll(); saveState()
+    }
+
     // MARK: File picker
 
     func openFilePicker() {
