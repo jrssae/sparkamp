@@ -117,6 +117,83 @@ pub fn is_path_suppressed(path: &Path) -> bool {
     guard().is_suppressed(path)
 }
 
+/// Accessor for the same global self-write registry used by
+/// [`register_self_write`] / [`is_path_suppressed`], for use by the live
+/// filesystem watcher's classifier calls.
+pub fn global_guard() -> &'static SelfWriteGuard {
+    guard()
+}
+
+/// A running debounced OS filesystem watcher over one or more folders.
+///
+/// Holds the underlying [`notify_debouncer_mini::Debouncer`] alive for as
+/// long as this value lives; dropping it (or calling [`FolderWatcher::stop`])
+/// tears down the debouncer's internal thread and stops watching.
+pub struct FolderWatcher {
+    _debouncer: notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>,
+}
+
+impl FolderWatcher {
+    /// Start watching `folders` (each a directory plus whether to watch it
+    /// recursively) for changes to files with one of `audio_exts`. Debounces
+    /// OS events over a 2-second window, classifies the resulting paths via
+    /// [`classify_paths`] (suppressing Sparkamp's own recent writes via the
+    /// global [`SelfWriteGuard`]), and sends a [`WatchAction`] per surviving
+    /// path on the returned channel.
+    ///
+    /// Returns `Err` if the underlying watcher fails to initialise or fails
+    /// to register any of the requested folders (e.g. the inotify
+    /// `max_user_watches` limit is exhausted) — callers should treat this as
+    /// a signal to fall back to manual rescans rather than panicking.
+    pub fn start(
+        folders: Vec<(PathBuf, bool)>,
+        audio_exts: Vec<String>,
+        cache_prefix: PathBuf,
+    ) -> std::io::Result<(FolderWatcher, std::sync::mpsc::Receiver<WatchAction>)> {
+        use notify_debouncer_mini::notify::RecursiveMode;
+        use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
+
+        let (tx, rx) = std::sync::mpsc::channel::<WatchAction>();
+
+        let mut debouncer = new_debouncer(Duration::from_secs(2), move |result: DebounceEventResult| {
+            match result {
+                Ok(events) => {
+                    let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
+                    let ext_refs: Vec<&str> = audio_exts.iter().map(|s| s.as_str()).collect();
+                    let actions = classify_paths(&paths, &ext_refs, &cache_prefix, global_guard());
+                    for action in actions {
+                        let _ = tx.send(action);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[sparkamp_watch] debouncer error: {e:?}");
+                }
+            }
+        })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+        for (path, recurse) in folders {
+            let mode = if recurse {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            debouncer
+                .watcher()
+                .watch(&path, mode)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        }
+
+        Ok((FolderWatcher { _debouncer: debouncer }, rx))
+    }
+
+    /// Stop watching. Consumes `self`; dropping the held debouncer stops its
+    /// internal thread and ends all active watches.
+    pub fn stop(self) {
+        drop(self._debouncer);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +249,33 @@ mod tests {
             classify_paths(&[f.clone()], &exts(), Path::new("/no-cache"), &guard),
             vec![WatchAction::Upsert(f)]
         );
+    }
+
+    #[test]
+    fn watcher_emits_upsert_on_new_file() {
+        use std::sync::mpsc::RecvTimeoutError;
+        let dir = tempfile::tempdir().unwrap();
+        let (watcher, rx) = FolderWatcher::start(
+            vec![(dir.path().to_path_buf(), true)],
+            vec!["mp3".into()],
+            std::path::PathBuf::from("/no-cache"),
+        )
+        .expect("watcher start");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::fs::write(dir.path().join("new.mp3"), b"x").unwrap();
+        let mut got = false;
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(8)) {
+                Ok(WatchAction::Upsert(p)) if p.ends_with("new.mp3") => {
+                    got = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(_) => break,
+            }
+        }
+        watcher.stop();
+        assert!(got, "expected an Upsert for the new file");
     }
 }
