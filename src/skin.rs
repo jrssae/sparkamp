@@ -651,10 +651,11 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {btext}; border: 1px solid {hl}; \
     }}").unwrap();
 
-    // Stop-after-current badge — tiny stop-square pinned to the bottom-right
-    // corner of the play/pause/stop state indicator while armed (phase 6, `t`).
+    // Stop-after-current badge — stop-square pinned to the bottom-right corner
+    // of the play/pause/stop state indicator while armed (phase 6, `t`). Same
+    // colour as the state glyph (`.time-disp` uses `{text}`).
     writeln!(css, "label.stop-after-badge {{ \
-        color: {hl}; font-size: 7px; margin: 0; padding: 0; \
+        color: {text}; font-size: 20px; margin: 0; padding: 0; \
     }}").unwrap();
 
 
