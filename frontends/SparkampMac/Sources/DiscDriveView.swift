@@ -197,9 +197,12 @@ struct DiscDriveView: View {
 
     private var vars: SkinVars { themeManager.currentVars }
     private var isEjecting: Bool { model.ejectingDiscs.contains(drive.id) }
-    /// The stored tag set for the loaded disc (nil until matched/edited).
+    /// The tag set for the loaded disc, for the header line: a gnudb match
+    /// or hand edits when there's one, else a CD-TEXT read off the drive
+    /// itself (nil until one of those has landed) — see
+    /// `SparkampModel.discOverlayTags`.
     private var discTags: DiscTagSet? {
-        model.discIdFor(drive).flatMap { model.discTagSets[$0] }
+        model.discIdFor(drive).flatMap { model.discOverlayTags($0) }
     }
 
     var body: some View {

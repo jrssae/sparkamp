@@ -67,6 +67,7 @@ extension SparkampModel {
             DispatchQueue.main.async {
                 self.discTracks = entries
                 self.discBusy = false
+                self.loadedDiscId = discId
                 if let id = discId, self.discTagSets[id] == nil,
                    let user = stored?.user {
                     self.discTagSets[id] = DiscTagSet(
@@ -79,6 +80,49 @@ extension SparkampModel {
                         self.discOfficial[id] = official
                     }
                 }
+                self.applyDiscTagTitles(drive)
+                self.maybeReadDiscCdtext(drive)
+            }
+        }
+    }
+
+    /// The overlay tag set for a disc: a gnudb match or hand edits
+    /// (`discTagSets`) win outright when present; a CD-TEXT read off the
+    /// drive itself (`discCdtext`, cached on first show of an unknown audio
+    /// disc — see `maybeReadDiscCdtext`) fills in only on a total miss.
+    /// Winamp precedence (LOCKED): the whole entry, never merged per-field —
+    /// mirrors GTK's `disc_tags.get(id).or_else(|| disc_cdtext.get(id))`.
+    func discOverlayTags(_ id: String) -> DiscTagSet? {
+        if let tags = discTagSets[id] { return tags }
+        guard let cd = discCdtext[id] else { return nil }
+        return DiscTagSet(
+            artist: cd.artist, album: cd.album, year: cd.year, genre: cd.genre,
+            titles: cd.trackTitles)
+    }
+
+    /// Read CD-TEXT off the drive when neither gnudb nor a hand edit has a
+    /// match for its disc — display-only fallback (mirrors GTK's
+    /// `disc_cdtext`/`disc_cdtext_tried`): a burned or commercial disc gnudb
+    /// has never heard of still shows its real names. Fires at most once per
+    /// disc per launch; the result is never written to the on-disk tag store
+    /// and never outranks a gnudb/user entry (see `discOverlayTags`).
+    func maybeReadDiscCdtext(_ drive: OpticalDrive) {
+        guard drive.media.isAudioCd,
+              let id = discIdFor(drive),
+              discTagSets[id] == nil,
+              discCdtext[id] == nil,
+              !discCdtextTried.contains(id)
+        else { return }
+        discCdtextTried.insert(id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let entry = DiscService.readCdtext(drive: drive)
+            guard let entry = entry else { return }
+            DispatchQueue.main.async {
+                self.discCdtext[id] = entry
+                // Re-render only if this disc is still the one `discTracks`
+                // holds — a late arrival after the user switched discs just
+                // updates the cache silently (reused on a later re-show).
+                guard self.loadedDiscId == id else { return }
                 self.applyDiscTagTitles(drive)
             }
         }
@@ -98,10 +142,12 @@ extension SparkampModel {
         return p.map { String(cString: $0) } ?? ""
     }
 
-    /// Overlay the stored tag set's titles onto `discTracks` ("Track N" stays
-    /// wherever a title is missing/empty).
+    /// Overlay the disc's tag set titles onto `discTracks` ("Track N" stays
+    /// wherever a title is missing/empty). The tag set is gnudb/hand-edited
+    /// when there is one, else a CD-TEXT read off the drive itself — see
+    /// `discOverlayTags`.
     func applyDiscTagTitles(_ drive: OpticalDrive) {
-        guard let id = discIdFor(drive), let tags = discTagSets[id] else { return }
+        guard let id = discIdFor(drive), let tags = discOverlayTags(id) else { return }
         discTracks = discTracks.map { entry in
             var e = entry
             let i = entry.number - 1

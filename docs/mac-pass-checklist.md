@@ -102,6 +102,11 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       disc view showing "Track N" for unknown discs. Core
       cdtext::{CdText, parse_v07t_readback, to_xmcd} is reusable; only the
       read source is platform-specific.
+      **Decided/implemented in Phase 9 below (2026-07-28): mac now calls the
+      shared `sparkamp_disc_read_cdtext` FFI (drutil-cdtext parse path), same
+      as GTK's cdrdao path. See Phase 9 for the verification items and the
+      DiscRecording-framework fallback if the drutil parse doesn't hold up
+      on real hardware.**
 - [ ] **Eject unmount (Linux fix, verify mac path):** GTK eject failed
       "must be superuser to unmount" on a mounted data disc; fixed by
       udisks-unmounting first. macOS `drutil eject` — confirm it ejects a
@@ -826,3 +831,101 @@ sprinkled across individual transport buttons.
       revoke folder permissions) and confirm the app does NOT crash —
       it should silently fall back to manual/interval rescans (per
       `rebuild_watcher`'s documented degrade-gracefully contract).
+
+---
+
+## Phase 9 — CD-TEXT read (2026-07-28, BLIND — Swift never compiled)
+
+Mirrors GTK's `disc_cdtext`/`disc_cdtext_tried` overlay
+(`frontends/gtk/window/media_library.rs:9031-9108`): mac now calls the
+shared `sparkamp_disc_read_cdtext` FFI (Task 2) on first show of an audio
+disc with no gnudb/user match, and overlays the result exactly like a gnudb
+entry. Winamp precedence is LOCKED to the whole entry, never merged
+per-field: gnudb/hand-edited tags win outright when present; CD-TEXT fills
+in only on a total miss.
+
+Files touched: `SparkampModel.swift` (new `discCdtext: [String: XmcdEntry]`,
+`discCdtextTried: Set<String>`, `loadedDiscId: String?`), `DiscService.swift`
+(new `readCdtext(drive:) -> XmcdEntry?`, wraps `sparkamp_disc_read_cdtext` +
+`sparkamp_free_string`), `SparkampModel+Discs.swift` (new
+`discOverlayTags(_:)` — the `gnudb ?? cdtext` chooser; new
+`maybeReadDiscCdtext(_:)` — the one-shot background read + cache + re-render;
+`loadDiscTracks` now sets `loadedDiscId` and calls `maybeReadDiscCdtext`;
+`applyDiscTagTitles` now reads through `discOverlayTags` instead of
+`discTagSets` directly), `DiscDriveView.swift` (header's `discTags` computed
+var now reads through `discOverlayTags` too, so the "Artist — Album (year)"
+line picks up a CD-TEXT-only entry the same as a gnudb one).
+
+- [ ] **CD-TEXT disc absent from gnudb**: insert an audio disc gnudb has no
+      record of but that carries CD-TEXT (e.g. a disc burned by Sparkamp
+      itself with disc-artist/disc-album set, or a commercial disc with
+      CD-TEXT gnudb doesn't know) — real album/artist show in the header
+      ("Artist — Album") and real per-track titles show in the track table,
+      without pressing Identify.
+- [ ] **gnudb-known disc unchanged**: insert a disc gnudb DOES match (or one
+      with hand-edited tags saved via Edit Tags) — its gnudb/user names are
+      unaffected; CD-TEXT is never read for it at all (confirm via a log/
+      breakpoint in `maybeReadDiscCdtext` that the early `discTagSets[id] ==
+      nil` guard skips the FFI call entirely for this disc).
+- [ ] **Neither gnudb nor CD-TEXT**: a disc with no gnudb match and no
+      CD-TEXT on the physical media — track table falls back to "Track N"
+      per track and the header line is hidden, same as before this task.
+- [ ] **Burn in one window + probe another → no drive fight**: with two
+      drives attached, start a burn on drive A's Disc Drive view while
+      navigating to and viewing an unknown audio disc on drive B (triggering
+      B's CD-TEXT read). Confirm no error dialogs, no drive contention, and
+      B's CD-TEXT read either succeeds cleanly or fails silently — the
+      exclusive-read guard is held INSIDE the core `sparkamp_disc_read_cdtext`
+      FFI call for its whole duration (per its bridge-header doc), so mac
+      Swift does not wrap it with its own begin/end calls the way GTK's raw
+      `disc::cdtext::read_cdtext` call does; confirm this built-in guard is
+      actually sufficient on mac (i.e. it doesn't need a Swift-side
+      `disc_reading`-style flag the way GTK's rip loop sets one).
+- [ ] **Ripped filenames/tags inherit CD-TEXT**: rip a CD-TEXT-only
+      (gnudb-absent) disc — the ripped files' names/tags use the CD-TEXT
+      track titles (via `discTracks[i].title`, already overlaid by
+      `applyDiscTagTitles` before the rip sheet reads it), matching GTK's
+      behavior for the same disc. NOTE (matches GTK, not a mac-specific gap):
+      the disc-level Artist/Album ID3 fields on the ripped files still come
+      from `discTagSets[id]` only (empty for a CD-TEXT-only disc, same as
+      GTK's `disc_tags.get(id)` in `disc.rs`'s rip dialog) — CD-TEXT is not
+      folded into the persisted/submittable tag set, only into the live
+      display + the per-track titles carried through to rip. If real-world
+      testing shows users expect the CD-TEXT artist/album on ripped files
+      too, that's a follow-up, not a regression from this task.
+- [ ] **Acquisition path + drutil dump capture**: confirm which path was
+      actually used to acquire CD-TEXT for a live disc on real hardware.
+      This task lands ONLY the FFI-based path (`sparkamp_disc_read_cdtext` →
+      core `parse_drutil_cdtext`, mirrored in `DiscService.readCdtext`) — the
+      DiscRecording-framework fallback (`DRDevice` + `DRCDTextBlock`/
+      `DRDeviceMediaInfoKey`) described in that function's doc comment and in
+      Task 2's brief is NOT implemented. If a real `drutil cdtext` dump
+      parses cleanly (non-nil `XmcdEntry` with sane fields), the FFI path
+      stands. If it returns nil/garbage on real hardware, paste the raw
+      `drutil cdtext -drive N` output here so the core `parse_drutil_cdtext`
+      fixture can be corrected, and open a follow-up task for the
+      DiscRecording-framework path:
+      ```
+      (paste real `drutil cdtext` output here during the hardware pass)
+      ```
+
+**Unsure / eyeball (blind, no Xcode here):**
+- `maybeReadDiscCdtext` guards re-render staleness with `loadedDiscId == id`
+  (set at the end of `loadDiscTracks`) rather than GTK's "is this drive
+  still the one the view holder points at" check — functionally equivalent
+  (both stop a late CD-TEXT arrival for a disc the user has since navigated
+  away from from clobbering `discTracks`), but it's a different mechanism
+  than GTK's, so eyeball a same-drive rapid disc-swap (eject mid-read,
+  insert a different disc before the FFI call returns) for a stale overlay.
+- `sparkamp_disc_read_cdtext` is called with `ctx: nil`, mirroring
+  `sparkamp_disc_track_entries`/`sparkamp_disc_id` (disc detection is
+  ctx-free, subprocess-backed) — confirm the header's `SparkampCtx *ctx`
+  parameter genuinely tolerates NULL here the same as those siblings.
+- `discCdtext`/`discCdtextTried` are never cleared when a drive disconnects
+  or a disc is ejected (unlike `discTagSets`, which persists on disk by
+  design) — a re-inserted disc with the same freedb ID reuses the cached
+  CD-TEXT rather than re-reading, which is intentional (mirrors GTK, which
+  also never clears `disc_cdtext`/`disc_cdtext_tried`), but flag if this
+  ever shows stale names after ejecting and inserting a DIFFERENT disc that
+  happens to collide on freedb ID (extremely unlikely — same collision risk
+  gnudb itself already has).

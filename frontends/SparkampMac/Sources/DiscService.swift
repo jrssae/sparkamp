@@ -250,6 +250,31 @@ enum DiscService {
         return takeString(out)
     }
 
+    /// Read CD-TEXT off the drive's loaded audio disc (nil when the disc has
+    /// none, the read fails, or the input is bad). The core FFI holds the
+    /// exclusive-read guard for the whole read, so this needs no locking of
+    /// its own — same contract as `trackEntries`. Spins the drive: call from
+    /// a background queue only, and expect it to take real time.
+    ///
+    /// MAC NOTE: this parses `drutil cdtext`'s dump the same way the Linux
+    /// build parses cdrdao's (core `disc::cdtext::parse_drutil_cdtext`). If
+    /// real hardware testing shows that dump doesn't parse, switch
+    /// acquisition to the DiscRecording framework instead (`DRDevice` +
+    /// `DRCDTextBlock`/`DRDeviceMediaInfoKey`, which hands back structured
+    /// title/performer strings rather than a raw dump) and build the overlay
+    /// entry Swift-side from that — this FFI call would then go unused on
+    /// mac while staying in place for parity with GTK/TUI. Not implemented
+    /// here; see docs/mac-pass-checklist.md, Phase 9.
+    static func readCdtext(drive: OpticalDrive) -> XmcdEntry? {
+        guard let driveJSON = jsonString(drive) else { return nil }
+        let out = driveJSON.withCString { sparkamp_disc_read_cdtext(nil, $0) }
+        guard let json = takeString(out),
+              let data = json.data(using: .utf8),
+              let entry = try? decoder().decode(XmcdEntry.self, from: data)
+        else { return nil }
+        return entry
+    }
+
     /// Ask gnudb which discs match this TOC. Blocking network (10 s timeout)
     /// — background queue only. Returns matches or a user-facing error string.
     static func gnudbQuery(toc: DiscToc, email: String) -> Result<[DiscMatch], GnudbFailure> {

@@ -241,6 +241,23 @@ final class SparkampModel: ObservableObject {
     /// The untouched gnudb match per disc — baseline for "worth submitting?"
     /// and the source of the revision an update must increment.
     @Published var discOfficial: [String: XmcdEntry] = [:]
+    /// CD-TEXT read straight off the drive, keyed by freedb disc ID —
+    /// display-only fallback for a disc gnudb has no match for (a burned or
+    /// commercial disc gnudb has never heard of still shows its real names).
+    /// Never persisted to the on-disk tag store and never overrides
+    /// `discTagSets` — see `discOverlayTags` for the whole-entry precedence.
+    /// Mirrors GTK's `disc_cdtext`.
+    @Published var discCdtext: [String: XmcdEntry] = [:]
+    /// Disc-ids for which a CD-TEXT read has already been attempted this
+    /// launch (success, failure, or "no CD-TEXT") — guarantees the
+    /// background read fires at most once per disc. Mirrors GTK's
+    /// `disc_cdtext_tried`.
+    var discCdtextTried: Set<String> = []
+    /// The freedb disc ID `discTracks` currently holds entries for (nil with
+    /// no disc loaded). Set at the end of `loadDiscTracks`; lets a late CD-
+    /// TEXT read arriving after the user has switched discs recognize itself
+    /// as stale and skip re-rendering onto the wrong disc's tracks.
+    var loadedDiscId: String? = nil
     /// True while a submission is in flight.
     @Published var discSubmitting: Bool = false
     /// Live rip progress (done/total · current title); nil when idle.
