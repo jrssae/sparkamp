@@ -994,8 +994,16 @@ impl MediaLibrary {
         if !p.exists() {
             return Ok(());
         }
-        let folder_id = self.get_folder_id_for_path(path)?;
-        self.upsert_track(folder_id, path)?;
+        // NULL-safe folder lookup (Phase 8 review Fix 1): auto-add-played
+        // inserts outside-folder rows with folder_id = NULL (see
+        // `upsert_path`), so a plain `tracks.folder_id` read here would
+        // hit `InvalidColumnType` on such a row and every caller of
+        // `rescan_track` silently swallows the Err, leaving stale
+        // metadata forever. Mirror `upsert_path`'s branch instead.
+        match self.owning_folder_id(path)? {
+            Some(fid) => self.upsert_track(fid, path)?,
+            None => self.update_track_metadata_only(path)?,
+        }
         self.update_last_scanned(path)?;
         Ok(())
     }
@@ -1005,15 +1013,6 @@ impl MediaLibrary {
     /// duration probing failed). Mirrors `tech.channels.or(tags.channels)`.
     pub(super) fn resolve_bitrate(computed: Option<i64>, tag_bitrate: Option<i64>) -> Option<i64> {
         computed.or(tag_bitrate)
-    }
-
-    pub(super) fn get_folder_id_for_path(&self, path: &str) -> Result<i64> {
-        let folder_id: i64 = self.conn.query_row(
-            "SELECT folder_id FROM tracks WHERE path = ?1",
-            params![path],
-            |row| row.get(0),
-        )?;
-        Ok(folder_id)
     }
 
     /// Check if a file needs metadata scanning based on modification time vs last_scanned.

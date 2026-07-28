@@ -597,6 +597,11 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_all(
 
     // Fast phase: re-discover any new files in all folders.
     let remove_missing = ctx.config.media_library.remove_missing_on_rescan;
+    // Read before spawning: `ctx` (and its `config`) isn't available inside
+    // the background closure below. Compact only after this FULL rescan
+    // completes, gated on the setting — mirrors GTK/TUI (VACUUM is too
+    // heavy to run after every fast folder-add).
+    let compact_after = ctx.config.media_library.compact_on_rescan;
     let folders = ml.list_folders().unwrap_or_default();
     for (folder_id, folder_path) in &folders {
         if let Err(e) = ml.rescan_folder_fast(*folder_id, folder_path, remove_missing) {
@@ -616,13 +621,19 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_all(
         let ud: *mut c_void = ud_addr as *mut c_void;
         let result = MediaLibrary::open_at(&MediaLibrary::db_path_pub()).and_then(|bg_ml| {
             let atomic = &progress_atomic;
-            bg_ml.scan_all_folders(&cancel, |done, total| {
+            let scan_result = bg_ml.scan_all_folders(&cancel, |done, total| {
                 let packed = ((total as u64) << 32) | (done as u64);
                 atomic.store(packed, Ordering::Relaxed);
                 if let Some(cb) = progress_cb {
                     unsafe { cb(ud, done as c_int, total as c_int) };
                 }
-            })
+            });
+            if scan_result.is_ok() && compact_after {
+                if let Err(e) = bg_ml.compact() {
+                    eprintln!("[sparkamp_ml_rescan_all] compact_on_rescan: VACUUM failed: {e}");
+                }
+            }
+            scan_result
         });
         if let Err(e) = result {
             eprintln!("[sparkamp_ml_rescan_all] background scan: {e}");

@@ -560,6 +560,36 @@ fn rescan_track_updates_metadata() {
     assert!(rescanned.last_scanned.is_some());
 }
 
+#[test]
+fn rescan_track_refreshes_null_folder_row() {
+    gstreamer::init().ok();
+
+    // No folders registered at all — mirrors
+    // add_played_outside_library_creates_null_folder_row: a played file
+    // outside every watched folder lands in the NULL-folder_id bucket.
+    // Editing its tags and rescanning must not error out just because
+    // there's no owning folder to look up (Phase 8 review Fix 1).
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().canonicalize().unwrap().join("track.mp3");
+    fs::write(&file_path, b"fake audio data").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    lib.add_played_track(path).unwrap();
+    assert!(track_row_exists(&lib, path));
+
+    let result = lib.rescan_track(path);
+
+    assert!(
+        result.is_ok(),
+        "rescan_track on a NULL-folder row must not error: {result:?}"
+    );
+    assert!(
+        track_row_exists(&lib, path),
+        "the NULL-bucket row must still exist after rescan"
+    );
+}
+
 // ── Smart scan helpers ─────────────────────────────────────────────────
 // (parse/format timestamp tests live in `crate::timeutil`.)
 

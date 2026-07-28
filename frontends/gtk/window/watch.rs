@@ -177,6 +177,14 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
     }
 
     let db_path = crate::media_library::MediaLibrary::db_path_pub();
+    // Read before spawning (short borrow, dropped before the thread starts):
+    // `scan_all_folders` only re-reads metadata for `tracks` rows that
+    // already exist — it never walks the filesystem — so a startup rescan
+    // that skipped straight to it would miss files added/removed while the
+    // app was closed. Fix 3 (Phase 8 review): walk+prune every folder with
+    // `rescan_folder_fast` first, same as the Settings/ML "Rescan" button
+    // and TUI/mac startup paths, gated on the same setting they use.
+    let remove_missing = state.borrow().config.media_library.remove_missing_on_rescan;
     let cancel_flag = start_ml_scan(state, ScanType::Rescan, 0);
 
     let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
@@ -189,6 +197,16 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
                 return;
             }
         };
+        match lib.list_folders() {
+            Ok(folders) => {
+                for (id, path) in folders {
+                    if let Err(e) = lib.rescan_folder_fast(id, &path, remove_missing) {
+                        eprintln!("[watch] startup rescan: fast walk of {path}: {e}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("[watch] startup rescan: list_folders failed: {e}"),
+        }
         let _ = lib.reset_unscanned_metadata();
         let result = lib
             .scan_all_folders(&cancel_flag, |current, total| {
