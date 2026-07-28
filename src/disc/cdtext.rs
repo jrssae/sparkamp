@@ -185,6 +185,91 @@ pub fn read_cdtext(drive_id: &str) -> Option<CdText> {
     (!cd.is_empty()).then_some(cd)
 }
 
+/// Read CD-TEXT off the loaded disc on macOS via `drutil -drive <id> cdtext`.
+/// `drive_id` is the drutil enumeration index (`OpticalDrive::id`), the same
+/// value the mac burn/rip paths pass. `None` when the disc has no CD-TEXT or
+/// drutil fails. READS THE DISC — the caller MUST hold the exclusive-read
+/// guard (drive-contention rule).
+#[cfg(target_os = "macos")]
+pub fn read_cdtext(drive_id: &str) -> Option<CdText> {
+    let out = std::process::Command::new("drutil")
+        .args(["-drive", drive_id, "cdtext"])
+        .output()
+        .ok()?;
+    let cd = parse_drutil_cdtext(&String::from_utf8_lossy(&out.stdout));
+    (!cd.is_empty()).then_some(cd)
+}
+
+/// Parse `drutil cdtext` output into a [`CdText`]. Tolerant, quote-aware:
+/// the FIRST `TITLE`/`PERFORMER` pair is disc-level; each later `TITLE`
+/// (under a `Track N:` heading) becomes that track's title in order.
+///
+/// NOTE: `drutil cdtext`'s exact format is undocumented; this handles the
+/// plausible `KEY "value"` token form. A macOS worker must confirm the real
+/// output shape and adjust this parser + its test fixture (see plan).
+///
+/// Only called from the macOS `read_cdtext` arm below; on other platforms
+/// its sole non-test caller is compiled out, so it would otherwise flag as
+/// dead code in the binary target (same pattern as `leading_number` in
+/// `disc/toc.rs`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn parse_drutil_cdtext(text: &str) -> CdText {
+    let mut out = CdText::default();
+    let mut cur_track: Option<u32> = None;
+    let mut next_seq: u32 = 0; // fallback track counter when no explicit "Track N"
+    for line in text.lines() {
+        let t = line.trim();
+        // "Track 3:" heading sets the track the following TITLE belongs to.
+        if let Some(rest) = t.strip_prefix("Track ") {
+            if let Some(nums) = rest.split([':', ' ']).next() {
+                if let Ok(n) = nums.trim().parse::<u32>() {
+                    cur_track = Some(n);
+                    continue;
+                }
+            }
+        }
+        let Some(val) = quoted_value(t) else { continue };
+        if val.is_empty() {
+            continue;
+        }
+        if let Some(key) = t.split_whitespace().next() {
+            match key {
+                "TITLE" | "Title" => {
+                    if out.album.is_none() && cur_track.is_none() {
+                        out.album = Some(val);
+                    } else {
+                        let n = cur_track.take().unwrap_or_else(|| {
+                            next_seq += 1;
+                            next_seq
+                        });
+                        if n as usize > next_seq as usize {
+                            next_seq = n;
+                        }
+                        out.track_titles.push((n, val));
+                    }
+                }
+                "PERFORMER" | "Performer" => {
+                    if out.artist.is_none() && cur_track.is_none() {
+                        out.artist = Some(val);
+                    }
+                    // per-track performers are ignored (title-only overlay,
+                    // same as the v07t readback path).
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Extract the first double-quoted substring from a line, if any.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn quoted_value(line: &str) -> Option<String> {
+    let start = line.find('"')? + 1;
+    let end = line[start..].find('"')? + start;
+    Some(line[start..end].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +366,36 @@ Track 02 Artist     = 34. Charli Xcx
         // Sanitized text keeps the readable parts (newlines replaced with spaces).
         assert!(sheet.contains("Album Title = B Artist Name = X"), "{sheet}");
         assert!(sheet.contains("Artist Name = A Album Title = HACKED"), "{sheet}");
+    }
+
+    #[test]
+    fn drutil_cdtext_parses_album_artist_and_titles() {
+        // PROVISIONAL fixture — verify/replace against a real `drutil cdtext`
+        // dump on macOS (see the BLIND-FORMAT WARNING in the plan). The parser
+        // treats the first TITLE/PERFORMER pair as disc-level and each
+        // subsequent TITLE as track 1, 2, … in order.
+        let dump = "\
+CD-Text, Block 0 (English):
+  TITLE \"Greatest Hits\"
+  PERFORMER \"The Band\"
+  Track 1:
+    TITLE \"First Song\"
+  Track 2:
+    TITLE \"Second Song\"
+";
+        let cd = parse_drutil_cdtext(dump);
+        assert_eq!(cd.album.as_deref(), Some("Greatest Hits"));
+        assert_eq!(cd.artist.as_deref(), Some("The Band"));
+        assert_eq!(cd.track_titles.len(), 2);
+        assert_eq!(cd.track_titles[0], (1, "First Song".into()));
+        assert_eq!(cd.track_titles[1], (2, "Second Song".into()));
+
+        // Round-trips into the same gnudb-style overlay entry as the v07t path.
+        let x = cd.to_xmcd("deadbeef");
+        assert_eq!(x.album, "Greatest Hits");
+        assert_eq!(x.track_titles[1], "Second Song");
+
+        // No CD-TEXT → empty (caller treats as a miss).
+        assert!(parse_drutil_cdtext("No CD-Text on this disc.\n").is_empty());
     }
 }
