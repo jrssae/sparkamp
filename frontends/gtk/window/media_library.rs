@@ -1021,9 +1021,6 @@ fn open_media_library_window(
         let widths: std::collections::HashMap<String, i32> =
             state.borrow().config.media_library.ml_file_col_widths.clone();
         let order = state.borrow().config.media_library.ml_file_col_order.clone();
-        // F12.2: display fallback for the "album_artist" column.
-        let artist_as_album_artist: bool =
-            state.borrow().config.media_library.artist_as_album_artist;
         // Build columns in the saved order (unknown/leftover ids appended).
         let ordered: Vec<&MlColumnDef> = {
             let mut v: Vec<&MlColumnDef> = Vec::new();
@@ -1076,6 +1073,7 @@ fn open_media_library_window(
             });
             let bind_id = id_str.clone();
             let bind_connected = dev_connected_artwork.clone();
+            let bind_state = state.clone();
             factory.connect_bind(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
                 let Some(boxed) = li
@@ -1085,6 +1083,12 @@ fn open_media_library_window(
                     return;
                 };
                 let t = boxed.borrow::<crate::media_library::LibTrack>();
+                // F12.2: read live so a Settings toggle applies to already
+                // -bound cells on the next rebind, not just at window
+                // construction (the ML window is a singleton — see
+                // rebuild_ml_callback in player.rs).
+                let artist_as_album_artist =
+                    bind_state.borrow().config.media_library.artist_as_album_artist;
                 if is_art {
                     let Some(btn) = li.child().and_then(|c| c.downcast::<Button>().ok()) else {
                         return;
@@ -4197,9 +4201,6 @@ fn open_media_library_window(
         let visible_ids: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
         let saved_widths: std::collections::HashMap<String, i32> =
             state.borrow().config.media_library.ml_file_col_widths.clone();
-        // F12.2: display fallback for the "album_artist" column.
-        let artist_as_album_artist: bool =
-            state.borrow().config.media_library.artist_as_album_artist;
 
         // Track which artwork buttons have been connected to avoid duplicate click handlers
         // (connect_bind fires each time an item is shown after a scroll).
@@ -4300,6 +4301,9 @@ fn open_media_library_window(
                 let state_for_ctx = state.clone();
                 let ctx_drives = current_drives.clone();
                 let ctx_devices = current_devices.clone();
+                // F12.2: separate clone for connect_bind — state_for_ctx
+                // above is moved into connect_setup's right-click handler.
+                let bind_state = state.clone();
 
                 factory.connect_setup(move |_, obj| {
                     let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -4551,6 +4555,12 @@ fn open_media_library_window(
                         return;
                     };
                     let t = boxed.borrow::<crate::media_library::LibTrack>();
+                    // F12.2: read live so a Settings toggle applies to
+                    // already-bound cells on the next rebind, not just at
+                    // window construction (the ML window is a singleton —
+                    // see rebuild_ml_callback in player.rs).
+                    let artist_as_album_artist =
+                        bind_state.borrow().config.media_library.artist_as_album_artist;
 
                     if is_artwork {
                         let btn = li.child().and_then(|c| c.downcast::<Button>().ok());
@@ -6108,9 +6118,6 @@ fn open_media_library_window(
             state.borrow().config.media_library.visible_columns.clone();
         let saved_widths: std::collections::HashMap<String, i32> =
             state.borrow().config.media_library.ml_file_col_widths.clone();
-        // F12.2: display fallback for the "album_artist" column.
-        let artist_as_album_artist: bool =
-            state.borrow().config.media_library.artist_as_album_artist;
 
         // Leading status-glyph column (⚠/🔒) — playlist-editor-only, mirrors
         // the unscanned-indicator column on the files side.
@@ -6215,6 +6222,9 @@ fn open_media_library_window(
             let setup_devices    = current_devices.clone();
             let setup_id         = id_str.clone();
             let is_artwork_col   = id_str == "artwork_path";
+            // F12.2: separate clone for connect_bind — setup_state above is
+            // moved into connect_setup.
+            let bind_state       = state.clone();
             factory.connect_setup(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
                 if li.child().is_some() { return }
@@ -6544,6 +6554,12 @@ fn open_media_library_window(
                 else { return };
                 let entry = boxed.borrow::<EditorEntry>();
                 let t = &entry.track;
+                // F12.2: read live so a Settings toggle applies to
+                // already-bound cells on the next rebind, not just at
+                // window construction (the ML window is a singleton — see
+                // rebuild_ml_callback in player.rs).
+                let artist_as_album_artist =
+                    bind_state.borrow().config.media_library.artist_as_album_artist;
                 // Stash this cell's canonical play-order index on whatever
                 // child widget the cell currently holds so the editor-area
                 // drop target can resolve a drop coordinate to a canonical

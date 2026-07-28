@@ -2198,9 +2198,20 @@ fn open_settings_window(
         {
             let state_rc = state.clone();
             chk_artist_as_album.connect_toggled(move |c| {
-                let mut s = state_rc.borrow_mut();
-                s.config.media_library.artist_as_album_artist = c.is_active();
-                let _ = s.config.save();
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.media_library.artist_as_album_artist = c.is_active();
+                    let _ = s.config.save();
+                }
+                // F12.2: the ML window is a singleton, so an already-open
+                // window's Files/Editor cells won't re-bind on their own —
+                // force a refresh of both so the toggle is live within the
+                // session (mirrors the ID3-save precedent, which refreshes
+                // the same two views after a tag edit).
+                if let Some(ref cb) = state_rc.borrow().rebuild_ml_callback {
+                    cb();
+                }
+                notify_editor_refresh();
             });
         }
         grid.attach(&chk_artist_as_album, 1, 18, 1, 1);
