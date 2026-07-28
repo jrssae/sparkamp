@@ -486,6 +486,15 @@ pub struct App {
     pub disc_official: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
     /// Receiver for an in-flight background gnudb lookup, drained by tick().
     disc_lookup: Option<mpsc::Receiver<DiscLookupMsg>>,
+    /// CD-TEXT read off unknown audio discs, keyed by freedb disc-id.
+    /// Consulted only when `disc_tags` has no gnudb/user entry (Winamp
+    /// precedence: gnudb wins entirely when present).
+    pub(crate) disc_cdtext: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    /// Disc-ids we've already attempted a CD-TEXT read for (one attempt each).
+    pub(crate) disc_cdtext_tried: std::collections::HashSet<String>,
+    /// In-flight background CD-TEXT read result, drained in the tick loop.
+    pub(crate) disc_cdtext_read:
+        Option<mpsc::Receiver<(String, crate::disc::xmcd::XmcdEntry)>>,
     /// Match list that arrived while the media library (or its Discs tab)
     /// wasn't showing — lookups keep running in the background, and the
     /// picker re-opens from here on the next Discs-tab visit.
@@ -649,6 +658,9 @@ impl App {
             disc_tags,
             disc_official,
             disc_lookup: None,
+            disc_cdtext: std::collections::HashMap::new(),
+            disc_cdtext_tried: std::collections::HashSet::new(),
+            disc_cdtext_read: None,
             pending_disc_matches: None,
             disc_fingerprints: std::collections::HashMap::new(),
             disc_rip: None,
@@ -1215,6 +1227,26 @@ impl App {
         }
         for msg in burn_msgs {
             self.handle_burn_msg(msg);
+        }
+
+        // 4d. Deliver a background CD-TEXT read result (Discs tab fallback).
+        // Unlike the gnudb/rip/burn channels above, the sender may finish
+        // without ever sending (no CD-TEXT on the disc) — try_recv's
+        // Empty/Disconnected distinction is what clears the slot in that
+        // case, so this can't reuse the generic `while let Ok(msg) = ...`
+        // drain those channels use.
+        if let Some(rx) = &self.disc_cdtext_read {
+            match rx.try_recv() {
+                Ok((discid, entry)) => {
+                    self.disc_cdtext.insert(discid, entry);
+                    self.disc_cdtext_read = None;
+                    self.apply_disc_tags_to_entries(); // re-overlay with the new names
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.disc_cdtext_read = None;
+                }
+            }
         }
 
         // 5. Auto-clear transient status messages after STATUS_TICKS ticks.

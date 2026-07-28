@@ -14,6 +14,48 @@ impl App {
         Some((toc, id))
     }
 
+    /// The selected drive's id (device node on Linux, `drutil` index on
+    /// macOS) — the value every disc subprocess (gnudb aside) targets.
+    pub(super) fn selected_disc_drive_id(&self) -> Option<String> {
+        let Mode::MediaLibrary(s) = &self.mode else {
+            return None;
+        };
+        s.drives.get(s.selected_drive).map(|d| d.id.clone())
+    }
+
+    /// Read CD-TEXT off the currently selected unknown audio disc on a
+    /// background thread (it spins the drive). One attempt per disc-id;
+    /// result arrives through `disc_cdtext_read` in the tick loop. No-op
+    /// when a read is already in flight, the disc was already tried, or
+    /// gnudb already has an entry (CD-TEXT is a total-miss fallback only —
+    /// Winamp precedence, see `apply_disc_tags_to_entries`).
+    pub(crate) fn spawn_disc_cdtext_read(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            return;
+        };
+        if self.disc_tags.contains_key(&discid)
+            || self.disc_cdtext_tried.contains(&discid)
+            || self.disc_cdtext_read.is_some()
+        {
+            return;
+        }
+        let Some(drive_id) = self.selected_disc_drive_id() else {
+            return;
+        };
+        self.disc_cdtext_tried.insert(discid.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.disc_cdtext_read = Some(rx);
+        std::thread::spawn(move || {
+            crate::disc::detect::begin_exclusive_read();
+            let cd = crate::disc::cdtext::read_cdtext(&drive_id);
+            crate::disc::detect::end_exclusive_read();
+            if let Some(cd) = cd {
+                // Receiver dropped = user closed the library; ignore send error.
+                let _ = tx.send((discid.clone(), cd.to_xmcd(&discid)));
+            }
+        });
+    }
+
     /// Kick off a background gnudb query for the selected drive's disc.
     /// Results arrive through `disc_lookup` in the tick loop, so the UI never
     /// blocks on the network (10 s timeout inside the client).

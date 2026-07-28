@@ -5,12 +5,19 @@ use super::super::*;
 
 impl App {
     /// Overlay the stored tag set's titles onto the visible disc entries
-    /// ("Track N" stays wherever a title is missing).
+    /// ("Track N" stays wherever a title is missing). gnudb/user tags win
+    /// entirely when present; CD-TEXT read off the disc fills in only when
+    /// there's no gnudb/user entry at all (Winamp precedence — whole-entry
+    /// fallback, not per-field gap-fill).
     pub(crate) fn apply_disc_tags_to_entries(&mut self) {
         let Some((_, discid)) = self.selected_disc_identity() else {
             return;
         };
-        let Some(entry) = self.disc_tags.get(&discid) else {
+        let Some(entry) = self
+            .disc_tags
+            .get(&discid)
+            .or_else(|| self.disc_cdtext.get(&discid))
+        else {
             return;
         };
         let titles = entry.track_titles.clone();

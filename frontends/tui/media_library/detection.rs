@@ -98,6 +98,11 @@ impl App {
             s.selected_disc_track = 0;
         }
         self.apply_disc_tags_to_entries();
+        // Unknown audio disc with no gnudb/user entry yet: read its CD-TEXT
+        // once, in the background, then re-overlay when it lands (tick loop).
+        // Self-gated (already-tried / gnudb-present / read-in-flight / no
+        // audio disc selected), so safe to call unconditionally here.
+        self.spawn_disc_cdtext_read();
     }
 
     /// Append disc-track entries to the current playlist with their tags:
@@ -114,7 +119,7 @@ impl App {
         }
         let (disc_artist, disc_album) = self
             .selected_disc_identity()
-            .and_then(|(_, id)| self.disc_tags.get(&id))
+            .and_then(|(_, id)| self.disc_tags.get(&id).or_else(|| self.disc_cdtext.get(&id)))
             .map(|t| (t.artist.clone(), t.album.clone()))
             .unwrap_or_default();
         let was_empty = self.playlist.is_empty();

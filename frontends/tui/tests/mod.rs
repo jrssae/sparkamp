@@ -55,3 +55,4 @@ mod views;
 mod bindings;
 mod engine;
 mod burn;
+mod discs;

@@ -137,7 +137,12 @@ impl App {
             self.set_status("Stop disc playback before ripping (one reader per drive)");
             return;
         }
-        let tags = self.disc_tags.get(&discid).cloned().unwrap_or_default();
+        let tags = self
+            .disc_tags
+            .get(&discid)
+            .or_else(|| self.disc_cdtext.get(&discid))
+            .cloned()
+            .unwrap_or_default();
 
         let (entries, dest, quality) = {
             let Mode::MediaLibrary(s) = &mut self.mode else {
