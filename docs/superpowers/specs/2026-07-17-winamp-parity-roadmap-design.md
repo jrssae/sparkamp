@@ -155,6 +155,38 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   (not directly under the table). Both are one-line moves if a different spot is
   preferred.
 
+## Known limitations (recorded during phase 9 — F5 CD-TEXT)
+
+- Precedence is whole-entry (Winamp): gnudb/user tags win entirely when the
+  disc has an entry; CD-TEXT is used only on a TOTAL gnudb miss. There is NO
+  per-field/per-track gap-fill and NO "prefer disc CD-TEXT" toggle (user
+  decision 2026-07-28) — this intentionally supersedes the design doc's
+  `merge_disc_metadata` gap-fill proposal.
+- CD-TEXT read is display-only and cached per freedb disc-id, read ONCE on
+  first show of an unknown audio disc (a per-id "tried" set); it is never
+  re-read on view refresh and the cache is never cleared while running
+  (mirrors GTK). A re-inserted disc that collides on freedb ID reuses the
+  cached names (same collision surface gnudb itself has).
+- macOS BURN-side CD-TEXT is NOT implemented: `drutil -audio` (the mac burn
+  CLI) has no CD-TEXT/v07t input. Writing CD-TEXT on mac needs a rewrite to
+  Apple's DiscRecording framework (`DRTrack`/`DRCDTextBlock`/`DRBurn`) — a
+  documented deferred item (see the appendix in
+  `docs/superpowers/plans/2026-07-28-phase9-cdtext-read.md`). Linux burn
+  already writes CD-TEXT via `cdrskin input_sheet_v07t=`.
+- The macOS READ parser (`parse_drutil_cdtext`) was written blind: `drutil
+  cdtext`'s exact stdout format is undocumented and unverifiable off-mac. Its
+  test fixture is provisional — a macOS worker must capture a real dump and
+  correct the parser/fixture (checklist item). If the format proves
+  unparseable, the mac reader falls back to the DiscRecording framework
+  (`DRCDTextBlock`) acquisition, documented in the plan/checklist.
+- CD-TEXT reads spin the drive; they are wrapped in the exclusive-read guard
+  and skipped when the drive is held (burn/rip), so metadata stays
+  gnudb/"Track N" under contention rather than fighting for the drive.
+- Per-frontend reach: GTK (pre-existing) + TUI + macOS read CD-TEXT. The TUI
+  read is audio-CD-only (data discs with a readable TOC are skipped). CD-TEXT
+  text is not NUL-sanitized on mac (SwiftUI `Text` is NUL-safe, unlike GTK's
+  `gtk_safe()` path).
+
 ## Known limitations (recorded during phase 8 — F10 watch folders)
 
 - remove_missing_on_rescan defaults OFF, which CHANGES prior behavior: rescans

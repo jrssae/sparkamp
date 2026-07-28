@@ -929,3 +929,8 @@ line picks up a CD-TEXT-only entry the same as a gnudb one).
   ever shows stale names after ejecting and inserting a DIFFERENT disc that
   happens to collide on freedb ID (extremely unlikely — same collision risk
   gnudb itself already has).
+- TWO unknown-audio-disc drives visible simultaneously: `discTracks`/
+  `loadedDiscId` are single global model fields (pre-existing architecture),
+  so two concurrent CD-TEXT re-renders could interleave against shared state.
+  Verify with two drives each holding a different gnudb-unknown CD-TEXT disc
+  that both resolve to the correct names (no cross-drive overlay bleed).

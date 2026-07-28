@@ -449,4 +449,18 @@ CD-Text, Block 0 (English):
         assert_eq!(cd2.track_titles[0], (1, "First Song".into()));
         assert_eq!(cd2.track_titles[1], (2, "Second Song".into()));
     }
+
+    /// Live read off a real disc. Ignored by default (like the other `live_*`
+    /// disc tests) — requires a CD-TEXT-bearing audio disc in the drive.
+    /// Point `SPARKAMP_TEST_DRIVE` at the optical device (default `/dev/sr0`).
+    /// Run: `cargo test --lib live_cdtext_read -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "requires a real disc with CD-TEXT in the drive; human-run"]
+    #[cfg(target_os = "linux")]
+    fn live_cdtext_read() {
+        let dev = std::env::var("SPARKAMP_TEST_DRIVE").unwrap_or_else(|_| "/dev/sr0".into());
+        let cd = read_cdtext(&dev);
+        println!("CD-TEXT read from {dev}: {cd:?}");
+        assert!(cd.is_some(), "no CD-TEXT read from {dev}");
+    }
 }
