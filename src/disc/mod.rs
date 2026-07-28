@@ -53,6 +53,7 @@ pub mod gnudb;
 // touching zbus.
 pub mod mount;
 pub mod rip;
+pub mod source;
 pub mod tagstore;
 pub mod toc;
 pub mod xmcd;
