@@ -5290,6 +5290,20 @@ fn open_media_library_window(
                             s.media_lib = crate::media_library::MediaLibrary::open().ok();
                         }
                         complete_ml_scan(&state_rc2);
+                        // Compact after a successful FULL rescan only, gated
+                        // on the setting — VACUUM is too heavy to run after
+                        // every fast folder-add, which is why this lives
+                        // here and not in the shared complete_ml_scan.
+                        if result.is_ok() {
+                            let compact = state_rc2.borrow().config.media_library.compact_on_rescan;
+                            if compact {
+                                if let Some(ref lib) = state_rc2.borrow().media_lib {
+                                    if let Err(e) = lib.compact() {
+                                        eprintln!("compact_on_rescan: VACUUM failed: {e}");
+                                    }
+                                }
+                            }
+                        }
                         match result {
                             Err(e) => status_ref2.set_text(&format!("Rescan error: {}", e)),
                             Ok(_) => {

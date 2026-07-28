@@ -211,8 +211,23 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
                 s.media_lib = crate::media_library::MediaLibrary::open().ok();
             }
             complete_ml_scan(&state);
+            let succeeded = result.is_ok();
             if let Err(e) = result {
                 eprintln!("[watch] startup rescan failed: {e}");
+            }
+            // Compact after a successful FULL rescan only, gated on the
+            // setting — VACUUM is too heavy to run after every fast
+            // folder-add, which is why this lives here and not in the
+            // shared complete_ml_scan.
+            if succeeded {
+                let compact = state.borrow().config.media_library.compact_on_rescan;
+                if compact {
+                    if let Some(ref lib) = state.borrow().media_lib {
+                        if let Err(e) = lib.compact() {
+                            eprintln!("[watch] compact_on_rescan: VACUUM failed: {e}");
+                        }
+                    }
+                }
             }
             let cb = state.borrow().rebuild_ml_callback.clone();
             if let Some(cb) = cb {

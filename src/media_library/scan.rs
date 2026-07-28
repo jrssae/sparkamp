@@ -303,7 +303,16 @@ impl MediaLibrary {
     /// `apply_watch_action`, which handles one filesystem event at a time
     /// so a fresh `list_folders()` query per call is not a hot loop the way
     /// `add_files_to_library`'s per-path resolution would be.
-    fn owning_folder_id(&self, path: &str) -> Result<Option<i64>> {
+    ///
+    /// `pub(crate)` (Phase 8 Task 10 fix wave) so the GTK frontend's
+    /// auto-add-played call site can check "is this path already managed
+    /// by a watched folder?" before calling `add_played_track` — the
+    /// library stores un-canonicalized scan paths while the frontend's
+    /// `Track::path` is canonicalized, so an inside-folder path can't be
+    /// reliably matched against `add_played_track`'s exact-string dedup
+    /// check; skipping the call entirely for inside-folder paths avoids
+    /// the duplicate-row risk instead of trying to normalize around it.
+    pub(crate) fn owning_folder_id(&self, path: &str) -> Result<Option<i64>> {
         let folders = self.list_folders()?;
         Ok(Self::best_matching_folder(path, &folders))
     }

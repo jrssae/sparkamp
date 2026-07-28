@@ -559,20 +559,29 @@ impl AppState {
         Some(display)
     }
 
-    /// Auto-add-played (Phase 8 Task 10): make sure a track that just
-    /// started playing has a row in the media library, gated on
-    /// `config.media_library.auto_add_played`. No-op if the setting is off,
-    /// the library isn't open, or `add_played_track` reports the path is
-    /// already known (`Ok(false)`) — the common case, since most playback
-    /// is already-library tracks.
+    /// Auto-add-played (Phase 8 Task 10, guard added in the fix wave): make
+    /// sure a track that just started playing, and lives OUTSIDE every
+    /// watched folder, has a row in the media library — gated on
+    /// `config.media_library.auto_add_played`. This is the documented
+    /// intent (config field doc + Task 5/7): tracks under a watched folder
+    /// are already managed by the watcher/rescan, so auto-add only exists
+    /// to catch playback from outside that set (the folder_id-NULL bucket).
     ///
-    /// `path` must be used exactly as stored on the playing `Track` — do
-    /// NOT canonicalize it again here. `Track::from_path`/`from_path_fast`
-    /// already canonicalize once at load time, and `add_played_track`'s
-    /// "already known" check is an exact string match against what the
-    /// library stored for this file; re-canonicalizing could format the
-    /// same file's path differently (or fail if it's momentarily
-    /// unreachable) and create a spurious second row.
+    /// No-op if the setting is off, the library isn't open, or
+    /// `add_played_track` reports the path is already known (`Ok(false)`).
+    ///
+    /// The inside/outside check is why this guards with `owning_folder_id`
+    /// rather than calling `add_played_track` unconditionally:
+    /// `Track::path` is canonicalized (`Track::from_path`/`from_path_fast`,
+    /// once at load time), but the library's scan paths are stored
+    /// UN-canonicalized (`rescan_folder_fast` skips the canonicalize() stat
+    /// for perf). For a track already indexed under a watched folder —
+    /// especially one reached via a symlink — those two strings can differ,
+    /// so `add_played_track`'s exact-string "already known" check could
+    /// miss the existing row and INSERT A DUPLICATE. Skipping the call
+    /// entirely whenever `owning_folder_id` resolves to `Some(_)` (inside a
+    /// watched folder) avoids that risk outright, rather than trying to
+    /// normalize the two path representations to match.
     ///
     /// Deliberately does NOT invoke `rebuild_ml_callback` on a new row: this
     /// method runs inside `play_current`/`play_current_no_record`, which
@@ -591,8 +600,24 @@ impl AppState {
         let Some(path_str) = path.to_str() else {
             return;
         };
-        if let Err(e) = lib.add_played_track(path_str) {
-            eprintln!("auto_add_played: failed for {}: {e}", path.display());
+        match lib.owning_folder_id(path_str) {
+            // Inside a watched folder — the watcher/rescan already owns
+            // this path; adding it here risks a duplicate row (see doc
+            // comment above), so skip.
+            Ok(Some(_)) => {}
+            // Outside every watched folder — the case auto-add-played
+            // exists for.
+            Ok(None) => {
+                if let Err(e) = lib.add_played_track(path_str) {
+                    eprintln!("auto_add_played: failed for {}: {e}", path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "auto_add_played: owning_folder_id lookup failed for {}: {e}",
+                    path.display()
+                );
+            }
         }
     }
 
