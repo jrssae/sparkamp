@@ -369,6 +369,112 @@ pub unsafe extern "C" fn sparkamp_set_auto_add_played(ctx: *mut SparkampCtx, val
     ctx.config.media_library.auto_add_played = value;
 }
 
+// ---------------------------------------------------------------------------
+// Play-count threshold (F11) — `[playback.play_stats]`. Plain config
+// mutators, mirroring the sparkamp_get/set_auto_add_played idiom above; none
+// of these call `sparkamp_save_config` themselves — persistence happens
+// wherever the frontend already persists other settings.
+// ---------------------------------------------------------------------------
+
+/// Position (seconds) at which the current track should be counted as played,
+/// given its length (`length_secs <= 0` means unknown). Returns `-1.0` when
+/// play-stats are disabled or `ctx` is null — the caller then never records.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_play_deadline_secs(
+    ctx: *const SparkampCtx,
+    length_secs: f64,
+) -> f64 {
+    if ctx.is_null() {
+        return -1.0;
+    }
+    let ctx = &*ctx;
+    let len = if length_secs > 0.0 { Some(length_secs) } else { None };
+    crate::play_stats::play_counted_at(len, &ctx.config.playback.play_stats).unwrap_or(-1.0)
+}
+
+/// Whether a play is ever recorded once its threshold is reached.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_play_stats_enabled(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return true;
+    }
+    let ctx = &*ctx;
+    ctx.config.playback.play_stats.enabled
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_play_stats_enabled(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.play_stats.enabled = value;
+}
+
+/// Active measurement mode: 0 = seconds, 1 = percent.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_play_stats_mode(ctx: *const SparkampCtx) -> u32 {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    match ctx.config.playback.play_stats.mode {
+        crate::config::PlayStatsMode::Seconds => 0,
+        crate::config::PlayStatsMode::Percent => 1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_play_stats_mode(ctx: *mut SparkampCtx, value: u32) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.play_stats.mode = if value == 1 {
+        crate::config::PlayStatsMode::Percent
+    } else {
+        crate::config::PlayStatsMode::Seconds
+    };
+}
+
+/// Threshold in seconds (Seconds mode).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_play_stats_seconds(ctx: *const SparkampCtx) -> u32 {
+    if ctx.is_null() {
+        return 20;
+    }
+    let ctx = &*ctx;
+    ctx.config.playback.play_stats.seconds
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_play_stats_seconds(ctx: *mut SparkampCtx, value: u32) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.play_stats.seconds = value.max(1);
+}
+
+/// Threshold as a percent of track length, 1..=100 (Percent mode).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_play_stats_percent(ctx: *const SparkampCtx) -> u32 {
+    if ctx.is_null() {
+        return 50;
+    }
+    let ctx = &*ctx;
+    u32::from(ctx.config.playback.play_stats.percent)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_play_stats_percent(ctx: *mut SparkampCtx, value: u32) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.playback.play_stats.percent = value.clamp(1, 100) as u8;
+}
+
 /// Whether a rescan (manual, interval, or a watch `Remove` event) hard-deletes
 /// library rows for files that no longer exist on disk, vs. leaving them in
 /// place (e.g. for temporarily-offline removable media).
@@ -685,6 +791,63 @@ mod tests {
             crate::ffi::media_library::sparkamp_ml_poll_watch_event(&mut ctx, &mut kind)
         };
         assert!(out.is_null());
+    }
+
+    #[test]
+    fn play_deadline_null_ctx_is_negative() {
+        unsafe {
+            assert_eq!(sparkamp_play_deadline_secs(std::ptr::null(), 200.0), -1.0);
+        }
+    }
+
+    #[test]
+    fn play_deadline_disabled_is_negative() {
+        let mut ctx = test_ctx();
+        unsafe { sparkamp_set_play_stats_enabled(&mut ctx, false) };
+        assert_eq!(unsafe { sparkamp_play_deadline_secs(&ctx, 200.0) }, -1.0);
+    }
+
+    #[test]
+    fn play_stats_enabled_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(unsafe { sparkamp_get_play_stats_enabled(&ctx) });
+        unsafe { sparkamp_set_play_stats_enabled(&mut ctx, false) };
+        assert!(!unsafe { sparkamp_get_play_stats_enabled(&ctx) });
+    }
+
+    #[test]
+    fn play_stats_mode_round_trips() {
+        let mut ctx = test_ctx();
+        assert_eq!(unsafe { sparkamp_get_play_stats_mode(&ctx) }, 0);
+        unsafe { sparkamp_set_play_stats_mode(&mut ctx, 1) };
+        assert_eq!(unsafe { sparkamp_get_play_stats_mode(&ctx) }, 1);
+        unsafe { sparkamp_set_play_stats_mode(&mut ctx, 0) };
+        assert_eq!(unsafe { sparkamp_get_play_stats_mode(&ctx) }, 0);
+    }
+
+    #[test]
+    fn play_stats_seconds_round_trips() {
+        let mut ctx = test_ctx();
+        assert_eq!(unsafe { sparkamp_get_play_stats_seconds(&ctx) }, 20);
+        unsafe { sparkamp_set_play_stats_seconds(&mut ctx, 45) };
+        assert_eq!(unsafe { sparkamp_get_play_stats_seconds(&ctx) }, 45);
+    }
+
+    #[test]
+    fn play_stats_percent_round_trips() {
+        let mut ctx = test_ctx();
+        assert_eq!(unsafe { sparkamp_get_play_stats_percent(&ctx) }, 50);
+        unsafe { sparkamp_set_play_stats_percent(&mut ctx, 75) };
+        assert_eq!(unsafe { sparkamp_get_play_stats_percent(&ctx) }, 75);
+    }
+
+    #[test]
+    fn play_deadline_reflects_seconds_mode_config() {
+        let mut ctx = test_ctx();
+        unsafe { sparkamp_set_play_stats_seconds(&mut ctx, 20) };
+        assert_eq!(unsafe { sparkamp_play_deadline_secs(&ctx, 200.0) }, 20.0);
+        // Unknown length (<= 0) still uses the raw seconds threshold.
+        assert_eq!(unsafe { sparkamp_play_deadline_secs(&ctx, 0.0) }, 20.0);
     }
 }
 

@@ -1003,3 +1003,30 @@ path (`discSubmittable`/`submitDisc`) is untouched and still reads
       independently of the artist/album line (so it renders whenever a source
       exists, even titles-only), then eyeball the header layout. Matches
       GTK/TUI behavior.
+
+---
+
+## Phase 10 — Task 2: F11 play-count threshold FFI (2026-07-28, BLIND — Swift never compiled)
+
+Adds the C FFI surface for the configurable play-count threshold: a deadline
+helper (`sparkamp_play_deadline_secs`) plus enabled/mode/seconds/percent
+get/set pairs over `[playback.play_stats]`, mirrored byte-for-byte into
+`sparkamp_bridge.h`. This task is Core + header only — no Swift UI wiring
+yet; the Settings controls and the transport call site that actually calls
+`sparkamp_play_deadline_secs` per-track land in Task 4. Nothing here is
+user-visible on mac until then.
+
+- [ ] **Header signatures match Rust exactly**: once Task 4 wires Swift
+      bindings, confirm Xcode compiles clean against the 9 declarations added
+      to `sparkamp_bridge.h` (`sparkamp_play_deadline_secs`,
+      `sparkamp_get/set_play_stats_enabled`,
+      `sparkamp_get/set_play_stats_mode`,
+      `sparkamp_get/set_play_stats_seconds`,
+      `sparkamp_get/set_play_stats_percent`) — param types, const-ness, and
+      `uint32_t` mode encoding (0 = seconds, 1 = percent) must line up
+      byte-for-byte with `src/ffi/settings.rs`.
+- [ ] **No persistence surprise**: like the neighboring watch-folders/media-
+      library setters, none of the four `sparkamp_set_play_stats_*` calls
+      persist on their own — Task 4's Swift call sites must call
+      `sparkamp_save_config` explicitly after a change, same as every other
+      Settings toggle on mac.

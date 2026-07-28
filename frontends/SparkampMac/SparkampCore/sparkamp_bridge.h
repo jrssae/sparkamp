@@ -321,6 +321,22 @@ void    sparkamp_set_compact_on_rescan(SparkampCtx *ctx, bool value);
 bool    sparkamp_get_rescan_on_startup(const SparkampCtx *ctx);
 void    sparkamp_set_rescan_on_startup(SparkampCtx *ctx, bool value);
 
+/* ── Play-count threshold (F11) ──────────────────────────────────────────────
+   sparkamp_play_deadline_secs returns the position (seconds) at which the
+   current track should be counted as played, given its length (length_secs
+   <= 0 means unknown); returns -1.0 when play-stats are disabled or ctx is
+   NULL — the caller then never records. mode: 0 = seconds, 1 = percent. None
+   of these persist automatically — call sparkamp_save_config as usual. */
+double   sparkamp_play_deadline_secs(const SparkampCtx *ctx, double length_secs);
+bool     sparkamp_get_play_stats_enabled(const SparkampCtx *ctx);
+void     sparkamp_set_play_stats_enabled(SparkampCtx *ctx, bool value);
+uint32_t sparkamp_get_play_stats_mode(const SparkampCtx *ctx);
+void     sparkamp_set_play_stats_mode(SparkampCtx *ctx, uint32_t value);
+uint32_t sparkamp_get_play_stats_seconds(const SparkampCtx *ctx);
+void     sparkamp_set_play_stats_seconds(SparkampCtx *ctx, uint32_t value);
+uint32_t sparkamp_get_play_stats_percent(const SparkampCtx *ctx);
+void     sparkamp_set_play_stats_percent(SparkampCtx *ctx, uint32_t value);
+
 /* ── ReplayGain (playback normalization) ─────────────────────────────────────
    enabled/source/clip/fallback rebuild the engine's rgvolume/rglimiter chain
    immediately if stopped, else the engine defers to the next track. source:
