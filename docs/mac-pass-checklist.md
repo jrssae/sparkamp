@@ -940,3 +940,53 @@ line picks up a CD-TEXT-only entry the same as a gnudb one).
   so two concurrent CD-TEXT re-renders could interleave against shared state.
   Verify with two drives each holding a different gnudb-unknown CD-TEXT disc
   that both resolve to the correct names (no cross-drive overlay bleed).
+
+### Phase 9 follow-on — source badge + editor seeding (2026-07-28, BLIND — Swift never compiled)
+
+Adds a source pill next to the disc header's "Artist — Album (year)" line
+naming which cache produced those names, mirroring Rust
+`DiscMetaSource::resolve`/`badge()` (`src/disc/source.rs`) and its GTK/TUI
+counterparts. Precedence and label strings are exact: `discOfficial[id] !=
+nil` → `"gnudb"`; else `discTagSets[id] != nil` → `"edited"`; else
+`discCdtext[id] != nil` → `"CD-TEXT"`; else no pill. Also seeds the disc tag
+editor from `discOverlayTags(id)` (gnudb/edit, else CD-TEXT) instead of
+`discTagSets[id]` alone, so a CD-TEXT-only disc no longer opens the editor
+blank.
+
+Files touched: `SparkampModel+Discs.swift` (new `discMetaSourceBadge(_:) ->
+String?`; `discTagsForEditing` now seeds from `discOverlayTags(id)` instead
+of `discTagSets[id]`), `DiscDriveView.swift` (header now renders a small
+Capsule pill with `discMetaSourceBadge`'s text next to the "Artist — Album"
+line when non-nil, styled off `theme.vars.highlight` — same token
+`DiscMediaIcon`'s format badge in this file already uses). The gnudb SUBMIT
+path (`discSubmittable`/`submitDisc`) is untouched and still reads
+`discTagSets` directly, so CD-TEXT still can never auto-submit.
+
+- [ ] **gnudb-known disc → `gnudb` pill**: insert/select a disc gnudb has
+      matched (via Identify or a restored match) — the header shows a pill
+      reading exactly `gnudb` next to "Artist — Album (year)".
+- [ ] **gnudb-unknown CD-TEXT disc → `CD-TEXT` pill**: a disc gnudb doesn't
+      know but that carries CD-TEXT — the header pill reads exactly
+      `CD-TEXT` (not "cdtext" or "CD Text").
+- [ ] **Edit + save a CD-TEXT/unknown disc → pill flips to `edited`**: open
+      Edit Tags on a CD-TEXT-only or fully-unknown disc, change/confirm a
+      field, Save — the pill switches to `edited` (because `saveDiscTags`
+      writes `discTagSets[id]`, which now outranks `discCdtext` in
+      `discMetaSourceBadge`).
+- [ ] **No metadata (Track N) → no pill**: a disc with no gnudb match, no
+      hand edit, and no CD-TEXT — track table shows "Track N" placeholders
+      and the header shows NO pill (and no "Artist — Album" line, unchanged
+      from before this task).
+- [ ] **Open the tag editor on a CD-TEXT-only disc → prefilled, not blank**:
+      with a gnudb-unknown, CD-TEXT-bearing disc loaded, click Edit Tags —
+      artist/album/year/genre and every per-track title field are PREFILLED
+      from CD-TEXT (not blank/"Track N" placeholders you'd get from a truly
+      empty `DiscTagSet`). Click Save — the pill becomes `edited`, and
+      "Submit to gnudb" becomes available (`discSubmittable` sees a disc
+      gnudb has no official entry for) and, once submitted, uploads the
+      promoted (now-user) tags — confirm the submitted payload is the
+      CD-TEXT-derived text, not blank fields.
+- [ ] **Three-frontend parity**: with the same physical/test disc, confirm
+      mac, GTK, and TUI all show the identical badge text (`gnudb` /
+      `edited` / `CD-TEXT`) for the same disc state — no casing or spelling
+      drift between frontends.

@@ -100,6 +100,18 @@ extension SparkampModel {
             titles: cd.trackTitles)
     }
 
+    /// Which source produced the disc's displayed names — mirrors Rust
+    /// `DiscMetaSource::resolve`/`badge()`. gnudb/user win over CD-TEXT
+    /// (whole-entry, same precedence as `discOverlayTags`); nil with no
+    /// metadata at all. Label strings are exact matches to the Rust/GTK/TUI
+    /// badge text so all three frontends read identically.
+    func discMetaSourceBadge(_ id: String) -> String? {
+        if discOfficial[id] != nil { return "gnudb" }
+        if discTagSets[id] != nil { return "edited" }
+        if discCdtext[id] != nil { return "CD-TEXT" }
+        return nil
+    }
+
     /// Read CD-TEXT off the drive when neither gnudb nor a hand edit has a
     /// match for its disc — display-only fallback (mirrors GTK's
     /// `disc_cdtext`/`disc_cdtext_tried`): a burned or commercial disc gnudb
@@ -221,10 +233,15 @@ extension SparkampModel {
     }
 
     /// The current (or blank) tag set for the drive's disc, sized to its
-    /// track count — what the editor sheet starts from.
+    /// track count — what the editor sheet starts from. Seeds from
+    /// `discOverlayTags` (gnudb/hand-edit, else CD-TEXT) rather than
+    /// `discTagSets` alone, so a CD-TEXT-only disc opens the editor with its
+    /// real artist/album/titles prefilled instead of blank. The gnudb SUBMIT
+    /// path (`discSubmittable`/`submitDisc`) still reads `discTagSets`
+    /// directly — CD-TEXT is display-only and must never auto-submit.
     func discTagsForEditing(_ drive: OpticalDrive) -> DiscTagSet {
         let count = drive.toc?.tracks.count ?? discTracks.count
-        var tags = discIdFor(drive).flatMap { discTagSets[$0] } ?? DiscTagSet()
+        var tags = discIdFor(drive).flatMap { discOverlayTags($0) } ?? DiscTagSet()
         // Prefill from the visible entries so an editor without a match still
         // shows "Track N" placeholders sized correctly.
         if tags.titles.count < count {

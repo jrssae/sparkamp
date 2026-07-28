@@ -678,13 +678,26 @@ struct DiscDriveView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(theme.playlistDurationText)
                     .lineLimit(1)
-                // Identified disc: artist — album (year) under the media line.
+                // Identified disc: artist — album (year) under the media line,
+                // plus a small pill naming where those names came from
+                // (gnudb / edited / CD-TEXT) — mirrors GTK/TUI's badge.
                 if let t = discTags, !t.artist.isEmpty || !t.album.isEmpty {
-                    Text("\(t.artist)\(t.album.isEmpty ? "" : " — \(t.album)")\(t.year.isEmpty ? "" : " (\(t.year))")")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(theme.playlistText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text("\(t.artist)\(t.album.isEmpty ? "" : " — \(t.album)")\(t.year.isEmpty ? "" : " (\(t.year))")")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(theme.playlistText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let source = model.discIdFor(drive).flatMap({ model.discMetaSourceBadge($0) }) {
+                            Text(source)
+                                .font(.system(size: 9, weight: .medium))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(theme.vars.highlight.opacity(0.15)))
+                                .overlay(Capsule().stroke(theme.vars.highlight, lineWidth: 0.5))
+                                .foregroundStyle(theme.vars.highlight)
+                        }
+                    }
                 }
             }
 
