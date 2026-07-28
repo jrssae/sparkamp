@@ -602,6 +602,105 @@ fn open_settings_window(
         }
         grid.attach(&scale_rg_fallback, 1, 12, 1, 1);
 
+        // ── Play count threshold (Phase 10, F11) — same "no dedicated
+        // Playback tab" situation as ReplayGain above, so it lives here too.
+        // Feeds `config.playback.play_stats`, consumed by
+        // `play_stats::play_counted_at` in the player tick loop.
+        let sep_ps = gtk4::Separator::new(Orientation::Horizontal);
+        sep_ps.set_margin_top(8);
+        sep_ps.set_margin_bottom(4);
+        grid.attach(&sep_ps, 0, 13, 2, 1);
+
+        let hdr_ps = Label::new(Some("Play Count"));
+        hdr_ps.set_halign(Align::Start);
+        hdr_ps.add_css_class("heading");
+        grid.attach(&hdr_ps, 0, 14, 2, 1);
+
+        let lbl_ps_enable = Label::new(Some("Count plays"));
+        lbl_ps_enable.set_halign(Align::Start);
+        grid.attach(&lbl_ps_enable, 0, 15, 1, 1);
+        let chk_play_stats = CheckButton::new();
+        chk_play_stats.set_active(state.borrow().config.playback.play_stats.enabled);
+        {
+            let state_rc = state.clone();
+            chk_play_stats.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.play_stats.enabled = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_play_stats, 1, 15, 1, 1);
+
+        // Mode: N seconds vs N% of track. The two CheckButtons share a
+        // group (mutually exclusive, radio-style); each row also carries
+        // that mode's SpinButton so its value stays visible next to it.
+        use crate::config::PlayStatsMode;
+        let cur_mode = state.borrow().config.playback.play_stats.mode;
+
+        let lbl_ps_seconds = Label::new(Some("After N seconds"));
+        lbl_ps_seconds.set_halign(Align::Start);
+        grid.attach(&lbl_ps_seconds, 0, 16, 1, 1);
+        let row_ps_seconds = GtkBox::new(Orientation::Horizontal, 6);
+        let radio_ps_seconds = CheckButton::new();
+        radio_ps_seconds.set_active(cur_mode == PlayStatsMode::Seconds);
+        let spin_ps_seconds = SpinButton::with_range(1.0, 3600.0, 1.0);
+        spin_ps_seconds.set_value(state.borrow().config.playback.play_stats.seconds as f64);
+        row_ps_seconds.append(&radio_ps_seconds);
+        row_ps_seconds.append(&spin_ps_seconds);
+        grid.attach(&row_ps_seconds, 1, 16, 1, 1);
+
+        let lbl_ps_percent = Label::new(Some("After N% of track"));
+        lbl_ps_percent.set_halign(Align::Start);
+        grid.attach(&lbl_ps_percent, 0, 17, 1, 1);
+        let row_ps_percent = GtkBox::new(Orientation::Horizontal, 6);
+        let radio_ps_percent = CheckButton::new();
+        radio_ps_percent.set_group(Some(&radio_ps_seconds));
+        radio_ps_percent.set_active(cur_mode == PlayStatsMode::Percent);
+        let spin_ps_percent = SpinButton::with_range(1.0, 100.0, 1.0);
+        spin_ps_percent.set_value(state.borrow().config.playback.play_stats.percent as f64);
+        row_ps_percent.append(&radio_ps_percent);
+        row_ps_percent.append(&spin_ps_percent);
+        grid.attach(&row_ps_percent, 1, 17, 1, 1);
+
+        {
+            let state_rc = state.clone();
+            radio_ps_seconds.connect_toggled(move |c| {
+                if c.is_active() {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.playback.play_stats.mode = PlayStatsMode::Seconds;
+                    let _ = s.config.save();
+                }
+            });
+        }
+        {
+            let state_rc = state.clone();
+            radio_ps_percent.connect_toggled(move |c| {
+                if c.is_active() {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.playback.play_stats.mode = PlayStatsMode::Percent;
+                    let _ = s.config.save();
+                }
+            });
+        }
+        {
+            let state_rc = state.clone();
+            spin_ps_seconds.connect_value_changed(move |s| {
+                let secs = s.value() as u32;
+                let mut st = state_rc.borrow_mut();
+                st.config.playback.play_stats.seconds = secs;
+                let _ = st.config.save();
+            });
+        }
+        {
+            let state_rc = state.clone();
+            spin_ps_percent.connect_value_changed(move |s| {
+                let pct = s.value() as u8;
+                let mut st = state_rc.borrow_mut();
+                st.config.playback.play_stats.percent = pct;
+                let _ = st.config.save();
+            });
+        }
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }

@@ -3722,18 +3722,32 @@ pub fn build(
                 patch_pl_row(idx);
             }
 
-            // Record play in media library after 20 seconds of playback.
-            // The rebuild_ml_callback borrows state immutably, so it must be
+            // Record play in media library once the configurable play-count
+            // threshold (F11) is crossed — either N seconds or N% of the
+            // track length, per config.playback.play_stats. The
+            // rebuild_ml_callback borrows state immutably, so it must be
             // called AFTER the mutable borrow is released — extract the Rc
             // first, then drop the borrow, then invoke the callback.
             let ml_rebuild_needed: Option<Rc<dyn Fn()>> = {
                 let mut s = state.borrow_mut();
                 let pos = pos.unwrap_or(Duration::ZERO);
+                // Track length in seconds, None when GStreamer hasn't
+                // reported a (non-zero) duration yet.
+                let track_len = dur_opt
+                    .filter(|d| !d.is_zero())
+                    .map(|d| d.as_secs_f64());
+                let deadline = crate::play_stats::play_counted_at(
+                    track_len,
+                    &s.config.playback.play_stats,
+                );
+                let crossed = deadline
+                    .map(|dl| pos.as_secs_f64() >= dl)
+                    .unwrap_or(false);
                 let path_str = s
                     .playlist
                     .current()
                     .map(|t| t.path.to_string_lossy().into_owned());
-                if pos >= Duration::from_secs(20) {
+                if crossed {
                     if let Some(ref p) = path_str {
                         if s.counted_play_path.as_ref() != Some(p) {
                             if let Some(ref ml) = s.media_lib {
