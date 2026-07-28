@@ -17,6 +17,8 @@ struct DeviceDetailView: View {
 
     @State private var selection: Set<String> = []
     @State private var searchText = ""
+    /// F12.1: debounce for persisting `searchText` to `last_search["devices"]`.
+    @State private var searchPersistDebounce: DispatchWorkItem? = nil
     @State private var sortOrder: [KeyPathComparator<DeviceTrack>] =
         [KeyPathComparator(\.title)]
     @State private var showingImporter = false
@@ -76,6 +78,7 @@ struct DeviceDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.background)
         .onAppear {
+            restoreOrClearSearch()
             model.loadDeviceTracks(device)
             model.loadDevicePlaylists(device)
             if !columnCustomizationData.isEmpty,
@@ -87,7 +90,7 @@ struct DeviceDetailView: View {
         .onChange(of: device.backendId) { _, _ in
             selection.removeAll()
             selectedPlaylistRelpath = nil
-            searchText = ""
+            restoreOrClearSearch()
             model.loadDeviceTracks(device)
             model.loadDevicePlaylists(device)
         }
@@ -449,6 +452,7 @@ struct DeviceDetailView: View {
                 .textFieldStyle(.plain)
                 .font(theme.vars.bodyFont)
                 .foregroundStyle(theme.playlistText)
+                .onChange(of: searchText) { _, v in debouncePersistSearch(v) }
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -644,5 +648,35 @@ struct DeviceDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+    }
+
+    // MARK: - F12.1: remember search per view
+
+    /// A previous device's search query must not filter this one — but if
+    /// `remember_search` is on, restore the "devices" view's saved query
+    /// instead of clearing. Called on first appearance and whenever the
+    /// shown device changes.
+    private func restoreOrClearSearch() {
+        if let ctx = model.ctx, sparkamp_get_remember_search(ctx) {
+            let p = "devices".withCString { sparkamp_get_last_search(ctx, $0) }
+            searchText = p.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(p)
+        } else {
+            searchText = ""
+        }
+    }
+
+    private func debouncePersistSearch(_ q: String) {
+        searchPersistDebounce?.cancel()
+        let task = DispatchWorkItem { persistSearch(q) }
+        searchPersistDebounce = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: task)
+    }
+
+    private func persistSearch(_ q: String) {
+        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else { return }
+        "devices".withCString { vid in
+            q.withCString { qv in sparkamp_set_last_search(ctx, vid, qv) }
+        }
     }
 }

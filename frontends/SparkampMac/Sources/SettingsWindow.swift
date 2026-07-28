@@ -712,6 +712,8 @@ private struct MediaLibraryPane: View {
     @State private var removeMissingOnRescan: Bool = false
     @State private var compactOnRescan: Bool = false
     @State private var rescanOnStartup: Bool = false
+    /// F12.1: restore each Media-Library view's search query on next open.
+    @State private var rememberSearch: Bool = false
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -811,6 +813,12 @@ private struct MediaLibraryPane: View {
                     .onChange(of: rescanOnStartup) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_rescan_on_startup(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Remember search per view", isOn: $rememberSearch)
+                    .onChange(of: rememberSearch) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_remember_search(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
             }
@@ -967,6 +975,7 @@ private struct MediaLibraryPane: View {
                 removeMissingOnRescan = sparkamp_get_remove_missing_on_rescan(ctx)
                 compactOnRescan = sparkamp_get_compact_on_rescan(ctx)
                 rescanOnStartup = sparkamp_get_rescan_on_startup(ctx)
+                rememberSearch = sparkamp_get_remember_search(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }

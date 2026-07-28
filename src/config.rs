@@ -754,6 +754,16 @@ pub struct MediaLibraryConfig {
     /// When true, run VACUUM after a full rescan completes to reclaim space.
     #[serde(default)]
     pub compact_on_rescan: bool,
+
+    /// When true, restore each Media-Library view's search query when the view
+    /// is next opened (F12). When false, the search box clears each open.
+    #[serde(default)]
+    pub remember_search: bool,
+
+    /// Last search query per view id ("files"/"playlists"/"devices"/"discs").
+    /// Only consulted when `remember_search` is true.
+    #[serde(default)]
+    pub last_search: std::collections::HashMap<String, String>,
 }
 
 impl MediaLibraryConfig {
@@ -827,6 +837,8 @@ impl Default for MediaLibraryConfig {
             auto_add_played: false,
             remove_missing_on_rescan: false,
             compact_on_rescan: false,
+            remember_search: false,
+            last_search: std::collections::HashMap::new(),
         }
     }
 }
@@ -1387,6 +1399,34 @@ visible_columns = ["title", "artist"]
         assert!(back.auto_add_played);
         assert!(back.remove_missing_on_rescan);
         assert!(back.compact_on_rescan);
+    }
+
+    #[test]
+    fn remember_search_defaults_false_and_last_search_round_trips() {
+        let cfg = MediaLibraryConfig::default();
+        assert!(!cfg.remember_search);
+        assert!(cfg.last_search.is_empty());
+
+        let mut cfg = MediaLibraryConfig::default();
+        cfg.remember_search = true;
+        cfg.last_search.insert("files".to_string(), "beatles".to_string());
+
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
+        assert!(back.remember_search);
+        assert_eq!(back.last_search.get("files"), Some(&"beatles".to_string()));
+    }
+
+    #[test]
+    fn media_library_toml_omitting_search_fields_uses_defaults() {
+        // A config written before these two fields were added should deserialize
+        // cleanly with remember_search=false, last_search=empty.
+        let toml_str = r#"
+rescan_on_startup = true
+"#;
+        let cfg: MediaLibraryConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(!cfg.remember_search);
+        assert!(cfg.last_search.is_empty());
     }
 
     #[test]

@@ -369,6 +369,74 @@ pub unsafe extern "C" fn sparkamp_set_auto_add_played(ctx: *mut SparkampCtx, val
     ctx.config.media_library.auto_add_played = value;
 }
 
+/// Whether each Media-Library view's search query (F12) is restored the next
+/// time that view is opened. Gating only, mirroring
+/// `sparkamp_get/set_auto_add_played` above — persistence happens wherever
+/// the frontend already persists other settings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_remember_search(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.remember_search
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_remember_search(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.remember_search = value;
+}
+
+/// Last search query saved for `view_id` ("files"/"playlists"/"devices"/
+/// "discs"), or "" when none is saved. Only meaningful when
+/// `remember_search` is on — callers should still check that flag before
+/// prefilling a search box, since the map may hold stale entries from when
+/// the feature was previously enabled. Heap C string — free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_last_search(
+    ctx: *const SparkampCtx,
+    view_id: *const c_char,
+) -> *mut c_char {
+    if ctx.is_null() || view_id.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let view_id = std::ffi::CStr::from_ptr(view_id).to_string_lossy();
+    let query = ctx
+        .config
+        .media_library
+        .last_search
+        .get(view_id.as_ref())
+        .cloned()
+        .unwrap_or_default();
+    CString::new(query)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Save `query` as the last search for `view_id`. A no-op if either string is
+/// not valid UTF-8-ish C data; an empty `query` still records (clears) the
+/// entry rather than removing it, matching a cleared search box.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_last_search(
+    ctx: *mut SparkampCtx,
+    view_id: *const c_char,
+    query: *const c_char,
+) {
+    if ctx.is_null() || view_id.is_null() || query.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let view_id = std::ffi::CStr::from_ptr(view_id).to_string_lossy().into_owned();
+    let query = std::ffi::CStr::from_ptr(query).to_string_lossy().into_owned();
+    ctx.config.media_library.last_search.insert(view_id, query);
+}
+
 // ---------------------------------------------------------------------------
 // Play-count threshold (F11) — `[playback.play_stats]`. Plain config
 // mutators, mirroring the sparkamp_get/set_auto_add_played idiom above; none
@@ -839,6 +907,44 @@ mod tests {
         assert_eq!(unsafe { sparkamp_get_play_stats_percent(&ctx) }, 50);
         unsafe { sparkamp_set_play_stats_percent(&mut ctx, 75) };
         assert_eq!(unsafe { sparkamp_get_play_stats_percent(&ctx) }, 75);
+    }
+
+    #[test]
+    fn remember_search_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_remember_search(&ctx) });
+        unsafe { sparkamp_set_remember_search(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_remember_search(&ctx) });
+    }
+
+    #[test]
+    fn last_search_round_trips_per_view_and_defaults_to_empty() {
+        let mut ctx = test_ctx();
+        let files = std::ffi::CString::new("files").unwrap();
+        let playlists = std::ffi::CString::new("playlists").unwrap();
+
+        // Unset view id returns an empty (non-null) string.
+        unsafe {
+            let out = sparkamp_get_last_search(&ctx, files.as_ptr());
+            assert!(!out.is_null());
+            assert_eq!(std::ffi::CStr::from_ptr(out).to_str().unwrap(), "");
+            super::super::sparkamp_free_string(out);
+        }
+
+        let query = std::ffi::CString::new("beatles").unwrap();
+        unsafe { sparkamp_set_last_search(&mut ctx, files.as_ptr(), query.as_ptr()) };
+
+        unsafe {
+            let out = sparkamp_get_last_search(&ctx, files.as_ptr());
+            assert_eq!(std::ffi::CStr::from_ptr(out).to_str().unwrap(), "beatles");
+            super::super::sparkamp_free_string(out);
+        }
+        // A different view id is unaffected.
+        unsafe {
+            let out = sparkamp_get_last_search(&ctx, playlists.as_ptr());
+            assert_eq!(std::ffi::CStr::from_ptr(out).to_str().unwrap(), "");
+            super::super::sparkamp_free_string(out);
+        }
     }
 
     #[test]

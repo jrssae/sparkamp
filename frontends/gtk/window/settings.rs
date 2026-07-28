@@ -2172,6 +2172,22 @@ fn open_settings_window(
         }
         grid.attach(&chk_rescan_startup, 1, 16, 1, 1);
 
+        // Row 17: remember each view's search query (F12.1).
+        let lbl_remember_search = Label::new(Some("Remember search per view"));
+        lbl_remember_search.set_halign(Align::Start);
+        grid.attach(&lbl_remember_search, 0, 17, 1, 1);
+        let chk_remember_search = CheckButton::new();
+        chk_remember_search.set_active(state.borrow().config.media_library.remember_search);
+        {
+            let state_rc = state.clone();
+            chk_remember_search.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.remember_search = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_remember_search, 1, 17, 1, 1);
+
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }

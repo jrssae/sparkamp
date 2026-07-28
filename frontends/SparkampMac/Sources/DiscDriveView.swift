@@ -179,6 +179,8 @@ struct DiscDriveView: View {
 
     @State private var selection: Set<Int> = []
     @State private var searchText = ""
+    /// F12.1: debounce for persisting `searchText` to `last_search["discs"]`.
+    @State private var searchPersistDebounce: DispatchWorkItem? = nil
     /// Selected rows in `dataDiscView`'s file table (`DiscFile.id` = path).
     @State private var discFilesSelection: Set<String> = []
     @State private var showTagEditor = false
@@ -290,6 +292,7 @@ struct DiscDriveView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.background)
         .onAppear {
+            restoreOrClearSearch()
             model.loadDiscTracks(drive)
             if drive.media.present, !drive.media.isAudioCd, !drive.media.isBlank {
                 model.loadDiscFiles(drive)
@@ -297,7 +300,7 @@ struct DiscDriveView: View {
         }
         .onChange(of: drive.id) { _, _ in
             selection.removeAll()
-            searchText = ""
+            restoreOrClearSearch()
             discFilesSelection.removeAll()
             model.loadDiscTracks(drive)
             model.discFiles = []
@@ -793,6 +796,7 @@ struct DiscDriveView: View {
                 .textFieldStyle(.plain)
                 .font(vars.bodyFont)
                 .foregroundStyle(theme.playlistText)
+                .onChange(of: searchText) { _, v in debouncePersistSearch(v) }
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -1176,5 +1180,35 @@ struct DiscDriveView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+    }
+
+    // MARK: - F12.1: remember search per view
+
+    /// A drive switch clears the search (a 10 s poll repopulating the SAME
+    /// drive must not — see the `drive.toc` onChange above, which is
+    /// deliberately left alone) — but if `remember_search` is on, restore
+    /// the "discs" view's saved query instead of clearing.
+    private func restoreOrClearSearch() {
+        if let ctx = model.ctx, sparkamp_get_remember_search(ctx) {
+            let p = "discs".withCString { sparkamp_get_last_search(ctx, $0) }
+            searchText = p.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(p)
+        } else {
+            searchText = ""
+        }
+    }
+
+    private func debouncePersistSearch(_ q: String) {
+        searchPersistDebounce?.cancel()
+        let task = DispatchWorkItem { persistSearch(q) }
+        searchPersistDebounce = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: task)
+    }
+
+    private func persistSearch(_ q: String) {
+        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else { return }
+        "discs".withCString { vid in
+            q.withCString { qv in sparkamp_set_last_search(ctx, vid, qv) }
+        }
     }
 }

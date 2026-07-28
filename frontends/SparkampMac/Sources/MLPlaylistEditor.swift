@@ -28,6 +28,8 @@ struct MLPlaylistEditor: View {
     @State private var savedTrackIds: [Int64]   = []
     @State private var trackSelection: Set<Int> = []
     @State private var searchText = ""
+    /// F12.1: debounce for persisting `searchText` to `last_search["playlists"]`.
+    @State private var searchPersistDebounce: DispatchWorkItem? = nil
     @State private var nextRowId: Int = 0
     @State private var showingRename  = false
     @State private var renameText     = ""
@@ -74,6 +76,7 @@ struct MLPlaylistEditor: View {
                     .textFieldStyle(.plain)
                     .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistText)
+                    .onChange(of: searchText) { _, v in debouncePersistSearch(v) }
                 if !searchText.isEmpty {
                     Button { searchText = "" } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -453,8 +456,32 @@ struct MLPlaylistEditor: View {
         }
         savedTrackIds = tracks.map(\.id)
         trackSelection.removeAll()
-        // A previous playlist's search query must not filter this one.
-        searchText = ""
+        // A previous playlist's search query must not filter this one — but
+        // F12.1: if remember_search is on, restore the "playlists" view's
+        // saved query instead of clearing.
+        if let ctx = model.ctx, sparkamp_get_remember_search(ctx) {
+            let p = "playlists".withCString { sparkamp_get_last_search(ctx, $0) }
+            searchText = p.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(p)
+        } else {
+            searchText = ""
+        }
+    }
+
+    // MARK: - F12.1: remember search per view
+
+    private func debouncePersistSearch(_ q: String) {
+        searchPersistDebounce?.cancel()
+        let task = DispatchWorkItem { persistSearch(q) }
+        searchPersistDebounce = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: task)
+    }
+
+    private func persistSearch(_ q: String) {
+        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else { return }
+        "playlists".withCString { vid in
+            q.withCString { qv in sparkamp_set_last_search(ctx, vid, qv) }
+        }
     }
 
     /// Append `tracks` to the editor, skipping any whose DB id is already

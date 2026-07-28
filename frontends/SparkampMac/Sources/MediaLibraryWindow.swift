@@ -175,6 +175,13 @@ struct MediaLibraryView: View {
             model.pollDevices()   // populate the Devices group immediately
             model.pollDiscDrives()  // and the Disc Drives group (background)
             model.startUnsupportedWatch()  // begin iOS/PTP recognition
+            // F12.1: restore the "files" view's saved query before the
+            // initial fetch, if the feature is on.
+            if let ctx = model.ctx, sparkamp_get_remember_search(ctx) {
+                let p = "files".withCString { sparkamp_get_last_search(ctx, $0) }
+                searchQuery = p.map { String(cString: $0) } ?? ""
+                sparkamp_free_string(p)
+            }
             reload()
             // Honor a pending auto-open request (audio CD inserted while the
             // window was closed): the onChange below can't fire for a value set
@@ -760,7 +767,7 @@ struct MediaLibraryView: View {
                 .frame(width: 180)
                 .onChange(of: searchQuery) { _, _ in debounceSearch() }
             if !searchQuery.isEmpty {
-                Button { searchQuery = ""; reload() } label: {
+                Button { searchQuery = ""; persistSearch(""); reload() } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(theme.playlistDurationText)
                         .font(.system(size: 11))
@@ -825,9 +832,21 @@ struct MediaLibraryView: View {
 
     private func debounceSearch() {
         searchDebounce?.cancel()
-        let task = DispatchWorkItem { [q = searchQuery] in reload(query: q) }
+        let task = DispatchWorkItem { [q = searchQuery] in
+            reload(query: q)
+            persistSearch(q)
+        }
         searchDebounce = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
+    }
+
+    /// F12.1: remember the "files" view's query for next open (only when the
+    /// feature is on; the value is unused otherwise).
+    private func persistSearch(_ q: String) {
+        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else { return }
+        "files".withCString { vid in
+            q.withCString { qv in sparkamp_set_last_search(ctx, vid, qv) }
+        }
     }
 
     private func reload(query: String? = nil) {

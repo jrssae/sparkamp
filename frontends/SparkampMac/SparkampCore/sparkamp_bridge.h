@@ -321,6 +321,18 @@ void    sparkamp_set_compact_on_rescan(SparkampCtx *ctx, bool value);
 bool    sparkamp_get_rescan_on_startup(const SparkampCtx *ctx);
 void    sparkamp_set_rescan_on_startup(SparkampCtx *ctx, bool value);
 
+/* ── Remember search per view (F12.1) ────────────────────────────────────────
+   sparkamp_get/set_remember_search is a plain config flag gating whether a
+   Media-Library view's search box is prefilled from the last query saved for
+   that view id ("files"/"playlists"/"devices"/"discs") when the view is next
+   opened. sparkamp_get_last_search returns "" if nothing is saved for that
+   view id; free the result with sparkamp_free_string. Neither setter persists
+   automatically — call sparkamp_save_config as usual. */
+bool    sparkamp_get_remember_search(const SparkampCtx *ctx);
+void    sparkamp_set_remember_search(SparkampCtx *ctx, bool value);
+char   *sparkamp_get_last_search(const SparkampCtx *ctx, const char *view_id);
+void    sparkamp_set_last_search(SparkampCtx *ctx, const char *view_id, const char *query);
+
 /* ── Play-count threshold (F11) ──────────────────────────────────────────────
    sparkamp_play_deadline_secs returns the position (seconds) at which the
    current track should be counted as played, given its length (length_secs

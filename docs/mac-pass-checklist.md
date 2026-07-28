@@ -1076,3 +1076,68 @@ Seconds/Percent mode picker, seconds stepper 1–3600, percent stepper
       previous track's length), because `dur` keeps flowing regardless of the
       publisher freeze, matching the always-fresh `pos` local the same gate
       uses.
+
+---
+
+## Phase 10 — Task 5: F12.1 remember search per view (2026-07-28, BLIND — Swift never compiled)
+
+Mirrors the 4 new FFI functions (`sparkamp_get/set_remember_search`,
+`sparkamp_get_last_search`, `sparkamp_set_last_search`) into
+`sparkamp_bridge.h`, adds a "Remember search per view" toggle to
+`SettingsWindow.swift`'s Media Library section (same Toggle/onChange/
+`sparkamp_save_config` idiom as the neighboring `rescanOnStartup` row), and
+wires each of the 4 Media-Library search boxes — Files (`MediaLibraryWindow.
+swift`), Playlists editor (`MLPlaylistEditor.swift`), Devices
+(`DeviceDetailView.swift`), Discs (`DiscDriveView.swift`) — to restore their
+saved query on view-open (window appear / playlist switch / device switch /
+drive switch) and persist on change via a debounced `sparkamp_set_last_search`
+call, keyed by view id `"files"`/`"playlists"`/`"devices"`/`"discs"`. When
+`remember_search` is off, every one of these falls back to the pre-existing
+"switching clears the search" behavior — nothing changes for users who leave
+the toggle off.
+
+- [ ] **Toggle off (default) → unchanged behavior**: with "Remember search
+      per view" off in Settings ▸ Media Library, open the Media Library,
+      type a search in Files, close the window, reopen it — the Files search
+      box is empty, same as before this feature existed. Same for switching
+      playlists/devices/discs: each switch still clears that view's search
+      box.
+- [ ] **Toggle on → Files search survives a window close/reopen**: turn on
+      "Remember search per view", open the Media Library, type "beatles" in
+      the Files search box, wait ~1 s (debounce), close the Media Library
+      window, reopen it — the Files search box shows "beatles" again and the
+      track list is filtered accordingly.
+- [ ] **Toggle on → Playlists editor search survives switching playlists and
+      reopening**: open a saved playlist's editor, type a query in its
+      search box, switch to a different saved playlist, switch back — the
+      query reappears (not cleared) and re-filters that playlist's rows.
+      Close and reopen the Media Library window; opening any playlist shows
+      the same remembered query.
+- [ ] **Toggle on → Devices search survives switching devices**: with two
+      devices connected, type a query while viewing device A, switch to
+      device B, switch back to A — the query is restored (not cleared) for
+      both, since `last_search["devices"]` is per-view, not per-device.
+- [ ] **Toggle on → Discs search survives switching drives and does NOT get
+      clobbered by the 10 s poll**: with a disc inserted, type a query in
+      the Discs search box, wait through at least one 10 s drive-poll cycle
+      on the SAME drive — the query must NOT be cleared (mirrors the GTK
+      `last_drive` guard: same-drive repopulation is not a "switch"). Switch
+      to a different drive and back — the query is restored, not cleared.
+- [ ] **Toggle off after having it on → next open clears again**: with
+      "Remember search per view" on and a saved query, turn the toggle back
+      off in Settings, then reopen the Media Library (or switch playlists/
+      devices/drives) — search boxes clear as they did before the feature
+      existed, even though `last_search` may still hold stale entries from
+      when the toggle was on (the map is only ever consulted while the flag
+      is on).
+- [ ] **Settings persist across relaunch**: turn on "Remember search per
+      view", quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Media
+      Library still shows it on, and a previously-typed Files query (typed
+      before quitting, given the ~1 s debounce time to fire) is restored on
+      the next Media Library open.
+- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
+      against the 4 declarations added to `sparkamp_bridge.h`
+      (`sparkamp_get/set_remember_search`, `sparkamp_get_last_search`,
+      `sparkamp_set_last_search`) — `sparkamp_get_last_search` returns a
+      heap `char *` (free with `sparkamp_free_string`) and never crashes on
+      an unknown `view_id`, returning `""` instead.

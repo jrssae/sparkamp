@@ -869,23 +869,43 @@ fn open_media_library_window(
     // different device opens; packed above the track table below.
     let (dev_search_row, dev_search_entry) =
         make_view_search_row("Search this device — artist, title, album…");
+    // F12.1: restore this view's last search query if the feature is on.
+    if state.borrow().config.media_library.remember_search {
+        let last = state.borrow().config.media_library.last_search.get("devices").cloned();
+        if let Some(last) = last {
+            dev_search_entry.set_text(&last);
+        }
+    }
     {
         // 150 ms debounce: the filter re-scans every row's text fields, so
         // re-running it per keystroke stutters on large device libraries.
         let q = dev_search_query.clone();
         let filter = dev_filter.clone();
+        let state_rc = state.clone();
         let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         dev_search_entry.connect_changed(move |e| {
-            let text = e.text().to_lowercase();
+            let raw_text = e.text().to_string();
+            let text = raw_text.to_lowercase();
             if let Some(src) = pending.borrow_mut().take() {
                 src.remove();
             }
             let q = q.clone();
             let filter = filter.clone();
+            let state_inner = state_rc.clone();
             let pending_inner = pending.clone();
             let src = glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
                 *q.borrow_mut() = text.clone();
                 filter.changed(gtk4::FilterChange::Different);
+                // F12.1: remember this view's query for next open.
+                {
+                    let mut s = state_inner.borrow_mut();
+                    if s.config.media_library.remember_search {
+                        s.config
+                            .media_library
+                            .last_search
+                            .insert("devices".to_string(), raw_text.clone());
+                    }
+                }
                 pending_inner.borrow_mut().take();
                 glib::ControlFlow::Break
             });
@@ -1135,8 +1155,17 @@ fn open_media_library_window(
         Rc::new(move |dev: crate::devices::Device| {
             counts_lbl.set_text("Reading device…");
             hint.set_text(""); // clear any stale copy status
-            // A previous device's search query must not filter this one.
-            search.set_text("");
+            // A previous device's search query must not filter this one — but
+            // F12.1: if remember_search is on, restore the "devices" view's
+            // saved query instead of clearing, so switching devices doesn't
+            // discard the query the user wants kept.
+            if state.borrow().config.media_library.remember_search {
+                let last =
+                    state.borrow().config.media_library.last_search.get("devices").cloned();
+                search.set_text(last.as_deref().unwrap_or(""));
+            } else {
+                search.set_text("");
+            }
             store.remove_all();
             pair_map.borrow_mut().clear(); // drop the previous device's pairings
             // Device contents may have changed (copy/send/sync) — drop the
@@ -2826,6 +2855,13 @@ fn open_media_library_window(
     let disc_search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let (disc_search_row, disc_search_entry) =
         make_view_search_row("Search this disc — track title…");
+    // F12.1: restore this view's last search query if the feature is on.
+    if state.borrow().config.media_library.remember_search {
+        let last = state.borrow().config.media_library.last_search.get("discs").cloned();
+        if let Some(last) = last {
+            disc_search_entry.set_text(&last);
+        }
+    }
     {
         let q = disc_search_query.clone();
         let entries_store = current_disc_entries.clone();
@@ -2848,9 +2884,16 @@ fn open_media_library_window(
     {
         let q = disc_search_query.clone();
         let list = disc_track_list.clone();
+        let state_rc = state.clone();
         disc_search_entry.connect_changed(move |e| {
-            *q.borrow_mut() = e.text().to_lowercase();
+            let raw_text = e.text().to_string();
+            *q.borrow_mut() = raw_text.to_lowercase();
             list.invalidate_filter();
+            // F12.1: remember this view's query for next open.
+            let mut s = state_rc.borrow_mut();
+            if s.config.media_library.remember_search {
+                s.config.media_library.last_search.insert("discs".to_string(), raw_text);
+            }
         });
     }
     disc_detail.append(&disc_search_row);
@@ -3643,6 +3686,16 @@ fn open_media_library_window(
         let search_entry = Entry::new();
         search_entry.set_placeholder_text(Some("Search artist, title, album…"));
         search_entry.set_hexpand(true);
+        // F12.1: restore this view's last search query if the feature is on.
+        // rebuild_files() (below) reads search_entry.text() for its initial
+        // fill, so this must happen before that call.
+        if state.borrow().config.media_library.remember_search {
+            let last =
+                state.borrow().config.media_library.last_search.get("files").cloned();
+            if let Some(last) = last {
+                search_entry.set_text(&last);
+            }
+        }
 
         let search_clear_btn = Button::with_label("✕");
         search_clear_btn.add_css_class("pl-btn");
@@ -4779,7 +4832,8 @@ fn open_media_library_window(
             let store_ref = track_store.clone();
             let pending = Rc::new(RefCell::new(None::<glib::SourceId>));
             search_entry.connect_changed(move |entry| {
-                let query = entry.text().to_lowercase();
+                let raw_query = entry.text().to_string();
+                let query = raw_query.to_lowercase();
                 // Cancel any pending search.
                 if let Some(src) = pending.borrow_mut().take() {
                     src.remove();
@@ -4805,6 +4859,17 @@ fn open_media_library_window(
                         let boxed: Vec<glib::BoxedAnyObject> =
                             tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
                         store_inner.splice(0, store_inner.n_items(), &boxed);
+                        // F12.1: remember this view's query for next open (only
+                        // when the feature is on; the value is unused otherwise).
+                        {
+                            let mut s = state_inner.borrow_mut();
+                            if s.config.media_library.remember_search {
+                                s.config
+                                    .media_library
+                                    .last_search
+                                    .insert("files".to_string(), raw_query.clone());
+                            }
+                        }
                         pending_inner.borrow_mut().take();
                         glib::ControlFlow::Break
                     });
@@ -5751,23 +5816,43 @@ fn open_media_library_window(
     // into the pl-edit page below.
     let (pl_search_row, pl_search_entry) =
         make_view_search_row("Search this playlist — artist, title, album…");
+    // F12.1: restore this view's last search query if the feature is on.
+    if state.borrow().config.media_library.remember_search {
+        let last = state.borrow().config.media_library.last_search.get("playlists").cloned();
+        if let Some(last) = last {
+            pl_search_entry.set_text(&last);
+        }
+    }
     {
         // 150 ms debounce — same rationale as the device search: the filter
         // walks every row per change, heavy on multi-thousand-row playlists.
         let q = pl_edit_query.clone();
         let filter = edit_filter.clone();
+        let state_rc = state.clone();
         let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         pl_search_entry.connect_changed(move |e| {
-            let text = e.text().to_lowercase();
+            let raw_text = e.text().to_string();
+            let text = raw_text.to_lowercase();
             if let Some(src) = pending.borrow_mut().take() {
                 src.remove();
             }
             let q = q.clone();
             let filter = filter.clone();
+            let state_inner = state_rc.clone();
             let pending_inner = pending.clone();
             let src = glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
                 *q.borrow_mut() = text.clone();
                 filter.changed(gtk4::FilterChange::Different);
+                // F12.1: remember this view's query for next open.
+                {
+                    let mut s = state_inner.borrow_mut();
+                    if s.config.media_library.remember_search {
+                        s.config
+                            .media_library
+                            .last_search
+                            .insert("playlists".to_string(), raw_text.clone());
+                    }
+                }
                 pending_inner.borrow_mut().take();
                 glib::ControlFlow::Break
             });
@@ -6706,8 +6791,21 @@ fn open_media_library_window(
         let search     = pl_search_entry.clone();
         Rc::new(move |id: i64| {
             ep_id.set(id);
-            // A previous playlist's search query must not filter this one.
-            search.set_text("");
+            // A previous playlist's search query must not filter this one —
+            // but F12.1: if remember_search is on, restore the "playlists"
+            // view's saved query instead of clearing.
+            if state_rc.borrow().config.media_library.remember_search {
+                let last = state_rc
+                    .borrow()
+                    .config
+                    .media_library
+                    .last_search
+                    .get("playlists")
+                    .cloned();
+                search.set_text(last.as_deref().unwrap_or(""));
+            } else {
+                search.set_text("");
+            }
             // Re-apply files-view column state so customizations made
             // while the editor was elsewhere take effect immediately.
             apply_cols();
@@ -9016,10 +9114,24 @@ fn open_media_library_window(
         // Which drive the detail last showed — a switch clears the search
         // (the 10 s poll repopulates the SAME drive and must not).
         let last_drive: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let state_disc = state.clone();
         Rc::new(move |drive: &crate::disc::OpticalDrive| {
             if last_drive.borrow().as_deref() != Some(drive.id.as_str()) {
                 *last_drive.borrow_mut() = Some(drive.id.clone());
-                search_entry.set_text("");
+                // F12.1: restore the "discs" view's saved query instead of
+                // clearing when remember_search is on.
+                if state_disc.borrow().config.media_library.remember_search {
+                    let last = state_disc
+                        .borrow()
+                        .config
+                        .media_library
+                        .last_search
+                        .get("discs")
+                        .cloned();
+                    search_entry.set_text(last.as_deref().unwrap_or(""));
+                } else {
+                    search_entry.set_text("");
+                }
             }
             // Data-disc file browser: hidden/cleared unconditionally up front.
             // The non-audio branch below re-shows/refills it for a data disc;
