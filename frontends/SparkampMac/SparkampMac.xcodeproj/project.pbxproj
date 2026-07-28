@@ -17,27 +17,6 @@
 		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
 		AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
 		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
-		AA5000000000000000000020 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
-		AA5000000000000000000021 /* TableSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000024 /* TableSupport.swift */; };
-		AA5000000000000000000031 /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000034 /* DeviceService.swift */; };
-		AA5000000000000000000033 /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000036 /* DeviceListView.swift */; };
-		AA5000000000000000000034 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000037 /* DeviceDetailView.swift */; };
-		AA5000000000000000000035 /* DeviceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000038 /* DeviceMenu.swift */; };
-		AA5000000000000000000036 /* DeviceConflictSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000039 /* DeviceConflictSheet.swift */; };
-		AA5000000000000000000037 /* UnsupportedDeviceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000040 /* UnsupportedDeviceWatcher.swift */; };
-		AA5000000000000000000038 /* DiscService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000041 /* DiscService.swift */; };
-		AA5000000000000000000039 /* SparkampModel+Discs.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000042 /* SparkampModel+Discs.swift */; };
-		AA5000000000000000000040 /* DiscDriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000043 /* DiscDriveView.swift */; };
-		AA5000000000000000000032 /* SparkampModel+Devices.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000035 /* SparkampModel+Devices.swift */; };
-		AA5000000000000000000030 /* SparkampModel+Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000033 /* SparkampModel+Keys.swift */; };
-		AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000032 /* SparkampModel+Dedupe.swift */; };
-		AA5000000000000000000028 /* SparkampModel+MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */; };
-		AA5000000000000000000027 /* SparkampModel+Transport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000030 /* SparkampModel+Transport.swift */; };
-		AA5000000000000000000026 /* SparkampModelTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000029 /* SparkampModelTypes.swift */; };
-		AA5000000000000000000025 /* MLFilesTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000028 /* MLFilesTable.swift */; };
-		AA5000000000000000000024 /* MLPlaylistEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000027 /* MLPlaylistEditor.swift */; };
-		AA5000000000000000000023 /* MLEditorTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000026 /* MLEditorTable.swift */; };
-		AA5000000000000000000022 /* MLPlaylistManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000025 /* MLPlaylistManagement.swift */; };
 		AA5000000000000000000011 /* FullscreenVisualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */; };
 		AA5000000000000000000012 /* JumpToTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000015 /* JumpToTrackView.swift */; };
 		AA5000000000000000000013 /* EqualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000016 /* EqualizerWindow.swift */; };
@@ -47,6 +26,27 @@
 		AA5000000000000000000017 /* MediaLibraryWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000020 /* MediaLibraryWindow.swift */; };
 		AA5000000000000000000018 /* DeduplicatorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000021 /* DeduplicatorWindow.swift */; };
 		AA5000000000000000000019 /* Theme+Guide.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000022 /* Theme+Guide.swift */; };
+		AA5000000000000000000020 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
+		AA5000000000000000000021 /* TableSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000024 /* TableSupport.swift */; };
+		AA5000000000000000000022 /* MLPlaylistManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000025 /* MLPlaylistManagement.swift */; };
+		AA5000000000000000000023 /* MLEditorTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000026 /* MLEditorTable.swift */; };
+		AA5000000000000000000024 /* MLPlaylistEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000027 /* MLPlaylistEditor.swift */; };
+		AA5000000000000000000025 /* MLFilesTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000028 /* MLFilesTable.swift */; };
+		AA5000000000000000000026 /* SparkampModelTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000029 /* SparkampModelTypes.swift */; };
+		AA5000000000000000000027 /* SparkampModel+Transport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000030 /* SparkampModel+Transport.swift */; };
+		AA5000000000000000000028 /* SparkampModel+MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */; };
+		AA5000000000000000000029 /* SparkampModel+Dedupe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000032 /* SparkampModel+Dedupe.swift */; };
+		AA5000000000000000000030 /* SparkampModel+Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000033 /* SparkampModel+Keys.swift */; };
+		AA5000000000000000000031 /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000034 /* DeviceService.swift */; };
+		AA5000000000000000000032 /* SparkampModel+Devices.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000035 /* SparkampModel+Devices.swift */; };
+		AA5000000000000000000033 /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000036 /* DeviceListView.swift */; };
+		AA5000000000000000000034 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000037 /* DeviceDetailView.swift */; };
+		AA5000000000000000000035 /* DeviceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000038 /* DeviceMenu.swift */; };
+		AA5000000000000000000036 /* DeviceConflictSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000039 /* DeviceConflictSheet.swift */; };
+		AA5000000000000000000037 /* UnsupportedDeviceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000040 /* UnsupportedDeviceWatcher.swift */; };
+		AA5000000000000000000038 /* DiscService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000041 /* DiscService.swift */; };
+		AA5000000000000000000039 /* SparkampModel+Discs.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000042 /* SparkampModel+Discs.swift */; };
+		AA5000000000000000000040 /* DiscDriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000043 /* DiscDriveView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -60,31 +60,9 @@
 		AA4000000000000000000007 /* MarqueeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarqueeView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000009 /* PlaylistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000010 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		AA4000000000000000000022 /* Theme+Guide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+Guide.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
-		AA4000000000000000000023 /* GraniteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraniteView.swift; sourceTree = "<group>"; };
-		AA4000000000000000000024 /* TableSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableSupport.swift; sourceTree = "<group>"; };
-		AA4000000000000000000034 /* DeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceService.swift; sourceTree = "<group>"; };
-		AA4000000000000000000036 /* DeviceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListView.swift; sourceTree = "<group>"; };
-		AA4000000000000000000037 /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailView.swift; sourceTree = "<group>"; };
-		AA4000000000000000000038 /* DeviceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMenu.swift; sourceTree = "<group>"; };
-		AA4000000000000000000039 /* DeviceConflictSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceConflictSheet.swift; sourceTree = "<group>"; };
-		AA4000000000000000000040 /* UnsupportedDeviceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnsupportedDeviceWatcher.swift; sourceTree = "<group>"; };
-		AA4000000000000000000041 /* DiscService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscService.swift; sourceTree = "<group>"; };
-		AA4000000000000000000042 /* SparkampModel+Discs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Discs.swift"; sourceTree = "<group>"; };
-		AA4000000000000000000043 /* DiscDriveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscDriveView.swift; sourceTree = "<group>"; };
-		AA4000000000000000000035 /* SparkampModel+Devices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Devices.swift"; sourceTree = "<group>"; };
-		AA4000000000000000000033 /* SparkampModel+Keys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Keys.swift"; sourceTree = "<group>"; };
-		AA4000000000000000000032 /* SparkampModel+Dedupe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Dedupe.swift"; sourceTree = "<group>"; };
-		AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+MediaLibrary.swift"; sourceTree = "<group>"; };
-		AA4000000000000000000030 /* SparkampModel+Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Transport.swift"; sourceTree = "<group>"; };
-		AA4000000000000000000029 /* SparkampModelTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampModelTypes.swift; sourceTree = "<group>"; };
-		AA4000000000000000000028 /* MLFilesTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLFilesTable.swift; sourceTree = "<group>"; };
-		AA4000000000000000000027 /* MLPlaylistEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLPlaylistEditor.swift; sourceTree = "<group>"; };
-		AA4000000000000000000026 /* MLEditorTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLEditorTable.swift; sourceTree = "<group>"; };
-		AA4000000000000000000025 /* MLPlaylistManagement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLPlaylistManagement.swift; sourceTree = "<group>"; };
 		AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenVisualizerWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000015 /* JumpToTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpToTrackView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000016 /* EqualizerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerWindow.swift; sourceTree = "<group>"; };
@@ -93,6 +71,28 @@
 		AA4000000000000000000019 /* ArtworkWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtworkWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000020 /* MediaLibraryWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000021 /* DeduplicatorWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeduplicatorWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000022 /* Theme+Guide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+Guide.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000023 /* GraniteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraniteView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000024 /* TableSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableSupport.swift; sourceTree = "<group>"; };
+		AA4000000000000000000025 /* MLPlaylistManagement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLPlaylistManagement.swift; sourceTree = "<group>"; };
+		AA4000000000000000000026 /* MLEditorTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLEditorTable.swift; sourceTree = "<group>"; };
+		AA4000000000000000000027 /* MLPlaylistEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLPlaylistEditor.swift; sourceTree = "<group>"; };
+		AA4000000000000000000028 /* MLFilesTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLFilesTable.swift; sourceTree = "<group>"; };
+		AA4000000000000000000029 /* SparkampModelTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampModelTypes.swift; sourceTree = "<group>"; };
+		AA4000000000000000000030 /* SparkampModel+Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Transport.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+MediaLibrary.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000032 /* SparkampModel+Dedupe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Dedupe.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000033 /* SparkampModel+Keys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Keys.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000034 /* DeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceService.swift; sourceTree = "<group>"; };
+		AA4000000000000000000035 /* SparkampModel+Devices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Devices.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000036 /* DeviceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000037 /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000038 /* DeviceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMenu.swift; sourceTree = "<group>"; };
+		AA4000000000000000000039 /* DeviceConflictSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceConflictSheet.swift; sourceTree = "<group>"; };
+		AA4000000000000000000040 /* UnsupportedDeviceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnsupportedDeviceWatcher.swift; sourceTree = "<group>"; };
+		AA4000000000000000000041 /* DiscService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscService.swift; sourceTree = "<group>"; };
+		AA4000000000000000000042 /* SparkampModel+Discs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Discs.swift"; sourceTree = "<group>"; };
+		AA4000000000000000000043 /* DiscDriveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscDriveView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -263,7 +263,6 @@
 		};
 		AA2000000000000000000004 /* Embed Skin Guide */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 0;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -438,9 +437,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = HR3P54M383;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -455,6 +457,7 @@
 					"$(inherited)",
 					"$(SRCROOT)",
 				);
+				ARCHS = arm64;
 				MARKETING_VERSION = 1.1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -470,8 +473,9 @@
 					"-lgio-2.0",
 					"-lintl",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.SparkampMac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -483,9 +487,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = HR3P54M383;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -500,6 +507,7 @@
 					"$(inherited)",
 					"$(SRCROOT)",
 				);
+				ARCHS = arm64;
 				MARKETING_VERSION = 1.1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -515,8 +523,9 @@
 					"-lgio-2.0",
 					"-lintl",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.SparkampMac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
 				SWIFT_STRICT_CONCURRENCY = minimal;
