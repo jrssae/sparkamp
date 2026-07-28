@@ -155,6 +155,49 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   (not directly under the table). Both are one-line moves if a different spot is
   preferred.
 
+## Known limitations (recorded during phase 8 — F10 watch folders)
+
+- remove_missing_on_rescan defaults OFF, which CHANGES prior behavior: rescans
+  (and the live watcher) no longer prune library rows for files that have
+  vanished unless the user enables the toggle. This is Winamp offline-media
+  parity (entries persist for unplugged/synced drives) — user decision
+  2026-07-27. There is no "mark-broken" row state in the codebase; a missing
+  file's row is either kept (OFF) or hard-deleted (ON).
+- auto_add_played adds ONLY tracks played from OUTSIDE every watched folder
+  (folder_id NULL bucket, visible in the Files view which has no folder JOIN).
+  In-folder played tracks are left to the watcher/rescan. This outside-only
+  guard also sidesteps a latent path-form inconsistency: the library stores
+  un-canonicalized scanned paths (fast-insert skips a per-file stat), while a
+  played `Track.path` is canonicalized — so adding an in-folder track by its
+  canonical path could create a duplicate row under symlinked paths (Flatpak
+  FUSE, synced libraries). Guarding to outside-only avoids it.
+- Watcher latency: ~2 s debounce before a created/modified/removed file
+  reflects in the library (the debouncer coalesces bulk copies to avoid a
+  per-file rescan storm). Event classification is pure-unit-tested; the live
+  OS watcher has one generous-timeout smoke test (timing-sensitive by nature).
+- inotify watch-limit exhaustion (`max_user_watches`) on very large recursive
+  trees makes `FolderWatcher::start` fail; the app logs and degrades to manual
+  rescan — it never crashes. No in-app "watching is off" banner was built
+  (only the log line); a surfaced status line is a possible later refinement.
+- Per-folder recurse has UI only in GTK + macOS. The TUI has no watched-folder
+  management screen, so TUI-managed folders always watch/scan per the DB
+  default (recurse=1). The `folders.recurse` column and the core `walk_dir`
+  still honor the flag everywhere; only the TUI toggle is absent.
+- TUI: a background watcher event that refreshes the open Files list reuses
+  `refresh_ml_search`, which resets the selection to the top — a minor
+  scroll-jump while browsing during live fs activity. Follow-up: preserve
+  selection by path.
+- Deprecated config fields `periodic_rescan` / `rescan_interval_mins` are
+  retained for TOML back-compat but no longer surfaced in any UI (superseded by
+  `watch_folders`). `MediaLibraryConfig::set_rescan_interval_mins` is now
+  reachable only from its own tests (`#[allow(dead_code)]`) — candidate for
+  deletion with its tests in a later cleanup.
+- macOS is BLIND (Swift never compiled here): the 5 settings toggles, the
+  per-folder Recurse checkbox (in SettingsWindow's MediaLibraryPane), the
+  tick() poll-drain, and the auto-add hook are verified by symbol/name
+  cross-check + `docs/mac-pass-checklist.md` (phase-8 section), pending the
+  user's Xcode/hardware pass.
+
 ## Known limitations (recorded during phase 7 — F1 playlist ops)
 
 - Full Winamp menu-bar consolidation (user decision 2026-07-27): the flat GTK/mac
