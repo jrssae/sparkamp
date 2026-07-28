@@ -990,3 +990,12 @@ path (`discSubmittable`/`submitDisc`) is untouched and still reads
       mac, GTK, and TUI all show the identical badge text (`gnudb` /
       `edited` / `CD-TEXT`) for the same disc state — no casing or spelling
       drift between frontends.
+- [ ] **FOLLOW-UP (fix while in Xcode) — titles-only CD-TEXT disc pill**: the
+      pill in `DiscDriveView.swift` is currently nested INSIDE the
+      `if let t = discTags, !t.artist.isEmpty || !t.album.isEmpty` header
+      conditional, so a rare CD-TEXT disc that carries track titles but empty
+      artist AND album shows NO pill on mac while GTK/TUI DO show `CD-TEXT`.
+      Lift the pill computation out to use `discMetaSourceBadge(id)`
+      independently of the artist/album line (so it renders whenever a source
+      exists, even titles-only), then eyeball the header layout. Matches
+      GTK/TUI behavior.

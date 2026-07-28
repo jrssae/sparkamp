@@ -191,6 +191,32 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   text is not NUL-sanitized on mac (SwiftUI `Text` is NUL-safe, unlike GTK's
   `gtk_safe()` path).
 
+### Phase 9 follow-on — source badge + CD-TEXT editor seeding (2026-07-28)
+
+- A disc-level source badge (text pill) shows where the displayed track
+  metadata came from: `gnudb` / `edited` / `CD-TEXT` (none → no pill). Because
+  precedence is whole-entry, the whole displayed set has ONE source, so the
+  badge is single (disc-level), not per-track. Shared classifier
+  `crate::disc::source::DiscMetaSource::resolve(has_official, has_user_tags,
+  has_cdtext)`; GTK `.disc-source-pill`, TUI bracketed tag on the Discs
+  column-header row (no Artist/Album header line exists there), mac capsule
+  pill — identical label strings across all three.
+- The disc tag editor now seeds from CD-TEXT (whole-entry `tags.or(cdtext)`)
+  on all three frontends, so a CD-TEXT-only disc prefills artist/album/titles.
+  **Submit-to-gnudb process:** open the disc tag editor (titles + now
+  artist/album prefilled from CD-TEXT) → optionally adjust → Save (promotes
+  the tags into the user tag set) → the Submit action becomes available →
+  pick a gnudb category + enter your email (first time) → uploads. CD-TEXT is
+  never auto-submitted; that edit+save is the deliberate promotion step.
+- Known follow-ups (non-blocking, deferred): (1) mac hides the pill for a
+  rare *titles-only* CD-TEXT disc (empty artist AND album) because the pill is
+  nested under the artist/album header conditional; GTK/TUI show it — a macOS
+  worker should lift the pill out of that conditional and eyeball the layout.
+  (2) Playlist-ADD disc-level artist/album: TUI folds CD-TEXT into added
+  tracks' artist/album; GTK and mac still read only the user/official tag set
+  (per-track TITLES inherit CD-TEXT on all three). Pre-existing since the read
+  phase; align GTK + mac to fold CD-TEXT there for full parity when scoped.
+
 ## Known limitations (recorded during phase 8 — F10 watch folders)
 
 - remove_missing_on_rescan defaults OFF, which CHANGES prior behavior: rescans
