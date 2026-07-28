@@ -842,6 +842,17 @@ impl EqConfig {
 
 impl MediaLibraryConfig {
     /// Set the rescan interval, enforcing a minimum of 1 minute.
+    ///
+    /// No caller left in the bin crate as of Phase 8 Task 11: the TUI's
+    /// settings row that used to call this (the numeric "Rescan interval"
+    /// edit field) was removed along with `periodic_rescan`, superseded by
+    /// the live filesystem watcher, and the FFI setter
+    /// (`sparkamp_set_ml_rescan_interval`) writes the field directly rather
+    /// than through this method. Kept (not deleted) — and `pub` — as the
+    /// documented, invariant-enforcing way to set this deprecated-but-still-
+    /// serialized field, for any future caller (config import/migration,
+    /// tests) that wants the `.max(1)` guarantee rather than duplicating it.
+    #[allow(dead_code)]
     pub fn set_rescan_interval_mins(&mut self, mins: u64) {
         self.rescan_interval_mins = mins.max(1);
     }

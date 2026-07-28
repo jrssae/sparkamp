@@ -182,31 +182,27 @@ pub(super) fn settings_rows_for_tab<'a>(
         )],
 
         // ── Media Library ─────────────────────────────────────────────────
+        // Phase 8 Task 11: the old "Periodic rescan" / "Rescan interval" pair
+        // (a poll-based rescan timer) is superseded by the live filesystem
+        // watcher (`watch_folders`, wired in `App::rebuild_watcher`) — those
+        // two rows are gone from the UI, though the deprecated config fields
+        // themselves stay for serde back-compat. Five booleans now, all using
+        // the same On/Off formatting.
         2 => {
-            let startup_val = if app.config.media_library.rescan_on_startup {
-                "[ On  / Off ]  ●  On".to_string()
-            } else {
-                "[ On  / Off ]  ●  Off".to_string()
-            };
-            let periodic_val = if app.config.media_library.periodic_rescan {
-                "[ On  / Off ]  ●  On".to_string()
-            } else {
-                "[ On  / Off ]  ●  Off".to_string()
-            };
-            // Show interval only when periodic rescan is on (always shown for editing).
-            let interval_val = if state.cursor == 2 {
-                if let Some(buf) = &state.edit_buf {
-                    format!("{buf}▌ min")
+            let on_off = |b: bool| {
+                if b {
+                    "[ On  / Off ]  ●  On".to_string()
                 } else {
-                    format!("{} min", app.config.media_library.rescan_interval_mins)
+                    "[ On  / Off ]  ●  Off".to_string()
                 }
-            } else {
-                format!("{} min", app.config.media_library.rescan_interval_mins)
             };
+            let ml = &app.config.media_library;
             vec![
-                ("Rescan on startup", startup_val),
-                ("Periodic rescan", periodic_val),
-                ("Rescan interval", interval_val),
+                ("Rescan on startup", on_off(ml.rescan_on_startup)),
+                ("Watch folders", on_off(ml.watch_folders)),
+                ("Auto-add played", on_off(ml.auto_add_played)),
+                ("Remove missing on rescan", on_off(ml.remove_missing_on_rescan)),
+                ("Compact after rescan", on_off(ml.compact_on_rescan)),
             ]
         }
 

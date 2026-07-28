@@ -568,6 +568,7 @@ impl App {
             self.open_media_library();
             return;
         };
+        let succeeded = result.is_ok();
         match result {
             Ok(((added, _removed), is_new)) => {
                 if is_new {
@@ -579,6 +580,13 @@ impl App {
             Err(e) => {
                 self.set_status(format!("Error adding to ML: {e}"));
             }
+        }
+        // A new (or newly re-added) folder changes the watch set — rebuild
+        // so the live watcher picks it up immediately rather than waiting
+        // for the next app restart. Only worth doing when the add actually
+        // went through; an error here means nothing changed on disk.
+        if succeeded {
+            self.rebuild_watcher();
         }
         self.open_media_library();
     }

@@ -23,6 +23,7 @@ use crate::{
     id3_editor::{ExtraFrame, TagFields, ID3V1_GENRES},
     model::{Playlist, Track},
     shuffle::ShuffleState,
+    watch::{FolderWatcher, WatchAction},
 };
 
 mod id3;
@@ -412,8 +413,8 @@ pub(super) fn settings_tab_len(tab: usize) -> usize {
         0 => 2,
         // Visualizer: 1 item (mode)
         1 => 1,
-        // Media Library: 3 items (rescan_on_startup, periodic_rescan, rescan_interval_mins)
-        2 => 3,
+        // Media Library: 5 items (rescan_on_startup, watch_folders, auto_add_played, remove_missing_on_rescan, compact_on_rescan)
+        2 => 5,
         // ReplayGain: 6 items (enabled, source, clip, fallback, auto_analyze, write_tags)
         3 => 6,
         _ => 0,
@@ -465,6 +466,15 @@ pub struct App {
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<crate::media_library::MediaLibrary>,
+    /// Live filesystem watcher over the media library's watched folders
+    /// (Phase 8 Task 11). `None` when `config.media_library.watch_folders`
+    /// is off, `media_lib` isn't open, there are no watched folders yet, or
+    /// the underlying OS watcher failed to start — see `rebuild_watcher`.
+    watch: Option<FolderWatcher>,
+    /// Receiving end of `watch`'s channel; drained by `tick()`. Always
+    /// `Some` exactly when `watch` is `Some` — both are set/cleared together
+    /// by `rebuild_watcher`.
+    watch_rx: Option<mpsc::Receiver<WatchAction>>,
     /// Active background scan channels, present while a scan is running.
     scan_channels: Option<ScanChannels>,
     /// Tag sets per disc (freedb id → entry): gnudb matches and hand edits.
@@ -581,18 +591,34 @@ impl App {
         let media_lib = crate::media_library::MediaLibrary::open().ok();
 
         // If startup rescan is enabled, run it now in a background thread
-        // so the TUI becomes interactive immediately.
+        // so the TUI becomes interactive immediately. Fire-and-forget: this
+        // full rescan isn't drained through `tick()` the way the live
+        // watcher is (nothing in the TUI depends on knowing when it
+        // finishes), so `compact_on_rescan` is handled right here, inside
+        // the same thread, after a successful `rescan_all` — matching the
+        // GTK frontend's rule of compacting only after a full rescan, never
+        // after a single folder add/rescan (`commit_ml_add_path`).
         if config.media_library.rescan_on_startup {
             let remove_missing = config.media_library.remove_missing_on_rescan;
+            let compact_after = config.media_library.compact_on_rescan;
             std::thread::spawn(move || {
                 if let Ok(lib) = crate::media_library::MediaLibrary::open() {
-                    let _ = lib.rescan_all(remove_missing);
+                    match lib.rescan_all(remove_missing) {
+                        Ok(_) => {
+                            if compact_after {
+                                if let Err(e) = lib.compact() {
+                                    eprintln!("[tui] compact_on_rescan: VACUUM failed: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("[tui] startup rescan failed: {e}"),
+                    }
                 }
             });
         }
 
         let shuffle_enabled = config.playback.shuffle_enabled;
-        Ok(App {
+        let mut app = App {
             playlist,
             player,
             config,
@@ -617,6 +643,8 @@ impl App {
             broken_rx,
             broken_tx,
             media_lib,
+            watch: None,
+            watch_rx: None,
             scan_channels: None,
             disc_tags,
             disc_official,
@@ -631,7 +659,86 @@ impl App {
             burn_prep_cancel: None,
             burn_phase: None,
             anim_tick: 0,
-        })
+        };
+        // Start the live watcher from the folder list `media_lib` just
+        // loaded (or leave it None per the same rules `rebuild_watcher`
+        // applies any other time it's called).
+        app.rebuild_watcher();
+        Ok(app)
+    }
+
+    // -----------------------------------------------------------------------
+    // Watch-folder lifecycle (Phase 8 Task 11)
+    // -----------------------------------------------------------------------
+
+    /// (Re)build the live folder watcher from the current config + folder
+    /// list.
+    ///
+    /// Mirrors the GTK frontend's `window/watch.rs::rebuild_watcher` (Phase
+    /// 8 Task 10), minus its `Rc<RefCell<AppState>>` borrow choreography —
+    /// the TUI's `App` is a plain owned value, so this just takes `&mut
+    /// self`. Always tears down any existing watcher first (a stale watcher
+    /// pointed at removed/renamed folders is worse than a brief gap with
+    /// none running), then starts a fresh one if
+    /// `config.media_library.watch_folders` is on, `media_lib` is open, and
+    /// there is at least one folder to watch.
+    ///
+    /// Call sites: `App::new` (startup), the "Watch folders" settings
+    /// toggle (`settings_eq.rs`), and `commit_ml_add_path` (a newly added
+    /// folder needs to join the watch set immediately). The TUI has no
+    /// folder-*removal* UI (only GTK/mac do), so there's no matching
+    /// rebuild call for that — nothing to rebuild after.
+    ///
+    /// Graceful degradation only: if the underlying OS watcher fails to
+    /// start (e.g. inotify's `max_user_watches` limit is exhausted), this
+    /// logs and leaves `watch`/`watch_rx` at `None` — manual add/rescan
+    /// keep working. Never panics.
+    pub(super) fn rebuild_watcher(&mut self) {
+        if let Some(old) = self.watch.take() {
+            old.stop();
+        }
+        self.watch_rx = None;
+
+        if !self.config.media_library.watch_folders {
+            return;
+        }
+        let Some(ref lib) = self.media_lib else {
+            return;
+        };
+        let folders: Vec<(PathBuf, bool)> = lib
+            .list_folders()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, path)| {
+                let recurse = lib.folder_recurse(id).unwrap_or(true);
+                (PathBuf::from(path), recurse)
+            })
+            .collect();
+        if folders.is_empty() {
+            return;
+        }
+        let audio_exts: Vec<String> = crate::model::AUDIO_EXTENSIONS
+            .iter()
+            .map(|ext| ext.to_string())
+            .collect();
+        // Must match the prefix every other cache consumer uses (tags.rs,
+        // now_playing.rs, media_library/queries.rs, and the GTK watcher's
+        // own `cache_prefix()`) so `classify_paths` correctly excludes
+        // Sparkamp's own writes (cached artwork, thumbnails) from watch
+        // events.
+        let cache_prefix = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("sparkamp");
+
+        match FolderWatcher::start(folders, audio_exts, cache_prefix) {
+            Ok((watcher, rx)) => {
+                self.watch = Some(watcher);
+                self.watch_rx = Some(rx);
+            }
+            Err(e) => {
+                eprintln!("[tui] failed to start folder watcher: {e}");
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -729,6 +836,7 @@ impl App {
                 self.visualizer_active = true;
                 self.marquee_offset = 0;
                 self.marquee_tick = 0;
+                self.maybe_auto_add_played(idx);
             }
             crate::controller::PlayResult::Error(e) => {
                 self.set_status(e);
@@ -750,11 +858,75 @@ impl App {
                 self.visualizer_active = true;
                 self.marquee_offset = 0;
                 self.marquee_tick = 0;
+                self.maybe_auto_add_played(idx);
             }
             crate::controller::PlayResult::Error(e) => {
                 self.set_status(e);
             }
             crate::controller::PlayResult::NoTrack => {}
+        }
+    }
+
+    /// Auto-add-played (Phase 8 Task 11, mirrors the GTK fix wave's
+    /// `window/state.rs::maybe_auto_add_played`): make sure a track that
+    /// just started playing, and lives OUTSIDE every watched folder, has a
+    /// row in the media library — gated on
+    /// `config.media_library.auto_add_played`. Tracks under a watched
+    /// folder are already managed by the watcher/rescan, so this only
+    /// exists to catch playback from outside that set (the
+    /// folder_id-NULL bucket).
+    ///
+    /// `idx` is `playlist.current_index` as of the just-started play, taken
+    /// by the caller rather than re-read here so this always acts on the
+    /// track that actually started, not whatever `current_index` happens to
+    /// be by the time this runs. The path used is exactly
+    /// `playlist.tracks[idx].path` — the same path the player was just
+    /// loaded with — deliberately NOT re-canonicalized here.
+    ///
+    /// No-op if the setting is off, the library isn't open, or the index is
+    /// out of range (shouldn't happen right after `Started`, but this is
+    /// defensive rather than a panic).
+    ///
+    /// The inside/outside check mirrors the GTK version's reasoning: guards
+    /// with `owning_folder_id` rather than calling `add_played_track`
+    /// unconditionally, because the library stores un-canonicalized scan
+    /// paths while `Track::path` is canonicalized — for a path already
+    /// indexed under a watched folder (especially via a symlink) those two
+    /// strings can differ, so `add_played_track`'s exact-string
+    /// "already known" check could miss the existing row and insert a
+    /// duplicate. Skipping the call entirely whenever `owning_folder_id`
+    /// resolves to `Some(_)` avoids that risk outright.
+    fn maybe_auto_add_played(&self, idx: usize) {
+        if !self.config.media_library.auto_add_played {
+            return;
+        }
+        let Some(lib) = self.media_lib.as_ref() else {
+            return;
+        };
+        let Some(track) = self.playlist.tracks.get(idx) else {
+            return;
+        };
+        let Some(path_str) = track.path.to_str() else {
+            return;
+        };
+        match lib.owning_folder_id(path_str) {
+            // Inside a watched folder — the watcher/rescan already owns
+            // this path; adding it here risks a duplicate row (see doc
+            // comment above), so skip.
+            Ok(Some(_)) => {}
+            // Outside every watched folder — the case auto-add-played
+            // exists for.
+            Ok(None) => {
+                if let Err(e) = lib.add_played_track(path_str) {
+                    eprintln!("[tui] auto_add_played: failed for {}: {e}", track.path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[tui] auto_add_played: owning_folder_id lookup failed for {}: {e}",
+                    track.path.display()
+                );
+            }
         }
     }
 
@@ -956,6 +1128,36 @@ impl App {
 
         // 1c. Background add-file scan: drain results and update playlist.
         self.drain_add_file_scan();
+
+        // 1d. Drain the live folder watcher (Phase 8 Task 11): apply any
+        // filesystem changes to the library the same way a manual rescan
+        // would, then — only if something was actually applied, and only if
+        // the media library overlay is open at all (any tab; cheap re-query,
+        // and simpler than tracking which tab is showing) — re-run the same
+        // query the search/sort handlers use so the Files-tab track list
+        // picks the change up live rather than going stale until the next
+        // manual search/sort.
+        let mut watch_applied = false;
+        if let Some(ref rx) = self.watch_rx {
+            let mut actions = Vec::new();
+            while let Ok(action) = rx.try_recv() {
+                actions.push(action);
+            }
+            if !actions.is_empty() {
+                let remove_missing = self.config.media_library.remove_missing_on_rescan;
+                if let Some(ref lib) = self.media_lib {
+                    for action in &actions {
+                        match lib.apply_watch_action(action, remove_missing) {
+                            Ok(()) => watch_applied = true,
+                            Err(e) => eprintln!("[tui] apply_watch_action failed: {e}"),
+                        }
+                    }
+                }
+            }
+        }
+        if watch_applied && matches!(self.mode, Mode::MediaLibrary(_)) {
+            self.refresh_ml_search();
+        }
 
         // 2. Write GStreamer duration back to the current track if not yet known.
         if let Some(dur) = self.player.duration() {

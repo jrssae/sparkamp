@@ -81,14 +81,12 @@ impl App {
                         Mode::Settings(s) => s.edit_buf.take().unwrap_or_default(),
                         _ => return,
                     };
-                    // Dispatch by (tab, cursor).
+                    // Dispatch by (tab, cursor). Tab 2 (Media Library) has no
+                    // text-edit row any more (Phase 8 Task 11 removed the
+                    // numeric rescan-interval field along with the
+                    // periodic-rescan row it belonged to) — only Tab 3's
+                    // fallback-gain field still enters edit mode.
                     match (tab, cursor) {
-                        (2, 2) => {
-                            // Parse interval minutes; silently keep old value on error.
-                            if let Ok(mins) = val.trim().parse::<u64>() {
-                                self.config.media_library.set_rescan_interval_mins(mins);
-                            }
-                        }
                         (3, 3) => {
                             // Parse fallback gain in dB; silently keep old value
                             // on error. Applies live to the player.
@@ -199,7 +197,14 @@ impl App {
                             VisualizerMode::Granite  => VisualizerMode::Bars,
                         };
                     }
-                    // Media Library: toggle booleans or edit the interval field.
+                    // Media Library: five plain booleans (Phase 8 Task 11 —
+                    // the old numeric "Rescan interval" edit-buffer field is
+                    // gone along with the periodic-rescan row it belonged
+                    // to; `set_rescan_interval_mins` stays as a method for
+                    // FFI/config callers, it's just no longer reachable from
+                    // this tab). Toggling "Watch folders" (re)builds or tears
+                    // down the live watcher immediately rather than waiting
+                    // for the settings overlay to close.
                     2 => {
                         match cursor {
                             0 => {
@@ -207,16 +212,21 @@ impl App {
                                     !self.config.media_library.rescan_on_startup;
                             }
                             1 => {
-                                self.config.media_library.periodic_rescan =
-                                    !self.config.media_library.periodic_rescan;
+                                self.config.media_library.watch_folders =
+                                    !self.config.media_library.watch_folders;
+                                self.rebuild_watcher();
                             }
                             2 => {
-                                // Enter text-edit mode for the interval value.
-                                let current =
-                                    self.config.media_library.rescan_interval_mins.to_string();
-                                if let Mode::Settings(s) = &mut self.mode {
-                                    s.edit_buf = Some(current);
-                                }
+                                self.config.media_library.auto_add_played =
+                                    !self.config.media_library.auto_add_played;
+                            }
+                            3 => {
+                                self.config.media_library.remove_missing_on_rescan =
+                                    !self.config.media_library.remove_missing_on_rescan;
+                            }
+                            4 => {
+                                self.config.media_library.compact_on_rescan =
+                                    !self.config.media_library.compact_on_rescan;
                             }
                             _ => {}
                         }
