@@ -131,6 +131,9 @@ pub struct PlaybackConfig {
     /// ReplayGain (volume normalization) settings.
     #[serde(default)]
     pub replaygain: ReplayGainConfig,
+    /// Play-count threshold settings (F11).
+    #[serde(default)]
+    pub play_stats: PlayStatsConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +202,43 @@ pub fn rg_album_mode(source: RgSource, shuffle_enabled: bool) -> bool {
         RgSource::Track => false,
         RgSource::Album => true,
         RgSource::Automatic => !shuffle_enabled,
+    }
+}
+
+/// How the "played" threshold is measured (F11). The user picks ONE active
+/// mode; Winamp exposes both but only one applies at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayStatsMode {
+    /// Count a play after N seconds of listening.
+    #[default]
+    Seconds,
+    /// Count a play after a percentage of the track length.
+    Percent,
+}
+
+/// Play-count threshold settings (F11). Lives under `[playback.play_stats]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayStatsConfig {
+    /// When false, no play is ever recorded (snapshot stats still read fine).
+    pub enabled: bool,
+    /// Active measurement mode.
+    pub mode: PlayStatsMode,
+    /// Threshold in seconds (Seconds mode).
+    pub seconds: u32,
+    /// Threshold as a percent of track length, 1..=100 (Percent mode).
+    pub percent: u8,
+}
+
+impl Default for PlayStatsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: PlayStatsMode::Seconds,
+            seconds: 20,
+            percent: 50,
+        }
     }
 }
 
@@ -874,6 +914,7 @@ impl Default for Config {
                 repeat_mode: RepeatMode::Off,
                 shuffle_enabled: false,
                 replaygain: ReplayGainConfig::default(),
+                play_stats: PlayStatsConfig::default(),
             },
             visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),

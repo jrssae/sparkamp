@@ -41,6 +41,7 @@ mod mpris_meta;
 mod now_playing;
 mod replaygain;
 mod pathutil;
+mod play_stats;
 // Shared active-playlist status-line formatter (phase 7).
 mod playlist_status;
 mod queue;
