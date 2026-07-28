@@ -216,6 +216,12 @@ pub fn read_cdtext(drive_id: &str) -> Option<CdText> {
 pub fn parse_drutil_cdtext(text: &str) -> CdText {
     let mut out = CdText::default();
     let mut cur_track: Option<u32> = None;
+    // Scope flag: true once any "Track N:" heading has been seen. Unlike
+    // `cur_track` (which is consumed by the next TITLE so it can track the
+    // *number* for the following track title), this never resets — once a
+    // track block starts, disc-level PERFORMER/TITLE promotion is over for
+    // good, structurally matching `parse_v07t_readback`.
+    let mut in_track = false;
     let mut next_seq: u32 = 0; // fallback track counter when no explicit "Track N"
     for line in text.lines() {
         let t = line.trim();
@@ -224,6 +230,7 @@ pub fn parse_drutil_cdtext(text: &str) -> CdText {
             if let Some(nums) = rest.split([':', ' ']).next() {
                 if let Ok(n) = nums.trim().parse::<u32>() {
                     cur_track = Some(n);
+                    in_track = true;
                     continue;
                 }
             }
@@ -235,21 +242,21 @@ pub fn parse_drutil_cdtext(text: &str) -> CdText {
         if let Some(key) = t.split_whitespace().next() {
             match key {
                 "TITLE" | "Title" => {
-                    if out.album.is_none() && cur_track.is_none() {
+                    if out.album.is_none() && !in_track {
                         out.album = Some(val);
                     } else {
                         let n = cur_track.take().unwrap_or_else(|| {
                             next_seq += 1;
                             next_seq
                         });
-                        if n as usize > next_seq as usize {
+                        if n > next_seq {
                             next_seq = n;
                         }
                         out.track_titles.push((n, val));
                     }
                 }
                 "PERFORMER" | "Performer" => {
-                    if out.artist.is_none() && cur_track.is_none() {
+                    if out.artist.is_none() && !in_track {
                         out.artist = Some(val);
                     }
                     // per-track performers are ignored (title-only overlay,
@@ -397,5 +404,49 @@ CD-Text, Block 0 (English):
 
         // No CD-TEXT → empty (caller treats as a miss).
         assert!(parse_drutil_cdtext("No CD-Text on this disc.\n").is_empty());
+    }
+
+    #[test]
+    fn drutil_cdtext_does_not_leak_per_track_performer_into_disc_artist() {
+        // Per-track PERFORMER lines must never be promoted to the disc-level
+        // artist, regardless of whether TITLE or PERFORMER comes first within
+        // the track block. Only the disc-level PERFORMER (before any "Track
+        // N:" heading) may set `out.artist`.
+        let dump = "\
+CD-Text, Block 0 (English):
+  TITLE \"Greatest Hits\"
+  PERFORMER \"The Band\"
+  Track 1:
+    TITLE \"First Song\"
+    PERFORMER \"Solo Artist A\"
+  Track 2:
+    PERFORMER \"Solo Artist B\"
+    TITLE \"Second Song\"
+";
+        let cd = parse_drutil_cdtext(dump);
+        assert_eq!(cd.artist.as_deref(), Some("The Band"));
+        assert_eq!(cd.album.as_deref(), Some("Greatest Hits"));
+        assert_eq!(cd.track_titles.len(), 2);
+        assert_eq!(cd.track_titles[0], (1, "First Song".into()));
+        assert_eq!(cd.track_titles[1], (2, "Second Song".into()));
+
+        // No disc-level PERFORMER at all: track performers must not leak in
+        // as a fallback disc artist — `cd.artist` stays `None`.
+        let dump_no_disc_performer = "\
+CD-Text, Block 0 (English):
+  TITLE \"Greatest Hits\"
+  Track 1:
+    TITLE \"First Song\"
+    PERFORMER \"Solo Artist A\"
+  Track 2:
+    PERFORMER \"Solo Artist B\"
+    TITLE \"Second Song\"
+";
+        let cd2 = parse_drutil_cdtext(dump_no_disc_performer);
+        assert_eq!(cd2.artist, None);
+        assert_eq!(cd2.album.as_deref(), Some("Greatest Hits"));
+        assert_eq!(cd2.track_titles.len(), 2);
+        assert_eq!(cd2.track_titles[0], (1, "First Song".into()));
+        assert_eq!(cd2.track_titles[1], (2, "Second Song".into()));
     }
 }
