@@ -2188,6 +2188,23 @@ fn open_settings_window(
         }
         grid.attach(&chk_remember_search, 1, 17, 1, 1);
 
+        // Row 18: treat artist as album artist when the tag is blank (F12.2).
+        let lbl_artist_as_album = Label::new(Some("Treat artist as album artist"));
+        lbl_artist_as_album.set_halign(Align::Start);
+        grid.attach(&lbl_artist_as_album, 0, 18, 1, 1);
+        let chk_artist_as_album = CheckButton::new();
+        chk_artist_as_album
+            .set_active(state.borrow().config.media_library.artist_as_album_artist);
+        {
+            let state_rc = state.clone();
+            chk_artist_as_album.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.artist_as_album_artist = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_artist_as_album, 1, 18, 1, 1);
+
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }

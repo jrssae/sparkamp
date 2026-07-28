@@ -197,6 +197,7 @@ struct MLFilesTable: NSViewRepresentable {
                        let spec = Self.specs.first(where: { $0.id == table.tableColumns[c].identifier.rawValue }) {
                         cell.setContent(Self.cellContent(track: tracks[r], spec: spec,
                                                           theme: theme,
+                                                          artistAsAlbumArtist: model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false,
                                                           onViewArt: { onEvent(.viewArt($0)) }))
                     }
                 }
@@ -250,6 +251,7 @@ struct MLFilesTable: NSViewRepresentable {
     static func cellContent(track: MLTrack,
                                         spec: ColumnSpec,
                                         theme: SkinTheme,
+                                        artistAsAlbumArtist: Bool,
                                         onViewArt: @escaping (Int64) -> Void) -> AnyView {
         let body: AnyView
         switch spec.id {
@@ -291,7 +293,17 @@ struct MLFilesTable: NSViewRepresentable {
                                     color: track.fileMissing ? .red : theme.playlistText,
                                     spec: spec, theme: theme))
         case "col-albumartist":
-            body = AnyView(textCell(track.albumArtist,
+            // F12.2: mirrors src/play_stats.rs's effective_album_artist —
+            // album_artist wins whenever non-blank (trimmed), else falls
+            // back to artist when the "treat artist as album artist" toggle
+            // is on, else blank. A4 (phase 11 album gallery) MUST use the
+            // same rule.
+            let displayAlbumArtist: String = {
+                let trimmed = track.albumArtist.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return track.albumArtist }
+                return artistAsAlbumArtist ? track.artist : ""
+            }()
+            body = AnyView(textCell(displayAlbumArtist,
                                     color: track.fileMissing ? .red : theme.playlistText,
                                     spec: spec, theme: theme))
         case "col-genre":
@@ -509,6 +521,7 @@ struct MLFilesTable: NSViewRepresentable {
                 track: tracks[row],
                 spec: spec,
                 theme: parent.theme,
+                artistAsAlbumArtist: parent.model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false,
                 onViewArt: { [weak self] id in self?.parent.onEvent(.viewArt(id)) }
             ))
             return cell

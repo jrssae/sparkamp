@@ -714,6 +714,9 @@ private struct MediaLibraryPane: View {
     @State private var rescanOnStartup: Bool = false
     /// F12.1: restore each Media-Library view's search query on next open.
     @State private var rememberSearch: Bool = false
+    /// F12.2: display/group a track with no album-artist tag under its
+    /// artist instead of blank.
+    @State private var artistAsAlbumArtist: Bool = false
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -819,6 +822,12 @@ private struct MediaLibraryPane: View {
                     .onChange(of: rememberSearch) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_remember_search(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Treat artist as album artist", isOn: $artistAsAlbumArtist)
+                    .onChange(of: artistAsAlbumArtist) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_artist_as_album_artist(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
             }
@@ -976,6 +985,7 @@ private struct MediaLibraryPane: View {
                 compactOnRescan = sparkamp_get_compact_on_rescan(ctx)
                 rescanOnStartup = sparkamp_get_rescan_on_startup(ctx)
                 rememberSearch = sparkamp_get_remember_search(ctx)
+                artistAsAlbumArtist = sparkamp_get_artist_as_album_artist(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }

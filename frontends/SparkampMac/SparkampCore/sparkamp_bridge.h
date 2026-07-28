@@ -333,6 +333,17 @@ void    sparkamp_set_remember_search(SparkampCtx *ctx, bool value);
 char   *sparkamp_get_last_search(const SparkampCtx *ctx, const char *view_id);
 void    sparkamp_set_last_search(SparkampCtx *ctx, const char *view_id, const char *query);
 
+/* ── Treat artist as album artist (F12.2) ────────────────────────────────────
+   sparkamp_get/set_artist_as_album_artist is a plain config flag: when true,
+   a track with no album-artist tag displays/groups under its artist instead
+   of blank in the Media Library. Mirrors src/play_stats.rs's
+   effective_album_artist(artist, album_artist, artist_as_album) exactly —
+   album_artist wins whenever non-blank (trimmed), else artist when this flag
+   is on, else blank. Swift call sites must replicate that same order.
+   Setter does not persist automatically — call sparkamp_save_config. */
+bool    sparkamp_get_artist_as_album_artist(const SparkampCtx *ctx);
+void    sparkamp_set_artist_as_album_artist(SparkampCtx *ctx, bool value);
+
 /* ── Play-count threshold (F11) ──────────────────────────────────────────────
    sparkamp_play_deadline_secs returns the position (seconds) at which the
    current track should be counted as played, given its length (length_secs

@@ -1021,6 +1021,9 @@ fn open_media_library_window(
         let widths: std::collections::HashMap<String, i32> =
             state.borrow().config.media_library.ml_file_col_widths.clone();
         let order = state.borrow().config.media_library.ml_file_col_order.clone();
+        // F12.2: display fallback for the "album_artist" column.
+        let artist_as_album_artist: bool =
+            state.borrow().config.media_library.artist_as_album_artist;
         // Build columns in the saved order (unknown/leftover ids appended).
         let ordered: Vec<&MlColumnDef> = {
             let mut v: Vec<&MlColumnDef> = Vec::new();
@@ -1102,7 +1105,7 @@ fn open_media_library_window(
                 let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
                     return;
                 };
-                lbl.set_text(&gtk_safe(&ml_cell_text(&t, &bind_id)));
+                lbl.set_text(&gtk_safe(&ml_cell_text(&t, &bind_id, artist_as_album_artist)));
             });
             let col = ColumnViewColumn::new(Some(c.header), Some(factory));
             col.set_resizable(true);
@@ -4194,6 +4197,9 @@ fn open_media_library_window(
         let visible_ids: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
         let saved_widths: std::collections::HashMap<String, i32> =
             state.borrow().config.media_library.ml_file_col_widths.clone();
+        // F12.2: display fallback for the "album_artist" column.
+        let artist_as_album_artist: bool =
+            state.borrow().config.media_library.artist_as_album_artist;
 
         // Track which artwork buttons have been connected to avoid duplicate click handlers
         // (connect_bind fires each time an item is shown after a scroll).
@@ -4647,7 +4653,14 @@ fn open_media_library_window(
                         "title" => t.title.as_deref().unwrap_or(&t.filename).to_string(),
                         "artist" => t.artist.as_deref().unwrap_or("").to_string(),
                         "album" => t.album.as_deref().unwrap_or("").to_string(),
-                        "album_artist" => t.album_artist.as_deref().unwrap_or("").to_string(),
+                        // F12.2: falls back to artist when the album-artist
+                        // tag is blank and the toggle is on. A4 (phase 11
+                        // album gallery) MUST also use this helper.
+                        "album_artist" => crate::play_stats::effective_album_artist(
+                            t.artist.as_deref().unwrap_or(""),
+                            t.album_artist.as_deref().unwrap_or(""),
+                            artist_as_album_artist,
+                        ),
                         "duration" => t
                             .length_secs
                             .map(|s| {
@@ -4713,7 +4726,7 @@ fn open_media_library_window(
                         // mode) silently rendered blank here while the DB had
                         // the data, because `_ => String::new()` swallowed
                         // them (found in the phase-1 user pass).
-                        other => ml_cell_text(&t, other),
+                        other => ml_cell_text(&t, other, artist_as_album_artist),
                     };
                     lbl.set_text(&gtk_safe(&text));
                 });
@@ -6095,6 +6108,9 @@ fn open_media_library_window(
             state.borrow().config.media_library.visible_columns.clone();
         let saved_widths: std::collections::HashMap<String, i32> =
             state.borrow().config.media_library.ml_file_col_widths.clone();
+        // F12.2: display fallback for the "album_artist" column.
+        let artist_as_album_artist: bool =
+            state.borrow().config.media_library.artist_as_album_artist;
 
         // Leading status-glyph column (⚠/🔒) — playlist-editor-only, mirrors
         // the unscanned-indicator column on the files side.
@@ -6571,7 +6587,14 @@ fn open_media_library_window(
                     "title" => t.title.as_deref().unwrap_or(&t.filename).to_string(),
                     "artist" => t.artist.as_deref().unwrap_or("").to_string(),
                     "album" => t.album.as_deref().unwrap_or("").to_string(),
-                    "album_artist" => t.album_artist.as_deref().unwrap_or("").to_string(),
+                    // F12.2: falls back to artist when the album-artist tag
+                    // is blank and the toggle is on. A4 (phase 11 album
+                    // gallery) MUST also use this helper.
+                    "album_artist" => crate::play_stats::effective_album_artist(
+                        t.artist.as_deref().unwrap_or(""),
+                        t.album_artist.as_deref().unwrap_or(""),
+                        artist_as_album_artist,
+                    ),
                     "duration" => t.length_secs
                         .map(|s| { let ss = s as u64; format!("{}:{:02}", ss/60, ss%60) })
                         .unwrap_or_else(|| "-:--".to_string()),

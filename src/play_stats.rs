@@ -34,6 +34,46 @@ pub fn play_counted_at(length_secs: Option<f64>, cfg: &PlayStatsConfig) -> Optio
     }
 }
 
+/// The album-artist to display/group by. When `artist_as_album` is true and
+/// the track has no album-artist tag, fall back to the artist (F12). Trims so
+/// whitespace-only tags count as empty.
+///
+/// NOTE: A4 (phase 11 album gallery) MUST also route its album-artist
+/// grouping through this helper, so the gallery agrees with the Media
+/// Library's display/grouping once that phase lands.
+pub fn effective_album_artist(artist: &str, album_artist: &str, artist_as_album: bool) -> String {
+    if !album_artist.trim().is_empty() {
+        album_artist.to_string()
+    } else if artist_as_album {
+        artist.to_string()
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod album_artist_tests {
+    use super::effective_album_artist;
+
+    #[test]
+    fn prefers_album_artist_when_present() {
+        assert_eq!(effective_album_artist("A", "AA", true), "AA");
+        assert_eq!(effective_album_artist("A", "AA", false), "AA");
+    }
+
+    #[test]
+    fn falls_back_to_artist_only_when_enabled() {
+        assert_eq!(effective_album_artist("A", "", true), "A");
+        assert_eq!(effective_album_artist("A", "   ", true), "A");
+        assert_eq!(effective_album_artist("A", "", false), "");
+    }
+
+    #[test]
+    fn neither_present() {
+        assert_eq!(effective_album_artist("", "", true), "");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

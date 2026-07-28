@@ -102,6 +102,7 @@ struct MLPlaylistEditor: View {
                 columnMask: columnMask,
                 sortKey: editorSortKey,
                 sortAscending: editorSortAscending,
+                artistAsAlbumArtist: model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false,
                 contextMenuBuilder: { ids in editorContextMenu(rowIds: ids) },
                 onDropPaths: { paths in handleEditorDrop(paths: paths) },
                 positionFor: { id in playPosition(forRowId: id) },

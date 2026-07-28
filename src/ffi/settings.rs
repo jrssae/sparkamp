@@ -369,6 +369,28 @@ pub unsafe extern "C" fn sparkamp_set_auto_add_played(ctx: *mut SparkampCtx, val
     ctx.config.media_library.auto_add_played = value;
 }
 
+/// Whether a track with no album-artist tag displays/groups under its artist
+/// instead of blank (F12.2 — `play_stats::effective_album_artist`). Gating
+/// only, mirroring `sparkamp_get/set_auto_add_played` above — persistence
+/// happens wherever the frontend already persists other settings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_artist_as_album_artist(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.artist_as_album_artist
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_artist_as_album_artist(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.artist_as_album_artist = value;
+}
+
 /// Whether each Media-Library view's search query (F12) is restored the next
 /// time that view is opened. Gating only, mirroring
 /// `sparkamp_get/set_auto_add_played` above — persistence happens wherever
@@ -814,6 +836,14 @@ mod tests {
         assert!(!unsafe { sparkamp_get_auto_add_played(&ctx) });
         unsafe { sparkamp_set_auto_add_played(&mut ctx, true) };
         assert!(unsafe { sparkamp_get_auto_add_played(&ctx) });
+    }
+
+    #[test]
+    fn artist_as_album_artist_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_artist_as_album_artist(&ctx) });
+        unsafe { sparkamp_set_artist_as_album_artist(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_artist_as_album_artist(&ctx) });
     }
 
     #[test]

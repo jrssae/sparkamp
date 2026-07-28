@@ -417,6 +417,17 @@ struct DeviceDetailView: View {
     /// Tracks shown in the table: all of them, or just the selected device
     /// playlist's entries (matched by filename), then the per-view search
     /// filter, then sorted.
+    /// F12.2: mirrors src/play_stats.rs's effective_album_artist — album
+    /// artist wins whenever non-blank (trimmed), else falls back to artist
+    /// when the "treat artist as album artist" toggle is on, else blank. A4
+    /// (phase 11 album gallery) MUST use the same rule.
+    private func displayAlbumArtist(for t: DeviceTrack) -> String {
+        let trimmed = t.albumArtist.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return t.albumArtist }
+        let artistAsAlbumArtist = model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false
+        return artistAsAlbumArtist ? t.artist : ""
+    }
+
     private var sortedTracks: [DeviceTrack] {
         var base: [DeviceTrack]
         if let rel = selectedPlaylistRelpath,
@@ -520,8 +531,10 @@ struct DeviceDetailView: View {
         .customizationID("col-title")
         TableColumn("Artist", value: \.artist).customizationID("col-artist")
         TableColumn("Album", value: \.album).customizationID("col-album")
-        TableColumn("Album Artist", value: \.albumArtist)
-            .customizationID("col-albumartist").defaultVisibility(.hidden)
+        TableColumn("Album Artist", value: \.albumArtist) { t in
+            Text(displayAlbumArtist(for: t))
+        }
+        .customizationID("col-albumartist").defaultVisibility(.hidden)
         TableColumn("Genre", value: \.genre)
             .customizationID("col-genre").defaultVisibility(.hidden)
         TableColumn("Composer", value: \.composer)

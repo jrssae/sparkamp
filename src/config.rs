@@ -764,6 +764,13 @@ pub struct MediaLibraryConfig {
     /// Only consulted when `remember_search` is true.
     #[serde(default)]
     pub last_search: std::collections::HashMap<String, String>,
+
+    /// When true, a track with no album-artist tag displays/groups under its
+    /// artist instead of blank (F12.2). See
+    /// `crate::play_stats::effective_album_artist` for the exact rule; A4
+    /// (phase 11 album gallery) must use the same helper.
+    #[serde(default)]
+    pub artist_as_album_artist: bool,
 }
 
 impl MediaLibraryConfig {
@@ -839,6 +846,7 @@ impl Default for MediaLibraryConfig {
             compact_on_rescan: false,
             remember_search: false,
             last_search: std::collections::HashMap::new(),
+            artist_as_album_artist: false,
         }
     }
 }

@@ -39,6 +39,10 @@ struct MLEditorTable: NSViewRepresentable {
     /// play-order array is unchanged).
     let sortKey: String
     let sortAscending: Bool
+    /// F12.2: `config.media_library.artist_as_album_artist` — passed through
+    /// to `MLFilesTable.cellContent` so the "col-albumartist" cell falls
+    /// back to the artist when the album-artist tag is blank.
+    let artistAsAlbumArtist: Bool
     let contextMenuBuilder: (Set<Int>) -> NSMenu?
     /// Called when the user drops file URLs onto the editor.  `paths` is
     /// the resolved list; the closure is responsible for adding them via
@@ -181,6 +185,7 @@ struct MLEditorTable: NSViewRepresentable {
                         cell.setContent(MLFilesTable.cellContent(
                             track: rows[r].track, spec: spec,
                             theme: currentTheme,
+                            artistAsAlbumArtist: artistAsAlbumArtist,
                             onViewArt: { _ in }
                         ))
                     }
@@ -302,6 +307,7 @@ struct MLEditorTable: NSViewRepresentable {
                 track: rows[row].track,
                 spec: spec,
                 theme: parent.currentTheme,
+                artistAsAlbumArtist: parent.artistAsAlbumArtist,
                 // No "view art" hook from editor — would need plumbing all
                 // the way back to the model; users do this from Files view
                 // or via the right-click "View Album Art" menu instead.

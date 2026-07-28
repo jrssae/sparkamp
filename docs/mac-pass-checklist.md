@@ -1141,3 +1141,66 @@ the toggle off.
       `sparkamp_set_last_search`) — `sparkamp_get_last_search` returns a
       heap `char *` (free with `sparkamp_free_string`) and never crashes on
       an unknown `view_id`, returning `""` instead.
+
+## Phase 10 — Task 6: F12.2 treat artist as album artist (2026-07-28, BLIND — Swift never compiled)
+
+Mirrors the 2 new FFI functions (`sparkamp_get/set_artist_as_album_artist`)
+into `sparkamp_bridge.h`, adds a "Treat artist as album artist" toggle to
+`SettingsWindow.swift`'s Media Library section (same Toggle/onChange/
+`sparkamp_save_config` idiom as the neighboring `rememberSearch` row), and
+routes every mac "Album Artist" cell through the same fallback rule as
+`src/play_stats.rs`'s `effective_album_artist` (album_artist wins whenever
+non-blank after trimming, else falls back to artist when the toggle is on,
+else blank): `MLFilesTable.swift`'s `cellContent` (Files table + both editor
+call sites via `MLEditorTable.swift`, which gained a new `artistAsAlbumArtist`
+stored property) and `DeviceDetailView.swift`'s "Album Artist" column (now a
+custom `TableColumn` content closure calling a new `displayAlbumArtist(for:)`
+helper). Rust could not be asked to do the string choice for mac — there is
+no shared FFI struct call per cell — so each Swift call site fetches the flag
+itself via `sparkamp_get_artist_as_album_artist(ctx)` and applies the same
+three-way rule inline. When the toggle is off, behavior is identical to
+before this feature existed (blank cell for a blank album-artist tag).
+
+- [ ] **Toggle off (default) → unchanged behavior**: with "Treat artist as
+      album artist" off in Settings ▸ Media Library, open the Media Library
+      Files table and find a track with no album-artist tag — its "Album
+      Artist" column cell is blank, same as before this feature existed.
+- [ ] **Toggle on → Files table falls back to artist**: turn on "Treat
+      artist as album artist", reopen/refresh the Files table — a track
+      with a blank album-artist tag now shows its artist in the "Album
+      Artist" column; a track that already has an album-artist tag is
+      unaffected (still shows the tag, not the artist).
+- [ ] **Whitespace-only album-artist tag counts as blank**: a track whose
+      album-artist tag is only spaces (if one exists in the library) falls
+      back to the artist when the toggle is on, exactly like an empty tag —
+      confirms the Swift-side trim check matches the Rust helper's
+      `.trim().is_empty()`.
+- [ ] **Playlist editor matches the Files table**: open a saved playlist's
+      editor (`MLPlaylistEditor.swift` → `MLEditorTable.swift`) containing a
+      track with a blank album-artist tag — with the toggle on, its "Album
+      Artist" column cell shows the artist, matching what the Files table
+      shows for the same track.
+- [ ] **Device view matches too**: with a device connected, open its detail
+      view, show the (hidden-by-default) "Album Artist" column — with the
+      toggle on, a synced track with a blank album-artist tag shows its
+      artist there as well.
+- [ ] **Toggle off after having it on → cells go blank again**: with the
+      toggle on and cells showing the artist fallback, turn it back off in
+      Settings — reopening/refreshing any of the three views (Files,
+      playlist editor, device) shows blank cells again for tracks with no
+      album-artist tag.
+- [ ] **Sorting/grouping unaffected**: confirm sorting by the "Album Artist"
+      column still sorts on the raw `album_artist` DB value (via
+      `MLFilesTable.keyPathComparator`/`sortKey(forKeyPath:)`), NOT the
+      display fallback — this task only changes what's shown, not how rows
+      are ordered or grouped. A future album-gallery pass (A4) is expected
+      to change grouping separately.
+- [ ] **Settings persist across relaunch**: turn on "Treat artist as album
+      artist", quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Media
+      Library still shows it on, and the Files table still shows the
+      fallback for blank-album-artist tracks.
+- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
+      against the 2 declarations added to `sparkamp_bridge.h`
+      (`sparkamp_get_artist_as_album_artist`, `sparkamp_set_artist_as_album_artist`)
+      — both take/return a plain `bool`, no persistence side effect in the
+      setter (call `sparkamp_save_config` separately, as the Toggle does).

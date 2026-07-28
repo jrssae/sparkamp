@@ -364,13 +364,23 @@ fn format_file_size(bytes: i64) -> String {
 
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the
 /// device track view so it mirrors the files view's columns.
-fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str) -> String {
+///
+/// `artist_as_album_artist` is the F12.2 display fallback
+/// (`config.media_library.artist_as_album_artist`); passed through to
+/// `play_stats::effective_album_artist` for the "album_artist" column. A4
+/// (phase 11 album gallery) MUST also route its grouping through that same
+/// helper.
+fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str, artist_as_album_artist: bool) -> String {
     match id {
         "num" | "track_num" => t.track_num.map(|n| n.to_string()).unwrap_or_default(),
         "title" => t.title.clone().unwrap_or_else(|| t.filename.clone()),
         "artist" => t.artist.clone().unwrap_or_default(),
         "album" => t.album.clone().unwrap_or_default(),
-        "album_artist" => t.album_artist.clone().unwrap_or_default(),
+        "album_artist" => crate::play_stats::effective_album_artist(
+            t.artist.as_deref().unwrap_or(""),
+            t.album_artist.as_deref().unwrap_or(""),
+            artist_as_album_artist,
+        ),
         "duration" => t
             .length_secs
             .map(|s| {
