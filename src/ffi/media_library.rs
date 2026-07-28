@@ -501,6 +501,69 @@ pub unsafe extern "C" fn sparkamp_ml_poll_watch_event(
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Auto-add-played (Phase 8 Task 12): make sure `path`, which the mac
+/// frontend just started playing, has a row in the media library — mirrors
+/// GTK's `State::maybe_auto_add_played` (`frontends/gtk/window/state.rs`)
+/// and the TUI's `App::maybe_auto_add_played`, but as an FFI entry point so
+/// Swift (which cannot call `add_played_track` in-process) can trigger the
+/// same policy. Encapsulates the whole decision here so Swift stays dumb —
+/// it just calls this once per track start.
+///
+/// No-op (`false`) if `auto_add_played` is off, the library isn't open, or
+/// `path` resolves inside a watched folder — the watcher/rescan already
+/// owns paths inside watched folders, and (per the GTK doc comment this
+/// mirrors) the library's scan paths are stored un-canonicalized while a
+/// frontend's now-playing path may be canonicalized, so an inside-folder
+/// path can't be reliably matched against `add_played_track`'s exact-string
+/// dedup check — skip entirely rather than risk a duplicate row. Also
+/// `false` if `owning_folder_id`'s lookup itself errors (logged) or if
+/// `add_played_track` errors (logged).
+///
+/// Returns `true` only when `add_played_track` actually inserted a new row
+/// — the caller (Swift) can use that as a "mark the Files view stale"
+/// signal.
+///
+/// `path` is used exactly as passed — NOT re-canonicalized here — matching
+/// the GTK/TUI call sites, which pass the path the player was just loaded
+/// with.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_note_played(
+    ctx: *mut SparkampCtx,
+    path: *const c_char,
+) -> bool {
+    if ctx.is_null() || path.is_null() {
+        return false;
+    }
+    let ctx = &mut *ctx;
+    if !ctx.config.media_library.auto_add_played {
+        return false;
+    }
+    let Some(ml) = &ctx.media_library else {
+        return false;
+    };
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
+        return false;
+    };
+    match ml.owning_folder_id(path_str) {
+        // Inside a watched folder — already managed by the watcher/rescan;
+        // skip to avoid a duplicate row (see doc comment above).
+        Ok(Some(_)) => false,
+        // Outside every watched folder — the case auto-add-played exists
+        // for.
+        Ok(None) => match ml.add_played_track(path_str) {
+            Ok(created) => created,
+            Err(e) => {
+                eprintln!("[sparkamp_ml_note_played] add_played_track failed for {path_str}: {e}");
+                false
+            }
+        },
+        Err(e) => {
+            eprintln!("[sparkamp_ml_note_played] owning_folder_id lookup failed for {path_str}: {e}");
+            false
+        }
+    }
+}
+
 /// Remove a single track from the media library by its database ID.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_remove_track(

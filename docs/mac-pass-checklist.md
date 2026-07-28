@@ -762,3 +762,67 @@ used at the bottom of all four Media Library list views, mirroring the GTK
   region doesn't map cleanly onto Mac's existing button placement, so this
   wasn't a literal port; confirm it reads correctly, doesn't crowd the
   buttons below it.
+
+## Phase 8 — F10 watch folders (2026-07-27, BLIND — Swift never compiled)
+
+Wires the Task-9 watch-folders FFI surface into the mac frontend: five
+Settings toggles (`SettingsWindow.swift`'s `MediaLibraryPane`, new "Folder
+Watching" section between ReplayGain and Watched Folders), a per-folder
+Recurse checkbox on each row of the existing "Watched Folders" list (same
+pane — note this is where that list actually lives, NOT
+`MediaLibraryWindow.swift`; the brief's assumption otherwise was stale and
+corrected by reading the real files), `sparkamp_ml_watch_rebuild` calls
+after folder add/remove/recurse-change and on library open
+(`SparkampModel+MediaLibrary.swift`), a `tick()` drain of
+`sparkamp_ml_poll_watch_event` that reuses the existing `mlReloadTrigger`
+signal (`SparkampModel.swift`), and a new FFI helper
+`sparkamp_ml_note_played` hooked once at the single central "current track
+just changed" point inside `tick()`'s `idx != currentIndex` branch — not
+sprinkled across individual transport buttons.
+
+- [ ] All 5 new toggles ("Watch folders for changes", "Automatically add
+      played tracks", "Remove missing files on rescan", "Compact database
+      after rescan", "Rescan all folders on startup") in Settings ▸ Media
+      Library persist across a quit/relaunch and correctly reflect the
+      saved value when the pane reopens.
+- [ ] Each watched folder row in Settings ▸ Media Library ▸ Watched Folders
+      shows a "Recurse" checkbox that reflects that folder's actual
+      recurse setting (not a shared/global value) and, when toggled,
+      changes only that folder's behavior.
+- [ ] With "Watch folders for changes" ON: dropping a new audio file into a
+      watched folder in Finder makes it appear in the Files view within
+      ~2–5 seconds, with no manual Rescan needed.
+- [ ] With "Remove missing files on rescan" ON: deleting a file from a
+      watched folder in Finder removes its row from Files within a similar
+      window. With it OFF: the row is KEPT (not marked broken/missing) —
+      confirm no row silently vanishes when the toggle is off.
+- [ ] Editing a tag externally (e.g. in another app) on a file already in
+      the library updates that file's row (title/artist/etc.) live, without
+      a manual rescan.
+- [ ] Saving a tag edit from Sparkamp's own ID3 editor does NOT trigger a
+      visible rescan/refresh storm — the watcher's cache-prefix / self-write
+      suppression (Task 5) should make Sparkamp's own writes invisible to
+      the watch-event drain.
+- [ ] A non-recursive folder (Recurse OFF) ignores new files dropped into a
+      SUBdirectory of that folder — they should not appear in Files until
+      Recurse is turned on (or the subfolder is separately watched).
+- [ ] With "Rescan all folders on startup" ON: quit Sparkamp, add a file to
+      a watched folder from Finder while it's closed, relaunch — the new
+      file is present in Files without a manual Rescan.
+- [ ] With "Automatically add played tracks" ON: play a file that lives
+      OUTSIDE every watched folder (e.g. via File ▸ Open or a drag-and-drop
+      onto the player) — it should appear as a row in Files shortly after
+      playback starts. With the toggle OFF, it should NOT appear.
+- [ ] Play a file that's already INSIDE a watched folder — confirm no
+      duplicate row is created (the inside/outside guard in
+      `sparkamp_ml_note_played` should skip it entirely).
+- [ ] With "Compact database after rescan" ON: run Rescan All (or trigger a
+      startup rescan) after removing several watched folders/files, and
+      confirm the on-disk DB file doesn't keep growing — a rough
+      before/after file-size check is enough (exact shrink amount isn't the
+      point, "doesn't just grow forever" is).
+- [ ] Simulate a watcher start failure (e.g. remove/rename a watched folder
+      out from under Sparkamp right as it's about to start watching, or
+      revoke folder permissions) and confirm the app does NOT crash —
+      it should silently fall back to manual/interval rescans (per
+      `rebuild_watcher`'s documented degrade-gracefully contract).

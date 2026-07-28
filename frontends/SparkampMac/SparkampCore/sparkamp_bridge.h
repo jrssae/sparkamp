@@ -513,6 +513,16 @@ void    sparkamp_ml_watch_rebuild(SparkampCtx *ctx);
     channels drained in sparkamp_tick. */
 char   *sparkamp_ml_poll_watch_event(SparkampCtx *ctx, int *out_kind);
 
+/* ── Auto-add-played (Phase 8 Task 12) ───────────────────────────────────
+   Call once per track start with the path that just began playing. Encapsulates
+   the whole "should this be auto-added?" policy (auto_add_played toggle +
+   inside/outside-watched-folder guard) so the frontend stays dumb. No-op
+   (false) if the toggle is off, the ML isn't open, or path is inside a
+   watched folder (already managed by the watcher/rescan). Returns true only
+   when a new row was actually inserted — use that as a "Files view is
+   stale" signal. Pass path as-is; do not re-canonicalize. */
+bool    sparkamp_ml_note_played(SparkampCtx *ctx, const char *path);
+
 void    sparkamp_ml_remove_track(SparkampCtx *ctx, int64_t track_id);
 
 /**

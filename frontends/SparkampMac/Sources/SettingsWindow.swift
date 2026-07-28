@@ -654,6 +654,14 @@ private struct MediaLibraryPane: View {
     /// Write computed ReplayGain values back into MP3 tags (non-MP3 skipped).
     @State private var rgWriteTags: Bool = false
 
+    // Watch folders (Phase 8 Task 9 FFI, wired here in Task 12). Defaults
+    // mirror MediaLibraryConfig's Default impl (src/config.rs).
+    @State private var watchFolders: Bool = true
+    @State private var autoAddPlayed: Bool = false
+    @State private var removeMissingOnRescan: Bool = false
+    @State private var compactOnRescan: Bool = false
+    @State private var rescanOnStartup: Bool = false
+
     var body: some View {
         let vars = themeManager.currentVars
         return Form {
@@ -720,6 +728,42 @@ private struct MediaLibraryPane: View {
                     }
             }
 
+            // ── Folder watching (Phase 8 Task 12) ──────────────────────────
+            Section("Folder Watching") {
+                Toggle("Watch folders for changes", isOn: $watchFolders)
+                    .onChange(of: watchFolders) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        // The Rust setter already (re)builds the watcher —
+                        // no extra call needed here.
+                        sparkamp_set_watch_folders(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Automatically add played tracks", isOn: $autoAddPlayed)
+                    .onChange(of: autoAddPlayed) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_auto_add_played(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Remove missing files on rescan", isOn: $removeMissingOnRescan)
+                    .onChange(of: removeMissingOnRescan) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_remove_missing_on_rescan(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Compact database after rescan", isOn: $compactOnRescan)
+                    .onChange(of: compactOnRescan) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_compact_on_rescan(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Rescan all folders on startup", isOn: $rescanOnStartup)
+                    .onChange(of: rescanOnStartup) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_rescan_on_startup(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+            }
+
             // ── Watched folders ────────────────────────────────────────────
             Section {
                 if model.mlFolders.isEmpty {
@@ -736,6 +780,30 @@ private struct MediaLibraryPane: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
+                            // Per-folder recurse (Phase 8 Task 12): reads/writes
+                            // straight through FFI rather than a mirrored
+                            // @State array — the folder list itself is only
+                            // refreshed on add/remove/rescan, so a live FFI
+                            // read on every render keeps this row honest
+                            // without a second cache to fall out of sync.
+                            Toggle("Recurse", isOn: Binding(
+                                get: {
+                                    guard let ctx = model.ctx else { return true }
+                                    return folder.withCString {
+                                        sparkamp_ml_folder_recurse(ctx, $0)
+                                    }
+                                },
+                                set: { newValue in
+                                    guard let ctx = model.ctx else { return }
+                                    folder.withCString {
+                                        sparkamp_ml_set_folder_recurse(ctx, $0, newValue)
+                                    }
+                                    sparkamp_ml_watch_rebuild(ctx)
+                                }
+                            ))
+                            .toggleStyle(.checkbox)
+                            .font(vars.bodyFont)
+                            .help("Include subfolders when scanning/watching this folder")
                             Button {
                                 model.mlRemoveFolder(folder)
                             } label: {
@@ -843,6 +911,11 @@ private struct MediaLibraryPane: View {
                 autoShowInsertedCd = sparkamp_get_auto_show_inserted_cd(ctx)
                 rgAutoAnalyze = sparkamp_get_rg_auto_analyze(ctx)
                 rgWriteTags = sparkamp_get_rg_write_tags(ctx)
+                watchFolders = sparkamp_get_watch_folders(ctx)
+                autoAddPlayed = sparkamp_get_auto_add_played(ctx)
+                removeMissingOnRescan = sparkamp_get_remove_missing_on_rescan(ctx)
+                compactOnRescan = sparkamp_get_compact_on_rescan(ctx)
+                rescanOnStartup = sparkamp_get_rescan_on_startup(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }

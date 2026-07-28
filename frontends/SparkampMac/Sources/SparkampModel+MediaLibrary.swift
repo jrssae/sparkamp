@@ -12,6 +12,11 @@ extension SparkampModel {
         if !mlIsOpen {
             sparkamp_ml_open(ctx)
             mlIsOpen = true
+            // The watcher can't start until the library DB is open (Phase 8
+            // Task 9's rebuild_watcher no-ops while ctx.media_library is
+            // None), so start it here rather than waiting for a folder
+            // add/remove to trigger the first sparkamp_ml_watch_rebuild.
+            sparkamp_ml_watch_rebuild(ctx)
         }
         mlRefreshFolders()
         mlRefreshSavedPlaylists()
@@ -98,6 +103,9 @@ extension SparkampModel {
     func mlAddFolder(_ path: String) {
         guard let ctx = ctx else { return }
         path.withCString { sparkamp_ml_add_folder(ctx, $0, nil, nil, nil) }
+        // New folder joins the watch set immediately (Phase 8 Task 12) —
+        // don't wait for a restart to notice files added under it.
+        sparkamp_ml_watch_rebuild(ctx)
         mlScanRunning = true
         mlScanDone = 0
         mlScanTotal = 0
@@ -110,6 +118,9 @@ extension SparkampModel {
     func mlRemoveFolder(_ path: String) {
         guard let ctx = ctx else { return }
         path.withCString { sparkamp_ml_remove_folder(ctx, $0) }
+        // Removed folder must drop out of the live watch set (Phase 8
+        // Task 12), same as add above.
+        sparkamp_ml_watch_rebuild(ctx)
         mlRefreshFolders()
         mlFetchTracks()
     }

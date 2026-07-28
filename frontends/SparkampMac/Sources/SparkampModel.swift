@@ -433,6 +433,25 @@ final class SparkampModel: ObservableObject {
             // New track started — reset the play-count gate so the next
             // record_play fires once playback crosses the threshold.
             countedPlayPath = nil
+
+            // Auto-add-played (Phase 8 Task 12): this idx-change branch is
+            // the one central point every track-start path funnels through
+            // (play/next/prev, queue-play-now, double-click, EOS advance —
+            // anything that ends up calling sparkamp_playlist_jump /
+            // sparkamp_play) — so hooking here once covers all of them
+            // instead of sprinkling calls across each transport call site.
+            // Policy (auto_add_played toggle + inside/outside-watched-
+            // folder guard) lives entirely in sparkamp_ml_note_played;
+            // Swift just reports the path unmodified, same idiom as
+            // Id3EditorWindow.swift's loadTag().
+            if idx >= 0, let pathPtr = sparkamp_playlist_get_path(ctx, Int32(idx)) {
+                let playedPath = String(cString: pathPtr)
+                sparkamp_free_string(pathPtr)
+                if !playedPath.isEmpty {
+                    let added = playedPath.withCString { sparkamp_ml_note_played(ctx, $0) }
+                    if added, mediaLibraryVisible { mlReloadTrigger &+= 1 }
+                }
+            }
         }
 
         // Detect a stopped→playing transition for the same track (a replay).
@@ -520,6 +539,25 @@ final class SparkampModel: ObservableObject {
                 mlRefreshFolders()
                 mlFetchTracks()
             }
+        }
+
+        // Drain filesystem-watch events (Phase 8 Task 12). The core already
+        // applied each change to the DB — sparkamp_ml_poll_watch_event does
+        // the apply internally before returning the path — so Swift's only
+        // job is to free the returned string and, if anything changed,
+        // nudge the Media Library window to re-fetch. Reuses mlReloadTrigger,
+        // the same "DB changed under us" signal the record_play block above
+        // uses; MediaLibraryWindow.swift already observes it via
+        // .onChange(of: model.mlReloadTrigger), so no new refresh path is
+        // invented here.
+        var watchEventKind: Int32 = 0
+        var watchEventSeen = false
+        while let watchPathPtr = sparkamp_ml_poll_watch_event(ctx, &watchEventKind) {
+            sparkamp_free_string(watchPathPtr)
+            watchEventSeen = true
+        }
+        if watchEventSeen, mediaLibraryVisible {
+            mlReloadTrigger &+= 1
         }
 
         // Poll ReplayGain analysis progress (if running).
