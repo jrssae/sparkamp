@@ -192,6 +192,27 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   `watch_folders`). `MediaLibraryConfig::set_rescan_interval_mins` is now
   reachable only from its own tests (`#[allow(dead_code)]`) — candidate for
   deletion with its tests in a later cleanup.
+- Legacy path-form mismatch on symlinked-home systems (Silverblue/uBlue/
+  ostree, where `/home`→`/var/home`): `add_folder` canonicalizes the folder
+  path (`canonicalize_folder_path`, resolving the symlink), and current scans
+  store `/var/home/...` track paths, so a FRESH library is fully consistent
+  with the watcher. But a library whose rows were scanned by an OLDER build
+  (stored `/home/...`) has track paths in a different string form than the
+  watcher's `/var/home/...` events — the watcher can neither remove/replace
+  those legacy rows (its path-keyed DELETE misses) nor recognize them on
+  Upsert (exact-string existence check misses), so it inserts `/var/home`
+  DUPLICATES and leaves the `/home` originals stranded. Confirmed live on the
+  user's uBlue system 2026-07-28 (Testing folder: 102 legacy `/home` rows +
+  watcher-added `/var/home` dupes for the same physical files). USER DECISION
+  2026-07-28: document only, no code change (a one-time path-canonicalization
+  migration or watcher symlink-awareness was declined to preserve the
+  deliberate un-canonicalized-storage design). WORKAROUND: on such systems,
+  remove and re-add each watched folder once after upgrading into the watch
+  feature — this purges the legacy rows and rescans them in the canonical
+  `/var/home` form the watcher uses. Note the Files view shows the folder/
+  embedded cover-art thumbnail per row (not a broken-file marker; the `⚠`
+  broken indicator exists only in the active playlist), so a stale row is not
+  visually flagged there.
 - macOS is BLIND (Swift never compiled here): the 5 settings toggles, the
   per-folder Recurse checkbox (in SettingsWindow's MediaLibraryPane), the
   tick() poll-drain, and the auto-add hook are verified by symbol/name
