@@ -1030,3 +1030,49 @@ user-visible on mac until then.
       persist on their own — Task 4's Swift call sites must call
       `sparkamp_save_config` explicitly after a change, same as every other
       Settings toggle on mac.
+
+---
+
+## Phase 10 — Task 4: F11 mac deadline wiring + settings UI (2026-07-28, BLIND — Swift never compiled)
+
+Wires the Task 2 FFI into the mac frontend: `SparkampModel.tick()`'s play-
+count gate now computes its deadline per-track from
+`sparkamp_play_deadline_secs(ctx, dur)` instead of the old hardcoded
+20 s constant (`playCountThresholdSecs` deleted), and `SettingsWindow.swift`
+gets a new "Play Count" section on the Playback pane (Count plays toggle,
+Seconds/Percent mode picker, seconds stepper 1–3600, percent stepper
+1–100), mirroring the existing ReplayGain section's Toggle/Picker/Stepper +
+`onChange` + `sparkamp_save_config` idiom.
+
+- [ ] **Toggle off → counts freeze**: in Settings ▸ Playback, turn off
+      "Count plays", play any track past its old threshold — the Media
+      Library's play count and last-played date for that track do NOT
+      change. Turn it back on and the next full playthrough counts normally.
+- [ ] **Seconds mode, seconds = 5 → counts at 5 s**: set mode to "N seconds",
+      seconds to 5, play a track — the Media Library row's play count
+      increments once position crosses ~5 s (not at the old 20 s default).
+- [ ] **Percent mode, percent = 50 on a 4-minute track → counts past 2:00**:
+      set mode to "N% of track", percent to 50, play a track that is close
+      to 4 minutes — the play count increments once position crosses
+      roughly the track's halfway point (~2:00), not before.
+- [ ] **Short track (shorter than the configured threshold) → counts near
+      its end**: with seconds mode and a threshold longer than a short
+      track's duration (or percent mode near 100%), play that short track to
+      completion — it still counts exactly once, at/near EOS, and does not
+      silently fail to count just because the track never reaches the
+      configured deadline mid-playback.
+- [ ] **Settings persist across relaunch**: change enabled/mode/seconds/
+      percent, quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Playback
+      shows the same values, and the gate behaves accordingly (confirms
+      `sparkamp_save_config` actually fired on each `onChange`, not just
+      `sparkamp_set_play_stats_*` in memory).
+- [ ] **Fullscreen-visualizer does NOT skew the deadline**: the gate feeds
+      the fresh per-tick local `dur` (`sparkamp_get_duration(ctx)`) to
+      `sparkamp_play_deadline_secs`, NOT the `@Published duration` property
+      that tick() freezes while the fullscreen visualizer is open (see the
+      `!fullscreenVizVisible` guard). Verify: in percent mode, open fullscreen
+      right as a new track starts, then let it play — the count should land at
+      the correct halfway point of the CURRENT track (not skewed by the
+      previous track's length), because `dur` keeps flowing regardless of the
+      publisher freeze, matching the always-fresh `pos` local the same gate
+      uses.

@@ -287,6 +287,12 @@ private struct PlaybackPane: View {
     @State private var rgClip: Bool        = true
     @State private var rgFallback: Double  = 0.0
 
+    // Play-count threshold (Phase 10, F11).
+    @State private var playStatsEnabled: Bool = true
+    @State private var playStatsMode: Int     = 0    // 0=Seconds, 1=Percent
+    @State private var playStatsSeconds: Int  = 20
+    @State private var playStatsPercent: Int  = 50
+
     var body: some View {
         Form {
             Section("Playlists") {
@@ -369,6 +375,47 @@ private struct PlaybackPane: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Section("Play Count") {
+                Toggle("Count plays", isOn: $playStatsEnabled)
+                    .onChange(of: playStatsEnabled) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_play_stats_enabled(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+
+                Picker("Count after", selection: $playStatsMode) {
+                    Text("N seconds").tag(0)
+                    Text("N% of track").tag(1)
+                }
+                .onChange(of: playStatsMode) { _, newValue in
+                    guard let ctx = model.ctx else { return }
+                    sparkamp_set_play_stats_mode(ctx, UInt32(newValue))
+                    sparkamp_save_config(ctx)
+                }
+                .disabled(!playStatsEnabled)
+
+                Stepper("After \(playStatsSeconds) seconds", value: $playStatsSeconds, in: 1...3600)
+                    .onChange(of: playStatsSeconds) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_play_stats_seconds(ctx, UInt32(newValue))
+                        sparkamp_save_config(ctx)
+                    }
+                    .disabled(!playStatsEnabled || playStatsMode != 0)
+
+                Stepper("After \(playStatsPercent)% of track", value: $playStatsPercent, in: 1...100)
+                    .onChange(of: playStatsPercent) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_play_stats_percent(ctx, UInt32(newValue))
+                        sparkamp_save_config(ctx)
+                    }
+                    .disabled(!playStatsEnabled || playStatsMode != 1)
+
+                Text("A track's play count and last-played date update in the Media Library once playback passes this point. Tracks shorter than the threshold count near the end.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -380,6 +427,10 @@ private struct PlaybackPane: View {
             rgSource       = Int(sparkamp_get_rg_source(ctx))
             rgClip         = sparkamp_get_rg_clip_protection(ctx)
             rgFallback     = Double(sparkamp_get_rg_fallback_db(ctx))
+            playStatsEnabled = sparkamp_get_play_stats_enabled(ctx)
+            playStatsMode    = Int(sparkamp_get_play_stats_mode(ctx))
+            playStatsSeconds = Int(sparkamp_get_play_stats_seconds(ctx))
+            playStatsPercent = Int(sparkamp_get_play_stats_percent(ctx))
         }
     }
 }

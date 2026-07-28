@@ -323,11 +323,12 @@ final class SparkampModel: ObservableObject {
     // MARK: Private — play-count gating
     //
     // Mirrors the GTK frontend rule: a track only counts as "played" once
-    // its position passes the threshold below.  Tracking the path (not just
-    // the playlist index) prevents re-counting if the same file appears
-    // twice in the queue or if the playlist is rebuilt mid-track.
+    // its position passes a deadline the core computes per-track from the
+    // configurable play-stats threshold (F11) — see
+    // sparkamp_play_deadline_secs in tick() below.  Tracking the path (not
+    // just the playlist index) prevents re-counting if the same file
+    // appears twice in the queue or if the playlist is rebuilt mid-track.
     private var countedPlayPath: String? = nil
-    private let playCountThresholdSecs: Double = 20.0
     /// Last raw playback state observed by tick() — used to detect
     /// stopped→playing transitions so a replay re-arms the play-count gate.
     /// 0 = stopped, 1 = playing, 2 = paused (matches sparkamp_get_state).
@@ -481,11 +482,15 @@ final class SparkampModel: ObservableObject {
         }
         lastPlaybackState = state
 
-        // Record a play in the media library after the user has listened
-        // for `playCountThresholdSecs` seconds of the current track.  The
-        // path-based gate (countedPlayPath) ensures we only count each
-        // playthrough once even if tick() runs many times per second.
-        if isPlaying, idx >= 0, pos >= playCountThresholdSecs {
+        // Record a play in the media library once the user has listened past
+        // the configurable play-stats deadline (F11) for the current track.
+        // The core computes the deadline from the track length plus the
+        // seconds/percent config; deadline < 0 means play-stats are disabled,
+        // so a play is never recorded.  The path-based gate (countedPlayPath)
+        // ensures we only count each playthrough once even if tick() runs
+        // many times per second.
+        let deadline = sparkamp_play_deadline_secs(ctx, dur)
+        if isPlaying, idx >= 0, deadline >= 0, pos >= deadline {
             if let pathPtr = sparkamp_playlist_get_path(ctx, Int32(idx)) {
                 let path = String(cString: pathPtr)
                 sparkamp_free_string(pathPtr)
