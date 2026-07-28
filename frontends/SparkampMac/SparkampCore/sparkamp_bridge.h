@@ -837,6 +837,15 @@ char *sparkamp_disc_list_drives(SparkampCtx *ctx);
     Free with sparkamp_free_string. */
 char *sparkamp_disc_track_entries(SparkampCtx *ctx, const char *drive_json);
 
+/** Reads CD-TEXT off the drive's loaded audio disc and returns it as a
+    JSON XmcdEntry (same shape as a gnudb match), so the frontend can overlay
+    it exactly like a database entry when gnudb has no match. Takes an
+    OpticalDrive JSON from sparkamp_disc_list_drives. NULL when the disc has
+    no CD-TEXT, the read fails, or the input is bad. Holds the
+    exclusive-read guard for the duration of the read (drive contention).
+    Free with sparkamp_free_string. */
+char *sparkamp_disc_read_cdtext(SparkampCtx *ctx, const char *drive_json);
+
 /** freedb disc ID (8 hex) for a DiscToc JSON — the per-disc key for tag
     overrides. Pure math. Free with sparkamp_free_string; NULL on bad input. */
 char *sparkamp_disc_id(SparkampCtx *ctx, const char *toc_json);

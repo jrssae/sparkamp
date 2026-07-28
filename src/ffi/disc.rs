@@ -834,6 +834,34 @@ pub unsafe extern "C" fn sparkamp_disc_probe_durations(
     json_out(&results)
 }
 
+/// Read CD-TEXT off the drive's loaded audio disc and return it as an
+/// `XmcdEntry` JSON (same shape as a gnudb match), so the frontend can
+/// overlay it exactly like a database entry when gnudb has no match. Takes
+/// the `OpticalDrive` JSON from `sparkamp_disc_list_drives`. Returns `null`
+/// when the disc has no CD-TEXT, the read fails, or the input is bad. Holds
+/// the exclusive-read guard for the duration of the read (drive contention).
+/// Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_read_cdtext(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+) -> *mut c_char {
+    let Some(drive): Option<OpticalDrive> = json_in(drive_json) else {
+        return std::ptr::null_mut();
+    };
+    let Some(toc) = drive.toc.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let discid = crate::disc::discid::freedb_discid(toc);
+    crate::disc::detect::begin_exclusive_read();
+    let cd = crate::disc::cdtext::read_cdtext(&drive.id);
+    crate::disc::detect::end_exclusive_read();
+    match cd {
+        Some(cd) => json_out(&cd.to_xmcd(&discid)),
+        None => std::ptr::null_mut(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,6 +1042,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "/no/such/file.mp3");
         assert!(results[0]["secs"].is_null());
+    }
+
+    #[test]
+    fn read_cdtext_null_on_bad_drive_json() {
+        // Bad JSON in → null out, no panic.
+        let bad = std::ffi::CString::new("not json").unwrap();
+        let p = unsafe { sparkamp_disc_read_cdtext(std::ptr::null_mut(), bad.as_ptr()) };
+        assert!(p.is_null());
     }
 
     #[test]
