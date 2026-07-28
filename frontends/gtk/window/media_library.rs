@@ -2796,6 +2796,12 @@ fn open_media_library_window(
     disc_tag_lbl.add_css_class("ml-section-header");
     disc_tag_lbl.set_visible(false);
     disc_header_text.append(&disc_tag_lbl);
+    // Source pill (gnudb / edited / CD-TEXT) for the tags shown above —
+    // hidden until populate_disc_detail has a source to badge.
+    let disc_source_pill = Label::builder().halign(Align::Start).xalign(0.0).build();
+    disc_source_pill.add_css_class("disc-source-pill");
+    disc_source_pill.set_visible(false);
+    disc_header_text.append(&disc_source_pill);
     disc_header_row.append(&disc_header_text);
     disc_detail.append(&disc_header_row);
     // Banner shown for non-audio media (no disc / blank / data).
@@ -8969,6 +8975,7 @@ fn open_media_library_window(
         let icon_box = disc_icon_box.clone();
         let media_lbl = disc_media_lbl.clone();
         let tag_lbl = disc_tag_lbl.clone();
+        let source_pill = disc_source_pill.clone();
         let banner = disc_banner.clone();
         let track_list = disc_track_list.clone();
         let tracks_scroll = disc_tracks_scroll.clone();
@@ -9106,6 +9113,24 @@ fn open_media_library_window(
                 }
                 None => tag_lbl.set_visible(false),
             }
+            // Source pill: which cache produced the tags shown above
+            // (whole-entry classification — same three caches the header
+            // block just read; each `.borrow()` is released at its own
+            // statement, so nothing is held across the `resolve()` call).
+            match discid.as_ref().and_then(|id| {
+                crate::disc::source::DiscMetaSource::resolve(
+                    disc_official.borrow().contains_key(id),
+                    disc_tags.borrow().get(id).is_some(),
+                    disc_cdtext.borrow().get(id).is_some(),
+                )
+                .badge()
+            }) {
+                Some(text) => {
+                    source_pill.set_text(text);
+                    source_pill.set_visible(true);
+                }
+                None => source_pill.set_visible(false),
+            }
             if drive.media.is_audio_cd && !entries.is_empty() {
                 banner.set_visible(false);
                 search_row.set_visible(true);
@@ -9165,6 +9190,7 @@ fn open_media_library_window(
                 submit_btn.set_visible(false);
                 eject_btn.set_visible(drive.media.present);
                 tag_lbl.set_visible(false);
+                source_pill.set_visible(false);
                 // Present + not blank covers both a true data disc and an
                 // audio disc whose TOC came back empty — same boundary the
                 // banner text below already drew; `ensure_mounted` degrades
@@ -9945,6 +9971,7 @@ fn open_media_library_window(
         let selected_disc_id = selected_disc_id.clone();
         let current_drives = current_drives.clone();
         let disc_tags = disc_tags.clone();
+        let disc_cdtext = disc_cdtext.clone();
         let entries_store = current_disc_entries.clone();
         let commit = commit_disc_tags.clone();
         let status = disc_status_lbl.clone();
@@ -9954,7 +9981,12 @@ fn open_media_library_window(
                 status.set_text("No audio disc loaded");
                 return;
             };
-            let stored = disc_tags.borrow().get(&discid).cloned();
+            // Prefer a real gnudb/user entry; fall back to CD-TEXT so a
+            // CD-TEXT-only disc (gnudb has no match) prefills artist/album
+            // instead of opening blank. Bind the gnudb lookup to a local
+            // first so the two RefCell borrows never overlap.
+            let gnudb = disc_tags.borrow().get(&discid).cloned();
+            let stored = gnudb.or_else(|| disc_cdtext.borrow().get(&discid).cloned());
             let entries = entries_store.borrow().clone();
             let dialog = gtk4::Window::builder()
                 .title("Edit Disc Tags")

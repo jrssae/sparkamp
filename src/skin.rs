@@ -872,6 +872,13 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}").unwrap();
     // Smaller badge variant (2pt smaller font + tighter padding).
     writeln!(css, ".device-badge-sm {{ font-size: {}px; padding: 0px 6px; }}", fs - 2.0).unwrap();
+    // Disc metadata source pill (gnudb / edited / CD-TEXT) next to the disc
+    // header's "Artist — Album" line — same rounded-badge idiom as
+    // .device-badge, one size down.
+    writeln!(css, ".disc-source-pill {{ \
+        color: {text_dim}; background-color: {tbg}; border: 1px solid {border}; \
+        border-radius: 999px; padding: 1px 8px; font-size: {}px; \
+    }}", fs - 2.0).unwrap();
     // Device detail page: header band, storage section, bottom status bar.
     writeln!(css, ".device-detail-header {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
@@ -1580,5 +1587,12 @@ mod tests {
         v.button_text_color = Rgb { r: 0x11, g: 0x22, b: 0x33 };
         let css = render_gtk_css(&v);
         assert!(css.contains("color: #112233"));
+    }
+
+    #[test]
+    fn render_gtk_css_covers_disc_source_pill() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".disc-source-pill"));
     }
 }

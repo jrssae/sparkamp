@@ -3,8 +3,6 @@
 //! source), so this is a single disc-level classification, not per-track.
 
 /// The origin of the disc's displayed album/artist/track names.
-// consumed by GTK/TUI/mac source badge in follow-on tasks
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscMetaSource {
     /// An official gnudb match (possibly user-tweaked, but gnudb-derived).
@@ -17,8 +15,6 @@ pub enum DiscMetaSource {
     None,
 }
 
-// consumed by GTK/TUI/mac source badge in follow-on tasks
-#[allow(dead_code)]
 impl DiscMetaSource {
     /// Classify from what each per-disc cache holds. `has_official` = an
     /// untouched gnudb match is on file; `has_user_tags` = a displayed/edited
