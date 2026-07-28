@@ -28,6 +28,7 @@ pub(super) fn draw_media_library(
     burn_phase: Option<&crate::disc::burn::BurnProgress>,
     burn_list: &crate::disc::burnlist::BurnList,
     tick: usize,
+    disc_source_badge: Option<&'static str>,
     area: Rect,
 ) {
     // Erase the player/playlist underneath so there are no legibility issues.
@@ -124,7 +125,7 @@ pub(super) fn draw_media_library(
     match state.tab {
         MediaLibraryTab::Files => draw_ml_files(frame, state, pane[1]),
         MediaLibraryTab::Playlists => draw_ml_playlists(frame, state, pane[1]),
-        MediaLibraryTab::Discs => draw_ml_discs(frame, state, pane[1]),
+        MediaLibraryTab::Discs => draw_ml_discs(frame, state, disc_source_badge, pane[1]),
     }
 
     // Hint / toast bar — a running burn/rip's progress wins, then status
@@ -829,7 +830,12 @@ pub(super) fn draw_ml_playlists(frame: &mut Frame, state: &MediaLibraryState, ar
 
 /// Render the Discs tab: drive rows on top (one per physical drive, like the
 /// external-device list), the selected drive's audio-disc track list below.
-pub(super) fn draw_ml_discs(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+pub(super) fn draw_ml_discs(
+    frame: &mut Frame,
+    state: &MediaLibraryState,
+    disc_source_badge: Option<&'static str>,
+    area: Rect,
+) {
     if area.height < 2 {
         return;
     }
@@ -892,11 +898,15 @@ pub(super) fn draw_ml_discs(frame: &mut Frame, state: &MediaLibraryState, area: 
         return;
     }
 
+    // Column header line; the disc metadata source badge (gnudb / edited /
+    // CD-TEXT) rides along at the end, dim like the rest of the row — no
+    // pill graphics in a terminal, a bracketed tag is the convention.
+    let header_line = match disc_source_badge {
+        Some(badge) => format!("{:>4}  {:<40} {:>6}  [{badge}]", "#", "Title", "Len"),
+        None => format!("{:>4}  {:<40} {:>6}", "#", "Title", "Len"),
+    };
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("{:>4}  {:<40} {:>6}", "#", "Title", "Len"),
-            Style::default().fg(C_DIM),
-        )),
+        Paragraph::new(Span::styled(header_line, Style::default().fg(C_DIM))),
         rows[1],
     );
 

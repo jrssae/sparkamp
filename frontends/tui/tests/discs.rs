@@ -155,3 +155,63 @@ fn cdtext_read_skips_data_discs() {
         "no background CD-TEXT read should be in flight for a data disc"
     );
 }
+
+/// The tag editor seeds from CD-TEXT when that's the only metadata source
+/// (gnudb/user tags absent), and from `disc_tags` (gnudb wins) once that's
+/// present too — same whole-entry precedence as `apply_disc_tags_to_entries`.
+#[test]
+fn tag_editor_seeds_from_cdtext_then_gnudb_wins() {
+    let mut app = make_app();
+    app.open_media_library();
+    let toc = two_track_toc();
+    let discid = crate::disc::discid::freedb_discid(&toc);
+    let Mode::MediaLibrary(s) = &mut app.mode else {
+        panic!("expected MediaLibrary mode");
+    };
+    s.tab = MediaLibraryTab::Discs;
+    s.drives = vec![fake_audio_drive("/dev/sr0", toc)];
+    s.selected_drive = 0;
+    app.reload_ml_disc_entries();
+
+    // CD-TEXT only, no gnudb/user entry -> editor seeds artist/album/titles
+    // from CD-TEXT.
+    app.disc_cdtext.insert(
+        discid.clone(),
+        crate::disc::xmcd::XmcdEntry {
+            artist: "CDTEXT Artist".to_string(),
+            album: "CDTEXT Album".to_string(),
+            track_titles: vec!["From CDTEXT 1".to_string(), "From CDTEXT 2".to_string()],
+            ..Default::default()
+        },
+    );
+    app.open_disc_tag_editor();
+    {
+        let Mode::MediaLibrary(s) = &app.mode else {
+            panic!("expected MediaLibrary mode");
+        };
+        let ed = s.tag_edit.as_ref().expect("tag editor should be open");
+        assert_eq!(ed.artist, "CDTEXT Artist");
+        assert_eq!(ed.album, "CDTEXT Album");
+        assert_eq!(ed.titles, vec!["From CDTEXT 1", "From CDTEXT 2"]);
+    }
+
+    // A gnudb/user disc_tags entry now exists -> it wins outright, CD-TEXT
+    // ignored.
+    app.disc_tags.insert(
+        discid.clone(),
+        crate::disc::xmcd::XmcdEntry {
+            artist: "Gnudb Artist".to_string(),
+            album: "Gnudb Album".to_string(),
+            track_titles: vec!["From gnudb 1".to_string(), "From gnudb 2".to_string()],
+            ..Default::default()
+        },
+    );
+    app.open_disc_tag_editor();
+    let Mode::MediaLibrary(s) = &app.mode else {
+        panic!("expected MediaLibrary mode");
+    };
+    let ed = s.tag_edit.as_ref().expect("tag editor should be open");
+    assert_eq!(ed.artist, "Gnudb Artist");
+    assert_eq!(ed.album, "Gnudb Album");
+    assert_eq!(ed.titles, vec!["From gnudb 1", "From gnudb 2"]);
+}

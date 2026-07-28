@@ -160,6 +160,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 .get(state.selected_drive)
                 .and_then(|d| app.burn_queues.get(&d.id))
                 .unwrap_or(&empty_burn_list);
+            // Source-of-truth badge for the selected drive's disc metadata
+            // (gnudb / edited / CD-TEXT) — same three caches the Discs tab
+            // reads elsewhere (`disc_tags`, `disc_official`, `disc_cdtext`).
+            let disc_source_badge = state
+                .drives
+                .get(state.selected_drive)
+                .and_then(|d| d.toc.as_ref())
+                .map(crate::disc::discid::freedb_discid)
+                .and_then(|discid| {
+                    crate::disc::source::DiscMetaSource::resolve(
+                        app.disc_official.contains_key(&discid),
+                        app.disc_tags.contains_key(&discid),
+                        app.disc_cdtext.contains_key(&discid),
+                    )
+                    .badge()
+                });
             draw_media_library(
                 frame,
                 state,
@@ -168,6 +184,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 app.burn_phase.as_ref(),
                 burn_list,
                 app.anim_tick,
+                disc_source_badge,
                 area,
             )
         }

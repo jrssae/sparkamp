@@ -35,12 +35,19 @@ impl App {
 
     /// Open the tag editor prefilled from the stored tag set (or the visible
     /// "Track N" titles when the disc has no tags yet).
-    pub(super) fn open_disc_tag_editor(&mut self) {
+    pub(crate) fn open_disc_tag_editor(&mut self) {
         let Some((_, discid)) = self.selected_disc_identity() else {
             self.set_status("No audio disc loaded");
             return;
         };
-        let stored = self.disc_tags.get(&discid).cloned();
+        // gnudb/user tags win outright; CD-TEXT seeds the editor only when
+        // there's no gnudb/user entry at all (same whole-entry precedence as
+        // `apply_disc_tags_to_entries`).
+        let stored = self
+            .disc_tags
+            .get(&discid)
+            .cloned()
+            .or_else(|| self.disc_cdtext.get(&discid).cloned());
         if let Mode::MediaLibrary(s) = &mut self.mode {
             let count = s.disc_entries.len();
             let mut titles: Vec<String> = (0..count)
