@@ -23,6 +23,38 @@ fn fake_audio_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::Optical
     }
 }
 
+/// A data disc: it still reports a readable TOC (so `selected_disc_identity`
+/// returns `Some`), but `media.is_audio_cd` is false and its tracks aren't
+/// audio — mirrors what real drives report for e.g. a burned data CD-R.
+fn fake_data_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::OpticalDrive {
+    crate::disc::OpticalDrive {
+        id: id.to_string(),
+        label: "Test Drive".to_string(),
+        media: crate::disc::MediaInfo {
+            present: true,
+            is_audio_cd: false,
+            is_blank: false,
+            rewritable: false,
+            kind: crate::disc::MediaKind::Unknown,
+            free_bytes: 0,
+            capacity_bytes: 0,
+        },
+        toc: Some(toc),
+        mount_path: None,
+    }
+}
+
+fn data_disc_toc() -> crate::disc::DiscToc {
+    crate::disc::DiscToc {
+        tracks: vec![crate::disc::TocTrack {
+            number: 1,
+            start_frame: 150,
+            is_audio: false,
+        }],
+        leadout_frame: 30_000,
+    }
+}
+
 fn two_track_toc() -> crate::disc::DiscToc {
     crate::disc::DiscToc {
         tracks: vec![
@@ -90,4 +122,36 @@ fn cdtext_overlays_only_when_gnudb_absent() {
     );
     app.apply_disc_tags_to_entries();
     assert_eq!(first_entry_title(&app), "From gnudb 1");
+}
+
+/// A data disc has a readable TOC too (tracks just aren't audio), so
+/// `selected_disc_identity` alone can't tell it apart from an audio CD.
+/// CD-TEXT reads spin the drive for real, so the spawner must gate on
+/// `media.is_audio_cd` and bail before ever recording the disc-id as
+/// "tried" — otherwise switching to the Discs tab with a data disc loaded
+/// pointlessly shells out to read CD-TEXT off a disc that can never have
+/// any track titles to show.
+#[test]
+fn cdtext_read_skips_data_discs() {
+    let mut app = make_app();
+    app.open_media_library();
+    let toc = data_disc_toc();
+    let discid = crate::disc::discid::freedb_discid(&toc);
+    let Mode::MediaLibrary(s) = &mut app.mode else {
+        panic!("expected MediaLibrary mode");
+    };
+    s.tab = MediaLibraryTab::Discs;
+    s.drives = vec![fake_data_drive("/dev/sr0", toc)];
+    s.selected_drive = 0;
+
+    app.reload_ml_disc_entries();
+
+    assert!(
+        !app.disc_cdtext_tried.contains(&discid),
+        "CD-TEXT read must not be attempted for a data disc"
+    );
+    assert!(
+        app.disc_cdtext_read.is_none(),
+        "no background CD-TEXT read should be in flight for a data disc"
+    );
 }

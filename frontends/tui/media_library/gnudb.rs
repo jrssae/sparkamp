@@ -23,16 +23,35 @@ impl App {
         s.drives.get(s.selected_drive).map(|d| d.id.clone())
     }
 
+    /// Whether the selected drive currently holds a recognized audio CD.
+    /// A readable TOC alone isn't enough — data discs also report a TOC,
+    /// just with `is_audio: false` tracks — so CD-TEXT reads (which spin
+    /// the drive) must gate on this, not on `selected_disc_identity`.
+    pub(super) fn selected_disc_is_audio_cd(&self) -> bool {
+        let Mode::MediaLibrary(s) = &self.mode else {
+            return false;
+        };
+        s.drives
+            .get(s.selected_drive)
+            .map(|d| d.media.is_audio_cd)
+            .unwrap_or(false)
+    }
+
     /// Read CD-TEXT off the currently selected unknown audio disc on a
     /// background thread (it spins the drive). One attempt per disc-id;
     /// result arrives through `disc_cdtext_read` in the tick loop. No-op
-    /// when a read is already in flight, the disc was already tried, or
-    /// gnudb already has an entry (CD-TEXT is a total-miss fallback only —
-    /// Winamp precedence, see `apply_disc_tags_to_entries`).
+    /// when the selected drive isn't an audio CD (data discs have a TOC
+    /// too, so `selected_disc_identity` alone can't tell), a read is
+    /// already in flight, the disc was already tried, or gnudb already has
+    /// an entry (CD-TEXT is a total-miss fallback only — Winamp precedence,
+    /// see `apply_disc_tags_to_entries`).
     pub(crate) fn spawn_disc_cdtext_read(&mut self) {
         let Some((_, discid)) = self.selected_disc_identity() else {
             return;
         };
+        if !self.selected_disc_is_audio_cd() {
+            return;
+        }
         if self.disc_tags.contains_key(&discid)
             || self.disc_cdtext_tried.contains(&discid)
             || self.disc_cdtext_read.is_some()
