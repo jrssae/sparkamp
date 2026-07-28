@@ -1413,6 +1413,20 @@ pub(super) fn connect_eject(
     });
 }
 
+/// The tag set baked into ripped files: whole-entry Winamp precedence, never
+/// merged per-field. A gnudb/user entry wins outright when present; CD-TEXT
+/// (read off the disc itself) only fills disc-level artist/album/titles on a
+/// TOTAL gnudb miss. CD-TEXT is never submitted/uploaded to gnudb — this
+/// only governs what gets written into the ripped files. Mirrors TUI's
+/// `disc_tags.get(&discid).or_else(|| disc_cdtext.get(&discid))`
+/// (`frontends/tui/media_library/rip.rs:140-145`).
+fn select_rip_tags(
+    gnudb: Option<crate::disc::xmcd::XmcdEntry>,
+    cdtext: Option<crate::disc::xmcd::XmcdEntry>,
+) -> crate::disc::xmcd::XmcdEntry {
+    gnudb.or(cdtext).unwrap_or_default()
+}
+
 /// Wire the Phase-3 rip flow: the "Rip…" button opens the setup dialog
 /// (track multi-select, destination, quality), Cancel stops the running rip
 /// after the current track.
@@ -1424,6 +1438,7 @@ pub(super) fn connect_rip_ui(
     win: &gtk4::Window,
     entries_store: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>>,
     disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+    disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
     selected_disc_id: Rc<RefCell<Option<String>>>,
     current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
 ) {
@@ -1636,6 +1651,7 @@ pub(super) fn connect_rip_ui(
         let d = dialog.clone();
         let ui = ui.clone();
         let disc_tags = disc_tags.clone();
+        let disc_cdtext = disc_cdtext.clone();
         let total = entries.len() as u8;
         start.connect_clicked(move |_| {
             let chosen: Vec<crate::disc::DiscTrackEntry> = list
@@ -1661,7 +1677,9 @@ pub(super) fn connect_rip_ui(
                 s.config.disc.rip_mp3_quality = quality;
                 let _ = s.config.save();
             }
-            let tags = disc_tags.borrow().get(&discid).cloned().unwrap_or_default();
+            let gnudb = disc_tags.borrow().get(&discid).cloned();
+            let cdtext = disc_cdtext.borrow().get(&discid).cloned();
+            let tags = select_rip_tags(gnudb, cdtext);
             start_rip(&ui, chosen, dest.trim().to_string(), quality, tags, total);
             d.close();
         });
@@ -1701,5 +1719,37 @@ mod tests {
             media_badge(&drive(true, MediaKind::Unknown, 4_700_000_000)),
             Some("DVD")
         );
+    }
+
+    fn xmcd(artist: &str, album: &str) -> crate::disc::xmcd::XmcdEntry {
+        crate::disc::xmcd::XmcdEntry {
+            artist: artist.into(),
+            album: album.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rip_tags_fill_from_cdtext_on_gnudb_miss() {
+        // Total gnudb miss: CD-TEXT's disc artist/album fill the ripped tags.
+        let cdtext = xmcd("CD-TEXT Artist", "CD-TEXT Album");
+        let tags = select_rip_tags(None, Some(cdtext.clone()));
+        assert_eq!(tags, cdtext);
+    }
+
+    #[test]
+    fn rip_tags_prefer_gnudb_whole_entry_over_cdtext() {
+        // gnudb/user entry wins outright — never merged per-field with
+        // CD-TEXT, even though CD-TEXT is also present for this disc.
+        let gnudb = xmcd("gnudb Artist", "gnudb Album");
+        let cdtext = xmcd("CD-TEXT Artist", "CD-TEXT Album");
+        let tags = select_rip_tags(Some(gnudb.clone()), Some(cdtext));
+        assert_eq!(tags, gnudb);
+    }
+
+    #[test]
+    fn rip_tags_default_when_neither_source_has_the_disc() {
+        let tags = select_rip_tags(None, None);
+        assert_eq!(tags, crate::disc::xmcd::XmcdEntry::default());
     }
 }

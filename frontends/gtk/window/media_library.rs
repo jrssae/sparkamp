@@ -10082,6 +10082,7 @@ fn open_media_library_window(
         &win,
         current_disc_entries.clone(),
         disc_tags.clone(),
+        disc_cdtext.clone(),
         selected_disc_id.clone(),
         current_drives.clone(),
     );

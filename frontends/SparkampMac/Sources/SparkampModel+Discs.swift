@@ -423,7 +423,12 @@ extension SparkampModel {
     ) {
         guard !entries.isEmpty, ripProgress == nil else { return }
         let discid = discIdFor(drive) ?? ""
-        let tagSet = discTagSets[discid]
+        // Whole-entry Winamp precedence: a gnudb match or hand edits win
+        // outright when present; CD-TEXT read off the drive fills disc
+        // artist/album (and titles) only on a total miss — see
+        // `discOverlayTags`. CD-TEXT is never submitted to gnudb; this only
+        // affects the tags written into the ripped files.
+        let tagSet = discOverlayTags(discid)
         let tags = XmcdEntry(
             discid: discid,
             artist: tagSet?.artist ?? "",

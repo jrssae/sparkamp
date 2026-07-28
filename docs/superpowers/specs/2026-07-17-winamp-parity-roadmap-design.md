@@ -162,11 +162,15 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   per-field/per-track gap-fill and NO "prefer disc CD-TEXT" toggle (user
   decision 2026-07-28) — this intentionally supersedes the design doc's
   `merge_disc_metadata` gap-fill proposal.
-- CD-TEXT read is display-only and cached per freedb disc-id, read ONCE on
-  first show of an unknown audio disc (a per-id "tried" set); it is never
-  re-read on view refresh and the cache is never cleared while running
-  (mirrors GTK). A re-inserted disc that collides on freedb ID reuses the
-  cached names (same collision surface gnudb itself has).
+- CD-TEXT read is used for DISPLAY and is inherited by RIPPED-FILE tags
+  (per-track titles and disc-level artist/album, whole-entry, on a total
+  gnudb miss — see the precedence rule above) on all three frontends, but it
+  is NEVER submitted/uploaded to gnudb: a CD-TEXT-only disc cannot be pushed
+  to the database. It is cached per freedb disc-id, read ONCE on first show
+  of an unknown audio disc (a per-id "tried" set); it is never re-read on
+  view refresh and the cache is never cleared while running (mirrors GTK). A
+  re-inserted disc that collides on freedb ID reuses the cached names (same
+  collision surface gnudb itself has).
 - macOS BURN-side CD-TEXT is NOT implemented: `drutil -audio` (the mac burn
   CLI) has no CD-TEXT/v07t input. Writing CD-TEXT on mac needs a rewrite to
   Apple's DiscRecording framework (`DRTrack`/`DRCDTextBlock`/`DRBurn`) — a

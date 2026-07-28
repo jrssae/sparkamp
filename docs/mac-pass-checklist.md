@@ -885,14 +885,20 @@ line picks up a CD-TEXT-only entry the same as a gnudb one).
       (gnudb-absent) disc — the ripped files' names/tags use the CD-TEXT
       track titles (via `discTracks[i].title`, already overlaid by
       `applyDiscTagTitles` before the rip sheet reads it), matching GTK's
-      behavior for the same disc. NOTE (matches GTK, not a mac-specific gap):
-      the disc-level Artist/Album ID3 fields on the ripped files still come
-      from `discTagSets[id]` only (empty for a CD-TEXT-only disc, same as
-      GTK's `disc_tags.get(id)` in `disc.rs`'s rip dialog) — CD-TEXT is not
-      folded into the persisted/submittable tag set, only into the live
-      display + the per-track titles carried through to rip. If real-world
-      testing shows users expect the CD-TEXT artist/album on ripped files
-      too, that's a follow-up, not a regression from this task.
+      behavior for the same disc. As of the 2026-07-28 parity fix, the
+      disc-level Artist/Album ID3 fields on the ripped files ALSO come from
+      CD-TEXT on a total gnudb miss: `ripDiscTracks` now reads
+      `discOverlayTags(discid)` (`SparkampModel+Discs.swift`) instead of
+      `discTagSets[discid]` directly, mirroring GTK's
+      `disc_tags.get(id).or_else(|| disc_cdtext.get(id))` in `disc.rs`'s rip
+      dialog and TUI's `rip.rs:140-145`. Precedence stays whole-entry
+      (Winamp): a gnudb/user entry wins outright when present; CD-TEXT only
+      fills in on a total miss. CD-TEXT is still NEVER folded into the
+      persisted/submittable tag set (`discTagSets`) — `discSubmittable`/
+      `submitDisc` keep reading `discTagSets` directly, so a CD-TEXT-only
+      disc still can't be pushed to gnudb. Confirm ripped MP3s from a
+      CD-TEXT-only disc carry the CD-TEXT artist/album, and that a
+      gnudb-matched disc's ripped tags are unaffected (gnudb still wins).
 - [ ] **Acquisition path + drutil dump capture**: confirm which path was
       actually used to acquire CD-TEXT for a live disc on real hardware.
       This task lands ONLY the FFI-based path (`sparkamp_disc_read_cdtext` →
