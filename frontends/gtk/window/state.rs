@@ -34,6 +34,17 @@ struct AppState {
     duration_cache: DurationCache,
     /// Media library — open on startup, or `None` when the DB cannot be opened.
     media_lib: Option<crate::media_library::MediaLibrary>,
+    /// Live filesystem watcher over the watched folders (Phase 8 Task 10).
+    /// `None` whenever watching is off (`config.media_library.watch_folders`
+    /// false), `media_lib` is unavailable, or the underlying OS watcher
+    /// failed to start (e.g. inotify `max_user_watches` exhausted) — the
+    /// last case is graceful degradation, never a hard error. Rebuilt via
+    /// `watch::rebuild_watcher` whenever folders, per-folder recurse, or the
+    /// toggle change.
+    watch: Option<crate::watch::FolderWatcher>,
+    /// Paired with `watch` above — the channel its debounced events arrive
+    /// on. Drained by the tick registered once in `watch::start_drain_tick`.
+    watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
     /// The media library browser window, if one is currently open.
     ml_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
@@ -461,6 +472,8 @@ impl AppState {
             mute_pending: None,
             duration_cache: DurationCache::load(),
             media_lib,
+            watch: None,
+            watch_rx: None,
             ml_window: None,
             id3_editor_window: None,
             art_window: None,
@@ -496,6 +509,11 @@ impl AppState {
         let track = self.playlist.current()?;
         let uri = track.uri();
         let display = track.display_name();
+        // Captured now — `track` borrows `self.playlist` and that borrow
+        // ends at this statement's last use below, before the `&mut self`
+        // field accesses that follow. `auto_add_played` needs the path
+        // after `play()`, once `track` is long gone.
+        let played_path = track.path.clone();
         // Record this track in shuffle history so the previous button can step back.
         let idx = self.playlist.current_index;
         self.shuffle_state.record_played(idx);
@@ -518,6 +536,7 @@ impl AppState {
             self.player.set_volume(0.0);
         }
         let _ = self.player.play();
+        self.maybe_auto_add_played(&played_path);
         Some(display)
     }
 
@@ -527,6 +546,7 @@ impl AppState {
         let track = self.playlist.current()?;
         let uri = track.uri();
         let display = track.display_name();
+        let played_path = track.path.clone();
         // Reset so the new track can be counted when it plays long enough.
         self.counted_play_path = None;
         let _ = self.player.load(&uri);
@@ -535,7 +555,45 @@ impl AppState {
             self.player.set_volume(0.0);
         }
         let _ = self.player.play();
+        self.maybe_auto_add_played(&played_path);
         Some(display)
+    }
+
+    /// Auto-add-played (Phase 8 Task 10): make sure a track that just
+    /// started playing has a row in the media library, gated on
+    /// `config.media_library.auto_add_played`. No-op if the setting is off,
+    /// the library isn't open, or `add_played_track` reports the path is
+    /// already known (`Ok(false)`) — the common case, since most playback
+    /// is already-library tracks.
+    ///
+    /// `path` must be used exactly as stored on the playing `Track` — do
+    /// NOT canonicalize it again here. `Track::from_path`/`from_path_fast`
+    /// already canonicalize once at load time, and `add_played_track`'s
+    /// "already known" check is an exact string match against what the
+    /// library stored for this file; re-canonicalizing could format the
+    /// same file's path differently (or fail if it's momentarily
+    /// unreachable) and create a spurious second row.
+    ///
+    /// Deliberately does NOT invoke `rebuild_ml_callback` on a new row: this
+    /// method runs inside `play_current`/`play_current_no_record`, which
+    /// every call site invokes as `state.borrow_mut().play_current()` — the
+    /// `RefCell` borrow is still live for the whole expression, so firing a
+    /// UI callback here (which may itself need to borrow `state`) risks a
+    /// borrow panic. An open Files view simply won't show the new row until
+    /// its next natural refresh.
+    fn maybe_auto_add_played(&self, path: &std::path::Path) {
+        if !self.config.media_library.auto_add_played {
+            return;
+        }
+        let Some(lib) = self.media_lib.as_ref() else {
+            return;
+        };
+        let Some(path_str) = path.to_str() else {
+            return;
+        };
+        if let Err(e) = lib.add_played_track(path_str) {
+            eprintln!("auto_add_played: failed for {}: {e}", path.display());
+        }
     }
 
     /// Register a now-playing subscriber (A1 panel, A6 window, phase-3 MPRIS).

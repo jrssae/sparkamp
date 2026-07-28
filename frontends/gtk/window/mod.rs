@@ -68,6 +68,12 @@ use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
 mod disc;
 use disc::{disc_overview_detail_line, selected_disc_discid};
 
+// Live folder-watcher lifecycle (Phase 8 Task 10): rebuild/start/stop the
+// `notify` watcher, drain its event channel, and the startup-rescan trigger.
+// A child module for the same reason as `disc` above — keeps this glue out
+// of player.rs/settings.rs/media_library.rs, which call it as `watch::...`.
+mod watch;
+
 // A1 expandable now-playing panel (art + tags + wiki links). A child module
 // (not include!d) so its widget-building code stays out of player.rs's
 // already-large body; player.rs calls it as `now_playing::build_panel(...)`.

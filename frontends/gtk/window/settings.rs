@@ -1267,16 +1267,44 @@ fn open_settings_window(
                 }
 
                 // Repopulate.
-                for (_, path) in &folders {
+                for (folder_id, path) in &folders {
                     let row = gtk4::ListBoxRow::new();
                     let row_box = GtkBox::new(Orientation::Horizontal, 6);
                     let icon = Image::from_icon_name("folder-open");
-                    let lbl = Label::new(Some(path));
+                    let lbl = Label::new(Some(&gtk_safe(path)));
                     lbl.set_hexpand(true);
                     lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
                     lbl.set_halign(Align::Start);
                     row_box.append(&icon);
                     row_box.append(&lbl);
+
+                    // Per-folder recurse toggle (Phase 8 Task 10). Set
+                    // active before connecting `toggled` so populating the
+                    // list never fires a spurious DB write / watcher
+                    // rebuild. Wired independently of `row.set_activatable`
+                    // below — clicking it must not also select the row.
+                    let chk_recurse = CheckButton::with_label("Recurse");
+                    chk_recurse.set_active(
+                        state_rc
+                            .borrow()
+                            .media_lib
+                            .as_ref()
+                            .and_then(|lib| lib.folder_recurse(*folder_id).ok())
+                            .unwrap_or(true),
+                    );
+                    {
+                        let state_recurse = state_rc.clone();
+                        let fid = *folder_id;
+                        chk_recurse.connect_toggled(move |c| {
+                            let active = c.is_active();
+                            if let Some(ref lib) = state_recurse.borrow().media_lib {
+                                let _ = lib.set_folder_recurse(fid, active);
+                            }
+                            watch::rebuild_watcher(&state_recurse);
+                        });
+                    }
+                    row_box.append(&chk_recurse);
+
                     row.set_child(Some(&row_box));
                     row.set_activatable(true);
                     folder_list_rc.append(&row);
@@ -1381,6 +1409,9 @@ fn open_settings_window(
                                             {
                                                 cb();
                                             }
+                                            // New folder registered — restart
+                                            // the live watcher so it's covered.
+                                            watch::rebuild_watcher(&state_q);
                                             status_q.set_text("Folder added — waiting to scan…");
                                         }
                                         Ok(Err(e)) => {
@@ -1479,6 +1510,9 @@ fn open_settings_window(
                                 if let Some(ref cb) = state_rc.borrow().rebuild_ml_callback {
                                     cb();
                                 }
+                                // New folder registered — restart the live
+                                // watcher so it's covered.
+                                watch::rebuild_watcher(&state_rc);
                             }
                         }
 
@@ -1580,6 +1614,9 @@ fn open_settings_window(
                                 if let Some(ref cb) = state_for_dialog.borrow().rebuild_ml_callback {
                                     cb();
                                 }
+                                // Folder gone — restart the live watcher so
+                                // it stops watching the removed folder.
+                                watch::rebuild_watcher(&state_for_dialog);
 
                                 // Background: purge the soft-deleted track rows.
                                 let db_path = crate::media_library::MediaLibrary::db_path_pub();
@@ -1928,6 +1965,99 @@ fn open_settings_window(
                 glib::ControlFlow::Continue
             });
         }
+
+        // Row 11: separator before the live-watch / auto-add settings below.
+        let sep_row11 = gtk4::Separator::new(Orientation::Horizontal);
+        sep_row11.set_margin_top(4);
+        sep_row11.set_margin_bottom(4);
+        grid.attach(&sep_row11, 0, 11, 4, 1);
+
+        // Row 12: watch folders for changes (Phase 8 Task 10). Rebuilds the
+        // live watcher immediately on toggle so turning it off actually
+        // stops watching, rather than waiting for the next folder change.
+        let lbl_watch = Label::new(Some("Watch folders for changes"));
+        lbl_watch.set_halign(Align::Start);
+        grid.attach(&lbl_watch, 0, 12, 1, 1);
+        let chk_watch = CheckButton::new();
+        chk_watch.set_active(state.borrow().config.media_library.watch_folders);
+        {
+            let state_rc = state.clone();
+            chk_watch.connect_toggled(move |c| {
+                {
+                    let mut s = state_rc.borrow_mut();
+                    s.config.media_library.watch_folders = c.is_active();
+                    let _ = s.config.save();
+                }
+                watch::rebuild_watcher(&state_rc);
+            });
+        }
+        grid.attach(&chk_watch, 1, 12, 1, 1);
+
+        // Row 13: auto-add-played.
+        let lbl_auto_add = Label::new(Some("Automatically add played tracks"));
+        lbl_auto_add.set_halign(Align::Start);
+        grid.attach(&lbl_auto_add, 0, 13, 1, 1);
+        let chk_auto_add = CheckButton::new();
+        chk_auto_add.set_active(state.borrow().config.media_library.auto_add_played);
+        {
+            let state_rc = state.clone();
+            chk_auto_add.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.auto_add_played = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_auto_add, 1, 13, 1, 1);
+
+        // Row 14: remove missing files on rescan (also gates the live
+        // watcher's Remove handling — see `apply_watch_action`).
+        let lbl_remove_missing = Label::new(Some("Remove missing files on rescan"));
+        lbl_remove_missing.set_halign(Align::Start);
+        grid.attach(&lbl_remove_missing, 0, 14, 1, 1);
+        let chk_remove_missing = CheckButton::new();
+        chk_remove_missing
+            .set_active(state.borrow().config.media_library.remove_missing_on_rescan);
+        {
+            let state_rc = state.clone();
+            chk_remove_missing.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.remove_missing_on_rescan = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_remove_missing, 1, 14, 1, 1);
+
+        // Row 15: compact database after rescan.
+        let lbl_compact = Label::new(Some("Compact database after rescan"));
+        lbl_compact.set_halign(Align::Start);
+        grid.attach(&lbl_compact, 0, 15, 1, 1);
+        let chk_compact = CheckButton::new();
+        chk_compact.set_active(state.borrow().config.media_library.compact_on_rescan);
+        {
+            let state_rc = state.clone();
+            chk_compact.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.compact_on_rescan = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_compact, 1, 15, 1, 1);
+
+        // Row 16: rescan all folders on startup.
+        let lbl_rescan_startup = Label::new(Some("Rescan all folders on startup"));
+        lbl_rescan_startup.set_halign(Align::Start);
+        grid.attach(&lbl_rescan_startup, 0, 16, 1, 1);
+        let chk_rescan_startup = CheckButton::new();
+        chk_rescan_startup.set_active(state.borrow().config.media_library.rescan_on_startup);
+        {
+            let state_rc = state.clone();
+            chk_rescan_startup.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.rescan_on_startup = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_rescan_startup, 1, 16, 1, 1);
 
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));

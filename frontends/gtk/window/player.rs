@@ -98,6 +98,16 @@ pub fn build(
         }
     };
 
+    // ── Live folder watcher (Phase 8 Task 10) ────────────────────────────────
+    // Must come after AppState (and its `media_lib`) exists. `rebuild_watcher`
+    // itself checks `config.media_library.watch_folders` / folder list /
+    // media_lib availability and degrades gracefully — see watch.rs.
+    watch::rebuild_watcher(&state);
+    watch::start_drain_tick(&state);
+    if state.borrow().config.media_library.rescan_on_startup {
+        watch::trigger_startup_rescan(&state);
+    }
+
     // ── Drives / devices / burn queues — shared with the Media Library ──────────
     // Owned here (not inside open_media_library_window) so the active
     // playlist's Send-to menu (below) and the ML window's Files/Editor/Device

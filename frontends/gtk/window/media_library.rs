@@ -5187,6 +5187,9 @@ fn open_media_library_window(
                                     }
                                     rebuild_inner();
                                     status_inner.set_text("Reading tags…");
+                                    // New folder registered — restart the
+                                    // live watcher so it's covered.
+                                    watch::rebuild_watcher(&state_inner);
                                 }
                             }
 
