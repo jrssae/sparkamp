@@ -8905,6 +8905,7 @@ fn open_media_library_window(
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
         let disc_tags = disc_tags.clone();
+        let disc_cdtext = disc_cdtext.clone();
         let selected_disc_id = selected_disc_id.clone();
         let current_drives = current_drives.clone();
         Rc::new(move |entries: &[crate::disc::DiscTrackEntry], mode: DiscAdd| {
@@ -8920,14 +8921,19 @@ fn open_media_library_window(
                 DiscAdd::Enqueue => false,
             };
             // Disc-level artist/album for the currently shown drive (empty until
-            // identified/edited); used for the non-sampler title case.
+            // identified/edited); used for the non-sampler title case. Falls
+            // back to CD-TEXT on a gnudb miss (whole-entry precedence), so a
+            // CD-TEXT-only disc's added tracks carry its artist/album too —
+            // matching the TUI add path and the rip path.
             let (disc_artist, disc_album) =
                 selected_disc_discid(&selected_disc_id, &current_drives)
                     .and_then(|(_, id)| {
-                        disc_tags
+                        let entry = disc_tags
                             .borrow()
                             .get(&id)
-                            .map(|t| (t.artist.clone(), t.album.clone()))
+                            .cloned()
+                            .or_else(|| disc_cdtext.borrow().get(&id).cloned());
+                        entry.map(|t| (t.artist.clone(), t.album.clone()))
                     })
                     .unwrap_or_default();
             if replace {

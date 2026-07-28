@@ -208,14 +208,17 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   the tags into the user tag set) → the Submit action becomes available →
   pick a gnudb category + enter your email (first time) → uploads. CD-TEXT is
   never auto-submitted; that edit+save is the deliberate promotion step.
-- Known follow-ups (non-blocking, deferred): (1) mac hides the pill for a
-  rare *titles-only* CD-TEXT disc (empty artist AND album) because the pill is
-  nested under the artist/album header conditional; GTK/TUI show it — a macOS
-  worker should lift the pill out of that conditional and eyeball the layout.
-  (2) Playlist-ADD disc-level artist/album: TUI folds CD-TEXT into added
-  tracks' artist/album; GTK and mac still read only the user/official tag set
-  (per-track TITLES inherit CD-TEXT on all three). Pre-existing since the read
-  phase; align GTK + mac to fold CD-TEXT there for full parity when scoped.
+- Playlist-ADD now folds CD-TEXT into the added tracks' disc-level
+  artist/album on ALL THREE frontends (whole-entry `tags.or(cdtext)`): TUI
+  (`add_disc_entries`), GTK (`add_disc_entries` closure), mac (`addDiscTracks`
+  via `discOverlayTags`). So CD-TEXT names now reach the disc view, ripped
+  files, AND the active playlist consistently everywhere. (Per-track titles
+  already inherited on all three.)
+- Remaining follow-up (non-blocking, deferred): mac hides the source pill for
+  a rare *titles-only* CD-TEXT disc (empty artist AND album) because the pill
+  is nested under the artist/album header conditional; GTK/TUI show it — a
+  macOS worker should lift the pill out of that conditional and eyeball the
+  layout (checklist item).
 
 ## Known limitations (recorded during phase 8 — F10 watch folders)
 

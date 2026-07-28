@@ -990,6 +990,10 @@ path (`discSubmittable`/`submitDisc`) is untouched and still reads
       mac, GTK, and TUI all show the identical badge text (`gnudb` /
       `edited` / `CD-TEXT`) for the same disc state — no casing or spelling
       drift between frontends.
+- [ ] **Playlist-add inherits CD-TEXT artist/album**: add a gnudb-unknown
+      CD-TEXT disc's tracks to the active playlist (`addDiscTracks`, now via
+      `discOverlayTags`) — the playlist rows show the CD-TEXT disc artist +
+      album (not blank), matching GTK/TUI. Per-track titles already inherited.
 - [ ] **FOLLOW-UP (fix while in Xcode) — titles-only CD-TEXT disc pill**: the
       pill in `DiscDriveView.swift` is currently nested INSIDE the
       `if let t = discTags, !t.artist.isEmpty || !t.album.isEmpty` header

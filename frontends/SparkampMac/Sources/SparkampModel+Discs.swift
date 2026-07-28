@@ -400,7 +400,10 @@ extension SparkampModel {
     /// already playing).
     func addDiscTracks(_ drive: OpticalDrive, entries: [DiscTrackEntry]) {
         guard let ctx = ctx, !entries.isEmpty else { return }
-        let tags = discIdFor(drive).flatMap { discTagSets[$0] }
+        // Whole-entry precedence: a gnudb/user tag set wins; on a total gnudb
+        // miss fall back to CD-TEXT so a CD-TEXT-only disc's added tracks carry
+        // its artist/album (matches the disc view, rip, and the TUI add path).
+        let tags = discIdFor(drive).flatMap { discOverlayTags($0) }
         let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
         let autoplay = sparkamp_get_autoplay_on_add(ctx)
         if shouldReplace { clearPlaylist() }
