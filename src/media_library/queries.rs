@@ -409,6 +409,22 @@ impl MediaLibrary {
 
     /// Clear the cached artwork path for a track so it gets re-extracted on next read.
     pub fn clear_artwork(&self, track_id: i64) -> Result<()> {
+        // Thumbnails are keyed by the OLD artwork path's hash, so look it up
+        // before nulling it out — otherwise a stale thumbnail (any `px`
+        // size) keeps rendering after the source is gone.
+        let old_art: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT artwork_path FROM tracks WHERE id = ?1",
+                params![track_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        if let Some(old_art) = old_art {
+            crate::now_playing::delete_thumbs_for(std::path::Path::new(&old_art));
+        }
+
         self.conn.execute(
             "UPDATE tracks SET artwork_path = NULL WHERE id = ?1",
             params![track_id],
@@ -430,6 +446,13 @@ impl MediaLibrary {
                 if std::path::Path::new(old_art).starts_with(&cache_root) {
                     let _ = std::fs::remove_file(old_art);
                 }
+                // Thumbnails always live in our own cache regardless of
+                // where the source artwork lives (embedded extraction vs.
+                // the user's own folder image), so invalidate them
+                // unconditionally — unlike the full-size delete above,
+                // which is gated to our cache dir to avoid touching the
+                // user's file.
+                crate::now_playing::delete_thumbs_for(std::path::Path::new(old_art));
             }
         }
 

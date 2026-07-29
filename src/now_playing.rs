@@ -179,18 +179,56 @@ pub fn wiki_search_url(query: &str) -> Option<String> {
     ))
 }
 
+/// Hash idiom shared by `thumb_path_for` and `delete_thumbs_for` so the two
+/// cannot drift out of sync on how a source `artwork_path` maps to a cache
+/// key.
+fn thumb_hash(artwork_path: &Path) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    artwork_path.hash(&mut h);
+    h.finish()
+}
+
 /// Deterministic cache path for a `px`-sized thumbnail of `artwork_path`.
 /// Frontends generate the PNG here on first display (gdk-pixbuf / NSImage);
 /// core only owns the path so every frontend shares one cache. Mirrors the
 /// artwork-cache hashing idiom in `tags.rs`.
 pub fn thumb_path_for(artwork_path: &Path, px: u32) -> Option<PathBuf> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    artwork_path.hash(&mut h);
-    let hash = h.finish();
     let dir = dirs::cache_dir()?.join("sparkamp").join("thumbs");
-    Some(dir.join(format!("{:016x}-{}.png", hash, px)))
+    Some(dir.join(format!("{:016x}-{}.png", thumb_hash(artwork_path), px)))
+}
+
+/// Remove every cached thumbnail (all `px` sizes) generated for a source
+/// `artwork_path`, best-effort. A zoom control means one source can have
+/// several `<hash>-<px>.png` files; called with the OLD `artwork_path`
+/// whenever a track's artwork is replaced or cleared so a stale thumbnail
+/// never survives the swap. No-op — never panics — when the thumbs dir is
+/// absent or the cache dir can't be determined.
+pub fn delete_thumbs_for(artwork_path: &Path) {
+    if let Some(cache_dir) = dirs::cache_dir() {
+        delete_thumbs_for_in(&cache_dir.join("sparkamp").join("thumbs"), artwork_path);
+    }
+}
+
+/// Dir-parameterized so tests can exercise the "thumbs dir absent" no-op
+/// path against an isolated tempdir instead of the real, shared cache.
+/// GUARD: only ever reads/removes entries directly inside `thumbs_dir` —
+/// never touches the source artwork itself or anything outside this dir.
+fn delete_thumbs_for_in(thumbs_dir: &Path, artwork_path: &Path) {
+    let prefix = format!("{:016x}-", thumb_hash(artwork_path));
+    let Ok(entries) = std::fs::read_dir(thumbs_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -438,5 +476,56 @@ mod tests {
         let a = thumb_path_for(Path::new("/music/a.jpg"), 48).unwrap();
         let b = thumb_path_for(Path::new("/music/b.jpg"), 48).unwrap();
         assert_ne!(a, b);
+    }
+
+    // `delete_thumbs_for` runs against the real, shared `~/.cache/sparkamp/
+    // thumbs` dir (no XDG_CACHE_HOME isolation exists elsewhere in this
+    // codebase — see media_library/tests.rs's cache_root tests, which do the
+    // same). To never disturb a real user's cached thumbnails, every source
+    // path here is unique per-process/per-line so its hash cannot collide
+    // with a real cover's hash.
+    #[test]
+    fn delete_thumbs_for_removes_all_sizes_for_one_source_only() {
+        let src_a = PathBuf::from(format!(
+            "/nonexistent/delete_thumbs_test_a_{}_{}.jpg",
+            std::process::id(),
+            line!()
+        ));
+        let src_b = PathBuf::from(format!(
+            "/nonexistent/delete_thumbs_test_b_{}_{}.jpg",
+            std::process::id(),
+            line!()
+        ));
+
+        let a160 = thumb_path_for(&src_a, 160).unwrap();
+        let a96 = thumb_path_for(&src_a, 96).unwrap();
+        let b160 = thumb_path_for(&src_b, 160).unwrap();
+
+        std::fs::create_dir_all(a160.parent().unwrap()).unwrap();
+        std::fs::write(&a160, b"fake").unwrap();
+        std::fs::write(&a96, b"fake").unwrap();
+        std::fs::write(&b160, b"fake").unwrap();
+
+        delete_thumbs_for(&src_a);
+
+        assert!(!a160.exists(), "160px thumb for src_a should be removed");
+        assert!(!a96.exists(), "96px thumb for src_a should be removed");
+        assert!(b160.exists(), "a different source's thumb must be untouched");
+
+        let _ = std::fs::remove_file(&b160);
+    }
+
+    // The public entrypoint always reads the real cache dir, which almost
+    // certainly exists on any machine that has ever played a track with
+    // artwork — so this exercises the no-op path through the private,
+    // dir-parameterized helper instead, isolated in a tempdir that is
+    // guaranteed absent. This is the seam `delete_thumbs_for` delegates to.
+    #[test]
+    fn delete_thumbs_for_in_is_noop_when_thumbs_dir_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let absent_dir = tmp.path().join("does-not-exist").join("thumbs");
+        assert!(!absent_dir.exists());
+        // Must not panic and must simply return.
+        delete_thumbs_for_in(&absent_dir, Path::new("/music/whatever.jpg"));
     }
 }
