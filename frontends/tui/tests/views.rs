@@ -330,3 +330,68 @@ fn display_name_includes_artist_when_present() {
 }
 
 // -----------------------------------------------------------------------
+// Media library — Albums tab render smoke test
+// -----------------------------------------------------------------------
+
+/// Renders the full-screen media library with the Albums tab active and a
+/// couple of `AlbumGroup`s, asserting the expected text shows up in the
+/// terminal buffer: `Album — Album Artist (Year)  ·  N tracks`, and the
+/// `is_no_album` bucket renders as `(no album)`.
+#[test]
+fn albums_tab_renders_album_list() {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = MediaLibraryTab::Albums;
+        s.albums = vec![
+            crate::media_library::AlbumGroup {
+                album: "Dark Side of the Moon".to_string(),
+                album_artist: "Pink Floyd".to_string(),
+                year: Some(1973),
+                track_count: 10,
+                artwork_path: None,
+                is_no_album: false,
+            },
+            crate::media_library::AlbumGroup {
+                album: String::new(),
+                album_artist: String::new(),
+                year: None,
+                track_count: 3,
+                artwork_path: None,
+                is_no_album: true,
+            },
+        ];
+        s.selected_album = 0;
+    }
+
+    let backend = ratatui::backend::TestBackend::new(100, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::draw(f, &app)).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let width = buffer.area.width as usize;
+    let mut content = String::new();
+    for (i, cell) in buffer.content.iter().enumerate() {
+        if i > 0 && i % width == 0 {
+            content.push('\n');
+        }
+        content.push_str(cell.symbol());
+    }
+
+    assert!(
+        content.contains("Dark Side of the Moon"),
+        "album title missing:\n{content}"
+    );
+    assert!(
+        content.contains("Pink Floyd"),
+        "album artist missing:\n{content}"
+    );
+    assert!(content.contains("1973"), "year missing:\n{content}");
+    assert!(
+        content.contains("(no album)"),
+        "no-album bucket label missing:\n{content}"
+    );
+    assert!(content.contains("Albums"), "Albums tab label missing:\n{content}");
+}
+
+// -----------------------------------------------------------------------

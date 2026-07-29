@@ -62,6 +62,12 @@ impl App {
             submit_email: None,
             rip: None,
             burn: None,
+            // Albums tab is loaded lazily on first entry, same as Discs.
+            albums: Vec::new(),
+            selected_album: 0,
+            album_drill: None,
+            album_tracks: Vec::new(),
+            selected_album_track: 0,
         });
     }
 
@@ -119,8 +125,13 @@ impl App {
         }
 
         // Snapshot relevant state before borrowing mutably.
-        let (search_active, add_active, tab) = match &self.mode {
-            Mode::MediaLibrary(s) => (s.search_active, s.add_input.is_some(), s.tab.clone()),
+        let (search_active, add_active, tab, album_drilled) = match &self.mode {
+            Mode::MediaLibrary(s) => (
+                s.search_active,
+                s.add_input.is_some(),
+                s.tab.clone(),
+                s.album_drill.is_some(),
+            ),
             _ => return,
         };
 
@@ -159,6 +170,20 @@ impl App {
         }
         if submit_open {
             self.handle_submit_category_key(code);
+            return;
+        }
+
+        // --- Albums tab drill-down: Esc pops back to the album list rather
+        // than closing the media library. Must be intercepted here, before
+        // the "Normal navigation" match's own `KeyCode::Esc` arm (which
+        // closes the whole ML) — same local-precedence pattern as the
+        // search-input and add-path blocks below. ---
+        if tab == MediaLibraryTab::Albums && album_drilled && code == KeyCode::Esc {
+            if let Mode::MediaLibrary(s) = &mut self.mode {
+                s.album_drill = None;
+                s.album_tracks.clear();
+                s.selected_album_track = 0;
+            }
             return;
         }
 
@@ -233,22 +258,33 @@ impl App {
                 self.mode = Mode::Normal;
             }
 
-            // Tab: cycle Files → Playlists → Discs.
+            // Tab: cycle Files → Playlists → Discs → Albums.
             KeyCode::Tab => {
-                let (now_discs, need_detect) = if let Mode::MediaLibrary(s) = &mut self.mode {
-                    s.tab = match s.tab {
-                        MediaLibraryTab::Files => MediaLibraryTab::Playlists,
-                        MediaLibraryTab::Playlists => MediaLibraryTab::Discs,
-                        MediaLibraryTab::Discs => MediaLibraryTab::Files,
+                let (now_discs, need_detect, now_albums) =
+                    if let Mode::MediaLibrary(s) = &mut self.mode {
+                        s.tab = match s.tab {
+                            MediaLibraryTab::Files => MediaLibraryTab::Playlists,
+                            MediaLibraryTab::Playlists => MediaLibraryTab::Discs,
+                            MediaLibraryTab::Discs => MediaLibraryTab::Albums,
+                            MediaLibraryTab::Albums => MediaLibraryTab::Files,
+                        };
+                        s.selected_track = 0;
+                        s.selected_playlist = 0;
+                        s.playlist_preview = None;
+                        let discs = s.tab == MediaLibraryTab::Discs;
+                        let albums = s.tab == MediaLibraryTab::Albums;
+                        if albums {
+                            // Always start at the album list, never mid-drill,
+                            // on (re-)entry to the tab.
+                            s.selected_album = 0;
+                            s.album_drill = None;
+                            s.album_tracks.clear();
+                            s.selected_album_track = 0;
+                        }
+                        (discs, discs && s.drives.is_empty(), albums)
+                    } else {
+                        (false, false, false)
                     };
-                    s.selected_track = 0;
-                    s.selected_playlist = 0;
-                    s.playlist_preview = None;
-                    let discs = s.tab == MediaLibraryTab::Discs;
-                    (discs, discs && s.drives.is_empty())
-                } else {
-                    (false, false)
-                };
                 // First visit: detect drives (subprocess-backed, so only on
                 // entry / explicit refresh, never per-frame).
                 if need_detect {
@@ -262,6 +298,11 @@ impl App {
                             s.gnudb_matches = Some((list, 0));
                         }
                     }
+                }
+                // Load the album list on entry — a single DB query, not
+                // re-run per keystroke while browsing it.
+                if now_albums {
+                    self.refresh_ml_albums();
                 }
             }
 
@@ -289,6 +330,14 @@ impl App {
                         MediaLibraryTab::Discs => {
                             s.selected_disc_track = s.selected_disc_track.saturating_sub(1);
                         }
+                        MediaLibraryTab::Albums => {
+                            if s.album_drill.is_some() {
+                                s.selected_album_track =
+                                    s.selected_album_track.saturating_sub(1);
+                            } else {
+                                s.selected_album = s.selected_album.saturating_sub(1);
+                            }
+                        }
                     }
                 }
             }
@@ -313,6 +362,15 @@ impl App {
                                 s.selected_disc_track += 1;
                             }
                         }
+                        MediaLibraryTab::Albums => {
+                            if s.album_drill.is_some() {
+                                if s.selected_album_track + 1 < s.album_tracks.len() {
+                                    s.selected_album_track += 1;
+                                }
+                            } else if s.selected_album + 1 < s.albums.len() {
+                                s.selected_album += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -328,29 +386,7 @@ impl App {
                             None
                         };
                         if let Some(path_str) = path {
-                            let p = std::path::Path::new(&path_str);
-                            match crate::model::Track::from_path(p) {
-                                Ok(track) => {
-                                    let was_empty = self.playlist.is_empty();
-                                    if self.config.behavior.playlist_add_behavior
-                                        == crate::config::PlaylistAddBehavior::Replace
-                                    {
-                                        self.playlist.tracks.clear();
-                                        self.playlist.current_index = 0;
-                                        self.shuffle_state.reset();
-                                    }
-                                    let before = self.playlist.tracks.len();
-                                    self.playlist.add(track);
-                                    self.probe_new_tracks(before);
-                                    if self.config.behavior.autoplay_on_add && was_empty {
-                                        self.play_current();
-                                    }
-                                    self.set_status("Track added to playlist");
-                                }
-                                Err(e) => {
-                                    self.set_status(format!("Cannot add track: {e}"));
-                                }
-                            }
+                            self.add_ml_track_path_to_playlist(path_str);
                         }
                     }
                     MediaLibraryTab::Playlists => {
@@ -380,6 +416,55 @@ impl App {
                         };
                         if let Some(e) = entry {
                             self.add_disc_entries(&[e]);
+                        }
+                    }
+                    MediaLibraryTab::Albums => {
+                        let drilled = if let Mode::MediaLibrary(s) = &self.mode {
+                            s.album_drill.is_some()
+                        } else {
+                            false
+                        };
+                        if drilled {
+                            // Drilled into an album: add the highlighted
+                            // track to the current playlist — same path as
+                            // the Files tab's Enter.
+                            let path = if let Mode::MediaLibrary(s) = &self.mode {
+                                s.album_tracks
+                                    .get(s.selected_album_track)
+                                    .map(|t| t.path.clone())
+                            } else {
+                                None
+                            };
+                            if let Some(path_str) = path {
+                                self.add_ml_track_path_to_playlist(path_str);
+                            }
+                        } else {
+                            // Album list: drill into the selected group's
+                            // track list.
+                            let group = if let Mode::MediaLibrary(s) = &self.mode {
+                                s.albums
+                                    .get(s.selected_album)
+                                    .map(|g| (g.album.clone(), g.album_artist.clone()))
+                            } else {
+                                None
+                            };
+                            if let Some((album, album_artist)) = group {
+                                let artist_as_album =
+                                    self.config.media_library.artist_as_album_artist;
+                                let tracks = self
+                                    .media_lib
+                                    .as_ref()
+                                    .and_then(|lib| {
+                                        lib.album_tracks(&album, &album_artist, artist_as_album)
+                                            .ok()
+                                    })
+                                    .unwrap_or_default();
+                                if let Mode::MediaLibrary(s) = &mut self.mode {
+                                    s.album_tracks = tracks;
+                                    s.album_drill = Some((album, album_artist));
+                                    s.selected_album_track = 0;
+                                }
+                            }
                         }
                     }
                 }
@@ -640,6 +725,56 @@ impl App {
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.tracks = tracks;
             s.selected_track = 0;
+        }
+    }
+
+    /// Add a media-library track (by path) to the current playlist. Shared
+    /// by the Files tab's Enter and the Albums tab's drilled-down track
+    /// list, so both honor the same replace/append and autoplay behavior.
+    pub(super) fn add_ml_track_path_to_playlist(&mut self, path_str: String) {
+        let p = std::path::Path::new(&path_str);
+        match crate::model::Track::from_path(p) {
+            Ok(track) => {
+                let was_empty = self.playlist.is_empty();
+                if self.config.behavior.playlist_add_behavior
+                    == crate::config::PlaylistAddBehavior::Replace
+                {
+                    self.playlist.tracks.clear();
+                    self.playlist.current_index = 0;
+                    self.shuffle_state.reset();
+                }
+                let before = self.playlist.tracks.len();
+                self.playlist.add(track);
+                self.probe_new_tracks(before);
+                if self.config.behavior.autoplay_on_add && was_empty {
+                    self.play_current();
+                }
+                self.set_status("Track added to playlist");
+            }
+            Err(e) => {
+                self.set_status(format!("Cannot add track: {e}"));
+            }
+        }
+    }
+
+    /// Load the Albums tab's grouped list. Called only on Albums-tab entry
+    /// (the Tab-cycle handler) — a lean, single query folded in Rust
+    /// (`MediaLibrary::albums`), never re-run per keystroke, so a 36k-track
+    /// library stays responsive. Default sort: Artist (no sort UI in the
+    /// TUI — YAGNI until requested).
+    pub(super) fn refresh_ml_albums(&mut self) {
+        let artist_as_album = self.config.media_library.artist_as_album_artist;
+        let albums = self
+            .media_lib
+            .as_ref()
+            .and_then(|lib| {
+                lib.albums(crate::media_library::AlbumSort::Artist, artist_as_album)
+                    .ok()
+            })
+            .unwrap_or_default();
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.selected_album = s.selected_album.min(albums.len().saturating_sub(1));
+            s.albums = albums;
         }
     }
 }

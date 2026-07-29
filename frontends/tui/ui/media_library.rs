@@ -67,6 +67,7 @@ pub(super) fn draw_media_library(
         ("Files", MediaLibraryTab::Files),
         ("Playlists", MediaLibraryTab::Playlists),
         ("Discs", MediaLibraryTab::Discs),
+        ("Albums", MediaLibraryTab::Albums),
     ]
     .iter()
     .map(|(label, tab)| {
@@ -126,6 +127,7 @@ pub(super) fn draw_media_library(
         MediaLibraryTab::Files => draw_ml_files(frame, state, pane[1]),
         MediaLibraryTab::Playlists => draw_ml_playlists(frame, state, pane[1]),
         MediaLibraryTab::Discs => draw_ml_discs(frame, state, disc_source_badge, pane[1]),
+        MediaLibraryTab::Albums => draw_ml_albums(frame, state, pane[1]),
     }
 
     // Hint / toast bar — a running burn/rip's progress wins, then status
@@ -180,6 +182,26 @@ pub(super) fn draw_media_library(
             sep(),
             hint("r", "rescan"),
         ])
+    } else if state.tab == MediaLibraryTab::Albums {
+        if state.album_drill.is_some() {
+            Line::from(vec![
+                hint("Esc", "back to albums"),
+                sep(),
+                hint("Enter", "add track"),
+                sep(),
+                hint("↑↓", "select"),
+            ])
+        } else {
+            Line::from(vec![
+                hint("Esc", "close"),
+                sep(),
+                hint("Tab", "tab"),
+                sep(),
+                hint("Enter", "open album"),
+                sep(),
+                hint("↑↓", "select"),
+            ])
+        }
     } else {
         Line::from(vec![
             hint("Esc", "close"),
@@ -938,6 +960,130 @@ pub(super) fn draw_ml_discs(
     let list =
         List::new(items).highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
     frame.render_stateful_widget(list, rows[2], &mut list_state);
+}
+
+/// Render the Albums tab: the grouped album list, or — once drilled into an
+/// album (`state.album_drill`) — that album's track list. Text only, no
+/// cover art (terminals); GTK/mac show art in their own gallery views.
+pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area: Rect) {
+    if area.height < 2 {
+        return;
+    }
+
+    match &state.album_drill {
+        None => {
+            if state.albums.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        "No albums in the media library.",
+                        Style::default().fg(C_DIM),
+                    )),
+                    area,
+                );
+                return;
+            }
+
+            let items: Vec<ListItem> = state
+                .albums
+                .iter()
+                .enumerate()
+                .map(|(i, g)| {
+                    let name = if g.is_no_album {
+                        "(no album)".to_string()
+                    } else {
+                        match g.year {
+                            Some(y) => format!("{} — {} ({y})", g.album, g.album_artist),
+                            None => format!("{} — {}", g.album, g.album_artist),
+                        }
+                    };
+                    let text = format!(
+                        "{name}  ·  {} track{}",
+                        g.track_count,
+                        if g.track_count == 1 { "" } else { "s" }
+                    );
+                    let style = if i == state.selected_album {
+                        Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+                    } else {
+                        Style::default().fg(C_TEXT)
+                    };
+                    ListItem::new(Span::styled(text, style))
+                })
+                .collect();
+
+            let mut list_state = ListState::default();
+            list_state.select(Some(state.selected_album));
+            let list = List::new(items)
+                .highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+            frame.render_stateful_widget(list, area, &mut list_state);
+        }
+        Some((album, album_artist)) => {
+            let header_area = Rect { height: 1, ..area };
+            let list_area = Rect {
+                y: area.y + 1,
+                height: area.height.saturating_sub(1),
+                ..area
+            };
+
+            let header = if album.trim().is_empty() {
+                "(no album)".to_string()
+            } else {
+                format!("{album} — {album_artist}")
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    header,
+                    Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                )),
+                header_area,
+            );
+
+            if state.album_tracks.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(Span::styled("No tracks.", Style::default().fg(C_DIM))),
+                    list_area,
+                );
+                return;
+            }
+
+            let items: Vec<ListItem> = state
+                .album_tracks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let title = t.title.as_deref().unwrap_or(&t.filename);
+                    let artist = t.artist.as_deref().unwrap_or("-");
+                    let len = t
+                        .length_secs
+                        .map(|s| {
+                            let u = s as u64;
+                            format!("{:>2}:{:02}", u / 60, u % 60)
+                        })
+                        .unwrap_or_else(|| "-:--".to_string());
+                    let style = if i == state.selected_album_track {
+                        Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50))
+                    } else {
+                        Style::default().fg(C_TEXT)
+                    };
+                    ListItem::new(Span::styled(
+                        format!(
+                            "{:>3}  {:<32} {:<20} {:>6}",
+                            i + 1,
+                            ml_truncate(title, 32),
+                            ml_truncate(artist, 20),
+                            len
+                        ),
+                        style,
+                    ))
+                })
+                .collect();
+
+            let mut list_state = ListState::default();
+            list_state.select(Some(state.selected_album_track));
+            let list = List::new(items)
+                .highlight_style(Style::default().fg(C_ACCENT).bg(Color::Rgb(30, 30, 50)));
+            frame.render_stateful_widget(list, list_area, &mut list_state);
+        }
+    }
 }
 
 /// Truncate a string to at most `max_chars` characters, appending `…` when cut.

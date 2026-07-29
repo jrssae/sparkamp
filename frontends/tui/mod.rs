@@ -150,6 +150,9 @@ pub enum MediaLibraryTab {
     Playlists,
     /// Optical drives: one row per drive, with the loaded disc's track list.
     Discs,
+    /// Album gallery: text list of album groups, Enter drills into tracks.
+    /// No art — terminals only.
+    Albums,
 }
 
 /// All state required by the full-screen media library view.
@@ -206,6 +209,20 @@ pub struct MediaLibraryState {
     pub rip: Option<RipSetupState>,
     /// Burn overlay, when open.
     pub burn: Option<BurnSetupState>,
+    /// Album groups shown in the Albums tab, loaded once on tab entry
+    /// (never re-queried per keystroke — a 36k-track library would make
+    /// that unusable).
+    pub albums: Vec<crate::media_library::AlbumGroup>,
+    /// Highlighted row in the Albums tab's album list.
+    pub selected_album: usize,
+    /// `Some((album, album_artist))` when drilled into an album's track
+    /// list; `None` shows the album list itself. Mirrors the identity pair
+    /// `MediaLibrary::album_tracks` matches against.
+    pub album_drill: Option<(String, String)>,
+    /// Tracks of the currently drilled-into album (Albums tab detail view).
+    pub album_tracks: Vec<crate::media_library::LibTrack>,
+    /// Highlighted row in the Albums tab's drilled-down track list.
+    pub selected_album_track: usize,
 }
 
 /// State of the burn overlay (Discs tab, `b`).
