@@ -99,6 +99,17 @@ pub enum Mode {
     PlaylistOps {
         selected: usize,
     },
+    /// y key: read-only lyrics viewer (F15) for a track with saved USLT.
+    /// `return_mode` is the mode to restore on Esc so opening from the Media
+    /// Library returns there with its state intact (no rebuild). `lines` is the
+    /// pre-wrapped-at-render lyric text split on newlines; `scroll` is the
+    /// vertical offset.
+    Lyrics {
+        title: String,
+        lines: Vec<String>,
+        scroll: u16,
+        return_mode: Box<Mode>,
+    },
 }
 
 /// State for an in-progress background add-file scan.

@@ -322,6 +322,38 @@ impl App {
                 }
             }
 
+            // 'y' — View/Search Lyrics for the highlighted Files/Albums track.
+            KeyCode::Char('y') => {
+                let track = if let Mode::MediaLibrary(s) = &self.mode {
+                    match s.tab {
+                        MediaLibraryTab::Files => s.tracks.get(s.selected_track).map(|t| {
+                            (
+                                std::path::PathBuf::from(&t.path),
+                                t.artist.clone().unwrap_or_default(),
+                                t.title.clone().unwrap_or_default(),
+                                t.album_artist.clone().unwrap_or_default(),
+                            )
+                        }),
+                        MediaLibraryTab::Albums if album_drilled => {
+                            s.album_tracks.get(s.selected_album_track).map(|t| {
+                                (
+                                    std::path::PathBuf::from(&t.path),
+                                    t.artist.clone().unwrap_or_default(),
+                                    t.title.clone().unwrap_or_default(),
+                                    t.album_artist.clone().unwrap_or_default(),
+                                )
+                            })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some((path, artist, title, album_artist)) = track {
+                    self.open_lyrics(path, artist, title, album_artist);
+                }
+            }
+
             // Navigation: up.
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Mode::MediaLibrary(s) = &mut self.mode {
@@ -760,6 +792,46 @@ impl App {
             }
             Err(e) => {
                 self.set_status(format!("Cannot add track: {e}"));
+            }
+        }
+    }
+
+    /// View/Search Lyrics (F15) for one track. Saved USLT opens the read-only
+    /// viewer overlay (preserving the current mode so Esc returns to the Media
+    /// Library with its state intact); no lyrics best-effort launches a browser
+    /// search, falling back to showing the URL in the status line when no
+    /// `xdg-open` is available (terminals can't always open a browser).
+    pub(super) fn open_lyrics(
+        &mut self,
+        path: std::path::PathBuf,
+        artist: String,
+        title: String,
+        album_artist: String,
+    ) {
+        match crate::lyrics::lyrics_action(&path, &artist, &title, &album_artist) {
+            crate::lyrics::LyricsAction::Show(text) => {
+                let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+                let disp = if title.trim().is_empty() {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("?")
+                        .to_string()
+                } else {
+                    title
+                };
+                let prev = std::mem::replace(&mut self.mode, Mode::Normal);
+                self.mode = Mode::Lyrics {
+                    title: disp,
+                    lines,
+                    scroll: 0,
+                    return_mode: Box::new(prev),
+                };
+            }
+            crate::lyrics::LyricsAction::Search(url) => {
+                match std::process::Command::new("xdg-open").arg(&url).spawn() {
+                    Ok(_) => self.set_status("Opening lyrics search in browser…"),
+                    Err(_) => self.set_status(format!("Lyrics: {url}")),
+                }
             }
         }
     }

@@ -440,6 +440,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             key("  w"),
             Span::raw("      Now-playing info (tags, stats, links)"),
         ]),
+        Line::from(vec![
+            key("  y"),
+            Span::raw("      View/Search lyrics for highlighted track"),
+        ]),
         Line::from(vec![key("  i"), Span::raw("      Show this help")]),
         Line::from(vec![key("  Esc"), Span::raw("     Quit")]),
         Line::from(""),
@@ -613,6 +617,60 @@ pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) 
                     .border_style(Style::default().fg(C_ACCENT)),
             )
             .style(Style::default().fg(C_TEXT))
+            .scroll((clamped_scroll, 0)),
+        popup,
+    );
+}
+
+/// Render the read-only lyrics viewer (`y` key, F15): the saved USLT text for
+/// one track, wrapped and vertically scrollable. `title`/`lines`/`scroll` come
+/// from `Mode::Lyrics`; no disk access happens per frame (the text was read
+/// once at open time).
+pub(super) fn draw_lyrics_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let (title, lines, scroll) = if let Mode::Lyrics { title, lines, scroll, .. } = &app.mode {
+        (title.clone(), lines.clone(), *scroll)
+    } else {
+        (String::new(), Vec::new(), 0)
+    };
+
+    let body: Vec<Line> = if lines.is_empty() {
+        vec![Line::from(Span::styled(
+            "(no lyrics text)",
+            Style::default().fg(C_DIM),
+        ))]
+    } else {
+        lines.into_iter().map(Line::from).collect()
+    };
+
+    let popup_h = area.height.saturating_sub(4).max(6);
+    let popup_w = area.width.saturating_sub(8).min(72).max(40);
+    let popup = centered_popup(area, popup_w, popup_h);
+
+    let visible = popup_h.saturating_sub(2) as usize;
+    let total = body.len();
+    let max_scroll = total.saturating_sub(visible) as u16;
+    let clamped_scroll = scroll.min(max_scroll);
+
+    let heading = if total > visible {
+        format!(" Lyrics — {title}  [{}/{}] ", clamped_scroll + 1, max_scroll + 1)
+    } else {
+        format!(" Lyrics — {title} ")
+    };
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(body)
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        heading,
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(C_ACCENT)),
+            )
+            .style(Style::default().fg(C_TEXT))
+            .wrap(Wrap { trim: false })
             .scroll((clamped_scroll, 0)),
         popup,
     );

@@ -263,6 +263,22 @@ impl App {
                     _ => {}
                 }
             }
+            Mode::Lyrics { ref mut scroll, .. } => {
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
+                    // Close and restore the mode the viewer was opened from
+                    // (e.g. the Media Library with its selection intact).
+                    KeyCode::Esc | KeyCode::Char('y') | KeyCode::Char('q') => {
+                        if let Mode::Lyrics { return_mode, .. } =
+                            std::mem::replace(&mut self.mode, Mode::Normal)
+                        {
+                            self.mode = *return_mode;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -475,6 +491,24 @@ impl App {
                         extra_cursor: 0,
                         status: None,
                     });
+                } else {
+                    self.set_status("No track selected");
+                }
+            }
+
+            // y — View/Search Lyrics for the active-playlist track under the
+            // cursor (or the playing track when the list is collapsed).
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let y_idx = if self.playlist_visible {
+                    self.playlist_cursor
+                } else {
+                    self.playlist.current_index
+                };
+                let track = self.playlist.tracks.get(y_idx).map(|t| {
+                    (t.path.clone(), t.artist.clone(), t.title.clone(), t.album_artist.clone())
+                });
+                if let Some((path, artist, title, album_artist)) = track {
+                    self.open_lyrics(path, artist, title, album_artist);
                 } else {
                     self.set_status("No track selected");
                 }
