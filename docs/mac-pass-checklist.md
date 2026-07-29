@@ -1346,3 +1346,30 @@ nav case, "Albums" sidebar row, album-filter honoring in `reload()`, the
       through the shared config file — but it means the zoom/sort chosen on
       one platform does not carry over to the other. Nothing to fix here;
       just confirm this is the expected, accepted behavior during the pass.
+
+## Phase 11 — gallery navigation polish (2026-07-29, BLIND — Swift never compiled)
+
+Parity with the GTK interactive-pass fixes (`fix(gtk): album gallery
+navigation polish`). Verify in Xcode / on hardware:
+
+- [ ] **Single click opens an album**: one click on a tile (not a
+      double-click) navigates into that album's tracks. (`AlbumCell` is a
+      plain SwiftUI `Button`, so this already held on mac — confirm it still
+      does after the changes.)
+- [ ] **Back-to-albums button**: while viewing an album's tracks, the Files
+      toolbar shows a "‹ Albums" button at the far left (before the search
+      field). Clicking it returns to the **gallery overview** (the album
+      grid), not the unfiltered Files list, and clears the drill-down filter.
+      The "Files" sidebar row remains the way back to the full library.
+- [ ] **Albums sidebar returns to the overview**: while viewing an album's
+      tracks, click "Albums" in the sidebar — it returns to the gallery
+      overview and clears the drill-down filter (does not leave a stale
+      album filter set).
+- [ ] **Zoom is −/＋ buttons with a "Zoom" label**: the gallery header shows
+      a minus button, the word "Zoom", and a plus button (the old continuous
+      slider + photo icons are gone). No pixel size is displayed. −/＋ step by
+      32 px, clamped to 96…256; each button disables at its limit.
+- [ ] **Please-wait on zoom**: clicking − or ＋ briefly shows a small spinner
+      in the header while the grid re-lays out and newly-visible covers load,
+      then it disappears (~0.35 s). Confirm no flicker/hang and that the new
+      size renders.

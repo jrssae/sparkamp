@@ -80,7 +80,14 @@ struct MediaLibraryView: View {
                         nav = .files
                         if hadFilter { reload() }
                     })
-                    sidebarRow(label: "Albums", icon: "square.grid.2x2", target: .albums)
+                    sidebarRow(label: "Albums", icon: "square.grid.2x2", target: .albums, onSelect: {
+                        // Returning to Albums always lands on the gallery
+                        // overview — clear any drill-down filter left set from
+                        // a tapped album (mirrors GTK's show_gallery_overview
+                        // on the Albums sidebar row / row-activated).
+                        model.mlSelectedAlbum = nil
+                        nav = .albums
+                    })
                     playlistsHeader
                     if playlistsExpanded {
                         ForEach(model.mlSavedPlaylists) { pl in
@@ -778,27 +785,29 @@ struct MediaLibraryView: View {
 
     // MARK: - Toolbar subviews
 
-    /// "Back" affordance for the album drill-down filter — shown in the
-    /// Files toolbar only while `mlSelectedAlbum` is set. Tapping it clears
-    /// the filter and restores the full/searched list (same effect as
-    /// re-selecting the "Files" sidebar row).
+    /// "Back to albums" affordance for the album drill-down — shown at the
+    /// left of the Files toolbar (before the search field) only while
+    /// `mlSelectedAlbum` is set. Tapping it clears the filter and returns to
+    /// the gallery overview (mirrors GTK's back button / `show_gallery_overview`
+    /// — NOT just the unfiltered Files list; the "Files" sidebar row remains
+    /// the way back to the full library).
     @ViewBuilder
     private var albumFilterChip: some View {
-        if let filter = model.mlSelectedAlbum {
+        if model.mlSelectedAlbum != nil {
             Button {
                 model.mlSelectedAlbum = nil
-                reload()
+                nav = .albums
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left").font(.system(size: 10))
-                    Text(filter.album.isEmpty ? "(no album)" : filter.album)
+                    Text("Albums")
                         .font(themeManager.currentVars.bodyFont)
                         .lineLimit(1)
                 }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help("Back to full library")
+            .help("Back to albums")
         }
     }
 

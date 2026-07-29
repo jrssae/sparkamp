@@ -40,6 +40,15 @@ struct MLAlbumGallery: View {
 
     @State private var albums: [AlbumGroup] = []
 
+    /// True briefly after a zoom change while the grid re-lays out and the
+    /// newly-revealed cells load their covers — drives the "please wait"
+    /// spinner (mirrors GTK's zoom spinner).
+    @State private var zooming = false
+
+    private let zoomMin: Double = 96
+    private let zoomMax: Double = 256
+    private let zoomStep: Double = 32
+
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: CGFloat(thumbPx), maximum: CGFloat(thumbPx) * 1.35), spacing: 16)]
     }
@@ -106,20 +115,52 @@ struct MLAlbumGallery: View {
             .labelsHidden()
             .frame(width: 130)
 
+            // "Please wait" while a zoom change re-lays out the grid and the
+            // newly-visible cells load their covers.
+            if zooming {
+                ProgressView()
+                    .controlSize(.small)
+                    .help("Rendering new size…")
+            }
+
+            // Zoom as −/＋ buttons with a plain "Zoom" label between them
+            // (no pixel size shown) — matches the GTK gallery.
             HStack(spacing: 6) {
-                Image(systemName: "photo")
-                    .font(.system(size: 10))
+                Button { changeZoom(by: -zoomStep) } label: {
+                    Image(systemName: "minus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(thumbPx <= zoomMin)
+
+                Text("Zoom")
+                    .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
-                Slider(value: $thumbPx, in: 96...256, step: 8)
-                    .frame(width: 120)
-                Image(systemName: "photo.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(theme.playlistDurationText)
+
+                Button { changeZoom(by: zoomStep) } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(thumbPx >= zoomMax)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(theme.background)
+    }
+
+    /// Step the thumbnail size by `delta`, clamped to `zoomMin...zoomMax`, and
+    /// show the please-wait spinner briefly while the grid settles. `@AppStorage`
+    /// persists the new size, same as before.
+    private func changeZoom(by delta: Double) {
+        let newValue = min(max(thumbPx + delta, zoomMin), zoomMax)
+        guard newValue != thumbPx else { return }
+        zooming = true
+        thumbPx = newValue
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            zooming = false
+        }
     }
 
     private func reloadAlbums() {
