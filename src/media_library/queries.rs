@@ -579,6 +579,16 @@ impl MediaLibrary {
     /// Matches `(album, album_artist)` against the requested pair using the
     /// same `effective_album_artist` resolution as [`Self::albums`] — kept in
     /// Rust rather than SQL for the same single-source-of-truth reason.
+    ///
+    /// When `album.trim()` is empty this is a fetch of the "(no album)"
+    /// bucket, which [`Self::albums`] forms by collapsing *every* blank-album
+    /// track into one group regardless of artist. So here too a blank
+    /// `album` matches by blank album alone, ignoring `album_artist`
+    /// entirely — otherwise calling this with the bucket's own
+    /// `(album="", album_artist="")` would wrongly filter out tracks whose
+    /// real artist isn't blank and return fewer rows than the bucket
+    /// reported.
+    ///
     /// Ordered by `(disc_num, track_num, filename)`, with NULL `disc_num`
     /// treated as 0 and NULL `track_num` sorted after any known track number.
     pub fn album_tracks(
@@ -599,16 +609,25 @@ impl MediaLibrary {
 
         let want_album = album.trim().to_lowercase();
         let want_artist = album_artist.trim().to_lowercase();
-        tracks.retain(|t| {
-            let t_album = t.album.as_deref().unwrap_or("").trim().to_lowercase();
-            let eff = effective_album_artist(
-                t.artist.as_deref().unwrap_or(""),
-                t.album_artist.as_deref().unwrap_or(""),
-                artist_as_album,
-            )
-            .to_lowercase();
-            t_album == want_album && eff == want_artist
-        });
+        if want_album.is_empty() {
+            // The no-album bucket in `albums()` collapses every blank-album
+            // track into one group regardless of artist, so fetching it back
+            // by the bucket's own (blank) fields must match the same way —
+            // on blank album alone — not by re-imposing an artist filter
+            // that the bucket never applied.
+            tracks.retain(|t| t.album.as_deref().unwrap_or("").trim().is_empty());
+        } else {
+            tracks.retain(|t| {
+                let t_album = t.album.as_deref().unwrap_or("").trim().to_lowercase();
+                let eff = effective_album_artist(
+                    t.artist.as_deref().unwrap_or(""),
+                    t.album_artist.as_deref().unwrap_or(""),
+                    artist_as_album,
+                )
+                .to_lowercase();
+                t_album == want_album && eff == want_artist
+            });
+        }
 
         tracks.sort_by(|a, b| {
             let ad = a.disc_num.unwrap_or(0);
@@ -941,5 +960,33 @@ mod tests {
         let tracks = lib.album_tracks("", "Artist", false).unwrap();
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].filename, "k1.mp3");
+    }
+
+    // Regression: the no-album bucket returned by `albums()` collapses ALL
+    // blank-album tracks into one group with `album=""` and
+    // `album_artist=""`, regardless of the tracks' real artists. Fetching
+    // that bucket's tracks via `album_tracks(bucket.album, bucket.album_artist, ...)`
+    // must therefore match on blank album alone — not on artist — or the
+    // gallery's "(no album)" tile shows N tracks but opens empty.
+    #[test]
+    fn album_tracks_fetches_full_no_album_bucket_via_its_own_fields() {
+        let (lib, _db) = temp_lib();
+        insert_track(
+            &lib, "/m/l1.mp3", "l1.mp3", "Artist", "", "Artist", Some(1), None, None, None,
+        );
+        insert_track(
+            &lib, "/m/l2.mp3", "l2.mp3", "Other", "", "Other", Some(1), None, None, None,
+        );
+
+        let groups = lib.albums(AlbumSort::Album, false).unwrap();
+        let bucket = groups.iter().find(|g| g.is_no_album).unwrap();
+        assert_eq!(bucket.track_count, 2);
+
+        let tracks = lib
+            .album_tracks(&bucket.album, &bucket.album_artist, false)
+            .unwrap();
+        let mut names: Vec<&str> = tracks.iter().map(|t| t.filename.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["l1.mp3", "l2.mp3"]);
     }
 }
