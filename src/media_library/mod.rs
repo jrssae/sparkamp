@@ -24,6 +24,11 @@ pub use devices::{DeviceRecord, PlaylistBaseline, SyncPair};
 // PlaySnapshot: pre-play stats captured before record_play's 20s timer fires.
 #[allow(unused_imports)]
 pub use playlists::PlaySnapshot;
+// AlbumGroup/AlbumSort: phase-11 album gallery grouping types; no frontend
+// consumer yet (that lands in a later phase), so allow the unused-import
+// warning until then.
+#[allow(unused_imports)]
+pub use queries::{AlbumGroup, AlbumSort};
 #[cfg(test)]
 mod tests;
 
