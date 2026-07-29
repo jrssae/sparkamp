@@ -7,6 +7,14 @@ fn open_settings_window(
     accent_rgba: Rc<RefCell<Option<gdk::RGBA>>>,
     rebuild_playlist: Rc<dyn Fn()>,
 ) {
+    // Singleton: if a Settings window is already open, focus it instead of
+    // opening a second one (matches ml_window / art_window). All callers pass
+    // initial_tab = None today, so re-presenting keeps the existing tab.
+    if let Some(existing) = state.borrow().settings_window.clone() {
+        existing.present();
+        return;
+    }
+
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — Sparkamp"));
     win.set_default_size(480, 340);
@@ -2373,7 +2381,10 @@ fn open_settings_window(
     {
         let state_rc = state.clone();
         win.connect_close_request(move |_| {
-            let _ = state_rc.borrow().config.save();
+            let mut s = state_rc.borrow_mut();
+            let _ = s.config.save();
+            // Clear the singleton handle so the next open builds a fresh one.
+            s.settings_window = None;
             glib::Propagation::Proceed
         });
     }
@@ -2383,6 +2394,7 @@ fn open_settings_window(
     vbox.append(&close_btn);
     win.set_child(Some(&vbox));
     win.present();
+    state.borrow_mut().settings_window = Some(win);
 }
 
 // ---------------------------------------------------------------------------

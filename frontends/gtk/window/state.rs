@@ -47,6 +47,9 @@ struct AppState {
     watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
     /// The media library browser window, if one is currently open.
     ml_window: Option<gtk4::Window>,
+    /// The settings window, if one is currently open. Singleton (like
+    /// `ml_window`): a second open request just `present()`s this one.
+    settings_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
     id3_editor_window: Option<gtk4::Window>,
     /// The A6 standalone album-art window, once built. Unlike `ml_window` /
@@ -518,6 +521,7 @@ impl AppState {
             watch: None,
             watch_rx: None,
             ml_window: None,
+            settings_window: None,
             id3_editor_window: None,
             art_window: None,
             mpris_guard: None,
