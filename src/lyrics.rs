@@ -117,6 +117,21 @@ mod tests {
     }
 
     #[test]
+    fn query_artist_matches_display_precedence() {
+        // Pin the search-query artist fallback to the SAME precedence the row
+        // label uses (artist, else album_artist, else none) — see
+        // `Track::display_name` in src/model.rs:236. If that fallback changes,
+        // this must change with it so the search query never drifts from the
+        // label the user right-clicked. (query_artist additionally trims, so a
+        // whitespace-only artist falls through — a deliberate superset.)
+        assert_eq!(query_artist("Artist", "AlbumArtist"), "Artist");
+        assert_eq!(query_artist("", "AlbumArtist"), "AlbumArtist");
+        assert_eq!(query_artist("Artist", ""), "Artist");
+        assert_eq!(query_artist("", ""), "");
+        assert_eq!(query_artist("   ", "AlbumArtist"), "AlbumArtist");
+    }
+
+    #[test]
     fn action_searches_when_path_unreadable() {
         // A missing file must degrade to Search, never panic.
         match lyrics_action(Path::new("/no/such/file.mp3"), "A", "T", "") {
