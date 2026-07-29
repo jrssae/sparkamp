@@ -1204,3 +1204,54 @@ before this feature existed (blank cell for a blank album-artist tag).
       (`sparkamp_get_artist_as_album_artist`, `sparkamp_set_artist_as_album_artist`)
       — both take/return a plain `bool`, no persistence side effect in the
       setter (call `sparkamp_save_config` separately, as the Toggle does).
+
+## Phase 10 — Task 7: F12.3 skip database load at startup (2026-07-28, BLIND — Swift never compiled)
+
+Mirrors the 2 new FFI functions (`sparkamp_get/set_skip_db_load`) into
+`sparkamp_bridge.h`, and adds a "Skip database load at startup" toggle to
+`SettingsWindow.swift`'s Media Library section (same Toggle/onChange/
+`sparkamp_save_config` idiom as the neighboring `artistAsAlbumArtist` row).
+No mac runtime-behavior change was needed beyond the toggle itself: unlike
+GTK (whose `AppState::new` unconditionally called
+`MediaLibrary::open()` at startup before this task), the mac core
+(`SparkampCtx`) has never eagerly opened the Media-Library DB — it starts
+with `media_library: None` (`src/ffi/mod.rs`'s `sparkamp_create`) and only
+opens it via `sparkamp_ml_open`, called from `SparkampModel+MediaLibrary
+.swift`'s `openMediaLibrary()` at first demand (ML window open/restore,
+Discs auto-open, dedupe, Settings "Add Folder…"). That function already
+kicks `sparkamp_ml_watch_rebuild(ctx)` right after opening, and
+`rebuild_watcher` (Rust) already no-ops while `ctx.media_library` is `None`
+— so watcher-on-first-open was already correct pre-existing behavior, not
+new wiring. The toggle's only mac-visible effect is that it now persists in
+`config.media_library.skip_db_load` and round-trips through Settings, for
+config parity with GTK/TUI.
+
+- [ ] **Cold start unaffected**: with the toggle either on or off, and
+      `mediaLibraryVisible` false from the previous session (ML window was
+      closed at last quit), launch the app — `sparkamp_ml_open` is not
+      called until something demands it (confirm via a log/breakpoint on
+      `openMediaLibrary()` if needed); the player window appears without
+      any DB-open delay either way, since mac never blocked cold start on
+      this to begin with.
+- [ ] **First ML open loads normally**: with the toggle on, open the Media
+      Library (⌘L / toolbar / menu) — folders, saved playlists, and tracks
+      load exactly as with the toggle off; no error, no empty-forever state.
+- [ ] **Play-count still works after ML opens**: with the toggle on, open
+      the Media Library once (so the DB is open), close it, then play a
+      track past the play-count threshold (F11) — `record_play` still fires
+      (check via a reopened Files view's Play Count column or last-played
+      timestamp).
+- [ ] **A1 stats show placeholders before ML ever opens**: with the toggle
+      on and a fresh launch (ML never opened this session), play a track and
+      open the A1 now-playing panel — Play Count / Last Played show their
+      "never played" placeholder rather than a crash or a stale/bogus value;
+      `sparkamp_now_playing_has_play_count` returns false for every track
+      until the library is opened.
+- [ ] **Toggle persists across relaunch**: turn on "Skip database load at
+      startup", quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Media
+      Library still shows it on.
+- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
+      against the 2 declarations added to `sparkamp_bridge.h`
+      (`sparkamp_get_skip_db_load`, `sparkamp_set_skip_db_load`) — both
+      take/return a plain `bool`, no persistence side effect in the setter
+      (call `sparkamp_save_config` separately, as the Toggle does).

@@ -4990,7 +4990,10 @@ pub fn build(
                     return;
                 }
             }
-            // First open: create the window.
+            // First open: create the window. Lazy-open the ML database now if
+            // `skip_db_load` left it unopened at startup (F12.3) — this is
+            // the real first-demand site.
+            ensure_media_lib_open(&state_rc);
             let parent = window_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
             let (w, h) = {
                 let cfg = &state_rc.borrow().config.window;
@@ -5475,6 +5478,9 @@ pub fn build(
         let btn_ml_for_restore = btn_ml.clone();
         glib::timeout_add_local_once(Duration::from_millis(50), move || {
             let state_rc = state.clone();
+            // The ML window is being restored visible from last session —
+            // that is itself first demand, so lazy-open the DB now (F12.3).
+            ensure_media_lib_open(&state_rc);
             let rebuild_pl = rebuild_playlist.clone();
             let ml_win = open_media_library_window(
                 Some(&window.upcast::<gtk4::Window>()),

@@ -356,6 +356,29 @@ fn update_scan_ui_elements(
     }
 }
 
+/// Lazily open the Media-Library database if it isn't already (F12.3
+/// `skip_db_load`). A no-op if `media_lib` is already `Some` — safe to call
+/// from every first-demand site without checking first.
+///
+/// Call this at the app's real first-demand sites: the ML window open
+/// handler (which also covers the device-sync view nested inside it) is the
+/// only one wired today. On a successful first open it also kicks the
+/// folder watcher via `watch::rebuild_watcher` — under `skip_db_load` the
+/// watcher stays dormant until this fires (binding user decision: never
+/// force the DB open at startup just because `watch_folders` is on).
+fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
+    if state.borrow().media_lib.is_some() {
+        return;
+    }
+    {
+        let mut s = state.borrow_mut();
+        s.media_lib = crate::media_library::MediaLibrary::open().ok();
+    }
+    if state.borrow().media_lib.is_some() {
+        watch::rebuild_watcher(state);
+    }
+}
+
 /// Build the engine's ReplayGain chain shape from config. Shared by startup
 /// and the settings-change apply path so they never drift.
 fn rg_chain(cfg: &Config) -> crate::engine::RgChain {
@@ -444,17 +467,27 @@ impl AppState {
             config.playback.replaygain.source,
             config.playback.shuffle_enabled,
         ));
-        let media_lib = crate::media_library::MediaLibrary::open().ok();
+        // F12.3: when `skip_db_load` is on, leave the Media-Library database
+        // unopened at startup — `ensure_media_lib_open` (below) opens it
+        // lazily the first time something actually needs it (ML window open,
+        // which also covers the device-sync view nested inside it). This
+        // also skips the soft-delete cleanup sweep, which otherwise opens
+        // the DB unconditionally on every launch.
+        let media_lib = if config.media_library.skip_db_load {
+            None
+        } else {
+            let lib = crate::media_library::MediaLibrary::open().ok();
 
-        // Startup cleanup: purge any soft-deleted records from previous sessions
-        {
+            // Startup cleanup: purge any soft-deleted records from previous sessions
             let db_path = crate::media_library::MediaLibrary::db_path_pub();
             std::thread::spawn(move || {
                 if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
                     let _ = lib.cleanup_on_startup();
                 }
             });
-        }
+
+            lib
+        };
 
         let shuffle_state = {
             let mut s = ShuffleState::new();

@@ -2216,6 +2216,25 @@ fn open_settings_window(
         }
         grid.attach(&chk_artist_as_album, 1, 18, 1, 1);
 
+        // Row 19: skip database load at startup (F12.3). Takes effect on the
+        // NEXT launch — this session's `media_lib` (already open or already
+        // deferred) is untouched, matching how `rescan_on_startup` above is
+        // a next-launch setting too.
+        let lbl_skip_db_load = Label::new(Some("Skip database load at startup"));
+        lbl_skip_db_load.set_halign(Align::Start);
+        grid.attach(&lbl_skip_db_load, 0, 19, 1, 1);
+        let chk_skip_db_load = CheckButton::new();
+        chk_skip_db_load.set_active(state.borrow().config.media_library.skip_db_load);
+        {
+            let state_rc = state.clone();
+            chk_skip_db_load.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.media_library.skip_db_load = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_skip_db_load, 1, 19, 1, 1);
+
         let tab_lbl = Label::new(Some("Media Library"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }

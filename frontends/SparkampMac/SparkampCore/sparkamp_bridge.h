@@ -344,6 +344,16 @@ void    sparkamp_set_last_search(SparkampCtx *ctx, const char *view_id, const ch
 bool    sparkamp_get_artist_as_album_artist(const SparkampCtx *ctx);
 void    sparkamp_set_artist_as_album_artist(SparkampCtx *ctx, bool value);
 
+/* ── Skip database load at startup (F12.3) ───────────────────────────────────
+   sparkamp_get/set_skip_db_load is a plain config flag: when true, the
+   Media-Library database is left unopened at startup and opened lazily on
+   first demand (ML window open, device sync, or the folder watcher's first
+   need); the watcher itself stays dormant until the DB is first opened by
+   something else. Setter does not persist automatically — call
+   sparkamp_save_config. */
+bool    sparkamp_get_skip_db_load(const SparkampCtx *ctx);
+void    sparkamp_set_skip_db_load(SparkampCtx *ctx, bool value);
+
 /* ── Play-count threshold (F11) ──────────────────────────────────────────────
    sparkamp_play_deadline_secs returns the position (seconds) at which the
    current track should be counted as played, given its length (length_secs

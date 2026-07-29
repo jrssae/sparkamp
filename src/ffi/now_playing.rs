@@ -195,3 +195,79 @@ pub unsafe extern "C" fn sparkamp_now_playing_album_wiki_url(
     let s = (&*np).info.album_wiki_url.clone().unwrap_or_default();
     CString::new(s).unwrap_or_default().into_raw()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Playlist, Track};
+    use std::sync::mpsc;
+
+    /// Minimal `SparkampCtx` for FFI unit tests — mirrors
+    /// `ffi::settings::tests::test_ctx`, with one current-playlist track and
+    /// `media_library` left `None` (the F12.3 `skip_db_load` pre-open state).
+    fn test_ctx_with_track() -> SparkampCtx {
+        gstreamer::init().expect("GStreamer must be available for tests");
+        let (meta_tx, meta_rx) = mpsc::channel();
+        let (duration_tx, duration_rx) = mpsc::channel();
+        let mut playlist = Playlist::new();
+        playlist.add(Track {
+            path: std::path::PathBuf::from("/nonexistent/skip-db-load-test-track.mp3"),
+            title: "Test Track".to_string(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        });
+        SparkampCtx {
+            player: crate::engine::Player::new().expect("Player::new"),
+            playlist,
+            config: crate::config::Config::default(),
+            shuffle_state: crate::shuffle::ShuffleState::new(),
+            queue: crate::queue::Queue::new(),
+            meta_tx,
+            meta_rx,
+            duration_tx,
+            duration_rx,
+            dirty_count: 0,
+            last_known_duration: None,
+            eos_cb: None,
+            eos_userdata: std::ptr::null_mut(),
+            error_cb: None,
+            error_userdata: std::ptr::null_mut(),
+            position_cb: None,
+            position_userdata: std::ptr::null_mut(),
+            media_library: None,
+            ml_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ml_scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ml_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rg_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            watch: None,
+            watch_rx: None,
+        }
+    }
+
+    /// F12.3 `skip_db_load`: the A1 now-playing stats read must tolerate a
+    /// not-yet-open media library gracefully — no crash, and `has_play_count`
+    /// reports false (the GTK/mac panels render em-dashes for that case)
+    /// rather than a bogus zero-means-real-zero value.
+    #[test]
+    fn now_playing_open_is_none_safe_when_media_lib_closed() {
+        let mut ctx = test_ctx_with_track();
+        assert!(ctx.media_library.is_none());
+        let np = unsafe { sparkamp_now_playing_open(&mut ctx) };
+        assert!(!np.is_null());
+        unsafe {
+            assert_eq!(sparkamp_now_playing_has_play_count(np), 0);
+            assert_eq!(sparkamp_now_playing_play_count(np), 0);
+            let lp = sparkamp_now_playing_last_played(np);
+            assert_eq!(std::ffi::CStr::from_ptr(lp).to_str().unwrap(), "");
+            crate::ffi::sparkamp_free_string(lp);
+            sparkamp_now_playing_close(np);
+        }
+    }
+}

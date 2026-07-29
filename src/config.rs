@@ -771,6 +771,13 @@ pub struct MediaLibraryConfig {
     /// (phase 11 album gallery) must use the same helper.
     #[serde(default)]
     pub artist_as_album_artist: bool,
+
+    /// When true, do not open/load the Media-Library database at startup.
+    /// It is opened lazily on first demand (ML window, device sync, or the
+    /// folder watcher's first need); the watcher itself stays dormant until
+    /// then (F12.3). Defaults to `false` (today's eager-open behaviour).
+    #[serde(default)]
+    pub skip_db_load: bool,
 }
 
 impl MediaLibraryConfig {
@@ -847,6 +854,7 @@ impl Default for MediaLibraryConfig {
             remember_search: false,
             last_search: std::collections::HashMap::new(),
             artist_as_album_artist: false,
+            skip_db_load: false,
         }
     }
 }
@@ -1373,6 +1381,7 @@ rescan_interval_mins = 60
         assert!(!cfg.auto_add_played);
         assert!(!cfg.remove_missing_on_rescan);
         assert!(!cfg.compact_on_rescan);
+        assert!(!cfg.skip_db_load);
     }
 
     #[test]
@@ -1391,6 +1400,8 @@ visible_columns = ["title", "artist"]
         assert!(!cfg.compact_on_rescan);
         assert!(cfg.rescan_on_startup);
         assert_eq!(cfg.rescan_interval_mins, 60);
+        // F12.3: old TOML predating this field must still load, defaulting off.
+        assert!(!cfg.skip_db_load);
     }
 
     #[test]
@@ -1400,6 +1411,7 @@ visible_columns = ["title", "artist"]
         cfg.auto_add_played = true;
         cfg.remove_missing_on_rescan = true;
         cfg.compact_on_rescan = true;
+        cfg.skip_db_load = true;
 
         let toml_str = toml::to_string(&cfg).expect("serialize");
         let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");
@@ -1407,6 +1419,7 @@ visible_columns = ["title", "artist"]
         assert!(back.auto_add_played);
         assert!(back.remove_missing_on_rescan);
         assert!(back.compact_on_rescan);
+        assert!(back.skip_db_load);
     }
 
     #[test]

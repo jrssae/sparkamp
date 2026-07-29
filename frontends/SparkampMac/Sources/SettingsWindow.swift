@@ -717,6 +717,14 @@ private struct MediaLibraryPane: View {
     /// F12.2: display/group a track with no album-artist tag under its
     /// artist instead of blank.
     @State private var artistAsAlbumArtist: Bool = false
+    /// F12.3: skip opening the Media-Library database at startup; it opens
+    /// lazily on first demand (ML window, device sync, or the folder
+    /// watcher's first need — see `openMediaLibrary()`). Inert on mac today:
+    /// unlike GTK, mac has never eagerly opened the DB at startup (Phase 8
+    /// baseline — `sparkamp_ml_open` is only ever called from demand sites),
+    /// so this toggle mainly keeps the persisted config in sync across
+    /// platforms rather than changing mac's own runtime behaviour.
+    @State private var skipDbLoad: Bool = false
 
     var body: some View {
         let vars = themeManager.currentVars
@@ -828,6 +836,12 @@ private struct MediaLibraryPane: View {
                     .onChange(of: artistAsAlbumArtist) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_artist_as_album_artist(ctx, newValue)
+                        sparkamp_save_config(ctx)
+                    }
+                Toggle("Skip database load at startup", isOn: $skipDbLoad)
+                    .onChange(of: skipDbLoad) { _, newValue in
+                        guard let ctx = model.ctx else { return }
+                        sparkamp_set_skip_db_load(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
             }
@@ -986,6 +1000,7 @@ private struct MediaLibraryPane: View {
                 rescanOnStartup = sparkamp_get_rescan_on_startup(ctx)
                 rememberSearch = sparkamp_get_remember_search(ctx)
                 artistAsAlbumArtist = sparkamp_get_artist_as_album_artist(ctx)
+                skipDbLoad = sparkamp_get_skip_db_load(ctx)
             }
         }
         .onDisappear { saveGnudbEmail() }

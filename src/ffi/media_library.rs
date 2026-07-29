@@ -158,6 +158,10 @@ impl SparkampLibTrack {
 ///
 /// Must be called before any other `sparkamp_ml_*` function.  Safe to call
 /// multiple times — subsequent calls are no-ops if the DB is already open.
+/// mac never calls this eagerly at startup — only from first-demand sites
+/// (`SparkampModel+MediaLibrary.swift`'s `openMediaLibrary()`), which is
+/// exactly the deferred-open behaviour `config.media_library.skip_db_load`
+/// (F12.3) asks GTK to opt into; mac has worked this way since Phase 8.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_open(ctx: *mut SparkampCtx) {
     if ctx.is_null() {

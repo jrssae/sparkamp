@@ -15,6 +15,15 @@
 //! - [`trigger_startup_rescan`] — fires the same `scan_all_folders` core
 //!   call the Settings/ML window Rescan buttons use, for
 //!   `config.media_library.rescan_on_startup`.
+//!
+//! F12.3 (`skip_db_load`) needed no changes here: [`rebuild_watcher`] already
+//! gates on `s.media_lib.as_ref()` being `Some` (see below), and
+//! [`trigger_startup_rescan`] already returns early when `media_lib.is_none()`
+//! — so with the DB left unopened at startup, both already no-op instead of
+//! forcing an open, exactly as the binding user decision requires. The
+//! watcher starts the first time something actually opens the library — see
+//! `state.rs`'s `ensure_media_lib_open`, which calls [`rebuild_watcher`]
+//! right after a successful lazy open.
 
 use gtk4::glib;
 use std::cell::RefCell;

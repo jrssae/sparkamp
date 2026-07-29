@@ -391,6 +391,28 @@ pub unsafe extern "C" fn sparkamp_set_artist_as_album_artist(ctx: *mut SparkampC
     ctx.config.media_library.artist_as_album_artist = value;
 }
 
+/// Whether the Media-Library database is left unopened at startup, to be
+/// opened lazily on first demand (F12.3). Gating only, mirroring
+/// `sparkamp_get/set_auto_add_played` above — persistence happens wherever
+/// the frontend already persists other settings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_skip_db_load(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.media_library.skip_db_load
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_skip_db_load(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.media_library.skip_db_load = value;
+}
+
 /// Whether each Media-Library view's search query (F12) is restored the next
 /// time that view is opened. Gating only, mirroring
 /// `sparkamp_get/set_auto_add_played` above — persistence happens wherever
@@ -844,6 +866,14 @@ mod tests {
         assert!(!unsafe { sparkamp_get_artist_as_album_artist(&ctx) });
         unsafe { sparkamp_set_artist_as_album_artist(&mut ctx, true) };
         assert!(unsafe { sparkamp_get_artist_as_album_artist(&ctx) });
+    }
+
+    #[test]
+    fn skip_db_load_round_trips() {
+        let mut ctx = test_ctx();
+        assert!(!unsafe { sparkamp_get_skip_db_load(&ctx) });
+        unsafe { sparkamp_set_skip_db_load(&mut ctx, true) };
+        assert!(unsafe { sparkamp_get_skip_db_load(&ctx) });
     }
 
     #[test]
