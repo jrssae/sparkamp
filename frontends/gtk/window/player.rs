@@ -532,6 +532,22 @@ pub fn build(
                 f();
             }
         })
+    }, {
+        // A1 "Lyrics" link — acts on whatever track is currently playing.
+        // rebuild_playlist isn't built yet at this point, so the Edit-in-editor
+        // path uses a no-op refresh; the panel self-refreshes on the next track
+        // change via subscribe_now_playing.
+        let state_lyr = state.clone();
+        Rc::new(move || {
+            let cur = state_lyr.borrow().playlist.current().map(|t| {
+                (t.path.clone(), t.artist.clone(), t.title.clone(), t.album_artist.clone())
+            });
+            if let Some((path, artist, title, album_artist)) = cur {
+                view_or_search_lyrics(
+                    &state_lyr, &path, &artist, &title, &album_artist, Rc::new(|| {}),
+                );
+            }
+        })
     });
     state.borrow_mut().subscribe_now_playing(np_panel_update.clone());
 
@@ -2526,6 +2542,29 @@ pub fn build(
         });
         pl_action_group.add_action(&action_id3);
 
+        // View/Search Lyrics (F15): saved USLT opens the viewer, else browser search.
+        let action_lyrics = gio::SimpleAction::new("lyrics", None);
+        let state_lyr = state.clone();
+        let rebuild_lyr = rebuild_playlist.clone();
+        let row_lyr = current_row.clone();
+        action_lyrics.connect_activate(move |_, _| {
+            let row_idx = *row_lyr.borrow();
+            if let Some(idx) = row_idx {
+                let t = state_lyr
+                    .borrow()
+                    .playlist
+                    .tracks
+                    .get(idx as usize)
+                    .map(|t| (t.path.clone(), t.artist.clone(), t.title.clone(), t.album_artist.clone()));
+                if let Some((path, artist, title, album_artist)) = t {
+                    view_or_search_lyrics(
+                        &state_lyr, &path, &artist, &title, &album_artist, rebuild_lyr.clone(),
+                    );
+                }
+            }
+        });
+        pl_action_group.add_action(&action_lyrics);
+
         let action_remove = gio::SimpleAction::new("remove", None); // Short name
         let remove_callback = remove_selected.clone();
         action_remove.connect_activate(move |_, _| {
@@ -2931,6 +2970,10 @@ pub fn build(
                 menu.append_item(&gio::MenuItem::new(
                     Some("🎵 View / Edit ID3"),
                     Some("pl.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("📝 View/Search Lyrics"),
+                    Some("pl.lyrics"),
                 ));
             }
             menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));

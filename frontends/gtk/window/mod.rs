@@ -142,5 +142,9 @@ include!("queue_manager.rs");
 // sidebar/stack (that's a follow-up task); media_library.rs will call it.
 include!("album_gallery.rs");
 
+// Phase 12 F15: read-only lyrics viewer + View/Search decision entry point
+// (view_or_search_lyrics) shared by every track-row surface.
+include!("lyrics.rs");
+
 // unit tests (#[cfg(test)] mod tests)
 include!("tests.rs");

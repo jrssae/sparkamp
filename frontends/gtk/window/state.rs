@@ -52,6 +52,9 @@ struct AppState {
     settings_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
     id3_editor_window: Option<gtk4::Window>,
+    /// The read-only lyrics viewer window (F15), if one is open. Singleton
+    /// like `id3_editor_window`: opening for another track replaces content.
+    lyrics_window: Option<gtk4::Window>,
     /// The A6 standalone album-art window, once built. Unlike `ml_window` /
     /// `id3_editor_window` this is never cleared back to `None` — it is
     /// built once, kept alive for the app's lifetime (hidden, not destroyed,
@@ -523,6 +526,7 @@ impl AppState {
             ml_window: None,
             settings_window: None,
             id3_editor_window: None,
+            lyrics_window: None,
             art_window: None,
             mpris_guard: None,
             rebuild_ml_callback: None,

@@ -1053,6 +1053,14 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {text_dim}; font-size: {fs}px; \
     }}").unwrap();
 
+    // Read-only lyrics viewer (F15): use the skin's body font/size so the
+    // lyrics read like the rest of the app. `text` selects the TextView's
+    // internal text node.
+    writeln!(css, ".lyrics-view, .lyrics-view text {{ \
+        font-family: {ff}; font-size: {fs}px; color: {text}; \
+        background-color: {tbg}; padding: 8px; \
+    }}").unwrap();
+
     css
 }
 
@@ -1619,5 +1627,11 @@ mod tests {
         let v = SkinVars::dark_defaults();
         let css = render_gtk_css(&v);
         assert!(css.contains(".disc-source-pill"));
+    }
+
+    #[test]
+    fn render_gtk_css_covers_lyrics_view() {
+        let css = render_gtk_css(&SkinVars::dark_defaults());
+        assert!(css.contains(".lyrics-view"), "lyrics viewer must be skin-styled");
     }
 }

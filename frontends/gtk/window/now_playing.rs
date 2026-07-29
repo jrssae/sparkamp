@@ -62,6 +62,7 @@ struct Carousel {
 pub(super) fn build_panel(
     info: Option<&NowPlayingInfo>,
     on_art_click: Rc<dyn Fn()>,
+    on_lyrics: Rc<dyn Fn()>,
 ) -> (gtk4::Widget, Rc<dyn Fn(&NowPlayingInfo)>) {
     let root = GtkBox::new(Orientation::Horizontal, 10);
     root.add_css_class("np-panel");
@@ -99,6 +100,15 @@ pub(super) fn build_panel(
     right.set_vexpand(true);
     right.append(&stack);
     right.append(&dots);
+
+    // A1 lyrics affordance (F15): a plain text link under the tag carousel that
+    // views saved lyrics for the current track or searches when there are none.
+    let lyrics_link = gtk4::Button::with_label("Lyrics");
+    lyrics_link.add_css_class("np-link");
+    lyrics_link.set_has_frame(false);
+    lyrics_link.set_halign(Align::Center);
+    lyrics_link.connect_clicked(move |_| on_lyrics());
+    right.append(&lyrics_link);
 
     root.append(&art_slot);
     root.append(&right);

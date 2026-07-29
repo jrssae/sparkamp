@@ -2725,6 +2725,37 @@ fn open_media_library_window(
         }
         dev_file_action_group.add_action(&action_id3);
 
+        // View/Search Lyrics (F15) on device files. The fresh USLT read runs on
+        // the caller thread as the ID3 action's read does; an unreadable/slow
+        // MTP path returns Search from core, so it never hangs forever.
+        let action_lyrics = gio::SimpleAction::new("lyrics", None);
+        {
+            let state_lyr = state.clone();
+            let sel_tracks = selected_device_tracks.clone();
+            let reload_store = reload_device_store.clone();
+            let devices_lyr = current_devices.clone();
+            let backend_lyr = selected_dev_backend.clone();
+            action_lyrics.connect_activate(move |_, _| {
+                let tracks = sel_tracks();
+                let [track] = tracks.as_slice() else { return };
+                let path = std::path::PathBuf::from(&track.path);
+                let artist = track.artist.clone().unwrap_or_default();
+                let title = track.title.clone().unwrap_or_default();
+                let album_artist = track.album_artist.clone().unwrap_or_default();
+                let reload = reload_store.clone();
+                let devices = devices_lyr.clone();
+                let backend = backend_lyr.clone();
+                let rebuild_cb: Rc<dyn Fn()> = Rc::new(move || {
+                    let Some(b) = backend.borrow().clone() else { return };
+                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned() {
+                        reload(dev);
+                    }
+                });
+                view_or_search_lyrics(&state_lyr, &path, &artist, &title, &album_artist, rebuild_cb);
+            });
+        }
+        dev_file_action_group.add_action(&action_lyrics);
+
         let sel_menu = selected_device_tracks.clone();
         let scroll_menu = dev_tracks_scroll.clone();
         let state_menu_dev = state.clone();
@@ -2741,6 +2772,10 @@ fn open_media_library_window(
                 menu.append_item(&gio::MenuItem::new(
                     Some("🎵 View / Edit ID3"),
                     Some("dev-file.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("📝 View/Search Lyrics"),
+                    Some("dev-file.lyrics"),
                 ));
             }
             let send = build_send_to_menu(
@@ -3539,6 +3574,28 @@ fn open_media_library_window(
             disc_files_action_group.add_action(&action);
         }
 
+        // View/Search Lyrics (F15) on disc files. Mounted files have real paths,
+        // so USLT reads normally; DiscFile carries no separate artist/title, so
+        // the search fallback uses the file stem as the title.
+        {
+            let sel_files = selected_disc_files.clone();
+            let state_lyr = state.clone();
+            let rebuild_lyr = rebuild_playlist.clone();
+            let action = gio::SimpleAction::new("lyrics", None);
+            action.connect_activate(move |_, _| {
+                let files = sel_files();
+                let Some(f) = files.first() else { return };
+                let title = f
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                view_or_search_lyrics(&state_lyr, &f.path, "", &title, "", rebuild_lyr.clone());
+            });
+            disc_files_action_group.add_action(&action);
+        }
+
         let sel_menu = selected_disc_files.clone();
         let scroll_menu = disc_files_scroll.clone();
         let state_menu = state.clone();
@@ -3559,6 +3616,10 @@ fn open_media_library_window(
                 menu.append_item(&gio::MenuItem::new(
                     Some("View ID3 Tags"),
                     Some("disc-files.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("View/Search Lyrics"),
+                    Some("disc-files.lyrics"),
                 ));
             }
             let this_drive = selected_disc_id_menu.borrow().clone();
@@ -4014,6 +4075,40 @@ fn open_media_library_window(
             );
         });
         ml_action_group.add_action(&action_id3);
+
+        // View/Search Lyrics (F15) on Files rows. The row stash holds only
+        // paths, so the search fallback pulls artist/title from the ML row
+        // (same source as the row label), or the file stem when unindexed.
+        let ml_action_lyrics_state = state.clone();
+        let ml_action_lyrics_tracks = ml_selected_tracks.clone();
+        let ml_action_lyrics_rebuild = rebuild_playlist.clone();
+        let action_lyrics = gio::SimpleAction::new("lyrics", None);
+        action_lyrics.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_lyrics_tracks.borrow().clone();
+            let Some(path) = tracks.first().cloned() else { return };
+            let path_str = path.to_string_lossy().into_owned();
+            let (artist, title, album_artist) = {
+                let s = ml_action_lyrics_state.borrow();
+                let lt = s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&path_str).ok());
+                match lt {
+                    Some(t) => (
+                        t.artist.clone().unwrap_or_default(),
+                        t.title.clone().unwrap_or_default(),
+                        t.album_artist.clone().unwrap_or_default(),
+                    ),
+                    None => (
+                        String::new(),
+                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string(),
+                        String::new(),
+                    ),
+                }
+            };
+            view_or_search_lyrics(
+                &ml_action_lyrics_state, &path, &artist, &title, &album_artist,
+                ml_action_lyrics_rebuild.clone(),
+            );
+        });
+        ml_action_group.add_action(&action_lyrics);
 
         // Rescan Metadata action
         let ml_action_rescan_state = state.clone();
@@ -4526,6 +4621,10 @@ fn open_media_library_window(
                             menu.append_item(&gio::MenuItem::new(
                                 Some("View/Edit ID3 Info"),
                                 Some("ml.edit-id3"),
+                            ));
+                            menu.append_item(&gio::MenuItem::new(
+                                Some("View/Search Lyrics"),
+                                Some("ml.lyrics"),
                             ));
                         }
 
@@ -6254,6 +6353,29 @@ fn open_media_library_window(
         ed_action_group.add_action(&action);
     }
     {
+        // View/Search Lyrics (F15) on saved-playlist editor rows.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let rebuild_pl = rebuild_playlist.clone();
+        let ctx_c = ctx_canonical_idx.clone();
+        let action = gio::SimpleAction::new("lyrics", None);
+        action.connect_activate(move |_, _| {
+            let c = ctx_c.get();
+            if c < 0 { return }
+            let t = et.borrow().get(c as usize).map(|t| {
+                (
+                    std::path::PathBuf::from(&t.path),
+                    t.artist.clone().unwrap_or_default(),
+                    t.title.clone().unwrap_or_default(),
+                    t.album_artist.clone().unwrap_or_default(),
+                )
+            });
+            let Some((path, artist, title, album_artist)) = t else { return };
+            view_or_search_lyrics(&state_c, &path, &artist, &title, &album_artist, rebuild_pl.clone());
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
         // Remove from Playlist — same body as the old flat button.
         let et = editing_tracks.clone();
         let state_c = state.clone();
@@ -6732,6 +6854,10 @@ fn open_media_library_window(
                         menu.append_item(&gio::MenuItem::new(
                             Some("Edit / View ID3 Tags"),
                             Some("ed.edit-id3"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("View/Search Lyrics"),
+                            Some("ed.lyrics"),
                         ));
                     }
                     menu.append_item(&gio::MenuItem::new(
@@ -8578,6 +8704,30 @@ fn open_media_library_window(
                 action_group.add_action(&action);
             }
 
+            // ─── View/Search Lyrics (F15, single only) ───────────────────
+            {
+                let state_rc      = state.clone();
+                let id_ref        = ctx_canonical_idx.clone();
+                let et            = editing_tracks.clone();
+                let rebuild_pl    = rebuild_playlist.clone();
+                let action        = gio::SimpleAction::new("lyrics", None);
+                action.connect_activate(move |_, _| {
+                    let c = id_ref.get();
+                    if c < 0 { return }
+                    let t = et.borrow().get(c as usize).map(|t| {
+                        (
+                            std::path::PathBuf::from(&t.path),
+                            t.artist.clone().unwrap_or_default(),
+                            t.title.clone().unwrap_or_default(),
+                            t.album_artist.clone().unwrap_or_default(),
+                        )
+                    });
+                    let Some((path, artist, title, album_artist)) = t else { return };
+                    view_or_search_lyrics(&state_rc, &path, &artist, &title, &album_artist, rebuild_pl.clone());
+                });
+                action_group.add_action(&action);
+            }
+
             // ─── Remove from Playlist (mutate editing_tracks + persist) ──
             // Removes selected rows from the canonical play order and
             // immediately rewrites the on-disk M3U8.  Does NOT delete the
@@ -8718,7 +8868,7 @@ fn open_media_library_window(
             // app prefix is the reliable code path in GTK4, even when
             // widget-tree action lookup fails for nested popovers.
             if let Some(app) = win.application() {
-                let app_action_names = ["append", "replace", "edit-id3",
+                let app_action_names = ["append", "replace", "edit-id3", "lyrics",
                                         "remove", "add-to-new", "add-to-saved"];
                 for name in app_action_names {
                     if let Some(act) = action_group.lookup_action(name) {
