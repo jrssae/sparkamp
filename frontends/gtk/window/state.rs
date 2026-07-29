@@ -375,6 +375,16 @@ fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
         s.media_lib = crate::media_library::MediaLibrary::open().ok();
     }
     if state.borrow().media_lib.is_some() {
+        // Match the eager-open path: purge soft-deleted rows from prior
+        // sessions on this first open (own connection — MediaLibrary isn't
+        // Send). Skipped entirely at startup under `skip_db_load`, so this
+        // is the lazy path's only chance to run it.
+        let db_path = crate::media_library::MediaLibrary::db_path_pub();
+        std::thread::spawn(move || {
+            if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                let _ = lib.cleanup_on_startup();
+            }
+        });
         watch::rebuild_watcher(state);
     }
 }
