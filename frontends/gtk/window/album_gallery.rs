@@ -23,7 +23,6 @@
 ///
 /// Guards against `media_lib == None` (F12.3 `skip_db_load`): the grid is
 /// simply empty until the DB is opened, never a panic.
-#[allow(dead_code)] // wired into the ML sidebar/stack by a follow-up task
 fn build_album_gallery(
     state: &Rc<RefCell<AppState>>,
     on_album_activate: Rc<dyn Fn(String, String)>,

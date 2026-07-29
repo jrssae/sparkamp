@@ -316,6 +316,23 @@ fn open_media_library_window(
         sidebar.append(&row);
     }
 
+    // ── "Albums" row (Phase 11 A5: album gallery) ──────────────────────────
+    {
+        let lbl = Label::builder()
+            .label("Albums")
+            .halign(Align::Start)
+            .xalign(0.0)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(7)
+            .margin_bottom(7)
+            .build();
+        let row = ListBoxRow::new();
+        row.set_widget_name("albums");
+        row.set_child(Some(&lbl));
+        sidebar.append(&row);
+    }
+
     // ── "Playlists" header row (with expand/collapse chevron) ─────────────
     let playlists_expanded = Rc::new(Cell::new(
         state.borrow().config.window.ml_playlists_expanded
@@ -3686,6 +3703,16 @@ fn open_media_library_window(
     let all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>> =
         Rc::new(RefCell::new(Vec::new()));
 
+    // Phase 11 A5: shared album→Files drill-down filter. `None` means the
+    // normal search/all-tracks Files view; `Some((album, album_artist))`
+    // means Files is showing just that album's tracks (set by the gallery's
+    // on_album_activate below). Cleared by re-selecting the "Files" sidebar
+    // row or by typing in the search box, so the user always has a way back
+    // to the full library. Declared here (before `rebuild_files` and before
+    // the sidebar wiring, both of which need it) rather than on AppState —
+    // it's pure UI navigation state local to this window.
+    let album_filter: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+
     // ── Page: Files ──────────────────────────────────────────────────────
     {
         let files_vbox = GtkBox::new(Orientation::Vertical, 4);
@@ -4809,26 +4836,70 @@ fn open_media_library_window(
             }
         }
 
+        // Phase 11 A5: "Play Album" / "Enqueue Album" — only meaningful (and
+        // only enabled) while `album_filter` is active, i.e. the Files view
+        // is showing a single album drilled into from the gallery. Declared
+        // here (before `rebuild_files`) so their sensitivity can be kept in
+        // sync from inside that closure on every rebuild.
+        let btn_play_album = Button::with_label("▶ Play Album");
+        btn_play_album.add_css_class("pl-btn");
+        btn_play_album.set_sensitive(false);
+        let btn_enqueue_album = Button::with_label("+ Enqueue Album");
+        btn_enqueue_album.add_css_class("pl-btn");
+        btn_enqueue_album.set_sensitive(false);
+
         let rebuild_files: Rc<dyn Fn() -> usize> = {
             let state_rc = state.clone();
             let store_ref = track_store.clone();
             let search_ref = search_entry.clone();
+            let album_filter_rc = album_filter.clone();
+            let btn_play_album_rc = btn_play_album.clone();
+            let btn_enqueue_album_rc = btn_enqueue_album.clone();
             Rc::new(move || {
-                // Respect any active search filter so that background rebuilds
-                // (rescan, folder add, ID3 save) don't discard the current query.
-                let query = search_ref.text().to_lowercase();
-                let tracks: Vec<crate::media_library::LibTrack> = state_rc
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| {
-                        if query.is_empty() {
-                            lib.all_tracks().ok()
-                        } else {
-                            lib.search_tracks(&query).ok()
-                        }
-                    })
-                    .unwrap_or_default();
+                // Album drill-down (Phase 11 A5): when a gallery cell was
+                // activated, populate from that one album instead of the
+                // search/all-tracks path below, and ignore whatever's in the
+                // search box until the filter is cleared (Files re-select or
+                // typing in the search box both clear it).
+                let active_filter = { album_filter_rc.borrow().clone() };
+                btn_play_album_rc.set_sensitive(active_filter.is_some());
+                btn_enqueue_album_rc.set_sensitive(active_filter.is_some());
+                let tracks: Vec<crate::media_library::LibTrack> =
+                    if let Some((album, album_artist)) = active_filter {
+                        search_ref.set_placeholder_text(Some(&format!(
+                            "Album: {} — {}",
+                            gtk_safe(&album),
+                            gtk_safe(&album_artist)
+                        )));
+                        let artist_as_album =
+                            state_rc.borrow().config.media_library.artist_as_album_artist;
+                        state_rc
+                            .borrow()
+                            .media_lib
+                            .as_ref()
+                            .and_then(|lib| {
+                                lib.album_tracks(&album, &album_artist, artist_as_album).ok()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        search_ref
+                            .set_placeholder_text(Some("Search artist, title, album…"));
+                        // Respect any active search filter so that background rebuilds
+                        // (rescan, folder add, ID3 save) don't discard the current query.
+                        let query = search_ref.text().to_lowercase();
+                        state_rc
+                            .borrow()
+                            .media_lib
+                            .as_ref()
+                            .and_then(|lib| {
+                                if query.is_empty() {
+                                    lib.all_tracks().ok()
+                                } else {
+                                    lib.search_tracks(&query).ok()
+                                }
+                            })
+                            .unwrap_or_default()
+                    };
                 let count = tracks.len();
                 let boxed: Vec<glib::BoxedAnyObject> =
                     tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
@@ -4853,8 +4924,21 @@ fn open_media_library_window(
         {
             let state_rc = state.clone();
             let store_ref = track_store.clone();
+            let album_filter_search = album_filter.clone();
+            let btn_play_album_search = btn_play_album.clone();
+            let btn_enqueue_album_search = btn_enqueue_album.clone();
             let pending = Rc::new(RefCell::new(None::<glib::SourceId>));
             search_entry.connect_changed(move |entry| {
+                // Typing escapes any active album drill-down back to the full
+                // library — done synchronously (not behind the debounce)
+                // since it's cheap and shouldn't wait on the timer.
+                {
+                    *album_filter_search.borrow_mut() = None;
+                }
+                entry.set_placeholder_text(Some("Search artist, title, album…"));
+                btn_play_album_search.set_sensitive(false);
+                btn_enqueue_album_search.set_sensitive(false);
+
                 let raw_query = entry.text().to_string();
                 let query = raw_query.to_lowercase();
                 // Cancel any pending search.
@@ -4962,6 +5046,11 @@ fn open_media_library_window(
         // Button row: send-to on the left, management buttons on the right.
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
+        // Play/Enqueue Album (Phase 11 A5) — only enabled while an album
+        // drill-down filter is active (see rebuild_files above); placed
+        // first, mirroring the device-view Play/Enqueue pair's prominence.
+        btn_row.append(&btn_play_album);
+        btn_row.append(&btn_enqueue_album);
         btn_row.append(&btn_send_to);
         btn_row.append(&spring);
         btn_row.append(&btn_rm_from_ml);
@@ -4972,6 +5061,76 @@ fn open_media_library_window(
         btn_row.append(&btn_analyze_rg);
         btn_row.append(&btn_cancel_rg);
         files_vbox.append(&btn_row);
+
+        // Play Album: replace the active playlist with the drilled-into
+        // album's tracks and play from the first one. Same seam as the
+        // device-view Play button above (~line 2215) — fresh borrow per
+        // line, never one held across `play_current()`.
+        {
+            let state_pa = state.clone();
+            let album_filter_pa = album_filter.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            btn_play_album.connect_clicked(move |_| {
+                let filt = { album_filter_pa.borrow().clone() };
+                let Some((album, album_artist)) = filt else { return };
+                let artist_as_album =
+                    state_pa.borrow().config.media_library.artist_as_album_artist;
+                let tracks: Vec<crate::media_library::LibTrack> = state_pa
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|lib| {
+                        lib.album_tracks(&album, &album_artist, artist_as_album).ok()
+                    })
+                    .unwrap_or_default();
+                if tracks.is_empty() {
+                    return;
+                }
+                let _ = state_pa.borrow_mut().player.stop();
+                state_pa.borrow_mut().playlist.clear();
+                for lt in &tracks {
+                    state_pa.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                }
+                if !state_pa.borrow().playlist.is_empty() {
+                    state_pa.borrow_mut().play_current();
+                }
+                rebuild_pl();
+            });
+        }
+
+        // Enqueue Album: append the drilled-into album's tracks to the
+        // active playlist. Same seam as the device-view Enqueue button above
+        // (~line 2238).
+        {
+            let state_ea = state.clone();
+            let album_filter_ea = album_filter.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            btn_enqueue_album.connect_clicked(move |_| {
+                let filt = { album_filter_ea.borrow().clone() };
+                let Some((album, album_artist)) = filt else { return };
+                let artist_as_album =
+                    state_ea.borrow().config.media_library.artist_as_album_artist;
+                let tracks: Vec<crate::media_library::LibTrack> = state_ea
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|lib| {
+                        lib.album_tracks(&album, &album_artist, artist_as_album).ok()
+                    })
+                    .unwrap_or_default();
+                if tracks.is_empty() {
+                    return;
+                }
+                let was_empty = state_ea.borrow().playlist.is_empty();
+                for lt in &tracks {
+                    state_ea.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                }
+                if state_ea.borrow().config.behavior.autoplay_on_add && was_empty {
+                    state_ea.borrow_mut().play_current();
+                }
+                rebuild_pl();
+            });
+        }
 
         // ── Files view status bar ───────────────────────────────────────────
         // `rebuild_files()` (above) already populated `track_store` once, and
@@ -5583,6 +5742,39 @@ fn open_media_library_window(
             rf();
         }));
     }
+
+    // ── Page: Albums (Phase 11 A5 — gallery grid, Task 4) ──────────────────
+    //
+    // Activating a cell (double-click / Enter) sets `album_filter` and
+    // switches straight to the Files page via `stack.set_visible_child_name`
+    // + the `rebuild_ml_callback` seam (same one background rebuilds use,
+    // see `state.borrow_mut().rebuild_ml_callback` just above) — deliberately
+    // NOT via `sidebar.select_row(&files_row)`, because the "files" branch
+    // of the sidebar's `connect_row_selected` (below) clears `album_filter`
+    // on entry, which would immediately undo the filter this callback just
+    // set. The tradeoff: the sidebar's visual selection stays on "Albums"
+    // while the stack shows Files. Acceptable — the Files content is what
+    // matters, and the user can click "Files" to explicitly return to the
+    // full library (which also updates the highlight).
+    let (gallery_page, rebuild_gallery): (gtk4::Widget, Rc<dyn Fn()>) = {
+        let on_album_activate: Rc<dyn Fn(String, String)> = {
+            let state_activate = state.clone();
+            let stack_activate = stack.clone();
+            let album_filter_activate = album_filter.clone();
+            Rc::new(move |album: String, album_artist: String| {
+                {
+                    *album_filter_activate.borrow_mut() = Some((album, album_artist));
+                }
+                stack_activate.set_visible_child_name("files");
+                let cb = state_activate.borrow().rebuild_ml_callback.clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+            })
+        };
+        build_album_gallery(&state, on_album_activate)
+    };
+    stack.add_named(&gallery_page, Some("albums"));
 
     // ── Page: Playlists ──────────────────────────────────────────────────
     //
@@ -8570,12 +8762,28 @@ fn open_media_library_window(
         let hdr_lbl        = edit_header.clone();
         let path_lbl       = edit_path_label.clone();
         let save_btn       = btn_save_pl_outer.clone();
+        let album_filter_sb = album_filter.clone();
+        let rebuild_gallery_sb = rebuild_gallery.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let row = match opt_row { Some(r) => r, None => return };
             let name = row.widget_name().to_string();
 
             if name == "files" {
+                // Explicitly returning to Files always means "show the full
+                // library" — clear any album drill-down left over from the
+                // gallery (Phase 11 A5) and rebuild through the same seam
+                // background rebuilds use.
+                {
+                    *album_filter_sb.borrow_mut() = None;
+                }
                 stack_ref.set_visible_child_name("files");
+                let cb = state_rc.borrow().rebuild_ml_callback.clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+            } else if name == "albums" {
+                stack_ref.set_visible_child_name("albums");
+                rebuild_gallery_sb();
             } else if name == "playlists" {
                 stack_ref.set_visible_child_name("playlists");
                 pl_sub_ref.set_visible_child_name("pl-manage");
