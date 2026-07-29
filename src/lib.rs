@@ -12,6 +12,7 @@ pub mod engine;
 pub mod devices;
 pub mod granite;
 pub mod id3_editor;
+pub mod lyrics;
 pub mod media_library;
 pub mod model;
 pub mod mpris_meta;

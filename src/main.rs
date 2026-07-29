@@ -31,6 +31,7 @@ mod engine;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod granite;
 mod id3_editor;
+mod lyrics;
 mod media_library;
 mod model;
 // Pure MPRIS metadata-map builder (Phase 3). The gio D-Bus layer that

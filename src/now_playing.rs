@@ -142,7 +142,7 @@ pub fn build_now_playing_info(
 /// (RFC 3986: A–Z a–z 0–9 `-` `_` `.` `~`) pass through; everything else is
 /// `%XX` (spaces become `%20`, not `+`, so `Special:Search` treats them as a
 /// literal phrase).
-fn percent_encode_query(s: &str) -> String {
+pub(crate) fn percent_encode_query(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {
         match b {
