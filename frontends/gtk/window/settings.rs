@@ -1450,6 +1450,13 @@ fn open_settings_window(
                     let Some(path_str) = path else {
                         return;
                     };
+                    // Under skip_db_load the shared media_lib may still be
+                    // closed at this point. Adding a folder is a genuine
+                    // demand to use the library, so open it now (no-op if
+                    // already open) — this populates state.media_lib so the
+                    // folder list rebuild and the live watcher reflect the
+                    // add instead of silently staying on "No folders…".
+                    ensure_media_lib_open(&state_rc);
                     // A scan is already running (only one metadata scan may run
                     // at a time). Register + fast-scan the folder now so it
                     // appears immediately, then queue a full rescan to pick up
