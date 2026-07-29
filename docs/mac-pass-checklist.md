@@ -1373,3 +1373,24 @@ navigation polish`). Verify in Xcode / on hardware:
       in the header while the grid re-lays out and newly-visible covers load,
       then it disappears (~0.35 s). Confirm no flicker/hang and that the new
       size renders.
+
+## Phase 12 — F15 View/Search Lyrics
+
+- [ ] **FFI signature match**: `sparkamp_lyrics_action(const char *path, const
+      char *artist, const char *title, const char *album_artist, uint32_t
+      *out_kind)` in `sparkamp_bridge.h` matches `src/ffi/lyrics.rs` byte-for-byte;
+      `out_kind` 0 = show lyrics text, 1 = search URL; returned string freed with
+      `sparkamp_free_string`; NULL path/out_kind returns NULL.
+- [ ] **Five surfaces + A1**: "View/Search Lyrics" appears on the context menus
+      of Files, playlist editor, device files, disc tracks, and active-playlist
+      rows, plus a text "Lyrics" link in the A1 now-playing panel.
+- [ ] **Viewer**: a track with saved USLT opens a read-only, scrollable lyrics
+      window in the skin/theme body font; line breaks intact; Esc/⌘W closes;
+      opening from another track replaces content (singleton, no window pile).
+- [ ] **Edit in tag editor**: the viewer's "Edit in tag editor" link opens the
+      existing ID3 editor for that track.
+- [ ] **Search fallback**: a track without lyrics opens the default browser on a
+      DuckDuckGo search `artist - title lyrics`; blank-artist → `title lyrics`;
+      `&`/`/`/unicode encode correctly (space → %20).
+- [ ] **Build**: `project.pbxproj` still opens in Xcode after adding
+      `LyricsWindow.swift`; the app builds and links against the new FFI symbol.

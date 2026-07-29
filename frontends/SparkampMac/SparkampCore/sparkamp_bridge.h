@@ -442,6 +442,17 @@ void            sparkamp_tag_set_artwork(SparkampTagCtx *tag, const char *path);
 void            sparkamp_tag_clear_artwork(SparkampTagCtx *tag);
 
 // ---------------------------------------------------------------------------
+// View/Search Lyrics (F15)
+// ---------------------------------------------------------------------------
+/** Decide View-vs-Search lyrics for `path`. Writes *out_kind (0 = show lyrics
+    text, 1 = search URL) and returns a heap C string with the lyrics body or a
+    DuckDuckGo search URL. Free the result with sparkamp_free_string. A NULL
+    path or out_kind returns NULL. */
+char           *sparkamp_lyrics_action(const char *path, const char *artist,
+                                       const char *title, const char *album_artist,
+                                       uint32_t *out_kind);
+
+// ---------------------------------------------------------------------------
 // Now Playing — A1 panel data for the CURRENT playlist track
 // ---------------------------------------------------------------------------
 

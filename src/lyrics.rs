@@ -2,9 +2,10 @@
 //! builds the search URL so the query can never drift from the row label the
 //! user right-clicked.
 
-// Consumed by the FFI entry point and every frontend in the following phase-12
-// tasks; until the first consumer lands the bin target sees the whole module as
-// dead. Removed once `sparkamp_lyrics_action` (Task 2) references it.
+// The lib target consumes this via the FFI (`sparkamp_lyrics_action`), but the
+// bin target does not compile `ffi` — so until a bin frontend (GTK / TUI) wires
+// the action onto its surfaces, the bin sees the whole module as dead. Removed
+// once the GTK/TUI surfaces land.
 #![allow(dead_code)]
 
 use std::path::Path;

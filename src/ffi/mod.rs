@@ -34,6 +34,7 @@ mod disc;
 mod eq;
 mod granite;
 mod id3;
+mod lyrics;
 mod media_library;
 mod now_playing;
 mod playback;
