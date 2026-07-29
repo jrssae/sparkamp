@@ -155,6 +155,32 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   (not directly under the table). Both are one-line moves if a different spot is
   preferred.
 
+## Known limitations (recorded during phase 11 — A4 album gallery)
+
+- The mac gallery loads each cover at full resolution, uncached, per cell
+  (`NSImage(contentsOfFile:)` off-main), rather than through the shared
+  downsampled thumbnail cache the GTK gallery uses (`thumb_path_for(path,
+  px)`). Accepted divergence: LazyVGrid only realizes visible cells, so it is
+  functionally correct; possible scroll jank on very large libraries is a
+  mac-checklist eyeball item / future optimization (generate + cache mac
+  thumbs like GTK).
+- Persistence of the gallery zoom size and sort mode diverges by frontend:
+  GTK stores them in the Rust config (`window.gallery_thumb_px` /
+  `gallery_sort`), mac stores them in SwiftUI `@AppStorage`
+  (`sparkamp.gallery.thumbPx` / `.sort`). Same accepted pattern as other mac
+  window prefs (e.g. sidebar width).
+- A GTK artwork edit made while the album gallery page is currently on screen
+  invalidates the thumbnail cache (all sizes) but does not repaint the
+  on-screen tile until the next gallery rebuild (sidebar re-select or a
+  scan-complete). Benign in practice — ID3/artwork editing happens outside
+  the gallery view — so it is left as-is rather than adding a live repaint
+  hook.
+- Grouping key lowercases the effective album artist without trimming
+  incidental whitespace (e.g. `"Band "` vs `"Band"` split into two groups),
+  matching the existing library-wide `SortKeys::from_track` convention rather
+  than introducing a divergent normalization. Album is trimmed for the
+  no-album-bucket test.
+
 ## Known limitations (recorded during phase 9 — F5 CD-TEXT)
 
 - Precedence is whole-entry (Winamp): gnudb/user tags win entirely when the

@@ -11,9 +11,7 @@ use crate::tags::read_track_tags;
 use super::{LibTrack, MediaLibrary};
 
 /// How to order the album gallery's groups. See [`MediaLibrary::albums`].
-// No frontend consumer yet (phase-11 gallery view lands later); allow
-// dead-code until then, mirroring the allow on the surrounding impl block.
-#[allow(dead_code)]
+/// Consumed by the GTK/mac gallery and the FFI `sparkamp_ml_albums` sort arg.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AlbumSort {
     Artist,
