@@ -1255,3 +1255,33 @@ config parity with GTK/TUI.
       (`sparkamp_get_skip_db_load`, `sparkamp_set_skip_db_load`) — both
       take/return a plain `bool`, no persistence side effect in the setter
       (call `sparkamp_save_config` separately, as the Toggle does).
+
+## Phase 11 — Task 3: album gallery FFI (count/list/tracks) + bridge (2026-07-29, BLIND — Swift never compiled)
+
+Adds the C FFI surface for the album gallery view: `sparkamp_ml_album_count`,
+`sparkamp_ml_albums`, and `sparkamp_ml_album_tracks`, plus the
+`SparkampAlbum` struct, mirrored byte-for-byte into `sparkamp_bridge.h`. No
+Swift consumer lands in this task — this is the core/bridge layer only, so
+the checks below are Rust-side (`cargo test`) plus a header-compiles-clean
+review; the Swift gallery view itself is a later mac task.
+
+- [ ] **Album count/list roundtrip is non-empty for a library with albums**:
+      with the ML open and ≥1 watched folder containing tagged audio files,
+      `sparkamp_ml_album_count(ctx, 0)` (Artist sort) returns > 0, and
+      `sparkamp_ml_albums(ctx, 0, out, count)` fills that many `SparkampAlbum`
+      rows with non-empty `album`/`album_artist` buffers for every row that
+      isn't the no-album bucket.
+- [ ] **No-album bucket is fetchable**: when at least one scanned file has a
+      blank album tag, exactly one `SparkampAlbum` row has `is_no_album == 1`
+      and an empty `album` buffer; calling `sparkamp_ml_album_tracks(ctx, "",
+      "", out, limit)` for that row returns the same `track_count` the
+      bucket reported.
+- [ ] **All three `AlbumSort` values are wired**: `sparkamp_ml_album_count`/
+      `sparkamp_ml_albums` called with `sort` 0/1/2 (Artist/Album/Year) each
+      return a stable count and don't crash on an out-of-range `sort` value
+      (falls back to Artist per the header comment).
+- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
+      against the `SparkampAlbum` struct and the three new declarations in
+      `sparkamp_bridge.h` — field order/types (`int64_t`, `uint8_t`,
+      `char[N]`-equivalent byte arrays) must match `src/ffi/media_library.rs`
+      byte-for-byte, including the trailing `_pad[6]`.

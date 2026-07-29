@@ -150,6 +150,66 @@ impl SparkampLibTrack {
     }
 }
 
+/// One album (or the single "no album" bucket) as returned by the album
+/// gallery view. All string fields are null-terminated and UTF-8, using the
+/// same fixed-buffer + `copy_str` idiom as [`SparkampLibTrack`].
+#[repr(C)]
+pub struct SparkampAlbum {
+    pub album: [u8; 256],
+    pub album_artist: [u8; 256],
+    /// Path to a representative track's cached/resolved artwork, or empty if
+    /// none of the album's tracks have artwork.
+    pub artwork_path: [u8; 512],
+    /// Release year, meaningful only when `has_year` is 1.
+    pub year: i64,
+    pub track_count: i64,
+    /// 1 if `year` is a known value; 0 otherwise (year is 0 in that case).
+    pub has_year: u8,
+    /// 1 if this is the synthetic "(no album)" bucket that collapses every
+    /// blank-album track regardless of artist; 0 for a normal album group.
+    pub is_no_album: u8,
+    /// Explicit padding to keep the layout predictable across the C
+    /// boundary (aligns the trailing flags out to an 8-byte boundary).
+    _pad: [u8; 6],
+}
+
+impl SparkampAlbum {
+    fn from_group(g: &crate::media_library::AlbumGroup) -> Self {
+        let mut out = Self {
+            album: [0u8; 256],
+            album_artist: [0u8; 256],
+            artwork_path: [0u8; 512],
+            year: g.year.unwrap_or(0),
+            track_count: g.track_count,
+            has_year: if g.year.is_some() { 1 } else { 0 },
+            is_no_album: if g.is_no_album { 1 } else { 0 },
+            _pad: [0u8; 6],
+        };
+        fn copy_str(dst: &mut [u8], src: &str) {
+            let bytes = src.as_bytes();
+            let n = bytes.len().min(dst.len() - 1);
+            dst[..n].copy_from_slice(&bytes[..n]);
+            dst[n] = 0;
+        }
+        copy_str(&mut out.album, &g.album);
+        copy_str(&mut out.album_artist, &g.album_artist);
+        copy_str(&mut out.artwork_path, g.artwork_path.as_deref().unwrap_or(""));
+        out
+    }
+}
+
+/// Map the mac-side `sort: u32` wire value to [`AlbumSort`]. Unknown values
+/// (including anything beyond 0/1/2) default to `Artist`, mirroring every
+/// other FFI sort-column fallback in this file.
+fn album_sort_from_u32(sort: u32) -> crate::media_library::AlbumSort {
+    use crate::media_library::AlbumSort;
+    match sort {
+        1 => AlbumSort::Album,
+        2 => AlbumSort::Year,
+        _ => AlbumSort::Artist,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Media Library — lifecycle
 // ---------------------------------------------------------------------------
@@ -945,6 +1005,102 @@ pub unsafe extern "C" fn sparkamp_ml_get_tracks(
 }
 
 // ---------------------------------------------------------------------------
+// Media Library — album gallery (Phase 11 Task 3)
+// ---------------------------------------------------------------------------
+
+/// Return the number of album groups (or 0 if the ML is not open).
+///
+/// `sort` maps 0=Artist, 1=Album, 2=Year (see [`album_sort_from_u32`]).
+/// The "artist as album artist" toggle is read from config, not passed in.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_album_count(
+    ctx: *const SparkampCtx,
+    sort: u32,
+) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let artist_as_album = ctx.config.media_library.artist_as_album_artist;
+    ml.albums(album_sort_from_u32(sort), artist_as_album)
+        .map(|v| v.len() as c_int)
+        .unwrap_or(0)
+}
+
+/// Fetch up to `limit` album groups into a caller-allocated array.
+///
+/// `sort` maps 0=Artist, 1=Album, 2=Year. Returns the number of elements
+/// actually written; 0 if `ctx`/`out` is null or the ML is not open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_albums(
+    ctx: *const SparkampCtx,
+    sort: u32,
+    out: *mut SparkampAlbum,
+    limit: c_int,
+) -> c_int {
+    if ctx.is_null() || out.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let artist_as_album = ctx.config.media_library.artist_as_album_artist;
+    let groups = ml
+        .albums(album_sort_from_u32(sort), artist_as_album)
+        .unwrap_or_default();
+    let n = (limit.max(0) as usize).min(groups.len());
+    let page = &groups[..n];
+    for (i, g) in page.iter().enumerate() {
+        let slot = out.add(i);
+        slot.write(SparkampAlbum::from_group(g));
+    }
+    page.len() as c_int
+}
+
+/// Fetch up to `limit` tracks belonging to the album `(album, album_artist)`
+/// into a caller-allocated array.
+///
+/// Null `album`/`album_artist` are treated as empty strings, so the
+/// "(no album)" bucket is reachable by passing `album = ""`. Returns the
+/// number of elements actually written; 0 if `ctx`/`out` is null or the ML
+/// is not open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_album_tracks(
+    ctx: *const SparkampCtx,
+    album: *const c_char,
+    album_artist: *const c_char,
+    out: *mut SparkampLibTrack,
+    limit: c_int,
+) -> c_int {
+    if ctx.is_null() || out.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let Some(ml) = &ctx.media_library else { return 0 };
+    let album_str = if album.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(album).to_str().unwrap_or("").to_owned()
+    };
+    let album_artist_str = if album_artist.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(album_artist).to_str().unwrap_or("").to_owned()
+    };
+    let artist_as_album = ctx.config.media_library.artist_as_album_artist;
+    let tracks = ml
+        .album_tracks(&album_str, &album_artist_str, artist_as_album)
+        .unwrap_or_default();
+    let n = (limit.max(0) as usize).min(tracks.len());
+    let page = &tracks[..n];
+    for (i, t) in page.iter().enumerate() {
+        let slot = out.add(i);
+        slot.write(SparkampLibTrack::from_lib_track(t));
+    }
+    page.len() as c_int
+}
+
+// ---------------------------------------------------------------------------
 // Media Library — playlist operations
 // ---------------------------------------------------------------------------
 
@@ -1450,6 +1606,83 @@ pub unsafe extern "C" fn sparkamp_ml_add_files(
             eprintln!("[sparkamp] add_files_to_library: {e}");
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod album_gallery_tests {
+    use super::*;
+    use crate::media_library::{AlbumGroup, AlbumSort};
+
+    fn decode(buf: &[u8]) -> &str {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        std::str::from_utf8(&buf[..end]).unwrap()
+    }
+
+    #[test]
+    fn album_sort_from_u32_maps_known_values_and_defaults_to_artist() {
+        assert_eq!(album_sort_from_u32(0), AlbumSort::Artist);
+        assert_eq!(album_sort_from_u32(1), AlbumSort::Album);
+        assert_eq!(album_sort_from_u32(2), AlbumSort::Year);
+        assert_eq!(album_sort_from_u32(99), AlbumSort::Artist);
+    }
+
+    #[test]
+    fn from_group_round_trips_a_normal_album_with_year_and_artwork() {
+        let g = AlbumGroup {
+            album: "Best Hits".to_string(),
+            album_artist: "Artist A".to_string(),
+            year: Some(1999),
+            track_count: 2,
+            artwork_path: Some("/art/best-hits.jpg".to_string()),
+            is_no_album: false,
+        };
+        let ffi = SparkampAlbum::from_group(&g);
+        assert_eq!(decode(&ffi.album), "Best Hits");
+        assert_eq!(decode(&ffi.album_artist), "Artist A");
+        assert_eq!(decode(&ffi.artwork_path), "/art/best-hits.jpg");
+        assert_eq!(ffi.year, 1999);
+        assert_eq!(ffi.has_year, 1);
+        assert_eq!(ffi.track_count, 2);
+        assert_eq!(ffi.is_no_album, 0);
+    }
+
+    #[test]
+    fn from_group_round_trips_the_no_album_bucket() {
+        let g = AlbumGroup {
+            album: String::new(),
+            album_artist: String::new(),
+            year: None,
+            track_count: 5,
+            artwork_path: None,
+            is_no_album: true,
+        };
+        let ffi = SparkampAlbum::from_group(&g);
+        assert_eq!(decode(&ffi.album), "");
+        assert_eq!(decode(&ffi.album_artist), "");
+        assert_eq!(decode(&ffi.artwork_path), "");
+        assert_eq!(ffi.year, 0);
+        assert_eq!(ffi.has_year, 0);
+        assert_eq!(ffi.track_count, 5);
+        assert_eq!(ffi.is_no_album, 1);
+    }
+
+    #[test]
+    fn from_group_truncates_and_nul_terminates_an_oversized_album_name() {
+        let long_name = "x".repeat(300); // exceeds the 256-byte album buffer
+        let g = AlbumGroup {
+            album: long_name.clone(),
+            album_artist: "Band".to_string(),
+            year: Some(2020),
+            track_count: 1,
+            artwork_path: None,
+            is_no_album: false,
+        };
+        let ffi = SparkampAlbum::from_group(&g);
+        // Truncated to fit dst.len() - 1 bytes, then NUL-terminated.
+        assert_eq!(decode(&ffi.album).len(), 255);
+        assert!(long_name.starts_with(decode(&ffi.album)));
+        assert_eq!(ffi.album[255], 0);
     }
 }
 

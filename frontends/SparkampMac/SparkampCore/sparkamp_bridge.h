@@ -654,6 +654,35 @@ int32_t sparkamp_ml_get_tracks(
     int32_t            limit,
     SparkampLibTrack  *out);
 
+/* ── Album gallery (Phase 11 Task 3) ─────────────────────────────────────
+   sort: 0=Artist, 1=Album, 2=Year (unknown values fall back to Artist).
+   The "artist as album artist" toggle is read from config, not passed in. */
+
+/** One album (or the single "(no album)" bucket).  All strings are
+    null-terminated UTF-8. */
+typedef struct {
+    uint8_t  album[256];
+    uint8_t  album_artist[256];
+    uint8_t  artwork_path[512]; /* representative track's artwork, or empty */
+    int64_t  year;              /* valid only when has_year is 1 */
+    int64_t  track_count;
+    uint8_t  has_year;          /* 1 = year is known */
+    uint8_t  is_no_album;       /* 1 = synthetic "(no album)" bucket */
+    uint8_t  _pad[6];
+} SparkampAlbum;
+
+/** Number of album groups (0 if ML not open). */
+int32_t sparkamp_ml_album_count(const SparkampCtx *ctx, uint32_t sort);
+/** Fetch up to limit album groups into a caller-allocated array. Returns count written. */
+int32_t sparkamp_ml_albums(const SparkampCtx *ctx, uint32_t sort,
+                           SparkampAlbum *out, int32_t limit);
+/** Fetch up to limit tracks for album (album, album_artist). NULL album/album_artist
+    are treated as "" so the "(no album)" bucket is reachable with album="".
+    Returns count written. */
+int32_t sparkamp_ml_album_tracks(const SparkampCtx *ctx, const char *album,
+                                 const char *album_artist,
+                                 SparkampLibTrack *out, int32_t limit);
+
 /** Append tracks (by library ID array) to the active playlist. */
 void    sparkamp_ml_add_tracks_to_playlist(SparkampCtx *ctx, const int64_t *ids, int32_t count);
 
