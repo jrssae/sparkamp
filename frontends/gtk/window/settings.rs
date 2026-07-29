@@ -114,7 +114,13 @@ fn open_settings_window(
         };
         rebuild_list();
 
-        // Selecting a row applies the skin live.
+        // Activating a row (user click / Enter) applies the skin live.
+        // Uses `row-activated`, NOT `row-selected`: `select_row()` (from the
+        // rebuild) and GtkNotebook tab re-show both emit spurious
+        // `row-selected` events, and only a real user gesture emits
+        // `row-activated`. The old `row-selected` + suppress-flag guard only
+        // covered the rebuild window, so a tab switch's spurious selection
+        // slipped through and jumped the active skin down a row.
         {
             let state_rc = state.clone();
             let provider = css_provider.clone();
@@ -122,10 +128,7 @@ fn open_settings_window(
             let accent_rgba = accent_rgba.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let rebuild = rebuild_list.clone();
-            let suppress = suppress_sel.clone();
-            listbox.connect_row_selected(move |_, row| {
-                if suppress.get() { return; }
-                let Some(row) = row else { return };
+            listbox.connect_row_activated(move |_, row| {
                 let name = row.widget_name().to_string();
                 if name.is_empty() { return; }
                 // User-clicked a row while the skin was already active
