@@ -38,8 +38,9 @@ use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn,
     ContentFit, CustomSorter, DragSource, DrawingArea, DropDown, DropTarget, Entry,
-    EventControllerKey, GestureClick, Grid, Image, Label, ListBox, ListBoxRow, ListStore,
-    MultiSelection, Notebook, Orientation, Paned, Picture, PolicyType, Scale, ScrolledWindow,
+    EventControllerKey, GestureClick, Grid, GridView, Image, Label, ListBox, ListBoxRow,
+    ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned, Picture, PolicyType,
+    Scale, ScrolledWindow,
     Separator, SignalListItemFactory, SortListModel, SpinButton, Stack, StackTransitionType,
     TreeView, TreeViewColumn,
 };
@@ -135,6 +136,11 @@ include!("devices.rs");
 // open_media_library_window(): files/playlists/devices/discs pages
 include!("media_library.rs");
 include!("queue_manager.rs");
+
+// Phase 11 A4: album gallery grid (build_album_gallery) — cover thumbnails,
+// zoom + sort controls, recycled GridView cells. Not yet wired into the ML
+// sidebar/stack (that's a follow-up task); media_library.rs will call it.
+include!("album_gallery.rs");
 
 // unit tests (#[cfg(test)] mod tests)
 include!("tests.rs");

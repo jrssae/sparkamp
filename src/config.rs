@@ -417,6 +417,12 @@ pub struct WindowConfig {
     /// Whether the main window's expandable now-playing panel was open at exit.
     #[serde(default)]
     pub player_expanded: bool,
+    /// Edge length (px) of album cover thumbnails in the gallery grid.
+    #[serde(default = "WindowConfig::default_gallery_thumb_px")]
+    pub gallery_thumb_px: u32,
+    /// Album gallery sort key: "artist" | "album" | "year".
+    #[serde(default = "WindowConfig::default_gallery_sort")]
+    pub gallery_sort: String,
 }
 
 impl Default for WindowConfig {
@@ -433,6 +439,8 @@ impl Default for WindowConfig {
             ml_playlists_expanded: true,
             ml_sidebar_width: Self::default_ml_sidebar_width(),
             player_expanded: false,
+            gallery_thumb_px: Self::default_gallery_thumb_px(),
+            gallery_sort: Self::default_gallery_sort(),
         }
     }
 }
@@ -461,6 +469,12 @@ impl WindowConfig {
     }
     pub fn default_ml_sidebar_width() -> i32 {
         165
+    }
+    pub fn default_gallery_thumb_px() -> u32 {
+        160
+    }
+    pub fn default_gallery_sort() -> String {
+        "artist".to_string()
     }
 }
 
@@ -1224,6 +1238,30 @@ playlist_height = 600
     #[test]
     fn window_config_defaults_player_collapsed() {
         assert!(!WindowConfig::default().player_expanded);
+    }
+
+    #[test]
+    fn window_config_defaults_gallery_zoom_and_sort() {
+        let cfg = WindowConfig::default();
+        assert_eq!(cfg.gallery_thumb_px, WindowConfig::default_gallery_thumb_px());
+        assert_eq!(cfg.gallery_thumb_px, 160);
+        assert_eq!(cfg.gallery_sort, WindowConfig::default_gallery_sort());
+        assert_eq!(cfg.gallery_sort, "artist");
+    }
+
+    #[test]
+    fn window_config_without_gallery_fields_deserializes_with_defaults() {
+        // A config written before the gallery fields were added should
+        // deserialize cleanly, picking up the new defaults.
+        let toml_str = r#"
+player_width = 600
+player_height = 400
+playlist_width = 500
+playlist_height = 600
+"#;
+        let cfg: WindowConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(cfg.gallery_thumb_px, WindowConfig::default_gallery_thumb_px());
+        assert_eq!(cfg.gallery_sort, WindowConfig::default_gallery_sort());
     }
 
     #[test]

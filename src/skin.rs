@@ -1037,6 +1037,22 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         font-size: 0.85em; \
     }}").unwrap();
 
+    // Phase 11 album gallery: recycled GridView cells (cover + title + artist).
+    // Cells reuse the ML row hover/selection accent so the grid reads as part
+    // of the same library chrome, not a separate widget style.
+    writeln!(css, ".album-cell {{ \
+        background-color: transparent; border-radius: 4px; padding: 6px; \
+    }}").unwrap();
+    writeln!(css, ".album-cell:hover {{ \
+        background-color: {hl_hov}; \
+    }}").unwrap();
+    writeln!(css, ".album-cell-title {{ \
+        color: {text}; font-size: {fs}px; font-weight: bold; \
+    }}").unwrap();
+    writeln!(css, ".album-cell-artist {{ \
+        color: {text_dim}; font-size: {fs}px; \
+    }}").unwrap();
+
     css
 }
 
@@ -1500,6 +1516,15 @@ mod tests {
         assert!(css.contains(".np-link"));
         assert!(css.contains(".np-collapse-btn"));
         assert!(css.contains("opacity: 0.5")); // dimmed placeholder
+    }
+
+    #[test]
+    fn render_gtk_css_covers_album_gallery() {
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        assert!(css.contains(".album-cell"));
+        assert!(css.contains(".album-cell-title"));
+        assert!(css.contains(".album-cell-artist"));
     }
 
     #[test]
