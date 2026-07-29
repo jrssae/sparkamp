@@ -177,8 +177,15 @@ impl App {
         // than closing the media library. Must be intercepted here, before
         // the "Normal navigation" match's own `KeyCode::Esc` arm (which
         // closes the whole ML) — same local-precedence pattern as the
-        // search-input and add-path blocks below. ---
-        if tab == MediaLibraryTab::Albums && album_drilled && code == KeyCode::Esc {
+        // search-input and add-path blocks below. Must NOT fire while a
+        // modal text input (add-path or search) is active — Esc should
+        // close that input first, same precedence as every other tab. ---
+        if tab == MediaLibraryTab::Albums
+            && album_drilled
+            && !add_active
+            && !search_active
+            && code == KeyCode::Esc
+        {
             if let Mode::MediaLibrary(s) = &mut self.mode {
                 s.album_drill = None;
                 s.album_tracks.clear();

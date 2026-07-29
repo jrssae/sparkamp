@@ -433,3 +433,52 @@ fn remove_track_reduces_playlist_length() {
     assert_eq!(app.playlist.len(), 2);
 }
 
+// -----------------------------------------------------------------------
+// Media Library: Albums-tab drill-down vs. add-path input precedence
+// -----------------------------------------------------------------------
+
+/// Esc must close the add-path input FIRST when both the Albums-tab drill
+/// and the add-path prompt are open at once (reachable via 'a' while
+/// drilled into an album). Only once the input is closed should a
+/// subsequent Esc pop the drill back to the album list — same precedence
+/// every other tab already has between its modal inputs and the plain
+/// "Esc closes this view" behavior.
+#[test]
+fn albums_esc_closes_add_path_before_popping_drill() {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = MediaLibraryTab::Albums;
+        s.album_drill = Some(("Dark Side of the Moon".to_string(), "Pink Floyd".to_string()));
+        s.add_input = Some(String::new());
+    } else {
+        panic!("expected MediaLibrary mode after open_media_library()");
+    }
+
+    // First Esc: closes the add-path input; the drill must survive.
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    if let Mode::MediaLibrary(s) = &app.mode {
+        assert!(
+            s.add_input.is_none(),
+            "first Esc should close the add-path input"
+        );
+        assert!(
+            s.album_drill.is_some(),
+            "drill must still be active after the add-path input closes"
+        );
+    } else {
+        panic!("expected MediaLibrary mode to remain open after first Esc");
+    }
+
+    // Second Esc: no modal input left open, so this one pops the drill.
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    if let Mode::MediaLibrary(s) = &app.mode {
+        assert!(
+            s.album_drill.is_none(),
+            "second Esc should pop the drill back to the album list"
+        );
+    } else {
+        panic!("expected MediaLibrary mode to remain open after second Esc");
+    }
+}
+
