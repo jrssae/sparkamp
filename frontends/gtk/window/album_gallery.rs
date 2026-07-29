@@ -244,6 +244,9 @@ fn build_album_gallery(
     let grid_view = GridView::new(Some(selection), Some(factory));
     grid_view.set_vexpand(true);
     grid_view.set_hexpand(true);
+    // A single click opens the album (not the GTK default double-click) so the
+    // gallery behaves like a click-to-browse cover grid.
+    grid_view.set_single_click_activate(true);
     {
         let store_act = store.clone();
         let on_activate = on_album_activate.clone();
@@ -324,10 +327,16 @@ fn build_album_gallery(
     spacer.set_hexpand(true);
     header.append(&spacer);
 
+    // "Please wait" spinner shown while a zoom change regenerates thumbnails
+    // at the new size; hidden once the in-flight generations drain.
+    let zoom_spinner = gtk4::Spinner::new();
+    zoom_spinner.set_visible(false);
     let zoom_out = Button::with_label("−");
-    let zoom_label = Label::new(Some(&format!("{}px", px.get())));
-    zoom_label.set_width_chars(6);
+    // The label is a fixed word, not the pixel size (users think in "bigger /
+    // smaller", not exact px).
+    let zoom_label = Label::new(Some("Zoom"));
     let zoom_in = Button::with_label("＋");
+    header.append(&zoom_spinner);
     header.append(&zoom_out);
     header.append(&zoom_label);
     header.append(&zoom_in);
@@ -335,44 +344,79 @@ fn build_album_gallery(
     const ZOOM_MIN: i32 = 96;
     const ZOOM_MAX: i32 = 256;
     const ZOOM_STEP: i32 = 32;
-    {
+
+    // Shared by both buttons: persist the new size, show the please-wait
+    // spinner, rebuild, then poll the `inflight` thumbnail set and hide the
+    // spinner once every visible cell's thumbnail has been (re)generated at
+    // the new size. `seen_work` avoids hiding during the brief window after
+    // `rebuild()` but before the grid has bound its cells (inflight still
+    // empty); the tick cap is a safety net so the spinner can never hang.
+    let apply_zoom: Rc<dyn Fn(i32)> = {
         let px_c = px.clone();
         let state_c = state.clone();
         let rebuild_c = rebuild.clone();
-        let zoom_label_c = zoom_label.clone();
-        zoom_out.connect_clicked(move |_| {
-            let new_px = (px_c.get() - ZOOM_STEP).max(ZOOM_MIN);
+        let inflight_c = inflight.clone();
+        let spinner_c = zoom_spinner.clone();
+        let zoom_out_c = zoom_out.clone();
+        let zoom_in_c = zoom_in.clone();
+        Rc::new(move |new_px: i32| {
             if new_px == px_c.get() {
                 return;
             }
             px_c.set(new_px);
-            zoom_label_c.set_text(&format!("{new_px}px"));
             {
                 let mut s = state_c.borrow_mut();
                 s.config.window.gallery_thumb_px = new_px as u32;
                 let _ = s.config.save();
             }
+            spinner_c.set_visible(true);
+            spinner_c.start();
+            zoom_out_c.set_sensitive(false);
+            zoom_in_c.set_sensitive(false);
             rebuild_c();
+
+            let inflight_p = inflight_c.clone();
+            let spinner_p = spinner_c.clone();
+            let zo = zoom_out_c.clone();
+            let zi = zoom_in_c.clone();
+            let ticks = Cell::new(0u32);
+            let seen_work = Cell::new(false);
+            glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                ticks.set(ticks.get() + 1);
+                let empty = inflight_p.borrow().is_empty();
+                if !empty {
+                    seen_work.set(true);
+                }
+                // Done when the queue has drained after doing work, or it
+                // stayed empty for 500ms (every size already cached — nothing
+                // to generate), or the 5s cap trips.
+                let done = (empty && seen_work.get())
+                    || (empty && ticks.get() >= 5)
+                    || ticks.get() >= 50;
+                if done {
+                    spinner_p.stop();
+                    spinner_p.set_visible(false);
+                    zo.set_sensitive(true);
+                    zi.set_sensitive(true);
+                    ControlFlow::Break
+                } else {
+                    ControlFlow::Continue
+                }
+            });
+        })
+    };
+    {
+        let px_c = px.clone();
+        let apply = apply_zoom.clone();
+        zoom_out.connect_clicked(move |_| {
+            apply((px_c.get() - ZOOM_STEP).max(ZOOM_MIN));
         });
     }
     {
         let px_c = px.clone();
-        let state_c = state.clone();
-        let rebuild_c = rebuild.clone();
-        let zoom_label_c = zoom_label.clone();
+        let apply = apply_zoom.clone();
         zoom_in.connect_clicked(move |_| {
-            let new_px = (px_c.get() + ZOOM_STEP).min(ZOOM_MAX);
-            if new_px == px_c.get() {
-                return;
-            }
-            px_c.set(new_px);
-            zoom_label_c.set_text(&format!("{new_px}px"));
-            {
-                let mut s = state_c.borrow_mut();
-                s.config.window.gallery_thumb_px = new_px as u32;
-                let _ = s.config.save();
-            }
-            rebuild_c();
+            apply((px_c.get() + ZOOM_STEP).min(ZOOM_MAX));
         });
     }
 

@@ -3713,6 +3713,15 @@ fn open_media_library_window(
     // it's pure UI navigation state local to this window.
     let album_filter: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
 
+    // Back button that returns from an album's track list to the gallery
+    // overview. Lives at the left of the Files search row; shown only while
+    // `album_filter` is active (i.e. the user drilled in from the gallery),
+    // hidden otherwise. Its click handler is connected further down, once
+    // `rebuild_gallery` exists (the shared `show_gallery_overview` closure).
+    let btn_album_back = Button::with_label("◀ Albums");
+    btn_album_back.add_css_class("pl-btn");
+    btn_album_back.set_visible(false);
+
     // ── Page: Files ──────────────────────────────────────────────────────
     {
         let files_vbox = GtkBox::new(Orientation::Vertical, 4);
@@ -3744,6 +3753,8 @@ fn open_media_library_window(
         search_row.set_margin_top(4);
         search_row.set_margin_start(4);
         search_row.set_margin_end(4);
+        // Back-to-gallery button sits at the far left of the search row.
+        search_row.append(&btn_album_back);
         search_row.append(&search_entry);
         search_row.append(&search_clear_btn);
         files_vbox.append(&search_row);
@@ -4927,6 +4938,7 @@ fn open_media_library_window(
             let album_filter_search = album_filter.clone();
             let btn_play_album_search = btn_play_album.clone();
             let btn_enqueue_album_search = btn_enqueue_album.clone();
+            let btn_album_back_search = btn_album_back.clone();
             let pending = Rc::new(RefCell::new(None::<glib::SourceId>));
             search_entry.connect_changed(move |entry| {
                 // Typing escapes any active album drill-down back to the full
@@ -4938,6 +4950,7 @@ fn open_media_library_window(
                 entry.set_placeholder_text(Some("Search artist, title, album…"));
                 btn_play_album_search.set_sensitive(false);
                 btn_enqueue_album_search.set_sensitive(false);
+                btn_album_back_search.set_visible(false);
 
                 let raw_query = entry.text().to_string();
                 let query = raw_query.to_lowercase();
@@ -5761,10 +5774,14 @@ fn open_media_library_window(
             let state_activate = state.clone();
             let stack_activate = stack.clone();
             let album_filter_activate = album_filter.clone();
+            let btn_album_back_activate = btn_album_back.clone();
             Rc::new(move |album: String, album_artist: String| {
                 {
                     *album_filter_activate.borrow_mut() = Some((album, album_artist));
                 }
+                // Reveal the back-to-gallery button now that we're in an
+                // album's track list.
+                btn_album_back_activate.set_visible(true);
                 stack_activate.set_visible_child_name("files");
                 let cb = state_activate.borrow().rebuild_ml_callback.clone();
                 if let Some(cb) = cb {
@@ -5775,6 +5792,31 @@ fn open_media_library_window(
         build_album_gallery(&state, on_album_activate)
     };
     stack.add_named(&gallery_page, Some("albums"));
+
+    // Return from an album's track list to the gallery overview: clear the
+    // drill-down filter, hide the back button, show the gallery page and
+    // refresh it. Shared by the back button (in the Files search row) and by
+    // clicking the "Albums" sidebar row while drilled in.
+    let show_gallery_overview: Rc<dyn Fn()> = {
+        let album_filter_ov = album_filter.clone();
+        let btn_album_back_ov = btn_album_back.clone();
+        let stack_ov = stack.clone();
+        let rebuild_gallery_ov = rebuild_gallery.clone();
+        Rc::new(move || {
+            {
+                *album_filter_ov.borrow_mut() = None;
+            }
+            btn_album_back_ov.set_visible(false);
+            stack_ov.set_visible_child_name("albums");
+            rebuild_gallery_ov();
+        })
+    };
+    {
+        let show_ov = show_gallery_overview.clone();
+        btn_album_back.connect_clicked(move |_| {
+            show_ov();
+        });
+    }
 
     // ── Page: Playlists ──────────────────────────────────────────────────
     //
@@ -8763,7 +8805,8 @@ fn open_media_library_window(
         let path_lbl       = edit_path_label.clone();
         let save_btn       = btn_save_pl_outer.clone();
         let album_filter_sb = album_filter.clone();
-        let rebuild_gallery_sb = rebuild_gallery.clone();
+        let btn_album_back_sb = btn_album_back.clone();
+        let show_gallery_overview_sb = show_gallery_overview.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let row = match opt_row { Some(r) => r, None => return };
             let name = row.widget_name().to_string();
@@ -8776,14 +8819,15 @@ fn open_media_library_window(
                 {
                     *album_filter_sb.borrow_mut() = None;
                 }
+                btn_album_back_sb.set_visible(false);
                 stack_ref.set_visible_child_name("files");
                 let cb = state_rc.borrow().rebuild_ml_callback.clone();
                 if let Some(cb) = cb {
                     cb();
                 }
             } else if name == "albums" {
-                stack_ref.set_visible_child_name("albums");
-                rebuild_gallery_sb();
+                // Always land on the gallery overview (clears any drill-down).
+                show_gallery_overview_sb();
             } else if name == "playlists" {
                 stack_ref.set_visible_child_name("playlists");
                 pl_sub_ref.set_visible_child_name("pl-manage");
@@ -8808,6 +8852,21 @@ fn open_media_library_window(
                         }
                     }
                 }
+            }
+        });
+    }
+
+    // Clicking the "Albums" sidebar row while it is ALREADY selected (i.e. the
+    // user drilled into an album, so the row's highlight never left "Albums")
+    // does not re-emit `row-selected`, so that path can't return to the
+    // gallery. `row-activated` DOES fire on every click, so handle the
+    // return-to-overview here too. Harmless when arriving from another row
+    // (both signals fire; `show_gallery_overview` is idempotent).
+    {
+        let show_gallery_overview_ra = show_gallery_overview.clone();
+        sidebar.connect_row_activated(move |_, row| {
+            if row.widget_name() == "albums" {
+                show_gallery_overview_ra();
             }
         });
     }
