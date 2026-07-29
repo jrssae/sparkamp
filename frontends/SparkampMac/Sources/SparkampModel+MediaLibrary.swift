@@ -100,6 +100,46 @@ extension SparkampModel {
         mlTracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
     }
 
+    // MARK: - Album gallery (Phase 11 A4)
+
+    /// Album groups for the gallery grid. `sort`: 0=Artist, 1=Album,
+    /// 2=Year (mirrors `AlbumSort` in `src/media_library/queries.rs`;
+    /// unknown values fall back to Artist inside the core). The "treat
+    /// artist as album artist" toggle is read from config core-side —
+    /// never passed in here, same as GTK's gallery.
+    ///
+    /// Count-then-fetch, same two-call idiom as `mlAllTracks`/`mlFetchTracks`:
+    /// `sparkamp_ml_album_count` sizes the buffer, `sparkamp_ml_albums` fills
+    /// it. Both calls happen back-to-back on the main actor against the same
+    /// single-threaded DB, so the count staying consistent between them is
+    /// guaranteed (per the header's doc comment on `sparkamp_ml_albums`).
+    func loadAlbums(sort: Int) -> [AlbumGroup] {
+        guard let ctx = ctx else { return [] }
+        let count = Int(sparkamp_ml_album_count(ctx, UInt32(sort)))
+        guard count > 0 else { return [] }
+        let buf = UnsafeMutablePointer<SparkampAlbum>.allocate(capacity: count)
+        defer { buf.deallocate() }
+        let written = sparkamp_ml_albums(ctx, UInt32(sort), buf, Int32(count))
+        return (0..<Int(written)).map { AlbumGroup(from: buf[$0]) }
+    }
+
+    /// Tracks for one album group — drives the Files-view drill-down
+    /// (`mlSelectedAlbum`) as well as the gallery's Play/Enqueue Album
+    /// actions. `album: ""` reaches the synthetic "(no album)" bucket, per
+    /// the header's doc comment on `sparkamp_ml_album_tracks`.
+    func albumTracks(album: String, albumArtist: String) -> [MLTrack] {
+        guard let ctx = ctx else { return [] }
+        let limit = 100_000
+        let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
+        defer { buf.deallocate() }
+        let count = album.withCString { albumPtr in
+            albumArtist.withCString { artistPtr in
+                sparkamp_ml_album_tracks(ctx, albumPtr, artistPtr, buf, Int32(limit))
+            }
+        }
+        return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+    }
+
     func mlAddFolder(_ path: String) {
         guard let ctx = ctx else { return }
         path.withCString { sparkamp_ml_add_folder(ctx, $0, nil, nil, nil) }

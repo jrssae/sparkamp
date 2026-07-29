@@ -1285,3 +1285,64 @@ review; the Swift gallery view itself is a later mac task.
       `sparkamp_bridge.h` — field order/types (`int64_t`, `uint8_t`,
       `char[N]`-equivalent byte arrays) must match `src/ffi/media_library.rs`
       byte-for-byte, including the trailing `_pad[6]`.
+
+## Phase 11 — Task 6: album gallery view + navigation (2026-07-29, BLIND — Swift never compiled)
+
+New files: `MLAlbumGallery.swift` (the gallery `LazyVGrid` + zoom/sort
+header + album cell). Modified: `SparkampModelTypes.swift` (`AlbumGroup`,
+`AlbumFilter`), `SparkampModel.swift` (`mlSelectedAlbum`),
+`SparkampModel+MediaLibrary.swift` (`loadAlbums(sort:)`,
+`albumTracks(album:albumArtist:)`), `MediaLibraryWindow.swift` (`.albums`
+nav case, "Albums" sidebar row, album-filter honoring in `reload()`, the
+"back" chip in the Files toolbar). Consumes the three FFI symbols from Task
+3 (`sparkamp_ml_album_count`/`sparkamp_ml_albums`/`sparkamp_ml_album_tracks`)
+— no new FFI in this task.
+
+- [ ] **Gallery renders real albums**: open the Media Library, click
+      "Albums" in the sidebar — cover tiles appear (title/artist/year under
+      each), matching the album count from a Files-view eyeball count of
+      distinct albums.
+- [ ] **Grouping matches the album-artist toggle**: with Settings' "treat
+      artist as album artist" off, a compilation-style album with several
+      distinct artists but no album_artist tag shows as several separate
+      groups; toggle it on and reopen the gallery — those tracks fold into
+      one group whose album-artist column matches `effective_album_artist`
+      (same rule as the Files view's Album Artist column, F12.2).
+- [ ] **No-art placeholder**: an album with no cached artwork shows the
+      50%-opacity app-icon placeholder (same visual as the A6 artwork
+      window / A1 panel's "No artwork available"), not a broken image or a
+      crash.
+- [ ] **Cover loads lazily and doesn't block scrolling**: scroll a library
+      with many albums — thumbnails pop in progressively as tiles come on
+      screen (async load off the main thread), no beachball/stutter.
+- [ ] **Zoom slider resizes cells**: dragging the header Slider (96–256)
+      changes tile size live; the `LazyVGrid`'s adaptive columns re-flow.
+      Quit and reopen the Media Library — the zoom level persisted
+      (`@AppStorage("sparkamp.gallery.thumbPx")`).
+- [ ] **Sort picker reorders**: switching the header Picker between
+      Artist/Album/Year visibly reorders the grid; the "(no album)" bucket
+      (if present) always sorts last regardless of the picker. The choice
+      persists across a Media Library close/reopen
+      (`@AppStorage("sparkamp.gallery.sort")`).
+- [ ] **Tap → correct tracks in Files**: clicking an album tile switches to
+      the Files view showing only that album's tracks in disc/track order;
+      the toolbar shows a "◀ <album name>" chip. Clicking the chip (or
+      re-clicking "Files" in the sidebar) returns to the full library.
+- [ ] **Search escapes the album filter**: while viewing a filtered album's
+      tracks, type into the Files search field — the filter chip disappears
+      and the view falls back to a normal library search over all tracks.
+- [ ] **Play Album / Enqueue Album**: right-click (or context-menu) an album
+      tile — "Play Album" replaces the active playlist and starts playback
+      per the autoplay setting (same behavior as the playlist editor's
+      "Play" button); "Enqueue Album" appends the album's tracks to the end
+      of the active playlist without disturbing current playback (same as
+      the editor's "Enqueue" button).
+- [ ] **Persistence divergence (eyeball only, not a bug)**: mac persists
+      gallery zoom/sort via `@AppStorage` (`UserDefaults`, matching the
+      existing `sparkamp.ml.sidebarWidth` idiom for other ML window prefs),
+      while GTK persists the equivalent `gallery_thumb_px`/`gallery_sort`
+      fields in the shared TOML config (`src/config.rs`). This is
+      intentional — mac's window-level UI prefs have never round-tripped
+      through the shared config file — but it means the zoom/sort chosen on
+      one platform does not carry over to the other. Nothing to fix here;
+      just confirm this is the expected, accepted behavior during the pass.

@@ -140,6 +140,12 @@ final class SparkampModel: ObservableObject {
     /// observes this and re-runs its own filtered/sorted fetch so the
     /// table reflects the new value without resetting search or sort.
     @Published var mlReloadTrigger: Int = 0
+    /// Album drill-down filter (Phase 11 A4 gallery → Files navigation).
+    /// Non-nil after an album tap in `MLAlbumGallery`; `MediaLibraryView`'s
+    /// `reload()` honors it by fetching `albumTracks(...)` instead of the
+    /// full/searched list. Cleared by re-selecting the "Files" sidebar row
+    /// or editing the search query — mirrors GTK's `album_filter` escape.
+    @Published var mlSelectedAlbum: AlbumFilter? = nil
     /// Bumps every time a saved playlist's *contents* (the playlist file on disk)
     /// change — e.g. append-paths, save, save-as.  The playlist editor
     /// observes this so right-click "Add to Playlist" from the active

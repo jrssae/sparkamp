@@ -196,6 +196,51 @@ struct MLTrack: Identifiable {
     }
 }
 
+// MARK: - Album gallery (Phase 11 A4)
+
+/// One album group from the media library, mirroring the core's
+/// `SparkampAlbum` (`sparkamp_ml_album_count`/`sparkamp_ml_albums`,
+/// `frontends/SparkampMac/SparkampCore/sparkamp_bridge.h`). The grouping
+/// itself — including the album-artist toggle — happens Rust-side
+/// (`effective_album_artist`); mac never re-derives it.
+struct AlbumGroup: Identifiable {
+    let album: String
+    let albumArtist: String
+    /// Representative track's resolved artwork path, or "" if none.
+    let artworkPath: String
+    /// nil when the core's `has_year` flag is 0 (unknown across the group).
+    let year: Int64?
+    let trackCount: Int64
+    /// True for the single synthetic "(no album)" bucket (blank `album`).
+    let isNoAlbum: Bool
+
+    /// Stable identity for `ForEach`/gallery diffing. The U+0001 separator
+    /// keeps album "A" + artist "B\u{1}" from colliding with album "A\u{1}B"
+    /// + artist "" (album/artist strings can contain arbitrary UTF-8, just
+    /// not this control character in practice).
+    var id: String { "\(album)\u{1}\(albumArtist)" }
+
+    init(from c: SparkampAlbum) {
+        var c = c
+        album       = cBytesToString(&c.album)
+        albumArtist = cBytesToString(&c.album_artist)
+        artworkPath = cBytesToString(&c.artwork_path)
+        year        = c.has_year != 0 ? c.year : nil
+        trackCount  = c.track_count
+        isNoAlbum   = c.is_no_album != 0
+    }
+}
+
+/// Album drill-down filter shared between `MLAlbumGallery` and the Files
+/// table (`SparkampModel.mlSelectedAlbum`). Mirrors GTK's `album_filter`:
+/// non-nil after an album tap, cleared by re-selecting Files directly or by
+/// editing the search query. A plain tuple would work too but isn't
+/// `Equatable`, which some SwiftUI `onChange` call sites want.
+struct AlbumFilter: Equatable {
+    let album: String
+    let albumArtist: String
+}
+
 // MARK: - Now Playing (A1 panel / A6 art window data)
 
 /// Swift-side mirror of the core's `NowPlayingInfo` (`sparkamp_now_playing_*`

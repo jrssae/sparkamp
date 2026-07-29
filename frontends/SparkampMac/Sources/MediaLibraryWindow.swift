@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 enum MLNavigation: Equatable {
     case files
+    case albums                // grid of album cover tiles (Phase 11 A4)
     case playlists            // management view: list of saved playlists
     case playlist(id: Int64)  // track editor for a specific playlist
     case devicesOverview      // grid of connected devices
@@ -69,7 +70,17 @@ struct MediaLibraryView: View {
             // ── Left sidebar ───────────────────────────────────────────────────
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 2) {
-                    sidebarRow(label: "Files", icon: "music.note.list", target: .files)
+                    sidebarRow(label: "Files", icon: "music.note.list", target: .files, onSelect: {
+                        // Re-selecting Files directly is the gallery's "back"
+                        // affordance — clear the album drill-down filter and
+                        // restore the full/searched list (mirrors GTK's
+                        // album_filter reset on re-selecting the Files row).
+                        let hadFilter = model.mlSelectedAlbum != nil
+                        model.mlSelectedAlbum = nil
+                        nav = .files
+                        if hadFilter { reload() }
+                    })
+                    sidebarRow(label: "Albums", icon: "square.grid.2x2", target: .albums)
                     playlistsHeader
                     if playlistsExpanded {
                         ForEach(model.mlSavedPlaylists) { pl in
@@ -113,6 +124,8 @@ struct MediaLibraryView: View {
                     filesTab
                     Divider().background(theme.windowBorder)
                     filesBottomBar
+                case .albums:
+                    MLAlbumGallery(nav: $nav, theme: theme)
                 case .playlists:
                     MLPlaylistManagement(nav: $nav, theme: theme)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -211,10 +224,15 @@ struct MediaLibraryView: View {
         // play-count threshold).  Using a trigger counter rather than
         // calling mlFetchTracks() directly preserves search & sort state.
         .onChange(of: model.mlReloadTrigger) { _, _ in reload() }
-        .onChange(of: nav) { _, _ in
+        .onChange(of: nav) { _, newNav in
             selection.removeAll()
             // Opening any drive clears a stale disconnect banner.
             if case .discDrive = nav { model.discDisconnectNotice = nil }
+            // Gallery tap (MLAlbumGallery.activate) sets mlSelectedAlbum then
+            // flips nav to .files in the same action; catch that transition
+            // here since filesTab only renders model.mlTracks and never
+            // fetches on its own.
+            if newNav == .files, model.mlSelectedAlbum != nil { reload() }
         }
         // When the selected device disappears (eject completed, or unplugged
         // while viewing it), return to the overview so nav + sidebar stay
@@ -338,10 +356,13 @@ struct MediaLibraryView: View {
     }
 
     @ViewBuilder
-    private func sidebarRow(label: String, icon: String, target: MLNavigation) -> some View {
+    private func sidebarRow(label: String, icon: String, target: MLNavigation,
+                            onSelect: (() -> Void)? = nil) -> some View {
         let isSelected = (nav == target)
         let vars = themeManager.currentVars
-        Button { nav = target } label: {
+        Button {
+            if let onSelect { onSelect() } else { nav = target }
+        } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 11))
                 Text(label)
@@ -609,7 +630,10 @@ struct MediaLibraryView: View {
     private var toolbar: some View {
         let vars = themeManager.currentVars
         HStack(spacing: 8) {
-            if nav == .files { searchField }
+            if nav == .files {
+                albumFilterChip
+                searchField
+            }
 
             if case let .playlist(id) = nav,
                let pl = model.mlSavedPlaylists.first(where: { $0.id == id }) {
@@ -754,6 +778,30 @@ struct MediaLibraryView: View {
 
     // MARK: - Toolbar subviews
 
+    /// "Back" affordance for the album drill-down filter — shown in the
+    /// Files toolbar only while `mlSelectedAlbum` is set. Tapping it clears
+    /// the filter and restores the full/searched list (same effect as
+    /// re-selecting the "Files" sidebar row).
+    @ViewBuilder
+    private var albumFilterChip: some View {
+        if let filter = model.mlSelectedAlbum {
+            Button {
+                model.mlSelectedAlbum = nil
+                reload()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left").font(.system(size: 10))
+                    Text(filter.album.isEmpty ? "(no album)" : filter.album)
+                        .font(themeManager.currentVars.bodyFont)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Back to full library")
+        }
+    }
+
     @ViewBuilder
     private var searchField: some View {
         HStack(spacing: 4) {
@@ -765,9 +813,14 @@ struct MediaLibraryView: View {
                 .font(themeManager.currentVars.bodyFont)
                 .foregroundStyle(theme.playlistText)
                 .frame(width: 180)
-                .onChange(of: searchQuery) { _, _ in debounceSearch() }
+                .onChange(of: searchQuery) { _, _ in
+                    // Typing a search query escapes an active album filter
+                    // (mirrors GTK's album_filter reset on search input).
+                    model.mlSelectedAlbum = nil
+                    debounceSearch()
+                }
             if !searchQuery.isEmpty {
-                Button { searchQuery = ""; persistSearch(""); reload() } label: {
+                Button { searchQuery = ""; persistSearch(""); model.mlSelectedAlbum = nil; reload() } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(theme.playlistDurationText)
                         .font(.system(size: 11))
@@ -850,6 +903,13 @@ struct MediaLibraryView: View {
     }
 
     private func reload(query: String? = nil) {
+        // Phase 11 A4: an active album drill-down filter takes over the
+        // Files fetch entirely (mirrors GTK's rebuild_files honoring
+        // album_filter) — search/sort don't apply until the filter clears.
+        if let filter = model.mlSelectedAlbum {
+            model.mlTracks = model.albumTracks(album: filter.album, albumArtist: filter.albumArtist)
+            return
+        }
         let q = query ?? searchQuery
         let colName: String? = sortOrder.first.flatMap { kp in
             switch kp.keyPath {
