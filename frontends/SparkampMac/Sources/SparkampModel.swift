@@ -96,6 +96,13 @@ final class SparkampModel: ObservableObject {
     @Published var lyricsText: String = ""
     /// File whose lyrics are shown — used by the viewer's "Edit in tag editor".
     @Published var lyricsEditPath: String = ""
+    /// DuckDuckGo search URL for the lyrics window's "Search" button (F15
+    /// revision, point 6) — precomputed by the Rust core for the shown track.
+    @Published var lyricsSearchURL: String = ""
+    /// Whether the lyrics window tracks a fixed song or the currently-playing
+    /// one (F15 revision, point 4). Opened `.current` from the now-playing
+    /// affordance, `.specific` from any playlist/ML row.
+    @Published var lyricsMode: LyricsMode = .specific
     /// Artwork image currently shown in the ID3 editor (shared with the artwork zoom window).
     @Published var artworkImage: NSImage? = nil
     /// When true, the artwork zoom window is open.

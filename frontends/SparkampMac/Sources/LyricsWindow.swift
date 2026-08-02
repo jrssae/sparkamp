@@ -29,7 +29,9 @@ struct LyricsView: View {
             Divider().background(theme.windowBorder)
 
             ScrollView {
-                Text(model.lyricsText.isEmpty ? "(no lyrics text)" : model.lyricsText)
+                // Empty body → "No lyrics available" (F15 revision, point 2 —
+                // the window still opens).
+                Text(model.lyricsText.isEmpty ? "No lyrics available" : model.lyricsText)
                     .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistText)
                     .textSelection(.enabled)
@@ -40,9 +42,28 @@ struct LyricsView: View {
 
             Divider().background(theme.windowBorder)
 
-            HStack {
-                // Closes the phase-0 single-line-Entry gap: jump to the full
-                // ID3 editor for this track (user decision).
+            HStack(spacing: 10) {
+                // This-song vs Now-playing (F15 revision, point 4). Switching to
+                // Now-playing retargets onto the currently playing track.
+                Picker("", selection: $model.lyricsMode) {
+                    Text("This song").tag(LyricsMode.specific)
+                    Text("Now playing").tag(LyricsMode.current)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .onChange(of: model.lyricsMode) { _, m in
+                    if m == .current { model.refreshCurrentLyricsIfNeeded() }
+                }
+
+                // DuckDuckGo search for the shown track (F15 revision, point 6).
+                Button("Search") {
+                    guard let url = URL(string: model.lyricsSearchURL) else { return }
+                    NSWorkspace.shared.open(url)
+                }
+                .disabled(model.lyricsSearchURL.isEmpty)
+
+                // Jump to the full ID3 editor for this track (user decision).
                 Button("Edit in tag editor") {
                     let path = model.lyricsEditPath
                     guard !path.isEmpty else { return }
@@ -59,6 +80,8 @@ struct LyricsView: View {
         .frame(minWidth: 360, minHeight: 420)
         .background(theme.background)
         .preferredColorScheme(themeManager.preferredColorScheme)
+        // Current mode: follow the playing track (F15 revision, point 4).
+        .onChange(of: model.nowPlayingNonce) { _, _ in model.refreshCurrentLyricsIfNeeded() }
         // Esc closes; PlayerWindow's onChange(lyricsVisible) dismisses the window.
         .onExitCommand { model.lyricsVisible = false }
         .onDisappear { model.lyricsVisible = false }

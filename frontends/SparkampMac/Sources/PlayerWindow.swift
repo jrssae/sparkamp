@@ -665,18 +665,32 @@ private struct NowPlayingPanel: View {
         return result
     }
 
+    /// Index of the LAST ID3/tags page (tag pages are the leading `.tags`
+    /// entries). The "Lyrics" button lives only there (F15 revision, point 1).
+    private var lastTagPageIndex: Int {
+        var n = 0
+        for p in pages {
+            if case .tags = p { n += 1 } else { break }
+        }
+        return max(0, n - 1)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             artView
             VStack(alignment: .leading, spacing: 4) {
                 pageContent
                     .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
-                if pages.count > 1 { dots }
-                // A1 lyrics affordance (F15): a plain text link under the tags
-                // that views saved lyrics for the current track or searches.
-                Button("Lyrics") { model.viewOrSearchLyricsForPlaylist(index: trackKey) }
+                // A1 lyrics affordance (F15, point 1): shown only on the LAST
+                // ID3 page, opening the window in Current (follow-playback) mode.
+                if pageIndex == lastTagPageIndex {
+                    Button("Lyrics") {
+                        model.viewOrSearchLyricsForPlaylist(index: trackKey, mode: .current)
+                    }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
+                }
+                if pages.count > 1 { dots }
             }
         }
         .onChange(of: trackKey) { _, _ in pageIndex = 0 }

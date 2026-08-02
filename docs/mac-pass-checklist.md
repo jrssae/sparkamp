@@ -1376,21 +1376,40 @@ navigation polish`). Verify in Xcode / on hardware:
 
 ## Phase 12 — F15 View/Search Lyrics
 
-- [ ] **FFI signature match**: `sparkamp_lyrics_action(const char *path, const
-      char *artist, const char *title, const char *album_artist, uint32_t
-      *out_kind)` in `sparkamp_bridge.h` matches `src/ffi/lyrics.rs` byte-for-byte;
-      `out_kind` 0 = show lyrics text, 1 = search URL; returned string freed with
-      `sparkamp_free_string`; NULL path/out_kind returns NULL.
-- [ ] **Five surfaces + A1**: "View/Search Lyrics" appears on the context menus
-      of Files, playlist editor, device files, disc tracks, and active-playlist
-      rows, plus a text "Lyrics" link in the A1 now-playing panel.
-- [ ] **Viewer**: a track with saved USLT opens a read-only, scrollable lyrics
-      window in the skin/theme body font; line breaks intact; Esc/⌘W closes;
-      opening from another track replaces content (singleton, no window pile).
-- [ ] **Edit in tag editor**: the viewer's "Edit in tag editor" link opens the
-      existing ID3 editor for that track.
-- [ ] **Search fallback**: a track without lyrics opens the default browser on a
-      DuckDuckGo search `artist - title lyrics`; blank-artist → `title lyrics`;
+### 2026-08-01 revision (window always opens; modes; search button)
+
+- [ ] **FFI signature match**: `sparkamp_lyrics_view(const char *path, const char
+      *artist, const char *title, const char *album_artist)` in `sparkamp_bridge.h`
+      matches `src/ffi/lyrics.rs` byte-for-byte; returns heap JSON
+      `{"title","body","has_body","search_url"}` (body "" when none); freed with
+      `sparkamp_free_string`; NULL path → NULL. (Old `sparkamp_lyrics_action` is
+      gone — confirm nothing else references it.)
+- [ ] **Five surfaces + A1**: "View/Search Lyrics" still on Files, playlist
+      editor, device files, disc tracks, and active-playlist rows. The A1 now-
+      playing "Lyrics" button appears ONLY on the LAST ID3/tags carousel page
+      (not persistently below the panel) and opens the window in **Now-playing**
+      mode.
+- [ ] **Always opens**: a track with NO saved USLT still opens the window,
+      showing "No lyrics available" (never silently browser-searches).
+- [ ] **Marquee title**: window title = `Lyrics — <artist> - <track>`, artist→
+      album_artist, track→filename stem (matches the scrolling marquee).
+- [ ] **Modes** (segmented picker at the bottom): opening from a playlist/ML row
+      defaults to **This song** (static). Opening from the A1 affordance defaults
+      to **Now playing** — title + body follow the playing track (driven by
+      `nowPlayingNonce` onChange → `refreshCurrentLyricsIfNeeded`). Toggling to
+      **Now playing** retargets immediately.
+- [ ] **Search button**: opens DuckDuckGo for `"<artist> <track> lyrics"` (SPACE-
+      separated, NOT dash), artist→album_artist, filename when both blank;
       `&`/`/`/unicode encode correctly (space → %20).
-- [ ] **Build**: `project.pbxproj` still opens in Xcode after adding
-      `LyricsWindow.swift`; the app builds and links against the new FFI symbol.
+- [ ] **Edit in tag editor**: still opens the ID3 editor for the shown track.
+- [ ] **Panel truncation**: the A1 ID3 "Lyric" row is capped at 200 chars + '…'
+      (comes from the core snapshot — no mac-side truncation, just verify it shows
+      truncated while the window shows the full text).
+- [ ] **Transport keys**: z/x/c/v/b/j/r/s still control playback while the lyrics
+      window is focused — covered by the app-wide `NSEvent` monitor
+      (`SparkampModel+Keys.swift`). Verify: selecting text in the lyrics body
+      (NSTextView first responder) is the one case the monitor yields to — eyeball
+      whether that is acceptable (GTK forwards via the window key controller).
+- [ ] **Build**: no new Swift files (edited existing `LyricsWindow.swift`,
+      `SparkampModel+Lyrics.swift`, `PlayerWindow.swift`, `SparkampModel.swift`),
+      so `project.pbxproj` is unchanged; the app builds against `sparkamp_lyrics_view`.
