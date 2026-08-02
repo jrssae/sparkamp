@@ -101,15 +101,6 @@ pub(super) fn build_panel(
     right.append(&stack);
     right.append(&dots);
 
-    // A1 lyrics affordance (F15): a plain text link under the tag carousel that
-    // views saved lyrics for the current track or searches when there are none.
-    let lyrics_link = gtk4::Button::with_label("Lyrics");
-    lyrics_link.add_css_class("np-link");
-    lyrics_link.set_has_frame(false);
-    lyrics_link.set_halign(Align::Center);
-    lyrics_link.connect_clicked(move |_| on_lyrics());
-    right.append(&lyrics_link);
-
     root.append(&art_slot);
     root.append(&right);
 
@@ -124,7 +115,8 @@ pub(super) fn build_panel(
     let update: Rc<dyn Fn(&NowPlayingInfo)> = {
         let art_slot = art_slot.clone();
         let carousel = carousel.clone();
-        Rc::new(move |info: &NowPlayingInfo| populate(&art_slot, &carousel, info))
+        let on_lyrics = on_lyrics.clone();
+        Rc::new(move |info: &NowPlayingInfo| populate(&art_slot, &carousel, info, &on_lyrics))
     };
 
     if let Some(info) = info {
@@ -183,7 +175,12 @@ fn jump(carousel: &Rc<RefCell<Carousel>>, to: usize) {
 /// Rebuild the art and the carousel pages from `info`. Pages are rebuilt
 /// wholesale (once per track change, not per frame); only groups with content
 /// get a page, so an empty-tag file simply shows fewer pages.
-fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayingInfo) {
+fn populate(
+    art_slot: &GtkBox,
+    carousel: &Rc<RefCell<Carousel>>,
+    info: &NowPlayingInfo,
+    on_lyrics: &Rc<dyn Fn()>,
+) {
     while let Some(child) = art_slot.first_child() {
         art_slot.remove(&child);
     }
@@ -194,10 +191,24 @@ fn populate(art_slot: &GtkBox, carousel: &Rc<RefCell<Carousel>>, info: &NowPlayi
     // its fields across multiple dots rather than one scrolling page.
     let mut pages: Vec<gtk4::Widget> = Vec::new();
 
-    for chunk in info.tags.chunks(ROWS_PER_TAG_PAGE) {
+    // `info.tags` is never empty (build_now_playing_info falls back to a Title
+    // row), so there is always at least one ID3 page — the "Lyrics" button
+    // (F15 revision, point 1) lands on the LAST of them.
+    let tag_chunks: Vec<&[(&'static str, String)]> = info.tags.chunks(ROWS_PER_TAG_PAGE).collect();
+    let last_tag_page = tag_chunks.len().saturating_sub(1);
+    for (ci, chunk) in tag_chunks.iter().enumerate() {
         let col = GtkBox::new(Orientation::Vertical, 4);
-        for (label, value) in chunk {
+        for (label, value) in *chunk {
             col.append(&tag_row(label, value));
+        }
+        if ci == last_tag_page {
+            let btn = gtk4::Button::with_label("Lyrics");
+            btn.add_css_class("np-link");
+            btn.set_has_frame(false);
+            btn.set_halign(Align::Start);
+            let on_lyrics = on_lyrics.clone();
+            btn.connect_clicked(move |_| on_lyrics());
+            col.append(&btn);
         }
         pages.push(page_scroller(&col));
     }

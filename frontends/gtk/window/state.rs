@@ -55,6 +55,18 @@ struct AppState {
     /// The read-only lyrics viewer window (F15), if one is open. Singleton
     /// like `id3_editor_window`: opening for another track replaces content.
     lyrics_window: Option<gtk4::Window>,
+    /// Whether the open lyrics window tracks a fixed song or the currently
+    /// playing one (F15 revision, point 4). A `Cell` so the now-playing
+    /// subscriber can read it without a `borrow_mut` on `AppState`.
+    lyrics_mode: Rc<std::cell::Cell<LyricsMode>>,
+    /// Set while the lyrics window is open in Current mode: re-reads the
+    /// current track and refreshes the window's title + body. Called by the
+    /// now-playing subscriber on every track change; cleared on window close.
+    lyrics_refresh: Option<Rc<dyn Fn()>>,
+    /// The main window's key handler, published by `player.rs` once built, so
+    /// satellite windows (the lyrics viewer) can forward the Winamp transport
+    /// keys (z/x/c/v/b/j/r/s) to it (F15 revision, point 5).
+    transport_key_handler: Option<Rc<dyn Fn(gtk4::gdk::Key) -> gtk4::glib::Propagation>>,
     /// The A6 standalone album-art window, once built. Unlike `ml_window` /
     /// `id3_editor_window` this is never cleared back to `None` — it is
     /// built once, kept alive for the app's lifetime (hidden, not destroyed,
@@ -527,6 +539,9 @@ impl AppState {
             settings_window: None,
             id3_editor_window: None,
             lyrics_window: None,
+            lyrics_mode: Rc::new(std::cell::Cell::new(LyricsMode::Specific)),
+            lyrics_refresh: None,
+            transport_key_handler: None,
             art_window: None,
             mpris_guard: None,
             rebuild_ml_callback: None,
@@ -676,6 +691,22 @@ impl AppState {
     /// Fired once per track start, after the play-start snapshot is captured.
     pub fn subscribe_now_playing(&mut self, cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>) {
         self.now_playing_subscribers.push(cb);
+    }
+
+    /// Publish the main window's key handler so the lyrics window can forward
+    /// the Winamp transport keys to it (F15 revision, point 5).
+    pub fn set_transport_key_handler(
+        &mut self,
+        h: Rc<dyn Fn(gtk4::gdk::Key) -> gtk4::glib::Propagation>,
+    ) {
+        self.transport_key_handler = Some(h);
+    }
+
+    /// The published transport key handler, if `player.rs` has built it yet.
+    pub fn transport_key_handler(
+        &self,
+    ) -> Option<Rc<dyn Fn(gtk4::gdk::Key) -> gtk4::glib::Propagation>> {
+        self.transport_key_handler.clone()
     }
 
     /// The now-playing info for the currently loaded track, if any. Cloned

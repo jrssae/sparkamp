@@ -545,11 +545,31 @@ pub fn build(
             if let Some((path, artist, title, album_artist)) = cur {
                 view_or_search_lyrics(
                     &state_lyr, &path, &artist, &title, &album_artist, Rc::new(|| {}),
+                    LyricsMode::Current,
                 );
             }
         })
     });
     state.borrow_mut().subscribe_now_playing(np_panel_update.clone());
+
+    // Retarget an open Current-mode lyrics window on every track change
+    // (F15 revision, point 4). Registered once; the lyrics window sets/clears
+    // `lyrics_refresh` as it opens/closes, and the mode gate lives in the Cell.
+    {
+        let state_sub = state.clone();
+        let cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)> = Rc::new(move |_info| {
+            let (mode, refresh) = {
+                let s = state_sub.borrow();
+                (s.lyrics_mode.get(), s.lyrics_refresh.clone())
+            };
+            if mode == LyricsMode::Current {
+                if let Some(r) = refresh {
+                    r();
+                }
+            }
+        });
+        state.borrow_mut().subscribe_now_playing(cb);
+    }
 
     // Collapsed shows nothing extra below the persistent marquee (classic
     // look); expanded shows the art + carousel panel.
@@ -2559,6 +2579,7 @@ pub fn build(
                 if let Some((path, artist, title, album_artist)) = t {
                     view_or_search_lyrics(
                         &state_lyr, &path, &artist, &title, &album_artist, rebuild_lyr.clone(),
+                        LyricsMode::Specific,
                     );
                 }
             }
@@ -4752,6 +4773,10 @@ pub fn build(
             }
         })
     };
+
+    // Publish the transport key handler so the lyrics window can forward the
+    // Winamp keys (z/x/c/v/b/j/r/s) to it (F15 revision, point 5).
+    state.borrow_mut().set_transport_key_handler(handle_key.clone());
 
     // Wire up the fullscreen opener now that handle_key is fully defined.
     {

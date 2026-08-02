@@ -2751,7 +2751,7 @@ fn open_media_library_window(
                         reload(dev);
                     }
                 });
-                view_or_search_lyrics(&state_lyr, &path, &artist, &title, &album_artist, rebuild_cb);
+                view_or_search_lyrics(&state_lyr, &path, &artist, &title, &album_artist, rebuild_cb, LyricsMode::Specific);
             });
         }
         dev_file_action_group.add_action(&action_lyrics);
@@ -3591,7 +3591,7 @@ fn open_media_library_window(
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
-                view_or_search_lyrics(&state_lyr, &f.path, "", &title, "", rebuild_lyr.clone());
+                view_or_search_lyrics(&state_lyr, &f.path, "", &title, "", rebuild_lyr.clone(), LyricsMode::Specific);
             });
             disc_files_action_group.add_action(&action);
         }
@@ -4105,7 +4105,7 @@ fn open_media_library_window(
             };
             view_or_search_lyrics(
                 &ml_action_lyrics_state, &path, &artist, &title, &album_artist,
-                ml_action_lyrics_rebuild.clone(),
+                ml_action_lyrics_rebuild.clone(), LyricsMode::Specific,
             );
         });
         ml_action_group.add_action(&action_lyrics);
@@ -6371,7 +6371,7 @@ fn open_media_library_window(
                 )
             });
             let Some((path, artist, title, album_artist)) = t else { return };
-            view_or_search_lyrics(&state_c, &path, &artist, &title, &album_artist, rebuild_pl.clone());
+            view_or_search_lyrics(&state_c, &path, &artist, &title, &album_artist, rebuild_pl.clone(), LyricsMode::Specific);
         });
         ed_action_group.add_action(&action);
     }
@@ -8723,7 +8723,7 @@ fn open_media_library_window(
                         )
                     });
                     let Some((path, artist, title, album_artist)) = t else { return };
-                    view_or_search_lyrics(&state_rc, &path, &artist, &title, &album_artist, rebuild_pl.clone());
+                    view_or_search_lyrics(&state_rc, &path, &artist, &title, &album_artist, rebuild_pl.clone(), LyricsMode::Specific);
                 });
                 action_group.add_action(&action);
             }
