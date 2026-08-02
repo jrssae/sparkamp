@@ -1,3 +1,18 @@
+/// Initial text for an editor field. Everything comes from the file's tags
+/// except ReplayGain, which lives in the library DB (analysis stores it there
+/// whether or not it was also written into the file) — so it is passed in
+/// pre-resolved rather than dug out of `TagFields`, which has no such field.
+fn field_seed_value(
+    fields: &crate::id3_editor::TagFields,
+    id: &str,
+    rg_seed: &str,
+) -> String {
+    if id == "rg_gain" {
+        return rg_seed.to_string();
+    }
+    get_id3_field_value(fields, id)
+}
+
 /// Get the display value for an ID3 editable field.
 fn get_id3_field_value(fields: &crate::id3_editor::TagFields, id: &str) -> String {
     match id {
@@ -710,6 +725,14 @@ fn open_id3_editor_window(
     }
 
     let fields = read_tag_fields(&path);
+    // ReplayGain is not a tag field — read the stored value so the editor can
+    // show it even when the file itself carries no REPLAYGAIN_* frames (the
+    // usual case: analysis stores to the DB, and only writes tags when the
+    // user asked for that).
+    let rg_seed = crate::replaygain::manual_gain_field_text(
+        state.borrow().media_lib.as_ref(),
+        &path.to_string_lossy(),
+    );
     let fname = gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
     let path_str = path.to_string_lossy().into_owned();
 
@@ -819,9 +842,9 @@ fn open_id3_editor_window(
         let value = if let Some(ref vals) = initial_values {
             vals.get(*id)
                 .cloned()
-                .unwrap_or_else(|| get_id3_field_value(&fields, id))
+                .unwrap_or_else(|| field_seed_value(&fields, id, &rg_seed))
         } else {
-            get_id3_field_value(&fields, id)
+            field_seed_value(&fields, id, &rg_seed)
         };
         if *id == "genre" {
             let entry = make_genre_entry(&value);
@@ -849,9 +872,9 @@ fn open_id3_editor_window(
         let value = if let Some(ref vals) = initial_values {
             vals.get(*id)
                 .cloned()
-                .unwrap_or_else(|| get_id3_field_value(&fields, id))
+                .unwrap_or_else(|| field_seed_value(&fields, id, &rg_seed))
         } else {
-            get_id3_field_value(&fields, id)
+            field_seed_value(&fields, id, &rg_seed)
         };
         if *id == "genre" {
             let entry = make_genre_entry(&value);
@@ -1070,6 +1093,7 @@ fn open_id3_editor_window(
         // stripping the value on every save while the field is hidden.
         // Snapshot the disk-read values here and fall back to them instead.
         let fields_snapshot = fields.clone();
+        let rg_seed_save = rg_seed.clone();
 
         move || {
             let entries = entries_r.borrow();
@@ -1154,6 +1178,34 @@ fn open_id3_editor_window(
                     .map(|e| e.text().to_string())
                     .unwrap_or_default(),
             };
+
+            // ReplayGain is not a TagFields frame — it round-trips through
+            // its own core helper, which writes the file tag and the library
+            // row together. Deliberately independent of the write-tags
+            // setting, which only governs automatic analysis.
+            if let Some(entry) = entries.get("rg_gain") {
+                let text = entry.text().to_string();
+                if text.trim() != rg_seed_save.trim() {
+                    let st = state_s.borrow();
+                    match crate::replaygain::apply_manual_gain_edit(
+                        st.media_lib.as_ref(),
+                        &path,
+                        &text,
+                    ) {
+                        Ok(_) => {}
+                        Err(crate::replaygain::ManualGainError::Unparseable) => {
+                            drop(st);
+                            status_s.set_text("ReplayGain must look like \"-6.20 dB\"");
+                            return;
+                        }
+                        Err(crate::replaygain::ManualGainError::WriteFailed) => {
+                            drop(st);
+                            status_s.set_text("Could not write ReplayGain");
+                            return;
+                        }
+                    }
+                }
+            }
 
             match write_tag_fields(&path, &new_fields) {
                 Ok(()) => {

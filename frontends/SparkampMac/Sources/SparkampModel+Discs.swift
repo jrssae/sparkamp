@@ -489,27 +489,34 @@ extension SparkampModel {
                 timer.invalidate()
                 return
             }
-            if self.ripCancelRequested && !cancelSent {
-                DiscService.ripJobCancel()
-                cancelSent = true
-            }
-            guard let st = DiscService.ripJobPoll() else { return }
-            if let done = st.done {
-                timer.invalidate()
-                self.ripProgress = nil
-                self.ripTrackFrac = 0
-                self.ripCancelRequested = false
-                // Import only registers files under watched folders; the
-                // shared message reports honestly either way.
-                var imported = 0
-                if !done.ripped.isEmpty {
-                    imported = self.mlAddFilesToLibrary(paths: done.ripped)
+
+            // The timer was scheduled on the main run loop, so this body always
+            // runs on the main actor — Swift 6 just cannot prove it through the
+            // @Sendable closure. Asserting it keeps the existing timing exactly;
+            // hopping with a Task would reorder these updates against the poll.
+            MainActor.assumeIsolated {
+                if self.ripCancelRequested && !cancelSent {
+                    DiscService.ripJobCancel()
+                    cancelSent = true
                 }
-                self.discStatus = DiscService.ripResultMessage(done: done, imported: imported)
-            } else if st.running {
-                self.ripProgress = CopyProgress(
-                    done: st.trackIndex, total: st.trackCount, name: st.title)
-                self.ripTrackFrac = st.frac
+                guard let st = DiscService.ripJobPoll() else { return }
+                if let done = st.done {
+                    timer.invalidate()
+                    self.ripProgress = nil
+                    self.ripTrackFrac = 0
+                    self.ripCancelRequested = false
+                    // Import only registers files under watched folders; the
+                    // shared message reports honestly either way.
+                    var imported = 0
+                    if !done.ripped.isEmpty {
+                        imported = self.mlAddFilesToLibrary(paths: done.ripped)
+                    }
+                    self.discStatus = DiscService.ripResultMessage(done: done, imported: imported)
+                } else if st.running {
+                    self.ripProgress = CopyProgress(
+                        done: st.trackIndex, total: st.trackCount, name: st.title)
+                    self.ripTrackFrac = st.frac
+                }
             }
         }
     }
@@ -703,23 +710,30 @@ extension SparkampModel {
                 timer.invalidate()
                 return
             }
-            guard let st = DiscService.burnJobPoll() else { return }
-            if let done = st.done {
-                timer.invalidate()
-                self.burnPhase = nil
-                self.burnFraction = nil
-                if done.ok {
-                    self.discStatus = done.message
-                    self.clearBurnList(driveId: driveId)
-                    self.pollDiscDrives()
-                } else if done.message == "cancelled" {
-                    self.discStatus = "Burn cancelled"
-                } else {
-                    self.discStatus = "Burn failed: \(done.message)"
+
+            // The timer was scheduled on the main run loop, so this body always
+            // runs on the main actor — Swift 6 just cannot prove it through the
+            // @Sendable closure. Asserting it keeps the existing timing exactly;
+            // hopping with a Task would reorder these updates against the poll.
+            MainActor.assumeIsolated {
+                guard let st = DiscService.burnJobPoll() else { return }
+                if let done = st.done {
+                    timer.invalidate()
+                    self.burnPhase = nil
+                    self.burnFraction = nil
+                    if done.ok {
+                        self.discStatus = done.message
+                        self.clearBurnList(driveId: driveId)
+                        self.pollDiscDrives()
+                    } else if done.message == "cancelled" {
+                        self.discStatus = "Burn cancelled"
+                    } else {
+                        self.discStatus = "Burn failed: \(done.message)"
+                    }
+                } else if st.running {
+                    self.burnPhase = st.phase
+                    self.burnFraction = st.fraction
                 }
-            } else if st.running {
-                self.burnPhase = st.phase
-                self.burnFraction = st.fraction
             }
         }
     }
@@ -823,7 +837,10 @@ extension SparkampModel {
     /// existing file: "name.ext", "name (2).ext", "name (3).ext", … — mirrors
     /// core `burn::stage_data_files`'s collision suffixing so files with the
     /// same name from different discs don't clobber each other.
-    private static func collisionSafeDestination(dir: String, filename: String) -> URL {
+    /// `nonisolated` because the data-disc copy loop calls this from a
+    /// background queue. It is a pure path computation over its arguments and
+    /// FileManager, so it never touches main-actor state.
+    private nonisolated static func collisionSafeDestination(dir: String, filename: String) -> URL {
         let base = URL(fileURLWithPath: dir)
         let ext = (filename as NSString).pathExtension
         let stem = (filename as NSString).deletingPathExtension

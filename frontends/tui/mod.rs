@@ -376,7 +376,14 @@ pub struct Id3EditorState {
     pub tech_summary: String,
     /// Live copies of the standard tag fields — mutated as the user types.
     pub fields: TagFields,
-    /// Which of the 12 default fields currently has focus (0–11).
+    /// Manually editable ReplayGain (dB), seeded from the library DB rather
+    /// than the file's tags — analysis stores it there whether or not it was
+    /// also written into the file. Saved via
+    /// `replaygain::apply_manual_gain_edit`, which updates tag and DB together.
+    pub rg_gain: String,
+    /// `rg_gain` as loaded, so save only touches tag + DB on a real edit.
+    pub rg_seed: String,
+    /// Which of the 13 focusable fields currently has focus (0–12).
     pub focused: usize,
     /// Cursor position within the focused field, in Unicode scalar values
     /// (characters), not bytes.  0 = before the first character; len = after
@@ -1307,6 +1314,36 @@ impl App {
 /// 6=Track#, 7=Track Total, 8=Disc#, 9=Disc Total, 10=BPM, 11=Comment,
 /// 12=Composer, 13=Original Artist, 14=Copyright, 15=URL, 16=Encoded By,
 /// 17=Lyric.
+/// Number of ID3-editor rows the user can Tab through. The form renders every
+/// `TagFields` pair, but only these lead ones plus ReplayGain are editable.
+pub const ID3_FOCUS_COUNT: usize = 13;
+/// Focus index of the ReplayGain row — also its position in the rendered pair
+/// list, so highlighting needs no special case.
+pub const ID3_RG_FOCUS: usize = 12;
+
+impl Id3EditorState {
+    /// The string the focused row edits. ReplayGain is not part of
+    /// `TagFields`, so it is routed here rather than through
+    /// `id3_field_value_mut`.
+    pub fn focused_value_mut(&mut self) -> &mut String {
+        if self.focused == ID3_RG_FOCUS {
+            &mut self.rg_gain
+        } else {
+            id3_field_value_mut(&mut self.fields, self.focused)
+        }
+    }
+
+    /// Rendered (label, value) rows: the standard tag pairs with ReplayGain
+    /// spliced in at `ID3_RG_FOCUS` so render position matches focus index.
+    pub fn display_pairs(&self) -> Vec<(&'static str, String)> {
+        let mut pairs = self.fields.field_pairs();
+        let tail = pairs.split_off(ID3_RG_FOCUS);
+        pairs.push(("ReplayGain", self.rg_gain.clone()));
+        pairs.extend(tail);
+        pairs
+    }
+}
+
 pub fn id3_field_value_mut(fields: &mut TagFields, index: usize) -> &mut String {
     match index {
         0 => &mut fields.title,

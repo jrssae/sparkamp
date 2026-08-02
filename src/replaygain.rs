@@ -345,6 +345,77 @@ pub struct RgJobProgress {
     pub total: usize,
 }
 
+/// Why a manual ReplayGain edit was rejected.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ManualGainError {
+    /// Non-empty text that isn't a gain value — nothing was written.
+    Unparseable,
+    /// The tag or database write failed.
+    WriteFailed,
+}
+
+/// Apply a hand-edited ReplayGain value from an ID3 editor: write it into the
+/// file's `REPLAYGAIN_TRACK_GAIN` tag AND store it in the library, so the two
+/// agree afterwards. Returns the parsed gain (`None` when cleared).
+///
+/// Deliberately independent of the `write_tags` setting — that governs whether
+/// *automatic analysis* writes back to files, whereas this is the user
+/// explicitly editing the value in front of them.
+///
+/// `text` is free-form (`-11.00 dB`, `-11`, `+2.3 dB`) and is normalised to the
+/// standard tag format before writing; empty/whitespace clears both the frame
+/// and the stored value. Non-MP3 files skip the tag write (Sparkamp tags via
+/// the `id3` crate, which is MP3-only) but still get the library value, which
+/// is what playback reads.
+///
+/// Shared by every frontend so the mac editor, GTK and the TUI cannot drift.
+pub fn apply_manual_gain_edit(
+    lib: Option<&crate::media_library::MediaLibrary>,
+    path: &std::path::Path,
+    text: &str,
+) -> Result<Option<f64>, ManualGainError> {
+    let trimmed = text.trim();
+    let gain = if trimmed.is_empty() {
+        None
+    } else {
+        Some(parse_gain_db(trimmed).ok_or(ManualGainError::Unparseable)?)
+    };
+
+    let is_mp3 = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mp3"))
+        .unwrap_or(false);
+    if is_mp3 {
+        let frame = format!(
+            "{}REPLAYGAIN_TRACK_GAIN",
+            crate::id3_editor::TXXX_PREFIX
+        );
+        let value = gain.map(format_gain_db).unwrap_or_default();
+        crate::id3_editor::write_extra_frame(path, &frame, &value)
+            .map_err(|_| ManualGainError::WriteFailed)?;
+    }
+
+    if let Some(lib) = lib {
+        lib.set_track_gain_by_path(&path.to_string_lossy(), gain)
+            .map_err(|_| ManualGainError::WriteFailed)?;
+    }
+    Ok(gain)
+}
+
+/// The stored track gain for `path`, formatted for an ID3 editor field
+/// (`-11.00 dB`), or an empty string when the file isn't in the library or has
+/// never been analyzed.
+pub fn manual_gain_field_text(
+    lib: Option<&crate::media_library::MediaLibrary>,
+    path: &str,
+) -> String {
+    lib.and_then(|l| l.track_by_path(path).ok())
+        .and_then(|t| t.rg_track_gain)
+        .map(format_gain_db)
+        .unwrap_or_default()
+}
+
 /// Resolve the ReplayGain value stored in the library for the file at `path`
 /// and hand it to the player as the gain for its next `load()`.
 ///

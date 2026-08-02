@@ -6,7 +6,7 @@ use crate::engine::PlayerState;
 use crate::id3_editor::{write_extra_frame, write_tag_fields};
 use crate::model::Track;
 
-use super::{id3_field_value_mut, id3_genre_matches, App, Mode};
+use super::{id3_genre_matches, App, Mode};
 
 impl App {
 
@@ -80,8 +80,8 @@ impl App {
             // Tab / Shift-Tab: advance/retreat through the 12 fields.
             KeyCode::Tab => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.focused = (s.focused + 1) % 12;
-                    s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                    s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                    s.cursor = s.focused_value_mut()
                         .chars()
                         .count();
                     s.genre_sel = 0;
@@ -90,8 +90,8 @@ impl App {
             }
             KeyCode::BackTab => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.focused = if s.focused == 0 { 11 } else { s.focused - 1 };
-                    s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                    s.focused = if s.focused == 0 { crate::tui::ID3_FOCUS_COUNT - 1 } else { s.focused - 1 };
+                    s.cursor = s.focused_value_mut()
                         .chars()
                         .count();
                     s.genre_sel = 0;
@@ -109,8 +109,8 @@ impl App {
                             s.genre_sel = (s.genre_sel + 1).min(n - 1);
                         }
                     } else {
-                        s.focused = (s.focused + 1) % 12;
-                        s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                        s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                        s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
                         s.genre_sel = 0;
@@ -122,8 +122,8 @@ impl App {
                     if s.focused == 4 {
                         s.genre_sel = s.genre_sel.saturating_sub(1);
                     } else {
-                        s.focused = if s.focused == 0 { 11 } else { s.focused - 1 };
-                        s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                        s.focused = if s.focused == 0 { crate::tui::ID3_FOCUS_COUNT - 1 } else { s.focused - 1 };
+                        s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
                         s.genre_sel = 0;
@@ -139,7 +139,7 @@ impl App {
             }
             KeyCode::Right => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    let len = id3_field_value_mut(&mut s.fields, s.focused)
+                    let len = s.focused_value_mut()
                         .chars()
                         .count();
                     s.cursor = (s.cursor + 1).min(len);
@@ -154,7 +154,7 @@ impl App {
             }
             KeyCode::End => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                    s.cursor = s.focused_value_mut()
                         .chars()
                         .count();
                 }
@@ -176,14 +176,14 @@ impl App {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
                     if let Some(chosen) = accept {
                         s.fields.genre = chosen;
-                        s.focused = (s.focused + 1) % 12;
-                        s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                        s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                        s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
                         s.genre_sel = 0;
                     } else {
-                        s.focused = (s.focused + 1) % 12;
-                        s.cursor = id3_field_value_mut(&mut s.fields, s.focused)
+                        s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                        s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
                         s.genre_sel = 0;
@@ -214,11 +214,11 @@ impl App {
                     let c = s.cursor;
                     if c > 0 {
                         let byte_idx = {
-                            let field = id3_field_value_mut(&mut s.fields, s.focused);
+                            let field = s.focused_value_mut();
                             field.char_indices().nth(c - 1).map(|(i, _)| i)
                         };
                         if let Some(bi) = byte_idx {
-                            id3_field_value_mut(&mut s.fields, s.focused).remove(bi);
+                            s.focused_value_mut().remove(bi);
                             s.cursor -= 1;
                         }
                     }
@@ -231,14 +231,14 @@ impl App {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
                     let c = s.cursor;
                     let byte_idx = {
-                        let field = id3_field_value_mut(&mut s.fields, s.focused);
+                        let field = s.focused_value_mut();
                         field
                             .char_indices()
                             .nth(c)
                             .map(|(i, _)| i)
                             .unwrap_or(field.len())
                     };
-                    id3_field_value_mut(&mut s.fields, s.focused).insert(byte_idx, ch);
+                    s.focused_value_mut().insert(byte_idx, ch);
                     s.cursor += 1;
                     s.genre_sel = 0;
                 }
@@ -411,11 +411,45 @@ impl App {
     /// Write the current `TagFields` back to disk, refresh the in-playlist
     /// track metadata, then close the editor.
     pub(super) fn id3_save_and_close(&mut self) {
-        let (path, fields) = if let Mode::Id3Editor(ref s) = self.mode {
-            (s.path.clone(), s.fields.clone())
+        let (path, fields, rg_gain, rg_seed) = if let Mode::Id3Editor(ref s) = self.mode {
+            (
+                s.path.clone(),
+                s.fields.clone(),
+                s.rg_gain.clone(),
+                s.rg_seed.clone(),
+            )
         } else {
             return;
         };
+
+        // ReplayGain is not a TagFields frame — it goes through its own core
+        // helper, which writes the file tag and the library row together.
+        // Deliberately independent of the write-tags setting, which governs
+        // only automatic analysis. Applied before write_tag_fields so a
+        // rejected value stops the save with the editor still open.
+        if rg_gain.trim() != rg_seed.trim() {
+            match crate::replaygain::apply_manual_gain_edit(
+                self.media_lib.as_ref(),
+                &path,
+                &rg_gain,
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    let msg = match e {
+                        crate::replaygain::ManualGainError::Unparseable => {
+                            "ReplayGain must look like \"-6.20 dB\""
+                        }
+                        crate::replaygain::ManualGainError::WriteFailed => {
+                            "Could not write ReplayGain"
+                        }
+                    };
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        s.status = Some(msg.to_string());
+                    }
+                    return;
+                }
+            }
+        }
 
         match write_tag_fields(&path, &fields) {
             Ok(()) => {

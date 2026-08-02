@@ -486,7 +486,16 @@ impl App {
                         lib_track.as_ref(),
                     );
                     let tech_summary = crate::media_library::tech_summary(&ro);
+                    // ReplayGain is not a tag field — read the stored value so
+                    // the row shows it even when the file carries no
+                    // REPLAYGAIN_* frames (the usual case).
+                    let rg_seed = crate::replaygain::manual_gain_field_text(
+                        self.media_lib.as_ref(),
+                        &path.to_string_lossy(),
+                    );
                     self.mode = Mode::Id3Editor(Id3EditorState {
+                        rg_gain: rg_seed.clone(),
+                        rg_seed,
                         path,
                         tech_summary,
                         fields,

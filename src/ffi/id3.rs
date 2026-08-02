@@ -296,43 +296,16 @@ pub unsafe extern "C" fn sparkamp_id3_set_replaygain(
     let ctx = &mut *ctx;
     let path_str = CStr::from_ptr(path).to_string_lossy().into_owned();
     let raw = CStr::from_ptr(text).to_string_lossy();
-    let trimmed = raw.trim();
 
-    let gain: Option<f64> = if trimmed.is_empty() {
-        None
-    } else {
-        match crate::replaygain::parse_gain_db(trimmed) {
-            Some(g) => Some(g),
-            None => return -1,
-        }
-    };
-
-    // File first: writing the canonical form keeps the tag readable by other
-    // players, and re-reading it later parses back to the same number.
-    let frame_id = format!(
-        "{}REPLAYGAIN_TRACK_GAIN",
-        crate::id3_editor::TXXX_PREFIX
-    );
-    let value = gain.map(crate::replaygain::format_gain_db).unwrap_or_default();
-    // Non-MP3 files have no ID3 tag to write; that is not an error here — the
-    // library value below is still the one playback uses.
-    let is_mp3 = Path::new(&path_str)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("mp3"))
-        .unwrap_or(false);
-    if is_mp3
-        && crate::id3_editor::write_extra_frame(Path::new(&path_str), &frame_id, &value).is_err()
-    {
-        return -2;
+    match crate::replaygain::apply_manual_gain_edit(
+        ctx.media_library.as_ref(),
+        Path::new(&path_str),
+        &raw,
+    ) {
+        Ok(_) => 0,
+        Err(crate::replaygain::ManualGainError::Unparseable) => -1,
+        Err(crate::replaygain::ManualGainError::WriteFailed) => -2,
     }
-
-    if let Some(lib) = ctx.media_library.as_ref() {
-        if lib.set_track_gain_by_path(&path_str, gain).is_err() {
-            return -2;
-        }
-    }
-    0
 }
 
 #[cfg(test)]

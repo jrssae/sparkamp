@@ -151,7 +151,10 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
         id: "rg_gain",
         header: "ReplayGain",
         expand: false,
-        id3_editable: false,
+        // Editable in the ID3 editor (not a tag frame — it round-trips
+        // through the library DB and the file's REPLAYGAIN_TRACK_GAIN tag
+        // together, see replaygain::apply_manual_gain_edit).
+        id3_editable: true,
         default_ml_visible: false,
         default_id3_visible: false,
     },

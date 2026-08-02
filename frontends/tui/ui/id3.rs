@@ -5,7 +5,7 @@ use super::imports::*;
 
 ///
 /// When `state.show_extra` is false, shows the standard two-column form for
-/// the 12 default tag fields.  When true, shows the Customize sub-panel
+/// the default tag fields plus the editable ReplayGain row.  When true, shows the Customize sub-panel
 /// listing all other ID3v2 frames present in the file.
 pub(super) fn draw_id3_editor_overlay(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
     // Use most of the screen for the editor — leave a 2-row gutter top/bottom.
@@ -20,7 +20,7 @@ pub(super) fn draw_id3_editor_overlay(frame: &mut Frame, state: &Id3EditorState,
     }
 }
 
-/// Render the 12-field two-column editor form.
+/// Render the two-column editor form (tag fields + ReplayGain).
 pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
     // Filename shown in the title bar for quick reference.
     let fname = state
@@ -56,8 +56,9 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rows[0]);
 
-    let pairs = state.fields.field_pairs(); // 18 (label, value) pairs
-    let mid = pairs.len() / 2; // 9 in each column
+    // Tag pairs with the ReplayGain row spliced in at its focus index.
+    let pairs = state.display_pairs(); // 19 (label, value) pairs
+    let mid = pairs.len().div_ceil(2); // 10 left, 9 right
 
     // Render each column.
     draw_id3_field_column(frame, state, &pairs[..mid], 0, cols[0]);
