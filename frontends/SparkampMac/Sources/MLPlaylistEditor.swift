@@ -325,6 +325,13 @@ struct MLPlaylistEditor: View {
                 model.mlViewArtForPath(t.path)
             }
         })
+        menu.addItem(BlockMenuItem(title: "View/Search Lyrics", enabled: rowIds.count == 1) {
+            if let first = rowIds.first,
+               let t = editingRows.first(where: { $0.id == first })?.track {
+                model.viewOrSearchLyrics(path: t.path, artist: t.artist,
+                                         title: t.title, albumArtist: t.albumArtist)
+            }
+        })
         menu.addItem(.separator())
 
         menu.addItem(BlockMenuItem(title: "Remove from Library", enabled: true) {

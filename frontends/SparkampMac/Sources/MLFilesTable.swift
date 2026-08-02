@@ -650,6 +650,13 @@ struct MLFilesTable: NSViewRepresentable {
             menu.addItem(BlockMenuItem(title: "View Album Art", enabled: ids.count == 1) {
                 if let first = ids.first { self.parent.onEvent(.viewArt(first)) }
             })
+            menu.addItem(BlockMenuItem(title: "View/Search Lyrics", enabled: ids.count == 1) {
+                if let first = ids.first,
+                   let t = self.tracks.first(where: { $0.id == first }) {
+                    self.parent.model.viewOrSearchLyrics(path: t.path, artist: t.artist,
+                                                         title: t.title, albumArtist: t.albumArtist)
+                }
+            })
             // Force a ReplayGain recompute of the selected rows (mirrors the
             // GTK "Calculate ReplayGain" context action). Disabled while an
             // analysis is already running.

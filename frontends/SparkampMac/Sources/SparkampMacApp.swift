@@ -189,6 +189,16 @@ struct SparkampMacApp: App {
         .windowResizability(.contentMinSize)
         .defaultSize(width: 560, height: 500)
 
+        // ── Lyrics viewer (F15) ───────────────────────────────────────────────
+        Window("Lyrics", id: "lyrics-viewer") {
+            LyricsView()
+                .environmentObject(model)
+                .environmentObject(themeManager)
+                .themedRoot(themeManager)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 420, height: 520)
+
         // ── Artwork zoom window ───────────────────────────────────────────────
         Window("Artwork", id: "artwork") {
             ArtworkView()

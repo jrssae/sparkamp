@@ -85,6 +85,17 @@ final class SparkampModel: ObservableObject {
     /// picking a different file while the editor is already open updates it and
     /// brings it to the front instead of doing nothing.
     @Published var id3Request: Int = 0
+    /// When true, the read-only lyrics viewer window (F15) is open.
+    @Published var lyricsVisible: Bool = false
+    /// Bumped on every lyrics-view request so the singleton window raises +
+    /// reloads for the newly picked track (same idiom as `id3Request`).
+    @Published var lyricsRequest: Int = 0
+    /// Title shown in the lyrics window ("Lyrics — <title>").
+    @Published var lyricsTitle: String = ""
+    /// The saved USLT text currently displayed in the lyrics window.
+    @Published var lyricsText: String = ""
+    /// File whose lyrics are shown — used by the viewer's "Edit in tag editor".
+    @Published var lyricsEditPath: String = ""
     /// Artwork image currently shown in the ID3 editor (shared with the artwork zoom window).
     @Published var artworkImage: NSImage? = nil
     /// When true, the artwork zoom window is open.

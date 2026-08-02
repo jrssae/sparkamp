@@ -951,6 +951,16 @@ struct DiscDriveView: View {
                     Menu("Send to") {
                         SendToMenu(paths: pathsFor(ids))
                     }
+                    if ids.count == 1, let p = ids.first {
+                        // Disc files carry no tags: use the file stem as the
+                        // title with empty artist, matching GTK's disc surface.
+                        Button("View/Search Lyrics") {
+                            let title = URL(fileURLWithPath: p)
+                                .deletingPathExtension().lastPathComponent
+                            model.viewOrSearchLyrics(path: p, artist: "",
+                                                     title: title, albumArtist: "")
+                        }
+                    }
                 } primaryAction: { ids in
                     // Double-click adds + plays — same replace/append +
                     // autoplay semantics as any other ordinary file add.

@@ -496,6 +496,12 @@ struct DeviceDetailView: View {
             if ids.count == 1, let p = ids.first {
                 Button("Edit / View ID3 Tags") { model.mlOpenTagEditorForPath(p) }
                 Button("View Album Art") { model.mlViewArtForPath(p) }
+                Button("View/Search Lyrics") {
+                    if let t = sortedTracks.first(where: { $0.id == p }) {
+                        model.viewOrSearchLyrics(path: t.path, artist: t.artist,
+                                                 title: t.title, albumArtist: t.albumArtist)
+                    }
+                }
                 Divider()
             }
             // Active Playlist / Saved Playlist ▸ / Disc Drive / Removable

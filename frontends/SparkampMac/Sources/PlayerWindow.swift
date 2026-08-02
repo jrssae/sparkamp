@@ -424,6 +424,9 @@ private struct WindowManagerModifier: ViewModifier {
             // unique Window raises the existing editor (or creates it) — so a
             // second file selection reuses + fronts the window.
             .onChange(of: model.id3Request)               { _, _ in openWindow(id: "id3-editor") }
+            .onChange(of: model.lyricsVisible)            { _, v in if !v { dismissWindow(id: "lyrics-viewer") } }
+            // Same open-or-raise idiom as id3Request: bumped on every lyrics view.
+            .onChange(of: model.lyricsRequest)            { _, _ in openWindow(id: "lyrics-viewer") }
             .onChange(of: model.artworkWindowVisible)     { _, v in v ? openWindow(id: "artwork")           : dismissWindow(id: "artwork") }
             // A6 open-or-focus: bumped on every "k" / art-tap / View-Art
             // request so a repeat press re-fronts the already-open singleton
@@ -669,6 +672,11 @@ private struct NowPlayingPanel: View {
                 pageContent
                     .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
                 if pages.count > 1 { dots }
+                // A1 lyrics affordance (F15): a plain text link under the tags
+                // that views saved lyrics for the current track or searches.
+                Button("Lyrics") { model.viewOrSearchLyricsForPlaylist(index: trackKey) }
+                    .buttonStyle(.link)
+                    .font(.system(size: 11))
             }
         }
         .onChange(of: trackKey) { _, _ in pageIndex = 0 }

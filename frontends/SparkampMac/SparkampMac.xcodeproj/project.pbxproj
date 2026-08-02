@@ -49,6 +49,8 @@
 		AA5000000000000000000018 /* DeduplicatorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000021 /* DeduplicatorWindow.swift */; };
 		AA5000000000000000000019 /* Theme+Guide.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000022 /* Theme+Guide.swift */; };
 		AA5000000000000000000041 /* MLAlbumGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000044 /* MLAlbumGallery.swift */; };
+		AA5000000000000000000042 /* LyricsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000045 /* LyricsWindow.swift */; };
+		AA5000000000000000000043 /* SparkampModel+Lyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000046 /* SparkampModel+Lyrics.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -97,6 +99,8 @@
 		AA4000000000000000000020 /* MediaLibraryWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000021 /* DeduplicatorWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeduplicatorWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000044 /* MLAlbumGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLAlbumGallery.swift; sourceTree = "<group>"; };
+		AA4000000000000000000045 /* LyricsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000046 /* SparkampModel+Lyrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Lyrics.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -173,6 +177,8 @@
 				AA4000000000000000000020 /* MediaLibraryWindow.swift */,
 				AA4000000000000000000021 /* DeduplicatorWindow.swift */,
 				AA4000000000000000000044 /* MLAlbumGallery.swift */,
+				AA4000000000000000000045 /* LyricsWindow.swift */,
+				AA4000000000000000000046 /* SparkampModel+Lyrics.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -338,6 +344,8 @@
 				AA5000000000000000000017 /* MediaLibraryWindow.swift in Sources */,
 				AA5000000000000000000018 /* DeduplicatorWindow.swift in Sources */,
 				AA5000000000000000000041 /* MLAlbumGallery.swift in Sources */,
+				AA5000000000000000000042 /* LyricsWindow.swift in Sources */,
+				AA5000000000000000000043 /* SparkampModel+Lyrics.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

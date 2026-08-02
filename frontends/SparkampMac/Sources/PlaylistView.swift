@@ -575,6 +575,10 @@ struct PlaylistView: View {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
         })
 
+        menu.addItem(BlockMenuItem(title: "View/Search Lyrics", enabled: sorted.count == 1) {
+            if let first = sorted.first { model.viewOrSearchLyricsForPlaylist(index: first) }
+        })
+
         // Queue / Dequeue the selection (manual play queue). Toggles each
         // selected row's queue membership; the [n] badges update in place.
         menu.addItem(BlockMenuItem(title: "Queue / Dequeue", enabled: !sorted.isEmpty) {
