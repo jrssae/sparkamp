@@ -164,25 +164,17 @@ struct SparkampMacApp: App {
         .windowResizability(.contentMinSize)
         .defaultSize(width: 800, height: 600)
 
-        // ── Jump to Track ─────────────────────────────────────────────────────
-        Window("Jump to Track", id: "jump-to-track") {
+        // ── Jump / Queue ──────────────────────────────────────────────────────
+        // One window, two panes selected by the radio row inside it (`j` opens
+        // it on Jump, `q` on Queue) — same shape as the GTK jump window.
+        Window("Jump / Queue", id: "jump-to-track") {
             JumpToTrackView()
                 .environmentObject(model)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 480, height: 360)
-
-        // ── Play Queue ──────────────────────────────────────────────────────────
-        Window("Play Queue", id: "queue") {
-            QueueView()
-                .environmentObject(model)
-                .environmentObject(themeManager)
-                .themedRoot(themeManager)
-        }
-        .windowResizability(.contentMinSize)
-        .defaultSize(width: 420, height: 420)
+        .defaultSize(width: 480, height: 400)
 
         // ── Equalizer ─────────────────────────────────────────────────────────
         Window("Equalizer", id: "equalizer") {
@@ -288,11 +280,13 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut("a", modifiers: [])
             Button("Fullscreen Visualizer") { model.openFullscreenViz() }
                 .keyboardShortcut("f", modifiers: [])
-            Button("Jump to Track…") { model.jumpToTrackVisible.toggle() }
+            Button("Jump to Track…") { model.openJumpQueue(queueMode: false) }
                 .keyboardShortcut("j", modifiers: [])
+            Button("Play Queue…")    { model.openJumpQueue(queueMode: true) }
+                .keyboardShortcut("q", modifiers: [])
             Button("Equalizer…")     { model.equalizerVisible.toggle() }
                 .keyboardShortcut("u", modifiers: [])
-            Button("Edit Tags…")     { model.openId3Editor() }
+            Button("View/Edit ID3…") { model.openId3Editor() }
                 .keyboardShortcut("d", modifiers: [])
         }
 

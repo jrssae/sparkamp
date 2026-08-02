@@ -430,11 +430,18 @@ extension SparkampModel {
     }
 
     /// Play the queued entry at queue position `pos` now (dequeue + jump + play).
+    /// Follows the same post-jump path as `jumpTo(index:)` — anything less and
+    /// `currentIndex` keeps pointing at the outgoing row (wrong playing marker)
+    /// and Now Playing keeps announcing the old track.
     func queuePlayNow(pos: Int) {
         guard let ctx = ctx else { return }
+        // Playing a specific track cancels a pending stop-after-current, same
+        // as any other jump.
+        setStopAfterCurrent(false)
         sparkamp_queue_play_now(ctx, Int32(pos))
-        refreshPlaylist()          // current index changed
-        refreshCurrentTrackInfo()
+        refreshAll()
+        saveState()
+        announceNowPlaying()
     }
 
     /// Append raw track paths to a saved playlist's file on disk (.m3u8 or

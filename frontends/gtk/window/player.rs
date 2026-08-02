@@ -2985,24 +2985,9 @@ pub fn build(
             #[allow(deprecated)]
             let sel_count = pl_view_ctx.selection().count_selected_rows() as usize;
 
-            // Build menu model with prefixed action names
-            let menu = gio::Menu::new();
-            menu.append_item(&gio::MenuItem::new(Some("▶ Play"), Some("pl.play")));
-            if sel_count <= 1 {
-                menu.append_item(&gio::MenuItem::new(
-                    Some("🎵 View / Edit ID3"),
-                    Some("pl.edit-id3"),
-                ));
-                menu.append_item(&gio::MenuItem::new(
-                    Some("📝 View/Search Lyrics"),
-                    Some("pl.lyrics"),
-                ));
-            }
-            menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));
-            menu.append_item(&gio::MenuItem::new(
-                Some("⯈ Queue / Dequeue"),
-                Some("pl.queue-toggle"),
-            ));
+            // Build menu model with prefixed action names. Item order matches
+            // the macOS row menu (PlaylistView.buildContextMenu) so the two
+            // frontends read the same top to bottom.
             let send = build_send_to_menu(
                 &state_menu_pl,
                 &SendToActions {
@@ -3017,7 +3002,32 @@ pub fn build(
                         .map(|d| (d.id.clone(), d.label.clone())).collect(),
                 },
             );
+            let menu = gio::Menu::new();
+            menu.append_item(&gio::MenuItem::new(Some("▶ Play"), Some("pl.play")));
             menu.append_submenu(Some("Send to"), &send);
+            if sel_count <= 1 {
+                menu.append_item(&gio::MenuItem::new(
+                    Some("🎵 View/Edit ID3"),
+                    Some("pl.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("📝 View/Search Lyrics"),
+                    Some("pl.lyrics"),
+                ));
+            }
+            menu.append_item(&gio::MenuItem::new(
+                Some("⯈ Enqueue / Dequeue"),
+                Some("pl.queue-toggle"),
+            ));
+            // Remove goes in its own section — GIO draws a separator between
+            // sections, which is how the destructive item gets set apart the
+            // way it is on macOS.
+            let remove_section = gio::Menu::new();
+            remove_section.append_item(&gio::MenuItem::new(
+                Some("✕ Remove"),
+                Some("pl.remove"),
+            ));
+            menu.append_section(None, &remove_section);
 
             // Create popover menu — NESTED keeps the Add-to-Playlist
             // submenu from being clipped to the parent menu's height.

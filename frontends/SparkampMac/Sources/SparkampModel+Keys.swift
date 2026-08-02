@@ -13,14 +13,19 @@ extension SparkampModel {
             // TextField is backed by NSTextView on macOS, so this one check
             // covers all text inputs (jump-to-track search, etc.).
             if NSApp.keyWindow?.firstResponder is NSTextView { return event }
-            // Bail out entirely when the Jump-to-Track window is visible
-            // so its List can consume arrow keys for selection movement
-            // (and Return / Escape for play / dismiss) instead of the
-            // monitor swallowing arrows as volume adjust.  The check is
-            // an instance property read on the main actor — safe here
-            // because NSEvent local monitors fire on the main thread.
-            let jumpVisible = MainActor.assumeIsolated { self.jumpToTrackVisible }
-            if jumpVisible { return event }
+            // Bail out entirely when the Jump / Queue window is showing its
+            // Jump pane, so the search List can consume arrow keys for
+            // selection movement (and Return / Escape for play / dismiss)
+            // instead of the monitor swallowing arrows as volume adjust —
+            // and so plain letters reach the search field as text. Queue mode
+            // has no text field, so the monitor stays live there and `q`
+            // still closes the window. The check is an instance property read
+            // on the main actor — safe here because NSEvent local monitors
+            // fire on the main thread.
+            let jumpPaneUp = MainActor.assumeIsolated {
+                self.jumpToTrackVisible && !self.jumpQueueMode
+            }
+            if jumpPaneUp { return event }
             let chars   = event.charactersIgnoringModifiers
             let keyCode = event.keyCode
             let hasMods = !event.modifierFlags
@@ -61,7 +66,7 @@ extension SparkampModel {
             UserDefaults.standard.set(playlistVisible, forKey: "sparkamp.playlistVisible")
             return true
         case "i": toggleKeyboardShortcuts();  return true
-        case "q": queueVisible.toggle();      return true
+        case "q": openJumpQueue(queueMode: true);  return true
         case "m":
             // Toggle the Media Library window (mirror the ML mode button).
             if mediaLibraryVisible { mediaLibraryVisible = false } else { openMediaLibrary() }
@@ -80,11 +85,12 @@ extension SparkampModel {
                 // 0.7 s fullscreen-exit animation in closeFullscreenViz.
                 closeFullscreenViz()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    self.jumpQueueMode = false
                     self.jumpToTrackVisible = true
                 }
                 return true
             }
-            jumpToTrackVisible.toggle()
+            openJumpQueue(queueMode: false)
             return true
         case "g":
             if fullscreenVizVisible {

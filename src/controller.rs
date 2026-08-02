@@ -112,6 +112,28 @@ impl Controller<'_> {
     // Playback
     // -----------------------------------------------------------------------
 
+    /// Feed the current track's stored ReplayGain to the pipeline.
+    ///
+    /// Must run immediately before `player.load`: `rgvolume` only reads
+    /// REPLAYGAIN tags off the decoded stream, so a gain that lives only in the
+    /// library reaches playback through the fallback that the load consumes.
+    /// Every path that loads a track has to call this — one that forgets plays
+    /// the track at its raw level with no visible sign anything was skipped.
+    fn prime_gain_for_current(&mut self) {
+        let Some(path) = self
+            .playlist
+            .current()
+            .map(|t| t.path.to_string_lossy().into_owned())
+        else {
+            return;
+        };
+        let album_mode = crate::config::rg_album_mode(
+            self.config.playback.replaygain.source,
+            self.config.playback.shuffle_enabled,
+        );
+        crate::replaygain::prime_player_gain(self.player, self.media_library, &path, album_mode);
+    }
+
     /// Load and begin playing the track at `playlist.current_index`.
     ///
     /// Does NOT record the track in the shuffle history.  Use this when
@@ -127,21 +149,8 @@ impl Controller<'_> {
         };
         let display = track.display_name();
         let uri = track.uri();
-        let path = track.path.to_string_lossy().into_owned();
         let idx = self.playlist.current_index;
-        // Feed this track's stored ReplayGain to the pipeline before the load
-        // consumes it (rgvolume only reads tags off the stream, so a gain that
-        // lives only in the library would otherwise never be applied).
-        let album_mode = crate::config::rg_album_mode(
-            self.config.playback.replaygain.source,
-            self.config.playback.shuffle_enabled,
-        );
-        crate::replaygain::prime_player_gain(
-            self.player,
-            self.media_library,
-            &path,
-            album_mode,
-        );
+        self.prime_gain_for_current();
         if let Err(e) = self.player.load(&uri) {
             self.playlist.tracks[idx].broken = true;
             return PlayResult::Error(format!("Load error: {e}"));
@@ -361,6 +370,7 @@ impl Controller<'_> {
         if let Some(idx) = self.queue_next_index() {
             self.playlist.jump_to(idx);
             let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
+            self.prime_gain_for_current();
             if self.player.load(&uri).is_ok() && self.player.play().is_ok() {
                 return AdvanceResult::Playing { new_index: idx };
             }
@@ -397,6 +407,7 @@ impl Controller<'_> {
 
             self.playlist.jump_to(idx);
             let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
+            self.prime_gain_for_current();
             let ok = self.player.load(&uri).is_ok() && self.player.play().is_ok();
             if ok {
                 self.shuffle_state.record_played(idx);

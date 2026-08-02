@@ -63,10 +63,12 @@ final class SparkampModel: ObservableObject {
     /// `.onKeyPress` on the fullscreen view never fires for keys the monitor
     /// doesn't pass through, and focus there is unreliable anyway.
     @Published var fullscreenFpsVisible: Bool = false
-    /// When true, the jump-to-track overlay is open.
+    /// When true, the combined Jump / Queue window is open.
     @Published var jumpToTrackVisible: Bool = false
-    /// Manual play-queue manager window visibility (opened with `q`).
-    @Published var queueVisible: Bool = false
+    /// Which pane that window shows: false = Jump (search), true = Queue.
+    /// One window with two modes, matching GTK — `j` opens it in Jump mode,
+    /// `q` in Queue mode, and the radio buttons switch between them.
+    @Published var jumpQueueMode: Bool = false
     /// When true, the equalizer window is open.
     @Published var equalizerVisible: Bool = false
     /// When true, the settings window is open.

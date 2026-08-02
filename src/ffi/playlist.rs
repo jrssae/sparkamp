@@ -217,6 +217,7 @@ pub unsafe extern "C" fn sparkamp_playlist_clear(ctx: *mut SparkampCtx) {
         return;
     }
     (*ctx).playlist.clear();
+    super::queue::sync_queue_to_playlist(&mut *ctx);
 }
 
 /// Remove the track at `index` from the playlist.
@@ -226,6 +227,7 @@ pub unsafe extern "C" fn sparkamp_playlist_remove(ctx: *mut SparkampCtx, index: 
         return;
     }
     (*ctx).playlist.remove(index as usize);
+    super::queue::sync_queue_to_playlist(&mut *ctx);
 }
 
 /// Move the track at `from` to position `to` (drag-reorder).

@@ -88,6 +88,19 @@ extension SparkampModel {
         keyboardShortcutsVisible.toggle()
     }
 
+    /// Open the combined Jump / Queue window in the requested pane, or close it
+    /// if it is already open showing that pane. `j` asks for Jump, `q` for
+    /// Queue; pressing the other one while it is open just switches panes, the
+    /// same as clicking its radio button.
+    func openJumpQueue(queueMode: Bool) {
+        if jumpToTrackVisible && jumpQueueMode == queueMode {
+            jumpToTrackVisible = false
+            return
+        }
+        jumpQueueMode = queueMode
+        jumpToTrackVisible = true
+    }
+
     func cycleVizMode() {
         guard let ctx = ctx else { return }
         sparkamp_cycle_viz_mode(ctx)

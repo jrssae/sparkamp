@@ -2771,7 +2771,7 @@ fn open_media_library_window(
             // Only a single-file selection is editable (the editor binds one file).
             if sel.len() == 1 {
                 menu.append_item(&gio::MenuItem::new(
-                    Some("🎵 View / Edit ID3"),
+                    Some("🎵 View/Edit ID3"),
                     Some("dev-file.edit-id3"),
                 ));
                 menu.append_item(&gio::MenuItem::new(
@@ -3616,7 +3616,7 @@ fn open_media_library_window(
             // Single selection only — the editor binds to one file.
             if sel_menu().len() == 1 {
                 menu.append_item(&gio::MenuItem::new(
-                    Some("View ID3 Tags"),
+                    Some("View/Edit ID3"),
                     Some("disc-files.edit-id3"),
                 ));
                 menu.append_item(&gio::MenuItem::new(
@@ -4622,7 +4622,7 @@ fn open_media_library_window(
                         // Only show View/Edit ID3 for single selection
                         if selected_count == 1 {
                             menu.append_item(&gio::MenuItem::new(
-                                Some("View/Edit ID3 Info"),
+                                Some("View/Edit ID3"),
                                 Some("ml.edit-id3"),
                             ));
                             menu.append_item(&gio::MenuItem::new(
@@ -6856,7 +6856,7 @@ fn open_media_library_window(
                     // Edit / View ID3 (single + library only)
                     if is_lib_track && sel_count <= 1 {
                         menu.append_item(&gio::MenuItem::new(
-                            Some("Edit / View ID3 Tags"),
+                            Some("View/Edit ID3"),
                             Some("ed.edit-id3"),
                         ));
                         menu.append_item(&gio::MenuItem::new(

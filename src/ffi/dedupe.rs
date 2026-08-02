@@ -203,6 +203,8 @@ pub unsafe extern "C" fn sparkamp_dedup_add_to_playlist(
             }
         }
     }
+    // Pushed straight into `tracks` — stamp the new entries' queue ids.
+    super::queue::sync_queue_to_playlist(ctx);
 }
 
 /// Replace the active playlist with all tracks in a group.
@@ -231,6 +233,8 @@ pub unsafe extern "C" fn sparkamp_dedup_replace_playlist(
             }
         }
     }
+    // Wholesale replacement — every previously queued entry is gone.
+    super::queue::sync_queue_to_playlist(ctx);
 }
 
 /// Open the containing folder of `path` in Finder.

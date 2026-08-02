@@ -8,11 +8,11 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 4 are done (2026-08-02)
+## Status — phases 0 through 5 are done (2026-08-02)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–4**;
-phases 5–12 below are still blind and unchanged.
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–5**;
+phases 6–12 below are still blind and unchanged.
 
 | Phase | Outcome |
 |-------|---------|
@@ -20,6 +20,7 @@ phases 5–12 below are still blind and unchanged.
 | 2 | ✅ Passed after 3 runtime bugs found and fixed |
 | 3 | ⚠️ Closed with one known limitation — the OS Now Playing card never appears; a custom Touch Bar was added instead |
 | 4 | ✅ Passed after a **design gap** was found: analysis results never reached playback at all |
+| 5 | ✅ Passed after 3 review rounds — 6 defects, a merge of the Queue window into the Jump window, the missing Ctrl+Q hotkey, and a row-menu parity sweep |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -659,14 +660,13 @@ mac now has.
   Files view sorts server-side, and the SQL pushes NULL gains to the end in
   both directions. Better than this note claimed.
 
-## Phase 5 — 2026-07-22: Manual play queue (P5-T8, BLIND)
+## Phase 5 — Manual play queue (F8) — ✅ PASSED on hardware 2026-08-02
 
-Rust FFI (built + tested on Linux: 494 lib + 699 bin, 0 warnings) — 8 queue
-symbols in `src/ffi/queue.rs`, mirrored into `sparkamp_bridge.h`. The queue
-lives in `ctx.queue`; the FFI advance seam (`sparkamp_nav_next` /
-`sparkamp_advance_after_eos`) already drains it ahead of shuffle/linear, so
-`next()` / `handleEOS()` → `refreshAll()` → `refreshPlaylist()` renumber the
-badges automatically.
+Rust FFI — 8 queue symbols in `src/ffi/queue.rs`, mirrored into
+`sparkamp_bridge.h`. The queue lives in `ctx.queue`; the advance seam
+(`sparkamp_nav_next` / `sparkamp_advance_after_eos`) drains it ahead of
+shuffle/linear, so `next()` / `handleEOS()` → `refreshAll()` →
+`refreshPlaylist()` renumber the badges automatically.
 
 Swift edits are all in EXISTING files (no new source → **no project.pbxproj
 change**): `SparkampModelTypes.swift` (PlaylistItem.queuePos + queueBadge),
@@ -674,37 +674,169 @@ change**): `SparkampModelTypes.swift` (PlaylistItem.queuePos + queueBadge),
 playlist refresh sites), `SparkampModel+MediaLibrary.swift` (queuedItems +
 queueToggle/Move/Clear/Shuffle/PlayNow), `PlaylistView.swift` (badge prefix +
 "Queue / Dequeue" context item), `SparkampModel+Keys.swift` (`q`), `SparkampMacApp.swift`
-(Queue window scene), `PlayerWindow.swift` (queueVisible → open/dismiss),
-`JumpToTrackView.swift` (new `QueueView`), `KeyboardShortcutsView.swift`.
+(Queue window scene + Playback-menu item), `PlayerWindow.swift` (queueVisible →
+open/dismiss), `JumpToTrackView.swift` (`QueueView`), `KeyboardShortcutsView.swift`.
 
-Verify on hardware:
+### Corrections made during the review pass (2026-08-02)
 
-- [ ] `q` opens the Play Queue window; `q` again (or Esc) closes it.
-- [ ] Right-click one or more playlist rows → "Queue / Dequeue" adds/removes
+The blind pass compiled and was structurally right; six defects were found by
+reading it against the rest of the codebase, and all six are fixed:
+
+1. **The queue was never pruned on mac.** `sparkamp_playlist_remove` /
+   `_clear` (and the ML replace/append + dedupe bulk paths) mutate
+   `ctx.playlist` directly without building a `Controller`, so they never
+   reached `Controller::sync_queue_to_playlist` the way GTK and the TUI do.
+   Removing a queued row left an id nothing resolved to: the Queue window's
+   count outran its rows and Clear Playlist left a non-empty queue. Added an
+   FFI-side `sync_queue_to_playlist` and wired it into all five sites.
+   Six regression tests in `src/ffi/queue.rs` cover it.
+2. **`QueueView`'s double-click would have disabled the whole button row.**
+   It used `.onTapGesture(count: 2)` on a row inside `List(selection:)`, which
+   swallows the click that selection needs — Up / Down / Remove are
+   `.disabled(selection == nil)`, so they would never have enabled. Switched to
+   `.contextMenu(forSelectionType:menu:primaryAction:)`, the idiom the jump
+   window already uses and documents as the canonical one.
+3. **`queuePlayNow` skipped most of the post-jump path.** It refreshed the
+   playlist but not `currentIndex`, so the ▶ marker stayed on the outgoing row,
+   and it never called `announceNowPlaying()` / `saveState()` /
+   `setStopAfterCurrent(false)`. Now mirrors `jumpTo(index:)`.
+4. **Closing the Queue window by its title bar wedged the `q` key.** Every
+   other window resyncs its flag in `.onDisappear`; `QueueView` had none, so
+   `queueVisible` stayed `true` and the next `q` read as "close" and did
+   nothing visible. Added.
+5. **`sparkamp_queue_play_now` left `last_known_duration` stale** — the one
+   thing `sparkamp_playlist_jump` does that it didn't, so the seek bar would be
+   sized by the outgoing track until the new pipeline reported its own.
+6. **ReplayGain was never applied on automatic advance** —
+   `Controller::advance_to_next_playable` loads and plays directly in both its
+   queue and shuffle/linear branches and neither primed the gain, so the
+   library value only ever reached playback on a manual jump or Play. This is
+   a **phase-4 gap, not a phase-5 one** (it predates the queue; the queue
+   branch merely copied the existing shape). Priming is now a
+   `Controller::prime_gain_for_current` helper called from all three load
+   sites. Worth re-testing as part of phase 4 as well as here.
+
+Also added: a "Play Queue…" item in the Playback menu (`q`) — every other
+window has one, and the queue only had the bare key.
+
+### Round 2 — GTK-shape corrections after the first hardware pass
+
+The first pass found two structural divergences from GTK, both fixed:
+
+7. **The queue was a separate window; GTK makes it a mode of the jump window.**
+   Merged: one `Window("Jump / Queue", id: "jump-to-track")` with a
+   Jump / Queue radio row at the top, exactly like GTK's `jump_mode_row`. `j`
+   opens it on Jump, `q` on Queue, and either key closes it when it is already
+   showing that pane. `queueVisible` is gone; the pane is `jumpQueueMode` and
+   visibility stays on `jumpToTrackVisible`. `QueueView` is now an embedded
+   pane, not a window (its `.onDisappear` / `.onExitCommand` moved to the host).
+8. **No enqueue hotkey.** GTK and the TUI both bind **Ctrl+Q** =
+   queue / dequeue the selection; mac had only the context menu. Added in two
+   places, because mac has no single owner of "the selection":
+   - Playlist window: `SparkampTableView.keyDown` gained an `onQueueKey` hook
+     (the app-wide monitor ignores modified keys, and the selection lives in
+     the table).
+   - Jump pane: a hidden `.keyboardShortcut("q", modifiers: .control)` button,
+     the same trick the arrow keys already use there.
+
+   Plain `q` stays a search character in the Jump pane, matching GTK's
+   `!qmode.get()` guard — so switching Jump→Queue by keyboard isn't possible
+   while the search field owns the keyboard; use the radio button. Going
+   Queue→Jump with `j` does work, since the Queue pane has no text field and
+   the key monitor stays live there.
+
+`KeyboardShortcutsView` now lists all three (`j`, `q`, `⌃Q`).
+
+### Round 3 — playlist row-menu parity
+
+A side-by-side of the GTK and mac active-playlist row menus turned up five
+differences. Three were resolved, two were kept as deliberate platform
+differences:
+
+- **Order** — GTK now follows the macOS order: Play, Send to ▸, View/Edit ID3,
+  View/Search Lyrics, Enqueue / Dequeue, ─separator─, Remove. (GTK previously
+  had Send-to last and Remove fourth.)
+- **Separator before Remove** — added to GTK. GIO menus have no separator item,
+  so Remove goes in its own `append_section`, the same trick `util.rs` already
+  uses for the saved-playlist submenu.
+- **One name for the ID3 editor** — it had *eight* labels across the two
+  frontends ("View / Edit ID3", "View ID3 Tags", "View/Edit ID3 Info",
+  "Edit / View ID3 Tags", "Edit Tags…"). All are now **View/Edit ID3**. The one
+  exception is the mac Playback menu, which keeps a trailing ellipsis
+  ("View/Edit ID3…") because every one of its siblings has one — macOS
+  convention for a menu item that opens a window.
+  The disc **tag-override** editor ("Edit Tags" on the disc header / disc view)
+  is a different feature and was deliberately left alone.
+- **Kept as-is:** GTK hides ID3/Lyrics on multi-select where mac disables them
+  (AppKit menus want a stable shape), and GTK's glyph prefixes (▶ 🎵 📝 ⯈ ✕)
+  stay GTK-only — emoji in an `NSMenu` is not a macOS idiom.
+- **Already identical, untouched:** the whole Send-to submenu. Both frontends
+  build it from the shared `send_to_spec` / `sendToSpec`, so the labels and the
+  0/1/N drive-and-device flattening already matched.
+
+> The GTK half of this round is **unverified** — `frontends/gtk` is
+> `#[cfg(target_os = "linux")]` and its deps (`gtk4`, `zbus`) are in a
+> Linux-only target block, so it cannot be compiled on the Mac. Un-gating it
+> would require re-vendoring, which is what produced the stale-static-library
+> trap above. The reorder is mechanical and `append_section` has a working
+> precedent in `util.rs:695`, but it wants a Linux build before it ships.
+
+### Confirmed on hardware (2026-08-02)
+
+- [x] Right-click one or more playlist rows → "Enqueue / Dequeue" adds/removes
       them; the `[n]` badge appears/updates on the playlist rows immediately.
-- [ ] Badges renumber as the queue drains during playback (queued tracks play
+      *(Verified while the item still read "Queue / Dequeue" — only the label
+      changed afterwards.)*
+- [x] Badges renumber as the queue drains during playback (queued tracks play
       before shuffle/linear, then playback resumes from that position).
-- [ ] Queue window: rows listed in order "1. Artist — Title"; Up / Down reorder
-      the selected entry; Remove dequeues it; Clear empties; Randomize shuffles.
-- [ ] Double-click a Queue-window row → plays it now (dequeues + jumps + plays).
-- [ ] Queue survives shuffle toggling; a queued track still wins, then shuffle
+- [x] Queue pane: rows listed in order "1. Artist — Title"; **single click
+      selects a row** (fix 2); Up / Down reorder the selected entry; Remove
+      dequeues it; Clear empties; Randomize shuffles.
+- [x] Double-click a Queue row → plays it now (dequeues + jumps + plays), and
+      the playlist's ▶ marker moves to that row.
+- [x] Queue survives shuffle toggling; a queued track still wins, then shuffle
       resumes.
-- [ ] Removing a queued track from the playlist drops it from the queue
-      (badge disappears; queue count decreases).
+- [x] Removing a queued track from the playlist drops it from the queue
+      (badge disappears; the "N queued tracks" count decreases).
+- [x] Clear Playlist empties the queue too.
+- [x] Reorder the playlist by dragging → badges follow their tracks.
+- [x] Jump pane shows `[n]` badges on matching rows.
+- [x] **Phase-4 recheck (fix 6):** ReplayGain now applies on natural
+      end-of-track advance. Confirmed by ear ("difficult to verify but it
+      sounds like it matches expected volumes") — not instrumented.
 
-**Unsure / eyeball (blind, no Xcode here):**
-- `QueueView` uses `List(selection:)` with `PlaylistItem.ID` (= Int playlist
-  index), `.onTapGesture(count: 2)` for play-now, `.onExitCommand` for Esc,
-  `.scrollContentBackground(.hidden)` (macOS 13+). Confirm selection, double-
-  click, and Esc all work and the theme colours apply.
-- Enqueue on mac is via the row **context menu** (the app-wide key monitor in
-  `SparkampModel+Keys.swift` guards `!hasModifiers`, so a global Ctrl+Q can't be
-  routed, and the playlist selection lives in the view, not the model). If a
-  Ctrl+Q shortcut is wanted later, lift the playlist `selection: Set<Int>` into
-  the model or add a focused-view key handler. Not a regression — GTK/TUI keep
-  Ctrl+Q; mac uses the context menu + Queue window.
-- New Window scene id "queue" wired through `queueVisible` exactly like
-  "jump-to-track" — confirm it opens/closes and doesn't fight fullscreen focus.
+### Rounds 2 and 3 — confirmed on hardware in a follow-up pass (2026-08-02)
+
+The merged-window, hotkey, and menu changes, tested after they landed:
+
+- [x] `q` opens the **Jump / Queue** window on the Queue pane; `q` again, Esc,
+      **or the window's own close button** all close it — and `q` reopens it
+      after each.
+- [x] `j` opens the same window on the Jump pane; the Jump / Queue radio row
+      switches panes; `j` while the Queue pane is up switches to Jump.
+- [x] Playback ▸ Jump to Track… / Play Queue… open the same window on their
+      respective panes.
+- [x] **Ctrl+Q** on a playlist selection queues / dequeues it (same as GTK/TUI).
+- [x] **Ctrl+Q** on a highlighted Jump-pane match queues / dequeues it; plain
+      `q` there still types into the search box.
+- [x] Row menu order reads Play, Send to ▸, View/Edit ID3, View/Search Lyrics,
+      Enqueue / Dequeue, ─separator─, Remove.
+- [x] The ID3 editor entry reads **View/Edit ID3** in every menu that opens it
+      (playlist row, ML files, ML playlist editor, device detail) and
+      **View/Edit ID3…** in the Playback menu.
+
+### Still open — needs a Linux box
+
+- [ ] **GTK:** the row menu matches that order and wording, and the separator
+      above Remove renders. `frontends/gtk` is `#[cfg(target_os = "linux")]`
+      with its deps in a Linux-only target block, so the round-3 GTK edits have
+      never been compiled, let alone run. See the note above.
+
+**Still unverified / eyeball:**
+- The app-wide key monitor bails only while the **Jump** pane is up, so the
+  search field keeps plain letters. In Queue mode the monitor is live, which
+  also means transport keys (`z`/`x`/`c`/`v`/`b`) work there. Intended, but
+  worth a look.
 - `refreshQueueBadges()` mutates `playlistItems` only when a badge changed;
   confirm it doesn't churn SwiftUI re-renders during idle playback.
 

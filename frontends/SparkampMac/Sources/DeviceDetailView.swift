@@ -494,7 +494,7 @@ struct DeviceDetailView: View {
         }
         .contextMenu(forSelectionType: DeviceTrack.ID.self) { ids in
             if ids.count == 1, let p = ids.first {
-                Button("Edit / View ID3 Tags") { model.mlOpenTagEditorForPath(p) }
+                Button("View/Edit ID3") { model.mlOpenTagEditorForPath(p) }
                 Button("View Album Art") { model.mlViewArtForPath(p) }
                 Button("View/Search Lyrics") {
                     if let t = sortedTracks.first(where: { $0.id == p }) {

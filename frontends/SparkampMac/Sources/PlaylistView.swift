@@ -183,6 +183,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
 
         table.onDeleteKey   = { [weak c = context.coordinator] in c?.handleDelete()   }
         table.onReturnKey   = { [weak c = context.coordinator] in c?.handleReturn()   }
+        table.onQueueKey    = { [weak c = context.coordinator] in c?.handleQueueKey() }
         table.onContextMenu = { [weak c = context.coordinator] _ in c?.buildContextMenu() }
 
         table.target       = context.coordinator
@@ -399,6 +400,16 @@ struct ActivePlaylistTable: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in self?.parent.selection.removeAll() }
         }
 
+        // ── Ctrl+Q → queue / dequeue the selected rows ──────────────────
+        func handleQueueKey() {
+            guard let table = self.table else { return }
+            let ids = table.selectedRowIndexes.compactMap { idx -> Int? in
+                guard idx < items.count else { return nil }
+                return items[idx].id
+            }
+            parent.model.queueToggle(indices: ids)
+        }
+
         // ── Return key → play first selected ────────────────────────────
         func handleReturn() {
             guard let table = self.table,
@@ -571,7 +582,7 @@ struct PlaylistView: View {
         let paths = sorted.compactMap { model.playlistTrackPath(index: $0) }
         menu.addItem(model.sendToMenuItem(paths: paths, includeActive: false))
 
-        menu.addItem(BlockMenuItem(title: "Edit Tags…", enabled: sorted.count == 1) {
+        menu.addItem(BlockMenuItem(title: "View/Edit ID3", enabled: sorted.count == 1) {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
         })
 
@@ -579,9 +590,9 @@ struct PlaylistView: View {
             if let first = sorted.first { model.viewOrSearchLyricsForPlaylist(index: first) }
         })
 
-        // Queue / Dequeue the selection (manual play queue). Toggles each
+        // Enqueue / Dequeue the selection (manual play queue). Toggles each
         // selected row's queue membership; the [n] badges update in place.
-        menu.addItem(BlockMenuItem(title: "Queue / Dequeue", enabled: !sorted.isEmpty) {
+        menu.addItem(BlockMenuItem(title: "Enqueue / Dequeue", enabled: !sorted.isEmpty) {
             model.queueToggle(indices: sorted)
         })
 

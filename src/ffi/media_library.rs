@@ -1134,6 +1134,9 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
             ctx.playlist.tracks.push(Track::from(*t));
         }
     }
+    // These pushed straight into `tracks`, so the new entries still hold the
+    // id-0 sentinel — stamp them before anything reads ids for the queue.
+    super::queue::sync_queue_to_playlist(ctx);
     // Kick off metadata + duration probing for the newly added tracks.
     let n = ctx.playlist.tracks.len();
     for idx in start_idx..n {
@@ -1222,6 +1225,8 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
         // still refine missing values.
         ctx.playlist.tracks.push(Track::from(t));
     }
+    // Wholesale replacement — every previously queued entry is gone.
+    super::queue::sync_queue_to_playlist(ctx);
     // Kick off background metadata + duration probing.
     for (i, t) in tracks.iter().enumerate() {
         let meta_tx = ctx.meta_tx.clone();

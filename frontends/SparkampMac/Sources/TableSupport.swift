@@ -48,9 +48,19 @@ final class SparkampSkinRowView: NSTableRowView {
 final class SparkampTableView: NSTableView {
     var onDeleteKey:   (() -> Void)?
     var onReturnKey:   (() -> Void)?
+    var onQueueKey:    (() -> Void)?
     var onContextMenu: ((NSEvent) -> NSMenu?)?
 
     override func keyDown(with event: NSEvent) {
+        // Ctrl+Q queues / dequeues the selection, matching GTK. It has to be
+        // caught here rather than in the app-wide monitor: that monitor ignores
+        // modified keys, and the action needs the table's own selection.
+        if event.modifierFlags.contains(.control),
+           event.charactersIgnoringModifiers?.lowercased() == "q",
+           let onQueueKey {
+            onQueueKey()
+            return
+        }
         switch event.keyCode {
         case 51, 117:          // Delete (backspace) / fn+Delete (forward delete)
             onDeleteKey?()

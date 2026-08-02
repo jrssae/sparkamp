@@ -313,7 +313,7 @@ struct MLPlaylistEditor: View {
         })
         menu.addItem(.separator())
 
-        menu.addItem(BlockMenuItem(title: "Edit / View ID3 Tags", enabled: rowIds.count == 1) {
+        menu.addItem(BlockMenuItem(title: "View/Edit ID3", enabled: rowIds.count == 1) {
             if let first = rowIds.first,
                let t = editingRows.first(where: { $0.id == first })?.track {
                 model.mlOpenTagEditorForPath(t.path)

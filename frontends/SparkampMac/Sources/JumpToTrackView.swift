@@ -28,6 +28,44 @@ struct JumpToTrackView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // ── Mode picker — one window, two panes (mirrors GTK) ─────────────
+            HStack {
+                Picker("", selection: $model.jumpQueueMode) {
+                    Text("Jump").tag(false)
+                    Text("Queue").tag(true)
+                }
+                .pickerStyle(.radioGroup)
+                .horizontalRadioGroupLayout()
+                .labelsHidden()
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(theme.playlistBg.opacity(0.7))
+
+            Divider().background(theme.windowBorder)
+
+            if model.jumpQueueMode {
+                QueueView()
+            } else {
+                jumpPane
+            }
+        }
+        .frame(minWidth: 380, minHeight: 360)
+        .background(theme.playlistBg)
+        .preferredColorScheme(themeManager.preferredColorScheme)
+        .onDisappear {
+            model.jumpToTrackVisible = false
+        }
+        .onKeyPress(.escape) {
+            model.jumpToTrackVisible = false
+            return .handled
+        }
+    }
+
+    /// The search pane: header, query field, and the filtered result list.
+    private var jumpPane: some View {
         let vars = themeManager.currentVars
         return VStack(spacing: 0) {
 
@@ -110,6 +148,12 @@ struct JumpToTrackView: View {
             // keyboardShortcut path catches them at the responder chain
             // level regardless of which inner view has focus.
             .background(arrowShortcutButtons)
+            // Ctrl+Q queues / dequeues the highlighted match, same as in the
+            // playlist window. Plain `q` stays a search character — hence the
+            // modifier, and hence a hidden button rather than the app-wide key
+            // monitor (which ignores modified keys and is bailed out here
+            // anyway while the search field owns the keyboard).
+            .background(queueShortcutButton)
             // Double-click on a row plays it immediately.  SwiftUI's
             // `contextMenu(forSelectionType:menu:primaryAction:)` is the
             // canonical way to attach a double-click handler to a List
@@ -127,8 +171,6 @@ struct JumpToTrackView: View {
             Divider()
                 .background(theme.windowBorder)
         }
-        .background(theme.playlistBg)
-        .preferredColorScheme(themeManager.preferredColorScheme)
         .onAppear {
             // Pre-select the currently playing track immediately.
             selectedPlaylistIndex = model.currentIndex >= 0 ? model.currentIndex : filteredItems.first?.id
@@ -136,13 +178,6 @@ struct JumpToTrackView: View {
             // the WindowGroup window becomes the key window, which hasn't
             // happened yet at onAppear time.
             DispatchQueue.main.async { fieldFocused = true }
-        }
-        .onDisappear {
-            model.jumpToTrackVisible = false
-        }
-        .onKeyPress(.escape) {
-            model.jumpToTrackVisible = false
-            return .handled
         }
     }
 
@@ -172,6 +207,17 @@ struct JumpToTrackView: View {
         .accessibilityHidden(true)
     }
 
+    /// Hidden Ctrl+Q button — queues / dequeues the highlighted match.
+    private var queueShortcutButton: some View {
+        Button("") {
+            if let idx = selectedPlaylistIndex { model.queueToggle(indices: [idx]) }
+        }
+        .keyboardShortcut("q", modifiers: .control)
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
     /// Shift `selectedPlaylistIndex` by `delta` positions through
     /// `filteredItems`, clamping at both ends.  Seeds with the first item
     /// when no row is selected yet (so the very first arrow press picks
@@ -189,11 +235,12 @@ struct JumpToTrackView: View {
     }
 }
 
-// MARK: - Play Queue window
+// MARK: - Play Queue pane
 
-/// The manual play-queue manager (opened with `q`): the queue in order with
-/// reorder / remove / clear / randomize controls and double-click play-now.
-/// Mirrors the GTK Queue view. Esc closes.
+/// The Queue pane of the Jump / Queue window (reached with `q` or the Queue
+/// radio button): the manual play queue in order, with reorder / remove /
+/// clear / randomize controls and double-click play-now. Mirrors the GTK queue
+/// panel, which is likewise embedded in the jump window rather than standalone.
 struct QueueView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
@@ -234,34 +281,49 @@ struct QueueView: View {
                             .foregroundStyle(theme.playlistDurationText)
                     }
                     .contentShape(Rectangle())
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                     .tag(item.id)
-                    .onTapGesture(count: 2) {
-                        model.queuePlayNow(pos: item.queuePos - 1)
-                    }
                 }
             }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(theme.playlistBg)
+            // Double-click plays the entry now.  Same idiom the jump window
+            // uses: an `.onTapGesture` on the row would swallow the click that
+            // `List(selection:)` needs, leaving every button below permanently
+            // disabled.  The empty `menu` means right-click shows nothing.
+            .contextMenu(forSelectionType: PlaylistItem.ID.self, menu: { _ in
+                EmptyView()
+            }, primaryAction: { ids in
+                guard let id = ids.first,
+                      let item = model.queuedItems.first(where: { $0.id == id })
+                else { return }
+                model.queuePlayNow(pos: item.queuePos - 1)
+                selection = nil
+            })
 
             Divider().background(theme.windowBorder)
 
             HStack(spacing: 6) {
-                Button("↑ Up")   { moveSelected(-1) }.disabled(selection == nil)
-                Button("↓ Down") { moveSelected(1) }.disabled(selection == nil)
-                Button("Remove") { removeSelected() }.disabled(selection == nil)
+                Button("↑ Up")   { moveSelected(-1) }.disabled(selectedPos() == nil)
+                Button("↓ Down") { moveSelected(1) }.disabled(selectedPos() == nil)
+                Button("Remove") { removeSelected() }.disabled(selectedPos() == nil)
                 Spacer()
-                Button("Clear")     { model.queueClear() }.disabled(items.isEmpty)
+                Button("Clear")     { model.queueClear(); selection = nil }
+                    .disabled(items.isEmpty)
                 Button("Randomize") { model.queueShuffle() }.disabled(items.isEmpty)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(theme.playlistBg.opacity(0.7))
         }
-        .frame(minWidth: 380, minHeight: 320)
-        .onExitCommand { model.queueVisible = false }
+        .background(theme.playlistBg)
     }
 
-    /// Queue position (0-based) of the selected row, or nil.
+    /// Queue position (0-based) of the selected row, or nil when nothing is
+    /// selected or the selection no longer names a queued entry (it was played,
+    /// removed, or the playlist row went away).
     private func selectedPos() -> Int? {
         guard let id = selection,
               let item = model.queuedItems.first(where: { $0.id == id })
@@ -275,6 +337,9 @@ struct QueueView: View {
 
     /// Remove the selected entry by toggling its underlying playlist index off.
     private func removeSelected() {
-        if let id = selection { model.queueToggle(indices: [id]) }
+        if let id = selection {
+            model.queueToggle(indices: [id])
+            selection = nil
+        }
     }
 }
