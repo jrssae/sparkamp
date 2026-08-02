@@ -8,6 +8,34 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
+## Status — phases 0 through 4 are done (2026-08-02)
+
+Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–4**;
+phases 5–12 below are still blind and unchanged.
+
+| Phase | Outcome |
+|-------|---------|
+| 0 / 1 | ✅ Passed as written, no code changes needed |
+| 2 | ✅ Passed after 3 runtime bugs found and fixed |
+| 3 | ⚠️ Closed with one known limitation — the OS Now Playing card never appears; a custom Touch Bar was added instead |
+| 4 | ✅ Passed after a **design gap** was found: analysis results never reached playback at all |
+
+Getting here first required unblocking the build itself. Every mac build had
+been silently linking a **stale static library**: the Xcode "Cargo Build" phase
+was failing (the gitignored `vendor/` tree was 92 crates out of date and 15
+short after phase 8 added `notify`/`walkdir`/`symphonia`), and the link step
+just reused the old `.a`. `cargo vendor vendor` fixed it. Anyone hitting
+undefined `_sparkamp_*` symbols should suspect this before suspecting the FFI.
+
+Two process notes worth keeping:
+
+- `xcodebuild … | tee | tail` reports **exit 0 even on BUILD FAILED**. Always
+  grep the output for `BUILD SUCCEEDED|BUILD FAILED` rather than trusting `$?`.
+- A struct-layout mismatch across the FFI is worth *proving*, not eyeballing.
+  Compiling `offsetof` in C against `size_of`/field offsets in Rust and diffing
+  the two takes a minute and turns the scariest blind item into a settled one.
+
 ### Build
 - [ ] `xcodebuild` succeeds with zero errors/warnings against the updated `sparkamp_bridge.h` (new: `sparkamp_disc_default_meta`, `sparkamp_disc_mount_list`; changed: `sparkamp_disc_burn_job_start`'s job JSON, `sparkamp_disc_burn_job_poll`'s reply JSON already had `fraction` from Task 6/pre-11).
 - [ ] Rust static lib cross-compiled for macOS actually contains the new symbols (`nm`/`otool -Iv` the archive, or just let the Swift link fail loudly if not).
@@ -112,61 +140,61 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       udisks-unmounting first. macOS `drutil eject` — confirm it ejects a
       mounted data disc without a similar error (drutil usually handles it).
 
-## Phase-0 fixes: ID3 editor extended + passthrough frames (2026-07-17) — mac verify
-- [ ] Mac ID3 editor's standard fields — Composer, Copyright, Encoded-by (and
+## Phase-0 fixes: ID3 editor extended + passthrough frames (2026-07-17) — ✅ VERIFIED on hardware 2026-08-02
+- [x] Mac ID3 editor's standard fields — Composer, Copyright, Encoded-by (and
       Original Artist, URL, Lyrics if exposed in the UI) — save via
       `sparkamp_tag_set`/`sparkamp_tag_save` and survive a close/reopen of
       the file (round-trips through `TagFields`, not silently dropped).
-- [ ] Customize panel: add a frame not covered by the standard fields (e.g.
+- [x] Customize panel: add a frame not covered by the standard fields (e.g.
       Publisher/TPUB, Key/TKEY, Mood/TMOO, Language/TLAN, ISRC/TSRC,
       Subtitle/TIT3) via `sparkamp_tag_set`, save, close, and reopen the
       file — confirm the value survives (passthrough via
       `write_extra_frame`, not just held in memory until close).
-- [ ] Setting a Customize frame, then reading it back via
+- [x] Setting a Customize frame, then reading it back via
       `sparkamp_tag_get` **before** saving, shows the just-set value (pending
       writes must win over what was loaded from disk).
-- [ ] Setting a standard field and a Customize frame together, then saving
+- [x] Setting a standard field and a Customize frame together, then saving
       once: both persist (the extra-frame write path runs after the main
       `write_tag_fields` call and doesn't clobber it).
 
-## Phase-0 fixes: playlist auto-scroll to current track (2026-07-17) — mac verify (D8, BLIND)
-- [ ] Playlist scrolls to the playing row on every track change: auto-advance
+## Phase-0 fixes: playlist auto-scroll to current track (2026-07-17) — ✅ VERIFIED on hardware 2026-08-02 (D8)
+- [x] Playlist scrolls to the playing row on every track change: auto-advance
       to the next track, `z`/`b` (prev/next), and double-click a different
       row to play it — the newly-current row should end up visible without
       manual scrolling.
-- [ ] While the same track keeps playing, manually scroll the playlist away
+- [x] While the same track keeps playing, manually scroll the playlist away
       from the current row (e.g. to look at a track further down) — confirm
       the view does NOT get yanked back to the current row on subsequent
       `updateNSView` passes (selection changes, tag edits, etc. must not
       re-trigger the scroll).
-- [ ] Scrolling to a very long playlist's last track (auto-advance reaching
+- [x] Scrolling to a very long playlist's last track (auto-advance reaching
       the final row) actually reveals that row — no off-by-one against
       `table.numberOfRows`.
-- [ ] Confirm `ActivePlaylistTable.Coordinator.lastScrolledIndex` compares
+- [x] Confirm `ActivePlaylistTable.Coordinator.lastScrolledIndex` compares
       against `model.currentIndex` (a stable playlist id), not a raw row
       number — reordering the playlist via drag should not cause a spurious
       re-scroll purely from a row-index shift while the same track plays.
-- [ ] Stop playback, scroll the playlist away from the (former) current
+- [x] Stop playback, scroll the playlist away from the (former) current
       row, then play that same track again — confirm the view scrolls back
       to it (the guard resets on stop, so replaying the same track re-fires
       the scroll instead of being treated as "already scrolled there").
 
-## Phase-0 fixes: EQ frequency labels removal (D10) — mac verify
-- [ ] EQ window shows 10 unlabeled sliders matching GTK, column spacing intact.
+## Phase-0 fixes: EQ frequency labels removal (D10) — ✅ VERIFIED on hardware 2026-08-02
+- [x] EQ window shows 10 unlabeled sliders matching GTK, column spacing intact.
 
-## Phase-1: ML technical columns + ID3 tech line (Task 7, BLIND — Swift never compiled)
-- [ ] `xcodebuild` succeeds with zero errors/warnings against the updated
+## Phase-1: ML technical columns + ID3 tech line (Task 7) — ✅ VERIFIED on hardware 2026-08-02
+- [x] `xcodebuild` succeeds with zero errors/warnings against the updated
       `sparkamp_bridge.h` — `SparkampLibTrack` grew six trailing fields
       (`sample_rate`, `file_size`, `added_at`, `file_mtime`, `bitrate_mode`,
       `channels`); confirm the Swift `MLTrack.init(from:)` field reads still
       line up byte-for-byte with the Rust struct (no silent offset drift).
-- [ ] Files view column picker (toolbar icon, `MediaLibraryWindow.swift`)
+- [x] Files view column picker (toolbar icon, `MediaLibraryWindow.swift`)
       shows five new toggles below the existing "Last Played" entry: Sample
       Rate, Size, Date Added, File Modified, Mode — all off by default
       (bits 17–21 aren't in the default `columnMask`), confirm each toggles
       its column's visibility independently and the layout/divider looks
       right.
-- [ ] Column content, once shown: Sample Rate renders "44.1 kHz" style (or
+- [x] Column content, once shown: Sample Rate renders "44.1 kHz" style (or
       blank when 0); Size renders "N KB" under 1 MB, "N.N MB" at/above (same
       thresholds as GTK's `format_file_size`); Date Added / File Modified
       render as a friendly local "yyyy-MM-dd HH:mm" date, NOT the raw
@@ -181,27 +209,27 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       lowercase it the way GTK's sort key does — the GTK *display* also
       keeps it as-is, only GTK's sort key is lowercased, so this should
       already match).
-- [ ] Click each of the five new column headers: table re-sorts via
+- [x] Click each of the five new column headers: table re-sorts via
       `sortDescriptorsDidChange` → `MLFilesTable.keyPathComparator` →
       `MediaLibraryWindow.reload()`'s `colName` switch → `mlFetchTracks`
       with the matching `sortCol` ("sample_rate" / "file_size" /
       "added_at" / "file_mtime" / "bitrate_mode") — confirm ascending AND
       descending both actually reorder rows (not just flip the header
       arrow).
-- [ ] These columns also appear in the Saved Playlist editor
+- [x] These columns also appear in the Saved Playlist editor
       (`MLEditorTable.swift`, which reuses `MLFilesTable.specs` /
       `.cellContent` directly) — confirm they render there too, not just
       in the Files view.
-- [ ] Existing columns (Title through Last Played) are visually and
+- [x] Existing columns (Title through Last Played) are visually and
       functionally unaffected — spot-check a few sorts/toggles pre- and
       post-change.
-- [ ] ID3 editor: open a file that IS indexed in the library (e.g. via the
+- [x] ID3 editor: open a file that IS indexed in the library (e.g. via the
       Files view's "Edit / View ID3 Tags") — confirm a dimmed technical
       line appears under the field grid reading uppercase filetype ·
       bitrate ("320k" style, not "320 kbps") · sample rate · channels
       (mono/stereo/Nch) · duration (M:SS), " · "-joined, matching what
       GTK's ID3 editor shows for the SAME file (GTK's `tech_summary`).
-- [ ] ID3 editor: open a file NOT indexed in the library (e.g. a playlist
+- [x] ID3 editor: open a file NOT indexed in the library (e.g. a playlist
       entry from an unwatched folder) — confirm the line still shows at
       least the filetype (derived from the path extension client-side)
       and "-:--" for duration; bitrate/sample rate/channels should be
@@ -214,54 +242,54 @@ Fixed on GTK+core; mac equivalents to check during the Xcode pass:
       harmless extra information, not a bug — do not "fix" it by adding a
       filetype field to `SparkampLibTrack` unless a real product need shows
       up.
-- [ ] Saving ID3 tags on a file does not change/blank the tech line
+- [x] Saving ID3 tags on a file does not change/blank the tech line
       (technical fields are independent of tag fields; the editor closes
       ~0.4s after a successful save, so this is mostly a "no crash /
       no flicker to blank" check during that window).
 
-## Phase 2 — 2026-07-20: now-playing FFI + artwork set/clear + ML art path (Task 12, BLIND — Swift never compiled)
-- [ ] `xcodebuild` succeeds with zero errors/warnings against the updated
+## Phase 2 — 2026-07-20: now-playing FFI + artwork set/clear + ML art path (Task 12) — ✅ VERIFIED on hardware 2026-08-02
+- [x] `xcodebuild` succeeds with zero errors/warnings against the updated
       `sparkamp_bridge.h` (new: opaque `SparkampNowPlaying` + its 10
       `sparkamp_now_playing_*` functions; new: `sparkamp_tag_set_artwork`,
       `sparkamp_tag_clear_artwork`; changed: `SparkampLibTrack` gained
       `artwork_path[512]` right after `has_art` — verify every existing
       field read by Swift after `has_art` still lines up positionally).
-- [ ] Now-playing panel (A1): on each track-change notification, call
+- [x] Now-playing panel (A1): on each track-change notification, call
       `sparkamp_now_playing_open`, read all fields, then
       `sparkamp_now_playing_close` — confirm it returns NULL gracefully
       when nothing is playing (panel should show its empty state, not crash).
-- [ ] Panel's curated tag rows (`sparkamp_now_playing_tag_count` /
+- [x] Panel's curated tag rows (`sparkamp_now_playing_tag_count` /
       `_tag_label` / `_tag_value`) match GTK's A1 panel for the SAME file:
       same labels, same order, only non-empty fields shown, filename-stem
       fallback title when a file has no usable ID3 text at all.
-- [ ] `sparkamp_now_playing_tech_line` matches the ID3 editor's tech line
+- [x] `sparkamp_now_playing_tech_line` matches the ID3 editor's tech line
       for the same file (shared `tech_summary` under the hood).
-- [ ] `sparkamp_now_playing_artwork_path` resolves to the same file GTK's
+- [x] `sparkamp_now_playing_artwork_path` resolves to the same file GTK's
       A1 panel shows (embedded APIC dump / folder image / library cache),
       and is "" when there is no art — panel shows its no-art placeholder,
       not a broken image.
-- [ ] `sparkamp_now_playing_has_play_count` / `_play_count` / `_last_played`:
+- [x] `sparkamp_now_playing_has_play_count` / `_play_count` / `_last_played`:
       an indexed (media-library-scanned) track shows real stats; a track
       played from outside the library (e.g. Testing dir, ad-hoc file) shows
       the "not yet played" / no-stats state instead of 0 or garbage.
-- [ ] `sparkamp_now_playing_artist_wiki_url` / `_album_wiki_url` open the
+- [x] `sparkamp_now_playing_artist_wiki_url` / `_album_wiki_url` open the
       correct Wikipedia search page (percent-encoded, spaces as `%20`) for
       the current artist/album; empty tag → link is hidden/disabled, not a
       broken URL.
-- [ ] ID3 editor: setting a new cover image now calls
+- [x] ID3 editor: setting a new cover image now calls
       `sparkamp_tag_set_artwork` + `sparkamp_tag_save` — confirm the saved
       file actually embeds the APIC frame (inspect with GTK or `id3v2 -l`)
       and the mac editor's art preview updates immediately after save.
-- [ ] ID3 editor: clearing/removing the cover now calls
+- [x] ID3 editor: clearing/removing the cover now calls
       `sparkamp_tag_clear_artwork` + `sparkamp_tag_save` — confirm ALL
       embedded pictures are gone afterward, not just hidden in the UI.
-- [ ] Set-then-clear-then-set-again on the same file round-trips cleanly
+- [x] Set-then-clear-then-set-again on the same file round-trips cleanly
       (no leftover/duplicate APIC frames after repeated saves).
-- [ ] Media Library table: add an art thumbnail/indicator column driven by
+- [x] Media Library table: add an art thumbnail/indicator column driven by
       `SparkampLibTrack.artwork_path` (fall back to `has_art` alone if no
       thumbnail rendering is wired yet) — confirm it populates for scanned
       tracks with cached art and stays blank for tracks without any.
-- [ ] Saved Playlist editor's track rows (same `SparkampLibTrack` source)
+- [x] Saved Playlist editor's track rows (same `SparkampLibTrack` source)
       also reflect `artwork_path` correctly, matching the Files/ML view for
       the same track.
 
@@ -275,7 +303,7 @@ composition of `Playlist::current`, `MediaLibrary::track_by_path`,
 `src/media_library/tests.rs`). The mac checklist items above are the
 verification for the FFI wiring itself.
 
-## Phase 2 — 2026-07-20: A1 panel, A6 window, ML art column, D14 art edit, w/k shortcuts (Task 13, BLIND — Swift never compiled)
+## Phase 2 — 2026-07-20: A1 panel, A6 window, ML art column, D14 art edit, w/k shortcuts (Task 13) — ✅ VERIFIED on hardware 2026-08-02
 
 Swift files touched: `PlayerWindow.swift` (A1), `ArtworkWindow.swift` (A6),
 `MLFilesTable.swift` (A2), `Id3EditorWindow.swift` (D14),
@@ -285,25 +313,25 @@ Swift files touched: `PlayerWindow.swift` (A1), `ArtworkWindow.swift` (A6),
 No FFI/bridge.h changes — Task 12's surface was already complete.
 
 ### Build
-- [ ] `xcodebuild` succeeds with zero errors/warnings. This task added the
+- [x] `xcodebuild` succeeds with zero errors/warnings. This task added the
       most speculative SwiftUI constructs of the phase — see "Unsure /
       eyeball" below before assuming a clean build means correct behavior.
 
 ### A1 — expandable now-playing panel
-- [ ] The marquee row (Row 1 of the info panel) now has a small chevron
+- [x] The marquee row (Row 1 of the info panel) now has a small chevron
       button at its right edge; clicking it toggles the panel exactly like
       pressing `w`, and the chevron flips (down = collapsed, up = expanded).
-- [ ] `playerExpanded` persists across relaunch via
+- [x] `playerExpanded` persists across relaunch via
       `UserDefaults["sparkamp.playerExpanded"]` (same mechanism as
       `playlistVisible`/`equalizerVisible`/`mediaLibraryVisible`) — restored
       in `SparkampModel.init()`, written in both the `w`-key handler, the
       chevron button, and `saveState()`.
-- [ ] Collapsed layout is pixel-identical to pre-Task-13 (nothing new renders
+- [x] Collapsed layout is pixel-identical to pre-Task-13 (nothing new renders
       when `playerExpanded == false` beyond the chevron itself).
-- [ ] Expanded: art (~100×100, clamped) appears on the left of the panel row,
+- [x] Expanded: art (~100×100, clamped) appears on the left of the panel row,
       a data carousel on the right, page dots beneath the carousel when there
       is more than one page.
-- [ ] **Window resize**: confirm the player window's height actually grows on
+- [x] **Window resize**: confirm the player window's height actually grows on
       expand and shrinks back on collapse. This relies entirely on
       `.windowResizability(.contentSize)` (`SparkampMacApp.swift`) picking up
       the SwiftUI ideal-size change with NO extra `NSWindow` code (unlike
@@ -312,60 +340,60 @@ No FFI/bridge.h changes — Task 12's surface was already complete.
       says" bet in this task; if the window does NOT resize, the fix is
       almost certainly `.fixedSize()` somewhere upstream fighting it, not
       the panel code itself.
-- [ ] Visualizer (left column, mini bars/waveform/Granite) visibly grows
+- [x] Visualizer (left column, mini bars/waveform/Granite) visibly grows
       taller when the panel expands (it relies on the same HStack-sizing
       side effect as the resize above — the left column has no explicit
       height, only `maxHeight: .infinity` on the `VisualizerView`).
-- [ ] Carousel pages match GTK's grouping/order for the same file: tag rows
+- [x] Carousel pages match GTK's grouping/order for the same file: tag rows
       chunked 4-per-page (curated order), then Technical (tech line), then
       Stats (play count / last played — only if the track is library-indexed
       or has a last-played value), then Links (artist/album Wikipedia) — a
       page is omitted entirely when its data is all empty, not shown as a
       blank page.
-- [ ] Carousel auto-advances every 6 s via `Timer.publish`; clicking a dot
+- [x] Carousel auto-advances every 6 s via `Timer.publish`; clicking a dot
       jumps directly to that page. NOTE: unlike GTK, a manual dot click does
       NOT push out the next auto-advance (GTK's `jump()` doubles the dwell so
       a manual pick lingers) — the mac timer just keeps advancing on schedule
       regardless. Confirm this reads as acceptable UX or file a follow-up.
-- [ ] Switching tracks resets the carousel to page 0 (`onChange(of: trackKey)`
+- [x] Switching tracks resets the carousel to page 0 (`onChange(of: trackKey)`
       where `trackKey == model.currentIndex`).
-- [ ] No artwork: the panel shows the dimmed app-icon + "No artwork
+- [x] No artwork: the panel shows the dimmed app-icon + "No artwork
       available" placeholder (matches the A6 window's placeholder wording).
-- [ ] Clicking the panel's art (or its placeholder) opens/focuses the A6
+- [x] Clicking the panel's art (or its placeholder) opens/focuses the A6
       album-art window in follow-mode (same as pressing `k`).
-- [ ] Last-played timestamps in the Stats page render as local
+- [x] Last-played timestamps in the Stats page render as local
       "yyyy-MM-dd HH:mm" (same formatting as the ML table's `lastPlayedDisplay`).
 
 ### A6 — standalone album-art window (singleton, follows current track)
-- [ ] `k` opens the window if closed, or brings it to front if already open
+- [x] `k` opens the window if closed, or brings it to front if already open
       (open-or-focus, not toggle — repeat `k` presses never do nothing).
-- [ ] While open in follow-mode, changing tracks (next/prev/EOS/jump) updates
+- [x] While open in follow-mode, changing tracks (next/prev/EOS/jump) updates
       the displayed art live, including flipping to the "No artwork
       available" placeholder when the new track has none.
-- [ ] Opening the window via the ID3 editor's artwork thumbnail tap, or the
+- [x] Opening the window via the ID3 editor's artwork thumbnail tap, or the
       Media Library's "View Art" action, shows that SPECIFIC track's art and
       does NOT get silently replaced by the currently-playing track's art a
       moment later (this is the `artworkFollowsPlayback` flag — verify it
       actually stays false for these two entry points and only becomes true
       via `k` / the A1 art tap).
-- [ ] Closing the window (Esc / red button) always resets follow-mode off,
+- [x] Closing the window (Esc / red button) always resets follow-mode off,
       so the next `k` press cleanly re-enters follow-mode rather than
       inheriting stale state.
-- [ ] Fullscreen visualizer: `k` is inert while fullscreen is up (added to
+- [x] Fullscreen visualizer: `k` is inert while fullscreen is up (added to
       the same disabled-keys list as `p`/`i`/`u`/`d`, so it doesn't yank
       focus out of the fullscreen Space).
 
 ### A2 — Media Library artwork thumbnail column
-- [ ] The "Art" column in the Files view (`MLFilesTable`) shows a small
+- [x] The "Art" column in the Files view (`MLFilesTable`) shows a small
       (18×18) rounded thumbnail image for tracks whose `artwork_path` resolves
       to a loadable image, instead of just a "View" text link.
-- [ ] A track marked `has_art` but whose thumbnail failed to decode falls
+- [x] A track marked `has_art` but whose thumbnail failed to decode falls
       back to the pre-existing "View" text link (not a blank cell) — the
       pre-Task-13 behavior for that edge case is unchanged.
-- [ ] Tracks with no art at all still render a blank cell.
-- [ ] Clicking the thumbnail (or the "View" fallback) still opens the
+- [x] Tracks with no art at all still render a blank cell.
+- [x] Clicking the thumbnail (or the "View" fallback) still opens the
       artwork viewer exactly as before.
-- [ ] **Performance**: scroll a large Files view (thousands of rows) with the
+- [x] **Performance**: scroll a large Files view (thousands of rows) with the
       Art column visible — `NSImage(contentsOfFile:)` runs directly in the
       cell-content builder with no caching/lazy-generation (unlike GTK's
       Task 8, which explicitly caches + backgrounds thumbnail generation via
@@ -373,86 +401,105 @@ No FFI/bridge.h changes — Task 12's surface was already complete.
       this should be fine in practice, but confirm there's no visible
       scroll jank with a large, art-heavy library. If there is, the fix is a
       small `NSImage` decode cache keyed by path — not a redesign.
-- [ ] Same column in the Saved Playlist editor (`MLEditorTable.swift`, which
+- [x] Same column in the Saved Playlist editor (`MLEditorTable.swift`, which
       reuses `MLFilesTable`'s specs/cellContent) — confirm the thumbnail
       renders there too (not separately touched this task; verify the reuse
       picked it up for free).
 
 ### D14 — ID3 editor artwork Browse / Clear
-- [ ] The artwork slot in the ID3 editor now ALWAYS shows something (a
+- [x] The artwork slot in the ID3 editor now ALWAYS shows something (a
       thumbnail, or a "No art" placeholder box) instead of collapsing to
       nothing when a file has no embedded art — confirm the left/right field
       columns' spacing looks right in both states (padding was hardcoded to
       0 now that the slot is never absent).
-- [ ] "Browse…" opens an NSOpenPanel restricted to images; picking a file
+- [x] "Browse…" opens an NSOpenPanel restricted to images; picking a file
       updates the on-screen thumbnail immediately (before Save).
-- [ ] "Clear" blanks the thumbnail immediately (before Save) and is disabled
+- [x] "Clear" blanks the thumbnail immediately (before Save) and is disabled
       when there's no artwork to clear.
-- [ ] Neither Browse nor Clear touches the file on disk until "Save" is
+- [x] Neither Browse nor Clear touches the file on disk until "Save" is
       pressed — `sparkamp_tag_set_artwork` / `sparkamp_tag_clear_artwork` are
       only called from `saveTag()`, mirroring how text-field edits are
       buffered in `fieldValues` and only pushed to the tag ctx at Save time.
-- [ ] Save with no Browse/Clear touch (`pendingArtworkPath == nil`) does NOT
+- [x] Save with no Browse/Clear touch (`pendingArtworkPath == nil`) does NOT
       strip existing embedded art — confirm a file's art survives an
       edit-and-save that never touched the artwork controls.
-- [ ] Browse → Save → reopen the same file: new art is embedded (inspect
+- [x] Browse → Save → reopen the same file: new art is embedded (inspect
       with GTK's ID3 editor or `id3v2 -l`) and the mac editor shows it.
-- [ ] Clear → Save → reopen: all embedded pictures are gone.
-- [ ] Browse/Clear buttons are hidden for read-only and missing files (same
+- [x] Clear → Save → reopen: all embedded pictures are gone.
+- [x] Browse/Clear buttons are hidden for read-only and missing files (same
       gate as the Save button: `!isReadOnly && !fileMissing`).
-- [ ] Loading a different file (Customize… aside) resets any unsaved
+- [x] Loading a different file (Customize… aside) resets any unsaved
       Browse/Clear buffer from the PREVIOUS file (`pendingArtworkPath = nil`
       in `loadTag()`) — confirm switching files via the editor's reload path
       doesn't leak a pending change onto the wrong file.
-- [ ] Not implemented for mac (scope call, see Task 9 GTK-only): the
+- [x] Not implemented for mac (scope call, see Task 9 GTK-only): the
       "Also write folder image" checkbox. GTK has it; mac's D14 spec only
       asked for Browse/Embed/Clear. Flag if this asymmetry should be closed.
 
 ### Shortcuts (3-file rule)
-- [ ] `KeyboardShortcutsView.swift`'s `sections` list now shows `w` → "Toggle
+- [x] `KeyboardShortcutsView.swift`'s `sections` list now shows `w` → "Toggle
       now-playing panel (art, tags, links)" and `k` → "Open album-art window"
       under "Playlist & modes" (mac's closest analog to GTK's "View & Tags"
       section, which mac doesn't have — GTK's `d`/`u` rows also aren't listed
       anywhere in mac's shortcuts view; that's a pre-existing gap, not
       something this task introduced or was asked to fix).
-- [ ] `SparkampModel+Keys.swift`'s `handleRawKey` handles lowercase `w`
+- [x] `SparkampModel+Keys.swift`'s `handleRawKey` handles lowercase `w`
       (toggle `playerExpanded` + persist) and `k` (`openArtworkWindow()`) —
       both no-op with modifier keys held, matching every other single-key
       shortcut.
-- [ ] Both keys are inert while a text field has focus (covered for free by
+- [x] Both keys are inert while a text field has focus (covered for free by
       the existing `NSTextView` firstResponder guard) and while the
       Jump-to-Track overlay is showing (existing `jumpVisible` guard).
 
-### Unsure / eyeball (blind pass — flag anything that doesn't compile or look right)
-- [ ] `.windowResizability(.contentSize)` auto-growing the window on
+### Outcome (2026-08-02) — passed after three runtime bugs
+
+All items above verified. Nothing was wrong with the FFI or the layout logic;
+the three failures were all SwiftUI behaviours that only show up when running:
+
+1. **The window grew but never shrank.** `.windowResizability(.contentSize)`
+   cannot shrink a window past a greedy `Spacer` + `maxHeight: .infinity`
+   child, so collapsing the now-playing panel left the window at its expanded
+   height. Fixed with an explicit `setContentSize(cv.fittingSize)` re-fit on
+   `playerExpanded` change.
+2. **Marquee text ran under the expand chevron**, making both unreadable. A
+   trailing padding reserve was not enough — the text still showed through.
+   Fixed by giving the chevron an opaque `lcdBackground` chip with an
+   `lcdBorder` outline, so it always reads as a button on top of the text.
+3. **`k` would not close a focused artwork window.** The key monitor is
+   app-wide, so `k` did reach the handler — it just re-focused the window
+   instead of toggling. Fixed by closing when the key window is the artwork
+   window.
+
+### Unsure / eyeball (blind pass — resolved by the 2026-08-02 run)
+- [x] `.windowResizability(.contentSize)` auto-growing the window on
       `playerExpanded` toggle with zero extra `NSWindow` code — the biggest
       "trust SwiftUI" bet in this task (see A1's resize item above).
-- [ ] `switch pages[safeIndex] { case .tags(...): ... }` written directly as
+- [x] `switch pages[safeIndex] { case .tags(...): ... }` written directly as
       `@ViewBuilder` content (mirrors the existing `switch nav { ... }` in
       `MediaLibraryWindow.swift`, so it should compile, but the carousel's
       case bodies are new).
-- [ ] `.task(id: info?.artworkPath ?? "")` for debounced image reload,
+- [x] `.task(id: info?.artworkPath ?? "")` for debounced image reload,
       `.onReceive(Timer.publish(...).autoconnect())` for the carousel timer,
       and `.onChange(of: pages.count)` for the page-count safety clamp — all
       standard SwiftUI, but this is their first use in this codebase; eyeball
       that the 6 s cadence feels right and the timer doesn't drift/pile up
       after the window has been open a long time.
-- [ ] `NowPlayingPanel` declares its own `@EnvironmentObject var model` and
+- [x] `NowPlayingPanel` declares its own `@EnvironmentObject var model` and
       `@EnvironmentObject var themeManager` — confirm both are actually in
       scope where it's instantiated inside `PlayerWindow`'s body (they should
       be, since `PlayerWindow` itself receives both via the WindowGroup's
       `.environmentObject` calls in `SparkampMacApp.swift`, and environment
       objects propagate to any descendant view without re-declaring them at
       each level).
-- [ ] `Link("Artist on Wikipedia", destination: url)` — confirm it actually
+- [x] `Link("Artist on Wikipedia", destination: url)` — confirm it actually
       opens the system browser from inside this app's window context (no
       reason it wouldn't, but it's the first `Link` use found in this
       codebase's mac sources).
-- [ ] The ID3 editor's artwork slot padding (now hardcoded `0` instead of the
+- [x] The ID3 editor's artwork slot padding (now hardcoded `0` instead of the
       old `artwork == nil ? 12 : 0` ternary) — eyeball the left-column
       alignment now that the slot is never absent.
 
-## Phase 3 — 2026-07-21: Now Playing + remote commands (P3-T6, BLIND)
+## Phase 3 — 2026-07-21: Now Playing + remote commands (P3-T6) — ⚠️ CLOSED 2026-08-02 with a known limitation
 
 New file `SparkampModel+NowPlaying.swift` (added to project.pbxproj: fileRef AA4…00A1 / buildFile AA5…00A1) + hooks in SparkampModel.swift (updateNowPlayingCenter from refreshCurrentTrackInfo + tick play-state change). Verify on hardware:
 
@@ -464,13 +511,48 @@ New file `SparkampModel+NowPlaying.swift` (added to project.pbxproj: fileRef AA4
 - [ ] Control Center scrubber seeks; the app seek bar reflects it (and vice-versa — app seek elapsed may lag one card update, accepted).
 - [ ] No-track / stopped → card clears (nowPlayingInfo nil, playbackState .stopped).
 
-**Unsure / eyeball (blind, no Xcode here):**
-- New Swift file compiles + is actually in the build target (pbxproj entries added by hand — confirm Xcode sees it; IDs AA4…00A1 / AA5…00A1 chosen unused).
+### Outcome (2026-08-02) — closed with a known limitation
+
+**The OS Now Playing card never appeared on this machine.** Not on the lock
+screen and not in Control Center, despite `MPNowPlayingInfoCenter` being fed
+correctly (media type, artwork with an app-icon fallback, elapsed time, rate)
+and `MPRemoteCommandCenter` handlers registering. Cause not established. The
+user chose to **deprioritize** it rather than keep digging, so the boxes above
+that depend on that card stay unticked — they are unverified, not passing.
+
+What was done instead: a **custom AppKit Touch Bar**
+(`TouchBarControls.swift`) with prev / play-pause / stop / next, a seek
+scrubber, and repeat + shuffle toggles. Verified working. Two findings there
+are worth remembering:
+
+- **SwiftUI's `.touchBar` modifier is useless for a window root.** It only
+  activates for a view in the *focused* responder chain, so it silently
+  produced no bar at all. Providing the bar from the app delegate
+  (`NSTouchBarProvider`) also never got consulted. What works is installing an
+  `NSTouchBar` on the **key window and its contentView**. This was settled by
+  adding temporary `NSLog` diagnostics and reading stderr from a direct binary
+  launch — guessing had already burned two attempts.
+- **`@Published` fires in `willSet`.** Subscribers that re-read the model see
+  the *old* value, so the bar rendered exactly one state behind (tap repeat →
+  UI shows One, bar still shows Off). Fixed with `.receive(on: .main)` on all
+  four subscriptions.
+
+Still unverified, and why:
+
+- Lock-screen / Control Center card — deprioritized (above).
+- AirPods gestures — no hardware available to test with.
+- Control Center scrubber — not exercised, card never appeared.
+
+Decision recorded: **on Stop, the Now Playing card keeps showing** (current
+behaviour, deliberately unchanged).
+
+**Unsure / eyeball (blind, no Xcode here) — resolved:**
+- New Swift file compiles + is actually in the build target (pbxproj entries added by hand — confirm Xcode sees it; IDs AA4…00A1 / AA5…00A1 chosen unused). ✅ builds and links.
 - `import MediaPlayer` on macOS + MPRemoteCommandCenter with no explicit audio-session entitlement (macOS doesn't require the iOS AVAudioSession; confirm commands fire).
 - `MPMediaItemArtwork(boundsSize:) { _ in image }` closure returns the NSImage at any requested size (returns the full image regardless of size — verify it renders, not blank).
 - Album extracted from `nowPlaying.tags` where label == "Album" (matches the core curated label).
 
-## Phase 4 — 2026-07-22: ReplayGain (P4-T8, BLIND)
+## Phase 4 — 2026-07-22: ReplayGain (P4-T8) — ✅ VERIFIED on hardware 2026-08-02 (design gap found + closed)
 
 Rust FFI (built + tested on Linux: 481 lib + 685 bin, 0 warnings) — 6 config
 get/set pairs + a background analysis trigger, mirrored into
@@ -481,37 +563,88 @@ get/set pairs + a background analysis trigger, mirrored into
 
 Verify on hardware:
 
-- [ ] Settings → Playback → ReplayGain: "Use ReplayGain", Gain source
+- [x] Settings → Playback → ReplayGain: "Use ReplayGain", Gain source
       (Track/Album/Automatic), "Prevent clipping", "Fallback gain" stepper all
       load current values on open and persist across a relaunch.
-- [ ] Toggling "Use ReplayGain" (or changing source/clip) while **stopped**
+- [x] Toggling "Use ReplayGain" (or changing source/clip) while **stopped**
       reshapes the chain immediately; while **playing** it takes effect on the
       next track (engine defers — expected, matches GTK/TUI).
-- [ ] Loud vs quiet tracks even out in perceived volume with ReplayGain on;
+- [x] Loud vs quiet tracks even out in perceived volume with ReplayGain on;
       turning it off restores raw levels.
-- [ ] Settings → Media Library → ReplayGain: "Analyze ReplayGain" runs a
+- [x] Settings → Media Library → ReplayGain: "Analyze ReplayGain" runs a
       background job; progress bar shows "Analyzing N/M…"; "Cancel Analysis"
       replaces the buttons while running and stops the job.
-- [ ] "Force Recalculate" reanalyzes every track (ignores stored values).
-- [ ] "Analyze new files on add/scan" and "Write ReplayGain tags to files
+- [x] "Force Recalculate" reanalyzes every track (ignores stored values).
+- [x] "Analyze new files on add/scan" and "Write ReplayGain tags to files
       (MP3 only)" toggles load + persist.
-- [ ] With write-tags ON, analyzing an MP3 writes REPLAYGAIN_* TXXX frames to
+- [x] With write-tags ON, analyzing an MP3 writes REPLAYGAIN_* TXXX frames to
       the file (visible to other taggers); non-MP3 files silently keep DB-only
       values.
-- [ ] Media Library Files view → columns menu (tablecells icon) has a
+- [x] Media Library Files view → columns menu (tablecells icon) has a
       "ReplayGain" entry (off by default); enabling it shows a "ReplayGain"
       column with e.g. "-6.2 dB", empty for un-analyzed tracks.
-- [ ] Sorting by the ReplayGain column works (server-side "rg_gain" order).
-- [ ] Right-click one or more Files rows → "Calculate ReplayGain" force-
+- [x] Sorting by the ReplayGain column works (server-side "rg_gain" order).
+- [x] Right-click one or more Files rows → "Calculate ReplayGain" force-
       analyzes the selection; the column updates when the job finishes;
       the item is disabled while an analysis is already running.
 
-**Unsure / eyeball (blind, no Xcode here):**
-- SparkampLibTrack struct field order in `sparkamp_bridge.h` must match the
-  Rust `#[repr(C)]` exactly — the 5 new fields (rg_track_gain/peak,
-  rg_album_gain/peak as `double`, rg_analyzed as `int32_t`) were appended
-  AFTER `channels` in both; confirm no misalignment (wrong gains/garbage would
-  signal a mismatch).
+### Outcome (2026-08-02) — passed, after a design gap was found and closed
+
+The blind Swift was fine. What the hardware pass exposed was bigger: **the
+whole feature did nothing for playback.**
+
+`rgvolume` reads `REPLAYGAIN_*` tags off the *decoded stream*. Analysis stored
+gains in the library DB. Nothing ever connected the two — so a file analyzed
+with write-tags off (the default, and the only possibility for non-MP3, which
+Sparkamp cannot tag) played completely unnormalized while the UI happily
+displayed its measured gain. The original phase-4 plan specified this
+tag-based design deliberately, but it makes "Analyze ReplayGain" look broken
+to anyone who has not read the plan.
+
+Closed core-wide (commit `60d954a`), making the DB the authority the UI
+already implied:
+
+- **Harvest on scan** — existing `REPLAYGAIN_*` values are now read during the
+  normal tag read (ID3 TXXX by description, Vorbis/MP4 via Symphonia), so a
+  pre-normalized file costs no analysis pass. The upsert COALESCEs these the
+  *opposite* way from other tag columns: the file wins when it has a value,
+  but an untagged file must never wipe a gain Sparkamp measured itself.
+- **DB drives playback** — `Player::load()`, the one funnel every frontend
+  passes through, points `rgvolume`'s `fallback-gain` at the track's stored
+  gain. That uses rgvolume's own precedence instead of fighting it. `load()`
+  *takes* the value, so a call site that forgets to prime can only
+  under-apply, never apply the previous track's gain to a different song.
+- **Live re-apply on mac** — toggling ReplayGain/clip protection mid-track now
+  reloads and seeks back, matching GTK. Needs a `pending_seek` on
+  `SparkampCtx` drained by the tick: `load()` leaves the pipeline at Null and
+  `play()` is async, so an inline seek is dropped.
+
+Four smaller fixes from the same pass:
+
+- `read_extra_frames` returned TXXX frames with **no label and no value**
+  (`Content::text()` is `None` for user-defined text), so all four
+  `REPLAYGAIN_*` frames rendered as blank rows labelled "TXXX". This is why
+  ReplayGain was invisible in the Customize panel on *every* frontend.
+- The ID3 editor gained an **editable** ReplayGain field. Saving writes the
+  file tag and the library row together, independent of the write-tags
+  setting. It must run *after* the post-save rescan, which would otherwise
+  COALESCE a cleared value straight back.
+- Existing users have a persisted ID3 field layout, so any newly added default
+  field was invisible to them forever. The layout now merges missing defaults.
+- RG completion called `mlFetchTracks()`, refetching with the default empty
+  query and sort and silently dropping the user's active search and column
+  sort. Now bumps `mlReloadTrigger`, which is what the window observes.
+
+Still open (tracked, not blocking): **GTK and TUI have no DB-sourced
+ReplayGain row** in their ID3 editors. They received the TXXX visibility fix,
+so frames show once a file carries tags, but not the editable DB-backed field
+mac now has.
+
+**Unsure / eyeball (blind, no Xcode here) — resolved:**
+- SparkampLibTrack field order vs the Rust `#[repr(C)]`. ✅ **Proven
+  identical**, not eyeballed: `offsetof` in C vs field offsets in Rust both
+  give size 3128 / channels 3080 / rg_track_gain 3088 / rg_track_peak 3096 /
+  rg_album_gain 3104 / rg_album_peak 3112 / rg_analyzed 3120.
 - `Stepper("Fallback gain: \(rgFallback, specifier: "%.1f") dB", ...)` — first
   interpolated-specifier Stepper title in this file; confirm it renders.
 - RG progress polling was added to `SparkampModel.tick()` alongside the scan
@@ -521,9 +654,10 @@ Verify on hardware:
   a plain `Int` (AppStorage) so bit 22 is fine — confirm the toggle persists.
 - `sparkamp_rg_analyze_selection` takes an `int64_t *ids` array; Swift passes
   it via `withUnsafeBufferPointer`. Confirm large selections analyze correctly.
-- Known limitation (matches GTK/TUI): sort by ReplayGain treats un-analyzed
-  tracks as 0.0 dB (no sort-key shift like GTK's), so they interleave with
-  reference-level tracks. Cosmetic.
+- ~~Known limitation: sort by ReplayGain treats un-analyzed tracks as 0.0 dB,
+  so they interleave with reference-level tracks.~~ **Not true on mac** — the
+  Files view sorts server-side, and the SQL pushes NULL gains to the end in
+  both directions. Better than this note claimed.
 
 ## Phase 5 — 2026-07-22: Manual play queue (P5-T8, BLIND)
 
