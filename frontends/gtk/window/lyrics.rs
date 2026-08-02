@@ -109,7 +109,14 @@ fn show_lyrics_window(
         let search_url = search_url.clone();
         search_btn.connect_clicked(move |_| {
             let url = search_url.borrow().clone();
-            let _ = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
+            // Use the portal-backed UriLauncher (same path the working Wikipedia
+            // LinkButtons use). `gio::AppInfo::launch_default_for_uri` silently
+            // no-ops for http(s) in a sandboxed / portal-only runtime.
+            gtk4::UriLauncher::new(&url).launch(
+                None::<&gtk4::Window>,
+                gio::Cancellable::NONE,
+                |_| {},
+            );
         });
     }
     controls.append(&search_btn);
@@ -130,6 +137,9 @@ fn show_lyrics_window(
                 state_edit.clone(),
                 rebuild_cb.clone(),
                 None,
+                // Force the Lyric field visible in the editor even if the user's
+                // column config hides it (F15 revision, point 2).
+                Some("lyric".to_string()),
             );
             if let Some(w) = win_weak.upgrade() {
                 w.close();

@@ -2720,6 +2720,7 @@ fn open_media_library_window(
                     state_id3.clone(),
                     rebuild_cb,
                     None,
+                    None,
                 );
             });
         }
@@ -3569,6 +3570,7 @@ fn open_media_library_window(
                     state_id3.clone(),
                     rebuild_id3.clone(),
                     None,
+                    None,
                 );
             });
             disc_files_action_group.add_action(&action);
@@ -4071,6 +4073,7 @@ fn open_media_library_window(
                 path,
                 ml_action_id3_state.clone(),
                 ml_action_id3_rebuild.clone(),
+                None,
                 None,
             );
         });
@@ -6347,6 +6350,7 @@ fn open_media_library_window(
                 path.into(),
                 state_c.clone(),
                 rebuild_pl.clone(),
+                None,
                 None,
             );
         });
@@ -8698,6 +8702,7 @@ fn open_media_library_window(
                         path.into(),
                         state_rc.clone(),
                         rebuild_pl.clone(),
+                        None,
                         None,
                     );
                 });

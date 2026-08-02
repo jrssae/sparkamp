@@ -690,6 +690,11 @@ fn open_id3_editor_window(
     state: Rc<RefCell<AppState>>,
     rebuild_cb: Rc<dyn Fn()>,
     initial_values: Option<std::collections::HashMap<String, String>>,
+    // Column id to force into the editor's visible set for THIS open even when
+    // the user's `id3_visible_columns` config hides it (F15: the lyrics
+    // window's "Edit in tag editor" passes "lyric" so it is always shown).
+    // Transient — not persisted to config.
+    force_visible: Option<String>,
 ) {
     use crate::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
@@ -735,12 +740,21 @@ fn open_id3_editor_window(
     state.borrow_mut().id3_editor_window = Some(win.clone());
 
     // ── Get visible columns from config (preserve order for left/right split) ──
-    let visible_ids: Vec<String> = state
+    let mut visible_ids: Vec<String> = state
         .borrow()
         .config
         .media_library
         .id3_visible_columns
         .clone();
+
+    // Force an extra column visible for this open (e.g. "lyric" when launched
+    // from the lyrics window) even if the user's config hides it. Appended so
+    // it lands at the end of the grid; not written back to config.
+    if let Some(ref fid) = force_visible {
+        if !visible_ids.iter().any(|v| v == fid) {
+            visible_ids.push(fid.clone());
+        }
+    }
 
     // ── Collect entry widgets for the save handler ───────────────────────────
     // Stores (field_id, Entry) for editable fields.
@@ -1302,6 +1316,7 @@ fn open_id3_editor_window(
                         state_inner.clone(),
                         rebuild_clone.clone(),
                         Some(current_values.clone()),
+                        None,
                     );
                 }) as Rc<dyn Fn()>),
             );

@@ -1413,3 +1413,11 @@ navigation polish`). Verify in Xcode / on hardware:
 - [ ] **Build**: no new Swift files (edited existing `LyricsWindow.swift`,
       `SparkampModel+Lyrics.swift`, `PlayerWindow.swift`, `SparkampModel.swift`),
       so `project.pbxproj` is unchanged; the app builds against `sparkamp_lyrics_view`.
+
+- [ ] **PARITY GAP (follow-up, not a regression)**: the GTK ID3 editor has a
+      "Lyric" (USLT) field; the mac editor's `ID3FieldConfig.defaults`
+      (Id3EditorWindow.swift) has NO USLT field (only "Lyricist"/TEXT), so it
+      cannot view/edit lyrics at all. GTK's F15 fix force-shows its Lyric field
+      when "Edit in tag editor" is used from the lyrics window (point 2); the mac
+      equivalent needs a USLT field added to the editor + FFI get/set support
+      first. Deferred — decide on a Mac whether to add it.
