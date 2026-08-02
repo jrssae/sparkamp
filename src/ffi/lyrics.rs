@@ -1,13 +1,12 @@
-//! View/Search-lyrics FFI (F15) — one entry point exposing the whole core
-//! decision to macOS. The fresh USLT read happens in core, not Swift, so the
-//! Show-vs-Search branch and the search-URL encoding stay single-sourced.
+//! Lyrics-view FFI (F15) — one entry point exposing the whole core view to
+//! macOS as a JSON blob. The fresh USLT read, marquee title, and search-URL
+//! encoding all happen in core, not Swift, so nothing is re-derived per
+//! frontend.
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_uint};
+use std::os::raw::c_char;
 use std::path::Path;
-
-use crate::lyrics::{lyrics_action, LyricsAction};
 
 /// Read an optional C string as an owned `String`; null / invalid UTF-8 → "".
 unsafe fn opt_str(p: *const c_char) -> String {
@@ -17,19 +16,18 @@ unsafe fn opt_str(p: *const c_char) -> String {
     CStr::from_ptr(p).to_str().unwrap_or_default().to_owned()
 }
 
-/// Decide View-vs-Search lyrics for `path`. Writes the discriminator into
-/// `*out_kind` (0 = show lyrics text, 1 = search URL) and returns a heap C
-/// string with the lyrics body or the DuckDuckGo URL. Free the result with
-/// `sparkamp_free_string`. A null `path` or `out_kind` yields a null return.
+/// Build the lyrics view for `path` and return it as a heap JSON string:
+/// `{"title":..,"body":..,"has_body":bool,"search_url":..}` (`body` is "" when
+/// there are no lyrics). Free with `sparkamp_free_string`. A null `path`
+/// yields a null return.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_lyrics_action(
+pub unsafe extern "C" fn sparkamp_lyrics_view(
     path: *const c_char,
     artist: *const c_char,
     title: *const c_char,
     album_artist: *const c_char,
-    out_kind: *mut c_uint,
 ) -> *mut c_char {
-    if path.is_null() || out_kind.is_null() {
+    if path.is_null() {
         return std::ptr::null_mut();
     }
     let path_str = opt_str(path);
@@ -37,13 +35,16 @@ pub unsafe extern "C" fn sparkamp_lyrics_action(
     let title = opt_str(title);
     let album_artist = opt_str(album_artist);
 
-    let (kind, body) = match lyrics_action(Path::new(&path_str), &artist, &title, &album_artist) {
-        LyricsAction::Show(text) => (0u32, text),
-        LyricsAction::Search(url) => (1u32, url),
-    };
+    let view = crate::lyrics::lyrics_view(Path::new(&path_str), &artist, &title, &album_artist);
+    let json = serde_json::json!({
+        "title": view.title,
+        "body": view.body.clone().unwrap_or_default(),
+        "has_body": view.body.is_some(),
+        "search_url": view.search_url,
+    })
+    .to_string();
 
-    *out_kind = kind;
-    CString::new(body)
+    CString::new(json)
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
@@ -53,70 +54,64 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Round-trip a C string arg the way the FFI callers do.
     fn c(s: &str) -> CString {
         CString::new(s).unwrap()
     }
 
-    #[test]
-    fn search_branch_returns_ddg_url_kind_1() {
-        let mut f = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
-        f.write_all(&[0xFF, 0xFB, 0x90, 0x00]).unwrap();
-        let path = c(f.path().to_str().unwrap());
-        let (artist, title, aa) = (c("Miles Davis"), c("So What"), c(""));
-        let mut kind: c_uint = 99;
-        unsafe {
-            let ptr = sparkamp_lyrics_action(
-                path.as_ptr(),
-                artist.as_ptr(),
-                title.as_ptr(),
-                aa.as_ptr(),
-                &mut kind,
-            );
-            assert!(!ptr.is_null());
-            assert_eq!(kind, 1);
-            let got = CStr::from_ptr(ptr).to_str().unwrap().to_owned();
-            assert_eq!(got, "https://duckduckgo.com/?q=Miles%20Davis%20-%20So%20What%20lyrics");
-            crate::ffi::sparkamp_free_string(ptr);
-        }
+    /// Parse the returned JSON and free the pointer.
+    unsafe fn call_and_parse(
+        path: &CString,
+        artist: &CString,
+        title: &CString,
+        aa: &CString,
+    ) -> serde_json::Value {
+        let ptr = sparkamp_lyrics_view(path.as_ptr(), artist.as_ptr(), title.as_ptr(), aa.as_ptr());
+        assert!(!ptr.is_null());
+        let got = CStr::from_ptr(ptr).to_str().unwrap().to_owned();
+        crate::ffi::sparkamp_free_string(ptr);
+        serde_json::from_str(&got).unwrap()
     }
 
     #[test]
-    fn show_branch_returns_lyrics_kind_0() {
+    fn view_json_has_body_true_with_uslt() {
         let mut f = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
         f.write_all(&[0xFF, 0xFB, 0x90, 0x00]).unwrap();
         let mut fields = crate::id3_editor::read_tag_fields(f.path());
         fields.lyric = "one\ntwo".to_string();
         crate::id3_editor::write_tag_fields(f.path(), &fields).unwrap();
         let path = c(f.path().to_str().unwrap());
-        let (artist, title, aa) = (c("A"), c("T"), c(""));
-        let mut kind: c_uint = 99;
         unsafe {
-            let ptr = sparkamp_lyrics_action(
-                path.as_ptr(),
-                artist.as_ptr(),
-                title.as_ptr(),
-                aa.as_ptr(),
-                &mut kind,
+            let v = call_and_parse(&path, &c("A"), &c("T"), &c(""));
+            assert_eq!(v["has_body"], true);
+            assert_eq!(v["body"], "one\ntwo");
+            assert_eq!(v["title"], "A - T");
+        }
+    }
+
+    #[test]
+    fn view_json_has_body_false_and_search_url() {
+        let mut f = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
+        f.write_all(&[0xFF, 0xFB, 0x90, 0x00]).unwrap();
+        let path = c(f.path().to_str().unwrap());
+        unsafe {
+            let v = call_and_parse(&path, &c("Miles Davis"), &c("So What"), &c(""));
+            assert_eq!(v["has_body"], false);
+            assert_eq!(v["body"], "");
+            assert_eq!(
+                v["search_url"],
+                "https://duckduckgo.com/?q=Miles%20Davis%20So%20What%20lyrics"
             );
-            assert!(!ptr.is_null());
-            assert_eq!(kind, 0);
-            let got = CStr::from_ptr(ptr).to_str().unwrap().to_owned();
-            assert_eq!(got, "one\ntwo");
-            crate::ffi::sparkamp_free_string(ptr);
         }
     }
 
     #[test]
     fn null_path_returns_null() {
-        let mut kind: c_uint = 99;
         unsafe {
-            let ptr = sparkamp_lyrics_action(
+            let ptr = sparkamp_lyrics_view(
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),
-                &mut kind,
             );
             assert!(ptr.is_null());
         }
