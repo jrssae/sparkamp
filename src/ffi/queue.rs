@@ -125,6 +125,7 @@ pub unsafe extern "C" fn sparkamp_queue_play_now(ctx: *mut SparkampCtx, queue_po
     if let Some(idx) = ctx.playlist.tracks.iter().position(|t| t.id == id) {
         ctx.playlist.jump_to(idx);
         let uri = ctx.playlist.current().map(|t| t.uri()).unwrap_or_default();
+        super::prime_rg_for_current(ctx);
         let _ = ctx.player.load(&uri);
         let _ = ctx.player.play();
     }

@@ -441,6 +441,17 @@ void            sparkamp_tag_set_artwork(SparkampTagCtx *tag, const char *path);
 /** Clear the artwork source path; sparkamp_tag_save then removes all embedded pictures. */
 void            sparkamp_tag_clear_artwork(SparkampTagCtx *tag);
 
+/** Manually set a track's ReplayGain from the ID3 editor: writes the value into
+    the file's REPLAYGAIN_TRACK_GAIN tag (MP3 only) AND stores it in the library,
+    so the two agree afterwards. Independent of the rg_write_tags setting, which
+    only governs automatic analysis.
+
+    `text` is free-form ("-11.00 dB", "-11", "+2.3 dB") and is normalised before
+    writing; empty/whitespace clears both the frame and the stored value.
+    Returns 0 on success, -1 if `text` is non-empty but unparseable (nothing is
+    written), -2 on an I/O or tag-write failure. */
+int             sparkamp_id3_set_replaygain(SparkampCtx *ctx, const char *path, const char *text);
+
 // ---------------------------------------------------------------------------
 // View/Search Lyrics (F15)
 // ---------------------------------------------------------------------------

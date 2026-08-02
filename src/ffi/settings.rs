@@ -670,6 +670,33 @@ unsafe fn ffi_apply_replaygain(ctx: &mut SparkampCtx) {
     );
     ctx.player.set_replaygain(chain);
     ctx.player.set_rg_album_mode(album);
+    // Enabling/disabling ReplayGain or clip protection relinks the pipeline,
+    // which is only legal at Null — so the engine deferred it to the next
+    // load. Reload the current track at its position so the toggle applies to
+    // what the user is hearing right now instead of silently waiting for the
+    // next song (GTK's apply_replaygain does the same).
+    if ctx.player.rg_reload_pending() && *ctx.player.state() == crate::engine::PlayerState::Playing
+    {
+        let pos = ctx.player.position();
+        let dur = ctx.player.duration();
+        let Some(uri) = ctx.playlist.current().map(|t| t.uri()) else {
+            return;
+        };
+        super::prime_rg_for_current(ctx);
+        let _ = ctx.player.load(&uri);
+        let _ = ctx.player.play();
+        // Seek back only once the fresh pipeline can report a duration —
+        // load() leaves it Null and play() is asynchronous, so an immediate
+        // seek would be dropped. Handing the fraction to the same
+        // pending-seek slot the tick already drains keeps that timing in one
+        // place (GTK solves it the same way).
+        if let (Some(p), Some(d)) = (pos, dur) {
+            let secs = d.as_secs_f64();
+            if secs > 0.0 {
+                ctx.pending_seek = Some((p.as_secs_f64() / secs).clamp(0.0, 1.0));
+            }
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -817,6 +844,7 @@ mod tests {
             duration_rx,
             dirty_count: 0,
             last_known_duration: None,
+            pending_seek: None,
             eos_cb: None,
             eos_userdata: std::ptr::null_mut(),
             error_cb: None,

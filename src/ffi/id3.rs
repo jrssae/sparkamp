@@ -270,9 +270,103 @@ pub unsafe extern "C" fn sparkamp_tag_free_artwork(ptr: *mut u8, len: c_int) {
     drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len as usize)));
 }
 
+/// Manually set a track's ReplayGain from the ID3 editor: writes the value
+/// into the file's `REPLAYGAIN_TRACK_GAIN` tag AND stores it in the library,
+/// so the two agree afterwards.
+///
+/// Deliberately independent of the `write_tags` setting — that governs whether
+/// *automatic analysis* writes back to files, whereas this is the user
+/// explicitly editing the value in front of them.
+///
+/// `text` is free-form (`-11.00 dB`, `-11`, `+2.3 dB`); it is normalised to
+/// the standard tag format before writing. Empty/whitespace clears both the
+/// frame and the stored value.
+///
+/// Returns 0 on success, -1 if `text` is non-empty but unparseable (nothing is
+/// written), -2 on an I/O or tag-write failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_id3_set_replaygain(
+    ctx: *mut super::SparkampCtx,
+    path: *const c_char,
+    text: *const c_char,
+) -> c_int {
+    if ctx.is_null() || path.is_null() || text.is_null() {
+        return -2;
+    }
+    let ctx = &mut *ctx;
+    let path_str = CStr::from_ptr(path).to_string_lossy().into_owned();
+    let raw = CStr::from_ptr(text).to_string_lossy();
+    let trimmed = raw.trim();
+
+    let gain: Option<f64> = if trimmed.is_empty() {
+        None
+    } else {
+        match crate::replaygain::parse_gain_db(trimmed) {
+            Some(g) => Some(g),
+            None => return -1,
+        }
+    };
+
+    // File first: writing the canonical form keeps the tag readable by other
+    // players, and re-reading it later parses back to the same number.
+    let frame_id = format!(
+        "{}REPLAYGAIN_TRACK_GAIN",
+        crate::id3_editor::TXXX_PREFIX
+    );
+    let value = gain.map(crate::replaygain::format_gain_db).unwrap_or_default();
+    // Non-MP3 files have no ID3 tag to write; that is not an error here — the
+    // library value below is still the one playback uses.
+    let is_mp3 = Path::new(&path_str)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mp3"))
+        .unwrap_or(false);
+    if is_mp3
+        && crate::id3_editor::write_extra_frame(Path::new(&path_str), &frame_id, &value).is_err()
+    {
+        return -2;
+    }
+
+    if let Some(lib) = ctx.media_library.as_ref() {
+        if lib.set_track_gain_by_path(&path_str, gain).is_err() {
+            return -2;
+        }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
+
+    /// The ID3 editor's manual ReplayGain edit: normalises free-form text into
+    /// the file's TXXX frame, and clears it again on an empty value. (The
+    /// library half needs a SparkampCtx, so it is exercised by the mac app;
+    /// this covers the parse/format/tag path the FFI owns.)
+    #[test]
+    fn manual_replaygain_edit_normalises_then_clears_the_tag() {
+        use crate::id3_editor::{read_extra_frames, write_extra_frame, TXXX_PREFIX};
+        let path = std::env::temp_dir().join("sparkamp_ffi_rg_edit.mp3");
+        std::fs::write(&path, [0xFFu8, 0xFB, 0x90, 0x00]).unwrap();
+        let frame = format!("{TXXX_PREFIX}REPLAYGAIN_TRACK_GAIN");
+
+        // Free-form input normalises to the canonical two-decimal form.
+        let parsed = crate::replaygain::parse_gain_db("-11 dB").unwrap();
+        write_extra_frame(&path, &frame, &crate::replaygain::format_gain_db(parsed)).unwrap();
+        let value = read_extra_frames(&path)
+            .into_iter()
+            .find(|e| e.label == "REPLAYGAIN_TRACK_GAIN")
+            .map(|e| e.value);
+        assert_eq!(value.as_deref(), Some("-11.00 dB"));
+
+        // Empty clears it rather than writing a blank frame.
+        write_extra_frame(&path, &frame, "").unwrap();
+        assert!(!read_extra_frames(&path)
+            .iter()
+            .any(|e| e.label == "REPLAYGAIN_TRACK_GAIN"));
+
+        std::fs::remove_file(&path).ok();
+    }
 
     // Round-trip a TagFields-backed frame and a passthrough frame through
     // the raw FFI surface the mac editor uses (B2/B7).

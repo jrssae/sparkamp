@@ -31,6 +31,35 @@ pub fn format_peak(peak: f64) -> String {
     format!("{:.6}", peak)
 }
 
+/// Parse a ReplayGain gain string back to dB — the inverse of
+/// [`format_gain_db`], but tolerant of what other taggers actually emit:
+/// a `dB` suffix in any case, a leading `+`, and surrounding whitespace
+/// (`-11.00 dB`, `+2.3 DB`, `-6.2`). Returns `None` for anything unparseable
+/// or non-finite, so a junk tag is treated as "no value" rather than poisoning
+/// the DB with NaN.
+pub fn parse_gain_db(raw: &str) -> Option<f64> {
+    let s = raw.trim();
+    let s = s
+        .strip_suffix("dB")
+        .or_else(|| s.strip_suffix("DB"))
+        .or_else(|| s.strip_suffix("db"))
+        .or_else(|| s.strip_suffix("Db"))
+        .unwrap_or(s)
+        .trim();
+    let s = s.strip_prefix('+').unwrap_or(s);
+    s.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// Parse a ReplayGain peak string to a linear value — the inverse of
+/// [`format_peak`]. Negative or non-finite values are rejected; peaks are
+/// magnitudes.
+pub fn parse_peak(raw: &str) -> Option<f64> {
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v >= 0.0)
+}
+
 /// The album-grouping key for a track: album + album-artist (falling back to
 /// artist), case-insensitive. `None` when the album tag is empty — such tracks
 /// analyze alone (a per-track batch), since an "album gain" over unrelated
@@ -316,6 +345,32 @@ pub struct RgJobProgress {
     pub total: usize,
 }
 
+/// Resolve the ReplayGain value stored in the library for the file at `path`
+/// and hand it to the player as the gain for its next `load()`.
+///
+/// The single place the DB→playback rule lives, so the frontends can't drift:
+/// in album mode prefer the album gain and fall back to the track gain (a
+/// single that was never part of an analyzed album has only the latter);
+/// in track mode use the track gain. `None` — no library, no row, or nothing
+/// analyzed — leaves the user's configured fallback in charge.
+///
+/// Call immediately before `player.load(...)`; `load` consumes the value.
+pub fn prime_player_gain(
+    player: &mut crate::engine::Player,
+    lib: Option<&crate::media_library::MediaLibrary>,
+    path: &str,
+    album_mode: bool,
+) {
+    let gain = lib.and_then(|l| l.track_by_path(path).ok()).and_then(|t| {
+        if album_mode {
+            t.rg_album_gain.or(t.rg_track_gain)
+        } else {
+            t.rg_track_gain
+        }
+    });
+    player.set_rg_db_gain(gain);
+}
+
 /// `true` when `t` should be (re-)analyzed: no stored track gain yet, or the
 /// file has been modified since the last scan. Both `file_mtime` and
 /// `last_scanned` are ISO-8601 strings, which compare lexically — no parsing
@@ -550,6 +605,39 @@ mod tests {
         ];
         let b = album_batches(&tracks);
         assert_eq!(b, vec![vec![0], vec![1], vec![2]]);
+    }
+
+    // ── parse_gain_db / parse_peak ──────────────────────────────────────
+
+    #[test]
+    fn parse_gain_accepts_what_other_taggers_write() {
+        assert_eq!(parse_gain_db("-11.00 dB"), Some(-11.0));
+        assert_eq!(parse_gain_db("+2.3 DB"), Some(2.3));
+        assert_eq!(parse_gain_db("  -6.2  "), Some(-6.2));
+        assert_eq!(parse_gain_db("0.00 db"), Some(0.0));
+    }
+
+    #[test]
+    fn parse_gain_rejects_junk_rather_than_poisoning_the_db() {
+        assert_eq!(parse_gain_db(""), None);
+        assert_eq!(parse_gain_db("dB"), None);
+        assert_eq!(parse_gain_db("loud"), None);
+        assert_eq!(parse_gain_db("NaN dB"), None);
+        assert_eq!(parse_gain_db("inf"), None);
+    }
+
+    #[test]
+    fn parse_peak_rejects_negatives_and_junk() {
+        assert_eq!(parse_peak("0.988123"), Some(0.988123));
+        assert_eq!(parse_peak(" 1.0 "), Some(1.0));
+        assert_eq!(parse_peak("-0.5"), None);
+        assert_eq!(parse_peak("x"), None);
+    }
+
+    #[test]
+    fn gain_and_peak_round_trip_through_our_own_formatters() {
+        assert_eq!(parse_gain_db(&format_gain_db(-6.2)), Some(-6.20));
+        assert_eq!(parse_peak(&format_peak(0.988123)), Some(0.988123));
     }
 
     // ── needs_analysis ──────────────────────────────────────────────────

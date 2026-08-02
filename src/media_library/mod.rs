@@ -684,5 +684,17 @@ impl MediaLibrary {
         )?;
         Ok(())
     }
+
+    /// Set (or clear, with `None`) just the track gain for the row at `path`,
+    /// leaving peaks and album gain alone. Used by the ID3 editor's manual
+    /// ReplayGain edit, which changes one measured number rather than
+    /// replacing a whole analysis result. Returns the number of rows updated
+    /// (0 when the file isn't in the library).
+    pub fn set_track_gain_by_path(&self, path: &str, gain_db: Option<f64>) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE tracks SET rg_track_gain = ?1 WHERE path = ?2",
+            rusqlite::params![gain_db, path],
+        )?)
+    }
 }
 

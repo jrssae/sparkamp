@@ -852,11 +852,13 @@ impl MediaLibrary {
                  play_count, last_played,
                  comment, album_artist, disc_num, disc_total, composer, original_artist,
                  copyright, url, encoded_by, lyric, artwork_path,
-                 sample_rate, file_size, file_mtime, added_at, bitrate_mode)
+                 sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                 rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     0, NULL,
                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                    ?26, ?27, ?28, ?29, ?30)
+                    ?26, ?27, ?28, ?29, ?30,
+                    ?31, ?32, ?33, ?34)
              ON CONFLICT(path) DO UPDATE SET
                 folder_id       = excluded.folder_id,
                 artist          = excluded.artist,
@@ -886,7 +888,16 @@ impl MediaLibrary {
                 file_size       = excluded.file_size,
                 file_mtime      = excluded.file_mtime,
                 bitrate_mode    = excluded.bitrate_mode,
-                added_at        = COALESCE(added_at, excluded.added_at)",
+                added_at        = COALESCE(added_at, excluded.added_at),
+                -- ReplayGain is COALESCEd the other way round from the tag
+                -- columns above: the file wins when it carries a value, but a
+                -- file with no ReplayGain tags must NOT wipe a gain Sparkamp
+                -- measured itself (analysis with write-tags off stores to the
+                -- DB only, and a later rescan would otherwise erase it).
+                rg_track_gain   = COALESCE(excluded.rg_track_gain, rg_track_gain),
+                rg_track_peak   = COALESCE(excluded.rg_track_peak, rg_track_peak),
+                rg_album_gain   = COALESCE(excluded.rg_album_gain, rg_album_gain),
+                rg_album_peak   = COALESCE(excluded.rg_album_peak, rg_album_peak)",
             params![
                 path,
                 folder_id,
@@ -918,6 +929,10 @@ impl MediaLibrary {
                 m.file_mtime,
                 m.now,
                 m.bitrate_mode,
+                m.tags.rg_track_gain,
+                m.tags.rg_track_peak,
+                m.tags.rg_album_gain,
+                m.tags.rg_album_peak,
             ],
         )?;
         // This WAS a full scan (tags + duration read above), so stamp it.
@@ -948,7 +963,13 @@ impl MediaLibrary {
                 disc_total = ?16, composer = ?17, original_artist = ?18, copyright = ?19,
                 url = ?20, encoded_by = ?21, lyric = ?22, artwork_path = ?23,
                 sample_rate = ?24, file_size = ?25, file_mtime = ?26, bitrate_mode = ?27,
-                added_at = COALESCE(added_at, ?28)
+                added_at = COALESCE(added_at, ?28),
+                -- Same asymmetry as upsert_track: keep a DB-only gain that
+                -- Sparkamp measured when the file itself carries no tags.
+                rg_track_gain = COALESCE(?30, rg_track_gain),
+                rg_track_peak = COALESCE(?31, rg_track_peak),
+                rg_album_gain = COALESCE(?32, rg_album_gain),
+                rg_album_peak = COALESCE(?33, rg_album_peak)
              WHERE path = ?29",
             params![
                 m.tags.artist,
@@ -980,6 +1001,10 @@ impl MediaLibrary {
                 m.bitrate_mode,
                 m.now,
                 path,
+                m.tags.rg_track_gain,
+                m.tags.rg_track_peak,
+                m.tags.rg_album_gain,
+                m.tags.rg_album_peak,
             ],
         )?;
         self.update_last_scanned(path)?;

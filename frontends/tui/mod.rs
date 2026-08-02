@@ -862,6 +862,7 @@ impl App {
             config: &mut self.config,
             shuffle_state: &mut self.shuffle_state,
             queue: &mut self.queue,
+            media_library: self.media_lib.as_ref(),
         }
     }
 

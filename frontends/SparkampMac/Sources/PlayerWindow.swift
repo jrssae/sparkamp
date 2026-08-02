@@ -721,6 +721,10 @@ private struct NowPlayingPanel: View {
                     }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
+                    // Indent past the label column so the button lines up with
+                    // the values in the tag rows above it rather than with
+                    // their labels.
+                    .padding(.leading, Self.tagLabelWidth + Self.tagLabelSpacing)
                 }
                 if pages.count > 1 { dots }
             }
@@ -809,12 +813,17 @@ private struct NowPlayingPanel: View {
         }
     }
 
+    /// Width of the label column in `tagRow`, shared with the Lyrics button
+    /// so the button stays flush with the value column if this ever changes.
+    private static let tagLabelWidth: CGFloat = 80
+    private static let tagLabelSpacing: CGFloat = 6
+
     private func tagRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .top, spacing: Self.tagLabelSpacing) {
             Text("\(label):")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(theme.playlistDurationText)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: Self.tagLabelWidth, alignment: .leading)
             Text(value)
                 .font(.system(size: 11))
                 .foregroundStyle(theme.playlistText)

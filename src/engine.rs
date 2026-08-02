@@ -150,6 +150,8 @@ pub struct Player {
     rg_volume: Option<gst::Element>,
     rg_limiter: Option<gst::Element>,
     /// The chain shape currently linked into the pipeline.
+    /// DB-sourced gain for the next `load()` — see `set_rg_db_gain`.
+    rg_db_gain: Option<f64>,
     rg_applied: RgChain,
     /// A desired chain shape requested mid-track, applied at the next Null
     /// window (see `load()`); relinking only happens at `gst::State::Null`.
@@ -415,6 +417,7 @@ impl Player {
             // before the first play.
             rg_volume: None,
             rg_limiter: None,
+            rg_db_gain: None,
             rg_applied: RgChain {
                 enabled: false,
                 clip_protection: false,
@@ -537,6 +540,19 @@ impl Player {
         // segment; a config change made mid-track lands here.
         if let Some(cfg) = self.rg_pending.take() {
             let _ = self.apply_rg_chain(cfg);
+        }
+
+        // Point rgvolume's fallback at this track's measured gain (set by the
+        // caller from the library DB), or back at the user's configured
+        // fallback when the track has no stored value. Taken rather than
+        // peeked so a caller that forgets to prime the next track can only
+        // under-apply, never mis-apply the previous track's gain.
+        let track_gain = self.rg_db_gain.take();
+        if let Some(ref rgv) = self.rg_volume {
+            rgv.set_property(
+                "fallback-gain",
+                track_gain.unwrap_or(self.rg_applied.fallback_db),
+            );
         }
 
         // CD-audio pseudo-URIs carry the target drive as a query suffix
@@ -830,6 +846,27 @@ impl Player {
             rgv.set_property("fallback-gain", db);
         }
         self.rg_applied.fallback_db = db;
+    }
+
+    /// Gain (dB) to use for the NEXT `load()` when the file itself carries no
+    /// ReplayGain tags — i.e. the value Sparkamp measured and stored in the
+    /// library DB. Pass `None` for "nothing analyzed", which leaves the user's
+    /// configured fallback in charge.
+    ///
+    /// This is how DB-stored gains reach playback at all. `rgvolume` only ever
+    /// reads tags off the decoded stream, so an analyzed-but-untagged file
+    /// (analysis with write-tags off, or any non-MP3, which Sparkamp cannot
+    /// tag) would otherwise play completely unnormalized despite having a
+    /// perfectly good measured gain sitting in the library. Feeding it in as
+    /// the fallback slots into rgvolume's own precedence: real tags still win,
+    /// and after a scan harvest those tags hold the same number anyway.
+    ///
+    /// `load()` consumes and clears this, so a missed call degrades to the
+    /// configured fallback rather than silently applying the previous track's
+    /// gain to a different song.
+    #[allow(dead_code)]
+    pub fn set_rg_db_gain(&mut self, db: Option<f64>) {
+        self.rg_db_gain = db;
     }
 
     /// Rebuild the RG segment. CALLER CONTRACT: pipeline state is Null. Never

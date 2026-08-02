@@ -452,6 +452,17 @@ impl AppState {
                 self.pending_seek = Some((p.as_secs_f64() / secs).clamp(0.0, 1.0));
             }
         }
+        let rg_album_mode = crate::config::rg_album_mode(
+            self.config.playback.replaygain.source,
+            self.config.playback.shuffle_enabled,
+        );
+        let rg_path = track.path.to_string_lossy().into_owned();
+        crate::replaygain::prime_player_gain(
+            &mut self.player,
+            self.media_lib.as_ref(),
+            &rg_path,
+            rg_album_mode,
+        );
         let _ = self.player.load(&uri); // applies the pending RG chain at Null
         if self.pending_seek.is_some() {
             // Mute the brief position-0 audio until the tick applies the seek.
@@ -585,6 +596,19 @@ impl AppState {
         self.shuffle_state.record_played(idx);
         // Reset so the new track can be counted when it plays long enough.
         self.counted_play_path = None;
+        // This track's stored ReplayGain, handed to the pipeline before the
+        // load consumes it — rgvolume only reads tags off the stream, so a
+        // gain that lives only in the library needs feeding in explicitly.
+        let rg_album_mode = crate::config::rg_album_mode(
+            self.config.playback.replaygain.source,
+            self.config.playback.shuffle_enabled,
+        );
+        crate::replaygain::prime_player_gain(
+            &mut self.player,
+            self.media_lib.as_ref(),
+            &played_path.to_string_lossy(),
+            rg_album_mode,
+        );
         let _ = self.player.load(&uri);
         if self.pending_seek.is_some() {
             // HACK: GStreamer's playbin does not expose a duration query while
@@ -615,6 +639,16 @@ impl AppState {
         let played_path = track.path.clone();
         // Reset so the new track can be counted when it plays long enough.
         self.counted_play_path = None;
+        let rg_album_mode = crate::config::rg_album_mode(
+            self.config.playback.replaygain.source,
+            self.config.playback.shuffle_enabled,
+        );
+        crate::replaygain::prime_player_gain(
+            &mut self.player,
+            self.media_lib.as_ref(),
+            &played_path.to_string_lossy(),
+            rg_album_mode,
+        );
         let _ = self.player.load(&uri);
         if self.pending_seek.is_some() {
             self.mute_pending = Some(self.config.playback.volume);

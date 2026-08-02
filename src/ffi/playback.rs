@@ -65,6 +65,7 @@ pub unsafe extern "C" fn sparkamp_play(ctx: *mut SparkampCtx) {
     if was_stopped {
         if let Some(track) = ctx.playlist.current() {
             let uri = track.uri();
+            super::prime_rg_for_current(ctx);
             ctx.player.load(&uri).ok();
         }
     }
@@ -199,6 +200,7 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
         config: &mut ctx.config,
         shuffle_state: &mut ctx.shuffle_state,
         queue: &mut ctx.queue,
+        media_library: ctx.media_library.as_ref(),
     };
     match ctrl.nav_next() {
         NavResult::Target { was_playing: true } => {
@@ -232,6 +234,7 @@ pub unsafe extern "C" fn sparkamp_advance_after_eos(ctx: *mut SparkampCtx) {
         config: &mut ctx.config,
         shuffle_state: &mut ctx.shuffle_state,
         queue: &mut ctx.queue,
+        media_library: ctx.media_library.as_ref(),
     };
     ctrl.advance_to_next_playable();
 }
@@ -260,6 +263,7 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         config: &mut ctx.config,
         shuffle_state: &mut ctx.shuffle_state,
         queue: &mut ctx.queue,
+        media_library: ctx.media_library.as_ref(),
     };
     match ctrl.nav_prev() {
         NavResult::Target { was_playing: true } => {

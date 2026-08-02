@@ -12,6 +12,13 @@ struct ID3FieldConfig: Identifiable, Codable, Equatable {
 }
 
 extension ID3FieldConfig {
+    /// Pseudo-field id for the read-only ReplayGain row. Deliberately five
+    /// characters so it can never collide with a real four-character ID3
+    /// frame id — the read/write loops skip it on that basis, since the value
+    /// comes from the library DB (where analysis stores it) rather than from
+    /// a tag frame. Off by default; the user turns it on in Customize.
+    static let replayGainId = "RGAIN"
+
     static let defaults: [ID3FieldConfig] = [
         // Left column
         ID3FieldConfig(id: "TIT2", label: "Title",        column: 0, order: 0, visible: true),
@@ -35,6 +42,7 @@ extension ID3FieldConfig {
         ID3FieldConfig(id: "TMOO", label: "Mood",         column: 1, order: 9, visible: false),
         ID3FieldConfig(id: "TLAN", label: "Language",     column: 1, order: 10, visible: false),
         ID3FieldConfig(id: "TSRC", label: "ISRC",         column: 1, order: 11, visible: false),
+        ID3FieldConfig(id: replayGainId, label: "ReplayGain", column: 1, order: 12, visible: false),
     ]
 }
 
@@ -64,6 +72,10 @@ struct Id3EditorView: View {
     /// `nil` when the file isn't indexed in the library yet.
     @State private var mlRow: MLTrack? = nil
 
+    /// ReplayGain as loaded, so Save only touches the tag + library when the
+    /// user actually changed it.
+    @State private var savedReplayGain: String = ""
+
     @State private var showCustomize = false
 
     /// Field layout config — persisted as JSON in UserDefaults.
@@ -75,8 +87,19 @@ struct Id3EditorView: View {
                   let data = configJSON.data(using: .utf8),
                   let decoded = try? JSONDecoder().decode([ID3FieldConfig].self, from: data)
             else { return ID3FieldConfig.defaults }
-            return decoded
+            // Anyone who has opened this window before has a saved layout that
+            // predates any field added since. Append the missing defaults so
+            // new fields still reach the Customize list instead of being
+            // invisible forever to existing users.
+            let known = Set(decoded.map(\.id))
+            return decoded + ID3FieldConfig.defaults.filter { !known.contains($0.id) }
         }
+    }
+
+    /// Greyed hint shown when the ReplayGain field is empty, so a blank box is
+    /// never ambiguous between "no value" and "not looked up".
+    private var replayGainPlaceholder: String {
+        mlRow == nil ? "not in library" : "not analyzed"
     }
 
     private func saveConfigs(_ configs: [ID3FieldConfig]) {
@@ -245,11 +268,21 @@ struct Id3EditorView: View {
                     // Left column
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(leftFields, id: \.id) { field in
-                            FieldRow(label: field.label,
-                                     value: binding(for: field.id),
-                                     readOnly: isReadOnly,
-                                     theme: theme,
-                                     suggestions: field.id == "TCON" ? id3GenreList : [])
+                            if field.id == ID3FieldConfig.replayGainId {
+                                // Not a tag frame — saved via its own FFI, which
+                                // writes the file tag and the library together.
+                                FieldRow(label: field.label,
+                                         value: binding(for: field.id),
+                                         readOnly: isReadOnly,
+                                         theme: theme,
+                                         placeholder: replayGainPlaceholder)
+                            } else {
+                                FieldRow(label: field.label,
+                                         value: binding(for: field.id),
+                                         readOnly: isReadOnly,
+                                         theme: theme,
+                                         suggestions: field.id == "TCON" ? id3GenreList : [])
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -257,11 +290,21 @@ struct Id3EditorView: View {
                     // Right column
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(rightFields, id: \.id) { field in
-                            FieldRow(label: field.label,
-                                     value: binding(for: field.id),
-                                     readOnly: isReadOnly,
-                                     theme: theme,
-                                     suggestions: field.id == "TCON" ? id3GenreList : [])
+                            if field.id == ID3FieldConfig.replayGainId {
+                                // Not a tag frame — saved via its own FFI, which
+                                // writes the file tag and the library together.
+                                FieldRow(label: field.label,
+                                         value: binding(for: field.id),
+                                         readOnly: isReadOnly,
+                                         theme: theme,
+                                         placeholder: replayGainPlaceholder)
+                            } else {
+                                FieldRow(label: field.label,
+                                         value: binding(for: field.id),
+                                         readOnly: isReadOnly,
+                                         theme: theme,
+                                         suggestions: field.id == "TCON" ? id3GenreList : [])
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -366,10 +409,17 @@ struct Id3EditorView: View {
 
         // Read all configured frame values
         var values: [String: String] = [:]
-        for cfg in fieldConfigs {
+        for cfg in fieldConfigs where cfg.id != ID3FieldConfig.replayGainId {
             values[cfg.id] = readField(tag: newTag, frameId: cfg.id)
         }
+        // ReplayGain comes from the library row, not a tag frame, and is
+        // shown in the canonical tag format so an unedited save round-trips
+        // byte-for-byte.
+        values[ID3FieldConfig.replayGainId] = mlRow.flatMap { row in
+            row.rgAnalyzed ? String(format: "%.2f dB", row.rgTrackGain) : nil
+        } ?? ""
         fieldValues = values
+        savedReplayGain = values[ID3FieldConfig.replayGainId] ?? ""
 
         // Read artwork
         artwork = nil
@@ -383,12 +433,36 @@ struct Id3EditorView: View {
         model.artworkImage = artwork
     }
 
+    /// Push an edited ReplayGain value to the file tag and the library.
+    /// Returns false (leaving an explanatory `saveStatus`) when the text can't
+    /// be parsed or the write fails, so the caller can keep the editor open.
+    private func applyReplayGainEdit() -> Bool {
+        let text = fieldValues[ID3FieldConfig.replayGainId] ?? ""
+        guard text != savedReplayGain, let ctx = model.ctx, !filePath.isEmpty else { return true }
+        let rc = filePath.withCString { pathPtr in
+            text.withCString { textPtr in
+                sparkamp_id3_set_replaygain(ctx, pathPtr, textPtr)
+            }
+        }
+        guard rc == 0 else {
+            saveStatus = rc == -1
+                ? "ReplayGain must look like \"-6.20 dB\""
+                : "Could not write ReplayGain"
+            return false
+        }
+        savedReplayGain = text
+        mlRow = model.mlGetTrackByPath(filePath)
+        // The gain playback uses just changed — refresh the ML column too.
+        model.mlReloadTrigger &+= 1
+        return true
+    }
+
     // MARK: Save tag
 
     private func saveTag() {
         guard let tag = tagCtx else { return }
 
-        for cfg in fieldConfigs {
+        for cfg in fieldConfigs where cfg.id != ID3FieldConfig.replayGainId {
             writeField(tag: tag, frameId: cfg.id, value: fieldValues[cfg.id] ?? "")
         }
 
@@ -423,6 +497,15 @@ struct Id3EditorView: View {
             // playlist-side `sparkamp_scan_metadata` above only updates the
             // active playlist; the ML row is independent.
             if !filePath.isEmpty { model.mlRescanTrack(path: filePath) }
+
+            // ReplayGain last, and only when actually edited. It is not a
+            // TagFields frame, so it has its own FFI that writes the file tag
+            // and the library row together. It must run AFTER the rescan
+            // above: that rescan re-harvests ReplayGain from the file and
+            // COALESCEs it into the DB, which would otherwise put a value the
+            // user just cleared straight back.
+            if !applyReplayGainEdit() { return }
+
             // Save acts as save-and-close: dismiss the editor so the user
             // returns straight to the table/playlist they came from.
             // Defer slightly so the "Saved ✓" status flashes briefly first.
@@ -489,6 +572,8 @@ private struct FieldRow: View {
     /// Typeahead items — non-empty turns the field into a suggestion text
     /// field (used for Genre with the ID3v1 list).
     var suggestions: [String] = []
+    /// Greyed hint shown while the field is empty.
+    var placeholder: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -497,7 +582,7 @@ private struct FieldRow: View {
                 .foregroundStyle(theme.playlistDurationText)
                 .padding(.leading, 2)
             if suggestions.isEmpty {
-                TextField("", text: $value)
+                TextField(placeholder, text: $value)
                     .textFieldStyle(.roundedBorder)
                     .font(theme.vars.bodyFont)
                     .disabled(readOnly)

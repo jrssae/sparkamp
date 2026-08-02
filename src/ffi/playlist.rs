@@ -446,6 +446,7 @@ pub unsafe extern "C" fn sparkamp_playlist_jump(ctx: *mut SparkampCtx, index: c_
     ctx.last_known_duration = None;
     if ctx.playlist.jump_to(index as usize).is_some() {
         let uri = ctx.playlist.current().map(|t| t.uri()).unwrap_or_default();
+        super::prime_rg_for_current(ctx);
         ctx.player.load(&uri).ok();
         ctx.player.play().ok();
         let idx = index as usize;
@@ -625,6 +626,7 @@ mod tests {
             duration_rx,
             dirty_count: 0,
             last_known_duration: None,
+            pending_seek: None,
             eos_cb: None,
             eos_userdata: std::ptr::null_mut(),
             error_cb: None,

@@ -125,6 +125,7 @@ struct MediaLibraryView: View {
                 Divider().background(theme.windowBorder)
 
                 if model.mlScanRunning { scanProgress }
+                if model.rgRunning { rgProgress }
 
                 switch nav {
                 case .files:
@@ -659,6 +660,21 @@ struct MediaLibraryView: View {
             .controlSize(.small)
             .disabled(model.mlScanRunning)
 
+            // Bulk ReplayGain analysis over the missing-or-stale set, matching
+            // the button GTK puts in its files button row. The forced
+            // "analyze exactly this selection" variant stays in the row
+            // context menu ("Calculate ReplayGain"), same split as GTK.
+            if nav == .files {
+                Button { model.rgAnalyzeMissing() } label: {
+                    Label("Analyze ReplayGain", systemImage: "waveform")
+                        .font(vars.bodyFont)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.rgRunning || model.mlScanRunning)
+                .help("Compute ReplayGain for tracks that have no value yet")
+            }
+
             if nav == .files {
                 Divider().background(theme.windowBorder).frame(height: 16)
                 columnPickerMenu
@@ -667,6 +683,38 @@ struct MediaLibraryView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(theme.background)
+    }
+
+    /// Mirrors `scanProgress` for the background ReplayGain job so the Media
+    /// Library window shows the same progress + Cancel the Settings pane does
+    /// (GTK reports it in the files status line; this is the mac equivalent).
+    @ViewBuilder
+    private var rgProgress: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                ProgressView(
+                    value: model.rgTotal > 0
+                        ? Double(model.rgDone) / Double(model.rgTotal)
+                        : nil
+                )
+                .frame(maxWidth: .infinity)
+
+                Text(model.rgTotal > 0
+                     ? "Analyzing ReplayGain \(model.rgDone)/\(model.rgTotal)…"
+                     : "Analyzing ReplayGain…")
+                    .font(themeManager.currentVars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+
+                Button("Cancel") { model.rgCancelAnalyze() }
+                    .buttonStyle(.borderless)
+                    .font(themeManager.currentVars.bodyFont)
+                    .foregroundStyle(.red)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(theme.background)
+            Divider().background(theme.windowBorder)
+        }
     }
 
     @ViewBuilder

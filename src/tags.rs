@@ -32,6 +32,16 @@ pub(crate) struct TrackTags {
     pub(crate) encoded_by: Option<String>,
     pub(crate) lyric: Option<String>,
     pub(crate) artwork_path: Option<String>,
+    /// ReplayGain values already embedded in the file, if any. Harvesting
+    /// these during the normal tag read means a file that arrived pre-tagged
+    /// (ripped elsewhere, bought pre-normalized) gets its gains into the
+    /// library for free — no `rganalysis` decode pass, and `needs_analysis`
+    /// then correctly leaves it alone. Sparkamp's own analysis writes the
+    /// same columns; these are just the cheap source.
+    pub(crate) rg_track_gain: Option<f64>,
+    pub(crate) rg_track_peak: Option<f64>,
+    pub(crate) rg_album_gain: Option<f64>,
+    pub(crate) rg_album_peak: Option<f64>,
 }
 
 /// Probe the track's directory for a conventional cover image. Winamp's
@@ -78,6 +88,13 @@ pub(crate) fn folder_image_fallback(track_path: &Path) -> Option<String> {
 /// When no embedded art is found (on either strategy, or when there are no
 /// tags at all), falls back to a conventional cover image file sitting next
 /// to the track (folder.jpg, cover.png, etc — see [`folder_image_fallback`]).
+/// Value of the TXXX frame whose description matches `desc` (case-insensitive).
+fn id3_rg(tag: &id3::Tag, desc: &str) -> Option<String> {
+    tag.extended_texts()
+        .find(|e| e.description.eq_ignore_ascii_case(desc))
+        .map(|e| e.value.clone())
+}
+
 pub(crate) fn read_track_tags(path: &Path) -> TrackTags {
     use id3::TagLike;
 
@@ -154,6 +171,22 @@ pub(crate) fn read_track_tags(path: &Path) -> TrackTags {
             encoded_by: get_text("TENC"),
             lyric: lyric_text,
             artwork_path: artwork_path.or_else(|| folder_image_fallback(path)),
+            // ReplayGain lives in TXXX (user-defined text) frames keyed by
+            // description, not in a frame ID of its own — `get_text` can't
+            // reach them. Description matching is case-insensitive because
+            // taggers disagree (REPLAYGAIN_TRACK_GAIN vs replaygain_track_gain).
+            rg_track_gain: id3_rg(&tag, "REPLAYGAIN_TRACK_GAIN")
+                .as_deref()
+                .and_then(crate::replaygain::parse_gain_db),
+            rg_track_peak: id3_rg(&tag, "REPLAYGAIN_TRACK_PEAK")
+                .as_deref()
+                .and_then(crate::replaygain::parse_peak),
+            rg_album_gain: id3_rg(&tag, "REPLAYGAIN_ALBUM_GAIN")
+                .as_deref()
+                .and_then(crate::replaygain::parse_gain_db),
+            rg_album_peak: id3_rg(&tag, "REPLAYGAIN_ALBUM_PEAK")
+                .as_deref()
+                .and_then(crate::replaygain::parse_peak),
         }
     } else {
         // Strategy 2: Symphonia generic (Vorbis Comments, FLAC, Opus, etc.).
@@ -202,6 +235,10 @@ pub(crate) fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
     let mut track_num: Option<i64> = None;
     let mut genre: Option<String> = None;
     let mut year: Option<i64> = None;
+    let mut rg_track_gain: Option<f64> = None;
+    let mut rg_track_peak: Option<f64> = None;
+    let mut rg_album_gain: Option<f64> = None;
+    let mut rg_album_peak: Option<f64> = None;
 
     // Read from the format reader's own metadata (Vorbis Comments, etc.).
     if let Some(rev) = probed.format.metadata().current() {
@@ -223,6 +260,20 @@ pub(crate) fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
                         .split('/')
                         .next()
                         .and_then(|n| n.trim().parse::<i64>().ok());
+                }
+                // Vorbis Comments / MP4 atoms carry ReplayGain as ordinary
+                // tags, so unlike ID3 these need no special frame handling.
+                Some(StandardTagKey::ReplayGainTrackGain) => {
+                    rg_track_gain = crate::replaygain::parse_gain_db(&safe_text);
+                }
+                Some(StandardTagKey::ReplayGainTrackPeak) => {
+                    rg_track_peak = crate::replaygain::parse_peak(&safe_text);
+                }
+                Some(StandardTagKey::ReplayGainAlbumGain) => {
+                    rg_album_gain = crate::replaygain::parse_gain_db(&safe_text);
+                }
+                Some(StandardTagKey::ReplayGainAlbumPeak) => {
+                    rg_album_peak = crate::replaygain::parse_peak(&safe_text);
                 }
                 Some(StandardTagKey::Genre) => genre = Some(safe_text),
                 Some(StandardTagKey::Date) => {
@@ -266,6 +317,10 @@ pub(crate) fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
         encoded_by: None,
         lyric: None,
         artwork_path: None,
+        rg_track_gain,
+        rg_track_peak,
+        rg_album_gain,
+        rg_album_peak,
     })
 }
 

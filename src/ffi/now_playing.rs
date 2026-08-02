@@ -233,6 +233,7 @@ mod tests {
             duration_rx,
             dirty_count: 0,
             last_known_duration: None,
+            pending_seek: None,
             eos_cb: None,
             eos_userdata: std::ptr::null_mut(),
             error_cb: None,

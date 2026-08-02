@@ -616,9 +616,13 @@ final class SparkampModel: ObservableObject {
             rgTotal = Int(total)
             if !stillRunning {
                 rgRunning = false
-                // Values changed on disk — refresh the visible rows so the
-                // ReplayGain column updates.
-                mlFetchTracks()
+                // Gains changed in the DB — nudge the Media Library window to
+                // re-run its OWN fetch so the ReplayGain column updates.
+                // Calling mlFetchTracks() here instead would refetch with the
+                // default empty query and default sort, silently dropping the
+                // user's active search and column sort (same reason the
+                // watch-event drain above bumps the trigger).
+                mlReloadTrigger &+= 1
             }
         }
     }

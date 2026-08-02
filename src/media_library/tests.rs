@@ -64,6 +64,70 @@ fn temp_dir_with_wav_files(count: usize) -> tempfile::TempDir {
     dir
 }
 
+// ── upsert_track: ReplayGain harvested from existing file tags ─────────
+
+/// Write a minimal MP3-shaped file carrying REPLAYGAIN_* TXXX frames.
+fn write_mp3_with_rg(path: &std::path::Path, track_gain: &str, track_peak: &str) {
+    use id3::TagLike;
+    fs::write(path, [0xFFu8, 0xFB, 0x90, 0x00]).unwrap();
+    let mut tag = id3::Tag::new();
+    tag.set_title("T");
+    for (desc, value) in [
+        ("REPLAYGAIN_TRACK_GAIN", track_gain),
+        ("REPLAYGAIN_TRACK_PEAK", track_peak),
+    ] {
+        tag.add_frame(id3::frame::ExtendedText {
+            description: desc.to_string(),
+            value: value.to_string(),
+        });
+    }
+    tag.write_to_path(path, id3::Version::Id3v23).unwrap();
+}
+
+#[test]
+fn scan_harvests_replaygain_tags_already_in_the_file() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("pretagged.mp3");
+    write_mp3_with_rg(&file_path, "-11.00 dB", "0.988123");
+    let path = file_path.to_str().unwrap();
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+
+    lib.upsert_track(folder_id, path).unwrap();
+
+    let track = lib.track_by_path(path).unwrap();
+    // A file that arrived pre-normalized should need no `rganalysis` pass.
+    assert_eq!(track.rg_track_gain, Some(-11.0));
+    assert_eq!(track.rg_track_peak, Some(0.988123));
+    assert!(
+        !crate::replaygain::needs_analysis(&track),
+        "harvested gain must satisfy needs_analysis so we don't re-measure it"
+    );
+}
+
+#[test]
+fn rescan_of_untagged_file_keeps_a_gain_sparkamp_measured() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("untagged.wav");
+    write_test_wav(&file_path, 44100, 2, 1.0);
+    let path = file_path.to_str().unwrap();
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.upsert_track(folder_id, path).unwrap();
+
+    // Analysis result stored in the DB only (write-tags off, and this is a
+    // WAV, which Sparkamp cannot tag at all).
+    let id = lib.track_by_path(path).unwrap().id;
+    lib.set_replaygain(id, -6.20, 0.988123, -7.10, 0.995).unwrap();
+
+    // A later rescan reads no ReplayGain from the file — it must not wipe it.
+    lib.upsert_track(folder_id, path).unwrap();
+
+    let track = lib.track_by_path(path).unwrap();
+    assert_eq!(track.rg_track_gain, Some(-6.20));
+    assert_eq!(track.rg_album_gain, Some(-7.10));
+}
+
 #[test]
 fn upsert_captures_technical_columns_and_preserves_added_at() {
     let (lib, _db) = temp_lib();

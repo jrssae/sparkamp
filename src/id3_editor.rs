@@ -295,6 +295,11 @@ impl TagFields {
 // ExtraFrame — custom / additional ID3v2 frames
 // ---------------------------------------------------------------------------
 
+/// Marks an [`ExtraFrame::id`] as addressing a TXXX frame by description
+/// rather than by frame ID (`TXXX:REPLAYGAIN_TRACK_GAIN`). Shared by
+/// [`read_extra_frames`] and [`write_extra_frame`] so the two never drift.
+pub const TXXX_PREFIX: &str = "TXXX:";
+
 /// A raw ID3v2 text frame that is not represented in [`TagFields`].
 ///
 /// Used by the "Customize" panel to let the user add arbitrary frames.
@@ -422,6 +427,19 @@ pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
             (id.starts_with('T') || id == "USLT") && !DEFAULT_IDS.contains(&id)
         })
         .map(|f| {
+            // TXXX (user-defined text) carries its own description, and that
+            // description — not the frame ID — is what identifies it. This is
+            // where REPLAYGAIN_TRACK_GAIN and friends live. `content().text()`
+            // returns None for TXXX, so without this arm a file with the four
+            // REPLAYGAIN_* frames showed four blank rows all labelled "TXXX",
+            // and the values were invisible in the Customize panel.
+            if let Some(ext) = f.content().extended_text() {
+                return ExtraFrame {
+                    label: ext.description.clone(),
+                    id: format!("{TXXX_PREFIX}{}", ext.description),
+                    value: ext.value.clone(),
+                };
+            }
             let value = f.content().text().unwrap_or("").to_string();
             ExtraFrame {
                 label: frame_label(f.id()).to_string(),
@@ -601,9 +619,24 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
 /// Write a single extra frame (from the "Customize" panel) to the tag.
 ///
 /// Reads, modifies, and re-writes the tag so all other frames are preserved.
+///
+/// A `frame_id` of `TXXX:DESCRIPTION` addresses one user-defined text frame by
+/// its description (the form `read_extra_frames` hands out) — needed because
+/// every TXXX frame shares the same four-character ID, so `set_text("TXXX", …)`
+/// could not say *which* one to write.
 pub fn write_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()> {
     let mut tag = Tag::read_from_path(path).unwrap_or_default();
-    if value.is_empty() {
+    if let Some(desc) = frame_id.strip_prefix(TXXX_PREFIX) {
+        // Always drop the old frame first so a write replaces rather than
+        // stacks a second frame with the same description.
+        tag.remove_extended_text(Some(desc), None);
+        if !value.is_empty() {
+            tag.add_frame(id3::frame::ExtendedText {
+                description: desc.to_string(),
+                value: value.to_string(),
+            });
+        }
+    } else if value.is_empty() {
         tag.remove(frame_id);
     } else {
         tag.set_text(frame_id, value);
@@ -974,6 +1007,68 @@ mod tests {
     #[test]
     fn frame_label_unknown_returns_id() {
         assert_eq!(frame_label("XXXX"), "XXXX");
+    }
+
+    // -----------------------------------------------------------------------
+    // TXXX (user-defined text) extra frames — where REPLAYGAIN_* values live
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extra_frames_expose_txxx_by_description() {
+        let f = make_tagged_mp3("T", "A", "Al");
+        let path = f.path();
+
+        // Write two TXXX frames the same way ReplayGain analysis does.
+        let mut tag = Tag::read_from_path(path).unwrap();
+        for (desc, value) in [
+            ("REPLAYGAIN_TRACK_GAIN", "-11.00 dB"),
+            ("REPLAYGAIN_TRACK_PEAK", "0.988123"),
+        ] {
+            tag.add_frame(id3::frame::ExtendedText {
+                description: desc.to_string(),
+                value: value.to_string(),
+            });
+        }
+        tag.write_to_path(path, Version::Id3v23).unwrap();
+
+        let extras = read_extra_frames(path);
+        let gain = extras
+            .iter()
+            .find(|e| e.label == "REPLAYGAIN_TRACK_GAIN")
+            .expect("TXXX frame surfaced by its description, not as a bare \"TXXX\" row");
+        // The bug this guards: TXXX has no `Content::text()`, so both the
+        // label and the value used to come back empty.
+        assert_eq!(gain.value, "-11.00 dB");
+        assert_eq!(gain.id, "TXXX:REPLAYGAIN_TRACK_GAIN");
+        assert!(extras.iter().any(|e| e.label == "REPLAYGAIN_TRACK_PEAK"));
+    }
+
+    #[test]
+    fn write_extra_frame_round_trips_txxx() {
+        let f = make_tagged_mp3("T", "A", "Al");
+        let path = f.path();
+
+        write_extra_frame(path, "TXXX:REPLAYGAIN_TRACK_GAIN", "-6.20 dB").unwrap();
+        let read_back = |p: &Path| {
+            read_extra_frames(p)
+                .into_iter()
+                .find(|e| e.label == "REPLAYGAIN_TRACK_GAIN")
+                .map(|e| e.value)
+        };
+        assert_eq!(read_back(path).as_deref(), Some("-6.20 dB"));
+
+        // Rewriting replaces rather than stacking a duplicate description.
+        write_extra_frame(path, "TXXX:REPLAYGAIN_TRACK_GAIN", "-3.10 dB").unwrap();
+        let matches: Vec<_> = read_extra_frames(path)
+            .into_iter()
+            .filter(|e| e.label == "REPLAYGAIN_TRACK_GAIN")
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].value, "-3.10 dB");
+
+        // Empty value removes the frame.
+        write_extra_frame(path, "TXXX:REPLAYGAIN_TRACK_GAIN", "").unwrap();
+        assert_eq!(read_back(path), None);
     }
 
     // -----------------------------------------------------------------------

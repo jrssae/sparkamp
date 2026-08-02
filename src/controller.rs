@@ -101,6 +101,10 @@ pub struct Controller<'a> {
     /// Manual play queue — drained ahead of shuffle/linear advance. Session
     /// state owned by the frontend; borrowed here for its lifetime.
     pub queue: &'a mut crate::queue::Queue,
+    /// Library DB, when open — read only, to look up the track's stored
+    /// ReplayGain before each load. `None` (library closed / not yet opened)
+    /// simply means playback uses the configured fallback gain.
+    pub media_library: Option<&'a crate::media_library::MediaLibrary>,
 }
 
 impl Controller<'_> {
@@ -123,7 +127,21 @@ impl Controller<'_> {
         };
         let display = track.display_name();
         let uri = track.uri();
+        let path = track.path.to_string_lossy().into_owned();
         let idx = self.playlist.current_index;
+        // Feed this track's stored ReplayGain to the pipeline before the load
+        // consumes it (rgvolume only reads tags off the stream, so a gain that
+        // lives only in the library would otherwise never be applied).
+        let album_mode = crate::config::rg_album_mode(
+            self.config.playback.replaygain.source,
+            self.config.playback.shuffle_enabled,
+        );
+        crate::replaygain::prime_player_gain(
+            self.player,
+            self.media_library,
+            &path,
+            album_mode,
+        );
         if let Err(e) = self.player.load(&uri) {
             self.playlist.tracks[idx].broken = true;
             return PlayResult::Error(format!("Load error: {e}"));
@@ -552,6 +570,7 @@ mod tests {
                 config: &mut self.config,
                 shuffle_state: &mut self.shuffle,
                 queue: &mut self.queue,
+                media_library: None,
             }
         }
     }

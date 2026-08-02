@@ -87,6 +87,10 @@ pub struct SparkampCtx {
     /// Last duration successfully reported by GStreamer while playing/paused.
     /// Kept after stop so the seek bar and time display remain correct.
     last_known_duration: Option<Duration>,
+    /// Fractional position to restore once the freshly loaded pipeline can
+    /// report a duration. Set when a ReplayGain chain change forces a reload
+    /// mid-track; drained by `sparkamp_tick`. Mirrors GTK's `pending_seek`.
+    pending_seek: Option<f64>,
     // Callback slots — set from Swift main thread, called from `sparkamp_tick`.
     eos_cb: Option<unsafe extern "C" fn(*mut c_void)>,
     eos_userdata: *mut c_void,
@@ -118,6 +122,30 @@ pub struct SparkampCtx {
     /// Receiver half of `watch`'s event channel. Always `Some` exactly when
     /// `watch` is `Some` — both are set/cleared together by `rebuild_watcher`.
     watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
+}
+
+/// Prime the player with the current playlist track's stored ReplayGain, for
+/// the FFI paths that call `player.load` directly instead of going through
+/// `Controller::play_current_no_record` (which does this itself). Must be
+/// called immediately before the load — `load` consumes the value.
+pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
+    let Some(path) = ctx
+        .playlist
+        .current()
+        .map(|t| t.path.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let album = crate::config::rg_album_mode(
+        ctx.config.playback.replaygain.source,
+        ctx.config.playback.shuffle_enabled,
+    );
+    crate::replaygain::prime_player_gain(
+        &mut ctx.player,
+        ctx.media_library.as_ref(),
+        &path,
+        album,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +191,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         duration_rx,
         dirty_count: 0,
         last_known_duration: None,
+        pending_seek: None,
         eos_cb: None,
         eos_userdata: std::ptr::null_mut(),
         error_cb: None,
@@ -285,6 +314,17 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
                 track.broken = false;
                 ctx.dirty_count += 1;
             }
+        }
+    }
+
+    // Restore the position after a ReplayGain-forced reload, as soon as the
+    // new pipeline reports a duration (it cannot right after load()/play(),
+    // which is why this waits for a tick instead of seeking inline).
+    if let Some(fraction) = ctx.pending_seek {
+        if let Some(total) = ctx.player.duration() {
+            let target = Duration::from_secs_f64(total.as_secs_f64() * fraction);
+            let _ = ctx.player.seek(target);
+            ctx.pending_seek = None;
         }
     }
 
