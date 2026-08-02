@@ -842,12 +842,60 @@ The merged-window, hotkey, and menu changes, tested after they landed:
 
 ---
 
-## Phase 6 — F9 shortcuts + dialog sweep (2026-07-26, blind)
+## Phase 6 — F9 shortcuts + dialog sweep (2026-07-26 blind; reviewed 2026-08-02)
 
 New keys wired in `SparkampModel+Keys.swift` (raw handler) and the app
 `Commands` menu (`SparkampMacApp.swift`). Stop-after-current is an engine flag
 reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
 `@Published var stopAfterCurrent`.
+
+### Corrections made during the review pass (2026-08-02)
+
+Five defects, found by reading the blind code against the rest of the
+codebase. Two of them would have failed a checklist item outright.
+
+1. **The badge could never clear itself.** `stopAfterCurrent` was write-only on
+   the Swift side, but the flag is *consumed inside the engine*:
+   `Controller::advance_to_next_playable` calls `take_stop_after_current()`, so
+   after it fires, Rust says false and Swift still said true — the badge stayed
+   lit forever and the next arming looked like a disarm. `tick()` now reads the
+   flag back (publishing only on change, matching the surrounding idiom) and
+   `refreshAll()` reads it alongside volume / repeat / shuffle.
+2. **Picking a track in the Media Library or a disc view left the arming set.**
+   `mlDoubleClickTracks`, `mlReplacePlaylistWith` and the disc add path call
+   `sparkamp_playlist_jump` directly rather than going through the model's
+   `jumpTo`, so the Swift-side clear missed them. Moved the clear into
+   `sparkamp_playlist_jump` itself — the one seam every "play that track now"
+   path funnels through, mirroring GTK's `AppState::play_current`. Regression
+   test in `src/ffi/playlist.rs`.
+3. **`↑ ↓` could not browse any track list.** The app-wide key monitor consumed
+   both arrows as volume before the event ever reached an `NSTableView`, so the
+   playlist, Media Library and every other list were keyboard-unbrowsable. GTK
+   splits this deliberately (its `↑ ↓` live in the main-window key controller,
+   not the shared `handle_key`), and mac now does too: the monitor hands the
+   arrows back whenever the key window's first responder is a table.
+4. **`m` / `n` / `Shift+N` fought the fullscreen visualizer.** Keys that open a
+   window are suppressed while fullscreen is up (macOS yanks focus to the main
+   Space to show it) — the list had `p i u d k` but not the three new keys, and
+   an `NSOpenPanel` pulls focus exactly as hard as a window.
+5. **`⌘S` / `⌘I` were nested inside SwiftUI `Menu`s** (phase 7's Add / Select /
+   Sort / List bar landed on top of them). A `Menu`'s content is built lazily
+   when it opens, so a `.keyboardShortcut` inside one is not reliably live
+   before then; the `List` menu is also `.disabled` on an empty playlist.
+   Added zero-size hidden buttons carrying both shortcuts — the idiom
+   `JumpToTrackView` already uses — so the keys work either way.
+
+Also: the "Stop After Current Track" menu item was in the **Window** menu;
+moved to **Playback**, after Next, matching GTK's `z x c v b t` grouping. The
+File group gained "Add Folder…" beside "Add File…".
+
+Shortcuts-window sweep (the phase's actual deliverable — the dialog is supposed
+to be the single source of truth): `u` (equalizer) and `d` (ID3 editor) were
+both bound in the handler and **missing from the help window**; added. `⌃Q`
+read "Queue / dequeue", now "Enqueue / dequeue" everywhere (mac, GTK, TUI). The
+`↑ ↓` lines now state the player-window / focused-list split.
+
+### Manual test plan
 
 - [ ] `m` toggles the Media Library window (open when hidden, close when shown).
 - [ ] `t` arms stop-after-current: a small stop-square appears on the
@@ -860,27 +908,147 @@ reached over FFI (`sparkamp_get/set_stop_after_current`) mirrored into
       the queue.
 - [ ] Manual stop (`v`), next (`b`), prev (`z`), and jumping to another track
       (double-click a row / jump window) clear the arming + badge.
+- [ ] **Double-clicking a track in the Media Library** also clears the arming
+      (defect 2 — this path bypasses the Swift transport helpers).
 - [ ] Pause then resume (`c`) KEEPS the arming + badge (must not clear).
 - [ ] `n` opens the file picker (add file[s]); `Shift+N` opens the folder picker
-      (add folder) — same as the playlist bottom-bar "Add Files"/"Add Folder".
-- [ ] `⌘S` saves the active playlist (same as the bottom-bar Save button).
+      (add folder) — same as the playlist bottom-bar Add ▸ menu.
+- [ ] `⌘S` saves the active playlist (same as the List ▸ Save Playlist item).
 - [ ] `⌘,` opens Settings; `⌘I` inverts the playlist selection.
-- [ ] `↑ ↓` still adjust volume; `← →` still seek (unchanged).
-- [ ] Keyboard Shortcuts window (`i`) lists every new binding and each line is
-      true (matches the GTK dialog content).
+- [ ] **`↑ ↓` in the player window still adjust volume**, and `← →` still seek.
+- [ ] **`↑ ↓` in the playlist window browse rows** instead of changing volume;
+      same in the Media Library file list (defect 3).
+- [ ] With the fullscreen visualizer up, `m` / `n` / `Shift+N` do nothing rather
+      than yanking the app out of fullscreen (defect 4).
+- [ ] Keyboard Shortcuts window (`i`) lists every binding and each line is
+      true — including the newly added `u` and `d` rows.
 
-**Unsure / eyeball (blind, no Xcode here):**
-- Play-button badge is a `.overlay(alignment: .bottomTrailing)` `Image("stop.fill")`
-  as a `.overlay(alignment: .bottomTrailing)` on the state-icon `Image` beside
-  the time display (`stateIcon`). Confirm it reads as a small badge on that
-  indicator without clipping the time text, and uses `stateColor`.
-- `⌘I` invert is a zero-size hidden `Button` in `PlaylistView.bottomBar` that
-  sets `selection = Set(playlistItems.map { $0.id }).subtracting(selection)`.
-  Confirm the shortcut fires while the playlist window is key and the table
-  reflects the new selection.
+**Unsure / eyeball:**
+- The badge is a 5 pt `Image(systemName: "stop.fill")` overlaid bottom-trailing
+  on the 9 pt state icon in `PlayerWindow.infoPanel`, tinted `stateColor`.
+  Confirm it reads as a badge rather than a smudge and doesn't crowd the time
+  text; say so if it wants to be a point or two larger.
 - `⌘,` is attached to the "Settings" command button (toggles `settingsVisible`).
   Confirm it opens the Settings window and doesn't collide with a system pref.
 - Stop-after-current is NOT persisted (transient), matching GTK/TUI.
+
+**Known divergence from GTK, left as-is:** arming `t` while *stopped* and then
+pressing play keeps the arming on mac; GTK cancels it, because its `x` key
+routes through `play_current`, which clears indiscriminately. Mac's behaviour
+is the more useful of the two — flag it if you want them identical instead.
+
+---
+
+## Phase 6 follow-ons (2026-08-02) — window focus, badge size, stop with fadeout
+
+Three items raised after the phase-6 review, built together.
+
+### Player-window focus on activation
+
+AppKit restores focus to whichever window was key when the app deactivated, so
+returning to Sparkamp after any Media Library visit left focus on a table.
+`AppDelegate` now anchors it on the player, the way Winamp's main window is the
+anchor: `applicationDidBecomeActive` covers ⌘-Tab, and a deferred call from
+`applicationDidFinishLaunching` covers launch (that notification fires *before*
+SwiftUI restores the remembered auxiliary windows, so without it whichever one
+is created last wins).
+
+- [ ] With the Media Library open and focused, ⌘-Tab away and back → the
+      **player** window is key; single-letter shortcuts work immediately.
+- [ ] Quit with the Media Library open, relaunch → the player is key, not the
+      restored Media Library.
+- [ ] The other windows still come forward as a group (they did before) rather
+      than being left behind the player.
+- [ ] Judgement call worth confirming: this is an unconditional steal. Leave a
+      half-typed Media Library search, ⌘-Tab away and back, and the cursor is
+      gone from that field. Say so if you would rather it only fired when no
+      Sparkamp window held focus.
+
+### State glyph + badge sized from GTK
+
+GTK's `.time-disp` class is on the *row box*, so its state glyph and its time
+digits both inherit `font-size: font_size_large` (32) in a monospace family; the
+glyph reserves 2 characters (`width_chars(2)`), the digits 6, and the badge is a
+literal 16 px. macOS was rendering that glyph at **9 pt** with a 5 pt badge
+against digits that were already 32 pt.
+
+Copying GTK's 32/16 across produced an indicator ~60 % too big, because those
+are *text glyphs*: `▶ ⏸ ⏹` ink only part of their em box, while an SF Symbol
+inks nearly all of it. Measured ink at font-size 32, against the 23.6 pt ink
+height of the digits beside them:
+
+| | GTK nominal | GTK ink | × the digits |
+|---|---|---|---|
+| `▶` | 32 px | 19.4 | 0.82× |
+| `⏸` / `⏹` | 32 px | 15.6 | 0.66× |
+| badge `⏹` | 16 px | 7.8 | 0.33× |
+
+SF Symbols ink 25.5–26.5 at 32 pt. At **20 pt** they ink 16.0–16.5 and a **10 pt**
+badge inks 8.0 — GTK's figures, and GTK's exact half-size relationship between
+glyph and badge. Sizes and slots are derived from `fontSizeLarge` at runtime
+rather than hardcoded, so a skin that changes `--sp-font-size-large` scales with
+it and cannot overflow the column.
+
+That costs the LCD column 118 → **158 pt** inside a fixed 480 pt window, paid
+for out of the right column (user's call, 2026-08-02) rather than by widening
+the window:
+
+- The time slot reserves **5** characters where GTK reserves 6. Every elapsed
+  time and any remaining time under ten minutes renders at full size; longer
+  ones (`-12:34`) scale down a few points instead of widening the column.
+- The transient volume percentage moved from a child of the volume row to an
+  overlay on the right end of the slider. It is invisible except for a moment
+  after a volume change, so the width it was reserving is now the slider's.
+
+Measured outcome: right column 361 → 321 pt, volume slider ~115 → **~111 pt**.
+
+One latent bug went with it. The time text had `.fixedSize()` inside a 118 pt
+frame, so it ignored the width it was offered and overflowed the column instead
+of scaling — `minimumScaleFactor` could never fire and the leading `-` on a
+remaining time was being clipped. It now sizes to its slot.
+
+- [ ] Play / pause / stop glyph reads at about two thirds the height of the
+      digits beside it — bigger than the old speck, not competing with the time.
+- [ ] `t` badge sits in the second character cell, clear of the glyph rather
+      than overlapping it (this is how GTK's lands), at half the glyph's size.
+- [ ] `12:34` renders at full size. Click the time to switch to remaining:
+      `-9:59` is full size, `-12:34` scales down slightly rather than clipping.
+      **Nothing is cut off in either mode.**
+- [ ] Volume slider is only marginally shorter than before and still easy to
+      drag; the mode buttons on its right are unmoved.
+- [ ] Change the volume: the percentage fades in over the right end of the
+      slider and back out, without displacing anything or covering the buttons.
+- [ ] Mini visualizer below fills the wider column cleanly, with no gap or
+      overflow at the divider.
+
+### Stop with fadeout (Shift+V)
+
+New feature, not a port — **GTK never had one** (grepped the tree and
+`git log --all`; the only "fade" was the Granite palette crossfade). Built core
+first, then all three frontends.
+
+Core is `Player::begin_fadeout` / `poll_fadeout` / `cancel_fadeout`, driven from
+each frontend's existing tick loop. The ramp is wall-clock, not step-counted, so
+the same fade takes the same time on GTK's 33 ms tick and the mac's 100 ms one.
+Attenuation lives in its own `fade_factor` rather than in `user_volume`, so
+restoring is one assignment and the user's chosen volume is never rewritten.
+Four engine tests cover the ramp, the not-playing no-op, transport cancelling a
+fade, and a track ending mid-fade. Length is `playback.fadeout_secs`, default
+**3** (Winamp's own default is 5), clamped to 1–10.
+
+- [ ] `Shift+V` while playing → audio ramps down over 3 s, then playback stops.
+- [ ] Plain `v` is still an immediate stop.
+- [ ] Volume is back to normal afterwards — the next track plays at full level,
+      and the volume slider never moved.
+- [ ] Pressing play / next / prev / picking a track mid-fade cancels it and
+      restores full volume immediately (no attenuated playback).
+- [ ] A track that reaches its own end mid-fade advances normally.
+- [ ] `Shift+V` while paused or stopped does nothing.
+- [ ] Settings → Behavior → **Stop With Fadeout**: the stepper reads 3 s,
+      changes persist across a relaunch, and a changed value is honoured by the
+      very next `Shift+V`.
+- [ ] Playback menu carries "Stop With Fadeout"; the shortcuts window (`i`)
+      lists `⇧V`.
 
 ---
 

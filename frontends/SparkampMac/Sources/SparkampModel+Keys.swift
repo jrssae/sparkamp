@@ -31,23 +31,44 @@ extension SparkampModel {
             let hasMods = !event.modifierFlags
                 .intersection([.command, .option, .control])
                 .isEmpty
+            // A focused track list keeps ↑/↓ for row browsing; only the player
+            // window turns them into volume. GTK draws the same line (its ↑/↓
+            // live in the main-window key controller, not the shared handler),
+            // and without this the monitor swallows the arrows before the
+            // table ever sees them, so no list could be browsed by keyboard.
+            let listFocused = NSApp.keyWindow?.firstResponder is NSTableView
             let consumed = MainActor.assumeIsolated {
-                self.handleRawKey(chars: chars, keyCode: keyCode, hasModifiers: hasMods)
+                self.handleRawKey(
+                    chars: chars,
+                    keyCode: keyCode,
+                    hasModifiers: hasMods,
+                    listFocused: listFocused
+                )
             }
             return consumed ? nil : event
         }
     }
 
     /// Handle a key expressed as plain Sendable values. Returns true if consumed.
+    ///
+    /// `listFocused` reports whether a track list currently holds focus; it
+    /// hands ↑/↓ back to that list instead of treating them as volume.
     @discardableResult
-    func handleRawKey(chars: String?, keyCode: UInt16, hasModifiers: Bool) -> Bool {
+    func handleRawKey(
+        chars: String?,
+        keyCode: UInt16,
+        hasModifiers: Bool,
+        listFocused: Bool = false
+    ) -> Bool {
         guard !hasModifiers, let chars = chars else { return false }
 
-        // Keys that open auxiliary windows are disabled while the fullscreen
-        // visualizer is up: the new window appears in the main Space and
-        // macOS yanks focus out of fullscreen to show it. (`j` instead exits
-        // fullscreen first — see its case below.)
-        if fullscreenVizVisible, ["p", "i", "u", "d", "k"].contains(chars) {
+        // Keys that open auxiliary windows or panels are disabled while the
+        // fullscreen visualizer is up: the new window appears in the main
+        // Space and macOS yanks focus out of fullscreen to show it. (`j`
+        // instead exits fullscreen first — see its case below.) `n`/`N` are
+        // here for the same reason: an NSOpenPanel pulls focus just as hard
+        // as a window does.
+        if fullscreenVizVisible, ["p", "i", "u", "d", "k", "m", "n", "N"].contains(chars) {
             return true
         }
 
@@ -56,6 +77,7 @@ extension SparkampModel {
         case "x": play();          return true
         case "c": togglePlay();    return true
         case "v": stop();          return true
+        case "V": stopWithFadeout(); return true   // Shift+V
         case "b": next();          return true
         case "r": cycleRepeat();               return true
         case "s": toggleShuffle();             return true
@@ -123,12 +145,19 @@ extension SparkampModel {
         default: break
         }
 
-        // Arrow keys — left/right seek ±5 s, up/down adjust volume
+        // Arrow keys — left/right seek ±5 s, up/down adjust volume unless a
+        // track list has focus, in which case ↑/↓ belong to it for row browse.
         switch keyCode {
         case 123: seek(to: ((position - 5) / max(duration, 1)).clamped(to: 0...1)); return true
         case 124: seek(to: ((position + 5) / max(duration, 1)).clamped(to: 0...1)); return true
-        case 125: adjustVolume(by: -0.05); return true  // down arrow
-        case 126: adjustVolume(by:  0.05); return true  // up arrow
+        case 125:
+            if listFocused { return false }
+            adjustVolume(by: -0.05)
+            return true  // down arrow
+        case 126:
+            if listFocused { return false }
+            adjustVolume(by:  0.05)
+            return true  // up arrow
         default: break
         }
 

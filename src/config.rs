@@ -134,6 +134,22 @@ pub struct PlaybackConfig {
     /// Play-count threshold settings (F11).
     #[serde(default)]
     pub play_stats: PlayStatsConfig,
+    /// How long stop-with-fadeout (Shift+V) takes to reach silence, in
+    /// seconds, clamped to `FADEOUT_SECS_RANGE`. Winamp defaults to 5; 3 is
+    /// short enough that a stop still feels like a stop.
+    #[serde(default = "default_fadeout_secs")]
+    pub fadeout_secs: u32,
+}
+
+/// Default length of the stop-with-fadeout ramp, in seconds.
+pub const DEFAULT_FADEOUT_SECS: u32 = 3;
+
+/// Accepted range for the fadeout length. The low end is 1 rather than 0 —
+/// a zero-second fade is just `v` (plain stop), which already has its own key.
+pub const FADEOUT_SECS_RANGE: std::ops::RangeInclusive<u32> = 1..=10;
+
+fn default_fadeout_secs() -> u32 {
+    DEFAULT_FADEOUT_SECS
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +901,17 @@ impl PlaybackConfig {
         self.volume = (self.volume + delta).clamp(0.0, 1.0);
         self.volume
     }
+
+    /// The configured stop-with-fadeout length, ready to hand to
+    /// `Player::begin_fadeout`. Clamped on read so a hand-edited config with
+    /// `fadeout_secs = 0` (an instant, inaudible "fade") or an absurd value
+    /// cannot make Shift+V behave unlike the setting the UI shows.
+    pub fn fadeout_duration(&self) -> std::time::Duration {
+        let secs = self
+            .fadeout_secs
+            .clamp(*FADEOUT_SECS_RANGE.start(), *FADEOUT_SECS_RANGE.end());
+        std::time::Duration::from_secs(secs as u64)
+    }
 }
 
 impl EqConfig {
@@ -957,6 +984,7 @@ impl Default for Config {
                 shuffle_enabled: false,
                 replaygain: ReplayGainConfig::default(),
                 play_stats: PlayStatsConfig::default(),
+                fadeout_secs: DEFAULT_FADEOUT_SECS,
             },
             visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),
@@ -1518,6 +1546,32 @@ rescan_on_startup = true
         let none: ReplayGainConfig = toml::from_str("").expect("empty deserialize");
         assert!(none.enabled);
         assert_eq!(none.source, RgSource::Automatic);
+    }
+
+    /// The fadeout length defaults to 3 s, survives a round-trip, and a
+    /// config predating the field still loads (rather than failing the whole
+    /// parse and resetting every other setting with it).
+    #[test]
+    fn fadeout_secs_defaults_and_roundtrips() {
+        let cfg = Config::default();
+        assert_eq!(cfg.playback.fadeout_secs, DEFAULT_FADEOUT_SECS);
+        assert_eq!(cfg.playback.fadeout_duration().as_secs(), 3);
+
+        let older = "volume = 0.8\nstart_paused = false\n";
+        let back: PlaybackConfig = toml::from_str(older).expect("pre-fadeout config loads");
+        assert_eq!(back.fadeout_secs, DEFAULT_FADEOUT_SECS);
+    }
+
+    /// A hand-edited config must not be able to make Shift+V behave unlike
+    /// the setting: 0 would be an inaudible instant "fade", and a huge value
+    /// would leave the user waiting on a stop they asked for.
+    #[test]
+    fn fadeout_duration_clamps_out_of_range_values() {
+        let mut cfg = Config::default();
+        cfg.playback.fadeout_secs = 0;
+        assert_eq!(cfg.playback.fadeout_duration().as_secs(), 1);
+        cfg.playback.fadeout_secs = 9_999;
+        assert_eq!(cfg.playback.fadeout_duration().as_secs(), 10);
     }
 
     #[test]

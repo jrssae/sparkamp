@@ -330,6 +330,27 @@ the lyric field; fold into phase 2 (F14 touches tag display) or later.
   hoists a menu-nested `.keyboardShortcut` into the window command set is a BLIND
   bet — verify on the Xcode/hardware pass (`docs/mac-pass-checklist.md` phase-7).
 
+## Stop with fadeout (added 2026-08-02, outside the F1–F15 roadmap)
+
+Winamp's Shift+V. Not part of the original F-list — added on user request after
+the phase-6 pass, built core-first across all three frontends.
+
+- Ramp lives on `engine::Player` (`begin_fadeout` / `poll_fadeout` /
+  `cancel_fadeout`) and is advanced by each frontend's existing tick loop; there
+  is no timer thread. Wall-clock, not step-counted, so GTK's 33 ms tick and the
+  mac's 100 ms tick produce the same fade length.
+- Attenuation is a separate `fade_factor` multiplied into the volume element
+  alongside `user_volume` and `user_preamp`, so a fade never rewrites the
+  volume the user chose and restoring it is a single assignment.
+- Any deliberate transport (play / pause / load / stop) cancels a fade in
+  progress. The volume is restored *after* the pipeline goes to Null so the end
+  of a fade cannot blip back to full for an instant.
+- Length is `playback.fadeout_secs`, default **3** (Winamp defaults to 5),
+  clamped to 1–10 on both read and write. 0 is deliberately not allowed — that
+  is plain `v`, which already has its own key.
+- TUI gets the key and the status line but no separate visual state; GTK and mac
+  show the fade only through the status line, since the ramp is audible.
+
 ## Known limitations (recorded during phase 6 — F9 Shortcuts + dialog sweep)
 
 - Stop-after-current (`t`) is a TRANSIENT engine flag — never persisted (fires

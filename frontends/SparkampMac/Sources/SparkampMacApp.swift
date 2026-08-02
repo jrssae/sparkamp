@@ -41,6 +41,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarProvider {
         false
     }
 
+    /// Give the player window focus whenever the app is activated.
+    ///
+    /// The player is the anchor window, the way Winamp's main window is: come
+    /// back to Sparkamp and the transport and its single-letter shortcuts
+    /// should be live. AppKit's own rule is to restore whichever window was key
+    /// when the app deactivated, which after any Media Library visit hands
+    /// focus to a table instead.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        focusPlayerWindow()
+    }
+
+    /// Focus the player window if it is on screen. Safe to call at any time —
+    /// it does nothing when the window is closed or minimised, leaving the
+    /// dock-reopen path (`applicationShouldHandleReopen`) to bring it back.
+    func focusPlayerWindow() {
+        guard let player = NSApp.windows.first(where: { $0.title == "Sparkamp" }),
+              player.isVisible,
+              !player.isMiniaturized
+        else { return }
+        player.makeKeyAndOrderFront(nil)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Swizzle NSTableRowView.drawSelection so every SwiftUI List / Table
         // paints its selection bar with the active skin's highlight colour
@@ -61,6 +83,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarProvider {
             name: NSWindow.didBecomeKeyNotification,
             object: nil
         )
+
+        // Anchor focus on the player at launch too. `applicationDidBecomeActive`
+        // fires before SwiftUI restores the remembered auxiliary windows, so
+        // whichever of those is created last would otherwise end up key — the
+        // Media Library being the usual culprit. Deferred past the restore
+        // burst; the delay is generous because being a moment late is
+        // invisible, while being early does nothing at all.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.focusPlayerWindow()
+        }
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
@@ -258,6 +290,7 @@ struct SparkampCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Add File…") { model.openFilePicker() }
                 .keyboardShortcut("o", modifiers: .command)
+            Button("Add Folder…") { model.openFolderPicker() }
             Button("Clear Playlist") { model.clearPlaylist() }
         }
 
@@ -266,10 +299,19 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut("c", modifiers: [])
             Button("Stop")           { model.stop() }
                 .keyboardShortcut("v", modifiers: [])
+            // No key equivalent on purpose. The neighbours get away with bare
+            // letters because AppKit suppresses modifier-less equivalents while
+            // a text field has focus; a ⇧V equivalent is not covered by that
+            // rule and would swallow every capital V typed into the search and
+            // tag fields. The app-wide key monitor handles Shift+V instead —
+            // it already stands aside for text input.
+            Button("Stop With Fadeout") { model.stopWithFadeout() }
             Button("Previous")       { model.prev() }
                 .keyboardShortcut("z", modifiers: [])
             Button("Next")           { model.next() }
                 .keyboardShortcut("b", modifiers: [])
+            Button("Stop After Current Track") { model.toggleStopAfterCurrent() }
+                .keyboardShortcut("t", modifiers: [])
             Divider()
             Button("Cycle Repeat")   { model.cycleRepeat() }
                 .keyboardShortcut("r", modifiers: [])
@@ -318,8 +360,6 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut(",", modifiers: .command)
             Button("Media Library") { model.openMediaLibrary() }
                 .keyboardShortcut("l", modifiers: .command)
-            Button("Stop After Current Track") { model.toggleStopAfterCurrent() }
-                .keyboardShortcut("t", modifiers: [])
             Button("Find Duplicates") { model.dedupVisible = true }
 
             Button("Keyboard Shortcuts") { model.keyboardShortcutsVisible.toggle() }

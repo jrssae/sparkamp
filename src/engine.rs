@@ -22,7 +22,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_sys;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
 use crate::model::{SpectrumData, WaveformBuffer};
@@ -61,6 +61,17 @@ pub enum PlayerState {
     Playing,
     /// A track is loaded but decoding is frozen; position is preserved.
     Paused,
+}
+
+/// An in-flight stop-with-fadeout ramp.
+///
+/// Wall-clock based rather than step-counted: `poll_fadeout` is driven by each
+/// frontend's tick loop, and those run at different rates (GTK 33 ms, mac
+/// 100 ms), so a step count would make the same fade take different lengths on
+/// different frontends.
+struct Fadeout {
+    started: Instant,
+    duration: Duration,
 }
 
 /// The chain-shape subset of the ReplayGain config: the two flags that decide
@@ -119,6 +130,13 @@ pub struct Player {
     /// Manual transport (next/prev/play/stop) also clears it — see the
     /// accessors below and the advance seams that consult it.
     stop_after_current: bool,
+    /// In-flight stop-with-fadeout ramp (Shift+V), or `None` when not fading.
+    fadeout: Option<Fadeout>,
+    /// Output attenuation currently imposed by a fadeout, 1.0 when none.
+    /// Kept apart from `user_volume` so the ramp can move the audible level
+    /// without rewriting the volume the user chose — restoring is just
+    /// setting this back to 1.0.
+    fade_factor: f64,
     /// The GStreamer `equalizer-10bands` element, or `None` if unavailable.
     eq: Option<gst::Element>,
     /// A GStreamer `volume` element for pre-amplification.
@@ -402,6 +420,8 @@ impl Player {
             spectrum_elem,
             state: PlayerState::Stopped,
             stop_after_current: false,
+            fadeout: None,
+            fade_factor: 1.0,
             eq,
             volume_elem,
             eq_bands: [0.0; 10],
@@ -535,6 +555,10 @@ impl Player {
         // buffers, releases the audio device, etc.) so the new URI starts
         // clean.
         self.pipeline.set_state(gst::State::Null)?;
+        // A new track must not inherit the previous one's fade attenuation.
+        // After Null for the same reason as in `stop`: restoring the level
+        // while the outgoing track is still audible would blip.
+        self.cancel_fadeout();
 
         // The Null window is the only safe moment to reshape the ReplayGain
         // segment; a config change made mid-track lands here.
@@ -613,6 +637,9 @@ impl Player {
     /// background.  The method returns as soon as the state-change request is
     /// posted, before audio actually starts.
     pub fn play(&mut self) -> Result<()> {
+        // Any deliberate transport overrides a fade in progress; without this
+        // the track would come back attenuated and then stop anyway.
+        self.cancel_fadeout();
         self.pipeline.set_state(gst::State::Playing)?;
         self.state = PlayerState::Playing;
         Ok(())
@@ -624,6 +651,9 @@ impl Player {
     /// - If currently `Paused`, resumes from the frozen position.
     /// - If `Stopped`, does nothing (nothing to pause or resume).
     pub fn toggle_pause(&mut self) -> Result<()> {
+        // Pausing mid-fade cancels it: the ramp is wall-clock, so resuming
+        // later would find it already expired and stop instantly.
+        self.cancel_fadeout();
         match self.state {
             PlayerState::Playing => {
                 self.pipeline.set_state(gst::State::Paused)?;
@@ -649,6 +679,11 @@ impl Player {
     /// the buffers intact — the user expects pause to hold the picture.
     pub fn stop(&mut self) -> Result<()> {
         self.pipeline.set_state(gst::State::Null)?;
+        // Restore the level only after the pipeline is down. Doing it first
+        // would jump a fading track back to full volume for the instant before
+        // Null takes effect — an audible blip at the end of every fade.
+        // Idempotent, so an ordinary stop that cut a fade short lands here too.
+        self.cancel_fadeout();
         self.state = PlayerState::Stopped;
         // Null released the device — detection polling may resume, but only
         // end the guard if a cdda session actually `begin`-ed it (matches
@@ -690,6 +725,73 @@ impl Player {
     /// so a single EOS consumes the arming and the next track auto-advances.
     pub fn take_stop_after_current(&mut self) -> bool {
         std::mem::replace(&mut self.stop_after_current, false)
+    }
+
+    // -----------------------------------------------------------------------
+    // Stop with fadeout (Shift+V)
+    // -----------------------------------------------------------------------
+
+    /// Start ramping the output down to silence; `poll_fadeout` stops playback
+    /// once the ramp reaches the end.
+    ///
+    /// Only meaningful while playing — fading a paused or stopped player would
+    /// just leave the volume turned down with nothing to hear it happen. Asking
+    /// for a fade that is already running restarts it from the current level,
+    /// so a double press shortens rather than lengthens the stop.
+    pub fn begin_fadeout(&mut self, duration: Duration) {
+        if self.state != PlayerState::Playing {
+            return;
+        }
+        self.fadeout = Some(Fadeout {
+            started: Instant::now(),
+            duration,
+        });
+    }
+
+    /// Advance an in-flight fadeout. Returns `true` on the tick that finishes
+    /// it — by then the player is stopped and the volume is back to normal, so
+    /// a caller can use the return purely to update its status line.
+    ///
+    /// Call this from the frontend tick loop alongside `poll_bus`.
+    pub fn poll_fadeout(&mut self) -> bool {
+        let Some(fade) = self.fadeout.as_ref() else {
+            return false;
+        };
+
+        // The track can end on its own mid-fade. Nothing is left to fade out,
+        // so drop the ramp and hand the level back rather than stopping a
+        // player that already stopped.
+        if self.state != PlayerState::Playing {
+            self.cancel_fadeout();
+            return false;
+        }
+
+        let elapsed = fade.started.elapsed();
+        if elapsed >= fade.duration {
+            let _ = self.stop();
+            self.cancel_fadeout();
+            return true;
+        }
+
+        // Linear in amplitude. A perceptual (dB) curve sounds better in theory,
+        // but over ~1.5 s the difference is slight and linear cannot produce
+        // the "silent long before the end" effect a steep curve can.
+        self.fade_factor = 1.0 - elapsed.as_secs_f64() / fade.duration.as_secs_f64();
+        self.apply_output_volume();
+        false
+    }
+
+    /// Abandon any in-flight fadeout and restore full output.
+    pub fn cancel_fadeout(&mut self) {
+        if self.fadeout.take().is_some() || self.fade_factor != 1.0 {
+            self.fade_factor = 1.0;
+            self.apply_output_volume();
+        }
+    }
+
+    /// Whether a stop-with-fadeout ramp is currently running.
+    pub fn is_fading_out(&self) -> bool {
+        self.fadeout.is_some()
     }
 
     /// Force the player into a specific state without touching GStreamer.
@@ -768,8 +870,7 @@ impl Player {
     /// `apply_preamp_compensation` calls do not reset the user's chosen level.
     pub fn set_volume(&mut self, vol: f64) {
         self.user_volume = vol.clamp(0.0, 1.0);
-        self.volume_elem
-            .set_property("volume", self.user_volume * self.user_preamp);
+        self.apply_output_volume();
     }
 
     // -----------------------------------------------------------------------
@@ -1014,8 +1115,17 @@ impl Player {
     /// volume element.  Called by both `set_volume` and `set_preamp` so that
     /// neither overwrites the other's contribution.
     fn apply_preamp_compensation(&self) {
-        self.volume_elem
-            .set_property("volume", self.user_volume * self.user_preamp);
+        self.apply_output_volume();
+    }
+
+    /// Push the audible level — user volume, pre-amp, and any fadeout
+    /// attenuation — to the volume element. Every writer goes through here so
+    /// that changing one factor mid-fade cannot silently discard the others.
+    fn apply_output_volume(&self) {
+        self.volume_elem.set_property(
+            "volume",
+            self.user_volume * self.user_preamp * self.fade_factor,
+        );
     }
 
     /// Non-blocking bus poll.  Returns `Some(BusEvent)` when the current track
@@ -1245,6 +1355,108 @@ mod live_cdda_tests {
         assert!(p.take_stop_after_current()); // fires
         assert!(!p.stop_after_current()); // cleared by take
         assert!(!p.take_stop_after_current()); // already clear
+    }
+
+    /// The audible level while fading, read straight off the volume element.
+    fn output_volume(p: &Player) -> f64 {
+        p.volume_elem.property::<f64>("volume")
+    }
+
+    /// GStreamer stores the volume property as a float internally, so a value
+    /// written as an `f64` reads back a few ULPs away (0.7 → 0.699999988…).
+    fn assert_volume(p: &Player, expected: f64) {
+        let actual = output_volume(p);
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "expected volume {expected}, got {actual}"
+        );
+    }
+
+    /// The whole fadeout contract in one pass: it attenuates while running,
+    /// stops the player when the ramp expires, and hands the user's volume
+    /// back afterwards so the next track is not silent.
+    #[test]
+    fn fadeout_ramps_down_then_stops_and_restores_the_volume() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        p.set_volume(0.8);
+        p.set_state_for_test(PlayerState::Playing);
+
+        p.begin_fadeout(Duration::from_millis(60));
+        assert!(p.is_fading_out());
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!p.poll_fadeout(), "still mid-ramp");
+        let mid = output_volume(&p);
+        assert!(mid < 0.8 && mid > 0.0, "attenuated but not silent: {mid}");
+
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(p.poll_fadeout(), "ramp expired — reports completion once");
+        assert_eq!(*p.state(), PlayerState::Stopped);
+        assert!(!p.is_fading_out());
+        assert_volume(&p, 0.8); // restored
+        assert!(!p.poll_fadeout(), "completion is reported only once");
+    }
+
+    /// Fading a player that is not playing would just turn the volume down
+    /// with nothing audible to fade, and would then stop an already-stopped
+    /// player.
+    #[test]
+    fn fadeout_is_a_no_op_unless_playing() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        p.set_volume(0.7);
+
+        p.begin_fadeout(Duration::from_millis(10));
+        assert!(!p.is_fading_out(), "stopped player does not fade");
+
+        p.set_state_for_test(PlayerState::Paused);
+        p.begin_fadeout(Duration::from_millis(10));
+        assert!(!p.is_fading_out(), "paused player does not fade");
+        assert_volume(&p, 0.7);
+    }
+
+    /// Deliberate transport beats a fade in progress — otherwise the track
+    /// would resume attenuated and then stop out from under the user.
+    #[test]
+    fn transport_cancels_a_fadeout_and_restores_the_volume() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        p.set_volume(0.6);
+        p.set_state_for_test(PlayerState::Playing);
+
+        p.begin_fadeout(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(30));
+        p.poll_fadeout();
+        assert!(output_volume(&p) < 0.6, "ramp took hold");
+
+        // The state change itself fails here — an empty pipeline with no URI
+        // cannot reach Playing — but the cancel runs before it, which is the
+        // ordering this test exists to hold in place.
+        let _ = p.play();
+        assert!(!p.is_fading_out());
+        assert_volume(&p, 0.6); // restored
+    }
+
+    /// A track can reach its own end mid-fade. There is nothing left to fade,
+    /// so the ramp is abandoned rather than firing a stop at a player that
+    /// already stopped — and the volume must not stay ducked.
+    #[test]
+    fn a_track_ending_mid_fade_abandons_the_ramp() {
+        gst::init().unwrap();
+        let mut p = Player::new().unwrap();
+        p.set_volume(0.9);
+        p.set_state_for_test(PlayerState::Playing);
+
+        p.begin_fadeout(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(30));
+        p.poll_fadeout();
+
+        // What poll_bus does on EOS.
+        p.set_state_for_test(PlayerState::Stopped);
+        assert!(!p.poll_fadeout(), "not reported as a fade completion");
+        assert!(!p.is_fading_out());
+        assert_volume(&p, 0.9); // restored
     }
 
     #[test]

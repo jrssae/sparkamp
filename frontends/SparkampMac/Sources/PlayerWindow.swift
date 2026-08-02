@@ -106,19 +106,23 @@ struct PlayerWindow: View {
             VStack(spacing: 0) {
                 // Time display (tappable)
                 Button { model.toggleRemainingTime() } label: {
-                    HStack(alignment: .center, spacing: 4) {
+                    HStack(alignment: .center, spacing: timeRowSpacing) {
                         Image(systemName: stateIcon)
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: stateGlyphSize))
                             .foregroundStyle(stateColor)
+                            // GTK reserves two character widths for this glyph
+                            // (`width_chars(2)`) and centres it, which is what
+                            // leaves the badge a cell of its own to sit in,
+                            // clear of the glyph rather than overlapping it.
+                            .frame(width: stateGlyphSlot)
                             .overlay(alignment: .bottomTrailing) {
-                                // Stop-after-current (phase 6): small stop-square
-                                // on the play/pause/stop indicator next to the
-                                // time index while armed (not on the play button).
+                                // Stop-after-current (phase 6): stop-square on
+                                // the play/pause/stop indicator next to the time
+                                // index while armed (not on the play button).
                                 if model.stopAfterCurrent {
                                     Image(systemName: "stop.fill")
-                                        .font(.system(size: 5, weight: .bold))
+                                        .font(.system(size: stateBadgeSize))
                                         .foregroundStyle(stateColor)
-                                        .offset(x: 2, y: 2)
                                 }
                             }
                         Text(timeDisplay)
@@ -126,11 +130,16 @@ struct PlayerWindow: View {
                             .foregroundStyle(theme.timeText)
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
-                            .fixedSize()
+                            // Six characters wide and centred, matching GTK's
+                            // `width_chars(6)`, so the slot does not resize as
+                            // the digits change. Deliberately NOT `.fixedSize()`:
+                            // that made the text ignore the width it was offered
+                            // and overflow the column instead of scaling, which
+                            // clipped the leading "-" on remaining times.
+                            .frame(width: timeSlot)
                     }
-                    .frame(width: 118, alignment: .leading)
                     .padding(.top, 8)
-                    .padding(.leading, 10)
+                    .padding(.leading, timeRowLeading)
                     .padding(.bottom, 4)
                 }
                 .buttonStyle(.plain)
@@ -140,10 +149,10 @@ struct PlayerWindow: View {
                 // .clipped() on the column prevents any overflow into the divider.
                 VisualizerView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.leading, 10)
+                    .padding(.leading, timeRowLeading)
                     .padding(.bottom, 6)
             }
-            .frame(width: 118)
+            .frame(width: lcdColumnWidth)
             .background(theme.lcdBackground)
             .clipped()
 
@@ -240,19 +249,28 @@ struct PlayerWindow: View {
                                 })
                         )
                         .frame(maxWidth: 140)
+                        // Fade-out volume percentage, drawn over the right end
+                        // of the track instead of sitting beside it. It is
+                        // invisible except for a moment after a volume change,
+                        // so reserving permanent width for it only narrowed the
+                        // slider — and with the wider LCD column there is no
+                        // longer slack in this row to spend that way.
+                        .overlay(alignment: .trailing) {
+                            Text("\(Int(model.volume * 100))%")
+                                .font(vars.smallMonospaceFont)
+                                .foregroundStyle(theme.transportText)
+                                .opacity(volumeLabelOpacity)
+                                .animation(.easeOut(duration: 0.3), value: volumeLabelOpacity)
+                                .fixedSize()
+                                .padding(.trailing, 2)
+                                .allowsHitTesting(false)
+                        }
 
                         Image(systemName: "speaker.wave.2.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(theme.volumeThumb.opacity(0.7))
 
-                        // Fade-out volume percentage label
-                        Text("\(Int(model.volume * 100))%")
-                            .font(vars.smallMonospaceFont)
-                            .foregroundStyle(theme.transportText)
-                            .opacity(volumeLabelOpacity)
-                            .animation(.easeOut(duration: 0.3), value: volumeLabelOpacity)
-
-                        Spacer()
+                        Spacer(minLength: 0)
 
                         ModeButton(icon: "info.circle", isActive: model.keyboardShortcutsVisible) {
                             model.keyboardShortcutsVisible.toggle()
@@ -361,6 +379,66 @@ struct PlayerWindow: View {
                 .stroke(theme.seekThumb, lineWidth: 2)
                 .background(theme.seekThumb.opacity(0.06))
         }
+    }
+
+    // MARK: – Time-row metrics
+    //
+    // The LCD column is laid out from GTK's numbers rather than fixed points,
+    // because both frontends drive it from the same skin variable. GTK's
+    // `.time-disp` class is on the *row box*, so its state glyph and its time
+    // digits both inherit `font-size: font_size_large` in a monospace family;
+    // the glyph reserves 2 characters (`width_chars(2)`), the digits 6. At the
+    // default 32 that is a 39.6 pt slot and a 118.7 pt slot.
+    //
+    // Deriving these from `fontSizeLarge` rather than hardcoding 40/119 keeps
+    // a skin that changes `--sp-font-size-large` from overflowing the column.
+
+    /// Point size for the play/pause/stop glyph, and for the badge on it.
+    ///
+    /// These are NOT GTK's nominal 32 px and 16 px, because copying those
+    /// numbers across gives a much bigger indicator than GTK draws. GTK's glyph
+    /// is *text* — `▶ ⏸ ⏹` inheriting the row's font size — and a text glyph
+    /// inks only part of its em box, while an SF Symbol inks nearly all of it.
+    /// Measured at font-size 32, against the 23.6 pt ink height of the digits
+    /// beside them:
+    ///
+    ///     ▶ 19.4 (0.82×)   ⏸ ⏹ 15.6 (0.66×)   badge ⏹ @16 → 7.8 (0.33×)
+    ///
+    /// SF Symbols at 32 pt ink 25.5–26.5, about 60 % over. At 20 pt they ink
+    /// 16.0–16.5 and the badge at 10 pt inks 8.0, which lands on GTK's figures
+    /// and keeps GTK's exact half-size relationship between the two.
+    private var stateGlyphSize: CGFloat { themeManager.currentVars.fontSizeLarge * 0.625 }
+    private var stateBadgeSize: CGFloat { stateGlyphSize / 2 }
+
+    /// Advance width of one monospaced digit at the LCD font size.
+    private var timeCharWidth: CGFloat {
+        let font = NSFont.monospacedSystemFont(ofSize: themeManager.currentVars.fontSizeLarge,
+                                               weight: .regular)
+        return ("0" as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    /// Two characters, matching GTK's `width_chars(2)` on the state label.
+    private var stateGlyphSlot: CGFloat { (timeCharWidth * 2).rounded(.up) }
+
+    /// Five characters, where GTK reserves six.
+    ///
+    /// The glyph slot above is what actually costs this column its width, and
+    /// this window is a fixed 480 pt — six characters here would leave the
+    /// volume slider at roughly half its length. Five holds every elapsed time
+    /// and any remaining time under ten minutes at full size; longer ones
+    /// (`-12:34`) scale down a few points via `minimumScaleFactor` rather than
+    /// widening the column.
+    private var timeSlot: CGFloat { (timeCharWidth * 5).rounded(.up) }
+
+    /// Gap between the glyph and the digits — GTK's `time_row` box spacing.
+    private let timeRowSpacing: CGFloat = 4
+    /// Inset shared by the time row and the mini visualizer below it.
+    private let timeRowLeading: CGFloat = 10
+
+    /// Width of the whole LCD column: the inset, both slots, the gap between
+    /// them, and a little trailing air so the digits never touch the divider.
+    private var lcdColumnWidth: CGFloat {
+        timeRowLeading + stateGlyphSlot + timeRowSpacing + timeSlot + 5
     }
 
     // MARK: – Helpers

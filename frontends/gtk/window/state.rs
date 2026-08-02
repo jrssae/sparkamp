@@ -1199,6 +1199,13 @@ impl AppState {
     fn poll_bus(&mut self) -> Option<BusEvent> {
         self.player.poll_bus()
     }
+
+    /// Advance a stop-with-fadeout ramp (Shift+V). Returns true on the tick
+    /// that finishes it, by which point the player is already stopped — the
+    /// caller uses that to reset the seek bar and status line.
+    fn poll_fadeout(&mut self) -> bool {
+        self.player.poll_fadeout()
+    }
 }
 
 // ---------------------------------------------------------------------------

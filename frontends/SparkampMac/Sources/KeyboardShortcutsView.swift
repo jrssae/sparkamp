@@ -26,6 +26,7 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "x",          action: "Play"),
                 ShortcutEntry(key: "c",          action: "Play / Pause"),
                 ShortcutEntry(key: "v",          action: "Stop"),
+                ShortcutEntry(key: "⇧V",         action: "Stop with fadeout (length in Settings)"),
                 ShortcutEntry(key: "z",          action: "Previous track"),
                 ShortcutEntry(key: "b",          action: "Next track"),
                 ShortcutEntry(key: "t",          action: "Stop after current track"),
@@ -41,7 +42,7 @@ struct KeyboardShortcutsView: View {
             title: "Volume",
             entries: [
                 ShortcutEntry(key: "− / =",      action: "Volume −5 % / +5 %"),
-                ShortcutEntry(key: "↑ / ↓",      action: "Volume +5 % / −5 %"),
+                ShortcutEntry(key: "↑ / ↓",      action: "Volume +5 % / −5 % (unless a track list has focus)"),
             ]
         ),
         (
@@ -54,7 +55,9 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "i",          action: "Toggle this shortcuts window"),
                 ShortcutEntry(key: "j",          action: "Open the Jump / Queue window on Jump (search)"),
                 ShortcutEntry(key: "q",          action: "Open the Jump / Queue window on Queue"),
-                ShortcutEntry(key: "⌃Q",         action: "Queue / dequeue selection (playlist or Jump list)"),
+                ShortcutEntry(key: "⌃Q",         action: "Enqueue / dequeue selection (playlist or Jump list)"),
+                ShortcutEntry(key: "u",          action: "Toggle equalizer window"),
+                ShortcutEntry(key: "d",          action: "View/Edit ID3 tags for the current track"),
                 ShortcutEntry(key: "w",          action: "Toggle now-playing panel (art, tags, links)"),
                 ShortcutEntry(key: "k",          action: "Open album-art window"),
                 ShortcutEntry(key: "n",          action: "Add file(s)"),
@@ -87,6 +90,7 @@ struct KeyboardShortcutsView: View {
             // — anywhere a row selection exists.
             title: "Track lists",
             entries: [
+                ShortcutEntry(key: "↑ / ↓",      action: "Browse rows (the focused list keeps the arrows)"),
                 ShortcutEntry(key: "Delete",     action: "Remove selected track(s) from current list"),
                 ShortcutEntry(key: "fn+Delete",  action: "Remove selected track(s) (forward-delete)"),
                 ShortcutEntry(key: "Return",     action: "Play selected track"),

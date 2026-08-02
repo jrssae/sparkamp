@@ -292,6 +292,7 @@ private struct PlaybackPane: View {
     @State private var playStatsMode: Int     = 0    // 0=Seconds, 1=Percent
     @State private var playStatsSeconds: Int  = 20
     @State private var playStatsPercent: Int  = 50
+    @State private var fadeoutSeconds: Int    = 3
 
     var body: some View {
         Form {
@@ -416,6 +417,18 @@ private struct PlaybackPane: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Section("Stop With Fadeout") {
+                Stepper("Fade over \(fadeoutSeconds) seconds", value: $fadeoutSeconds, in: 1...10)
+                    .onChange(of: fadeoutSeconds) { _, newValue in
+                        model.setFadeoutSeconds(newValue)
+                    }
+
+                Text("Shift+V ramps playback down to silence over this long and then stops. Plain Stop (v) is still immediate.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -431,6 +444,7 @@ private struct PlaybackPane: View {
             playStatsMode    = Int(sparkamp_get_play_stats_mode(ctx))
             playStatsSeconds = Int(sparkamp_get_play_stats_seconds(ctx))
             playStatsPercent = Int(sparkamp_get_play_stats_percent(ctx))
+            fadeoutSeconds   = Int(sparkamp_get_fadeout_secs(ctx))
         }
     }
 }

@@ -549,6 +549,29 @@ struct PlaylistView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(theme.playlistBg.opacity(0.85))
+        .overlay(alignment: .leading) { menuShortcutButtons }
+    }
+
+    /// Zero-size hidden buttons carrying ⌘S and ⌘I.
+    ///
+    /// Both actions also live in the Add/Select/Sort/List menus above, but a
+    /// SwiftUI `Menu`'s content is built lazily when the menu is opened, so a
+    /// `.keyboardShortcut` nested inside one is not guaranteed to be live
+    /// beforehand. These duplicates run the same code and are always in the
+    /// view tree, so the keys work whether or not the menu registered them.
+    private var menuShortcutButtons: some View {
+        ZStack {
+            Button("", action: saveActivePlaylistAs)
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(model.playlistItems.isEmpty)
+            Button("") {
+                selection = Set(model.playlistItems.map { $0.id }).subtracting(selection)
+            }
+            .keyboardShortcut("i", modifiers: .command)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     // MARK: Helpers

@@ -99,6 +99,30 @@ pub unsafe extern "C" fn sparkamp_stop(ctx: *mut SparkampCtx) {
     (*ctx).player.stop().ok();
 }
 
+/// Stop with fadeout (Shift+V): ramp the output down, then stop.
+///
+/// Returns immediately — the ramp is advanced by `sparkamp_tick`, so the
+/// caller sees the stop land `playback.fadeout_secs` later. No-op unless
+/// playing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_stop_with_fadeout(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    let duration = ctx.config.playback.fadeout_duration();
+    ctx.player.begin_fadeout(duration);
+}
+
+/// Whether a stop-with-fadeout ramp is currently running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_is_fading_out(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    (*ctx).player.is_fading_out()
+}
+
 /// Seek to a fractional position in the current track (0.0 = start, 1.0 = end).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_seek(ctx: *mut SparkampCtx, fraction: c_double) {

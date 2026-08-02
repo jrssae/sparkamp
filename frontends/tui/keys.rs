@@ -332,6 +332,19 @@ impl App {
             }
             KeyCode::Char('b') => self.play_next(),
 
+            // Shift+V — stop with fadeout. The ramp is driven by the tick loop
+            // and stops the player when it reaches silence.
+            KeyCode::Char('V') => {
+                self.player.set_stop_after_current(false);
+                let fade = self.config.playback.fadeout_duration();
+                self.player.begin_fadeout(fade);
+                // begin_fadeout owns the "only while playing" rule; asking the
+                // player whether it took avoids restating that rule here.
+                if self.player.is_fading_out() {
+                    self.set_status(format!("Fading out over {}s…", fade.as_secs()));
+                }
+            }
+
             // t — toggle stop-after-current (phase 6). Fires at the next EOS,
             // then clears; the combined ▶⏹ header glyph shows it is armed.
             KeyCode::Char('t') | KeyCode::Char('T') => {

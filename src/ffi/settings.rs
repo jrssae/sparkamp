@@ -178,6 +178,26 @@ pub unsafe extern "C" fn sparkamp_set_stop_after_current(ctx: *mut SparkampCtx, 
     ctx.player.set_stop_after_current(value);
 }
 
+/// How long stop-with-fadeout (Shift+V) takes, in seconds. Persisted under
+/// `playback.fadeout_secs`; the setter clamps to the accepted range so the UI
+/// cannot store a value the fade would then ignore.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_fadeout_secs(ctx: *const SparkampCtx) -> u32 {
+    if ctx.is_null() {
+        return crate::config::DEFAULT_FADEOUT_SECS;
+    }
+    (*ctx).config.playback.fadeout_secs
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_fadeout_secs(ctx: *mut SparkampCtx, value: u32) {
+    if ctx.is_null() {
+        return;
+    }
+    let range = crate::config::FADEOUT_SECS_RANGE;
+    (*ctx).config.playback.fadeout_secs = value.clamp(*range.start(), *range.end());
+}
+
 /// Last chosen rip destination directory ("" when unset — the UI then
 /// defaults to the first watched folder and prompts before the first rip).
 /// Heap C string — free with `sparkamp_free_string`.

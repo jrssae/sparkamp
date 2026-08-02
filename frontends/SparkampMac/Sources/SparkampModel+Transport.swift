@@ -15,6 +15,27 @@ extension SparkampModel {
         if isPlaying { pause() } else { play() }
     }
 
+    // MARK: Stop with fadeout (Shift+V)
+
+    /// Ramp the output down to silence and then stop, over
+    /// `playback.fadeout_secs`. The ramp runs in the engine and is advanced by
+    /// `sparkamp_tick`, so this returns straight away and the stop lands a
+    /// fade-length later — `tick()` picks the state change up on its own.
+    func stopWithFadeout() {
+        guard let ctx = ctx else { return }
+        setStopAfterCurrent(false)
+        sparkamp_stop_with_fadeout(ctx)
+        isFadingOut = sparkamp_is_fading_out(ctx)
+    }
+
+    /// Stop-with-fadeout length in seconds (Settings).
+    func setFadeoutSeconds(_ secs: Int) {
+        guard let ctx = ctx else { return }
+        sparkamp_set_fadeout_secs(ctx, UInt32(max(0, secs)))
+        fadeoutSeconds = Int(sparkamp_get_fadeout_secs(ctx))
+        saveState()
+    }
+
     // MARK: Stop after current (phase 6)
 
     /// Set the engine stop-after-current flag and mirror it to the published

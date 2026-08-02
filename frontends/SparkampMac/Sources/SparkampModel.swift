@@ -76,6 +76,10 @@ final class SparkampModel: ObservableObject {
     /// Stop-after-current-track flag (phase 6, key `t`). Transient — mirrors the
     /// engine flag over FFI; drives the play-button stop badge.
     @Published var stopAfterCurrent: Bool = false
+    /// True while a stop-with-fadeout ramp (Shift+V) is running.
+    @Published var isFadingOut: Bool = false
+    /// Length of that ramp in seconds — `playback.fadeout_secs` (Settings).
+    @Published var fadeoutSeconds: Int = 3
     /// When true, the ID3 tag editor window is open.
     @Published var id3EditorVisible: Bool = false
     /// Playlist index to open in the ID3 editor; -1 means the current track.
@@ -458,6 +462,16 @@ final class SparkampModel: ObservableObject {
         // Refresh the macOS Now Playing card's rate/state on a play/pause/stop
         // transition (track changes are covered by refreshCurrentTrackInfo).
         if playStateChanged { updateNowPlayingCenter() }
+        // Stop-after-current fires inside the engine — the EOS advance consumes
+        // the flag without telling Swift — so the badge has to be read back
+        // rather than only written. Polling it here also covers the paths that
+        // clear it in Rust (any track pick reaching sparkamp_playlist_jump).
+        let armed = sparkamp_get_stop_after_current(ctx)
+        if stopAfterCurrent != armed { stopAfterCurrent = armed }
+        // Same story for the fadeout ramp: it ends inside the engine, so the
+        // only way Swift learns it finished is by asking.
+        let fading = sparkamp_is_fading_out(ctx)
+        if isFadingOut != fading { isFadingOut = fading }
         let pos = sparkamp_get_position(ctx)
         let dur = sparkamp_get_duration(ctx)
         // While the fullscreen visualizer owns the screen, keep the 10 Hz
@@ -753,10 +767,13 @@ final class SparkampModel: ObservableObject {
 
     func refreshAll() {
         guard let ctx = ctx else { return }
-        volume         = sparkamp_get_volume(ctx)
-        repeatMode     = Int(sparkamp_get_repeat_mode(ctx))
-        shuffleEnabled = sparkamp_get_shuffle(ctx) != 0
-        currentIndex   = Int(sparkamp_playlist_current_index(ctx))
+        volume           = sparkamp_get_volume(ctx)
+        repeatMode       = Int(sparkamp_get_repeat_mode(ctx))
+        shuffleEnabled   = sparkamp_get_shuffle(ctx) != 0
+        stopAfterCurrent = sparkamp_get_stop_after_current(ctx)
+        isFadingOut      = sparkamp_is_fading_out(ctx)
+        fadeoutSeconds   = Int(sparkamp_get_fadeout_secs(ctx))
+        currentIndex     = Int(sparkamp_playlist_current_index(ctx))
         refreshPlaylist()
         refreshCurrentTrackInfo()
     }

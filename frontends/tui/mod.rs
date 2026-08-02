@@ -446,8 +446,8 @@ pub struct EqState {
 /// Tabs: 0=Behavior, 1=Visualizer, 2=Media Library, 3=ReplayGain.
 pub(super) fn settings_tab_len(tab: usize) -> usize {
     match tab {
-        // Behavior: 2 items (autoplay_on_add, playlist_add_behavior)
-        0 => 2,
+        // Behavior: 3 items (autoplay_on_add, playlist_add_behavior, fadeout_secs)
+        0 => 3,
         // Visualizer: 1 item (mode)
         1 => 1,
         // Media Library: 5 items (rescan_on_startup, watch_folders, auto_add_played, remove_missing_on_rescan, compact_on_rescan)
@@ -1221,7 +1221,14 @@ impl App {
             }
         }
 
-        // 3. Auto-advance on end-of-stream or GStreamer error.
+        // 3. Advance a stop-with-fadeout ramp (Shift+V) — it stops the player
+        //    itself once the ramp expires. Ahead of the bus poll so the rest
+        //    of this tick sees the post-stop state.
+        if self.player.poll_fadeout() {
+            self.set_status("Stopped".to_string());
+        }
+
+        //    Auto-advance on end-of-stream or GStreamer error.
         //    On an error, mark the current track broken so it shows a ⚠ indicator
         //    and is skipped automatically in future auto-advance calls.
         if let Some(event) = self.player.poll_bus() {

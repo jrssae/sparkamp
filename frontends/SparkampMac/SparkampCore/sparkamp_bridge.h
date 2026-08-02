@@ -30,6 +30,10 @@ void    sparkamp_load_and_play(SparkampCtx *ctx, const char *uri);
 void    sparkamp_play(SparkampCtx *ctx);
 void    sparkamp_pause(SparkampCtx *ctx);
 void    sparkamp_stop(SparkampCtx *ctx);
+/* Stop with fadeout (Shift+V): ramps to silence over playback.fadeout_secs
+   and then stops. Returns immediately — sparkamp_tick drives the ramp. */
+void    sparkamp_stop_with_fadeout(SparkampCtx *ctx);
+bool    sparkamp_is_fading_out(const SparkampCtx *ctx);
 void    sparkamp_seek(SparkampCtx *ctx, double fraction);
 void    sparkamp_set_volume(SparkampCtx *ctx, double vol);
 double  sparkamp_get_volume(const SparkampCtx *ctx);
@@ -401,6 +405,10 @@ void    sparkamp_set_gnudb_submit_test(SparkampCtx *ctx, bool value);
    the mac key `t` and any menu item so both reflect one engine flag. */
 bool    sparkamp_get_stop_after_current(const SparkampCtx *ctx);
 void    sparkamp_set_stop_after_current(SparkampCtx *ctx, bool value);
+/* Stop-with-fadeout length in seconds (persisted). The setter clamps to the
+   accepted 1..=10 range. */
+uint32_t sparkamp_get_fadeout_secs(const SparkampCtx *ctx);
+void     sparkamp_set_fadeout_secs(SparkampCtx *ctx, uint32_t value);
 /* Rip destination ("" = unset; free with sparkamp_free_string) + MP3 preset
    (0 = VBR V0, 1 = VBR V2 default, 2 = 320 CBR). */
 char   *sparkamp_get_rip_dest(SparkampCtx *ctx);

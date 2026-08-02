@@ -338,6 +338,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![key("  x"), Span::raw("      Play")]),
         Line::from(vec![key("  c"), Span::raw("      Pause / resume")]),
         Line::from(vec![key("  v"), Span::raw("      Stop")]),
+        Line::from(vec![key("  Shift+V"), Span::raw("Stop with fadeout")]),
         Line::from(vec![key("  b"), Span::raw("      Next track")]),
         Line::from(vec![key("  t"), Span::raw("      Stop after current track")]),
         Line::from(vec![key("  ← →"), Span::raw("    Seek −5 s / +5 s")]),
@@ -373,7 +374,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![key("  j"), Span::raw("      Jump / search")]),
         Line::from(vec![key("  q"), Span::raw("      Play queue manager")]),
-        Line::from(vec![key("  Ctrl+Q"), Span::raw(" Queue / dequeue highlighted track")]),
+        Line::from(vec![key("  Ctrl+Q"), Span::raw(" Enqueue / dequeue highlighted track")]),
         Line::from(vec![
             key("  o"),
             Span::raw("      Playlist ops (sort / randomize / reverse)"),

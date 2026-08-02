@@ -439,6 +439,12 @@ pub unsafe extern "C" fn sparkamp_playlist_is_read_only(
 }
 
 /// Jump to `index`, load the track, and begin playing.
+///
+/// This is the frontend's only "play that track now" seam — the playlist
+/// double-click, the jump window, the Media Library and the disc view all
+/// funnel through it — so it is where a pending stop-after-current gets
+/// cancelled, mirroring GTK's `AppState::play_current`. Clearing here instead
+/// of at each Swift call site means a new caller cannot forget to do it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_playlist_jump(ctx: *mut SparkampCtx, index: c_int) {
     if ctx.is_null() {
@@ -446,6 +452,7 @@ pub unsafe extern "C" fn sparkamp_playlist_jump(ctx: *mut SparkampCtx, index: c_
     }
     let ctx = &mut *ctx;
     ctx.last_known_duration = None;
+    ctx.player.set_stop_after_current(false);
     if ctx.playlist.jump_to(index as usize).is_some() {
         let uri = ctx.playlist.current().map(|t| t.uri()).unwrap_or_default();
         super::prime_rg_for_current(ctx);
@@ -584,10 +591,56 @@ mod tests {
     /// reordered rows) must be gone.
     #[test]
     fn playlist_sort_resets_shuffle_history() {
+        let mut ctx = fake_ctx(3);
+        // Seed non-empty shuffle history the same way real playback does
+        // (`sparkamp_playlist_jump` → `ShuffleState::record_played`), but
+        // directly here since we don't have a loadable URI for a fake path.
+        ctx.shuffle_state.enabled = true;
+        ctx.shuffle_state.record_played(0);
+        ctx.shuffle_state.record_played(2);
+        assert!(
+            ctx.shuffle_state.has_history(),
+            "fixture must start with non-empty shuffle history"
+        );
+
+        unsafe {
+            sparkamp_playlist_sort(&mut ctx as *mut SparkampCtx, 0);
+        }
+
+        assert!(
+            !ctx.shuffle_state.has_history(),
+            "sort must reset shuffle history"
+        );
+    }
+
+    /// Picking a track to play cancels a pending stop-after-current (phase 6).
+    /// The clear lives in the FFI rather than in Swift because the Media
+    /// Library and disc views call `sparkamp_playlist_jump` directly instead
+    /// of going through the model's `jumpTo`, so a Swift-side clear would miss
+    /// them. GTK gets the same behaviour from `AppState::play_current`.
+    #[test]
+    fn jumping_to_a_track_cancels_stop_after_current() {
+        let mut ctx = fake_ctx(3);
+        ctx.player.set_stop_after_current(true);
+
+        unsafe {
+            sparkamp_playlist_jump(&mut ctx as *mut SparkampCtx, 1);
+        }
+
+        assert!(
+            !ctx.player.stop_after_current(),
+            "choosing a track to play must clear the arming"
+        );
+    }
+
+    /// A ctx holding `n` fake playlist entries. The paths do not exist, so any
+    /// load/play the call under test attempts fails harmlessly — enough for
+    /// bookkeeping assertions, which is all these tests make.
+    fn fake_ctx(n: usize) -> SparkampCtx {
         gstreamer::init().expect("GStreamer must be available for tests");
 
         let mut playlist = crate::model::Playlist::new();
-        for i in 0..3 {
+        for i in 0..n {
             playlist.add(Track {
                 path: std::path::PathBuf::from(format!("/fake/{i}.mp3")),
                 title: format!("T{i}"),
@@ -601,26 +654,14 @@ mod tests {
             });
         }
 
-        // Seed non-empty shuffle history the same way real playback does
-        // (`sparkamp_playlist_jump` → `ShuffleState::record_played`), but
-        // directly here since we don't have a loadable URI for a fake path.
-        let mut shuffle_state = crate::shuffle::ShuffleState::new();
-        shuffle_state.enabled = true;
-        shuffle_state.record_played(0);
-        shuffle_state.record_played(2);
-        assert!(
-            shuffle_state.has_history(),
-            "fixture must start with non-empty shuffle history"
-        );
-
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (duration_tx, duration_rx) = std::sync::mpsc::channel();
 
-        let mut ctx = SparkampCtx {
+        SparkampCtx {
             player: crate::engine::Player::new().expect("Player::new"),
             playlist,
             config: crate::config::Config::default(),
-            shuffle_state,
+            shuffle_state: crate::shuffle::ShuffleState::new(),
             queue: crate::queue::Queue::new(),
             meta_tx,
             meta_rx,
@@ -644,15 +685,6 @@ mod tests {
             rg_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             watch: None,
             watch_rx: None,
-        };
-
-        unsafe {
-            sparkamp_playlist_sort(&mut ctx as *mut SparkampCtx, 0);
         }
-
-        assert!(
-            !ctx.shuffle_state.has_history(),
-            "sort must reset shuffle history"
-        );
     }
 }

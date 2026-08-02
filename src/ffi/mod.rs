@@ -286,6 +286,11 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
         }
     }
 
+    // Advance a stop-with-fadeout ramp. Ahead of the bus drain so that a fade
+    // expiring on this tick has already stopped the player, and everything
+    // below reads one consistent state rather than the pre-stop one.
+    ctx.player.poll_fadeout();
+
     // Drain the GStreamer message bus.
     while let Some(event) = ctx.player.poll_bus() {
         match event {

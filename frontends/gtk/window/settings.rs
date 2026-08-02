@@ -712,6 +712,40 @@ fn open_settings_window(
             });
         }
 
+        // ── Stop with fadeout (Shift+V) — how long the ramp to silence
+        // takes. Same home as ReplayGain and Play Count above: playback
+        // settings live on this tab because there is no Playback tab.
+        let sep_fade = gtk4::Separator::new(Orientation::Horizontal);
+        sep_fade.set_margin_top(8);
+        sep_fade.set_margin_bottom(4);
+        grid.attach(&sep_fade, 0, 18, 2, 1);
+
+        let hdr_fade = Label::new(Some("Stop With Fadeout"));
+        hdr_fade.set_halign(Align::Start);
+        hdr_fade.add_css_class("heading");
+        grid.attach(&hdr_fade, 0, 19, 2, 1);
+
+        let lbl_fade = Label::new(Some("Fade length (seconds)"));
+        lbl_fade.set_halign(Align::Start);
+        grid.attach(&lbl_fade, 0, 20, 1, 1);
+        let spin_fade = SpinButton::with_range(
+            *crate::config::FADEOUT_SECS_RANGE.start() as f64,
+            *crate::config::FADEOUT_SECS_RANGE.end() as f64,
+            1.0,
+        );
+        spin_fade.set_value(state.borrow().config.playback.fadeout_secs as f64);
+        spin_fade.set_tooltip_text(Some("Shift+V stops playback over this many seconds"));
+        {
+            let state_rc = state.clone();
+            spin_fade.connect_value_changed(move |s| {
+                let secs = s.value() as u32;
+                let mut st = state_rc.borrow_mut();
+                st.config.playback.fadeout_secs = secs;
+                let _ = st.config.save();
+            });
+        }
+        grid.attach(&spin_fade, 1, 20, 1, 1);
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }

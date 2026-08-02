@@ -169,6 +169,15 @@ pub(super) fn settings_rows_for_tab<'a>(
                     PlaylistAddBehavior::Replace => "[ Append / Replace ]  ●  Replace".to_string(),
                 },
             ),
+            (
+                // Shift+V fade length. Shows the live edit buffer while the
+                // row is being typed, the same as the fallback-gain row.
+                "Fadeout length (Shift+V)",
+                match (state.cursor, &state.edit_buf) {
+                    (2, Some(buf)) => format!("{buf}▌ s"),
+                    _ => format!("{} s", app.config.playback.fadeout_secs),
+                },
+            ),
         ],
 
         // ── Visualizer ────────────────────────────────────────────────────

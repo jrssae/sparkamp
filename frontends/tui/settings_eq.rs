@@ -87,6 +87,16 @@ impl App {
                     // periodic-rescan row it belonged to) — only Tab 3's
                     // fallback-gain field still enters edit mode.
                     match (tab, cursor) {
+                        (0, 2) => {
+                            // Fadeout length in seconds; out-of-range and
+                            // unparseable input keep the previous value rather
+                            // than silently landing on a clamped surprise.
+                            if let Ok(secs) = val.trim().parse::<u32>() {
+                                if crate::config::FADEOUT_SECS_RANGE.contains(&secs) {
+                                    self.config.playback.fadeout_secs = secs;
+                                }
+                            }
+                        }
                         (3, 3) => {
                             // Parse fallback gain in dB; silently keep old value
                             // on error. Applies live to the player.
@@ -184,6 +194,13 @@ impl App {
                                     PlaylistAddBehavior::Append => PlaylistAddBehavior::Replace,
                                     PlaylistAddBehavior::Replace => PlaylistAddBehavior::Append,
                                 };
+                        }
+                        2 => {
+                            // Enter text-edit mode for the fadeout length.
+                            let current = self.config.playback.fadeout_secs.to_string();
+                            if let Mode::Settings(s) = &mut self.mode {
+                                s.edit_buf = Some(current);
+                            }
                         }
                         _ => {}
                     },

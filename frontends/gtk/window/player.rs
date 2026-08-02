@@ -11,6 +11,7 @@ fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'st
             ("x",          "Play"),
             ("c",          "Pause / resume"),
             ("v",          "Stop"),
+            ("Shift+V",    "Stop with fadeout (length in Settings)"),
             ("b",          "Next track"),
             ("t",          "Stop after current track"),
             ("← →",        "Seek −5 s / +5 s"),
@@ -28,7 +29,7 @@ fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'st
             ("m",          "Toggle Media Library window"),
             ("j",          "Jump / search"),
             ("q",          "Play queue (Jump/Queue window, Queue mode)"),
-            ("Ctrl+Q",     "Queue / dequeue selection (playlist or jump)"),
+            ("Ctrl+Q",     "Enqueue / dequeue selection (playlist or jump)"),
             ("↑ ↓",        "Browse up / down (playlist window)"),
             ("Enter",      "Play selected track"),
             ("Ctrl+S",     "Save playlist"),
@@ -3644,6 +3645,17 @@ pub fn build(
                 }
             }
 
+            // 0b. Advance a stop-with-fadeout ramp (Shift+V). It stops the
+            //     player itself at the end of the ramp, so this runs before
+            //     the bus poll and leaves the rest of the tick reading the
+            //     post-stop state.
+            // Only the seek bar is reset here: `status_label` is not one of
+            // this closure's captures, and the stop-after-current EOS guard
+            // below settles for the same treatment.
+            if state.borrow_mut().poll_fadeout() {
+                seek_bar.set_value(0.0);
+            }
+
             // 1. Check for end-of-stream or GStreamer error.
             let bus_event = state.borrow_mut().poll_bus();
 
@@ -4529,6 +4541,21 @@ pub fn build(
                     kbd_seek_bar.set_value(0.0);
                     // Manual stop cancels a pending stop-after-current.
                     state.borrow_mut().player.set_stop_after_current(false);
+                    glib::Propagation::Stop
+                }
+                // ── Stop with fadeout (Shift+V) — ramp to silence, then stop.
+                // The tick drives the ramp and resets the seek bar at the end. ─
+                gdk::Key::V => {
+                    let fade = {
+                        let mut s = state.borrow_mut();
+                        s.player.set_stop_after_current(false);
+                        let d = s.config.playback.fadeout_duration();
+                        s.player.begin_fadeout(d);
+                        s.player.is_fading_out().then_some(d)
+                    };
+                    if let Some(d) = fade {
+                        kbd_stop_status.set_text(&format!("Fading out over {}s…", d.as_secs()));
+                    }
                     glib::Propagation::Stop
                 }
                 gdk::Key::b => {
