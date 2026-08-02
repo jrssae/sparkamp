@@ -263,10 +263,20 @@ impl App {
                     _ => {}
                 }
             }
-            Mode::Lyrics { ref mut scroll, .. } => {
+            Mode::Lyrics { ref mut scroll, ref search_url, .. } => {
                 match code {
                     KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
                     KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
+                    // d — DuckDuckGo lyrics search in the browser (F15 revision,
+                    // point 6). The window/overlay stays open behind it.
+                    KeyCode::Char('d') => {
+                        let url = search_url.clone();
+                        match std::process::Command::new("xdg-open").arg(&url).spawn() {
+                            Ok(_) => self.status_message = Some("Opening lyrics search in browser…".into()),
+                            Err(_) => self.status_message = Some(format!("Lyrics: {url}")),
+                        }
+                        self.status_ticks = STATUS_TICKS;
+                    }
                     // Close and restore the mode the viewer was opened from
                     // (e.g. the Media Library with its selection intact).
                     KeyCode::Esc | KeyCode::Char('y') | KeyCode::Char('q') => {

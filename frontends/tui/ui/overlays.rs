@@ -666,6 +666,10 @@ pub(super) fn draw_lyrics_overlay(frame: &mut Frame, app: &App, area: Rect) {
                         heading,
                         Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
                     ))
+                    .title_bottom(Span::styled(
+                        " ↑↓ scroll · d search · Esc close ",
+                        Style::default().fg(C_DIM),
+                    ))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(C_ACCENT)),
             )

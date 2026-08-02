@@ -808,32 +808,21 @@ impl App {
         title: String,
         album_artist: String,
     ) {
-        match crate::lyrics::lyrics_action(&path, &artist, &title, &album_artist) {
-            crate::lyrics::LyricsAction::Show(text) => {
-                let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-                let disp = if title.trim().is_empty() {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("?")
-                        .to_string()
-                } else {
-                    title
-                };
-                let prev = std::mem::replace(&mut self.mode, Mode::Normal);
-                self.mode = Mode::Lyrics {
-                    title: disp,
-                    lines,
-                    scroll: 0,
-                    return_mode: Box::new(prev),
-                };
-            }
-            crate::lyrics::LyricsAction::Search(url) => {
-                match std::process::Command::new("xdg-open").arg(&url).spawn() {
-                    Ok(_) => self.set_status("Opening lyrics search in browser…"),
-                    Err(_) => self.set_status(format!("Lyrics: {url}")),
-                }
-            }
-        }
+        // The window/overlay ALWAYS opens now (F15 revision, point 2); a file
+        // with no USLT shows "No lyrics available", and `d` searches the web.
+        let view = crate::lyrics::lyrics_view(&path, &artist, &title, &album_artist);
+        let lines: Vec<String> = match view.body {
+            Some(text) => text.lines().map(|l| l.to_string()).collect(),
+            None => vec!["No lyrics available".to_string()],
+        };
+        let prev = std::mem::replace(&mut self.mode, Mode::Normal);
+        self.mode = Mode::Lyrics {
+            title: view.title,
+            lines,
+            scroll: 0,
+            search_url: view.search_url,
+            return_mode: Box::new(prev),
+        };
     }
 
     /// Load the Albums tab's grouped list. Called only on Albums-tab entry

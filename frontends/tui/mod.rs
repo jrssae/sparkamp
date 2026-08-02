@@ -108,6 +108,8 @@ pub enum Mode {
         title: String,
         lines: Vec<String>,
         scroll: u16,
+        /// DuckDuckGo search URL for the `d` key (F15 revision, point 6).
+        search_url: String,
         return_mode: Box<Mode>,
     },
 }
