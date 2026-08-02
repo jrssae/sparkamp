@@ -6,12 +6,24 @@ import ObjectiveC.runtime
 // Handles macOS-specific lifecycle events that SwiftUI's App protocol
 // doesn't expose: dock-icon click, application reopen, terminate.
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarProvider {
 
     /// Posted when the user clicks the dock icon or selects "Show Player"
     /// while no player window is visible.  The App scene listens for this
     /// and calls openWindow(id: "player").
     static let reopenPlayerNotification = Notification.Name("SparkampReopenPlayer")
+
+    // MARK: Touch Bar
+    //
+    // The Touch Bar responder chain ends at NSApp and then its delegate, so
+    // providing the bar here gives Sparkamp transport controls whenever the app
+    // is active — no window needs to hold focus in a particular way.
+    // `touchBarController.model` is injected by the scene once it exists.
+
+    let touchBarController = SparkampTouchBarController()
+
+    @objc dynamic var touchBar: NSTouchBar? { touchBarController.bar }
 
     /// Called when the user clicks the dock icon with no visible windows,
     /// or chooses "Show All" / "SparkampMac" from the dock menu.
@@ -36,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // is published to SparkampSelectionPalette by the ThemeManager.
         NSTableRowView.sparkampInstallSelectionPaint()
 
+        // Publish the Touch Bar app-wide. Setting it on NSApp covers the tail
+        // of the responder chain; windows get it as they become key (below),
+        // which is nearer the front of the chain.
+        touchBarController.install(on: NSApp)
+
         // When any Sparkamp window is clicked, raise all other Sparkamp windows
         // so the complete set stays together in the window stack.
         NotificationCenter.default.addObserver(
@@ -48,6 +65,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         guard let keyWindow = notification.object as? NSWindow else { return }
+        // Give the focused window (and its SwiftUI content view) the Touch Bar
+        // explicitly — a hosting view that provides its own would otherwise cut
+        // the chain short before NSApp/the delegate is ever asked.
+        touchBarController.install(on: keyWindow)
+        touchBarController.install(on: keyWindow.contentView)
         // Raise all visible, non-panel, non-sheet Sparkamp windows beneath the key window.
         let others = NSApp.windows.filter {
             $0 !== keyWindow &&
@@ -78,6 +100,9 @@ struct SparkampMacApp: App {
                 .environmentObject(model)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
+                // Hand the Touch Bar controller the model it drives (the
+                // delegate is constructed before the scene's StateObject).
+                .onAppear { appDelegate.touchBarController.model = model }
                 // Re-open this window when the dock icon is clicked while it
                 // is hidden / closed.
                 .onReceive(NotificationCenter.default.publisher(

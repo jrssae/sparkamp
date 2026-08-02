@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 // MARK: - Main player window
 
@@ -48,6 +49,21 @@ struct PlayerWindow: View {
         }
         .onAppear { handleAppear() }
         .modifier(WindowManagerModifier(model: model, openWindow: openWindow, dismissWindow: dismissWindow))
+        .onChange(of: model.playerExpanded) { _, _ in
+            // .windowResizability(.contentSize) grows the player window when the
+            // A1 panel appears but does NOT shrink it back on collapse — the
+            // greedy Spacer + maxHeight:.infinity visualizer keep the fitting
+            // height at the larger value. Force the window back to its content's
+            // fitting size on every toggle (mirrors GTK's manual resize on
+            // panel toggle). Deferred one runloop so SwiftUI lays out the new
+            // collapsed/expanded content first.
+            DispatchQueue.main.async {
+                guard let win = NSApp.windows.first(where: { $0.title == "Sparkamp" }),
+                      let cv = win.contentView else { return }
+                cv.layoutSubtreeIfNeeded()
+                win.setContentSize(cv.fittingSize)
+            }
+        }
     }
 
     private func handleAppear() {
@@ -156,29 +172,45 @@ struct PlayerWindow: View {
                 // A small borderless arrow at the right end toggles the A1
                 // now-playing panel below (mirrors the GTK inline marquee
                 // arrow) — same action as the `w` key.
-                HStack(spacing: 4) {
-                    MarqueeView(text: marqueeText)
-                        .frame(height: 42)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .gesture(TapGesture(count: 2).onEnded {
-                            model.openId3Editor()
-                        })
-
-                    Button {
-                        model.playerExpanded.toggle()
-                        model.saveState()
-                    } label: {
-                        Image(systemName: model.playerExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(theme.modeBtnText.opacity(0.8))
-                            .frame(width: 16, height: 16)
+                // Marquee fills the LCD strip; a 22 px trailing reserve keeps
+                // its clipped text clear of the chevron that overlays the
+                // strip's right end. (Marquee + chevron were siblings with only
+                // 4 px between them, so scrolling text ran right up under the
+                // button.) Mirrors GTK's narrower marquee display area, but
+                // reserving just the button's footprint so text isn't cut short.
+                // The chevron toggles the A1 panel — same action as `w`.
+                MarqueeView(text: marqueeText)
+                    .frame(height: 42)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, 22)
+                    .gesture(TapGesture(count: 2).onEnded {
+                        model.openId3Editor()
+                    })
+                    .overlay(alignment: .trailing) {
+                        Button {
+                            model.playerExpanded.toggle()
+                            model.saveState()
+                        } label: {
+                            Image(systemName: model.playerExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(theme.modeBtnText)
+                                .frame(width: 18, height: 18)
+                                // Opaque LCD-colored chip + outline so the button
+                                // stays legible even when long marquee text
+                                // scrolls behind it — a transparent chevron
+                                // blended illegibly with the moving text.
+                                .background(theme.lcdBackground)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .stroke(theme.lcdBorder, lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show/hide now-playing panel (w)")
                     }
-                    .buttonStyle(.plain)
-                    .help("Show/hide now-playing panel (w)")
-                }
-                .padding(.horizontal, 10)
-                .background(theme.lcdBackground)
-                .padding(.top, 1)
+                    .padding(.horizontal, 10)
+                    .background(theme.lcdBackground)
+                    .padding(.top, 1)
 
                 // A1 — expandable now-playing panel: persistent marquee above
                 // (unchanged), art + auto-cycling tag/tech/stats/links

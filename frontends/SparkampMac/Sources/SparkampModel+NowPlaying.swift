@@ -96,10 +96,24 @@ extension SparkampModel {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = max(0, position)
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
 
-        if let path = nowPlaying?.artworkPath, !path.isEmpty,
-           let image = NSImage(contentsOfFile: path) {
-            let size = image.size
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: size) { _ in image }
+        // Marking the item as audio helps the system cards (lock screen in
+        // particular) lay the entry out as a music item rather than a generic
+        // one.
+        info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+
+        // Fall back to the app icon when the track has no art, so the card
+        // shows the Sparkamp logo instead of an empty artwork well.
+        let art: NSImage? = {
+            if let path = nowPlaying?.artworkPath, !path.isEmpty,
+               let image = NSImage(contentsOfFile: path) {
+                return image
+            }
+            return NSApp.applicationIconImage
+        }()
+        if let image = art {
+            info[MPMediaItemPropertyArtwork] =
+                MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         }
 
         center.nowPlayingInfo = info

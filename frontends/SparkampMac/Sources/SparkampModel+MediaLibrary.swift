@@ -196,7 +196,7 @@ extension SparkampModel {
     /// ReplayGain" action), regardless of any stored value.
     func rgAnalyzeSelection(ids: [Int64]) {
         guard let ctx = ctx, !ids.isEmpty else { return }
-        var idArray = ids
+        let idArray = ids
         idArray.withUnsafeBufferPointer { buf in
             sparkamp_rg_analyze_selection(ctx, buf.baseAddress, Int32(ids.count), nil, nil, nil)
         }

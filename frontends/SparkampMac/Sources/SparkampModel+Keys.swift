@@ -101,7 +101,15 @@ extension SparkampModel {
             UserDefaults.standard.set(playerExpanded, forKey: "sparkamp.playerExpanded")
             return true
         case "k":
-            openArtworkWindow()  // A6 — open-or-focus, follows the current track
+            // Toggle: if the album-art window is the focused (key) window,
+            // pressing k again dismisses it; otherwise open-or-focus it (the
+            // app-wide key monitor still fires while A6 has focus, so without
+            // this a second k was a no-op). Esc / red button still close it too.
+            if let w = NSApp.keyWindow, w.title == "Artwork" {
+                w.close()
+            } else {
+                openArtworkWindow()  // A6 — open-or-focus, follows the current track
+            }
             return true
         case "\u{1B}":  // Escape — close fullscreen if open
             if fullscreenVizVisible { closeFullscreenViz(); return true }

@@ -17,7 +17,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 
 use super::{MediaKind, OpticalDrive};
 
