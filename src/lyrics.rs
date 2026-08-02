@@ -1,56 +1,97 @@
-//! View/Search-lyrics decision (F15). One place decides Show-vs-Search and
-//! builds the search URL so the query can never drift from the row label the
-//! user right-clicked.
+//! Lyrics view assembly (F15). One place builds the marquee title, the
+//! DuckDuckGo search URL, and the USLT body so no frontend re-derives any of
+//! them and the search query can never drift from the row label the user
+//! right-clicked. The lyrics WINDOW always opens (even with no saved lyrics);
+//! the search is an in-window affordance, not an alternate code path.
 
 use std::path::Path;
 
+/// Everything the lyrics window needs to render one track.
 #[derive(Debug, Clone)]
-pub enum LyricsAction {
-    /// Non-empty USLT text read fresh from the file (multi-line preserved).
-    Show(String),
-    /// DuckDuckGo search URL to hand to the default browser.
-    Search(String),
+pub struct LyricsView {
+    /// Marquee identifier for the title bar (`<artist> - <track>`).
+    pub title: String,
+    /// Saved USLT text (multi-line preserved), or `None` when the file has no
+    /// lyrics — the window shows "No lyrics available" in that case.
+    pub body: Option<String>,
+    /// DuckDuckGo search URL for the in-window "Search" button.
+    pub search_url: String,
 }
 
-/// Fresh-read a track's USLT. Non-empty → `Show`; empty/unreadable → `Search`.
-/// The Media Library row may be stale, so this always re-reads from disk.
-pub fn lyrics_action(path: &Path, artist: &str, title: &str, album_artist: &str) -> LyricsAction {
-    let lyric = crate::id3_editor::read_tag_fields(path).lyric;
-    if lyric.trim().is_empty() {
-        LyricsAction::Search(lyrics_search_url(artist, title, album_artist))
-    } else {
-        LyricsAction::Show(lyric)
+/// Assemble the lyrics view for one track: fresh-read the USLT (the Media
+/// Library row may be stale), and precompute the title + search URL.
+pub fn lyrics_view(path: &Path, artist: &str, title: &str, album_artist: &str) -> LyricsView {
+    let raw = crate::id3_editor::read_tag_fields(path).lyric;
+    let body = if raw.trim().is_empty() { None } else { Some(raw) };
+    LyricsView {
+        title: lyrics_display_title(artist, title, album_artist, path),
+        body,
+        search_url: lyrics_search_url(artist, title, album_artist, path),
     }
 }
 
-/// `https://duckduckgo.com/?q=<enc>` where the query is `"{artist} - {title} lyrics"`,
-/// or `"{title} lyrics"` when no artist is available. Mirrors the row display
-/// fallback (artist → album_artist → none).
-pub fn lyrics_search_url(artist: &str, title: &str, album_artist: &str) -> String {
-    let a = query_artist(artist, album_artist);
-    let query = if a.is_empty() {
-        format!("{title} lyrics")
+/// The effective artist: `artist` (TPE1), else `album_artist` (TPE2), else "".
+/// Trim-aware so a whitespace-only field counts as absent. Mirrors the
+/// marquee's `Track::display_name` precedence (src/model.rs).
+fn eff_artist<'a>(artist: &'a str, album_artist: &'a str) -> &'a str {
+    if !artist.trim().is_empty() {
+        artist.trim()
+    } else if !album_artist.trim().is_empty() {
+        album_artist.trim()
     } else {
-        format!("{a} - {title} lyrics")
+        ""
+    }
+}
+
+/// The file stem (no extension) as a display fallback, "?" if unreadable.
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// Marquee identifier for the window title: `"<artist> - <track>"`, artist
+/// falling back to album_artist, track falling back to the filename stem, and
+/// the whole thing collapsing to just the track when no artist is available.
+/// Same precedence as the scrolling marquee (`Track::display_name`).
+pub fn lyrics_display_title(artist: &str, title: &str, album_artist: &str, path: &Path) -> String {
+    let a = eff_artist(artist, album_artist);
+    let t = if title.trim().is_empty() {
+        file_stem(path)
+    } else {
+        title.trim().to_string()
     };
-    // Reuse the now-playing Wikipedia encoder so both URLs share one encoding
+    if a.is_empty() {
+        t
+    } else {
+        format!("{a} - {t}")
+    }
+}
+
+/// `https://duckduckgo.com/?q=<enc>` where the query is `"<artist> <track> lyrics"`
+/// (SPACE-separated). Artist falls back to album_artist; when BOTH artist and
+/// track are absent the query is `"<filename> lyrics"`.
+pub fn lyrics_search_url(artist: &str, title: &str, album_artist: &str, path: &Path) -> String {
+    let a = eff_artist(artist, album_artist);
+    let t = title.trim();
+    let core = if a.is_empty() && t.is_empty() {
+        file_stem(path)
+    } else {
+        // Join the non-empty terms with a single space.
+        [a, t]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let query = format!("{core} lyrics");
+    // Reuse the now-playing encoder so DDG + Wikipedia URLs share one encoding
     // (space → %20, unreserved-set only) and can never drift.
     format!(
         "https://duckduckgo.com/?q={}",
         crate::now_playing::percent_encode_query(&query)
     )
-}
-
-/// artist, else album_artist, else "" — same precedence as the display label
-/// (keep in sync with the row-display fallback in `src/model.rs`).
-fn query_artist(artist: &str, album_artist: &str) -> String {
-    if !artist.trim().is_empty() {
-        artist.to_string()
-    } else if !album_artist.trim().is_empty() {
-        album_artist.to_string()
-    } else {
-        String::new()
-    }
 }
 
 #[cfg(test)]
@@ -59,84 +100,100 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
-    #[test]
-    fn url_has_artist_dash_title_lyrics() {
-        let u = lyrics_search_url("Miles Davis", "So What", "");
-        assert_eq!(u, "https://duckduckgo.com/?q=Miles%20Davis%20-%20So%20What%20lyrics");
+    fn p(s: &str) -> &Path {
+        Path::new(s)
     }
 
     #[test]
-    fn url_falls_back_to_album_artist_when_artist_blank() {
-        let u = lyrics_search_url("", "So What", "Miles Davis");
-        assert_eq!(u, "https://duckduckgo.com/?q=Miles%20Davis%20-%20So%20What%20lyrics");
-    }
-
-    #[test]
-    fn url_omits_dash_when_no_artist() {
-        // No artist and no album_artist → just "<title> lyrics", no leading "- ".
-        let u = lyrics_search_url("", "So What", "");
-        assert_eq!(u, "https://duckduckgo.com/?q=So%20What%20lyrics");
-    }
-
-    #[test]
-    fn url_percent_encodes_ampersand_and_unicode() {
-        let u = lyrics_search_url("AC/DC", "Café & Cream", "");
-        // '/', '&', space, and non-ASCII must all be percent-encoded.
+    fn title_is_artist_dash_track() {
         assert_eq!(
-            u,
-            "https://duckduckgo.com/?q=AC%2FDC%20-%20Caf%C3%A9%20%26%20Cream%20lyrics"
+            lyrics_display_title("Miles Davis", "So What", "", p("/x/y.mp3")),
+            "Miles Davis - So What"
         );
     }
 
     #[test]
-    fn action_shows_uslt_when_present_multiline_preserved() {
-        // SAME temp-mp3 idiom as src/id3_editor.rs tests: a NamedTempFile with a
-        // minimal MPEG frame header, then write USLT via the existing writer.
+    fn title_falls_back_to_album_artist() {
+        assert_eq!(
+            lyrics_display_title("", "So What", "Coltrane", p("/x/y.mp3")),
+            "Coltrane - So What"
+        );
+    }
+
+    #[test]
+    fn title_falls_back_to_filename_when_both_blank() {
+        // No artist, no album_artist, no title → just the filename stem.
+        assert_eq!(
+            lyrics_display_title("", "", "", p("/music/track99.mp3")),
+            "track99"
+        );
+    }
+
+    #[test]
+    fn title_no_artist_is_track_only() {
+        assert_eq!(
+            lyrics_display_title("", "So What", "", p("/x/y.mp3")),
+            "So What"
+        );
+    }
+
+    #[test]
+    fn search_is_space_separated_with_lyrics_suffix() {
+        // Space between artist and track (NOT the old " - " dash), "lyrics" suffix.
+        let u = lyrics_search_url("Miles Davis", "So What", "", p("/x/y.mp3"));
+        assert_eq!(u, "https://duckduckgo.com/?q=Miles%20Davis%20So%20What%20lyrics");
+    }
+
+    #[test]
+    fn search_uses_album_artist_when_no_artist() {
+        let u = lyrics_search_url("", "So What", "Coltrane", p("/x/y.mp3"));
+        assert_eq!(u, "https://duckduckgo.com/?q=Coltrane%20So%20What%20lyrics");
+    }
+
+    #[test]
+    fn search_uses_filename_when_artist_and_title_blank() {
+        let u = lyrics_search_url("", "", "", p("/music/track99.mp3"));
+        assert_eq!(u, "https://duckduckgo.com/?q=track99%20lyrics");
+    }
+
+    #[test]
+    fn search_percent_encodes_specials() {
+        let u = lyrics_search_url("AC/DC", "Café & Cream", "", p("/x/y.mp3"));
+        assert_eq!(
+            u,
+            "https://duckduckgo.com/?q=AC%2FDC%20Caf%C3%A9%20%26%20Cream%20lyrics"
+        );
+    }
+
+    #[test]
+    fn view_body_some_when_uslt_present() {
         let mut f = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
         f.write_all(&[0xFF, 0xFB, 0x90, 0x00]).unwrap();
         let mut fields = crate::id3_editor::read_tag_fields(f.path());
         fields.lyric = "line one\nline two".to_string();
         crate::id3_editor::write_tag_fields(f.path(), &fields).unwrap();
 
-        match lyrics_action(f.path(), "A", "T", "") {
-            LyricsAction::Show(text) => assert_eq!(text, "line one\nline two"),
-            other => panic!("expected Show, got {other:?}"),
-        }
+        let v = lyrics_view(f.path(), "A", "T", "");
+        assert_eq!(v.body.as_deref(), Some("line one\nline two"));
+        assert_eq!(v.title, "A - T");
     }
 
     #[test]
-    fn action_searches_when_no_uslt() {
+    fn view_body_none_when_no_uslt() {
         let mut f = tempfile::NamedTempFile::with_suffix(".mp3").unwrap();
         f.write_all(&[0xFF, 0xFB, 0x90, 0x00]).unwrap();
-        match lyrics_action(f.path(), "Miles Davis", "So What", "") {
-            LyricsAction::Search(u) => {
-                assert_eq!(u, "https://duckduckgo.com/?q=Miles%20Davis%20-%20So%20What%20lyrics");
-            }
-            other => panic!("expected Search, got {other:?}"),
-        }
+        let v = lyrics_view(f.path(), "Miles Davis", "So What", "");
+        assert_eq!(v.body, None);
+        assert_eq!(
+            v.search_url,
+            "https://duckduckgo.com/?q=Miles%20Davis%20So%20What%20lyrics"
+        );
     }
 
     #[test]
-    fn query_artist_matches_display_precedence() {
-        // Pin the search-query artist fallback to the SAME precedence the row
-        // label uses (artist, else album_artist, else none) — see
-        // `Track::display_name` in src/model.rs:236. If that fallback changes,
-        // this must change with it so the search query never drifts from the
-        // label the user right-clicked. (query_artist additionally trims, so a
-        // whitespace-only artist falls through — a deliberate superset.)
-        assert_eq!(query_artist("Artist", "AlbumArtist"), "Artist");
-        assert_eq!(query_artist("", "AlbumArtist"), "AlbumArtist");
-        assert_eq!(query_artist("Artist", ""), "Artist");
-        assert_eq!(query_artist("", ""), "");
-        assert_eq!(query_artist("   ", "AlbumArtist"), "AlbumArtist");
-    }
-
-    #[test]
-    fn action_searches_when_path_unreadable() {
-        // A missing file must degrade to Search, never panic.
-        match lyrics_action(Path::new("/no/such/file.mp3"), "A", "T", "") {
-            LyricsAction::Search(_) => {}
-            other => panic!("expected Search, got {other:?}"),
-        }
+    fn view_body_none_when_path_unreadable() {
+        // A missing file degrades to "no lyrics", never panics.
+        let v = lyrics_view(Path::new("/no/such/file.mp3"), "A", "T", "");
+        assert_eq!(v.body, None);
     }
 }

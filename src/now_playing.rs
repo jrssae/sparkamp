@@ -51,6 +51,16 @@ pub fn build_now_playing_info(
         .filter(|(_, v)| !v.trim().is_empty())
         .collect();
 
+    // Lyrics can be arbitrarily long (a full song). The A1 ID3 panel is a
+    // compact carousel, so truncate the on-panel Lyric row — the standalone
+    // lyrics window (F15) is where the full text lives. See point 7 of the
+    // 2026-08-01 lyrics revision.
+    for (label, value) in tags.iter_mut() {
+        if *label == "Lyric" {
+            *value = truncate_panel_lyric(value);
+        }
+    }
+
     // When a file carries no usable ID3 text at all, fall back to the filename
     // stem — mirrors the marquee's display_name (artist → album_artist →
     // filename) so the panel never shows an empty title group.
@@ -135,6 +145,23 @@ pub fn build_now_playing_info(
         added_at: lib_row.and_then(|t| t.added_at.clone()),
         artist_wiki_url: wiki_search_url(&fields.artist),
         album_wiki_url: wiki_search_url(&fields.album),
+    }
+}
+
+/// Longest lyric shown inline on the A1 ID3 panel before it is truncated with
+/// an ellipsis (the full text lives in the F15 lyrics window).
+pub const PANEL_LYRIC_MAX_CHARS: usize = 200;
+
+/// Truncate a lyric for the compact ID3 panel: unchanged when ≤ 200 chars,
+/// otherwise the first 200 chars followed by '…'. Counts CHARS, not bytes, so
+/// multi-byte text is never split mid-codepoint.
+pub fn truncate_panel_lyric(s: &str) -> String {
+    if s.chars().count() <= PANEL_LYRIC_MAX_CHARS {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(PANEL_LYRIC_MAX_CHARS).collect();
+        out.push('…');
+        out
     }
 }
 
@@ -266,6 +293,38 @@ mod tests {
         assert_eq!(info.tags.first(), Some(&("Title", "My Song".to_string())));
         assert!(info.tags.iter().any(|(l, _)| *l == "Artist"));
         assert!(!info.tags.iter().any(|(_, v)| v.is_empty()));
+    }
+
+    #[test]
+    fn truncate_leaves_short_unchanged() {
+        assert_eq!(truncate_panel_lyric("short lyric"), "short lyric");
+        // Exactly 200 chars is not truncated.
+        let exactly = "a".repeat(200);
+        assert_eq!(truncate_panel_lyric(&exactly), exactly);
+    }
+
+    #[test]
+    fn truncate_caps_long_at_200_plus_ellipsis() {
+        let long = "a".repeat(500);
+        let out = truncate_panel_lyric(&long);
+        assert_eq!(out.chars().count(), 201); // 200 chars + '…'
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn panel_lyric_row_is_truncated() {
+        let f = make_tagged_mp3("S", "A");
+        let mut fields = crate::id3_editor::read_tag_fields(f.path());
+        fields.lyric = "x".repeat(500);
+        crate::id3_editor::write_tag_fields(f.path(), &fields).unwrap();
+        let info = build_now_playing_info(f.path(), None, PlaySnapshot::default());
+        let (_, value) = info
+            .tags
+            .iter()
+            .find(|(l, _)| *l == "Lyric")
+            .expect("Lyric row present");
+        assert_eq!(value.chars().count(), 201);
+        assert!(value.ends_with('…'));
     }
 
     #[test]
