@@ -8,11 +8,15 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 8 are done (2026-08-03)
+## Status — phases 0 through 9 are done (2026-08-03)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–8**;
-phases 9–12 below are still blind and unchanged.
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–9**
+— phase 9's Swift now compiles and its read path has run against a real
+optical drive. Phase 9 was **closed with 14 of its 19 items accepted
+untested** (they need discs and a second drive that pass did not have); they
+are named under "Deferred" in that section rather than ticked. Phases 10–12
+are still blind and unchanged.
 
 | Phase | Outcome |
 |-------|---------|
@@ -24,6 +28,7 @@ phases 9–12 below are still blind and unchanged.
 | 6 | ✅ Passed after 5 defects and 3 follow-ons — a badge that could never clear, arrows no list could use, the LCD indicator resized off GTK's measured ink, and stop-with-fadeout built from scratch |
 | 7 | ✅ Passed after 1 core defect — a reorder could move the playing highlight onto the wrong track whenever entries reached the playlist without an id — plus a status line that sat at the top of the window instead of the bottom |
 | 8 | ✅ Passed after 5 defects — the whole feature was dormant unless the Media Library window happened to be open, a checkbox that was correct only by accident, and two pieces of work sitting on the main thread that belonged on a worker |
+| 9 | ✅ Closed after 6 defects; the read path is **verified on hardware** (real drive + CD-TEXT disc, names on screen). Headed by a parser written for a `drutil` output format that does not exist — the real tool prints an XML plist, so before this pass no disc could ever have shown CD-TEXT on mac. Closed with 14 of 19 items accepted untested — the gnudb-known, no-CD-TEXT, partial-CD-TEXT, multi-language and two-drive cases needed discs this pass didn't have, and are listed as deferred rather than ticked |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -1398,7 +1403,175 @@ the ones most likely to fail if a fix is wrong:
 
 ---
 
-## Phase 9 — CD-TEXT read (2026-07-28, BLIND — Swift never compiled)
+## Phase 9 — CD-TEXT read ✅ CLOSED on hardware 2026-08-03
+
+**Closed by decision on 2026-08-03**, with the read path verified on real
+hardware and the remaining cases accepted untested. 5 of the 19 items below
+were exercised against a physical drive and are ticked; the other 14 were
+**not run** and are left unticked on purpose — they need discs and a second
+drive this pass did not have, and ticking them would put untested claims in
+the project's test record. They are listed under "Deferred" below so a later
+pass (or a bug report) knows exactly what was never exercised.
+
+**The core read path is confirmed on real hardware.** A Slimtype DVD A
+DS8A5SH (USB) with a 15-track CD-TEXT disc — "Bespoke Bounce" by Waller
+Creek Vipers, freedb id `e40b970f`, no gnudb match — was read end to end:
+`drutil` dump → `parse_drutil_cdtext` → `sparkamp_disc_read_cdtext` →
+`XmcdEntry` JSON → Swift overlay → Media Library disc view showing
+"Waller Creek Vipers — Bespoke Bounce", a `CD-TEXT` pill, and all 15 real
+track titles.
+
+The remaining unticked items need discs or drives this pass did not have: a
+gnudb-*known* disc, a disc with no CD-TEXT at all, a disc whose CD-TEXT
+names only some tracks, a multi-language disc, and a second drive for the
+burn-contention test.
+
+### Real `drutil -drive 1 cdtext` output (captured 2026-08-03)
+
+Exactly the XML plist the parser was written against, with one structure the
+synthetic fixtures did not have — a `<data>` blob under `DRCDTextSizeKey`,
+whose base64 body sits on its own lines. The parser ignores it (it matches
+neither `<string>…</string>` nor a `<key>`), which is the correct outcome.
+stdout carried the plist; stderr was empty; exit 0.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+	<dict>
+		<key>Properties</key>
+		<dict>
+			<key>DRCDTextCFStringEncodingKey</key>
+			<integer>1536</integer>
+			<key>DRCDTextCharacterCodeKey</key>
+			<integer>1</integer>
+			<key>DRCDTextCopyrightAssertedForNamesKey</key>
+			<integer>1</integer>
+			<key>DRCDTextLanguageKey</key>
+			<string>en</string>
+			<key>DRCDTextNSStringEncodingKey</key>
+			<integer>1</integer>
+		</dict>
+		<key>Tracks</key>
+		<array>
+			<dict>                              <!-- index 0 = the DISC -->
+				<key>DRCDTextPerformerKey</key>
+				<string>Waller Creek Vipers</string>
+				<key>DRCDTextSizeKey</key>
+				<data>
+				AQEPAxYbAAAAAAAAAAAAAAAAAAMzAAAAAAAAAAkAAAAA
+				AAAA
+				</data>
+				<key>DRCDTextTitleKey</key>
+				<string>Bespoke Bounce</string>
+			</dict>
+			<dict>                              <!-- index 1 = track 1 -->
+				<key>DRCDTextPerformerKey</key>
+				<string>Waller Creek Vipers</string>
+				<key>DRCDTextTitleKey</key>
+				<string>Blue Light Boogie</string>
+			</dict>
+			… 14 more track dicts …
+		</array>
+	</dict>
+</array>
+</plist>
+```
+
+Accounting checks out: 18 `<dict>` = 1 block + 1 `Properties` + 16 track
+dicts (disc + 15 tracks), 16 `DRCDTextTitleKey`, 1 language block. The FFI
+returned `{"discid":"e40b970f","artist":"Waller Creek Vipers","album":
+"Bespoke Bounce",…}` with exactly 15 `track_titles`.
+
+Two live tests were added and both pass against this disc:
+`disc::cdtext::tests::live_drutil_cdtext_read` (raw dump + parse) and
+`ffi::disc::tests::live_read_cdtext_ffi` (drive enumeration → FFI →
+`XmcdEntry`, asserting one title per audio track). Both are `#[ignore]`d.
+
+### Deferred — accepted untested when phase 9 was closed (2026-08-03)
+
+Not run. Each stayed unticked below rather than being marked passed.
+
+**Testable with the same CD-TEXT disc, just not done** — these four are the
+cheapest to close if phase 9 is ever revisited, and they exercise the write
+half of the feature (seeding and propagation) that the read verification
+never touched:
+- Tag editor on a CD-TEXT-only disc → prefilled, not blank
+- Edit + Save → pill flips to `edited`
+- Playlist-add inherits the CD-TEXT artist/album
+- Ripped files inherit the CD-TEXT artist/album
+
+**Blocked on media/hardware not available:**
+- gnudb-*known* disc: names unaffected, CD-TEXT never read for it (needs a
+  disc gnudb matches) — and its `gnudb` pill
+- A disc with no gnudb match AND no CD-TEXT: "Track N" fallback, no pill
+- A disc whose CD-TEXT names only some tracks (gap handling)
+- A multi-language CD-TEXT disc (the first-wins block logic — the test disc
+  carried a single `en` block, so that path ran unexercised on hardware)
+- `&`, `<`, accented or non-Latin CD-TEXT (entity + encoding path; only
+  apostrophes were seen live)
+- Burn on drive A while probing drive B (needs a second drive) — see the
+  note on that item: the exclusive-read guard does nothing on macOS by
+  design, so this is the one item with a real chance of finding something
+- Three-frontend badge parity (needs the same disc under GTK on Linux)
+- Titles-only CD-TEXT disc: pill renders with no artist/album beside it
+  (code fixed this pass, layout never eyeballed)
+
+### Corrections applied 2026-08-03
+
+1. **The whole feature was inert: the parser was written for a format
+   `drutil` never emits.** `parse_drutil_cdtext` looked for a human-readable
+   dump — `TITLE "…"` / `PERFORMER "…"` lines under `Track N:` headings —
+   which the plan itself flagged as a guess ("`drutil cdtext`'s exact stdout
+   format is NOT documented publicly and could not be captured in this
+   environment"). It is not what the tool does. Disassembling
+   `/usr/bin/drutil` shows the `cdtext` command building one
+   `{Properties, Tracks}` dictionary per CD-TEXT block, then
+   `[NSPropertyListSerialization dataWithPropertyList:format:100 …]`
+   (`100` = `NSPropertyListXMLFormat_v1_0`) and `printf("%.*s")` — it prints
+   an **XML property list**. None of its lines start with `TITLE` or
+   `Track `, so the old parser matched nothing on every real disc,
+   `read_cdtext` returned `None` every time, the FFI returned NULL, and
+   `DiscService.readCdtext` returned nil. No disc could ever have shown
+   CD-TEXT on mac. Rewritten to parse the plist.
+2. **Track indexing was off by one relative to the real data.** In
+   DiscRecording, `Tracks[0]` describes the **disc** and `Tracks[N]` track N
+   (documented on `DRCDTextBlockGetTrackDictionaries`). The old parser had no
+   concept of a disc entry in the track list and would have numbered
+   everything from 1.
+3. **Multi-language blocks.** A disc carrying several language blocks emits
+   one dict per block; fields are now taken first-wins, so block 0 (English
+   in practice) names the disc and a later block only fills what it left out.
+4. **XML entities.** Names arrive escaped (`Simon &amp; Garfunkel`), so the
+   parser resolves entities in a single left-to-right pass — an escaped
+   escape (`&amp;lt;`) resolves once to `&lt;` rather than twice to `<`.
+5. **The pill was hidden on exactly the disc it exists for.** The
+   already-flagged follow-up is fixed: the source pill was nested inside the
+   `!artist.isEmpty || !album.isEmpty` header conditional, so a CD-TEXT disc
+   carrying track titles but no disc artist or album showed no pill on mac
+   while GTK and the TUI showed `CD-TEXT`. The header line and the badge are
+   now independent computed properties (`discHeaderLine`, `discSourceBadge`).
+6. **Two phase-9 tests failed on macOS and now pass.**
+   `cdtext_overlays_only_when_gnudb_absent` and
+   `tag_editor_seeds_from_cdtext_then_gnudb_wins` were asserting against an
+   empty track list. `disc::toc::track_entries` is platform-split — Linux
+   synthesizes a `cdda://` URI per track off the TOC, macOS lists the AIFFs
+   in the volume the OS mounted — so a fake drive with `mount_path: None`
+   yields zero entries on macOS and both tests collapsed before testing
+   anything. The fixture now backs the fake drive with a tempdir of
+   per-track files. This was a test-portability defect, not a product one.
+
+**How the format was verified without a disc:** the fixtures in
+`src/disc/cdtext.rs` are not hand-written guesses. They were produced by
+driving the same DiscRecording + `NSPropertyListSerialization` calls
+disassembled out of `drutil`, and the reconstructed fixture in the test was
+diffed byte-for-byte against that real output. What is still unverified is
+only the part a disc is needed for: that a real drive populates those
+dictionaries the way a synthetic block does. `cargo test --lib
+live_drutil_cdtext_read -- --ignored --nocapture` (added in this pass) prints
+the raw dump beside the parse result and is the first thing to run once a
+drive is attached.
 
 Mirrors GTK's `disc_cdtext`/`disc_cdtext_tried` overlay
 (`frontends/gtk/window/media_library.rs:9031-9108`): mac now calls the
@@ -1420,7 +1593,7 @@ Files touched: `SparkampModel.swift` (new `discCdtext: [String: XmcdEntry]`,
 var now reads through `discOverlayTags` too, so the "Artist — Album (year)"
 line picks up a CD-TEXT-only entry the same as a gnudb one).
 
-- [ ] **CD-TEXT disc absent from gnudb**: insert an audio disc gnudb has no
+- [x] **CD-TEXT disc absent from gnudb** ✅ verified 2026-08-03 (Bespoke Bounce / Waller Creek Vipers, `e40b970f`; header + all 15 titles, no Identify needed): insert an audio disc gnudb has no
       record of but that carries CD-TEXT (e.g. a disc burned by Sparkamp
       itself with disc-artist/disc-album set, or a commercial disc with
       CD-TEXT gnudb doesn't know) — real album/artist show in the header
@@ -1438,13 +1611,19 @@ line picks up a CD-TEXT-only entry the same as a gnudb one).
       drives attached, start a burn on drive A's Disc Drive view while
       navigating to and viewing an unknown audio disc on drive B (triggering
       B's CD-TEXT read). Confirm no error dialogs, no drive contention, and
-      B's CD-TEXT read either succeeds cleanly or fails silently — the
-      exclusive-read guard is held INSIDE the core `sparkamp_disc_read_cdtext`
-      FFI call for its whole duration (per its bridge-header doc), so mac
-      Swift does not wrap it with its own begin/end calls the way GTK's raw
-      `disc::cdtext::read_cdtext` call does; confirm this built-in guard is
-      actually sufficient on mac (i.e. it doesn't need a Swift-side
-      `disc_reading`-style flag the way GTK's rip loop sets one).
+      B's CD-TEXT read either succeeds cleanly or fails silently.
+      **Read this before testing:** `sparkamp_disc_read_cdtext` does hold the
+      exclusive-read guard around the read, but that guard **does nothing on
+      macOS** — and that is deliberate, not an oversight. The only production
+      code that consults `exclusive_read()` is Linux's `list_drives_cached`
+      (`src/disc/detect.rs:822`), because on Linux even a status ioctl
+      interleaves SCSI commands with a streaming read; macOS goes through
+      `drutil status`, which `detect.rs:35` documents as not spinning the
+      disc, so there is nothing to suppress. The practical consequence is
+      that on mac nothing serializes a CD-TEXT read against a concurrent burn
+      beyond drutil's own device locking. That is what this item is really
+      testing — if two drutil invocations on the same drive do fight, the fix
+      is a Swift-side guard, not the core refcount.
 - [ ] **Ripped filenames/tags inherit CD-TEXT**: rip a CD-TEXT-only
       (gnudb-absent) disc — the ripped files' names/tags use the CD-TEXT
       track titles (via `discTracks[i].title`, already overlaid by
@@ -1463,21 +1642,28 @@ line picks up a CD-TEXT-only entry the same as a gnudb one).
       disc still can't be pushed to gnudb. Confirm ripped MP3s from a
       CD-TEXT-only disc carry the CD-TEXT artist/album, and that a
       gnudb-matched disc's ripped tags are unaffected (gnudb still wins).
-- [ ] **Acquisition path + drutil dump capture**: confirm which path was
-      actually used to acquire CD-TEXT for a live disc on real hardware.
-      This task lands ONLY the FFI-based path (`sparkamp_disc_read_cdtext` →
-      core `parse_drutil_cdtext`, mirrored in `DiscService.readCdtext`) — the
-      DiscRecording-framework fallback (`DRDevice` + `DRCDTextBlock`/
-      `DRDeviceMediaInfoKey`) described in that function's doc comment and in
-      Task 2's brief is NOT implemented. If a real `drutil cdtext` dump
-      parses cleanly (non-nil `XmcdEntry` with sane fields), the FFI path
-      stands. If it returns nil/garbage on real hardware, paste the raw
-      `drutil cdtext -drive N` output here so the core `parse_drutil_cdtext`
-      fixture can be corrected, and open a follow-up task for the
-      DiscRecording-framework path:
+- [x] **Acquisition path + drutil dump capture** ✅ verified 2026-08-03 — FFI path, dump above, parses clean (run this FIRST — it is the
+      one item the rest depend on): with a CD-TEXT disc loaded, run
+      ```
+      cargo test --lib live_drutil_cdtext_read -- --ignored --nocapture
+      ```
+      It prints the raw `drutil -drive N cdtext` stdout, drutil's stderr, and
+      the parsed `CdText` side by side. Set `SPARKAMP_TEST_DRIVE` to the
+      drutil index from `drutil list` if it is not `1`. Expected: an XML
+      plist on stdout and a parse with real album/artist/titles. If the parse
+      comes back empty, paste the raw dump here — the parser is written
+      against synthetic-but-real DiscRecording output, so a mismatch means a
+      live drive populates the dictionaries differently:
       ```
       (paste real `drutil cdtext` output here during the hardware pass)
       ```
+      Only the FFI path is implemented (`sparkamp_disc_read_cdtext` → core
+      `parse_drutil_cdtext`, mirrored in `DiscService.readCdtext`). The
+      DiscRecording-framework fallback (`DRDevice` + `DRCDTextBlock`) named
+      in that function's doc comment is still NOT implemented; it only
+      becomes necessary if a live dump proves unparseable, and note that the
+      core parser already consumes DiscRecording's own output format, so the
+      framework route would buy structure, not different data.
 
 **Unsure / eyeball (blind, no Xcode here):**
 - `maybeReadDiscCdtext` guards re-render staleness with `loadedDiscId == id`
@@ -1487,10 +1673,10 @@ line picks up a CD-TEXT-only entry the same as a gnudb one).
   away from from clobbering `discTracks`), but it's a different mechanism
   than GTK's, so eyeball a same-drive rapid disc-swap (eject mid-read,
   insert a different disc before the FFI call returns) for a stale overlay.
-- `sparkamp_disc_read_cdtext` is called with `ctx: nil`, mirroring
-  `sparkamp_disc_track_entries`/`sparkamp_disc_id` (disc detection is
-  ctx-free, subprocess-backed) — confirm the header's `SparkampCtx *ctx`
-  parameter genuinely tolerates NULL here the same as those siblings.
+- ~~`sparkamp_disc_read_cdtext` is called with `ctx: nil`~~ — **resolved by
+  reading the code, no hardware needed.** The Rust side binds the parameter
+  as `_ctx` and never touches it, so NULL is safe exactly as it is for
+  `sparkamp_disc_track_entries`/`sparkamp_disc_id`.
 - `discCdtext`/`discCdtextTried` are never cleared when a drive disconnects
   or a disc is ejected (unlike `discTagSets`, which persists on disk by
   design) — a re-inserted disc with the same freedb ID reuses the cached
@@ -1529,7 +1715,7 @@ path (`discSubmittable`/`submitDisc`) is untouched and still reads
 - [ ] **gnudb-known disc → `gnudb` pill**: insert/select a disc gnudb has
       matched (via Identify or a restored match) — the header shows a pill
       reading exactly `gnudb` next to "Artist — Album (year)".
-- [ ] **gnudb-unknown CD-TEXT disc → `CD-TEXT` pill**: a disc gnudb doesn't
+- [x] **gnudb-unknown CD-TEXT disc → `CD-TEXT` pill** ✅ verified 2026-08-03 — pill reads exactly `CD-TEXT`: a disc gnudb doesn't
       know but that carries CD-TEXT — the header pill reads exactly
       `CD-TEXT` (not "cdtext" or "CD Text").
 - [ ] **Edit + save a CD-TEXT/unknown disc → pill flips to `edited`**: open
@@ -1558,15 +1744,38 @@ path (`discSubmittable`/`submitDisc`) is untouched and still reads
       CD-TEXT disc's tracks to the active playlist (`addDiscTracks`, now via
       `discOverlayTags`) — the playlist rows show the CD-TEXT disc artist +
       album (not blank), matching GTK/TUI. Per-track titles already inherited.
-- [ ] **FOLLOW-UP (fix while in Xcode) — titles-only CD-TEXT disc pill**: the
-      pill in `DiscDriveView.swift` is currently nested INSIDE the
-      `if let t = discTags, !t.artist.isEmpty || !t.album.isEmpty` header
-      conditional, so a rare CD-TEXT disc that carries track titles but empty
-      artist AND album shows NO pill on mac while GTK/TUI DO show `CD-TEXT`.
-      Lift the pill computation out to use `discMetaSourceBadge(id)`
-      independently of the artist/album line (so it renders whenever a source
-      exists, even titles-only), then eyeball the header layout. Matches
-      GTK/TUI behavior.
+- [ ] **Titles-only CD-TEXT disc pill** (code fixed 2026-08-03 — verify the
+      layout on hardware): the pill used to be nested inside the
+      `!artist.isEmpty || !album.isEmpty` header conditional, so a CD-TEXT
+      disc carrying track titles but empty artist AND album showed no pill on
+      mac while GTK/TUI showed `CD-TEXT`. `discHeaderLine` and
+      `discSourceBadge` are now separate computed properties and the row
+      renders when either is non-nil. On such a disc, confirm the pill
+      appears on its own line under the media summary and that the header
+      doesn't look lopsided with no text beside it.
+
+**Added by the 2026-08-03 review — verify these specifically:**
+
+- [x] **The parser actually parses this drive's output** ✅ verified 2026-08-03: covered by the
+      "Acquisition path + drutil dump capture" item above; it is the
+      gating check for every other CD-TEXT item on this page, because before
+      this review the parser could not have matched any real dump.
+- [x] **Disc-level names land on the disc, not on track 1** ✅ verified 2026-08-03 — header `Bespoke Bounce`, row 1 `Blue Light Boogie`: on a CD-TEXT
+      disc, confirm the album/artist show in the header AND that track 1's
+      row shows track 1's own title — not the album name shifted down by
+      one. This is the `Tracks[0]` = disc indexing.
+- [ ] **A disc whose CD-TEXT names only some tracks**: the named tracks show
+      their titles and the rest stay "Track N" — no blank rows, no
+      off-by-one after the gap.
+- [ ] **Non-ASCII / punctuated names survive** (PARTLY verified 2026-08-03):
+      apostrophes came through the whole chain intact — `Moppin' And Boppin'`
+      and `You's A Viper` render correctly in the disc view. Still untested:
+      `&` and `<` (the entity-resolution path — unit-tested but never seen on
+      a real disc) and accented / non-Latin characters (the
+      `DRCDTextCharacterCodeKey` = 1 encoding path). Needs a disc with those
+      in its CD-TEXT.
+- [ ] **Several language blocks**: a disc with more than one CD-TEXT language
+      block shows the first block's names (English in practice), not a mix.
 
 ---
 

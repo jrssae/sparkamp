@@ -206,6 +206,19 @@ struct DiscDriveView: View {
     private var discTags: DiscTagSet? {
         model.discIdFor(drive).flatMap { model.discOverlayTags($0) }
     }
+    /// The "Artist — Album (year)" line, or nil when the disc has neither an
+    /// artist nor an album worth showing.
+    private var discHeaderLine: String? {
+        guard let t = discTags, !t.artist.isEmpty || !t.album.isEmpty else { return nil }
+        return "\(t.artist)\(t.album.isEmpty ? "" : " — \(t.album)")\(t.year.isEmpty ? "" : " (\(t.year))")"
+    }
+    /// Which cache produced the displayed names — `gnudb`, `edited` or
+    /// `CD-TEXT`. Deliberately independent of `discHeaderLine`: a disc whose
+    /// CD-TEXT carries per-track titles but no disc artist or album still has
+    /// a source worth naming, and GTK and the TUI both badge it.
+    private var discSourceBadge: String? {
+        model.discIdFor(drive).flatMap { model.discMetaSourceBadge($0) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -684,14 +697,16 @@ struct DiscDriveView: View {
                 // Identified disc: artist — album (year) under the media line,
                 // plus a small pill naming where those names came from
                 // (gnudb / edited / CD-TEXT) — mirrors GTK/TUI's badge.
-                if let t = discTags, !t.artist.isEmpty || !t.album.isEmpty {
+                if discHeaderLine != nil || discSourceBadge != nil {
                     HStack(spacing: 6) {
-                        Text("\(t.artist)\(t.album.isEmpty ? "" : " — \(t.album)")\(t.year.isEmpty ? "" : " (\(t.year))")")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(theme.playlistText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        if let source = model.discIdFor(drive).flatMap({ model.discMetaSourceBadge($0) }) {
+                        if let line = discHeaderLine {
+                            Text(line)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(theme.playlistText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        if let source = discSourceBadge {
                             Text(source)
                                 .font(.system(size: 9, weight: .medium))
                                 .padding(.horizontal, 5)

@@ -5,8 +5,27 @@
 
 use super::*;
 
-fn fake_audio_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::OpticalDrive {
-    crate::disc::OpticalDrive {
+/// A fake audio drive whose disc really does produce track entries.
+///
+/// `disc::toc::track_entries` is platform-split: Linux synthesizes a
+/// `cdda://` URI per track straight off the TOC, but macOS lists the AIFF
+/// files in the volume the OS mounted for the disc. So on macOS a drive with
+/// no `mount_path` — or one pointing at an empty directory — yields zero
+/// entries, and every assertion about overlaid titles collapses before it
+/// tests anything. The tempdir gets one file per audio track, named the way
+/// macOS names them ("1 Audio Track.aiff"); Linux ignores it entirely.
+///
+/// The returned `TempDir` owns those files: hold it for the whole test, or
+/// the directory is deleted the moment it drops.
+fn fake_audio_drive(
+    id: &str,
+    toc: crate::disc::DiscToc,
+) -> (crate::disc::OpticalDrive, tempfile::TempDir) {
+    let mount = tempfile::tempdir().unwrap();
+    for t in toc.tracks.iter().filter(|t| t.is_audio) {
+        std::fs::write(mount.path().join(format!("{} Audio Track.aiff", t.number)), []).unwrap();
+    }
+    let drive = crate::disc::OpticalDrive {
         id: id.to_string(),
         label: "Test Drive".to_string(),
         media: crate::disc::MediaInfo {
@@ -19,8 +38,9 @@ fn fake_audio_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::Optical
             capacity_bytes: 0,
         },
         toc: Some(toc),
-        mount_path: None,
-    }
+        mount_path: Some(mount.path().to_path_buf()),
+    };
+    (drive, mount)
 }
 
 /// A data disc: it still reports a readable TOC (so `selected_disc_identity`
@@ -96,11 +116,12 @@ fn cdtext_overlays_only_when_gnudb_absent() {
     app.open_media_library();
     let toc = two_track_toc();
     let discid = crate::disc::discid::freedb_discid(&toc);
+    let (drive, _mount) = fake_audio_drive("/dev/sr0", toc);
     let Mode::MediaLibrary(s) = &mut app.mode else {
         panic!("expected MediaLibrary mode");
     };
     s.tab = MediaLibraryTab::Discs;
-    s.drives = vec![fake_audio_drive("/dev/sr0", toc)];
+    s.drives = vec![drive];
     s.selected_drive = 0;
     // Builds disc_entries ("Track N" placeholders) and applies whatever tags
     // exist yet (none) — mirrors the real Discs-tab entry flow.
@@ -165,11 +186,12 @@ fn tag_editor_seeds_from_cdtext_then_gnudb_wins() {
     app.open_media_library();
     let toc = two_track_toc();
     let discid = crate::disc::discid::freedb_discid(&toc);
+    let (drive, _mount) = fake_audio_drive("/dev/sr0", toc);
     let Mode::MediaLibrary(s) = &mut app.mode else {
         panic!("expected MediaLibrary mode");
     };
     s.tab = MediaLibraryTab::Discs;
-    s.drives = vec![fake_audio_drive("/dev/sr0", toc)];
+    s.drives = vec![drive];
     s.selected_drive = 0;
     app.reload_ml_disc_entries();
 

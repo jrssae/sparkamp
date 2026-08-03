@@ -1052,6 +1052,52 @@ mod tests {
         assert!(p.is_null());
     }
 
+    /// The whole read path a frontend actually walks, against a real disc:
+    /// enumerate drives, hand one back in as JSON, and get an `XmcdEntry`
+    /// out. The unit tests above cover the parser with captured output; this
+    /// is the one that proves detection populates the TOC, the disc-id is
+    /// computed, and the JSON the frontends decode is well-formed — the
+    /// pieces that only exist when a drive and a CD-TEXT disc are present.
+    /// Human-run: `cargo test --lib live_read_cdtext_ffi -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "requires a real audio disc with CD-TEXT in the drive; human-run"]
+    fn live_read_cdtext_ffi() {
+        let drives_json = {
+            let p = unsafe { sparkamp_disc_list_drives(std::ptr::null_mut()) };
+            assert!(!p.is_null(), "list_drives returned null");
+            let s = unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_string();
+            unsafe { super::super::sparkamp_free_string(p) };
+            s
+        };
+        let drives: Vec<crate::disc::OpticalDrive> =
+            serde_json::from_str(&drives_json).expect("drive list should parse");
+        println!("drives: {drives:#?}");
+        let drive = drives
+            .iter()
+            .find(|d| d.media.is_audio_cd)
+            .expect("no audio CD found — load one and retry");
+        assert!(drive.toc.is_some(), "audio CD reported without a TOC");
+
+        let arg = CString::new(serde_json::to_string(drive).unwrap()).unwrap();
+        let out = unsafe { sparkamp_disc_read_cdtext(std::ptr::null_mut(), arg.as_ptr()) };
+        assert!(!out.is_null(), "no CD-TEXT read from {}", drive.id);
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { super::super::sparkamp_free_string(out) };
+        println!("XmcdEntry JSON: {s}");
+
+        let entry: crate::disc::xmcd::XmcdEntry = serde_json::from_str(&s).unwrap();
+        assert!(!entry.discid.is_empty(), "entry carries no disc id");
+        assert!(
+            !entry.album.is_empty() || !entry.artist.is_empty(),
+            "entry has neither album nor artist"
+        );
+        assert_eq!(
+            entry.track_titles.len(),
+            drive.toc.as_ref().unwrap().tracks.iter().filter(|t| t.is_audio).count(),
+            "one title per audio track (empty where CD-TEXT names none)"
+        );
+    }
+
     #[test]
     fn suggest_category_ffi_round_trip() {
         let arg = CString::new("Progressive Rock").unwrap();
