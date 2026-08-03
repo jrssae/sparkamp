@@ -62,11 +62,26 @@ fn build_album_gallery(
             cell.set_margin_bottom(4);
             cell.set_width_request(px_setup.get() + 32);
 
+            // The cover sits in an Overlay so the track-count pill can be
+            // pinned to its bottom-right corner. `bind`/`unbind` below walk
+            // this structure by sibling/child, so the order here is load
+            // bearing: overlay(child = Image, overlay = count Label), then
+            // title, then artist.
+            let art = gtk4::Overlay::new();
+            art.set_halign(Align::Center);
             let img = Image::builder()
                 .pixel_size(px_setup.get())
                 .halign(Align::Center)
                 .build();
-            cell.append(&img);
+            art.set_child(Some(&img));
+
+            let count = Label::builder()
+                .css_classes(["album-cell-count"])
+                .halign(Align::End)
+                .valign(Align::End)
+                .build();
+            art.add_overlay(&count);
+            cell.append(&art);
 
             let title = Label::builder()
                 .css_classes(["album-cell-title"])
@@ -101,7 +116,7 @@ fn build_album_gallery(
             // Copy the fields we need out, then drop the Ref before doing
             // any widget/GTK work (never hold a RefCell-style borrow across
             // a UI call).
-            let (title_text, artist_text, artwork_path, is_no_album, year) = {
+            let (title_text, artist_text, artwork_path, is_no_album, year, track_count) = {
                 let album = boxed.borrow::<crate::media_library::AlbumGroup>();
                 (
                     album.album.clone(),
@@ -109,16 +124,26 @@ fn build_album_gallery(
                     album.artwork_path.clone(),
                     album.is_no_album,
                     album.year,
+                    album.track_count,
                 )
             };
 
             let Some(cell) = li.child().and_then(|c| c.downcast::<GtkBox>().ok()) else {
                 return;
             };
-            let Some(img) = cell.first_child().and_then(|c| c.downcast::<Image>().ok()) else {
+            let Some(art) = cell
+                .first_child()
+                .and_then(|c| c.downcast::<gtk4::Overlay>().ok())
+            else {
                 return;
             };
-            let Some(title_lbl) = img
+            let Some(img) = art.child().and_then(|c| c.downcast::<Image>().ok()) else {
+                return;
+            };
+            if let Some(count_lbl) = art.last_child().and_then(|c| c.downcast::<Label>().ok()) {
+                count_lbl.set_text(&track_count.to_string());
+            }
+            let Some(title_lbl) = art
                 .next_sibling()
                 .and_then(|c| c.downcast::<Label>().ok())
             else {
@@ -232,6 +257,8 @@ fn build_album_gallery(
             .child()
             .and_then(|c| c.downcast::<GtkBox>().ok())
             .and_then(|cell| cell.first_child())
+            .and_then(|c| c.downcast::<gtk4::Overlay>().ok())
+            .and_then(|art| art.child())
             .and_then(|c| c.downcast::<Image>().ok())
         {
             img.clear(); // never let a recycled cell show stale art

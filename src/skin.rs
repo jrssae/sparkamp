@@ -1052,6 +1052,14 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, ".album-cell-artist {{ \
         color: {text_dim}; font-size: {fs}px; \
     }}").unwrap();
+    // Track-count pill overlaid on the bottom-right of the cover. Fixed
+    // black/white rather than skin colours on purpose: it sits on top of
+    // arbitrary cover art, so it needs a contrast floor no skin can undercut.
+    writeln!(css, ".album-cell-count {{ \
+        color: #ffffff; background-color: rgba(0,0,0,0.65); \
+        font-size: {fs}px; font-weight: bold; \
+        padding: 1px 5px; border-radius: 8px; margin: 5px; \
+    }}").unwrap();
 
     // Read-only lyrics viewer (F15): use the skin's body font/size so the
     // lyrics read like the rest of the app. `text` selects the TextView's
@@ -1533,6 +1541,7 @@ mod tests {
         assert!(css.contains(".album-cell"));
         assert!(css.contains(".album-cell-title"));
         assert!(css.contains(".album-cell-artist"));
+        assert!(css.contains(".album-cell-count"));
     }
 
     #[test]

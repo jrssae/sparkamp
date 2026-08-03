@@ -6,10 +6,20 @@ import IOKit.pwr_mgt
 
 /// Convert a fixed-size C byte array (imported as a tuple in Swift) to a String.
 /// Stops at the first null byte; interprets as UTF-8.
+///
+/// Decoded with the stdlib's `String(decoding:as:)` rather than Foundation's
+/// `String(bytes:encoding: .utf8)`, which is *lossy*: it treats a leading
+/// EF BB BF as a byte-order mark and silently drops it. Some real-world tags
+/// carry that BOM inside the album/artist text, and every value that comes
+/// through here is a candidate to be handed straight back to the core as a
+/// lookup key — `sparkamp_ml_album_tracks(album:albumArtist:)` is the one that
+/// caught it. Rust keeps the BOM (U+FEFF has not been Unicode White_Space
+/// since 4.0.1, so `trim()` leaves it), so a stripped copy no longer matched
+/// any row and the album opened empty.
 func cBytesToString<T>(_ value: inout T) -> String {
     withUnsafeBytes(of: &value) { bytes in
         let end = bytes.firstIndex(of: 0) ?? bytes.endIndex
-        return String(bytes: bytes[..<end], encoding: .utf8) ?? ""
+        return String(decoding: bytes[..<end], as: UTF8.self)
     }
 }
 
@@ -219,6 +229,18 @@ struct AlbumGroup: Identifiable {
     /// + artist "" (album/artist strings can contain arbitrary UTF-8, just
     /// not this control character in practice).
     var id: String { "\(album)\u{1}\(albumArtist)" }
+
+    /// Tile caption. Lives here rather than in the cell view because the
+    /// gallery's search filter matches on what the user can actually read —
+    /// typing "no album" has to find the bucket whose raw `album` is "".
+    var displayAlbum: String {
+        isNoAlbum ? "(no album)" : (album.isEmpty ? "Unknown Album" : album)
+    }
+    /// Tile subtitle; empty means no album-artist could be derived (see
+    /// `effective_album_artist` and the F12.2 toggle).
+    var displayArtist: String {
+        albumArtist.isEmpty ? "Unknown Artist" : albumArtist
+    }
 
     init(from c: SparkampAlbum) {
         var c = c

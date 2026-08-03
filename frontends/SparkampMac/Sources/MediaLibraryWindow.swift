@@ -39,6 +39,14 @@ struct MediaLibraryView: View {
     @State private var searchQuery = ""
     @State private var searchDebounce: DispatchWorkItem? = nil
 
+    // Search (Albums tab). Deliberately a second, independent query rather
+    // than a shared one: the two views search different things (tracks vs
+    // album groups), and F12.1 persists each view's last query under its own
+    // id, so folding them together would make Files' saved query reappear in
+    // the gallery. Filtering is instant (in-memory over the loaded album
+    // list), so this one needs no debounce.
+    @State private var albumSearchQuery = ""
+
     // Table sort & selection (Files tab)
     @State private var sortOrder: [KeyPathComparator<MLTrack>] = [KeyPathComparator(\.title)]
     @State private var selection: Set<Int64> = []
@@ -70,7 +78,17 @@ struct MediaLibraryView: View {
             // ── Left sidebar ───────────────────────────────────────────────────
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 2) {
-                    sidebarRow(label: "Files", icon: "music.note.list", target: .files, onSelect: {
+                    // An album drill-down renders in the Files page but is
+                    // still, to the user, somewhere inside Albums — so the
+                    // highlight stays on the Albums row until they leave it.
+                    // GTK does the same (see the comment above
+                    // `on_album_activate` in window/media_library.rs); mac was
+                    // jumping the highlight to Files, which read as "you left
+                    // the gallery" when the ‹ Albums button says otherwise.
+                    let inAlbumDrillDown = (nav == .files && model.mlSelectedAlbum != nil)
+                    sidebarRow(label: "Files", icon: "music.note.list", target: .files,
+                               selected: nav == .files && !inAlbumDrillDown,
+                               onSelect: {
                         // Re-selecting Files directly is the gallery's "back"
                         // affordance — clear the album drill-down filter and
                         // restore the full/searched list (mirrors GTK's
@@ -80,7 +98,9 @@ struct MediaLibraryView: View {
                         nav = .files
                         if hadFilter { reload() }
                     })
-                    sidebarRow(label: "Albums", icon: "square.grid.2x2", target: .albums, onSelect: {
+                    sidebarRow(label: "Albums", icon: "square.grid.2x2", target: .albums,
+                               selected: nav == .albums || inAlbumDrillDown,
+                               onSelect: {
                         // Returning to Albums always lands on the gallery
                         // overview — clear any drill-down filter left set from
                         // a tapped album (mirrors GTK's show_gallery_overview
@@ -133,7 +153,7 @@ struct MediaLibraryView: View {
                     Divider().background(theme.windowBorder)
                     filesBottomBar
                 case .albums:
-                    MLAlbumGallery(nav: $nav, theme: theme)
+                    MLAlbumGallery(nav: $nav, searchQuery: albumSearchQuery, theme: theme)
                 case .playlists:
                     MLPlaylistManagement(nav: $nav, theme: theme)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -358,9 +378,13 @@ struct MediaLibraryView: View {
     }
 
     @ViewBuilder
+    /// `selected` overrides the default "highlighted when `nav == target`"
+    /// rule for the two rows whose highlight and nav case come apart during an
+    /// album drill-down (see the Files/Albums rows above).
     private func sidebarRow(label: String, icon: String, target: MLNavigation,
+                            selected: Bool? = nil,
                             onSelect: (() -> Void)? = nil) -> some View {
-        let isSelected = (nav == target)
+        let isSelected = selected ?? (nav == target)
         let vars = themeManager.currentVars
         Button {
             if let onSelect { onSelect() } else { nav = target }
@@ -637,6 +661,12 @@ struct MediaLibraryView: View {
                 searchField
             }
 
+            // Same widget, same leading slot as the Files search — the two
+            // views should not make the user hunt for the search box.
+            if nav == .albums {
+                albumSearchField
+            }
+
             if case let .playlist(id) = nav,
                let pl = model.mlSavedPlaylists.first(where: { $0.id == id }) {
                 Text(pl.name)
@@ -853,25 +883,60 @@ struct MediaLibraryView: View {
         }
     }
 
+    /// The Files-view search box: query text plus the tracks-table reload it
+    /// drives.
+    ///
+    /// The explicit `.id` here and on `albumSearchField` is not cosmetic. The
+    /// two boxes are the same view type in adjacent conditional branches of
+    /// the toolbar, so SwiftUI was matching them up across a nav change and
+    /// carrying the `TextField`'s editing state from one to the other: leaving
+    /// the gallery and coming back wrote the Files box's empty text into
+    /// `albumSearchQuery`, silently clearing the album filter. Distinct ids
+    /// keep the two identities apart.
     @ViewBuilder
     private var searchField: some View {
+        searchBox(text: $searchQuery, onChange: {
+            // Typing a search query escapes an active album filter
+            // (mirrors GTK's album_filter reset on search input).
+            model.mlSelectedAlbum = nil
+            debounceSearch()
+        }, onClear: {
+            persistSearch("")
+            model.mlSelectedAlbum = nil
+            reload()
+        })
+        .id("ml-search-files")
+    }
+
+    /// The Albums-view search box. Same widget in the same slot as the Files
+    /// one; the gallery reads `albumSearchQuery` and filters its already-loaded
+    /// album list, so there is nothing to reload here.
+    @ViewBuilder
+    private var albumSearchField: some View {
+        searchBox(text: $albumSearchQuery,
+                  onChange: { persistAlbumSearch(albumSearchQuery) },
+                  onClear:  { persistAlbumSearch("") })
+            .id("ml-search-albums")
+    }
+
+    /// Shared chrome for both search boxes, so the Files and Albums views can
+    /// never drift apart visually.
+    @ViewBuilder
+    private func searchBox(text: Binding<String>,
+                           onChange: @escaping () -> Void,
+                           onClear: @escaping () -> Void) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(theme.playlistDurationText)
                 .font(.system(size: 11))
-            TextField("Search…", text: $searchQuery)
+            TextField("Search…", text: text)
                 .textFieldStyle(.plain)
                 .font(themeManager.currentVars.bodyFont)
                 .foregroundStyle(theme.playlistText)
                 .frame(width: 180)
-                .onChange(of: searchQuery) { _, _ in
-                    // Typing a search query escapes an active album filter
-                    // (mirrors GTK's album_filter reset on search input).
-                    model.mlSelectedAlbum = nil
-                    debounceSearch()
-                }
-            if !searchQuery.isEmpty {
-                Button { searchQuery = ""; persistSearch(""); model.mlSelectedAlbum = nil; reload() } label: {
+                .onChange(of: text.wrappedValue) { _, _ in onChange() }
+            if !text.wrappedValue.isEmpty {
+                Button { text.wrappedValue = ""; onClear() } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(theme.playlistDurationText)
                         .font(.system(size: 11))
@@ -956,20 +1021,31 @@ struct MediaLibraryView: View {
     /// `DeviceDetailView`, `MLPlaylistEditor`) already clear on their own
     /// reopen path; this one had been the exception.
     private func restoreOrClearSearch() {
-        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else {
-            searchQuery = ""
-            return
-        }
-        let p = "files".withCString { sparkamp_get_last_search(ctx, $0) }
-        searchQuery = p.map { String(cString: $0) } ?? ""
-        sparkamp_free_string(p)
+        searchQuery = savedSearch(view: "files")
+        albumSearchQuery = savedSearch(view: "albums")
+    }
+
+    /// The saved query for one view id, or "" when the feature is off. The
+    /// empty result is what makes turning the toggle off actually clear the
+    /// boxes on the next open (see `restoreOrClearSearch`).
+    private func savedSearch(view: String) -> String {
+        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else { return "" }
+        let p = view.withCString { sparkamp_get_last_search(ctx, $0) }
+        defer { sparkamp_free_string(p) }
+        return p.map { String(cString: $0) } ?? ""
     }
 
     /// F12.1: remember the "files" view's query for next open (only when the
     /// feature is on; the value is unused otherwise).
-    private func persistSearch(_ q: String) {
+    private func persistSearch(_ q: String) { persistSearch(q, view: "files") }
+
+    /// F12.1 for the gallery, under its own view id so it does not collide
+    /// with the Files query.
+    private func persistAlbumSearch(_ q: String) { persistSearch(q, view: "albums") }
+
+    private func persistSearch(_ q: String, view: String) {
         guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else { return }
-        "files".withCString { vid in
+        view.withCString { vid in
             q.withCString { qv in sparkamp_set_last_search(ctx, vid, qv) }
         }
     }

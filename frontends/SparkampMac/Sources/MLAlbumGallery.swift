@@ -28,6 +28,12 @@ import AppKit
 // `docs/mac-pass-checklist.md`.
 struct MLAlbumGallery: View {
     @Binding var nav: MLNavigation
+    /// Live text from the Media Library toolbar's search field, which renders
+    /// in the same leading slot for this view as it does for Files. Filtering
+    /// happens here rather than in the core: the whole album list is already
+    /// in memory and a substring match over a few thousand rows is far cheaper
+    /// than a round trip through `sparkamp_ml_albums` per keystroke.
+    let searchQuery: String
     let theme: SkinTheme
 
     @EnvironmentObject var model: SparkampModel
@@ -53,13 +59,26 @@ struct MLAlbumGallery: View {
         [GridItem(.adaptive(minimum: CGFloat(thumbPx), maximum: CGFloat(thumbPx) * 1.35), spacing: 16)]
     }
 
+    /// Albums matching the toolbar query. Matched against the *displayed*
+    /// title and artist, not the raw fields, so "(no album)" and "Unknown
+    /// Artist" find the tiles that show those words — a user searching for
+    /// what they can read on screen is the case worth serving.
+    private var visibleAlbums: [AlbumGroup] {
+        let q = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return albums }
+        return albums.filter {
+            $0.displayAlbum.localizedCaseInsensitiveContains(q)
+                || $0.displayArtist.localizedCaseInsensitiveContains(q)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().background(theme.windowBorder)
-            if albums.isEmpty {
+            if visibleAlbums.isEmpty {
                 Spacer()
-                Text("No albums yet.\nAdd a folder to your library to see albums here.")
+                Text(emptyMessage)
                     .multilineTextAlignment(.center)
                     .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
@@ -67,7 +86,7 @@ struct MLAlbumGallery: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 20) {
-                        ForEach(albums) { album in
+                        ForEach(visibleAlbums) { album in
                             AlbumCell(
                                 album: album,
                                 thumbPx: thumbPx,
@@ -94,13 +113,26 @@ struct MLAlbumGallery: View {
         .onChange(of: model.mlScanRunning) { _, running in if !running { reloadAlbums() } }
     }
 
+    /// Distinguishes "your library has no albums" from "your query matched
+    /// none of them" — the fix for the first is adding a folder, for the
+    /// second it's clearing the search.
+    private var emptyMessage: String {
+        albums.isEmpty
+            ? "No albums yet.\nAdd a folder to your library to see albums here."
+            : "No albums match your search."
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
             Text("Albums")
                 .font(theme.vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistDurationText)
-            if !albums.isEmpty {
-                Text("\(albums.count)")
+            if !visibleAlbums.isEmpty {
+                // `verbatim:` — a bare "\(count)" would go through
+                // LocalizedStringKey and pick up the locale's grouping
+                // separator, printing a 1,234-album library as "1,234" while
+                // every other count in this window ("278 tracks") stays plain.
+                Text(verbatim: "\(visibleAlbums.count)")
                     .font(.system(size: 10))
                     .foregroundStyle(theme.playlistDurationText)
             }
@@ -220,7 +252,11 @@ private struct AlbumCell: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if let year = album.year {
-                        Text("· \(year)")
+                        // `verbatim:` is load-bearing: the LocalizedStringKey
+                        // overload formats an interpolated integer through the
+                        // current locale, which turned every release year into
+                        // "2,014".
+                        Text(verbatim: "· \(year)")
                             .font(.system(size: 11))
                             .foregroundStyle(theme.playlistDurationText)
                     }
@@ -237,12 +273,8 @@ private struct AlbumCell: View {
         .onAppear(perform: loadArt)
     }
 
-    private var displayAlbum: String {
-        album.isNoAlbum ? "(no album)" : (album.album.isEmpty ? "Unknown Album" : album.album)
-    }
-    private var displayArtist: String {
-        album.albumArtist.isEmpty ? "Unknown Artist" : album.albumArtist
-    }
+    private var displayAlbum: String { album.displayAlbum }
+    private var displayArtist: String { album.displayArtist }
 
     @ViewBuilder
     private var cover: some View {
@@ -258,6 +290,22 @@ private struct AlbumCell: View {
         .frame(width: CGFloat(thumbPx), height: CGFloat(thumbPx))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.windowBorder, lineWidth: 1))
+        .overlay(alignment: .bottomTrailing) { trackCountBadge }
+    }
+
+    /// How many of this album's tracks are in the library, as a small pill in
+    /// the bottom-right of the cover. Sits on its own translucent backing so
+    /// it stays legible over both a bright cover and the dark placeholder.
+    private var trackCountBadge: some View {
+        Text(verbatim: "\(album.trackCount)")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                Capsule().fill(Color.black.opacity(0.65))
+            )
+            .padding(5)
     }
 
     /// Same "no artwork" treatment as the A6 artwork window / A1 panel

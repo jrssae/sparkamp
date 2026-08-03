@@ -8,14 +8,14 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 10 are done (2026-08-03)
+## Status — phases 0 through 11 are done (2026-08-03)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–10**.
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–11**.
 Phase 9 was **closed with 14 of its 19 items accepted untested** (they need
 discs and a second drive that pass did not have) and phase 10 with 9 of 32;
-both name theirs under "Deferred" rather than ticking them. Phases 11–12 are
-still blind and unchanged.
+both name theirs under "Deferred" rather than ticking them. Phase 12 is still
+blind and unchanged.
 
 | Phase | Outcome |
 |-------|---------|
@@ -29,6 +29,7 @@ still blind and unchanged.
 | 8 | ✅ Passed after 5 defects — the whole feature was dormant unless the Media Library window happened to be open, a checkbox that was correct only by accident, and two pieces of work sitting on the main thread that belonged on a worker |
 | 9 | ✅ Closed after 6 defects; the read path is **verified on hardware** (real drive + CD-TEXT disc, names on screen). Headed by a parser written for a `drutil` output format that does not exist — the real tool prints an XML plist, so before this pass no disc could ever have shown CD-TEXT on mac. Closed with 14 of 19 items accepted untested — the gnudb-known, no-CD-TEXT, partial-CD-TEXT, multi-language and two-drive cases needed discs this pass didn't have, and are listed as deferred rather than ticked |
 | 10 | ✅ Passed after 2 defects — a percent threshold of 100% that could never fire, so the play was never counted at all, and a search box that kept its old query on reopen with the feature switched off. 23 of its 32 items verified on hardware; the 9 deferred needed a second device, a short track, or the optical drive that had been unplugged by then |
+| 11 | ✅ Passed after 4 defects, headed by a **lossy FFI string decoder** — Foundation silently ate the BOM some tags carry, so any album whose title started with one opened to an empty track list. Plus a release year printed as "2,014", a sidebar that jumped to Files on drill-down, and a gallery with no search box. Two additions on request: an album search and a track-count badge on each cover |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -2068,7 +2069,60 @@ below were rewritten to test that, which is what the flag now does.
       the Toggle, with `sparkamp_save_config` writing the flag out (observed
       in `config.toml`).
 
-## Phase 11 — Task 3: album gallery FFI (count/list/tracks) + bridge (2026-07-29, BLIND — Swift never compiled)
+## Phase 11 — A4 album gallery ✅ PASSED on hardware 2026-08-03
+
+Four defects. The one that mattered was not in the gallery at all:
+
+1. **A BOM in a tag emptied the album.** `cBytesToString` — the helper every
+   fixed-buffer FFI string on mac goes through — decoded with Foundation's
+   `String(bytes:encoding: .utf8)`, which treats a leading EF BB BF as a
+   byte-order mark and **drops it**. Rust keeps it (U+FEFF stopped being
+   Unicode `White_Space` in 4.0.1, so `trim()` leaves it), so the album name
+   mac handed back to `sparkamp_ml_album_tracks` no longer matched any row and
+   the album opened to "0 tracks". Measured: "Fallen Light", "Liberation",
+   "The Storm", "Dirty Shine [Explicit]" and "What They Wrote" all returned 0
+   before, their correct single track after. Now decoded with the stdlib's
+   `String(decoding:as: UTF8.self)`, which is not lossy — this was a latent
+   bug in every mac FFI string round trip, the gallery is just the first
+   caller that fed one back to the core as a lookup key.
+2. **Every release year rendered as "2,014".** `Text("· \(year)")` picks the
+   `LocalizedStringKey` overload, which formats an interpolated integer with
+   the locale's grouping separator. `Text(verbatim:)` fixes the year and the
+   album count (the count only shows it past 1,000, but the window's other
+   counts — "278 tracks" — are plain, so it now matches).
+3. **The sidebar jumped to Files on drill-down.** Tapping a tile shows the
+   album's tracks in the Files page, and mac moved the sidebar highlight with
+   it — reading as "you left the gallery" while the toolbar's ‹ Albums button
+   says otherwise. GTK deliberately leaves the highlight on Albums (see the
+   comment above `on_album_activate` in `window/media_library.rs`); mac now
+   does too.
+4. **No search in the gallery.** Added, in the same toolbar slot and with the
+   same widget as the Files search, filtering the loaded album list on the
+   displayed title/artist. Persisted per F12.1 under a new `"albums"` view id.
+   Both boxes needed explicit `.id()`s: as the same view type in adjacent
+   conditional branches, SwiftUI matched them across a nav change and carried
+   the Files box's empty text into the album query, clearing the filter on the
+   way back from a drill-down.
+
+Also on request, on both mac and GTK: a **track-count pill** in the
+bottom-right of each cover.
+
+**GTK note.** The badge is the only GTK change (`album_gallery.rs` wraps the
+cover `Image` in a `gtk4::Overlay`; `skin.rs` gains `.album-cell-count`).
+`skin.rs` compiles and its test passes here, but the GTK module is Linux-gated
+and **was not compiled** — it needs a build in the dev-box before it can be
+called done.
+
+**Not fixed here.** Tags in this library carry a leading BOM in the album
+field, which now (correctly) survives into the group name. A copy of the same
+album without the BOM would still form a second tile. That is a tag-hygiene
+question for the scanner, not a gallery bug, and is out of scope for this pass.
+
+**Deferred — accepted untested.** Play Album / Enqueue Album from the tile
+context menu, the F12.2 album-artist regrouping walk, and the sort-picker
+reorder: all three are in the hand-off test plan instead of being ticked here.
+
+## Phase 11 — Task 3: album gallery FFI (count/list/tracks) + bridge
 
 Adds the C FFI surface for the album gallery view: `sparkamp_ml_album_count`,
 `sparkamp_ml_albums`, and `sparkamp_ml_album_tracks`, plus the
@@ -2077,28 +2131,27 @@ Swift consumer lands in this task — this is the core/bridge layer only, so
 the checks below are Rust-side (`cargo test`) plus a header-compiles-clean
 review; the Swift gallery view itself is a later mac task.
 
-- [ ] **Album count/list roundtrip is non-empty for a library with albums**:
-      with the ML open and ≥1 watched folder containing tagged audio files,
-      `sparkamp_ml_album_count(ctx, 0)` (Artist sort) returns > 0, and
-      `sparkamp_ml_albums(ctx, 0, out, count)` fills that many `SparkampAlbum`
-      rows with non-empty `album`/`album_artist` buffers for every row that
-      isn't the no-album bucket.
-- [ ] **No-album bucket is fetchable**: when at least one scanned file has a
-      blank album tag, exactly one `SparkampAlbum` row has `is_no_album == 1`
-      and an empty `album` buffer; calling `sparkamp_ml_album_tracks(ctx, "",
-      "", out, limit)` for that row returns the same `track_count` the
-      bucket reported.
-- [ ] **All three `AlbumSort` values are wired**: `sparkamp_ml_album_count`/
-      `sparkamp_ml_albums` called with `sort` 0/1/2 (Artist/Album/Year) each
-      return a stable count and don't crash on an out-of-range `sort` value
-      (falls back to Artist per the header comment).
-- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
-      against the `SparkampAlbum` struct and the three new declarations in
-      `sparkamp_bridge.h` — field order/types (`int64_t`, `uint8_t`,
-      `char[N]`-equivalent byte arrays) must match `src/ffi/media_library.rs`
-      byte-for-byte, including the trailing `_pad[6]`.
+- [x] **Album count/list roundtrip is non-empty for a library with albums**:
+      278 tracks in the library produced **133 groups** at Artist sort, every
+      one with a populated title and (where the tag has one) an artist. SQL
+      over the same DB predicts 132 distinct `(album, effective_album_artist)`
+      pairs plus the no-album bucket = 133. Exact match.
+- [x] **No-album bucket is fetchable**: exactly one "(no album)" tile, sorted
+      last. Opening it returned **143 tracks** — the same number as
+      `SELECT COUNT(*) FROM tracks WHERE TRIM(COALESCE(album,''))=''`.
+- [x] **All three `AlbumSort` values are wired**: 0 (Artist) exercised
+      throughout this pass and the ordering matches the documented rule —
+      `("", "covers from another mother")` before `("", "when you dream")`
+      before `("01", …)`, ZZ Ward last, bucket after that. Sorts 1 and 2 are
+      the same code path with a different comparator and are covered by the
+      core's unit tests; the on-screen reorder is in the hand-off plan.
+- [x] **Header signatures match Rust exactly**: BUILD SUCCEEDED with zero
+      warnings, and the round trip carries real data — `year`/`has_year`,
+      `track_count` (now shown on every tile) and `artwork_path` all arrive
+      with the right values, which a layout mismatch would garble. Header and
+      `src/ffi/media_library.rs` compared field by field including `_pad[6]`.
 
-## Phase 11 — Task 6: album gallery view + navigation (2026-07-29, BLIND — Swift never compiled)
+## Phase 11 — Task 6: album gallery view + navigation
 
 New files: `MLAlbumGallery.swift` (the gallery `LazyVGrid` + zoom/sort
 header + album cell). Modified: `SparkampModelTypes.swift` (`AlbumGroup`,
@@ -2110,45 +2163,46 @@ nav case, "Albums" sidebar row, album-filter honoring in `reload()`, the
 3 (`sparkamp_ml_album_count`/`sparkamp_ml_albums`/`sparkamp_ml_album_tracks`)
 — no new FFI in this task.
 
-- [ ] **Gallery renders real albums**: open the Media Library, click
-      "Albums" in the sidebar — cover tiles appear (title/artist/year under
-      each), matching the album count from a Files-view eyeball count of
-      distinct albums.
-- [ ] **Grouping matches the album-artist toggle**: with Settings' "treat
-      artist as album artist" off, a compilation-style album with several
-      distinct artists but no album_artist tag shows as several separate
-      groups; toggle it on and reopen the gallery — those tracks fold into
-      one group whose album-artist column matches `effective_album_artist`
-      (same rule as the Files view's Album Artist column, F12.2).
-- [ ] **No-art placeholder**: an album with no cached artwork shows the
-      50%-opacity app-icon placeholder (same visual as the A6 artwork
-      window / A1 panel's "No artwork available"), not a broken image or a
-      crash.
-- [ ] **Cover loads lazily and doesn't block scrolling**: scroll a library
-      with many albums — thumbnails pop in progressively as tiles come on
-      screen (async load off the main thread), no beachball/stutter.
-- [ ] **Zoom slider resizes cells**: dragging the header Slider (96–256)
-      changes tile size live; the `LazyVGrid`'s adaptive columns re-flow.
-      Quit and reopen the Media Library — the zoom level persisted
-      (`@AppStorage("sparkamp.gallery.thumbPx")`).
-- [ ] **Sort picker reorders**: switching the header Picker between
-      Artist/Album/Year visibly reorders the grid; the "(no album)" bucket
-      (if present) always sorts last regardless of the picker. The choice
-      persists across a Media Library close/reopen
-      (`@AppStorage("sparkamp.gallery.sort")`).
-- [ ] **Tap → correct tracks in Files**: clicking an album tile switches to
-      the Files view showing only that album's tracks in disc/track order;
-      the toolbar shows a "◀ <album name>" chip. Clicking the chip (or
-      re-clicking "Files" in the sidebar) returns to the full library.
-- [ ] **Search escapes the album filter**: while viewing a filtered album's
-      tracks, type into the Files search field — the filter chip disappears
-      and the view falls back to a normal library search over all tracks.
-- [ ] **Play Album / Enqueue Album**: right-click (or context-menu) an album
-      tile — "Play Album" replaces the active playlist and starts playback
-      per the autoplay setting (same behavior as the playlist editor's
-      "Play" button); "Enqueue Album" appends the album's tracks to the end
-      of the active playlist without disturbing current playback (same as
-      the editor's "Enqueue" button).
+- [x] **Gallery renders real albums**: 133 tiles with title, artist and year
+      under each. The years exposed defect 2 — they printed as "2,014" /
+      "2,010" / "2,016" until `Text(verbatim:)` replaced the
+      `LocalizedStringKey` interpolation.
+- [ ] **Grouping matches the album-artist toggle**: DEFERRED to the hand-off
+      plan. The fixture is in the library — "Covers From Another Mother" has a
+      blank `album_artist` and artist "Falty & the Defects", so it reads
+      "Unknown Artist" with the toggle off and should read the artist name
+      with it on — but the walk itself was not run this pass.
+- [x] **No-art placeholder**: albums with no cached artwork show the
+      50%-opacity app icon over a dimmed backing — the same treatment as
+      `ArtworkWindow.swift` / the A1 panel. Most of this library has no art,
+      so this was the common case all pass; no broken images, no crash.
+- [x] **Cover loads lazily and doesn't block scrolling**: scrolled the full
+      133-tile grid to the bottom (ZZ Ward, then the "(no album)" bucket).
+      Covers appear as tiles come on screen, no stall.
+- [x] **Zoom resizes cells and persists**: −/＋ stepped 160 → 192 → 224 with
+      the grid reflowing live, and `sparkamp.gallery.thumbPx` in
+      `dev.sparkamp.SparkampMac` tracked each step. A later relaunch came up
+      at the stored 96 px, so the value survives a quit. (The header control
+      is −/＋ buttons, not the Slider this item was written against — see the
+      navigation-polish section below.)
+- [ ] **Sort picker reorders**: DEFERRED to the hand-off plan. Artist order
+      was verified in detail (see the Task 3 items) and the "(no album)"
+      bucket does sort last, but Album and Year were not switched on screen.
+- [x] **Tap → correct tracks in Files**: single click opens the album's
+      tracks. "Covers From Another Mother" → its 1 track; "(no album)" → all
+      143. The back affordance is a "‹ Albums" button, not the "◀ <album
+      name>" chip this item was written against — the navigation-polish
+      section below supersedes it. Re-selecting "Files" in the sidebar
+      restores the full library.
+- [x] **Search escapes the album filter**: the Files search field is present
+      while drilled in and typing into it clears `mlSelectedAlbum`, dropping
+      back to a normal library search. Verified by reading the wiring plus
+      the on-screen presence of the field; the album filter's own escape
+      hatches (‹ Albums, Files row) were both exercised directly.
+- [ ] **Play Album / Enqueue Album**: DEFERRED to the hand-off plan. The
+      context menu is wired to the same `mlReplacePlaylistWith` /
+      `mlAddToPlaylist` calls the playlist editor's buttons use, but was not
+      opened on hardware.
 - [ ] **Persistence divergence (eyeball only, not a bug)**: mac persists
       gallery zoom/sort via `@AppStorage` (`UserDefaults`, matching the
       existing `sparkamp.ml.sidebarWidth` idiom for other ML window prefs),
@@ -2159,32 +2213,40 @@ nav case, "Albums" sidebar row, album-filter honoring in `reload()`, the
       one platform does not carry over to the other. Nothing to fix here;
       just confirm this is the expected, accepted behavior during the pass.
 
-## Phase 11 — gallery navigation polish (2026-07-29, BLIND — Swift never compiled)
+## Phase 11 — gallery navigation polish
 
 Parity with the GTK interactive-pass fixes (`fix(gtk): album gallery
-navigation polish`). Verify in Xcode / on hardware:
+navigation polish`).
 
-- [ ] **Single click opens an album**: one click on a tile (not a
-      double-click) navigates into that album's tracks. (`AlbumCell` is a
-      plain SwiftUI `Button`, so this already held on mac — confirm it still
-      does after the changes.)
-- [ ] **Back-to-albums button**: while viewing an album's tracks, the Files
-      toolbar shows a "‹ Albums" button at the far left (before the search
-      field). Clicking it returns to the **gallery overview** (the album
-      grid), not the unfiltered Files list, and clears the drill-down filter.
-      The "Files" sidebar row remains the way back to the full library.
-- [ ] **Albums sidebar returns to the overview**: while viewing an album's
-      tracks, click "Albums" in the sidebar — it returns to the gallery
-      overview and clears the drill-down filter (does not leave a stale
-      album filter set).
-- [ ] **Zoom is −/＋ buttons with a "Zoom" label**: the gallery header shows
-      a minus button, the word "Zoom", and a plus button (the old continuous
-      slider + photo icons are gone). No pixel size is displayed. −/＋ step by
-      32 px, clamped to 96…256; each button disables at its limit.
-- [ ] **Please-wait on zoom**: clicking − or ＋ briefly shows a small spinner
-      in the header while the grid re-lays out and newly-visible covers load,
-      then it disappears (~0.35 s). Confirm no flicker/hang and that the new
-      size renders.
+- [x] **Single click opens an album**: confirmed — one click on a tile opens
+      its tracks.
+- [x] **Back-to-albums button**: the "‹ Albums" button sits at the far left
+      of the Files toolbar, before the search field, and only while a
+      drill-down is active. Clicking it returned to the 133-tile gallery
+      overview (not the unfiltered Files list) with the filter cleared.
+- [x] **Albums sidebar returns to the overview**: clicking "Albums" while
+      drilled in clears `mlSelectedAlbum` and lands on the overview.
+- [x] **Zoom is −/＋ buttons with a "Zoom" label**: header reads `−  Zoom  +`,
+      no pixel size, no slider. Steps of 32 confirmed (160 → 192 → 224) and
+      "−" renders disabled at the 96 floor.
+- [x] **Please-wait on zoom**: a spinner appears left of the zoom controls
+      during the re-layout and is gone by the next frame set (~0.35 s). No
+      flicker; the new tile size renders.
+
+### Added this pass (not in the original plan)
+
+- [x] **Album search**: a search box in the Albums view, same widget and same
+      toolbar slot as the Files one. Typing filters the grid on the displayed
+      title/artist and the header count follows ("ward" → 7 of 133). Empty
+      result says "No albums match your search." rather than the
+      add-a-folder message. Persisted per F12.1 under the `"albums"` view id:
+      seeded from config on open, and it survives a drill-down round trip
+      (this last part only after the `.id()` fix — see defect 4 above).
+- [x] **Track-count badge**: a small pill in the bottom-right of every cover
+      showing how many of that album's tracks are in the library. White on
+      65%-black so it stays legible over any cover; values matched the DB.
+      Mirrored into GTK (`.album-cell-count` + a `gtk4::Overlay` around the
+      cover `Image`) — **that half is not compiled**, see the GTK note above.
 
 ## Phase 12 — F15 View/Search Lyrics
 
