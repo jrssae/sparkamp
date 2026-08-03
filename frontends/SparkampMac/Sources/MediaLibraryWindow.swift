@@ -196,13 +196,7 @@ struct MediaLibraryView: View {
             model.pollDevices()   // populate the Devices group immediately
             model.pollDiscDrives()  // and the Disc Drives group (background)
             model.startUnsupportedWatch()  // begin iOS/PTP recognition
-            // F12.1: restore the "files" view's saved query before the
-            // initial fetch, if the feature is on.
-            if let ctx = model.ctx, sparkamp_get_remember_search(ctx) {
-                let p = "files".withCString { sparkamp_get_last_search(ctx, $0) }
-                searchQuery = p.map { String(cString: $0) } ?? ""
-                sparkamp_free_string(p)
-            }
+            restoreOrClearSearch()
             reload()
             // Honor a pending auto-open request (audio CD inserted while the
             // window was closed): the onChange below can't fire for a value set
@@ -948,6 +942,27 @@ struct MediaLibraryView: View {
         }
         searchDebounce = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
+    }
+
+    /// F12.1: seed the Files search box when the window opens — from the saved
+    /// "files" query if the feature is on, otherwise empty.
+    ///
+    /// The clear is not redundant. This is a SwiftUI `Window` scene, so closing
+    /// the Media Library does not tear the view down: `searchQuery` is still
+    /// holding whatever was typed the last time it was open. Without the else
+    /// branch, turning the feature OFF left the old query in the box (and the
+    /// list filtered by it) on the next open — the one behavior the toggle
+    /// promises not to change. The three sibling views (`DiscDriveView`,
+    /// `DeviceDetailView`, `MLPlaylistEditor`) already clear on their own
+    /// reopen path; this one had been the exception.
+    private func restoreOrClearSearch() {
+        guard let ctx = model.ctx, sparkamp_get_remember_search(ctx) else {
+            searchQuery = ""
+            return
+        }
+        let p = "files".withCString { sparkamp_get_last_search(ctx, $0) }
+        searchQuery = p.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(p)
     }
 
     /// F12.1: remember the "files" view's query for next open (only when the

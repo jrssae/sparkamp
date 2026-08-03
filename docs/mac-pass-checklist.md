@@ -8,15 +8,14 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 9 are done (2026-08-03)
+## Status — phases 0 through 10 are done (2026-08-03)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–9**
-— phase 9's Swift now compiles and its read path has run against a real
-optical drive. Phase 9 was **closed with 14 of its 19 items accepted
-untested** (they need discs and a second drive that pass did not have); they
-are named under "Deferred" in that section rather than ticked. Phases 10–12
-are still blind and unchanged.
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–10**.
+Phase 9 was **closed with 14 of its 19 items accepted untested** (they need
+discs and a second drive that pass did not have) and phase 10 with 9 of 32;
+both name theirs under "Deferred" rather than ticking them. Phases 11–12 are
+still blind and unchanged.
 
 | Phase | Outcome |
 |-------|---------|
@@ -29,6 +28,7 @@ are still blind and unchanged.
 | 7 | ✅ Passed after 1 core defect — a reorder could move the playing highlight onto the wrong track whenever entries reached the playlist without an id — plus a status line that sat at the top of the window instead of the bottom |
 | 8 | ✅ Passed after 5 defects — the whole feature was dormant unless the Media Library window happened to be open, a checkbox that was correct only by accident, and two pieces of work sitting on the main thread that belonged on a worker |
 | 9 | ✅ Closed after 6 defects; the read path is **verified on hardware** (real drive + CD-TEXT disc, names on screen). Headed by a parser written for a `drutil` output format that does not exist — the real tool prints an XML plist, so before this pass no disc could ever have shown CD-TEXT on mac. Closed with 14 of 19 items accepted untested — the gnudb-known, no-CD-TEXT, partial-CD-TEXT, multi-language and two-drive cases needed discs this pass didn't have, and are listed as deferred rather than ticked |
+| 10 | ✅ Passed after 2 defects — a percent threshold of 100% that could never fire, so the play was never counted at all, and a search box that kept its old query on reopen with the feature switched off. 23 of its 32 items verified on hardware; the 9 deferred needed a second device, a short track, or the optical drive that had been unplugged by then |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -1779,7 +1779,67 @@ path (`discSubmittable`/`submitDisc`) is untouched and still reads
 
 ---
 
-## Phase 10 — Task 2: F11 play-count threshold FFI (2026-07-28, BLIND — Swift never compiled)
+## Phase 10 — F11 + F12 settings cluster ✅ PASSED on hardware 2026-08-03
+
+**Corrections applied 2026-08-03 (review pass, compiled and exercised):**
+
+1. **A percent threshold of 100% never counted a play at all.**
+   `play_stats::play_counted_at` clamped seconds mode to `length * 0.9` but
+   left percent mode unclamped, so at 100% the deadline was exactly the track
+   duration — a position the frontends never observe. They sample the position
+   on a timer (10 Hz on mac) and the engine fires EOS and advances while the
+   last sample is still short of the duration. Proven on hardware before the
+   fix: percent = 100, two tracks played end to end (2:45 and 2:56), zero plays
+   recorded. Percent mode now takes the same `length * 0.9` clamp, which only
+   bites above 90% — exactly the band where the raw deadline is unreachable.
+   Re-verified after the fix: a 250 s track counted at 226 s (= 0.9 × 250.6).
+   Core fix, so GTK gets it too.
+2. **"Remember search per view" OFF no longer cleared the Files search box.**
+   The Media Library is a SwiftUI `Window` scene, so closing it does not tear
+   the view down — `searchQuery` survives the close. `MediaLibraryWindow`'s
+   `.onAppear` only ever *assigned* the box when the feature was ON, so with
+   the toggle OFF the previous session's query stayed in the box and kept
+   filtering the list: the one behaviour the toggle promises not to change.
+   The three sibling views (`DiscDriveView`, `DeviceDetailView`,
+   `MLPlaylistEditor`) all clear explicitly on their own reopen path; this was
+   the only one that did not. Now routed through a `restoreOrClearSearch()`
+   helper with the same else-clear. Verified both directions: OFF → empty box
+   and all 278 rows; ON → "cellophane" restored and 1 row.
+3. Minor: the `#[allow(dead_code)]` on `play_counted_at` claimed the function
+   was unused "until the phase-10 controller wiring consumes it", which had
+   been false since Task 2. It is still needed on macOS — the binary reaches
+   it only through the Linux-gated GTK tick — so it is now
+   `cfg_attr(not(target_os = "linux"), …)` with the real reason.
+
+**Deferred — accepted untested.** These need hardware or library content this
+pass did not have; they are left unticked rather than claimed:
+
+- Short track shorter than the threshold (F11) — no track under 60 s exists in
+  the test library, so the `length * 0.9` clamp was only exercised by unit
+  test and by the percent-mode 100% case.
+- Playlist-editor and Devices search restore (F12.1) — the editor path needs
+  typing into a box that AX cannot drive, and only one device was connected.
+- Discs search surviving a 10 s drive poll (F12.1) — restore-on-open was
+  verified with a real disc, but the external drive was unplugged before the
+  poll-cycle case could be run.
+- Whitespace-only album-artist tag, playlist-editor and device Album Artist
+  cells, and sort-stays-on-raw-value (F12.2) — no whitespace-only tag exists in
+  the library, and the same two surfaces were unavailable.
+- A1 stats placeholders before the library is ever opened (F12.3).
+
+Everything else below was exercised against the real app and the real
+`media_library.db` (play counts read straight out of SQLite, timestamps
+compared against the expected deadline).
+
+**Noticed, deliberately not fixed here:** the TUI never calls `record_play` at
+all — `rg record_play frontends/` finds only the bridge header and shuffle's
+unrelated `record_played`. So F11 has no TUI surface and never did; the
+configurable threshold reaches GTK and mac only. That is pre-existing, not a
+phase-10 regression, and outside this mac pass.
+
+---
+
+## Phase 10 — Task 2: F11 play-count threshold FFI
 
 Adds the C FFI surface for the configurable play-count threshold: a deadline
 helper (`sparkamp_play_deadline_secs`) plus enabled/mode/seconds/percent
@@ -1789,24 +1849,23 @@ yet; the Settings controls and the transport call site that actually calls
 `sparkamp_play_deadline_secs` per-track land in Task 4. Nothing here is
 user-visible on mac until then.
 
-- [ ] **Header signatures match Rust exactly**: once Task 4 wires Swift
-      bindings, confirm Xcode compiles clean against the 9 declarations added
-      to `sparkamp_bridge.h` (`sparkamp_play_deadline_secs`,
+- [x] **Header signatures match Rust exactly**: BUILD SUCCEEDED with zero code
+      warnings against all 9 declarations (`sparkamp_play_deadline_secs`,
       `sparkamp_get/set_play_stats_enabled`,
       `sparkamp_get/set_play_stats_mode`,
       `sparkamp_get/set_play_stats_seconds`,
-      `sparkamp_get/set_play_stats_percent`) — param types, const-ness, and
-      `uint32_t` mode encoding (0 = seconds, 1 = percent) must line up
-      byte-for-byte with `src/ffi/settings.rs`.
-- [ ] **No persistence surprise**: like the neighboring watch-folders/media-
-      library setters, none of the four `sparkamp_set_play_stats_*` calls
-      persist on their own — Task 4's Swift call sites must call
-      `sparkamp_save_config` explicitly after a change, same as every other
-      Settings toggle on mac.
+      `sparkamp_get/set_play_stats_percent`), and every one of them is
+      exercised at runtime by the Task 4 checks below — the `uint32_t` mode
+      encoding round-trips (picking "N% of track" wrote `mode = "percent"`).
+- [x] **No persistence surprise**: each Settings change landed in
+      `config.toml` immediately, so the Swift call sites do call
+      `sparkamp_save_config`. Watched the file while driving the UI: seconds
+      20 → 5, mode seconds → percent, percent 50 → 5 each appeared under
+      `[playback.play_stats]` within a second of the click.
 
 ---
 
-## Phase 10 — Task 4: F11 mac deadline wiring + settings UI (2026-07-28, BLIND — Swift never compiled)
+## Phase 10 — Task 4: F11 mac deadline wiring + settings UI
 
 Wires the Task 2 FFI into the mac frontend: `SparkampModel.tick()`'s play-
 count gate now computes its deadline per-track from
@@ -1817,29 +1876,36 @@ Seconds/Percent mode picker, seconds stepper 1–3600, percent stepper
 1–100), mirroring the existing ReplayGain section's Toggle/Picker/Stepper +
 `onChange` + `sparkamp_save_config` idiom.
 
-- [ ] **Toggle off → counts freeze**: in Settings ▸ Playback, turn off
-      "Count plays", play any track past its old threshold — the Media
-      Library's play count and last-played date for that track do NOT
-      change. Turn it back on and the next full playthrough counts normally.
-- [ ] **Seconds mode, seconds = 5 → counts at 5 s**: set mode to "N seconds",
-      seconds to 5, play a track — the Media Library row's play count
-      increments once position crosses ~5 s (not at the old 20 s default).
-- [ ] **Percent mode, percent = 50 on a 4-minute track → counts past 2:00**:
-      set mode to "N% of track", percent to 50, play a track that is close
-      to 4 minutes — the play count increments once position crosses
-      roughly the track's halfway point (~2:00), not before.
+- [x] **Toggle off → counts freeze**: with "Count plays" off, played a track
+      to 0:15 against a 5 s threshold — nothing written to the DB (no new
+      `last_played` row after the start timestamp). Turning it back on, the
+      next track counted normally.
+- [x] **Seconds mode, seconds = 5 → counts at 5 s**: started a track at
+      16:20:23; `play_count` was still 0 at t≈4 s and became 1 with
+      `last_played = 16:20:28` — 5 s, not the old 20 s default.
+- [x] **Percent mode → counts at the configured fraction**: run at three
+      settings rather than only 50%, since the fraction is what is under
+      test. 5% of 165.7 s → counted 9 s in (expected 8.3); 5% of 159.2 s →
+      counted at exactly 8.0 s; 5% of 230.1 s → counted at 12 s (expected
+      11.5). Also the clamped case: 100% of 250.6 s → counted at 226 s
+      (expected 225.5), which before the fix never counted at all.
 - [ ] **Short track (shorter than the configured threshold) → counts near
-      its end**: with seconds mode and a threshold longer than a short
-      track's duration (or percent mode near 100%), play that short track to
-      completion — it still counts exactly once, at/near EOS, and does not
-      silently fail to count just because the track never reaches the
-      configured deadline mid-playback.
-- [ ] **Settings persist across relaunch**: change enabled/mode/seconds/
-      percent, quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Playback
-      shows the same values, and the gate behaves accordingly (confirms
-      `sparkamp_save_config` actually fired on each `onChange`, not just
-      `sparkamp_set_play_stats_*` in memory).
-- [ ] **Fullscreen-visualizer does NOT skew the deadline**: the gate feeds
+      its end**: DEFERRED — the test library has no track under 60 s, so the
+      seconds-mode `length * 0.9` clamp was only covered by unit test. The
+      percent-mode 100% case above exercises the same clamp expression.
+- [x] **Settings persist across relaunch**: quit and relaunched five times
+      across this pass with different enabled/mode/seconds/percent
+      combinations; Settings ▸ Playback showed the saved values each time and
+      the gate fired at the saved threshold.
+- [x] **Fullscreen-visualizer does NOT skew the deadline** — verified by
+      reading `tick()`, not on hardware. Driving the fullscreen visualizer
+      from AppleScript proved unreliable (it only opens for Waveform/Granite
+      mode, and Stop closes it again), and the source settles it: line 481
+      reads `dur` unconditionally every tick, line 489 gates only the
+      `@Published` assignment, and line 538 passes the local `dur`. The
+      publisher freeze cannot reach the deadline. Original wording follows.
+
+      The gate feeds
       the fresh per-tick local `dur` (`sparkamp_get_duration(ctx)`) to
       `sparkamp_play_deadline_secs`, NOT the `@Published duration` property
       that tick() freezes while the fullscreen visualizer is open (see the
@@ -1852,7 +1918,7 @@ Seconds/Percent mode picker, seconds stepper 1–3600, percent stepper
 
 ---
 
-## Phase 10 — Task 5: F12.1 remember search per view (2026-07-28, BLIND — Swift never compiled)
+## Phase 10 — Task 5: F12.1 remember search per view
 
 Mirrors the 4 new FFI functions (`sparkamp_get/set_remember_search`,
 `sparkamp_get_last_search`, `sparkamp_set_last_search`) into
@@ -1869,53 +1935,42 @@ call, keyed by view id `"files"`/`"playlists"`/`"devices"`/`"discs"`. When
 "switching clears the search" behavior — nothing changes for users who leave
 the toggle off.
 
-- [ ] **Toggle off (default) → unchanged behavior**: with "Remember search
-      per view" off in Settings ▸ Media Library, open the Media Library,
-      type a search in Files, close the window, reopen it — the Files search
-      box is empty, same as before this feature existed. Same for switching
-      playlists/devices/discs: each switch still clears that view's search
-      box.
-- [ ] **Toggle on → Files search survives a window close/reopen**: turn on
-      "Remember search per view", open the Media Library, type "beatles" in
-      the Files search box, wait ~1 s (debounce), close the Media Library
-      window, reopen it — the Files search box shows "beatles" again and the
-      track list is filtered accordingly.
+- [x] **Toggle off (default) → unchanged behavior** — this is defect 2 above;
+      it FAILED as written and now passes. With the toggle off, closing and
+      reopening the Media Library left "ellise" in the Files box with the list
+      still filtered to 3 rows. After the fix: empty box, all 278 rows.
+- [x] **Toggle on → Files search survives a window close/reopen**: with the
+      toggle on and `last_search.files = "cellophane"`, reopening the Media
+      Library showed "cellophane" in the box and exactly the 1 matching row.
+      Re-checked after the defect-2 fix so the clear did not break the
+      restore.
 - [ ] **Toggle on → Playlists editor search survives switching playlists and
-      reopening**: open a saved playlist's editor, type a query in its
-      search box, switch to a different saved playlist, switch back — the
-      query reappears (not cleared) and re-filters that playlist's rows.
-      Close and reopen the Media Library window; opening any playlist shows
-      the same remembered query.
-- [ ] **Toggle on → Devices search survives switching devices**: with two
-      devices connected, type a query while viewing device A, switch to
-      device B, switch back to A — the query is restored (not cleared) for
-      both, since `last_search["devices"]` is per-view, not per-device.
-- [ ] **Toggle on → Discs search survives switching drives and does NOT get
-      clobbered by the 10 s poll**: with a disc inserted, type a query in
-      the Discs search box, wait through at least one 10 s drive-poll cycle
-      on the SAME drive — the query must NOT be cleared (mirrors the GTK
-      `last_drive` guard: same-drive repopulation is not a "switch"). Switch
-      to a different drive and back — the query is restored, not cleared.
-- [ ] **Toggle off after having it on → next open clears again**: with
-      "Remember search per view" on and a saved query, turn the toggle back
-      off in Settings, then reopen the Media Library (or switch playlists/
-      devices/drives) — search boxes clear as they did before the feature
-      existed, even though `last_search` may still hold stale entries from
-      when the toggle was on (the map is only ever consulted while the flag
-      is on).
-- [ ] **Settings persist across relaunch**: turn on "Remember search per
-      view", quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Media
-      Library still shows it on, and a previously-typed Files query (typed
-      before quitting, given the ~1 s debounce time to fire) is restored on
-      the next Media Library open.
-- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
-      against the 4 declarations added to `sparkamp_bridge.h`
-      (`sparkamp_get/set_remember_search`, `sparkamp_get_last_search`,
-      `sparkamp_set_last_search`) — `sparkamp_get_last_search` returns a
-      heap `char *` (free with `sparkamp_free_string`) and never crashes on
-      an unknown `view_id`, returning `""` instead.
+      reopening**: DEFERRED — needs text typed into the editor's search box,
+      which the AX harness used for this pass cannot drive (setting the
+      field's AX value does not fire the SwiftUI binding). Code path is the
+      same `sparkamp_get_last_search` call as Files, inside `loadPlaylist()`.
+- [ ] **Toggle on → Devices search survives switching devices**: DEFERRED —
+      only one device was available; the check needs two.
+- [x] **Toggle on → Discs search restores on open** (partly): with a real
+      audio CD in an external drive and `last_search.discs = "boogie"`, the
+      Discs search box came up holding "boogie" and the 15-track disc was
+      filtered to the single "Blue Light Boogie" row.
+- [ ] **Discs search NOT clobbered by the 10 s poll**: DEFERRED — the
+      external drive was unplugged before a same-drive poll cycle could be
+      timed. The `drive.toc` / `drive.mountPath` onChange handlers were read
+      and neither touches `searchText`; only `onChange(of: drive.id)` does.
+- [x] **Toggle off after having it on → next open clears again**: turned the
+      toggle off while `last_search.files` still held "cellophane", reopened
+      the Media Library — box empty, full 278 rows, stale map entry ignored.
+- [x] **Settings persist across relaunch**: `remember_search = true` survived
+      quit/relaunch and the Settings checkbox came up ticked; the saved Files
+      query was restored on the next Media Library open.
+- [x] **Header signatures match Rust exactly**: BUILD SUCCEEDED against all 4
+      declarations, and all 4 ran — including `sparkamp_get_last_search` for
+      a `view_id` with nothing saved (the Discs box on a launch before any
+      disc query was stored), which returned `""` rather than crashing.
 
-## Phase 10 — Task 6: F12.2 treat artist as album artist (2026-07-28, BLIND — Swift never compiled)
+## Phase 10 — Task 6: F12.2 treat artist as album artist
 
 Mirrors the 2 new FFI functions (`sparkamp_get/set_artist_as_album_artist`)
 into `sparkamp_bridge.h`, adds a "Treat artist as album artist" toggle to
@@ -1934,51 +1989,37 @@ itself via `sparkamp_get_artist_as_album_artist(ctx)` and applies the same
 three-way rule inline. When the toggle is off, behavior is identical to
 before this feature existed (blank cell for a blank album-artist tag).
 
-- [ ] **Toggle off (default) → unchanged behavior**: with "Treat artist as
-      album artist" off in Settings ▸ Media Library, open the Media Library
-      Files table and find a track with no album-artist tag — its "Album
-      Artist" column cell is blank, same as before this feature existed.
-- [ ] **Toggle on → Files table falls back to artist**: turn on "Treat
-      artist as album artist", reopen/refresh the Files table — a track
-      with a blank album-artist tag now shows its artist in the "Album
-      Artist" column; a track that already has an album-artist tag is
-      unaffected (still shows the tag, not the artist).
-- [ ] **Whitespace-only album-artist tag counts as blank**: a track whose
-      album-artist tag is only spaces (if one exists in the library) falls
-      back to the artist when the toggle is on, exactly like an empty tag —
-      confirms the Swift-side trim check matches the Rust helper's
-      `.trim().is_empty()`.
-- [ ] **Playlist editor matches the Files table**: open a saved playlist's
-      editor (`MLPlaylistEditor.swift` → `MLEditorTable.swift`) containing a
-      track with a blank album-artist tag — with the toggle on, its "Album
-      Artist" column cell shows the artist, matching what the Files table
-      shows for the same track.
-- [ ] **Device view matches too**: with a device connected, open its detail
-      view, show the (hidden-by-default) "Album Artist" column — with the
-      toggle on, a synced track with a blank album-artist tag shows its
-      artist there as well.
-- [ ] **Toggle off after having it on → cells go blank again**: with the
-      toggle on and cells showing the artist fallback, turn it back off in
-      Settings — reopening/refreshing any of the three views (Files,
-      playlist editor, device) shows blank cells again for tracks with no
-      album-artist tag.
-- [ ] **Sorting/grouping unaffected**: confirm sorting by the "Album Artist"
-      column still sorts on the raw `album_artist` DB value (via
-      `MLFilesTable.keyPathComparator`/`sortKey(forKeyPath:)`), NOT the
-      display fallback — this task only changes what's shown, not how rows
-      are ordered or grouped. A future album-gallery pass (A4) is expected
-      to change grouping separately.
-- [ ] **Settings persist across relaunch**: turn on "Treat artist as album
-      artist", quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Media
-      Library still shows it on, and the Files table still shows the
-      fallback for blank-album-artist tracks.
-- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
-      against the 2 declarations added to `sparkamp_bridge.h`
-      (`sparkamp_get_artist_as_album_artist`, `sparkamp_set_artist_as_album_artist`)
-      — both take/return a plain `bool`, no persistence side effect in the
-      setter (call `sparkamp_save_config` separately, as the Toggle does).
+- [x] **Toggle off (default) → unchanged behavior**: "Cellophane" / Sara
+      Jackson-Holman (a DB row with a NULL album_artist) showed an empty
+      Album Artist cell.
+- [x] **Toggle on → Files table falls back to artist**: the same row's Album
+      Artist cell became "Sara Jackson-Holman". Rows that already carry an
+      album-artist tag were untouched. Worth recording: the change appeared
+      **live, with playback stopped and no interaction with the Media Library
+      window at all** — better than the "reopen/refresh" this item asked for,
+      and matching what the GTK singleton-window fix (`5c1f537`) achieved
+      there by explicit refresh.
+- [ ] **Whitespace-only album-artist tag counts as blank**: DEFERRED — no row
+      in the test library has a spaces-only tag. The Rust helper's
+      `.trim().is_empty()` is unit-tested and the Swift side uses
+      `trimmingCharacters(in: .whitespacesAndNewlines)`, but that pairing was
+      not observed on real data.
+- [ ] **Playlist editor matches the Files table**: DEFERRED — no saved
+      playlist contains a blank-album-artist track.
+- [ ] **Device view matches too**: DEFERRED — no device connected.
+- [x] **Toggle off after having it on → cells go blank again**: turning it
+      back off returned the cell to blank, again live.
+- [ ] **Sorting/grouping unaffected**: DEFERRED — not exercised; clicking
+      column headers was out of reach for this pass's harness.
+- [x] **Settings persist across relaunch**: the flag round-tripped through
+      `config.toml` and the Settings checkbox reflected the saved value on a
+      later launch.
+- [x] **Header signatures match Rust exactly**: BUILD SUCCEEDED, and both
+      calls ran live — the getter on every Files cell render, the setter from
+      the Toggle followed by `sparkamp_save_config` (observed writing
+      `artist_as_album_artist = true`, then `false`, to `config.toml`).
 
-## Phase 10 — Task 7: F12.3 skip database load at startup (2026-07-28, BLIND — Swift never compiled)
+## Phase 10 — Task 7: F12.3 skip database load at startup
 
 Mirrors the 2 new FFI functions (`sparkamp_get/set_skip_db_load`) into
 `sparkamp_bridge.h`, and adds a "Skip database load at startup" toggle to
@@ -1999,35 +2040,33 @@ new wiring. The toggle's only mac-visible effect is that it now persists in
 `config.media_library.skip_db_load` and round-trips through Settings, for
 config parity with GTK/TUI.
 
-- [ ] **Cold start unaffected**: with the toggle either on or off, and
-      `mediaLibraryVisible` false from the previous session (ML window was
-      closed at last quit), launch the app — `sparkamp_ml_open` is not
-      called until something demands it (confirm via a log/breakpoint on
-      `openMediaLibrary()` if needed); the player window appears without
-      any DB-open delay either way, since mac never blocked cold start on
-      this to begin with.
-- [ ] **First ML open loads normally**: with the toggle on, open the Media
-      Library (⌘L / toolbar / menu) — folders, saved playlists, and tracks
-      load exactly as with the toggle off; no error, no empty-forever state.
-- [ ] **Play-count still works after ML opens**: with the toggle on, open
-      the Media Library once (so the DB is open), close it, then play a
-      track past the play-count threshold (F11) — `record_play` still fires
-      (check via a reopened Files view's Play Count column or last-played
-      timestamp).
-- [ ] **A1 stats show placeholders before ML ever opens**: with the toggle
-      on and a fresh launch (ML never opened this session), play a track and
-      open the A1 now-playing panel — Play Count / Last Played show their
-      "never played" placeholder rather than a crash or a stale/bogus value;
-      `sparkamp_now_playing_has_play_count` returns false for every track
-      until the library is opened.
-- [ ] **Toggle persists across relaunch**: turn on "Skip database load at
-      startup", quit (Cmd+Q, not Xcode Stop), relaunch — Settings ▸ Media
-      Library still shows it on.
-- [ ] **Header signatures match Rust exactly**: confirm Xcode compiles clean
-      against the 2 declarations added to `sparkamp_bridge.h`
-      (`sparkamp_get_skip_db_load`, `sparkamp_set_skip_db_load`) — both
-      take/return a plain `bool`, no persistence side effect in the setter
-      (call `sparkamp_save_config` separately, as the Toggle does).
+**Note (2026-08-03):** this task's original text predates phase 8's fix, which
+gave mac an `mlStartupTasks()` that DOES open the library at launch — gated on
+exactly this flag. So `skip_db_load` is no longer "config parity only" on mac;
+it is the switch that decides whether the library opens at launch. The checks
+below were rewritten to test that, which is what the flag now does.
+
+- [x] **Cold start with the toggle ON leaves the DB shut**: quit with the
+      Media Library window closed (so nothing demands the DB), turn
+      `skip_db_load` on, relaunch. Player window came up normally, and
+      playing a track to 0:19 against a 5 s threshold recorded nothing —
+      `record_play` no-ops while `ctx.media_library` is `None`, which is the
+      observable proof the DB was never opened.
+- [x] **First ML open loads normally**: opening the Media Library with the
+      toggle on loaded all 278 tracks, the folder list, and the 4 saved
+      playlists — no error, no empty-forever state.
+- [x] **Play-count still works after ML opens**: immediately after that
+      first open, the next track counted (id 84, `last_played` 17:10:29,
+      ~4 s into a 5 s threshold). So the DB opens on demand and the F11 gate
+      picks up from there.
+- [ ] **A1 stats show placeholders before ML ever opens**: DEFERRED — the
+      now-playing panel was not opened during the DB-shut window.
+- [x] **Toggle persists across relaunch**: `skip_db_load = true` survived
+      quit/relaunch and drove the behaviour above on the next launch.
+- [x] **Header signatures match Rust exactly**: BUILD SUCCEEDED; the getter
+      is called from `mlStartupTasks()` on every launch and the setter from
+      the Toggle, with `sparkamp_save_config` writing the flag out (observed
+      in `config.toml`).
 
 ## Phase 11 — Task 3: album gallery FFI (count/list/tracks) + bridge (2026-07-29, BLIND — Swift never compiled)
 
