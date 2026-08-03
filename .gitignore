@@ -1,3 +1,12 @@
+# Apple signing credentials — NEVER commit. These are private keys: an App
+# Store Connect key (AuthKey_*.p8) and a signing certificate bundle
+# (cert.p12) sit untracked in the repo root during notarization work, and
+# publishing either to a public repo cannot be undone by deleting the commit.
+# Matched by extension rather than by filename so a rotated or renamed key is
+# still caught.
+*.p8
+*.p12
+
 # Rust build artifacts (~1.7 GB — never commit these)
 /target
 
