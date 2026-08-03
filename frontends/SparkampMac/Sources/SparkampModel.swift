@@ -395,6 +395,11 @@ final class SparkampModel: ObservableObject {
         mediaLibraryVisible  = UserDefaults.standard.bool(forKey: "sparkamp.mlVisible")
         playerExpanded       = UserDefaults.standard.bool(forKey: "sparkamp.playerExpanded")
         refreshAll()
+        // Folder watcher, auto-add-played and rescan-on-startup all need the
+        // library DB open, and none of them should have to wait for the user
+        // to open a window first (Phase 8 review — GTK and the TUI both do
+        // this at their own startup).
+        mlStartupTasks()
         startTick()
         startKeyMonitor()
 
@@ -592,15 +597,18 @@ final class SparkampModel: ObservableObject {
             mlScanDone  = Int(done)
             mlScanTotal = Int(total)
             mlScanTickCount += 1
-            // Refresh the track list every ~1 s so metadata fills in live.
-            if mlScanTickCount % 10 == 0 {
+            // Refresh the track list every ~1 s so metadata fills in live —
+            // but only while the window is up to see it. A rescan-on-startup
+            // scan runs with everything closed, and the Media Library fetches
+            // for itself on appear and on mlScanRunning clearing.
+            if mlScanTickCount % 10 == 0, mediaLibraryVisible {
                 mlFetchTracks()
             }
             if !stillRunning {
                 mlScanRunning = false
                 mlScanTickCount = 0
                 mlRefreshFolders()
-                mlFetchTracks()
+                if mediaLibraryVisible { mlFetchTracks() }
             }
         }
 
@@ -613,9 +621,20 @@ final class SparkampModel: ObservableObject {
         // uses; MediaLibraryWindow.swift already observes it via
         // .onChange(of: model.mlReloadTrigger), so no new refresh path is
         // invented here.
+        //
+        // Bounded per tick, because that "apply internally" is a tag read and
+        // a DB write per event, on the main actor. Copying an album into a
+        // watched folder queues one event per file, and draining the lot in a
+        // single tick would stall the UI (and the visualizer's frame timer)
+        // for as long as the whole batch takes. At 10 Hz this still clears
+        // ~160 files a second, and whatever is left waits one tick.
+        let watchEventsPerTick = 16
         var watchEventKind: Int32 = 0
         var watchEventSeen = false
-        while let watchPathPtr = sparkamp_ml_poll_watch_event(ctx, &watchEventKind) {
+        for _ in 0..<watchEventsPerTick {
+            guard let watchPathPtr = sparkamp_ml_poll_watch_event(ctx, &watchEventKind) else {
+                break
+            }
             sparkamp_free_string(watchPathPtr)
             watchEventSeen = true
         }

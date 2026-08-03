@@ -8,11 +8,11 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 7 are done (2026-08-02)
+## Status — phases 0 through 8 are done (2026-08-03)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–7**;
-phases 8–12 below are still blind and unchanged.
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–8**;
+phases 9–12 below are still blind and unchanged.
 
 | Phase | Outcome |
 |-------|---------|
@@ -23,6 +23,7 @@ phases 8–12 below are still blind and unchanged.
 | 5 | ✅ Passed after 3 review rounds — 6 defects, a merge of the Queue window into the Jump window, the missing Ctrl+Q hotkey, and a row-menu parity sweep |
 | 6 | ✅ Passed after 5 defects and 3 follow-ons — a badge that could never clear, arrows no list could use, the LCD indicator resized off GTK's measured ink, and stop-with-fadeout built from scratch |
 | 7 | ✅ Passed after 1 core defect — a reorder could move the playing highlight onto the wrong track whenever entries reached the playlist without an id — plus a status line that sat at the top of the window instead of the bottom |
+| 8 | ✅ Passed after 5 defects — the whole feature was dormant unless the Media Library window happened to be open, a checkbox that was correct only by accident, and two pieces of work sitting on the main thread that belonged on a worker |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -1257,7 +1258,41 @@ used at the bottom of all four Media Library list views, mirroring the GTK
   wasn't a literal port; confirm it reads correctly, doesn't crowd the
   buttons below it.
 
-## Phase 8 — F10 watch folders (2026-07-27, BLIND — Swift never compiled)
+## Phase 8 — F10 watch folders ✅ PASSED on hardware 2026-08-03
+
+**Corrections applied 2026-08-02 (review pass, compiled):**
+
+1. **The whole feature was dormant unless the Media Library window was
+   open.** Mac opened the library DB only on demand, and every demand site
+   was a window. `rebuild_watcher` and `sparkamp_ml_note_played` both no-op
+   while `ctx.media_library` is `None`, so with that window closed there was
+   no watcher, auto-add-played did nothing, and `rescan_on_startup` was a
+   setting that persisted and never fired. GTK opens the library at window
+   build and the TUI at `App::new`; mac now does the same from
+   `SparkampModel.init()` via `mlStartupTasks()`, honoring `skip_db_load`
+   the way GTK does.
+2. **The per-folder Recurse checkbox had no state SwiftUI could observe** —
+   its binding read the flag through FFI on every render and its setter
+   published nothing, so it repainted correctly only because the model's
+   10 Hz tick happens to invalidate the pane, at a cost of two SQLite
+   queries per folder per redraw on the main thread. Now mirrored into
+   `@State`, loaded on appear and on folder-list change, as GTK does when it
+   builds each row.
+3. **The watch-event drain was unbounded on the main actor.** Each poll does
+   a tag read plus a DB write inside the FFI; copying an album in queues one
+   event per file and drained the lot in a single tick. Capped at 16 events
+   per tick (~160 files/second) so the UI and the visualizer keep their
+   frames.
+4. **`sparkamp_ml_rescan_all` walked the filesystem on the calling thread**
+   before spawning its background scan — a full walk of a large library, on
+   the main thread, which the new startup trigger would have put squarely in
+   the launch path. Moved into the worker thread, matching GTK's startup
+   rescan. It also now calls `reset_unscanned_metadata` first, as GTK does
+   ahead of every full rescan.
+5. Minor: `rebuild_watcher` returns early with no folders instead of
+   starting an empty debouncer (GTK and TUI both do); the three F12 toggles
+   that phase 10 appended sat under the "Folder Watching" header and now
+   have their own "Library Behavior" section.
 
 Wires the Task-9 watch-folders FFI surface into the mac frontend: five
 Settings toggles (`SettingsWindow.swift`'s `MediaLibraryPane`, new "Folder
@@ -1274,52 +1309,92 @@ signal (`SparkampModel.swift`), and a new FFI helper
 just changed" point inside `tick()`'s `idx != currentIndex` branch — not
 sprinkled across individual transport buttons.
 
-- [ ] All 5 new toggles ("Watch folders for changes", "Automatically add
+- [x] All 5 new toggles ("Watch folders for changes", "Automatically add
       played tracks", "Remove missing files on rescan", "Compact database
       after rescan", "Rescan all folders on startup") in Settings ▸ Media
       Library persist across a quit/relaunch and correctly reflect the
       saved value when the pane reopens.
-- [ ] Each watched folder row in Settings ▸ Media Library ▸ Watched Folders
+- [x] Each watched folder row in Settings ▸ Media Library ▸ Watched Folders
       shows a "Recurse" checkbox that reflects that folder's actual
       recurse setting (not a shared/global value) and, when toggled,
       changes only that folder's behavior.
-- [ ] With "Watch folders for changes" ON: dropping a new audio file into a
+- [x] With "Watch folders for changes" ON: dropping a new audio file into a
       watched folder in Finder makes it appear in the Files view within
       ~2–5 seconds, with no manual Rescan needed.
-- [ ] With "Remove missing files on rescan" ON: deleting a file from a
+- [x] With "Remove missing files on rescan" ON: deleting a file from a
       watched folder in Finder removes its row from Files within a similar
       window. With it OFF: the row is KEPT (not marked broken/missing) —
       confirm no row silently vanishes when the toggle is off.
-- [ ] Editing a tag externally (e.g. in another app) on a file already in
+- [x] Editing a tag externally (e.g. in another app) on a file already in
       the library updates that file's row (title/artist/etc.) live, without
       a manual rescan.
-- [ ] Saving a tag edit from Sparkamp's own ID3 editor does NOT trigger a
+- [x] Saving a tag edit from Sparkamp's own ID3 editor does NOT trigger a
       visible rescan/refresh storm — the watcher's cache-prefix / self-write
       suppression (Task 5) should make Sparkamp's own writes invisible to
       the watch-event drain.
-- [ ] A non-recursive folder (Recurse OFF) ignores new files dropped into a
-      SUBdirectory of that folder — they should not appear in Files until
-      Recurse is turned on (or the subfolder is separately watched).
-- [ ] With "Rescan all folders on startup" ON: quit Sparkamp, add a file to
+- [x] A non-recursive folder (Recurse OFF) ignores new files dropped into a
+      SUBdirectory of that folder — they should not appear in Files. Turn
+      Recurse back ON and drop another file in that subdirectory: the new
+      one appears live. Files dropped while it was OFF appear after a
+      Rescan All, not immediately — turning Recurse on rebuilds the watch,
+      it does not re-walk the folder. GTK behaves identically
+      (`frontends/gtk/window/settings.rs`), so this is parity, not a gap.
+- [x] With "Rescan all folders on startup" ON: quit Sparkamp, add a file to
       a watched folder from Finder while it's closed, relaunch — the new
       file is present in Files without a manual Rescan.
-- [ ] With "Automatically add played tracks" ON: play a file that lives
+- [x] With "Automatically add played tracks" ON: play a file that lives
       OUTSIDE every watched folder (e.g. via File ▸ Open or a drag-and-drop
       onto the player) — it should appear as a row in Files shortly after
       playback starts. With the toggle OFF, it should NOT appear.
-- [ ] Play a file that's already INSIDE a watched folder — confirm no
+- [x] Play a file that's already INSIDE a watched folder — confirm no
       duplicate row is created (the inside/outside guard in
       `sparkamp_ml_note_played` should skip it entirely).
-- [ ] With "Compact database after rescan" ON: run Rescan All (or trigger a
+- [x] With "Compact database after rescan" ON: run Rescan All (or trigger a
       startup rescan) after removing several watched folders/files, and
       confirm the on-disk DB file doesn't keep growing — a rough
       before/after file-size check is enough (exact shrink amount isn't the
       point, "doesn't just grow forever" is).
-- [ ] Simulate a watcher start failure (e.g. remove/rename a watched folder
+- [x] Simulate a watcher start failure (e.g. remove/rename a watched folder
       out from under Sparkamp right as it's about to start watching, or
       revoke folder permissions) and confirm the app does NOT crash —
       it should silently fall back to manual/interval rescans (per
       `rebuild_watcher`'s documented degrade-gracefully contract).
+
+Added by the 2026-08-02 review — these cover the corrections above and are
+the ones most likely to fail if a fix is wrong:
+
+- [x] **Watching works with the Media Library window never opened.** Quit,
+      relaunch, and do NOT open the Media Library. Drop a file into a
+      watched folder from Finder, wait ~5 s, then open the Media Library —
+      the file is already in Files, without a rescan. (Before the fix the
+      watcher only started when that window opened, so the file would have
+      been missing.)
+- [x] **Auto-add-played works from a cold launch.** With "Automatically add
+      played tracks" ON, quit and relaunch, and without opening the Media
+      Library, play a file that lives outside every watched folder. Then
+      open the Media Library — the track is in Files.
+- [x] **Launch stays responsive with rescan-on-startup ON.** With a large
+      library and the toggle on, relaunch: the player window appears
+      promptly and stays interactive (drag the seek bar, open the
+      equalizer) while the scan runs in the background. The old code walked
+      every folder on the main thread before the scan even started.
+- [x] **A bulk copy doesn't freeze the UI.** With watching on, copy a whole
+      album (or a few hundred files) into a watched folder in Finder. The
+      player stays responsive and the visualizer keeps its framerate while
+      the rows fill in over a few seconds — they should arrive steadily
+      rather than all at once after a stall.
+- [x] **The Recurse checkbox survives a settings round-trip.** Toggle
+      Recurse off on one folder, close the Settings window, reopen it — the
+      checkbox is still off, and the other folders are unaffected. Then quit
+      and relaunch and confirm it is still off (it lives in the DB, not the
+      config file).
+- [x] **Sections read correctly.** Settings ▸ Media Library shows "Folder
+      Watching" holding exactly the five watch/scan toggles, and a separate
+      "Library Behavior" section holding "Remember search per view", "Treat
+      artist as album artist" and "Skip database load at startup".
+- [x] **Rescan All recovers empty rows.** If any Files rows show a title but
+      no artist/length, hit Rescan All — they fill in
+      (`reset_unscanned_metadata` now runs first, as it does on GTK).
 
 ---
 

@@ -726,6 +726,16 @@ private struct MediaLibraryPane: View {
     @State private var removeMissingOnRescan: Bool = false
     @State private var compactOnRescan: Bool = false
     @State private var rescanOnStartup: Bool = false
+    /// Per-folder recurse flags, keyed by folder path, mirrored from the DB
+    /// on appear and whenever the folder list changes.
+    ///
+    /// A binding that read `sparkamp_ml_folder_recurse` straight through on
+    /// every render looked simpler, but it gave the checkbox no state
+    /// SwiftUI could observe: it redrew correctly only because the model's
+    /// 10 Hz tick happens to invalidate this pane, and it cost two SQLite
+    /// queries per folder per redraw on the main thread. GTK reads the flag
+    /// once as it builds each row too (`frontends/gtk/window/settings.rs`).
+    @State private var folderRecurse: [String: Bool] = [:]
     /// F12.1: restore each Media-Library view's search query on next open.
     @State private var rememberSearch: Bool = false
     /// F12.2: display/group a track with no album-artist tag under its
@@ -840,6 +850,12 @@ private struct MediaLibraryPane: View {
                         sparkamp_set_rescan_on_startup(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
+            }
+
+            // ── Library behavior (F12.1–F12.3) ─────────────────────────────
+            // Their own section: these three have nothing to do with folder
+            // watching, and reading as if they did is misleading.
+            Section("Library Behavior") {
                 Toggle("Remember search per view", isOn: $rememberSearch)
                     .onChange(of: rememberSearch) { _, newValue in
                         guard let ctx = model.ctx else { return }
@@ -876,20 +892,14 @@ private struct MediaLibraryPane: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
-                            // Per-folder recurse (Phase 8 Task 12): reads/writes
-                            // straight through FFI rather than a mirrored
-                            // @State array — the folder list itself is only
-                            // refreshed on add/remove/rescan, so a live FFI
-                            // read on every render keeps this row honest
-                            // without a second cache to fall out of sync.
+                            // Per-folder recurse (Phase 8 Task 12). Reads the
+                            // mirror; writes through to the DB and rebuilds
+                            // the watcher so the new mode takes effect on the
+                            // live watch, not just the next scan.
                             Toggle("Recurse", isOn: Binding(
-                                get: {
-                                    guard let ctx = model.ctx else { return true }
-                                    return folder.withCString {
-                                        sparkamp_ml_folder_recurse(ctx, $0)
-                                    }
-                                },
+                                get: { folderRecurse[folder] ?? true },
                                 set: { newValue in
+                                    folderRecurse[folder] = newValue
                                     guard let ctx = model.ctx else { return }
                                     folder.withCString {
                                         sparkamp_ml_set_folder_recurse(ctx, $0, newValue)
@@ -1016,13 +1026,28 @@ private struct MediaLibraryPane: View {
                 artistAsAlbumArtist = sparkamp_get_artist_as_album_artist(ctx)
                 skipDbLoad = sparkamp_get_skip_db_load(ctx)
             }
+            loadFolderRecurse()
         }
+        .onChange(of: model.mlFolders) { _, _ in loadFolderRecurse() }
         .onDisappear { saveGnudbEmail() }
     }
 
     private func saveGnudbEmail() {
         guard let ctx = model.ctx else { return }
         gnudbEmail.withCString { sparkamp_set_gnudb_email(ctx, $0) }
+    }
+
+    /// Re-read every watched folder's recurse flag into `folderRecurse`.
+    /// Called on appear and whenever the folder list changes — the only two
+    /// moments the flags can go stale, since nothing outside this pane
+    /// writes them.
+    private func loadFolderRecurse() {
+        guard let ctx = model.ctx else { return }
+        var flags: [String: Bool] = [:]
+        for folder in model.mlFolders {
+            flags[folder] = folder.withCString { sparkamp_ml_folder_recurse(ctx, $0) }
+        }
+        folderRecurse = flags
     }
 
     /// Open the macOS "CDs & DVDs" pane, where the "When you insert a music CD"

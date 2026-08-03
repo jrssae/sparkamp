@@ -6,18 +6,49 @@ import AppKit
 extension SparkampModel {
     // MARK: Media Library
 
+    /// Open (or create) the media library DB and start the folder watcher,
+    /// without showing anything.
+    ///
+    /// Split out of `openMediaLibrary()` because the background half of the
+    /// library — the watcher, auto-add-played, rescan-on-startup — needs the
+    /// DB open but must not pop a window open to get it. Cheap to call
+    /// repeatedly: everything here happens once, on the first call.
+    func mlEnsureOpen() {
+        guard let ctx = ctx, !mlIsOpen else { return }
+        sparkamp_ml_open(ctx)
+        mlIsOpen = true
+        // The watcher can't start until the library DB is open (Phase 8
+        // Task 9's rebuild_watcher no-ops while ctx.media_library is
+        // None), so start it here rather than waiting for a folder
+        // add/remove to trigger the first sparkamp_ml_watch_rebuild.
+        sparkamp_ml_watch_rebuild(ctx)
+    }
+
+    /// Everything the library needs doing at launch, mirroring GTK's window
+    /// build (`frontends/gtk/window/watch.rs`, called from `player.rs`) and
+    /// the TUI's `App::new`.
+    ///
+    /// Both of those open the library at startup, so their watcher is live
+    /// and their startup rescan runs from the moment the app is up. Mac
+    /// opened the DB only on demand, and every demand site was a window —
+    /// so with the Media Library window closed there was no watcher at all,
+    /// `sparkamp_ml_note_played` no-opped on its `ctx.media_library` guard,
+    /// and `rescan_on_startup` was a setting that persisted and did nothing.
+    ///
+    /// `skip_db_load` (F12.3) suppresses all of it exactly as it does on
+    /// GTK: the DB stays shut, and the watcher starts on whatever opens the
+    /// library later.
+    func mlStartupTasks() {
+        guard let ctx = ctx, !sparkamp_get_skip_db_load(ctx) else { return }
+        mlEnsureOpen()
+        mlRefreshFolders()
+        if sparkamp_get_rescan_on_startup(ctx) { mlRescanAll() }
+    }
+
     /// Open (or create) the media library DB and load initial data.
     func openMediaLibrary() {
-        guard let ctx = ctx else { return }
-        if !mlIsOpen {
-            sparkamp_ml_open(ctx)
-            mlIsOpen = true
-            // The watcher can't start until the library DB is open (Phase 8
-            // Task 9's rebuild_watcher no-ops while ctx.media_library is
-            // None), so start it here rather than waiting for a folder
-            // add/remove to trigger the first sparkamp_ml_watch_rebuild.
-            sparkamp_ml_watch_rebuild(ctx)
-        }
+        guard ctx != nil else { return }
+        mlEnsureOpen()
         mlRefreshFolders()
         mlRefreshSavedPlaylists()
         mediaLibraryVisible = true
@@ -171,8 +202,15 @@ extension SparkampModel {
         mlScanRunning = true
         mlScanDone = 0
         mlScanTotal = 0
-        // Show current state immediately; tick() will refresh periodically.
-        mlFetchTracks()
+        // Show current state immediately; tick() refreshes every second while
+        // the scan runs, which is also when newly discovered rows appear (the
+        // folder walk runs on the scan's own thread, so nothing new is in the
+        // DB yet at this point). Only worth fetching when something is on
+        // screen to show it — a rescan-on-startup runs with every window
+        // closed, and building 10k MLTracks for nobody is pure cost. The
+        // Media Library window fetches for itself on appear and again when
+        // mlScanRunning clears.
+        if mediaLibraryVisible { mlFetchTracks() }
     }
 
     func mlCancelScan() {

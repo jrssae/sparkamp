@@ -479,6 +479,12 @@ pub(super) unsafe fn rebuild_watcher(ctx: &mut SparkampCtx) {
         })
         .collect();
 
+    // Nothing to watch — don't spin up a debouncer thread with no watches on
+    // it, same early return GTK's and the TUI's rebuild_watcher make.
+    if folders.is_empty() {
+        return;
+    }
+
     let audio_exts: Vec<String> = crate::model::AUDIO_EXTENSIONS
         .iter()
         .map(|s| s.to_string())
@@ -657,21 +663,16 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_all(
         return;
     }
     let ctx = &mut *ctx;
-    let Some(ml) = &ctx.media_library else { return };
+    if ctx.media_library.is_none() {
+        return;
+    }
 
-    // Fast phase: re-discover any new files in all folders.
     let remove_missing = ctx.config.media_library.remove_missing_on_rescan;
     // Read before spawning: `ctx` (and its `config`) isn't available inside
     // the background closure below. Compact only after this FULL rescan
     // completes, gated on the setting — mirrors GTK/TUI (VACUUM is too
     // heavy to run after every fast folder-add).
     let compact_after = ctx.config.media_library.compact_on_rescan;
-    let folders = ml.list_folders().unwrap_or_default();
-    for (folder_id, folder_path) in &folders {
-        if let Err(e) = ml.rescan_folder_fast(*folder_id, folder_path, remove_missing) {
-            eprintln!("[sparkamp_ml_rescan_all] fast rescan {folder_path}: {e}");
-        }
-    }
 
     let cancel = Arc::clone(&ctx.ml_cancel);
     let scanning = Arc::clone(&ctx.ml_scanning);
@@ -684,6 +685,28 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_all(
     rayon::spawn(move || {
         let ud: *mut c_void = ud_addr as *mut c_void;
         let result = MediaLibrary::open_at(&MediaLibrary::db_path_pub()).and_then(|bg_ml| {
+            // Fast phase: walk every folder to pick up files added or
+            // removed since the last scan. On this thread, not the caller's
+            // — a full walk of a large library is seconds of filesystem I/O,
+            // and the caller is the main thread (the Rescan button, or the
+            // rescan-on-startup trigger, where it would delay launch). Same
+            // shape as GTK's startup rescan, which also walks inside its
+            // worker thread. The DB is WAL with a busy timeout, so the main
+            // thread's reads run alongside these writes.
+            for (folder_id, folder_path) in bg_ml.list_folders().unwrap_or_default() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Err(e) = bg_ml.rescan_folder_fast(folder_id, &folder_path, remove_missing) {
+                    eprintln!("[sparkamp_ml_rescan_all] fast rescan {folder_path}: {e}");
+                }
+            }
+            // Recover rows an earlier scan marked done but wrote no metadata
+            // for, so a Rescan actually re-reads them — the same call GTK
+            // makes ahead of every full rescan (window/watch.rs,
+            // media_library.rs, settings.rs). Cheap, and this is the button
+            // a user reaches for when rows look empty.
+            let _ = bg_ml.reset_unscanned_metadata();
             let atomic = &progress_atomic;
             let scan_result = bg_ml.scan_all_folders(&cancel, |done, total| {
                 let packed = ((total as u64) << 32) | (done as u64);
