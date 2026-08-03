@@ -8,11 +8,11 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 5 are done (2026-08-02)
+## Status — phases 0 through 7 are done (2026-08-02)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–5**;
-phases 6–12 below are still blind and unchanged.
+library, not just a compile. The "BLIND" caveat is **retired for phases 0–7**;
+phases 8–12 below are still blind and unchanged.
 
 | Phase | Outcome |
 |-------|---------|
@@ -21,6 +21,8 @@ phases 6–12 below are still blind and unchanged.
 | 3 | ⚠️ Closed with one known limitation — the OS Now Playing card never appears; a custom Touch Bar was added instead |
 | 4 | ✅ Passed after a **design gap** was found: analysis results never reached playback at all |
 | 5 | ✅ Passed after 3 review rounds — 6 defects, a merge of the Queue window into the Jump window, the missing Ctrl+Q hotkey, and a row-menu parity sweep |
+| 6 | ✅ Passed after 5 defects and 3 follow-ons — a badge that could never clear, arrows no list could use, the LCD indicator resized off GTK's measured ink, and stop-with-fadeout built from scratch |
+| 7 | ✅ Passed after 1 core defect — a reorder could move the playing highlight onto the wrong track whenever entries reached the playlist without an id — plus a status line that sat at the top of the window instead of the bottom |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -842,7 +844,7 @@ The merged-window, hotkey, and menu changes, tested after they landed:
 
 ---
 
-## Phase 6 — F9 shortcuts + dialog sweep (2026-07-26 blind; reviewed 2026-08-02)
+## Phase 6 — F9 shortcuts + dialog sweep — ✅ PASSED on hardware 2026-08-02
 
 New keys wired in `SparkampModel+Keys.swift` (raw handler) and the app
 `Commands` menu (`SparkampMacApp.swift`). Stop-after-current is an engine flag
@@ -897,30 +899,30 @@ read "Queue / dequeue", now "Enqueue / dequeue" everywhere (mac, GTK, TUI). The
 
 ### Manual test plan
 
-- [ ] `m` toggles the Media Library window (open when hidden, close when shown).
-- [ ] `t` arms stop-after-current: a small stop-square appears on the
+- [x] `m` toggles the Media Library window (open when hidden, close when shown).
+- [x] `t` arms stop-after-current: a small stop-square appears on the
       play/pause/stop indicator next to the time index (NOT on the play button);
       the "Stop After Current Track" menu item (Playback menu) toggles the same
       state.
-- [ ] With `t` armed, the current track finishes → playback stops, badge clears.
-- [ ] `t` twice = toggles off (playback continues to the next track).
-- [ ] `t` armed with queued tracks → stops before the queue; next play resumes
+- [x] With `t` armed, the current track finishes → playback stops, badge clears.
+- [x] `t` twice = toggles off (playback continues to the next track).
+- [x] `t` armed with queued tracks → stops before the queue; next play resumes
       the queue.
-- [ ] Manual stop (`v`), next (`b`), prev (`z`), and jumping to another track
+- [x] Manual stop (`v`), next (`b`), prev (`z`), and jumping to another track
       (double-click a row / jump window) clear the arming + badge.
-- [ ] **Double-clicking a track in the Media Library** also clears the arming
+- [x] **Double-clicking a track in the Media Library** also clears the arming
       (defect 2 — this path bypasses the Swift transport helpers).
-- [ ] Pause then resume (`c`) KEEPS the arming + badge (must not clear).
-- [ ] `n` opens the file picker (add file[s]); `Shift+N` opens the folder picker
+- [x] Pause then resume (`c`) KEEPS the arming + badge (must not clear).
+- [x] `n` opens the file picker (add file[s]); `Shift+N` opens the folder picker
       (add folder) — same as the playlist bottom-bar Add ▸ menu.
-- [ ] `⌘S` saves the active playlist (same as the List ▸ Save Playlist item).
-- [ ] `⌘,` opens Settings; `⌘I` inverts the playlist selection.
-- [ ] **`↑ ↓` in the player window still adjust volume**, and `← →` still seek.
-- [ ] **`↑ ↓` in the playlist window browse rows** instead of changing volume;
+- [x] `⌘S` saves the active playlist (same as the List ▸ Save Playlist item).
+- [x] `⌘,` opens Settings; `⌘I` inverts the playlist selection.
+- [x] **`↑ ↓` in the player window still adjust volume**, and `← →` still seek.
+- [x] **`↑ ↓` in the playlist window browse rows** instead of changing volume;
       same in the Media Library file list (defect 3).
-- [ ] With the fullscreen visualizer up, `m` / `n` / `Shift+N` do nothing rather
+- [x] With the fullscreen visualizer up, `m` / `n` / `Shift+N` do nothing rather
       than yanking the app out of fullscreen (defect 4).
-- [ ] Keyboard Shortcuts window (`i`) lists every binding and each line is
+- [x] Keyboard Shortcuts window (`i`) lists every binding and each line is
       true — including the newly added `u` and `d` rows.
 
 **Unsure / eyeball:**
@@ -939,7 +941,7 @@ is the more useful of the two — flag it if you want them identical instead.
 
 ---
 
-## Phase 6 follow-ons (2026-08-02) — window focus, badge size, stop with fadeout
+## Phase 6 follow-ons — ✅ PASSED on hardware 2026-08-02
 
 Three items raised after the phase-6 review, built together.
 
@@ -953,13 +955,13 @@ anchor: `applicationDidBecomeActive` covers ⌘-Tab, and a deferred call from
 SwiftUI restores the remembered auxiliary windows, so without it whichever one
 is created last wins).
 
-- [ ] With the Media Library open and focused, ⌘-Tab away and back → the
+- [x] With the Media Library open and focused, ⌘-Tab away and back → the
       **player** window is key; single-letter shortcuts work immediately.
-- [ ] Quit with the Media Library open, relaunch → the player is key, not the
+- [x] Quit with the Media Library open, relaunch → the player is key, not the
       restored Media Library.
-- [ ] The other windows still come forward as a group (they did before) rather
+- [x] The other windows still come forward as a group (they did before) rather
       than being left behind the player.
-- [ ] Judgement call worth confirming: this is an unconditional steal. Leave a
+- [x] Judgement call worth confirming: this is an unconditional steal. Leave a
       half-typed Media Library search, ⌘-Tab away and back, and the cursor is
       gone from that field. Say so if you would rather it only fired when no
       Sparkamp window held focus.
@@ -1007,18 +1009,18 @@ frame, so it ignored the width it was offered and overflowed the column instead
 of scaling — `minimumScaleFactor` could never fire and the leading `-` on a
 remaining time was being clipped. It now sizes to its slot.
 
-- [ ] Play / pause / stop glyph reads at about two thirds the height of the
+- [x] Play / pause / stop glyph reads at about two thirds the height of the
       digits beside it — bigger than the old speck, not competing with the time.
-- [ ] `t` badge sits in the second character cell, clear of the glyph rather
+- [x] `t` badge sits in the second character cell, clear of the glyph rather
       than overlapping it (this is how GTK's lands), at half the glyph's size.
-- [ ] `12:34` renders at full size. Click the time to switch to remaining:
+- [x] `12:34` renders at full size. Click the time to switch to remaining:
       `-9:59` is full size, `-12:34` scales down slightly rather than clipping.
       **Nothing is cut off in either mode.**
-- [ ] Volume slider is only marginally shorter than before and still easy to
+- [x] Volume slider is only marginally shorter than before and still easy to
       drag; the mode buttons on its right are unmoved.
-- [ ] Change the volume: the percentage fades in over the right end of the
+- [x] Change the volume: the percentage fades in over the right end of the
       slider and back out, without displacing anything or covering the buttons.
-- [ ] Mini visualizer below fills the wider column cleanly, with no gap or
+- [x] Mini visualizer below fills the wider column cleanly, with no gap or
       overflow at the divider.
 
 ### Stop with fadeout (Shift+V)
@@ -1036,23 +1038,81 @@ Four engine tests cover the ramp, the not-playing no-op, transport cancelling a
 fade, and a track ending mid-fade. Length is `playback.fadeout_secs`, default
 **3** (Winamp's own default is 5), clamped to 1–10.
 
-- [ ] `Shift+V` while playing → audio ramps down over 3 s, then playback stops.
-- [ ] Plain `v` is still an immediate stop.
-- [ ] Volume is back to normal afterwards — the next track plays at full level,
+- [x] `Shift+V` while playing → audio ramps down over 3 s, then playback stops.
+- [x] Plain `v` is still an immediate stop.
+- [x] Volume is back to normal afterwards — the next track plays at full level,
       and the volume slider never moved.
-- [ ] Pressing play / next / prev / picking a track mid-fade cancels it and
+- [x] Pressing play / next / prev / picking a track mid-fade cancels it and
       restores full volume immediately (no attenuated playback).
-- [ ] A track that reaches its own end mid-fade advances normally.
-- [ ] `Shift+V` while paused or stopped does nothing.
-- [ ] Settings → Behavior → **Stop With Fadeout**: the stepper reads 3 s,
+- [x] A track that reaches its own end mid-fade advances normally.
+- [x] `Shift+V` while paused or stopped does nothing.
+- [x] Settings → Behavior → **Stop With Fadeout**: the stepper reads 3 s,
       changes persist across a relaunch, and a changed value is honoured by the
       very next `Shift+V`.
-- [ ] Playback menu carries "Stop With Fadeout"; the shortcuts window (`i`)
+- [x] Playback menu carries "Stop With Fadeout"; the shortcuts window (`i`)
       lists `⇧V`.
+
+### Still open after the phase-6 pass — needs a Linux box
+
+Everything above was verified on macOS. The GTK side of the same work has never
+been compiled: `frontends/gtk` is `#[cfg(target_os = "linux")]` and its `gtk4`
+/ `zbus` dependencies live in a Linux-only target block, so it cannot be built
+on this Mac. Un-gating it needs a re-vendor, which is what caused the
+stale-static-library trap earlier in this project.
+
+- [ ] GTK builds clean with the phase-6 changes: the `Ctrl+Q` help label, the
+      `Shift+V` key arm in `handle_key`, the `poll_fadeout` hook in
+      `AppState::poll_bus` and the tick that consumes it, and the new
+      "Stop With Fadeout" spinner on the Behavior settings tab.
+- [ ] GTK `Shift+V` behaves as it does on macOS, and its fade length follows
+      the same `playback.fadeout_secs` setting.
 
 ---
 
-## Phase 7 — Task 10: Winamp playlist menu bar + status line (2026-07-27, BLIND — Swift never compiled)
+## Phase 7 — Task 10: Winamp playlist menu bar + status line — ✅ PASSED on hardware 2026-08-02
+
+### Correction made during the review pass (2026-08-02)
+
+**A reorder could move the playing highlight onto the wrong track.**
+`sort_by` / `reverse` / `randomize` find the playing track again afterwards by
+its entry id, but several paths push straight into `playlist.tracks` rather
+than going through `Playlist::add`, and those entries keep the id-0 sentinel:
+the mac dedupe and Media Library bulk adds, GTK's drag-drop file adds, and
+GTK's disc-track adds. With an unstamped playlist the lookup searched for id 0,
+matched whichever unstamped row came first, and pointed `current_index` at it —
+so the highlight jumped, and the next automatic advance continued from the
+wrong place. Reachable on macOS without touching anything exotic: add files,
+play one, sort.
+
+The ops now stamp before reading (`stamped_current_id`), so they hold however
+the entries arrived, and `repoint_current_to` rejects id 0 outright since it is
+never a real entry. Regression test in `src/model.rs` builds its fixture by
+direct `push` the way the bulk paths do — it fails without the fix. The
+existing reorder tests all used `add`, which stamps, which is why this survived
+the blind pass.
+
+Also fixed while in there: `sort_by`'s comment claimed it precomputed a
+lowercase key per track, but it called `sort_field` inside the comparator, so
+every comparison rebuilt and re-lowercased two Strings. Now
+`sort_by_cached_key`, which is what the comment described and is also stable.
+
+Everything else read clean. All five status lines (active playlist, ML files,
+playlist editor, device detail, disc files) go through one formatter that
+matches core's byte for byte, each guards on the DISPLAYED rows so a filter
+that hides the selection omits the clause rather than showing "0:00 selected",
+and all three frontends reset shuffle history after a reorder.
+
+### Round 2 — status-line placement (hardware pass, 2026-08-02)
+
+The blind pass put the active playlist's status line at the TOP of the window,
+in the slot the old count/duration header used. Every other status line in the
+app — GTK's (`pl_root`: scroll → status → separator → button row) and all four
+Media Library bars — sits below its list and above its controls. Moved to
+match; the table is now the first element in the window, under the title bar.
+
+- [x] Active-playlist status line sits below the table and above the
+      Add/Select/Sort/List row, lining up with the Media Library's bars.
+
 
 `PlaylistView.bottomBar` replaced the five flat buttons (Add Files, Add
 Folder, Save, Remove, Remove All) with four SwiftUI `Menu`s — Add / Select /
@@ -1063,19 +1123,19 @@ FFI (`sparkamp_playlist_sort/reverse/randomize`, wrapped as
 by a single status line mirroring core `playlist_status_line`
 (`src/playlist_status.rs`) via `PlaylistView.formatStatus`.
 
-- [ ] **Add** menu opens; "Add Files…" / "Add Folder…" behave exactly as the
+- [x] **Add** menu opens; "Add Files…" / "Add Folder…" behave exactly as the
       old buttons (same file/folder pickers).
-- [ ] **Select** menu opens (NOT disabled on an empty playlist — deliberately
+- [x] **Select** menu opens (NOT disabled on an empty playlist — deliberately
       left enabled so its nested ⌘I keeps firing; only Sort and List are
       disabled-on-empty); "Select All" / "Select None" / "Invert Selection" set
       `selection` correctly against the currently loaded playlist.
-- [ ] After a Sort/Randomize/Reverse, the selection is CLEARED (the index-based
+- [x] After a Sort/Randomize/Reverse, the selection is CLEARED (the index-based
       `selection` set would otherwise highlight whatever tracks landed on the old
       rows) — matches GTK, which clears selection on rebuild.
-- [ ] **Sort** menu opens (disabled when playlist empty); Title / Artist /
+- [x] **Sort** menu opens (disabled when playlist empty); Title / Artist /
       Album / Filename / Path each call `sparkamp_playlist_sort` with the
       matching `kind` (0–4) and the table re-renders in the new order.
-- [ ] Randomize / Reverse (below the divider in Sort) reorder the playlist;
+- [x] Randomize / Reverse (below the divider in Sort) reorder the playlist;
       in all five sort cases AND Randomize/Reverse, confirm:
       - the currently PLAYING track (waveform icon row) stays the same
         logical track after reorder — core keeps `current` pointed at the
@@ -1084,28 +1144,23 @@ by a single status line mirroring core `playlist_status_line`
       - queue `[n]` badges follow their tracks to the new row positions
         (`refreshAll()` → `refreshPlaylist()` re-reads `queuePos` per index
         from the ctx after the reorder, so badges should track correctly).
-- [ ] **List** menu opens (disabled when playlist empty); "Save Playlist…"
+- [x] **List** menu opens (disabled when playlist empty); "Save Playlist…"
       behaves exactly as the old Save button (same NSSavePanel flow);
       "Remove Selected" is disabled with an empty selection and removes
       exactly the selected rows; "Remove All" clears the playlist and the
       selection.
-- [ ] Status line (top of the playlist window, where the old count/duration
-      header sat) reads `"N tracks · MM:SS total"` with 0 selected rows, and
-      `"N tracks · MM:SS total · MM:SS selected"` once ≥1 row is selected —
+- [x] Status line reads `"N tracks · MM:SS total"` with 0 selected rows, and
+      `"N tracks · MM:SS total · K selected · MM:SS"` once ≥1 row is selected —
       confirm singular "1 track" with exactly one row, and H:MM:SS rollover
       once total (or selected) duration reaches an hour.
-- [ ] `⌘S` (Save Playlist) and `⌘I` (Invert Selection) still work with the
-      playlist window key — both `keyboardShortcut` modifiers now live on the
-      `Button`s *inside* the List/Select `Menu` content (moved off the old
-      hidden zero-size buttons) rather than as standalone bottom-bar buttons.
+- [x] `⌘S` (Save Playlist) and `⌘I` (Invert Selection) work with the playlist
+      window key. Settled in phase 6 and verified on hardware there: the
+      modifiers on the `Button`s inside the List/Select `Menu` content are
+      backed by hidden zero-size buttons in `bottomBar`, because a `Menu`'s
+      content is built lazily on open and a nested `.keyboardShortcut` is not
+      reliably live before then.
 
 **Unsure / eyeball (blind, no Xcode here):**
-- `.keyboardShortcut` on a `Button` nested inside `Menu { ... }` content is
-  expected to register the shortcut globally (SwiftUI hoists it into the
-  window's command set) exactly like a standalone button did before — this
-  is the one behavioral bet in this task; if `⌘S`/`⌘I` stop firing, move
-  those two modifiers back onto small hidden top-level buttons in
-  `bottomBar` (the pre-phase-7 pattern) instead of inside the menus.
 - `Menu`'s trigger/label styling: previously every bottom-bar control used
   `PlaylistControlButtonStyle` (rounded-rect, skin-tinted). `Menu` doesn't
   honor `.buttonStyle` the same way a plain `Button` does, so the four new
@@ -1120,7 +1175,7 @@ by a single status line mirroring core `playlist_status_line`
   correct UX rather than surprising (Add is never disabled, matching the
   old always-enabled Add buttons).
 
-## Task 3 — 2026-07-27: status bar on the four Media Library views (BLIND — Swift never compiled)
+## Phase 7 — Task 3: status bar on the four Media Library views — ✅ PASSED on hardware 2026-08-02
 
 `PlaylistView.formatStatus` (phase 7, `static` on `PlaylistView`) was lifted
 into a free top-level function `playlistStatusLine(count:totalSecs:selected:)`
@@ -1164,25 +1219,25 @@ used at the bottom of all four Media Library list views, mirroring the GTK
   was removed since the new bottom bar now shows count + duration +
   selection in one place.
 
-- [ ] Each of the four views shows `N tracks · MM:SS total`, directly below
+- [x] Each of the four views shows `N tracks · MM:SS total`, directly below
       its list/table and above its control-button row, with nothing selected.
-- [ ] Each adds `· K selected · MM:SS` (selected COUNT + duration) the
+- [x] Each adds `· K selected · MM:SS` (selected COUNT + duration) the
       moment ≥1 row is selected, and drops it again back to no
       selected-clause when selection clears.
-- [ ] Format matches the active playlist exactly: singular "1 track" with
+- [x] Format matches the active playlist exactly: singular "1 track" with
       exactly one row, `M:SS` under an hour, `H:MM:SS` at/above an hour, for
       both the total and the selected clause independently.
-- [ ] The bar updates live on selection change (click/⌘-click/shift-click)
+- [x] The bar updates live on selection change (click/⌘-click/shift-click)
       and on list reload (rescan, add/remove tracks, playlist Save/Revert,
       device sync, disc swap) — no stale count/duration lingering after any
       of these.
-- [ ] Playlist editor: confirm the status bar reflects the SEARCH-FILTERED
+- [x] Playlist editor: confirm the status bar reflects the SEARCH-FILTERED
       view (type in "Search this playlist…" and confirm the count drops to
       match only matching rows), not the full unsearched playlist.
-- [ ] Device detail: confirm the status bar reflects the selected playlist
+- [x] Device detail: confirm the status bar reflects the selected playlist
       chip filter too (switch from "All files" to a device playlist chip and
       confirm the count matches just that playlist's entries).
-- [ ] Disc-files browser: confirm the bar is only present for a non-blank
+- [x] Disc-files browser: confirm the bar is only present for a non-blank
       data disc (hidden/absent state matches whenever `dataDiscView` itself
       isn't shown — blank disc, audio CD, no disc).
 

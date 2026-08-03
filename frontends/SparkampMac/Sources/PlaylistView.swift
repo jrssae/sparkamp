@@ -453,7 +453,19 @@ struct PlaylistView: View {
     var body: some View {
         let vars = themeManager.currentVars
         return VStack(spacing: 0) {
+            ActivePlaylistTable(
+                model: model,
+                themeManager: themeManager,
+                selection: $selection,
+                contextMenuBuilder: { ids in buildContextMenu(ids: ids) }
+            )
+            .background(theme.playlistBg)
+
             // Status line: "N tracks · MM:SS total · K selected · MM:SS"
+            //
+            // Below the table and above the controls, which is where GTK puts
+            // it (`pl_root`: scroll → status → separator → button row) and
+            // where the Media Library's four status bars sit.
             HStack {
                 Text(statusLine)
                     .font(vars.bodyFont)
@@ -463,17 +475,6 @@ struct PlaylistView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(theme.playlistBg.opacity(0.7))
-
-            Divider()
-                .background(theme.windowBorder)
-
-            ActivePlaylistTable(
-                model: model,
-                themeManager: themeManager,
-                selection: $selection,
-                contextMenuBuilder: { ids in buildContextMenu(ids: ids) }
-            )
-            .background(theme.playlistBg)
 
             Divider()
                 .background(theme.windowBorder)

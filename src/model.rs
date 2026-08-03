@@ -525,8 +525,15 @@ impl Playlist {
     }
 
     /// Point `current_index` at the track with `id`; unchanged if not found.
+    ///
+    /// Id 0 is the "not stamped yet" sentinel, never a real entry, so it is
+    /// rejected outright — searching for it would match the first unstamped
+    /// row and silently move `current_index` onto the wrong track.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn repoint_current_to(&mut self, id: u64) {
+        if id == 0 {
+            return;
+        }
         if let Some(pos) = self.tracks.iter().position(|t| t.id == id) {
             self.current_index = pos;
         }
@@ -537,10 +544,10 @@ impl Playlist {
     /// back to the filename so untitled rows sort by their visible label.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn sort_by(&mut self, key: SortKey) {
-        let playing = self.current_id();
-        // Precompute a lowercase key per track so the comparator is cheap and
-        // the sort stays stable (sort_by_key is stable in std).
-        self.tracks.sort_by(|a, b| sort_field(a, key).cmp(&sort_field(b, key)));
+        let playing = self.stamped_current_id();
+        // `sort_by_cached_key` computes each lowercase key once instead of on
+        // every comparison, and is stable — both of which this sort needs.
+        self.tracks.sort_by_cached_key(|t| sort_field(t, key));
         if let Some(id) = playing {
             self.repoint_current_to(id);
         }
@@ -549,7 +556,7 @@ impl Playlist {
     /// Reverse the active playlist; the playing track stays current.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn reverse(&mut self) {
-        let playing = self.current_id();
+        let playing = self.stamped_current_id();
         self.tracks.reverse();
         if let Some(id) = playing {
             self.repoint_current_to(id);
@@ -561,11 +568,27 @@ impl Playlist {
     // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn randomize(&mut self) {
         use rand::seq::SliceRandom;
-        let playing = self.current_id();
+        let playing = self.stamped_current_id();
         self.tracks.shuffle(&mut rand::thread_rng());
         if let Some(id) = playing {
             self.repoint_current_to(id);
         }
+    }
+
+    /// Stamp every entry, then return the playing track's id.
+    ///
+    /// The reorder ops find the playing track again by id afterwards, so they
+    /// need one that actually identifies it. Several paths push straight into
+    /// `tracks` rather than going through `add` — the mac dedupe and Media
+    /// Library bulk adds, GTK's drag-drop and disc-track adds — and those
+    /// entries carry the id-0 sentinel until something stamps them. Left
+    /// unstamped, a sort would look up id 0, land on whichever unstamped row
+    /// came first, and move the playing highlight (and the next auto-advance)
+    /// onto the wrong track. Stamping here means the ops hold regardless of
+    /// how the entries arrived.
+    fn stamped_current_id(&mut self) -> Option<u64> {
+        self.ensure_ids();
+        self.current_id()
     }
 
     /// Return the indices of all tracks whose `title`, `artist`, or `album`
@@ -1349,6 +1372,34 @@ mod tests {
         pl.sort_by(SortKey::Title);
         assert_eq!(pl.current_id(), Some(1), "still on banana after sort");
         assert_eq!(pl.current_index, 1, "banana moved to the end");
+    }
+
+    /// Entries that arrive by a direct `tracks.push` rather than through `add`
+    /// carry the id-0 sentinel — the mac dedupe and Media Library bulk adds and
+    /// GTK's drag-drop and disc-track adds all do this. A reorder finds the
+    /// playing track again by id, so before this was fixed the lookup matched
+    /// id 0 against the FIRST unstamped row and moved the playing highlight
+    /// (and the next auto-advance) onto a track the user was not listening to.
+    #[test]
+    fn sort_keeps_the_playing_track_when_entries_were_never_stamped() {
+        let mut pl = Playlist::new();
+        for (title, path) in [("delta", "/4.mp3"), ("charlie", "/3.mp3"), ("bravo", "/2.mp3")] {
+            pl.tracks.push(track_named(0, title, path)); // id 0, as bulk adds leave it
+        }
+        pl.jump_to(2); // playing "bravo", last row
+        assert_eq!(pl.tracks[pl.current_index].title, "bravo");
+
+        pl.sort_by(SortKey::Title);
+
+        assert_eq!(
+            pl.tracks[pl.current_index].title, "bravo",
+            "playing track still current after sorting unstamped entries"
+        );
+        assert_eq!(pl.current_index, 0, "bravo sorted to the front");
+        assert!(
+            pl.tracks.iter().all(|t| t.id != 0),
+            "the reorder stamped every entry on its way through"
+        );
     }
 
     // -----------------------------------------------------------------------
