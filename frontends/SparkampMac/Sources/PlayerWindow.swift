@@ -721,10 +721,9 @@ struct ThemedVolumeSlider: View {
 /// the page back to 0 on every track change, same as GTK's `populate()`
 /// resetting `c.index = 0`.
 ///
-/// SIMPLIFICATION vs GTK: a manually-clicked dot does not push out the next
-/// auto-advance (GTK's `jump()` doubles the dwell so a manual pick lingers);
-/// here the timer just keeps advancing on its fixed schedule. Noted in the
-/// mac checklist as a UX item to eyeball, not a correctness bug.
+/// A manually-clicked dot pushes the next auto-advance out and doubles the
+/// dwell, so the page you picked lingers instead of flipping away a moment
+/// later — same as GTK's `jump()`.
 private struct NowPlayingPanel: View {
     let info: NowPlayingInfo?
     let trackKey: Int
@@ -734,12 +733,39 @@ private struct NowPlayingPanel: View {
     @State private var pageIndex: Int = 0
     @State private var artworkImage: NSImage? = nil
 
+    /// When the carousel should next advance on its own. A dot click and a
+    /// track change both push this out, which is what a bare repeating timer
+    /// could not express — same design as GTK's `Carousel::next_advance`.
+    @State private var nextAdvance = Date().addingTimeInterval(Self.carouselInterval)
+
+    /// Polls once a second and advances when `nextAdvance` has passed, rather
+    /// than firing every six seconds. Polling is what lets a manual pick move
+    /// the deadline without tearing the timer down (GTK's `CAROUSEL_POLL`).
+    ///
+    /// It also has to be created ONCE per view identity. Building the
+    /// publisher inline in `.onReceive(Timer.publish(…))` looks equivalent but
+    /// is not: `body` re-runs on every published model change — several times
+    /// a second while a track plays, as `position` ticks — and each run handed
+    /// `onReceive` a brand-new publisher, restarting its countdown before it
+    /// could ever fire. The panel sat on one page for the whole song and only
+    /// advanced while playback was stopped.
+    @State private var pollTimer = Timer.publish(every: Self.carouselPoll, on: .main, in: .common)
+        .autoconnect()
+
+    /// How long a page stays up before advancing (GTK's `CAROUSEL_INTERVAL`).
+    private static let carouselInterval: TimeInterval = 6
+    /// How often the poll checks the deadline (GTK's `CAROUSEL_POLL`).
+    private static let carouselPoll: TimeInterval = 1
+
     private var theme: SkinTheme { themeManager.currentTheme }
 
     private enum Page {
         case tags([(String, String)])
-        case tech(String)
-        case stats(count: Int64?, last: String?)
+        /// Discrete Format/Bitrate/… rows, laid out like the tag pages. The
+        /// concatenated `techLine` is still what the TUI and MPRIS use, but a
+        /// panel page has room for rows and GTK has always shown them that way.
+        case tech([(String, String)])
+        case stats(rows: [(String, String)])
         case links(artist: String?, album: String?)
     }
 
@@ -756,15 +782,22 @@ private struct NowPlayingPanel: View {
             result.append(.tags(Array(info.tags[i..<end])))
             i = end
         }
-        if !info.techLine.isEmpty {
-            result.append(.tech(info.techLine))
+        if !info.technical.isEmpty {
+            result.append(.tech(info.technical))
         }
-        if info.hasPlayCount || !info.lastPlayed.isEmpty {
-            result.append(.stats(
-                count: info.hasPlayCount ? info.playCount : nil,
-                last: info.lastPlayed.isEmpty ? nil : info.lastPlayed
-            ))
+        // Stats page: same four rows GTK shows, each present only when known.
+        var stats: [(String, String)] = []
+        if info.hasPlayCount { stats.append(("Play count", "\(info.playCount)")) }
+        if !info.lastPlayed.isEmpty {
+            stats.append(("Last played", Self.formatLastPlayed(info.lastPlayed)))
         }
+        if !info.lastScanned.isEmpty {
+            stats.append(("Last scanned", Self.formatLastPlayed(info.lastScanned)))
+        }
+        if !info.addedAt.isEmpty {
+            stats.append(("Added", Self.formatLastPlayed(info.addedAt)))
+        }
+        if !stats.isEmpty { result.append(.stats(rows: stats)) }
         if !info.artistWikiURL.isEmpty || !info.albumWikiURL.isEmpty {
             result.append(.links(
                 artist: info.artistWikiURL.isEmpty ? nil : info.artistWikiURL,
@@ -785,34 +818,58 @@ private struct NowPlayingPanel: View {
     }
 
     var body: some View {
+        // Art on the left, carousel column on the right, page dots centred
+        // under the carousel — the art is not part of what they index, so they
+        // centre on the column alone (GTK puts its `dots` box inside the same
+        // right-hand VBox with `halign: Center`).
+        //
+        // The dots also have to hold still. They used to be the last item in
+        // the flow of page content, so they rode up and down as each page
+        // changed height and jumped again whenever the Lyrics button appeared
+        // on the last tag page. Pinning the row to the artwork's height and
+        // letting the content expand above them fixes the baseline.
         HStack(alignment: .top, spacing: 10) {
             artView
-            VStack(alignment: .leading, spacing: 4) {
-                pageContent
-                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
-                // A1 lyrics affordance (F15, point 1): shown only on the LAST
-                // ID3 page, opening the window in Current (follow-playback) mode.
-                if pageIndex == lastTagPageIndex {
-                    Button("Lyrics") {
-                        model.viewOrSearchLyricsForPlaylist(index: trackKey, mode: .current)
+            VStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 4) {
+                    pageContent
+                        .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                    // A1 lyrics affordance (F15, point 1): shown only on the LAST
+                    // ID3 page, opening the window in Current (follow-playback) mode.
+                    if pageIndex == lastTagPageIndex {
+                        Button("Lyrics") {
+                            model.viewOrSearchLyricsForPlaylist(index: trackKey, mode: .current)
+                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                        // Indent past the label column so the button lines up with
+                        // the values in the tag rows above it rather than with
+                        // their labels.
+                        .padding(.leading, Self.tagLabelWidth + Self.tagLabelSpacing)
                     }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
-                    // Indent past the label column so the button lines up with
-                    // the values in the tag rows above it rather than with
-                    // their labels.
-                    .padding(.leading, Self.tagLabelWidth + Self.tagLabelSpacing)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
                 if pages.count > 1 { dots }
             }
         }
-        .onChange(of: trackKey) { _, _ in pageIndex = 0 }
+        // Match the artwork's height so a one-line page and a six-row page put
+        // the dots at the same y.
+        .frame(minHeight: Self.artSize, alignment: .top)
+        // A new track restarts the carousel at page 0 with a full dwell, so
+        // the first page is not cut short by the outgoing track's deadline
+        // (GTK's `populate` resets both).
+        .onChange(of: trackKey) { _, _ in
+            pageIndex = 0
+            nextAdvance = Date().addingTimeInterval(Self.carouselInterval)
+        }
         .onChange(of: pages.count) { _, count in
             if pageIndex >= count { pageIndex = 0 }
         }
-        .onReceive(Timer.publish(every: 6, on: .main, in: .common).autoconnect()) { _ in
-            guard pages.count > 1 else { return }
+        .onReceive(pollTimer) { now in
+            guard pages.count > 1, now >= nextAdvance else { return }
             pageIndex = (pageIndex + 1) % pages.count
+            nextAdvance = now.addingTimeInterval(Self.carouselInterval)
         }
         // Reload the decoded image only when the path actually changes
         // (not on every 6 s page-advance re-render) — avoids re-hitting disk
@@ -823,6 +880,10 @@ private struct NowPlayingPanel: View {
         }
     }
 
+    /// Side of the square artwork well. Also the panel's content height, which
+    /// is what keeps the page dots on a fixed baseline (see `body`).
+    private static let artSize: CGFloat = 100
+
     @ViewBuilder
     private var artView: some View {
         Group {
@@ -830,7 +891,7 @@ private struct NowPlayingPanel: View {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 100, height: 100)
+                    .frame(width: Self.artSize, height: Self.artSize)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             } else {
                 VStack(spacing: 4) {
@@ -844,7 +905,7 @@ private struct NowPlayingPanel: View {
                         .multilineTextAlignment(.center)
                         .frame(width: 90)
                 }
-                .frame(width: 100, height: 100)
+                .frame(width: Self.artSize, height: Self.artSize)
             }
         }
         .contentShape(Rectangle())
@@ -866,14 +927,13 @@ private struct NowPlayingPanel: View {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(rows, id: \.0) { row in tagRow(row.0, row.1) }
                 }
-            case .tech(let line):
-                Text(line)
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.playlistText)
-            case .stats(let count, let last):
+            case .tech(let rows):
                 VStack(alignment: .leading, spacing: 3) {
-                    if let count { tagRow("Play count", "\(count)") }
-                    if let last { tagRow("Last played", Self.formatLastPlayed(last)) }
+                    ForEach(rows, id: \.0) { row in tagRow(row.0, row.1) }
+                }
+            case .stats(let rows):
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(rows, id: \.0) { row in tagRow(row.0, row.1) }
                 }
             case .links(let artist, let album):
                 VStack(alignment: .leading, spacing: 3) {
@@ -916,7 +976,13 @@ private struct NowPlayingPanel: View {
                     .fill(i == pageIndex ? theme.vars.highlight : theme.playlistDurationText.opacity(0.4))
                     .frame(width: 5, height: 5)
                     .contentShape(Rectangle())
-                    .onTapGesture { pageIndex = i }
+                    .onTapGesture {
+                        pageIndex = i
+                        // A manual pick resets the dwell and doubles it, so the
+                        // chosen page lingers instead of flipping away a moment
+                        // later (GTK's `jump`).
+                        nextAdvance = Date().addingTimeInterval(Self.carouselInterval * 2)
+                    }
             }
         }
     }

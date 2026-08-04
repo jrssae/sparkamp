@@ -484,6 +484,20 @@ struct PlaylistView: View {
         }
         .background(theme.playlistBg)
         .preferredColorScheme(themeManager.preferredColorScheme)
+        // Keep the `l` key's target in step with the selection: exactly one
+        // row, or nothing to open.
+        .onChange(of: selection) { _, sel in
+            guard sel.count == 1, let id = sel.first,
+                  let item = model.playlistItems.first(where: { $0.id == id }),
+                  let path = model.playlistTrackPath(index: id)
+            else {
+                model.lyricsTargetPlaylist = nil
+                return
+            }
+            model.lyricsTargetPlaylist = LyricsTarget(
+                path: path, artist: item.artist,
+                title: item.title, albumArtist: item.albumArtist)
+        }
         .onDisappear {
             // Sync model flag when window is closed via the system X button
             // so the playlist button in the player reflects the correct state.
@@ -553,13 +567,20 @@ struct PlaylistView: View {
         .overlay(alignment: .leading) { menuShortcutButtons }
     }
 
-    /// Zero-size hidden buttons carrying ⌘S and ⌘I.
+    /// Zero-size hidden buttons carrying ⌘S, ⌘I and ⌃Q.
     ///
-    /// Both actions also live in the Add/Select/Sort/List menus above, but a
+    /// The first two also live in the Add/Select/Sort/List menus above, but a
     /// SwiftUI `Menu`'s content is built lazily when the menu is opened, so a
     /// `.keyboardShortcut` nested inside one is not guaranteed to be live
     /// beforehand. These duplicates run the same code and are always in the
     /// view tree, so the keys work whether or not the menu registered them.
+    ///
+    /// ⌃Q is here because the app-wide `NSEvent` monitor cannot carry it:
+    /// `handleRawKey` refuses anything with a modifier, so a modified key needs
+    /// a real responder-chain shortcut. GTK binds Ctrl+Q to enqueue/dequeue in
+    /// its playlist window as well as its Jump window; on mac only the Jump
+    /// window had it, so the shortcut list was promising something the
+    /// playlist did not do.
     private var menuShortcutButtons: some View {
         ZStack {
             Button("", action: saveActivePlaylistAs)
@@ -569,6 +590,9 @@ struct PlaylistView: View {
                 selection = Set(model.playlistItems.map { $0.id }).subtracting(selection)
             }
             .keyboardShortcut("i", modifiers: .command)
+            Button("") { model.queueToggle(indices: Array(selection).sorted()) }
+                .keyboardShortcut("q", modifiers: .control)
+                .disabled(selection.isEmpty)
         }
         .frame(width: 0, height: 0)
         .opacity(0)

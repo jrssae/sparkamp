@@ -209,6 +209,12 @@ extension SparkampModel {
         sparkamp_playlist_jump(ctx, Int32(index))
         refreshAll()
         saveState()
+        // A jump starts a different track, so it is a now-playing change like
+        // any other. Without this the nonce-driven observers (the lyrics
+        // window in Now-playing mode, the fullscreen track toast) sat on the
+        // previous song — `next`/`prev`/EOS all announce, and double-clicking
+        // a row is the most common way of all to change track.
+        announceNowPlaying()
     }
 
     // MARK: Playlist actions

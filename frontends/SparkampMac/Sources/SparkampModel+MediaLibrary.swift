@@ -370,9 +370,14 @@ extension SparkampModel {
         return Int(added)
     }
 
-    func mlOpenTagEditorForPath(_ path: String) {
+    /// `forceField` is an ID3 frame id the editor must show for this opening
+    /// even if the user's saved field layout hides it — the lyrics window
+    /// passes "USLT" so "Edit in tag editor" always lands on a visible Lyric
+    /// row. Cleared on the next ordinary open.
+    func mlOpenTagEditorForPath(_ path: String, forceField: String = "") {
         id3TrackIndex = -1          // direct-path mode; drop any stale playlist index
         id3DirectPath = path
+        id3ForceFieldId = forceField
         id3EditorVisible = true
         id3Request &+= 1
     }

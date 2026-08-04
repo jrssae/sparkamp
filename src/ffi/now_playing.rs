@@ -114,6 +114,57 @@ pub unsafe extern "C" fn sparkamp_now_playing_tech_line(
         .into_raw()
 }
 
+/// Number of discrete technical rows (Format / Bitrate / Sample rate /
+/// Channels / File size / ReplayGain), non-empty only.
+///
+/// These are the same fields `tech_line` concatenates, but as label/value
+/// pairs so a panel can lay them out like the tag rows — which is what the
+/// GTK A1 carousel does. `tech_line` stays for the single-line consumers
+/// (TUI, MPRIS).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_now_playing_technical_count(
+    np: *const SparkampNowPlaying,
+) -> c_int {
+    if np.is_null() {
+        return 0;
+    }
+    (&*np).info.technical.len() as c_int
+}
+
+/// Label of technical row `i` (e.g. "Format", "Bitrate"). Empty string if out
+/// of range. Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_now_playing_technical_label(
+    np: *const SparkampNowPlaying,
+    i: c_int,
+) -> *mut c_char {
+    if np.is_null() || i < 0 {
+        return CString::new("").unwrap().into_raw();
+    }
+    let np = &*np;
+    match np.info.technical.get(i as usize) {
+        Some((label, _)) => CString::new(*label).unwrap_or_default().into_raw(),
+        None => CString::new("").unwrap().into_raw(),
+    }
+}
+
+/// Value of technical row `i`. Empty string if out of range. Free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_now_playing_technical_value(
+    np: *const SparkampNowPlaying,
+    i: c_int,
+) -> *mut c_char {
+    if np.is_null() || i < 0 {
+        return CString::new("").unwrap().into_raw();
+    }
+    let np = &*np;
+    match np.info.technical.get(i as usize) {
+        Some((_, value)) => CString::new(value.as_str()).unwrap_or_default().into_raw(),
+        None => CString::new("").unwrap().into_raw(),
+    }
+}
+
 /// Path to the resolved artwork file (embedded APIC dump, folder image, or
 /// library-cached path); "" if none. Free with `sparkamp_free_string`.
 #[unsafe(no_mangle)]
@@ -167,6 +218,32 @@ pub unsafe extern "C" fn sparkamp_now_playing_last_played(
         return CString::new("").unwrap().into_raw();
     }
     let s = (&*np).info.last_played.clone().unwrap_or_default();
+    CString::new(s).unwrap_or_default().into_raw()
+}
+
+/// ISO-8601 timestamp of the last metadata scan, or "" if unindexed.
+/// Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_now_playing_last_scanned(
+    np: *const SparkampNowPlaying,
+) -> *mut c_char {
+    if np.is_null() {
+        return CString::new("").unwrap().into_raw();
+    }
+    let s = (&*np).info.last_scanned.clone().unwrap_or_default();
+    CString::new(s).unwrap_or_default().into_raw()
+}
+
+/// ISO-8601 timestamp the file first entered the library, or "" if unindexed.
+/// Free with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_now_playing_added_at(
+    np: *const SparkampNowPlaying,
+) -> *mut c_char {
+    if np.is_null() {
+        return CString::new("").unwrap().into_raw();
+    }
+    let s = (&*np).info.added_at.clone().unwrap_or_default();
     CString::new(s).unwrap_or_default().into_raw()
 }
 

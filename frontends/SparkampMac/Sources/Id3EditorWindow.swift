@@ -29,6 +29,10 @@ extension ID3FieldConfig {
         ID3FieldConfig(id: "TCOM", label: "Composer",     column: 0, order: 5, visible: false),
         ID3FieldConfig(id: "TEXT", label: "Lyricist",     column: 0, order: 6, visible: false),
         ID3FieldConfig(id: "TIT3", label: "Subtitle",     column: 0, order: 7, visible: false),
+        // USLT — the only multi-line frame in the editor. Hidden by default
+        // (it is tall, and most people never touch it), but the lyrics
+        // window's "Edit in tag editor" force-shows it, same as GTK.
+        ID3FieldConfig(id: "USLT", label: "Lyric",        column: 0, order: 8, visible: false),
         // Right column
         ID3FieldConfig(id: "TDRC", label: "Year",         column: 1, order: 0, visible: true),
         ID3FieldConfig(id: "TRCK", label: "Track #",      column: 1, order: 1, visible: true),
@@ -111,9 +115,15 @@ struct Id3EditorView: View {
 
     private var theme: SkinTheme { themeManager.currentTheme }
 
-    // Fields visible in each column, sorted by order
-    private var leftFields:  [ID3FieldConfig] { fieldConfigs.filter { $0.visible && $0.column == 0 }.sorted { $0.order < $1.order } }
-    private var rightFields: [ID3FieldConfig] { fieldConfigs.filter { $0.visible && $0.column == 1 }.sorted { $0.order < $1.order } }
+    // Fields visible in each column, sorted by order. A field the caller
+    // forced (`model.id3ForceFieldId`) shows for this opening whatever the
+    // saved layout says — that is how the lyrics window guarantees a Lyric
+    // row to edit.
+    private func isShown(_ f: ID3FieldConfig) -> Bool {
+        f.visible || f.id == model.id3ForceFieldId
+    }
+    private var leftFields:  [ID3FieldConfig] { fieldConfigs.filter { isShown($0) && $0.column == 0 }.sorted { $0.order < $1.order } }
+    private var rightFields: [ID3FieldConfig] { fieldConfigs.filter { isShown($0) && $0.column == 1 }.sorted { $0.order < $1.order } }
 
     /// One-line technical summary: uppercase filetype, bitrate, sample rate,
     /// channels, duration — " · "-joined, skipping empty parts. Mirrors the
@@ -281,7 +291,8 @@ struct Id3EditorView: View {
                                          value: binding(for: field.id),
                                          readOnly: isReadOnly,
                                          theme: theme,
-                                         suggestions: field.id == "TCON" ? id3GenreList : [])
+                                         suggestions: field.id == "TCON" ? id3GenreList : [],
+                                         multiline: field.id == "USLT")
                             }
                         }
                     }
@@ -303,7 +314,8 @@ struct Id3EditorView: View {
                                          value: binding(for: field.id),
                                          readOnly: isReadOnly,
                                          theme: theme,
-                                         suggestions: field.id == "TCON" ? id3GenreList : [])
+                                         suggestions: field.id == "TCON" ? id3GenreList : [],
+                                         multiline: field.id == "USLT")
                             }
                         }
                     }
@@ -574,6 +586,9 @@ private struct FieldRow: View {
     var suggestions: [String] = []
     /// Greyed hint shown while the field is empty.
     var placeholder: String = ""
+    /// Renders a scrolling multi-line editor instead of a one-line field —
+    /// USLT lyrics are the only tag here that need it.
+    var multiline: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -581,7 +596,18 @@ private struct FieldRow: View {
                 .font(theme.vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistDurationText)
                 .padding(.leading, 2)
-            if suggestions.isEmpty {
+            if multiline {
+                TextEditor(text: $value)
+                    .font(theme.vars.bodyFont)
+                    .scrollContentBackground(.hidden)
+                    .background(theme.lcdBackground)
+                    .frame(height: 120)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(theme.windowBorder, lineWidth: 1)
+                    )
+                    .disabled(readOnly)
+            } else if suggestions.isEmpty {
                 TextField(placeholder, text: $value)
                     .textFieldStyle(.roundedBorder)
                     .font(theme.vars.bodyFont)

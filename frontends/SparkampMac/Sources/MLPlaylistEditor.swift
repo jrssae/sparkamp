@@ -111,6 +111,17 @@ struct MLPlaylistEditor: View {
                 requestDeleteRows: { ids in deleteEditorRows(ids: ids) }
             )
             .background(theme.playlistBg)
+            // Feed the `l` key: exactly one selected row, or nothing.
+            .onChange(of: trackSelection) { _, sel in
+                guard sel.count == 1, let id = sel.first,
+                      let t = editingRows.first(where: { $0.id == id })?.track
+                else {
+                    model.lyricsTargetML = nil
+                    return
+                }
+                model.lyricsTargetML = LyricsTarget(path: t.path, artist: t.artist,
+                                                    title: t.title, albumArtist: t.albumArtist)
+            }
 
             // ── Status bar: "N tracks · MM:SS total · K selected · MM:SS" ──────
             // Mirrors the active playlist's status line; reflects the currently

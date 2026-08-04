@@ -128,6 +128,9 @@ extension SparkampModel {
             playerExpanded.toggle()
             UserDefaults.standard.set(playerExpanded, forKey: "sparkamp.playerExpanded")
             return true
+        case "l":
+            openLyricsForFocusedSurface()
+            return true
         case "k":
             // Toggle: if the album-art window is the focused (key) window,
             // pressing k again dismisses it; otherwise open-or-focus it (the

@@ -524,6 +524,17 @@ struct DeviceDetailView: View {
             }
             return true
         }
+        // Feed the `l` key: exactly one selected row, or nothing.
+        .onChange(of: selection) { _, sel in
+            guard sel.count == 1, let id = sel.first,
+                  let t = sortedTracks.first(where: { $0.id == id })
+            else {
+                model.lyricsTargetML = nil
+                return
+            }
+            model.lyricsTargetML = LyricsTarget(path: t.path, artist: t.artist,
+                                                title: t.title, albumArtist: t.albumArtist)
+        }
     }
 
     // Columns split into two builders so the type-checker stays fast and we

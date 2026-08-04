@@ -7,6 +7,16 @@ enum LyricsMode: Hashable {
     case current
 }
 
+/// The one track a surface would open lyrics for, resolved from its current
+/// selection. Surfaces publish `nil` when nothing is selected or when more
+/// than one row is — the `l` key is deliberately a single-row action.
+struct LyricsTarget: Equatable {
+    let path: String
+    let artist: String
+    let title: String
+    let albumArtist: String
+}
+
 /// Decoded shape of `sparkamp_lyrics_view`'s JSON return.
 private struct LyricsViewDTO: Decodable {
     let title: String
@@ -72,11 +82,45 @@ extension SparkampModel {
                            albumArtist: item.albumArtist, mode: mode)
     }
 
+    /// The `l` key. Which track it opens depends on where the user is looking:
+    /// a selected row in the Media Library or the active playlist, and
+    /// otherwise the playing track — the same thing the A1 panel's "Lyrics"
+    /// button does, in follow-the-track mode. A selection of zero or several
+    /// rows does nothing, matching the row menus, which only offer
+    /// "View/Search Lyrics" for exactly one row.
+    func openLyricsForFocusedSurface() {
+        // Window titles rather than scene ids: `NSApp.keyWindow` is an AppKit
+        // window and SwiftUI does not expose its scene id here. Every Media
+        // Library tab — including the disc and device views, which live inside
+        // that window — reports the one title, which is exactly the grouping
+        // `lyricsTargetML` wants.
+        switch NSApp.keyWindow?.title {
+        case "Media Library":
+            open(target: lyricsTargetML)
+        case "Playlist":
+            open(target: lyricsTargetPlaylist)
+        default:
+            viewOrSearchLyricsForPlaylist(index: currentIndex, mode: .current)
+        }
+    }
+
+    private func open(target: LyricsTarget?) {
+        guard let t = target else { return }
+        viewOrSearchLyrics(path: t.path, artist: t.artist, title: t.title,
+                           albumArtist: t.albumArtist)
+    }
+
     /// Retarget an open Current-mode lyrics window onto the now-playing track.
     /// Called from the lyrics window's now-playing observer; a no-op unless the
     /// window is open in Current mode.
     func refreshCurrentLyricsIfNeeded() {
-        guard lyricsVisible, lyricsMode == .current, currentIndex >= 0,
+        // Deliberately NOT gated on `lyricsVisible`. The only caller is the
+        // live `LyricsView`, so the window is on screen by construction, and
+        // the flag can lag reality: macOS restores the "lyrics-viewer" Window
+        // scene at launch, which puts the view back on screen with the model
+        // still at its `false` default. That made every Now-playing refresh
+        // bail on a window the user was looking at.
+        guard lyricsMode == .current, currentIndex >= 0,
               let item = playlistItems.first(where: { $0.id == currentIndex }),
               let path = playlistTrackPath(index: currentIndex)
         else { return }

@@ -43,11 +43,17 @@ fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'st
             ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
             ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
             ("d",           "View/Edit ID3 tags for current track"),
+            ("l",           "View/Search Lyrics (selected track, else the current one)"),
             ("u",           "Toggle equalizer window"),
             ("w",           "Toggle now-playing panel (art, tags, links)"),
             ("k",           "Open album-art window"),
             ("Ctrl+.",      "Open settings"),
             ("Click logo",  "Open settings"),
+        ]),
+        ("Mouse", &[
+            ("Click time",   "Switch elapsed / remaining"),
+            ("Click viz",    "Cycle visualizer mode"),
+            ("Dbl-click viz", "Fullscreen visualizer (Waveform or Granite mode)"),
         ]),
         ("Other", &[
             ("i",          "Toggle this help"),
@@ -4752,6 +4758,36 @@ pub fn build(
                                 None,
                             );
                         }
+                    } else {
+                        status_label.set_text("No track loaded");
+                    }
+                    glib::Propagation::Stop
+                }
+
+                // ── Lyrics (l) — open the window for the current track, in
+                // follow-the-track mode, the same as the A1 panel's "Lyrics"
+                // button. The Media Library's own controllers bind `l` to the
+                // selected row instead; this arm is what the player and
+                // playlist windows see.
+                gdk::Key::l | gdk::Key::L => {
+                    let cur = state.borrow().playlist.current().map(|t| {
+                        (
+                            t.path.clone(),
+                            t.artist.clone(),
+                            t.title.clone(),
+                            t.album_artist.clone(),
+                        )
+                    });
+                    if let Some((path, artist, title, album_artist)) = cur {
+                        view_or_search_lyrics(
+                            &state,
+                            &path,
+                            &artist,
+                            &title,
+                            &album_artist,
+                            kbd_rebuild.clone(),
+                            LyricsMode::Current,
+                        );
                     } else {
                         status_label.set_text("No track loaded");
                     }

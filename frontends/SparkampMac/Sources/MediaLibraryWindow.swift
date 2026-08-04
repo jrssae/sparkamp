@@ -246,6 +246,9 @@ struct MediaLibraryView: View {
         // play-count threshold).  Using a trigger counter rather than
         // calling mlFetchTracks() directly preserves search & sort state.
         .onChange(of: model.mlReloadTrigger) { _, _ in reload() }
+        // Keep the `l` key's target in step with the Files/album-drill-down
+        // selection. Exactly one row, or nothing to open.
+        .onChange(of: selection) { _, sel in publishLyricsTarget(sel) }
         .onChange(of: nav) { _, newNav in
             selection.removeAll()
             // Opening any drive clears a stale disconnect banner.
@@ -1056,6 +1059,7 @@ struct MediaLibraryView: View {
         // album_filter) — search/sort don't apply until the filter clears.
         if let filter = model.mlSelectedAlbum {
             model.mlTracks = model.albumTracks(album: filter.album, albumArtist: filter.albumArtist)
+            publishLyricsTarget(selection)
             return
         }
         let q = query ?? searchQuery
@@ -1086,6 +1090,21 @@ struct MediaLibraryView: View {
         }
         let desc = sortOrder.first.map { $0.order == .reverse } ?? false
         model.mlFetchTracks(query: q, sortCol: colName, sortDesc: desc)
+        publishLyricsTarget(selection)
+    }
+
+    /// Hand the `l` key the single selected row, or nothing. Resolved against
+    /// the rows actually on screen so a selection left over from a previous
+    /// query cannot open lyrics for a row the user can no longer see.
+    private func publishLyricsTarget(_ sel: Set<Int64>) {
+        guard sel.count == 1, let id = sel.first,
+              let t = model.mlTracks.first(where: { $0.id == id })
+        else {
+            model.lyricsTargetML = nil
+            return
+        }
+        model.lyricsTargetML = LyricsTarget(path: t.path, artist: t.artist,
+                                            title: t.title, albumArtist: t.albumArtist)
     }
 }
 

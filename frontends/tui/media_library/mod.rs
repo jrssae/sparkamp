@@ -322,8 +322,8 @@ impl App {
                 }
             }
 
-            // 'y' — View/Search Lyrics for the highlighted Files/Albums track.
-            KeyCode::Char('y') => {
+            // 'l' — View/Search Lyrics for the highlighted Files/Albums track.
+            KeyCode::Char('l') => {
                 let track = if let Mode::MediaLibrary(s) = &self.mode {
                     match s.tab {
                         MediaLibraryTab::Files => s.tracks.get(s.selected_track).map(|t| {

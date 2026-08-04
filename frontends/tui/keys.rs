@@ -279,7 +279,7 @@ impl App {
                     }
                     // Close and restore the mode the viewer was opened from
                     // (e.g. the Media Library with its selection intact).
-                    KeyCode::Esc | KeyCode::Char('y') | KeyCode::Char('q') => {
+                    KeyCode::Esc | KeyCode::Char('l') | KeyCode::Char('q') => {
                         if let Mode::Lyrics { return_mode, .. } =
                             std::mem::replace(&mut self.mode, Mode::Normal)
                         {
@@ -421,7 +421,9 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.playlist_cursor = self.playlist_cursor.saturating_sub(1);
             }
-            KeyCode::Down | KeyCode::Char('l') => {
+            // Down only: every other list in the TUI pairs k/j, and `l` is
+            // the lyrics key now. The arrows navigate every list regardless.
+            KeyCode::Down => {
                 if self.playlist_cursor + 1 < self.playlist.len() {
                     self.playlist_cursor += 1;
                 }
@@ -528,9 +530,10 @@ impl App {
                 }
             }
 
-            // y — View/Search Lyrics for the active-playlist track under the
-            // cursor (or the playing track when the list is collapsed).
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            // l — View/Search Lyrics for the active-playlist track under the
+            // cursor (or the playing track when the list is collapsed). Same key
+            // as the GTK and macOS frontends.
+            KeyCode::Char('l') | KeyCode::Char('L') => {
                 let y_idx = if self.playlist_visible {
                     self.playlist_cursor
                 } else {

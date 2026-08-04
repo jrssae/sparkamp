@@ -491,6 +491,15 @@ char   *sparkamp_now_playing_tag_value(const SparkampNowPlaying *np, int32_t i);
 /** e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45"; "" if nothing probed.
     Free with sparkamp_free_string. */
 char   *sparkamp_now_playing_tech_line(const SparkampNowPlaying *np);
+/** Number of discrete technical rows (Format / Bitrate / Sample rate /
+    Channels / File size / ReplayGain), non-empty only. Same fields the
+    tech_line concatenates, as label/value pairs so the panel can lay them out
+    like tag rows (what GTK's A1 carousel does). */
+int32_t sparkamp_now_playing_technical_count(const SparkampNowPlaying *np);
+/** Label of technical row i; "" if out of range. Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_technical_label(const SparkampNowPlaying *np, int32_t i);
+/** Value of technical row i; "" if out of range. Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_technical_value(const SparkampNowPlaying *np, int32_t i);
 /** Resolved artwork file path, or "" if none. Free with sparkamp_free_string. */
 char   *sparkamp_now_playing_artwork_path(const SparkampNowPlaying *np);
 /** 1 if the track is indexed in the media library (has a play count); 0 otherwise. */
@@ -500,6 +509,12 @@ int64_t sparkamp_now_playing_play_count(const SparkampNowPlaying *np);
 /** ISO-8601 UTC last-played timestamp, or "" if never played / unindexed.
     Free with sparkamp_free_string. */
 char   *sparkamp_now_playing_last_played(const SparkampNowPlaying *np);
+/** ISO-8601 timestamp of the last metadata scan, or "" if unindexed.
+    Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_last_scanned(const SparkampNowPlaying *np);
+/** ISO-8601 timestamp the file first entered the library, or "" if unindexed.
+    Free with sparkamp_free_string. */
+char   *sparkamp_now_playing_added_at(const SparkampNowPlaying *np);
 /** Wikipedia search URL for the artist tag, or "" if empty. Free with sparkamp_free_string. */
 char   *sparkamp_now_playing_artist_wiki_url(const SparkampNowPlaying *np);
 /** Wikipedia search URL for the album tag, or "" if empty. Free with sparkamp_free_string. */

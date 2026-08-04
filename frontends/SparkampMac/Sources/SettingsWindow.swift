@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
 
+    // Always opens on About — the first tab on every frontend.
     @State private var selectedTab: SettingsTab = .about
     @Environment(\.colorScheme) private var colorScheme
 
@@ -27,7 +28,7 @@ struct SettingsView: View {
                 switch selectedTab {
                 case .about:        AboutPane()
                 case .appearance:   AppearancePane()
-                case .playback:     PlaybackPane()
+                case .behavior:     BehaviorPane()
                 case .visualizer:   VisualizerPane()
                 case .mediaLibrary: MediaLibraryPane()
                 }
@@ -45,14 +46,19 @@ struct SettingsView: View {
 
 // MARK: - Tab definition
 
+/// Same tabs, same names, same order as GTK's settings notebook — About,
+/// Appearance, Behavior, Visualizer, Media Library — and the window always
+/// opens on About. GTK's separate "Filetypes" tab held one dropdown (playlist
+/// format); that setting lives in Behavior on both frontends now and the tab
+/// is gone.
 private enum SettingsTab: String, CaseIterable {
-    case about, appearance, playback, visualizer, mediaLibrary
+    case about, appearance, behavior, visualizer, mediaLibrary
 
     var label: String {
         switch self {
         case .about:         return "About"
         case .appearance:    return "Appearance"
-        case .playback:      return "Playback"
+        case .behavior:      return "Behavior"
         case .visualizer:    return "Visualizer"
         case .mediaLibrary:  return "Media Library"
         }
@@ -62,7 +68,7 @@ private enum SettingsTab: String, CaseIterable {
         switch self {
         case .about:         return "info.circle"
         case .appearance:    return "paintbrush"
-        case .playback:      return "play.circle"
+        case .behavior:      return "slider.horizontal.3"
         case .visualizer:    return "waveform"
         case .mediaLibrary:  return "music.note.house"
         }
@@ -272,14 +278,23 @@ private struct AppearancePane: View {
     }
 }
 
-// MARK: - Playback pane
+// MARK: - Behavior pane
 
-private struct PlaybackPane: View {
+/// GTK's Behavior tab: how playback, adding files, ReplayGain, play counts,
+/// fadeout and discs behave. The disc and gnudb settings live here rather than
+/// under Media Library because that is where GTK keeps them.
+private struct BehaviorPane: View {
     @EnvironmentObject var model: SparkampModel
 
     @State private var autoplayOnAdd: Bool = false
     @State private var addBehavior: Int    = 0    // 0=Append, 1=Replace
     @State private var playlistFormat: Int = 0    // 0=m3u8, 1=m3u
+
+    // Discs / gnudb — GTK groups these under Behavior too.
+    @State private var gnudbEmail: String = ""
+    @State private var gnudbSubmitTest: Bool = true
+    @State private var burnVerify: Bool = true
+    @State private var autoShowInsertedCd: Bool = true
 
     // ReplayGain (playback normalization).
     @State private var rgEnabled: Bool     = true
@@ -312,15 +327,15 @@ private struct PlaybackPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("On Add") {
-                Toggle("Autoplay when files are added", isOn: $autoplayOnAdd)
+            Section("Playback") {
+                Toggle("Autoplay on add", isOn: $autoplayOnAdd)
                     .onChange(of: autoplayOnAdd) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_autoplay_on_add(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
 
-                Picker("When adding files", selection: $addBehavior) {
+                Picker("Media library → playlist", selection: $addBehavior) {
                     Text("Append to playlist").tag(0)
                     Text("Replace playlist").tag(1)
                 }
@@ -340,7 +355,7 @@ private struct PlaybackPane: View {
                         sparkamp_save_config(ctx)
                     }
 
-                Picker("Gain source", selection: $rgSource) {
+                Picker("ReplayGain source", selection: $rgSource) {
                     Text("Track").tag(0)
                     Text("Album").tag(1)
                     Text("Automatic").tag(2)
@@ -352,7 +367,7 @@ private struct PlaybackPane: View {
                 }
                 .disabled(!rgEnabled)
 
-                Toggle("Prevent clipping (limiter)", isOn: $rgClip)
+                Toggle("Clipping protection", isOn: $rgClip)
                     .onChange(of: rgClip) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_rg_clip_protection(ctx, newValue)
@@ -361,7 +376,7 @@ private struct PlaybackPane: View {
                     .disabled(!rgEnabled)
 
                 Stepper(
-                    "Fallback gain: \(rgFallback, specifier: "%.1f") dB",
+                    "Fallback gain (no RG info): \(rgFallback, specifier: "%.1f") dB",
                     value: $rgFallback, in: -15...15, step: 0.5
                 )
                 .onChange(of: rgFallback) { _, newValue in
@@ -419,7 +434,8 @@ private struct PlaybackPane: View {
             }
 
             Section("Stop With Fadeout") {
-                Stepper("Fade over \(fadeoutSeconds) seconds", value: $fadeoutSeconds, in: 1...10)
+                Stepper("Fade length (seconds): \(fadeoutSeconds)",
+                        value: $fadeoutSeconds, in: 1...10)
                     .onChange(of: fadeoutSeconds) { _, newValue in
                         model.setFadeoutSeconds(newValue)
                     }
@@ -429,11 +445,64 @@ private struct PlaybackPane: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            // ── Discs ─────────────────────────────────────────────────────
+            // Grouped here, not under Media Library, to match GTK's Behavior
+            // tab.
+            Section("gnudb submissions") {
+                TextField("you@example.com", text: $gnudbEmail)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .onSubmit { saveGnudbEmail() }
+                Text("Your address, sent with gnudb disc submissions (gnudb requires a personal one — Sparkamp asks on the first submission if this is blank). Lookups work without it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Submit in test mode", isOn: $gnudbSubmitTest)
+                    .onChange(of: gnudbSubmitTest) { _, v in
+                        if let ctx = model.ctx { sparkamp_set_gnudb_submit_test(ctx, v) }
+                    }
+                Text("gnudb validates test submissions without publishing them. Turn off once a real submission is confirmed working.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Disc burning") {
+                Toggle("Verify discs after burning", isOn: $burnVerify)
+                    .onChange(of: burnVerify) { _, v in
+                        if let ctx = model.ctx { sparkamp_set_burn_verify(ctx, v) }
+                    }
+                Text("Reads the disc back after a burn to catch bad media. Slower; turn off to trade safety for speed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Audio CD inserted") {
+                Toggle("Open the Media Library", isOn: $autoShowInsertedCd)
+                    .onChange(of: autoShowInsertedCd) { _, v in
+                        if let ctx = model.ctx { sparkamp_set_auto_show_inserted_cd(ctx, v) }
+                    }
+                Text("Shows the Media Library at the drive that received the disc. To have macOS launch Sparkamp automatically on insert, set it as the handler in System Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open CDs & DVDs Settings…") { openCdDvdSettings() }
+                    .buttonStyle(.bordered)
+            }
         }
         .formStyle(.grouped)
         .onAppear {
             guard let ctx = model.ctx else { return }
             autoplayOnAdd  = sparkamp_get_autoplay_on_add(ctx)
+            let p = sparkamp_get_gnudb_email(ctx)
+            gnudbEmail = p.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(p)
+            gnudbSubmitTest    = sparkamp_get_gnudb_submit_test(ctx)
+            burnVerify         = sparkamp_get_burn_verify(ctx)
+            autoShowInsertedCd = sparkamp_get_auto_show_inserted_cd(ctx)
             addBehavior    = Int(sparkamp_get_playlist_add_behavior(ctx))
             playlistFormat = Int(sparkamp_get_playlist_format(ctx))
             rgEnabled      = sparkamp_get_rg_enabled(ctx)
@@ -445,6 +514,27 @@ private struct PlaybackPane: View {
             playStatsSeconds = Int(sparkamp_get_play_stats_seconds(ctx))
             playStatsPercent = Int(sparkamp_get_play_stats_percent(ctx))
             fadeoutSeconds   = Int(sparkamp_get_fadeout_secs(ctx))
+        }
+        // The email field commits on Return; catch the case where the pane
+        // closes with an uncommitted edit still in it.
+        .onDisappear { saveGnudbEmail() }
+    }
+
+    private func saveGnudbEmail() {
+        guard let ctx = model.ctx else { return }
+        gnudbEmail.withCString { sparkamp_set_gnudb_email(ctx, $0) }
+    }
+
+    /// Open the macOS "CDs & DVDs" pane, where the "When you insert a music CD"
+    /// action lives. We never write that preference programmatically (it's in
+    /// Apple's protected `com.apple.digihub` domain) — the user points it at
+    /// Sparkamp.app once here.
+    private func openCdDvdSettings() {
+        let pane = URL(fileURLWithPath: "/System/Library/PreferencePanes/DigiHubDiscs.prefPane")
+        if FileManager.default.fileExists(atPath: pane.path) {
+            NSWorkspace.shared.open(pane)
+        } else if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.DigiHubDiscs") {
+            NSWorkspace.shared.open(url)
         }
     }
 }
@@ -490,7 +580,7 @@ private struct VisualizerPane: View {
                     sparkamp_save_config(ctx)
                 }
 
-                Toggle("Keep display awake in fullscreen visualizer",
+                Toggle("Keep display awake in fullscreen",
                        isOn: $keepScreenAwake)
                     .onChange(of: keepScreenAwake) { _, newValue in
                         model.setKeepScreenAwake(newValue)
@@ -535,7 +625,7 @@ private struct VisualizerPane: View {
                     }
 
                     HStack {
-                        Text("Trails")
+                        Text("Feedback")
                         Slider(value: $graniteFeedback, in: 0.0...0.9, step: 0.05)
                             .onChange(of: graniteFeedback) { _, newValue in
                                 guard let ctx = model.ctx else { return }
@@ -558,7 +648,7 @@ private struct VisualizerPane: View {
                         sparkamp_save_config(ctx)
                     }
 
-                    Toggle("Auto-switch effect every 12–24 s (sooner on beats)",
+                    Toggle("Auto-switch effect",
                            isOn: $graniteAutoSwitch)
                         .onChange(of: graniteAutoSwitch) { _, newValue in
                             guard let ctx = model.ctx else { return }
@@ -581,7 +671,7 @@ private struct VisualizerPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Toggle("Brighten waveform on beats", isOn: $graniteBeatBright)
+                    Toggle("Brighten colors on beats", isOn: $graniteBeatBright)
                         .onChange(of: graniteBeatBright) { _, newValue in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_granite_beat_brightness(ctx, newValue)
@@ -590,14 +680,14 @@ private struct VisualizerPane: View {
                 }
             } else if vizMode == 0 {
                 Section("Bars") {
-                    Toggle("Mirror (extend above and below center)", isOn: $barsMirror)
+                    Toggle("Mirror bars", isOn: $barsMirror)
                         .onChange(of: barsMirror) { _, newValue in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_viz_mirror(ctx, newValue)
                             sparkamp_save_config(ctx)
                         }
 
-                    Stepper("Zones: \(barsZones)", value: $barsZones, in: 1...6)
+                    Stepper("Color zones: \(barsZones)", value: $barsZones, in: 1...6)
                         .onChange(of: barsZones) { _, newValue in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_viz_zones(ctx, Int32(newValue))
@@ -632,7 +722,7 @@ private struct VisualizerPane: View {
                         sparkamp_save_config(ctx)
                     }
 
-                    Stepper("Zones: \(waveformZones)", value: $waveformZones, in: 1...6)
+                    Stepper("Color zones: \(waveformZones)", value: $waveformZones, in: 1...6)
                         .onChange(of: waveformZones) { _, newValue in
                             guard let ctx = model.ctx else { return }
                             sparkamp_set_waveform_zones(ctx, Int32(newValue))
@@ -706,14 +796,6 @@ private struct MediaLibraryPane: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
 
-    /// gnudb identity, loaded from config on appear and written back on edit.
-    @State private var gnudbEmail: String = ""
-    /// gnudb submissions stay in test mode (validated, unpublished) until off.
-    @State private var gnudbSubmitTest: Bool = true
-    /// Verify discs after burning where the tool supports it (default on).
-    @State private var burnVerify: Bool = true
-    /// Auto-open the library to a drive when it receives an audio CD (default on).
-    @State private var autoShowInsertedCd: Bool = true
     /// Analyze ReplayGain for newly added/scanned files automatically.
     @State private var rgAutoAnalyze: Bool = false
     /// Write computed ReplayGain values back into MP3 tags (non-MP3 skipped).
@@ -753,20 +835,32 @@ private struct MediaLibraryPane: View {
     var body: some View {
         let vars = themeManager.currentVars
         return Form {
-            // ── Open / rescan ──────────────────────────────────────────────
-            Section("Library") {
+            // ── Rescan ─────────────────────────────────────────────────────
+            // Rescan and Cancel Scan swap places, the way GTK's pair does —
+            // a running scan had no way to be stopped from here before.
+            Section("Scan") {
                 HStack {
-                    Button("Open Media Library") {
-                        model.openMediaLibrary()
-                        model.mediaLibraryVisible = true
+                    if model.mlScanRunning {
+                        Button("Cancel Scan") { model.mlCancelScan() }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("Rescan") {
+                            model.openMediaLibrary()
+                            model.mlRescanAll()
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Rescan All") {
-                        model.openMediaLibrary()
-                        model.mlRescanAll()
-                    }
-                    .buttonStyle(.bordered)
+                }
+                if model.mlScanRunning {
+                    ProgressView(
+                        value: model.mlScanTotal > 0
+                            ? Double(model.mlScanDone) / Double(model.mlScanTotal) : 0
+                    )
+                    Text(model.mlScanTotal > 0
+                         ? "Scanning \(model.mlScanDone)/\(model.mlScanTotal)…"
+                         : "Scanning…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -802,13 +896,13 @@ private struct MediaLibraryPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Toggle("Analyze new files on add/scan", isOn: $rgAutoAnalyze)
+                Toggle("Analyze ReplayGain on add/scan", isOn: $rgAutoAnalyze)
                     .onChange(of: rgAutoAnalyze) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_rg_auto_analyze(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
-                Toggle("Write ReplayGain tags to files (MP3 only)", isOn: $rgWriteTags)
+                Toggle("Write ReplayGain tags to files (MP3)", isOn: $rgWriteTags)
                     .onChange(of: rgWriteTags) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_rg_write_tags(ctx, newValue)
@@ -935,55 +1029,8 @@ private struct MediaLibraryPane: View {
                 }
             }
 
-            // ── Discs ──────────────────────────────────────────────────────
-            Section("Discs") {
-                VStack(alignment: .leading, spacing: 4) {
-                    TextField("you@example.com", text: $gnudbEmail)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                        .onSubmit { saveGnudbEmail() }
-                    Text("Your address, sent with gnudb disc submissions (gnudb requires a personal one — Sparkamp asks on the first submission if this is blank). Lookups work without it.")
-                        .font(vars.bodyFont)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Submit in test mode", isOn: $gnudbSubmitTest)
-                        .onChange(of: gnudbSubmitTest) { _, v in
-                            if let ctx = model.ctx { sparkamp_set_gnudb_submit_test(ctx, v) }
-                        }
-                    Text("gnudb validates test submissions without publishing them. Turn off once a real submission is confirmed working.")
-                        .font(vars.bodyFont)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Verify discs after burning", isOn: $burnVerify)
-                        .onChange(of: burnVerify) { _, v in
-                            if let ctx = model.ctx { sparkamp_set_burn_verify(ctx, v) }
-                        }
-                    Text("Reads the disc back after a burn to catch bad media. Slower; turn off to trade safety for speed.")
-                        .font(vars.bodyFont)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Open the library when an audio CD is inserted", isOn: $autoShowInsertedCd)
-                        .onChange(of: autoShowInsertedCd) { _, v in
-                            if let ctx = model.ctx { sparkamp_set_auto_show_inserted_cd(ctx, v) }
-                        }
-                    Text("Shows the Media Library at the drive that received the disc. To have macOS launch Sparkamp automatically on insert, set it as the handler in System Settings.")
-                        .font(vars.bodyFont)
-                        .foregroundStyle(.secondary)
-                    Button("Open CDs & DVDs Settings…") { openCdDvdSettings() }
-                        .buttonStyle(.bordered)
-                        .padding(.top, 2)
-                }
-                .padding(.vertical, 2)
-            }
+            // Disc and gnudb settings live in the Behavior tab, where GTK
+            // keeps them.
 
             // ── Tools ──────────────────────────────────────────────────────
             Section("Tools") {
@@ -1009,12 +1056,6 @@ private struct MediaLibraryPane: View {
             // Ensure folder list is fresh when the pane is shown.
             if model.mlIsOpen { model.mlRefreshFolders() }
             if let ctx = model.ctx {
-                let p = sparkamp_get_gnudb_email(ctx)
-                gnudbEmail = p.map { String(cString: $0) } ?? ""
-                sparkamp_free_string(p)
-                gnudbSubmitTest = sparkamp_get_gnudb_submit_test(ctx)
-                burnVerify = sparkamp_get_burn_verify(ctx)
-                autoShowInsertedCd = sparkamp_get_auto_show_inserted_cd(ctx)
                 rgAutoAnalyze = sparkamp_get_rg_auto_analyze(ctx)
                 rgWriteTags = sparkamp_get_rg_write_tags(ctx)
                 watchFolders = sparkamp_get_watch_folders(ctx)
@@ -1029,12 +1070,6 @@ private struct MediaLibraryPane: View {
             loadFolderRecurse()
         }
         .onChange(of: model.mlFolders) { _, _ in loadFolderRecurse() }
-        .onDisappear { saveGnudbEmail() }
-    }
-
-    private func saveGnudbEmail() {
-        guard let ctx = model.ctx else { return }
-        gnudbEmail.withCString { sparkamp_set_gnudb_email(ctx, $0) }
     }
 
     /// Re-read every watched folder's recurse flag into `folderRecurse`.
@@ -1048,18 +1083,5 @@ private struct MediaLibraryPane: View {
             flags[folder] = folder.withCString { sparkamp_ml_folder_recurse(ctx, $0) }
         }
         folderRecurse = flags
-    }
-
-    /// Open the macOS "CDs & DVDs" pane, where the "When you insert a music CD"
-    /// action lives. We never write that preference programmatically (it's in
-    /// Apple's protected `com.apple.digihub` domain) — the user points it at
-    /// Sparkamp.app once here.
-    private func openCdDvdSettings() {
-        let pane = URL(fileURLWithPath: "/System/Library/PreferencePanes/DigiHubDiscs.prefPane")
-        if FileManager.default.fileExists(atPath: pane.path) {
-            NSWorkspace.shared.open(pane)
-        } else if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.DigiHubDiscs") {
-            NSWorkspace.shared.open(url)
-        }
     }
 }

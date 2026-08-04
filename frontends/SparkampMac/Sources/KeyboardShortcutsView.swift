@@ -58,13 +58,16 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "⌃Q",         action: "Enqueue / dequeue selection (playlist or Jump list)"),
                 ShortcutEntry(key: "u",          action: "Toggle equalizer window"),
                 ShortcutEntry(key: "d",          action: "View/Edit ID3 tags for the current track"),
+                ShortcutEntry(key: "l",          action: "View/Search Lyrics (selected track, else the current one)"),
                 ShortcutEntry(key: "w",          action: "Toggle now-playing panel (art, tags, links)"),
                 ShortcutEntry(key: "k",          action: "Open album-art window"),
                 ShortcutEntry(key: "n",          action: "Add file(s)"),
                 ShortcutEntry(key: "⇧N",         action: "Add folder"),
+                ShortcutEntry(key: "⌘O",         action: "Add file(s) (File menu)"),
                 ShortcutEntry(key: "⌘S",         action: "Save playlist"),
                 ShortcutEntry(key: "⌘I",         action: "Invert selection"),
                 ShortcutEntry(key: "⌘,",         action: "Open settings"),
+                ShortcutEntry(key: "click logo", action: "Open settings"),
             ]
         ),
         (

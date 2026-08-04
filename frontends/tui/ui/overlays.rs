@@ -442,7 +442,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("      Now-playing info (tags, stats, links)"),
         ]),
         Line::from(vec![
-            key("  y"),
+            key("  l"),
             Span::raw("      View/Search lyrics for highlighted track"),
         ]),
         Line::from(vec![key("  i"), Span::raw("      Show this help")]),
@@ -623,7 +623,7 @@ pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) 
     );
 }
 
-/// Render the read-only lyrics viewer (`y` key, F15): the saved USLT text for
+/// Render the read-only lyrics viewer (`l` key, F15): the saved USLT text for
 /// one track, wrapped and vertically scrollable. `title`/`lines`/`scroll` come
 /// from `Mode::Lyrics`; no disk access happens per frame (the text was read
 /// once at open time).

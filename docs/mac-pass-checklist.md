@@ -8,14 +8,18 @@ gitignored phase-1 checklist was lost — do not keep the only copy in
 
 This is the driving document for the human Xcode/hardware pass. Phase-1 items are reconstructed from commits `2c19aa6`, `c5c4014`, and the current Swift source (their own checklist file was lost); phase-2 items are this task's new/changed surface.
 
-## Status — phases 0 through 11 are done (2026-08-03)
+## Status — ALL phases (0 through 12) are done (2026-08-04)
 
 Verified on an M1 MacBook Pro (macOS 26.6, Xcode 26.6, arm64) against a real
-library, not just a compile. The "BLIND" caveat is **retired for phases 0–11**.
+library, not just a compile. The "BLIND" caveat is **retired for every phase**.
 Phase 9 was **closed with 14 of its 19 items accepted untested** (they need
 discs and a second drive that pass did not have) and phase 10 with 9 of 32;
-both name theirs under "Deferred" rather than ticking them. Phase 12 is still
-blind and unchanged.
+both name theirs under "Deferred" rather than ticking them.
+
+The 12-phase mac parity plan is complete. What remains is not a phase: the
+GTK-side edits made during the phase-12 pass have never been compiled (that
+module is `#[cfg(target_os = "linux")]`), and GTK's `l` key reaches only the
+current track. Both are listed at the end of the phase-12 section.
 
 | Phase | Outcome |
 |-------|---------|
@@ -30,6 +34,7 @@ blind and unchanged.
 | 9 | ✅ Closed after 6 defects; the read path is **verified on hardware** (real drive + CD-TEXT disc, names on screen). Headed by a parser written for a `drutil` output format that does not exist — the real tool prints an XML plist, so before this pass no disc could ever have shown CD-TEXT on mac. Closed with 14 of 19 items accepted untested — the gnudb-known, no-CD-TEXT, partial-CD-TEXT, multi-language and two-drive cases needed discs this pass didn't have, and are listed as deferred rather than ticked |
 | 10 | ✅ Passed after 2 defects — a percent threshold of 100% that could never fire, so the play was never counted at all, and a search box that kept its old query on reopen with the feature switched off. 23 of its 32 items verified on hardware; the 9 deferred needed a second device, a short track, or the optical drive that had been unplugged by then |
 | 11 | ✅ Passed after 4 defects, headed by a **lossy FFI string decoder** — Foundation silently ate the BOM some tags carry, so any album whose title started with one opened to an empty track list. Plus a release year printed as "2,014", a sidebar that jumped to Files on drill-down, and a gallery with no search box. Two additions on request: an album search and a track-count badge on each cover |
+| 12 | ✅ Passed after 12 defects. Now-playing mode never retargeted (the refresh was gated on a flag that is false for a window macOS restored at launch); `jumpTo` was the one track-change path that never announced; a restored lyrics window opened as an empty shell; the A1 carousel **never advanced during playback** because the timer publisher was rebuilt on every `body` evaluation, restarting its own countdown; the page dots drifted vertically and were centred on the wrong thing; the Technical page was one run-on line where GTK shows rows, and the Stats page was missing two of GTK's four; the window vanished on a jump because `.onDisappear` fired on routine teardown; and the mac ID3 editor had **no USLT field at all**, so "Edit in tag editor" led somewhere lyrics could not be edited. Five FFI getters were added — the core had `technical`, `last_scanned` and `added_at` all along and the FFI only ever exposed the concatenated `tech_line` |
 
 Getting here first required unblocking the build itself. Every mac build had
 been silently linking a **stale static library**: the Xcode "Cargo Build" phase
@@ -2248,50 +2253,127 @@ navigation polish`).
       Mirrored into GTK (`.album-cell-count` + a `gtk4::Overlay` around the
       cover `Image`) — **that half is not compiled**, see the GTK note above.
 
-## Phase 12 — F15 View/Search Lyrics
+## Phase 12 — F15 View/Search Lyrics ✅ PASSED on hardware 2026-08-04
+
+Twelve defects. Only two were in the lyrics feature's own new code; the rest
+were in the surfaces it leaned on, which is why a compile-clean blind pass
+missed all of them.
+
+1. **Now-playing mode never retargeted.** `refreshCurrentLyricsIfNeeded` was
+   gated on `lyricsVisible`, which is `false` for a window macOS *restored* at
+   launch — the flag only ever gets set by an explicit open. Instrumenting the
+   guard printed `visible=false mode=current cur=284 items=286 hit=true`: every
+   other precondition passed. The flag is now gone from the guard. Its only
+   caller is the live view, so the window is on screen by construction.
+2. **A jump never announced.** `jumpTo(index:)` refreshed and saved but never
+   called `announceNowPlaying()`, so double-clicking a playlist row — the most
+   common way to change track — moved nothing that listens to the nonce. Also
+   fixes the fullscreen visualizer's track toast on a jump.
+3. **A restored lyrics window was a dead shell** — "Lyrics —", no body, Search
+   and Edit both disabled. It now adopts the playing track on appear.
+4. **The carousel never advanced while a track played.** `Timer.publish(…)`
+   built inline in `.onReceive` handed the modifier a brand-new publisher on
+   every `body` evaluation — several a second, as `position` ticks — restarting
+   the six-second countdown before it could fire. It only ever advanced while
+   playback was *stopped*. Now a single `@State` publisher.
+5. **The page dots drifted vertically**, riding the height of each page's
+   content and jumping again when the Lyrics button appeared on the last tag
+   page. Pinned to the artwork's height.
+6. **The dots were centred on the wrong thing** — first on the text column,
+   then (after a first fix) on the whole panel including the art. GTK centres
+   them on the carousel column alone; mac now does too.
+7. **A manual dot click did not reset the dwell.** GTK's `jump()` resets *and
+   doubles* it so the chosen page lingers; mac's comment documented skipping
+   this as a simplification. Mac now mirrors GTK's whole model — a 1 s poll
+   against a `nextAdvance` deadline rather than a fixed repeating timer, which
+   is what lets a click move the deadline without tearing the timer down.
+8. **The Technical page was one run-on line**; GTK renders discrete rows.
+9. **The Stats page had two of GTK's four rows** — no Last scanned, no Added.
+   8 and 9 both needed new FFI: the core has had `technical`, `last_scanned`
+   and `added_at` all along, and the FFI only ever exposed `tech_line`.
+10. **The window vanished on a jump.** `.onDisappear` fired on routine SwiftUI
+    teardown and `PlayerWindow` reads that as "close it" — so an ordinary state
+    change really closed the window. Removed; nothing needs the flag lowered on
+    close.
+11. **The mac ID3 editor had no USLT field at all**, so "Edit in tag editor"
+    from the lyrics window landed somewhere lyrics could not be seen or edited.
+    Added as a multi-line Lyric row, hidden by default and force-shown when
+    arriving from the lyrics window — the same thing GTK does.
+12. **Cosmetic:** the titlebar read a generic "Lyrics" while the song sat in a
+    duplicate in-content header, and the control row clipped "Edit in tag
+    editor". Real `navigationTitle`, header dropped, window widened.
+
+### Verified on hardware
+
+- Window opens from all five surfaces; a track with no USLT still opens it and
+  shows "No lyrics available".
+- Now-playing mode retargets on `b`, on EOS and on a double-click jump; the
+  window survives all three.
+- Transport keys work while the lyrics window is focused.
+- "Edit in tag editor" opens the editor with a populated Lyric row even with
+  the field switched off in Customize; edits round-trip through Save.
+- Search opens DuckDuckGo for `<artist> <track> lyrics`.
+- Carousel advances on its own during playback; a dot click holds the page
+  ~12 s; the dots hold one baseline across a 4-row and a 6-row page.
+- Technical shows Format / Bitrate / Sample rate / Channels / File size /
+  ReplayGain; Stats shows all four rows.
+
+### Not fixed here
+
+- **GTK is uncompiled.** Every GTK edit in this pass — the `l` key, the
+  Filetypes-tab removal, the shortcut-list entries — was written against a
+  module that is `#[cfg(target_os = "linux")]` and cannot build on a Mac. It
+  needs a dev-box build before it can be called done.
+- **GTK's `l` reaches only the current track.** The player and playlist windows
+  share `handle_key`, so both open lyrics for what is *playing*; the Media
+  Library's own controllers have no `l` arm. The selection-aware variants are
+  outstanding.
 
 ### 2026-08-01 revision (window always opens; modes; search button)
 
-- [ ] **FFI signature match**: `sparkamp_lyrics_view(const char *path, const char
+- [x] **FFI signature match**: `sparkamp_lyrics_view(const char *path, const char
       *artist, const char *title, const char *album_artist)` in `sparkamp_bridge.h`
       matches `src/ffi/lyrics.rs` byte-for-byte; returns heap JSON
       `{"title","body","has_body","search_url"}` (body "" when none); freed with
       `sparkamp_free_string`; NULL path → NULL. (Old `sparkamp_lyrics_action` is
       gone — confirm nothing else references it.)
-- [ ] **Five surfaces + A1**: "View/Search Lyrics" still on Files, playlist
+- [x] **Five surfaces + A1**: "View/Search Lyrics" still on Files, playlist
       editor, device files, disc tracks, and active-playlist rows. The A1 now-
       playing "Lyrics" button appears ONLY on the LAST ID3/tags carousel page
       (not persistently below the panel) and opens the window in **Now-playing**
       mode.
-- [ ] **Always opens**: a track with NO saved USLT still opens the window,
+- [x] **Always opens**: a track with NO saved USLT still opens the window,
       showing "No lyrics available" (never silently browser-searches).
-- [ ] **Marquee title**: window title = `Lyrics — <artist> - <track>`, artist→
+- [x] **Marquee title**: window title = `Lyrics — <artist> - <track>`, artist→
       album_artist, track→filename stem (matches the scrolling marquee).
-- [ ] **Modes** (segmented picker at the bottom): opening from a playlist/ML row
+- [x] **Modes** (segmented picker at the bottom): opening from a playlist/ML row
       defaults to **This song** (static). Opening from the A1 affordance defaults
       to **Now playing** — title + body follow the playing track (driven by
       `nowPlayingNonce` onChange → `refreshCurrentLyricsIfNeeded`). Toggling to
       **Now playing** retargets immediately.
-- [ ] **Search button**: opens DuckDuckGo for `"<artist> <track> lyrics"` (SPACE-
+- [x] **Search button**: opens DuckDuckGo for `"<artist> <track> lyrics"` (SPACE-
       separated, NOT dash), artist→album_artist, filename when both blank;
       `&`/`/`/unicode encode correctly (space → %20).
-- [ ] **Edit in tag editor**: still opens the ID3 editor for the shown track.
-- [ ] **Panel truncation**: the A1 ID3 "Lyric" row is capped at 200 chars + '…'
+- [x] **Edit in tag editor**: still opens the ID3 editor for the shown track.
+- [x] **Panel truncation**: the A1 ID3 "Lyric" row is capped at 200 chars + '…'
       (comes from the core snapshot — no mac-side truncation, just verify it shows
       truncated while the window shows the full text).
-- [ ] **Transport keys**: z/x/c/v/b/j/r/s still control playback while the lyrics
+- [x] **Transport keys**: z/x/c/v/b/j/r/s still control playback while the lyrics
       window is focused — covered by the app-wide `NSEvent` monitor
       (`SparkampModel+Keys.swift`). Verify: selecting text in the lyrics body
       (NSTextView first responder) is the one case the monitor yields to — eyeball
       whether that is acceptable (GTK forwards via the window key controller).
-- [ ] **Build**: no new Swift files (edited existing `LyricsWindow.swift`,
+- [x] **Build**: no new Swift files (edited existing `LyricsWindow.swift`,
       `SparkampModel+Lyrics.swift`, `PlayerWindow.swift`, `SparkampModel.swift`),
       so `project.pbxproj` is unchanged; the app builds against `sparkamp_lyrics_view`.
 
-- [ ] **PARITY GAP (follow-up, not a regression)**: the GTK ID3 editor has a
+- [x] **PARITY GAP — FIXED 2026-08-04**: the GTK ID3 editor has a
       "Lyric" (USLT) field; the mac editor's `ID3FieldConfig.defaults`
       (Id3EditorWindow.swift) has NO USLT field (only "Lyricist"/TEXT), so it
       cannot view/edit lyrics at all. GTK's F15 fix force-shows its Lyric field
       when "Edit in tag editor" is used from the lyrics window (point 2); the mac
-      equivalent needs a USLT field added to the editor + FFI get/set support
-      first. Deferred — decide on a Mac whether to add it.
+      equivalent needed a USLT field added to the editor. The FFI already
+      supported the frame (`src/ffi/id3.rs` maps "USLT" in both directions), so
+      this was a Swift-side change only: a multi-line Lyric row in
+      `ID3FieldConfig.defaults`, hidden by default, force-shown via
+      `model.id3ForceFieldId` when the lyrics window opens the editor.

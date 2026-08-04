@@ -274,7 +274,12 @@ struct NowPlayingInfo {
     /// Curated, non-empty tag rows in core order (title/artist/album first).
     let tags: [(String, String)]
     /// e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45"; empty if unprobed.
+    /// Kept for single-line consumers; the A1 panel renders `technical`.
     let techLine: String
+    /// The same technical fields as label/value pairs (Format, Bitrate, Sample
+    /// rate, Channels, File size, ReplayGain), so the carousel's Technical page
+    /// can lay them out as rows like the tag pages — matching GTK.
+    let technical: [(String, String)]
     /// Resolved artwork file path; empty if none.
     let artworkPath: String
     /// True if the track is indexed in the media library (play count known).
@@ -283,6 +288,10 @@ struct NowPlayingInfo {
     let playCount: Int64
     /// ISO-8601 UTC timestamp; empty if never played / unindexed.
     let lastPlayed: String
+    /// ISO-8601 timestamp of the last metadata scan; empty if unindexed.
+    let lastScanned: String
+    /// ISO-8601 timestamp the file entered the library; empty if unindexed.
+    let addedAt: String
     /// Wikipedia search URL for the artist tag; empty if the tag is empty.
     let artistWikiURL: String
     /// Wikipedia search URL for the album tag; empty if the tag is empty.

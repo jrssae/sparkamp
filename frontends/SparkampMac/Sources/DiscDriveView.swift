@@ -981,6 +981,19 @@ struct DiscDriveView: View {
                     // autoplay semantics as any other ordinary file add.
                     model.addFiles(pathsFor(ids).map { URL(fileURLWithPath: $0) })
                 }
+                // Feed the `l` key: exactly one selected row, or nothing. Disc
+                // files carry no tags, so the stem stands in for the title —
+                // the same substitution the row menu above makes.
+                .onChange(of: discFilesSelection) { _, sel in
+                    guard sel.count == 1, let p = sel.first else {
+                        model.lyricsTargetML = nil
+                        return
+                    }
+                    let title = URL(fileURLWithPath: p)
+                        .deletingPathExtension().lastPathComponent
+                    model.lyricsTargetML = LyricsTarget(path: p, artist: "",
+                                                        title: title, albumArtist: "")
+                }
 
                 // ── Status bar: "N tracks · MM:SS total · K selected · MM:SS" ──
                 HStack {

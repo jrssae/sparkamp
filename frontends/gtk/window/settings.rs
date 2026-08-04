@@ -746,6 +746,55 @@ fn open_settings_window(
         }
         grid.attach(&spin_fade, 1, 20, 1, 1);
 
+        // ── Playlists — the preferred format for new saves. This used to be a
+        // whole notebook tab of its own ("Filetypes") holding this single
+        // dropdown; it reads better next to the other file-handling settings,
+        // and the macOS frontend groups it the same way.
+        {
+            use crate::config::PlaylistFormat;
+
+            let sep_fmt = gtk4::Separator::new(Orientation::Horizontal);
+            sep_fmt.set_margin_top(8);
+            sep_fmt.set_margin_bottom(4);
+            grid.attach(&sep_fmt, 0, 21, 2, 1);
+
+            let hdr_fmt = Label::new(Some("Playlists"));
+            hdr_fmt.set_halign(Align::Start);
+            hdr_fmt.add_css_class("heading");
+            grid.attach(&hdr_fmt, 0, 22, 2, 1);
+
+            let lbl_fmt = Label::new(Some("Playlist format"));
+            lbl_fmt.set_halign(Align::Start);
+            grid.attach(&lbl_fmt, 0, 23, 1, 1);
+
+            let dd_fmt = DropDown::from_strings(&["m3u8", "m3u"]);
+            dd_fmt.set_selected(match state.borrow().config.media_library.playlist_format {
+                PlaylistFormat::M3u8 => 0,
+                PlaylistFormat::M3u => 1,
+            });
+            {
+                let state_rc = state.clone();
+                dd_fmt.connect_selected_notify(move |d| {
+                    let fmt = if d.selected() == 1 {
+                        PlaylistFormat::M3u
+                    } else {
+                        PlaylistFormat::M3u8
+                    };
+                    state_rc.borrow_mut().config.media_library.playlist_format = fmt;
+                });
+            }
+            grid.attach(&dd_fmt, 1, 23, 1, 1);
+
+            let hint = Label::new(Some(
+                "New playlists, Save As, and device exports use this format. \
+                 Existing playlists keep their own.",
+            ));
+            hint.set_halign(Align::Start);
+            hint.set_wrap(true);
+            hint.add_css_class("status-label");
+            grid.attach(&hint, 0, 24, 2, 1);
+        }
+
         let tab_lbl = Label::new(Some("Behavior"));
         notebook.append_page(&grid, Some(&tab_lbl));
     }
@@ -1309,54 +1358,7 @@ fn open_settings_window(
         notebook.append_page(&grid, Some(&tab_lbl));
     }
 
-    // ── Tab 3: Filetypes ──────────────────────────────────────────────────
-    {
-        use crate::config::PlaylistFormat;
-        let grid = Grid::new();
-        grid.set_row_spacing(12);
-        grid.set_column_spacing(16);
-        grid.set_margin_top(16);
-        grid.set_margin_bottom(16);
-        grid.set_margin_start(16);
-        grid.set_margin_end(16);
-
-        // Preferred playlist format for new saves.
-        let lbl_fmt = Label::new(Some("Playlist format"));
-        lbl_fmt.set_halign(Align::Start);
-        grid.attach(&lbl_fmt, 0, 0, 1, 1);
-
-        let dd_fmt = DropDown::from_strings(&["m3u8", "m3u"]);
-        dd_fmt.set_selected(match state.borrow().config.media_library.playlist_format {
-            PlaylistFormat::M3u8 => 0,
-            PlaylistFormat::M3u => 1,
-        });
-        {
-            let state_rc = state.clone();
-            dd_fmt.connect_selected_notify(move |d| {
-                let fmt = if d.selected() == 1 {
-                    PlaylistFormat::M3u
-                } else {
-                    PlaylistFormat::M3u8
-                };
-                state_rc.borrow_mut().config.media_library.playlist_format = fmt;
-            });
-        }
-        grid.attach(&dd_fmt, 1, 0, 1, 1);
-
-        let hint = Label::new(Some(
-            "New playlists, Save As, and device exports use this format. \
-             Existing playlists keep their own.",
-        ));
-        hint.set_halign(Align::Start);
-        hint.set_wrap(true);
-        hint.add_css_class("status-label");
-        grid.attach(&hint, 0, 1, 2, 1);
-
-        let tab_lbl = Label::new(Some("Filetypes"));
-        notebook.append_page(&grid, Some(&tab_lbl));
-    }
-
-    // ── Tab 4: Media Library (watched folders) ───────────────────────────
+    // ── Tab 3: Media Library (watched folders) ───────────────────────────
     {
         let grid = Grid::new();
         grid.set_row_spacing(8);
@@ -2389,9 +2391,10 @@ fn open_settings_window(
         notebook.reorder_child(&scroll, Some(0));
     }
 
-    // About tab is index 0 — the default landing tab when no specific tab
-    // was requested by the caller. Other tabs shifted right by one:
-    // Appearance(1), Behavior(2), Visualizer(3), Filetypes(4), Media Library(5).
+    // About tab is index 0 — the default landing tab when no specific tab was
+    // requested by the caller, and the leftmost one, matching macOS. The rest
+    // follow it: Appearance(1), Behavior(2), Visualizer(3), Media Library(4).
+    // (Filetypes is gone; its one dropdown moved into Behavior.)
     notebook.set_current_page(Some(initial_tab.unwrap_or(0)));
 
     // ── Close button ───────────────────────────────────────────────────────

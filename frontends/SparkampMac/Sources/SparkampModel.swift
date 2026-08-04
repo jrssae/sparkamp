@@ -86,11 +86,23 @@ final class SparkampModel: ObservableObject {
     @Published var id3TrackIndex: Int = -1
     /// When set, the ID3 editor opens this file path directly (bypasses playlist index).
     @Published var id3DirectPath: String = ""
+    /// ID3 frame id the editor must show for this opening even when the saved
+    /// field layout hides it — "USLT" when arriving from the lyrics window's
+    /// "Edit in tag editor". Empty for an ordinary open.
+    @Published var id3ForceFieldId: String = ""
     /// Bumped on every ID3-editor open request. The editor reloads its file on
     /// each change and the window manager raises the (single) editor window, so
     /// picking a different file while the editor is already open updates it and
     /// brings it to the front instead of doing nothing.
     @Published var id3Request: Int = 0
+    /// Lyrics target for the `l` key while the Media Library window has focus,
+    /// published by whichever tab owns the selection — files, an album
+    /// drill-down, a saved-playlist editor, a device, or a disc. They share one
+    /// slot because only one of them is on screen at a time.
+    @Published var lyricsTargetML: LyricsTarget? = nil
+    /// Same, for the active-playlist window.
+    @Published var lyricsTargetPlaylist: LyricsTarget? = nil
+
     /// When true, the read-only lyrics viewer window (F15) is open.
     @Published var lyricsVisible: Bool = false
     /// Bumped on every lyrics-view request so the singleton window raises +
@@ -892,6 +904,19 @@ final class SparkampModel: ObservableObject {
         let techLine = techPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(techPtr)
 
+        let techCount = Int(sparkamp_now_playing_technical_count(np))
+        var technical: [(String, String)] = []
+        technical.reserveCapacity(techCount)
+        for i in 0..<techCount {
+            let labelPtr = sparkamp_now_playing_technical_label(np, Int32(i))
+            let valuePtr = sparkamp_now_playing_technical_value(np, Int32(i))
+            let label = labelPtr.map { String(cString: $0) } ?? ""
+            let value = valuePtr.map { String(cString: $0) } ?? ""
+            sparkamp_free_string(labelPtr)
+            sparkamp_free_string(valuePtr)
+            if !label.isEmpty { technical.append((label, value)) }
+        }
+
         let artPtr = sparkamp_now_playing_artwork_path(np)
         let artworkPath = artPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(artPtr)
@@ -902,6 +927,14 @@ final class SparkampModel: ObservableObject {
         let lastPlayedPtr = sparkamp_now_playing_last_played(np)
         let lastPlayed = lastPlayedPtr.map { String(cString: $0) } ?? ""
         sparkamp_free_string(lastPlayedPtr)
+
+        let lastScannedPtr = sparkamp_now_playing_last_scanned(np)
+        let lastScanned = lastScannedPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(lastScannedPtr)
+
+        let addedAtPtr = sparkamp_now_playing_added_at(np)
+        let addedAt = addedAtPtr.map { String(cString: $0) } ?? ""
+        sparkamp_free_string(addedAtPtr)
 
         let artistWikiPtr = sparkamp_now_playing_artist_wiki_url(np)
         let artistWikiURL = artistWikiPtr.map { String(cString: $0) } ?? ""
@@ -914,10 +947,13 @@ final class SparkampModel: ObservableObject {
         nowPlaying = NowPlayingInfo(
             tags: tags,
             techLine: techLine,
+            technical: technical,
             artworkPath: artworkPath,
             hasPlayCount: hasPlayCount,
             playCount: playCount,
             lastPlayed: lastPlayed,
+            lastScanned: lastScanned,
+            addedAt: addedAt,
             artistWikiURL: artistWikiURL,
             albumWikiURL: albumWikiURL
         )
