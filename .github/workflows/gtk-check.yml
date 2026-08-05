@@ -1,0 +1,97 @@
+# Compile-check the Linux build — above all the GTK4 frontend.
+#
+# Why this exists, when Build Flatpak already compiles the same code:
+# that job runs only on main, and only as a full flatpak-builder run of
+# several minutes. `frontends/gtk` is `#[cfg(target_os = "linux")]`
+# (src/main.rs:58) with no feature flag, so a macOS dev machine cannot
+# compile it, cannot `cargo check` it, and cannot even name-resolve it. That
+# left every GTK edit unverified until it reached main.
+#
+# This job closes that gap on every branch in about a minute, which is what
+# makes the media_library.rs breakup (docs/gtk-breakup-plan.md) tractable:
+# each extraction needs the compiler to arbitrate which captures a page
+# really needs, and waiting on a Flatpak build for that answer is not a
+# workable loop.
+#
+# `cargo check`, not `cargo build` — this exists for the type and borrow
+# errors, and skipping codegen roughly halves the time.
+
+name: GTK check
+
+# Every branch. No `pull_request:` trigger — this repo merges locally rather
+# than through PRs, and having both would run each PR commit twice. Add it if
+# that changes.
+on:
+  push:
+  workflow_dispatch:
+
+# A new push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: gtk-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # CLAUDE.md requires a warning-free tree, and the Linux build is already
+  # clean (commit c2bf40a: "cargo build clean (0 warnings)"). Enforcing it
+  # here is also what catches the imports and helpers an extraction strands
+  # behind it — the single most common mistake in a move-only refactor.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: cargo check (linux + gtk4)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # GTK 4.12+ (the `v4_12` feature on the gtk4 crate) and the GStreamer
+      # headers for gstreamer-sys / -pbutils. rusqlite is `bundled`, so no
+      # system SQLite is needed, and zbus 5 is pure Rust — no libdbus.
+      # ubuntu-24.04 ships GTK 4.14, which satisfies v4_12.
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            pkg-config
+
+      # `.cargo/config.toml` redirects crates-io to a local `vendor/` tree
+      # that is gitignored (.gitignore:25), so a fresh clone cannot resolve a
+      # single dependency until this runs. Build Flatpak does the same thing
+      # for the same reason.
+      - name: Cache cargo registry and vendor tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            vendor
+            target
+          key: gtk-check-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: gtk-check-${{ runner.os }}-
+
+      - name: Vendor Rust dependencies
+        run: cargo vendor
+
+      # --all-targets covers tests and benches too, so a refactor that breaks
+      # test code fails here rather than at `cargo test` on someone's box.
+      - name: cargo check
+        run: cargo check --all-targets --locked
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## GTK check"
+            echo ""
+            echo "\`cargo check --all-targets\` on ubuntu-latest with GTK4 +"
+            echo "GStreamer headers — the compile coverage a macOS dev box"
+            echo "cannot provide for \`frontends/gtk\`."
+            echo ""
+            echo "Warnings are errors here (\`RUSTFLAGS: -D warnings\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
