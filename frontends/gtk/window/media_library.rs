@@ -7282,7 +7282,7 @@ fn open_media_library_window(
                     .label(&pl.name)
                     .halign(Align::Start)
                     .xalign(0.0)
-                    .margin_start(24).margin_end(8)
+                    .margin_start(sidebar::SUB_ROW_INSET).margin_end(8)
                     .margin_top(4).margin_bottom(4)
                     .build();
                 let s_row = ListBoxRow::new();
@@ -7325,7 +7325,7 @@ fn open_media_library_window(
                 .label(name)
                 .halign(Align::Start)
                 .xalign(0.0)
-                .margin_start(24).margin_end(8)
+                .margin_start(sidebar::SUB_ROW_INSET).margin_end(8)
                 .margin_top(4).margin_bottom(4)
                 .build();
             let s_row = ListBoxRow::new();
@@ -7488,7 +7488,7 @@ fn open_media_library_window(
                     let s_lbl = Label::builder().label(&name)
                         .halign(Align::Start)
                         .xalign(0.0)
-                        .margin_start(24).margin_end(8)
+                        .margin_start(sidebar::SUB_ROW_INSET).margin_end(8)
                         .margin_top(4).margin_bottom(4).build();
                     let s_row = ListBoxRow::new();
                     s_row.set_widget_name(&format!("pl:{}", new_id));
@@ -8309,7 +8309,7 @@ fn open_media_library_window(
                         .label(&new_name)
                         .halign(Align::Start)
                         .xalign(0.0)
-                        .margin_start(24).margin_end(8)
+                        .margin_start(sidebar::SUB_ROW_INSET).margin_end(8)
                         .margin_top(4).margin_bottom(4)
                         .build();
                     let s_row = ListBoxRow::new();
@@ -9328,7 +9328,7 @@ fn open_media_library_window(
                                     }
                                     None => {
                                         let bx = GtkBox::new(Orientation::Vertical, 2);
-                                        bx.set_margin_start(24);
+                                        bx.set_margin_start(sidebar::SUB_ROW_INSET);
                                         bx.set_margin_end(8);
                                         bx.set_margin_top(4);
                                         bx.set_margin_bottom(4);
@@ -10068,7 +10068,7 @@ fn open_media_library_window(
                         }
                         None => {
                             let bx = GtkBox::new(Orientation::Vertical, 2);
-                            bx.set_margin_start(24);
+                            bx.set_margin_start(sidebar::SUB_ROW_INSET);
                             bx.set_margin_end(8);
                             bx.set_margin_top(4);
                             bx.set_margin_bottom(4);

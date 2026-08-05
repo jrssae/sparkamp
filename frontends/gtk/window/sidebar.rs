@@ -30,6 +30,32 @@ use std::rc::Rc;
 // to the parent module, which a child may still use.
 use super::{attach_pl_row_drag, notify_playlist_changed, MlHost};
 
+/// Left inset of a header chevron, matching the 10px text inset the
+/// chevron-less rows (Files, Albums) use, so every row starts on one line.
+const CHEVRON_MARGIN: i32 = 10;
+
+/// Fixed width of the chevron's slot. Requested rather than left to the glyph
+/// so the text column does not shift with the font the skin picks.
+const CHEVRON_GLYPH_W: i32 = 12;
+
+/// Left inset for rows that have no chevron (Files, Albums), placing their
+/// text on the same column as a header's. Without it the nav reads as ragged.
+const ROW_TEXT_INSET: i32 = CHEVRON_MARGIN + CHEVRON_GLYPH_W + 4;
+
+/// Left inset for sub-rows (`pl:`, `disc:`, `dev:`), one step deeper than the
+/// header they hang under so the nesting is legible. Shared rather than
+/// repeated: sub-rows are created in six places — here for the initial
+/// playlists, and in media_library.rs for the playlist rebuilds and the disc
+/// and device polls — and they drifted into looking flat once the chevrons
+/// moved and pushed every header's text right.
+pub(super) const SUB_ROW_INSET: i32 = ROW_TEXT_INSET + 16;
+
+/// Width of the chevron's click zone, measured from the row's left edge.
+/// A click inside it toggles the section; anything right of it falls through
+/// to row selection, which is what navigates. Covers the 10px inset plus the
+/// glyph and its trailing margin, with a little slack for a fat finger.
+const CHEVRON_HIT_WIDTH: f64 = 26.0;
+
 /// The sidebar and every handle into it the rest of the window needs.
 pub(super) struct Sidebar {
     /// The nav list itself. Pages append their own sub-rows to it and read
@@ -232,7 +258,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             .label("Files")
             .halign(Align::Start)
             .xalign(0.0)
-            .margin_start(10)
+            .margin_start(ROW_TEXT_INSET)
             .margin_end(10)
             .margin_top(7)
             .margin_bottom(7)
@@ -249,7 +275,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             .label("Albums")
             .halign(Align::Start)
             .xalign(0.0)
-            .margin_start(10)
+            .margin_start(ROW_TEXT_INSET)
             .margin_end(10)
             .margin_top(7)
             .margin_bottom(7)
@@ -276,19 +302,22 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             .halign(Align::Start)
             .xalign(0.0)
             .hexpand(true)
-            .margin_start(10)
             .margin_top(7)
             .margin_bottom(7)
             .build();
 
-        // Chevron label — "▾" expanded, "▸" collapsed
+        // Chevron label — "▾" expanded, "▸" collapsed. Leads the text rather
+        // than trailing it: a right-aligned chevron is the first thing a long
+        // playlist name pushes out of view in a narrow sidebar.
         let chevron_lbl = Label::builder()
             .label(if playlists_expanded.get() { "▾" } else { "▸" })
-            .margin_end(8)
+            .width_request(CHEVRON_GLYPH_W)
+            .margin_start(CHEVRON_MARGIN)
+            .margin_end(4)
             .build();
 
-        pl_header_box.append(&pl_lbl);
         pl_header_box.append(&chevron_lbl);
+        pl_header_box.append(&pl_lbl);
 
         let row_playlists = ListBoxRow::new();
         row_playlists.set_widget_name("playlists");
@@ -301,12 +330,9 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         let sub_rows_rc  = pl_sub_rows.clone();
         let chev = chevron_lbl.clone();
         let state_toggle = host.state.clone();
-        gesture.connect_released(move |g, _n, x, _y| {
-            // Only handle clicks in the right ~20px (chevron area)
-            let widget = g.widget();
-            let width  = widget.map(|w| w.width()).unwrap_or(0) as f64;
-            if x < width - 24.0 {
-                return; // let the row selection handle the left area
+        gesture.connect_released(move |_g, _n, x, _y| {
+            if x > CHEVRON_HIT_WIDTH {
+                return; // right of the chevron = navigation, handled elsewhere
             }
             let new_val = !expanded_rc.get();
             expanded_rc.set(new_val);
@@ -339,7 +365,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                 .label(&pl.name)
                 .halign(Align::Start)
                 .xalign(0.0)
-                .margin_start(24)  // indent
+                .margin_start(SUB_ROW_INSET)
                 .margin_end(8)
                 .margin_top(4)
                 .margin_bottom(4)
@@ -372,13 +398,12 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
     disc_detect_spinner.start();
     {
         let hdr = GtkBox::new(Orientation::Horizontal, 0);
-        // Label takes only its text width (no hexpand) so the spinner can follow
-        // it directly; a hexpanding spacer then keeps the chevron right-aligned.
+        // Chevron leads, then the label at its text width (no hexpand) so the
+        // spinner can follow it directly; a hexpanding spacer absorbs the rest.
         let lbl = Label::builder()
             .label("Disc Drives")
             .halign(Align::Start)
             .xalign(0.0)
-            .margin_start(10)
             .margin_top(7)
             .margin_bottom(7)
             .build();
@@ -386,12 +411,14 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         spacer.set_hexpand(true);
         let chev = Label::builder()
             .label(if discs_expanded.get() { "▾" } else { "▸" })
-            .margin_end(8)
+            .width_request(CHEVRON_GLYPH_W)
+            .margin_start(CHEVRON_MARGIN)
+            .margin_end(4)
             .build();
+        hdr.append(&chev);
         hdr.append(&lbl);
         hdr.append(&disc_detect_spinner);
         hdr.append(&spacer);
-        hdr.append(&chev);
         let row = ListBoxRow::new();
         row.set_widget_name("discs");
         row.set_child(Some(&hdr));
@@ -401,10 +428,9 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         let exp = discs_expanded.clone();
         let subs = disc_sub_rows.clone();
         let chev2 = chev.clone();
-        gesture.connect_released(move |g, _n, x, _y| {
-            let w = g.widget().map(|w| w.width()).unwrap_or(0) as f64;
-            if x < w - 24.0 {
-                return; // left of the chevron = navigation, handled elsewhere
+        gesture.connect_released(move |_g, _n, x, _y| {
+            if x > CHEVRON_HIT_WIDTH {
+                return; // right of the chevron = navigation, handled elsewhere
             }
             let v = !exp.get();
             exp.set(v);
@@ -429,16 +455,17 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             .halign(Align::Start)
             .xalign(0.0)
             .hexpand(true)
-            .margin_start(10)
             .margin_top(7)
             .margin_bottom(7)
             .build();
         let chev = Label::builder()
             .label(if devices_expanded.get() { "▾" } else { "▸" })
-            .margin_end(8)
+            .width_request(CHEVRON_GLYPH_W)
+            .margin_start(CHEVRON_MARGIN)
+            .margin_end(4)
             .build();
-        hdr.append(&lbl);
         hdr.append(&chev);
+        hdr.append(&lbl);
         let row = ListBoxRow::new();
         row.set_widget_name("devices");
         row.set_child(Some(&hdr));
@@ -448,10 +475,9 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         let exp = devices_expanded.clone();
         let subs = dev_sub_rows.clone();
         let chev2 = chev.clone();
-        gesture.connect_released(move |g, _n, x, _y| {
-            let w = g.widget().map(|w| w.width()).unwrap_or(0) as f64;
-            if x < w - 24.0 {
-                return; // left of the chevron = navigation, handled elsewhere
+        gesture.connect_released(move |_g, _n, x, _y| {
+            if x > CHEVRON_HIT_WIDTH {
+                return; // right of the chevron = navigation, handled elsewhere
             }
             let v = !exp.get();
             exp.set(v);
