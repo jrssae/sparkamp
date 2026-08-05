@@ -129,6 +129,13 @@ pub fn is_valid_email(email: &str) -> bool {
 /// An unset email sends an anonymous identity (lookups don't require a
 /// personal address — only submissions do); a value without `@` uses the
 /// whole string as username with `localhost` as host.
+///
+/// The two address-derived fields are percent-encoded, the two literal ones
+/// are not, and the `+` separators stay raw — CDDB uses `+` to delimit the
+/// four fields, so encoding the joined string would corrupt the parameter it
+/// is meant to protect. Without this an address containing `&`, `#`, a space
+/// or a `+` broke out of the value and injected query parameters, since
+/// `hello` is interpolated straight into the request URL.
 pub(crate) fn hello_param(email: &str) -> String {
     let (user, host) = if is_unset_email(email) {
         ("anonymous", "localhost")
@@ -138,7 +145,15 @@ pub(crate) fn hello_param(email: &str) -> String {
             _ => (email, "localhost"),
         }
     };
-    format!("{user}+{host}+Sparkamp+{}", env!("CARGO_PKG_VERSION"))
+    // Same encoder as the Wikipedia and DuckDuckGo URLs, so every outbound
+    // query string in the app shares one escaping rule.
+    let enc = crate::now_playing::percent_encode_query;
+    format!(
+        "{}+{}+Sparkamp+{}",
+        enc(user),
+        enc(host),
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Full query URL for a TOC: `cmd=cddb+query+<discid>+<n>+<off…>+<nsecs>`.
@@ -316,8 +331,36 @@ mod tests {
         let h = hello_param("jane@example.org");
         assert!(h.starts_with("jane+example.org+Sparkamp+"));
         // Weird-but-legal quoted local part with an @ inside: split at LAST @.
+        // The surviving @ is percent-encoded — it is a query-string sub-delim,
+        // and only the three `+` separators may stay raw.
         let h = hello_param("a@b@example.org");
-        assert!(h.starts_with("a@b+example.org+Sparkamp+"));
+        assert!(h.starts_with("a%40b+example.org+Sparkamp+"));
+    }
+
+    /// An address carrying URL metacharacters must not escape the `hello`
+    /// value: `hello` is interpolated straight into the request URL, so a raw
+    /// `&` would start a new query parameter and a raw space would break the
+    /// request line. The `+` separators stay literal so CDDB still sees four
+    /// fields.
+    #[test]
+    fn hello_encodes_url_metacharacters_but_keeps_separators() {
+        let h = hello_param("a&cmd=hack me@example.org");
+        assert!(
+            h.starts_with("a%26cmd%3Dhack%20me+example.org+Sparkamp+"),
+            "got {h}"
+        );
+        assert_eq!(h.matches('+').count(), 3, "separators must survive: {h}");
+        for bad in ['&', '?', '#', ' ', '='] {
+            assert!(!h.contains(bad), "{bad:?} left unencoded in {h}");
+        }
+    }
+
+    /// The encoding has to hold at the URL level too, not just in the helper.
+    #[test]
+    fn query_url_cannot_be_injected_via_email() {
+        let url = query_url(&sample_toc(), "x&cmd=evil@example.org");
+        assert!(!url.contains("&cmd=evil"), "injected parameter in {url}");
+        assert!(url.ends_with("&proto=6"));
     }
 
     #[test]
