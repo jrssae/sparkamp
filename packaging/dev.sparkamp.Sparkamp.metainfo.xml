@@ -28,6 +28,31 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.2.0" date="2026-08-05">
+      <description>
+        <p>Winamp parity reaches its full 12-phase roadmap. Now Playing grows an
+        expandable panel and a standalone album art window (with inline media
+        library thumbnails); playback integrates with the OS via Linux MPRIS2 and
+        macOS Now Playing / remote commands; ReplayGain analyzes and normalizes
+        volume across tracks and albums; a manual play queue lets you line up
+        specific tracks ahead of shuffle or linear order; and a browse-by-cover
+        album gallery joins the media library.</p>
+        <p>Playlists gain sort/randomize/reverse and a status row with
+        count/duration/selection; watch folders auto-rescan and auto-add new
+        music; disc CD-TEXT reading and source badges round out track metadata;
+        and a right-click "View/Search Lyrics" opens a lyrics viewer (USLT tags,
+        or a browser search fallback) from any track list, with toggle-to-close
+        behavior. The Send-to menu and per-drive burn queues make copying tracks
+        to playlists, devices, and disc burns a single consistent action across
+        every view.</p>
+        <p>Every right-click context menu across GTK and macOS was re-aligned to
+        the same order, labels, and actions, and a GTK popover sizing bug that
+        made long menus scroll unnecessarily was fixed. A large settings cluster
+        (play-stats thresholds, remembered per-view search, artist-fallback
+        sorting) and a wide sweep of shortcut and dialog fixes round out the
+        release.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-07-13">
       <description>
         <p>Optical disc support across all three frontends: play audio CDs

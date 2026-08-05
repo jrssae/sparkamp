@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v1.1.0** — see [What's New](#whats-new-v110) for everything added in this release.
+> **v1.2.0** — see [What's New](#whats-new-v120) for everything added in this release.
 
 Like the project and want to support it? https://ko-fi.com/sparkamp to donate to my AI tokens
 
@@ -13,6 +13,21 @@ There are a number of various Winamp clones and other audio players available fo
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
 
 ---
+
+## What's New (v1.2.0)
+
+The Winamp-parity roadmap ships in full — 12 phases, one release.
+
+- **Now Playing panel + album art window** — an expandable now-playing panel (marquee ↔ art swap), a standalone art window that follows the current track, and inline art thumbnails in the media library.
+- **OS media integration** — Linux MPRIS2 (metadata, art, transport controls from the shell) and macOS Now Playing / remote commands (lock screen, headset, Control Center).
+- **ReplayGain** — volume analysis and normalization (track/album/auto modes, clip protection, opt-in tag write-back) with a bulk analyze action and an ML column.
+- **Manual play queue** — line up specific tracks ahead of shuffle/linear order; playlist badges, right-click and `q` to toggle, survives playlist edits.
+- **Album gallery** — browse the media library by cover art; click an album to see its tracks.
+- **Lyrics viewer** — right-click "View/Search Lyrics" on any track row (files, playlists, disc, device, active playlist) opens embedded USLT lyrics or falls back to a browser search; press `l` again to close.
+- **Send-to menu + per-drive burn queues** — one consistent way to copy tracks to a playlist, a device, or a disc burn queue from every view.
+- **Playlist ops & watch folders** — sort/randomize/reverse, a status row (count/duration/selection), filesystem-watched folders that auto-rescan and auto-add new music.
+- **CD-TEXT & source badges**, a settings cluster (play-stats thresholds, remembered per-view search, artist-fallback sorting), and a full shortcut/dialog sweep.
+- **Context-menu alignment** — every right-click menu on GTK and macOS now shares the same order, labels, and actions; a GTK popover sizing bug that made long menus scroll unnecessarily is fixed.
 
 ## What's New (v1.1.0)
 
