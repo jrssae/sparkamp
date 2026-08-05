@@ -492,8 +492,21 @@ struct DeviceDetailView: View {
             primaryColumns
             extraColumns
         }
+        // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics · ─ · Delete.
+        // Matches GTK's device row menu.
         .contextMenu(forSelectionType: DeviceTrack.ID.self) { ids in
+            // Active Playlist / Saved Playlist ▸ / Disc Drive / Removable
+            // Device over the selected device files — same spec as the
+            // Files-view and playlist-editor context menus.
+            Menu("Send to") {
+                SendToMenu(paths: paths(for: ids))
+            }
+            Button("Replace Current Playlist") {
+                model.replacePlaylistWithPaths(paths(for: ids))
+            }
+            .disabled(ids.isEmpty)
             if ids.count == 1, let p = ids.first {
+                Divider()
                 Button("View/Edit ID3") { model.mlOpenTagEditorForPath(p) }
                 Button("View Album Art") { model.mlViewArtForPath(p) }
                 Button("View/Search Lyrics") {
@@ -502,13 +515,6 @@ struct DeviceDetailView: View {
                                                  title: t.title, albumArtist: t.albumArtist)
                     }
                 }
-                Divider()
-            }
-            // Active Playlist / Saved Playlist ▸ / Disc Drive / Removable
-            // Device over the selected device files — same spec as the
-            // Files-view and playlist-editor context menus.
-            Menu("Send to") {
-                SendToMenu(paths: paths(for: ids))
             }
             Divider()
             Button(deleteActionLabel, role: .destructive) {

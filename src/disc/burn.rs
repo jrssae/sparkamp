@@ -17,6 +17,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+// Used only by the progress-channel plumbing, which is all cfg'd out on macOS
+// (drutil owns the progress bar there). Gate the import to match, or macOS
+// warns on an unused import while Linux fails to build without it.
+#[cfg(not(target_os = "macos"))]
+use std::sync::mpsc;
 
 use super::{MediaKind, OpticalDrive};
 

@@ -345,12 +345,16 @@ struct MLPlaylistEditor: View {
         })
         menu.addItem(.separator())
 
-        menu.addItem(BlockMenuItem(title: "Remove from Library", enabled: true) {
-            if !dbIds.isEmpty { model.mlRemoveTracks(ids: dbIds) }
-            // Drop the rows locally so the UI updates without waiting for
-            // a reload — handles stubs (no DB row to remove) too.
+        // Remove from THIS playlist only — drop the rows and rewrite the .m3u.
+        // The library and the on-disk audio files are untouched (Deletion
+        // Rule). GTK's "ed.remove" does exactly this; the earlier "Remove from
+        // Library" here was wrong — it deleted the track from the whole library.
+        menu.addItem(BlockMenuItem(title: "Remove from Playlist", enabled: true) {
             editingRows.removeAll { rowIds.contains($0.id) }
             trackSelection.subtract(rowIds)
+            let ids = editingRows.compactMap { $0.track.id }
+            model.mlSavePlaylist(id: playlistId, trackIds: ids)
+            savedTrackIds = ids
         })
         return menu
     }

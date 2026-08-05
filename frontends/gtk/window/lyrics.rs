@@ -29,6 +29,21 @@ fn view_or_search_lyrics(
     rebuild_cb: Rc<dyn Fn()>,
     mode: LyricsMode,
 ) {
+    // Toggle: pressing `l` on the track the window is already showing closes
+    // it; pressing `l` on a different track falls through and retargets the
+    // window (show_lyrics_window replaces the singleton). "Same track" is by
+    // path, which is what the shown-path cell records on open and on every
+    // Current-mode refresh.
+    let showing_same = {
+        let s = state.borrow();
+        s.lyrics_window.is_some() && s.lyrics_shown_path.borrow().as_deref() == Some(path)
+    };
+    if showing_same {
+        if let Some(win) = state.borrow_mut().lyrics_window.take() {
+            win.close();
+        }
+        return;
+    }
     show_lyrics_window(state, path, artist, title, album_artist, rebuild_cb, mode);
 }
 
@@ -57,6 +72,12 @@ fn show_lyrics_window(
     // every track change without rebuilding it.
     let active_path = Rc::new(RefCell::new(path.to_path_buf()));
     let search_url = Rc::new(RefCell::new(view.search_url.clone()));
+
+    // Mirror the shown track into AppState so the `l`-key toggle can tell
+    // "same track → close" from "different track → retarget". Updated again in
+    // the Current-mode refresh closure and cleared on close.
+    let shown_path = state.borrow().lyrics_shown_path.clone();
+    *shown_path.borrow_mut() = Some(path.to_path_buf());
 
     let win = gtk4::Window::builder()
         .title(format!("Lyrics — {}", gtk_safe(&view.title)))
@@ -160,6 +181,7 @@ fn show_lyrics_window(
         let text_view = text_view.clone();
         let active_path = active_path.clone();
         let search_url = search_url.clone();
+        let shown_path = shown_path.clone();
         Rc::new(move || {
             // Read the current track under a short borrow, then drop it before
             // touching any widget (subscribers must never re-enter AppState).
@@ -178,6 +200,7 @@ fn show_lyrics_window(
             text_view
                 .buffer()
                 .set_text(&gtk_safe(v.body.as_deref().unwrap_or("No lyrics available")));
+            *shown_path.borrow_mut() = Some(p.clone());
             *active_path.borrow_mut() = p;
             *search_url.borrow_mut() = v.search_url;
         })
@@ -256,6 +279,8 @@ fn show_lyrics_window(
             s.lyrics_window = None;
             // Break the refresh cycle (refresh holds an Rc<AppState> clone).
             s.lyrics_refresh = None;
+            // Forget the shown track so the next `l` opens rather than toggles.
+            *s.lyrics_shown_path.borrow_mut() = None;
         }
         glib::Propagation::Proceed
     });

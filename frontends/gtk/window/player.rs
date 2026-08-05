@@ -2594,6 +2594,24 @@ pub fn build(
         });
         pl_action_group.add_action(&action_lyrics);
 
+        // View Album Art for the right-clicked row (single-selection item).
+        let action_view_art = gio::SimpleAction::new("view-art", None);
+        let state_art = state.clone();
+        let row_art = current_row.clone();
+        action_view_art.connect_activate(move |_, _| {
+            let Some(idx) = *row_art.borrow() else { return };
+            let path = state_art
+                .borrow()
+                .playlist
+                .tracks
+                .get(idx as usize)
+                .map(|t| t.path.clone());
+            if let Some(path) = path {
+                art_window::open_track_art(&state_art, &path);
+            }
+        });
+        pl_action_group.add_action(&action_view_art);
+
         let action_remove = gio::SimpleAction::new("remove", None); // Short name
         let remove_callback = remove_selected.clone();
         action_remove.connect_activate(move |_, _| {
@@ -3009,13 +3027,27 @@ pub fn build(
                         .map(|d| (d.id.clone(), d.label.clone())).collect(),
                 },
             );
+            // Order: Play · Enqueue/Dequeue · Send to · ID3 · Album Art ·
+            // Lyrics · Remove. Matches the macOS row menu
+            // (PlaylistView.buildContextMenu). Flat (no sections) — GtkPopover-
+            // Menu doesn't allocate height for section separators when the
+            // popover's parent has no LayoutManager, so a sectioned menu came
+            // up too short and scrolled; Remove stays last regardless.
             let menu = gio::Menu::new();
             menu.append_item(&gio::MenuItem::new(Some("▶ Play"), Some("pl.play")));
-            menu.append_submenu(Some("Send to"), &send);
+            menu.append_item(&gio::MenuItem::new(
+                Some("⯈ Enqueue / Dequeue"),
+                Some("pl.queue-toggle"),
+            ));
+            menu.append_submenu(Some("↪ Send to"), &send);
             if sel_count <= 1 {
                 menu.append_item(&gio::MenuItem::new(
                     Some("🎵 View/Edit ID3"),
                     Some("pl.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("🖼 View Album Art"),
+                    Some("pl.view-art"),
                 ));
                 menu.append_item(&gio::MenuItem::new(
                     Some("📝 View/Search Lyrics"),
@@ -3023,26 +3055,24 @@ pub fn build(
                 ));
             }
             menu.append_item(&gio::MenuItem::new(
-                Some("⯈ Enqueue / Dequeue"),
-                Some("pl.queue-toggle"),
-            ));
-            // Remove goes in its own section — GIO draws a separator between
-            // sections, which is how the destructive item gets set apart the
-            // way it is on macOS.
-            let remove_section = gio::Menu::new();
-            remove_section.append_item(&gio::MenuItem::new(
                 Some("✕ Remove"),
                 Some("pl.remove"),
             ));
-            menu.append_section(None, &remove_section);
 
             // Create popover menu — NESTED keeps the Add-to-Playlist
             // submenu from being clipped to the parent menu's height.
-            let popover = gtk4::PopoverMenu::from_model_full(
-                &menu,
-                gtk4::PopoverMenuFlags::NESTED,
-            );
-            popover.set_parent(&pl_scroll_ctx);
+            //
+            // Parent the popover to `pl_view` — the SAME widget this gesture is
+            // on — so the pointing rect below is in the parent's coordinate
+            // space. Parenting to the enclosing ScrolledWindow instead put the
+            // (x, y) from `pl_view` into the scroller's space; once the list was
+            // scrolled the anchor landed outside the viewport and GTK gave the
+            // menu scroll arrows to keep it on screen. Action dispatch still
+            // resolves: the "pl" group lives on `pl_scroll_ctx`, pl_view's
+            // parent, so the popover's action walk reaches it either way.
+            let popover = context_popover(&menu);
+            #[allow(deprecated)]
+            popover.set_parent(&pl_view_ctx);
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
@@ -4953,6 +4983,10 @@ pub fn build(
         let handler = handle_key.clone();
         let wrap_invert_selection = invert_selection.clone();
         let wrap_save_active = btn_save_active.clone();
+        let lyr_state = state.clone();
+        let lyr_sel_idx = pl_selected_idx.clone();
+        let lyr_rebuild = rebuild_playlist.clone();
+        let lyr_pl_view = pl_view.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
             if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
                 match key {
@@ -4977,6 +5011,38 @@ pub fn build(
                     w.set_visible(false);
                 }
                 return glib::Propagation::Stop;
+            }
+            // `l` on the playlist window opens lyrics for the single SELECTED
+            // row in Specific mode (the window does not follow playback). A
+            // multi-row selection does nothing — matching the Media Library and
+            // the row menu, which only offer lyrics for exactly one row. With
+            // no row selected it falls through to the shared handler, whose `l`
+            // arm opens the currently-playing track in Current mode — "selected
+            // track, else the current one".
+            if matches!(key, gdk::Key::l | gdk::Key::L) {
+                #[allow(deprecated)]
+                let sel_count = lyr_pl_view.selection().count_selected_rows();
+                if sel_count > 1 {
+                    return glib::Propagation::Stop; // no action on multi-select
+                }
+                let idx = lyr_sel_idx.get();
+                if sel_count == 1 && idx != usize::MAX {
+                    let t = lyr_state.borrow().playlist.tracks.get(idx).map(|t| {
+                        (
+                            t.path.clone(),
+                            t.artist.clone(),
+                            t.title.clone(),
+                            t.album_artist.clone(),
+                        )
+                    });
+                    if let Some((path, artist, title, album_artist)) = t {
+                        view_or_search_lyrics(
+                            &lyr_state, &path, &artist, &title, &album_artist,
+                            lyr_rebuild.clone(), LyricsMode::Specific,
+                        );
+                        return glib::Propagation::Stop;
+                    }
+                }
             }
             handler(key)
         });

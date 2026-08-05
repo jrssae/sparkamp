@@ -1028,9 +1028,16 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, "popover.menu box.menu button.modelbutton label {{ \
         font-weight: normal; \
     }}").unwrap();
+    // A separator's ONLY accounted height is its `min-height` (content box):
+    // GtkPopoverMenu sizes the popover from the item rows and counts a
+    // separator's min-height but neither its `margin` NOR its `border`, so any
+    // gap built from those left the popover too short and pushed the last item
+    // ("Remove") under a scroll arrow. Keep it a plain 1px line with no
+    // margin/border — the 6px vertical padding on the adjacent modelbuttons
+    // already gives it breathing room, and 1px rendered == 1px counted, so
+    // nothing overflows.
     writeln!(css, "popover.menu box.menu separator {{ \
-        background-color: {border}; min-height: 1px; \
-        margin: 4px 8px; \
+        background-color: {border}; min-height: 1px; margin: 0 8px; \
     }}").unwrap();
     writeln!(css, "popover.menu box.menu label.dim-label {{ \
         color: {btext}; padding: 4px 14px 2px 14px; \

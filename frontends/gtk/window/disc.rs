@@ -12,7 +12,7 @@ use gtk4::{gio, glib, Align, Box as GtkBox, Button, Entry, Label, ListBoxRow, Or
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{gtk_safe, AppState};
+use super::{context_popover, gtk_safe, AppState};
 use crate::disc::rip::RipOutcome;
 
 /// Progress messages from the rip worker thread to the GTK poller.
@@ -682,6 +682,52 @@ pub(super) fn build_burn_panel(
             glib::Propagation::Proceed
         });
         queue.add_controller(key);
+    }
+    // Right-click a burn-queue row → a one-item "Remove" menu, so removal is
+    // reachable from the row menu like every other list view. Parent the
+    // popover on `queue` (the gesture's own widget) so the pointing rect is in
+    // the same coordinate space — parenting on the scroller instead gives the
+    // menu spurious scroll arrows once the list is scrolled.
+    {
+        let group = gio::SimpleActionGroup::new();
+        let remove_action = gio::SimpleAction::new("remove", None);
+        {
+            let remove_selected = remove_selected.clone();
+            remove_action.connect_activate(move |_, _| remove_selected());
+        }
+        group.add_action(&remove_action);
+        queue.insert_action_group("burn", Some(&group));
+
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+        let queue_g = queue.clone();
+        gesture.connect_pressed(move |g, _, x, y| {
+            // Select the row under the pointer unless it is already part of the
+            // selection, so a right-click without a prior click still targets
+            // something.
+            if let Some(row) = queue_g.row_at_y(y as i32) {
+                if !row.is_selected() {
+                    queue_g.select_row(Some(&row));
+                }
+            }
+            if queue_g.selected_rows().is_empty() {
+                return;
+            }
+            let menu = gio::Menu::new();
+            menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("burn.remove")));
+            let popover =
+                context_popover(&menu);
+            popover.set_parent(&queue_g);
+            // Unparent on close: the burn-queue rebuild clears `queue`'s
+            // children with `while first_child { remove }`, which would hit a
+            // leftover popover and warn. Safe (no nested submenu).
+            popover.connect_closed(|p| p.unparent());
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+            g.set_state(gtk4::EventSequenceState::Claimed);
+        });
+        queue.add_controller(gesture);
     }
     // Move the whole selected block up (delta -1) or down (+1) by one,
     // clamped so it can't run off either end, and keep exactly those rows
@@ -1441,6 +1487,10 @@ pub(super) fn connect_rip_ui(
     disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
     selected_disc_id: Rc<RefCell<Option<String>>>,
     current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
+    // When set (by the "Rip Track(s)" row menu), only these entry indices start
+    // checked in the dialog; consumed on open so a later toolbar Rip… selects
+    // all again. `None` = the whole-disc default.
+    rip_preselect: Rc<RefCell<Option<Vec<usize>>>>,
 ) {
     // Cancel the running rip (stops after the current track finishes).
     {
@@ -1535,7 +1585,11 @@ pub(super) fn connect_rip_ui(
             let l = list.clone();
             deselect_all.connect_clicked(move |_| l.unselect_all());
         }
-        for e in entries.iter() {
+        // The row menu may have asked to start with only some tracks checked;
+        // consume it so a later toolbar Rip… falls back to the whole-disc
+        // default.
+        let preselect = rip_preselect.borrow_mut().take();
+        for (i, e) in entries.iter().enumerate() {
             let lbl = Label::builder()
                 .label(&gtk_safe(&format!(
                     "{}. {}",
@@ -1552,7 +1606,13 @@ pub(super) fn connect_rip_ui(
             let row = ListBoxRow::new();
             row.set_child(Some(&lbl));
             list.append(&row);
-            list.select_row(Some(&row));
+            let start_checked = match &preselect {
+                Some(idxs) => idxs.contains(&i),
+                None => true,
+            };
+            if start_checked {
+                list.select_row(Some(&row));
+            }
         }
         let list_scroll = ScrolledWindow::builder().vexpand(true).child(&list).build();
         outer.append(&list_scroll);

@@ -431,6 +431,33 @@ extension SparkampModel {
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
     }
 
+    /// Replace the active playlist with `entries` and start playing, regardless
+    /// of the append/replace setting — the explicit "Replace Current Playlist"
+    /// audio-CD context action (GTK's DiscAdd::PlayNow).
+    func replaceWithDiscTracks(_ drive: OpticalDrive, entries: [DiscTrackEntry]) {
+        guard let ctx = ctx, !entries.isEmpty else { return }
+        let tags = discIdFor(drive).flatMap { discOverlayTags($0) }
+        clearPlaylist()
+        for e in entries {
+            let meta = discEntryMeta(e, tags: tags)
+            e.path.withCString { p in
+                meta.title.withCString { t in
+                    meta.artist.withCString { a in
+                        meta.album.withCString { al in
+                            _ = sparkamp_playlist_add_entry(
+                                ctx, p, t, a, al, Int32(e.durationSecs))
+                        }
+                    }
+                }
+            }
+        }
+        sparkamp_playlist_jump(ctx, 0)
+        sparkamp_play(ctx)
+        refreshPlaylist()
+        refreshCurrentTrackInfo()
+        discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
+    }
+
     // MARK: Rip
 
     /// Rip the given tracks through the core's job runner (the same loop

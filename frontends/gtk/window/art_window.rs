@@ -19,8 +19,72 @@ use gtk4::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::AppState;
+use super::{gtk_safe, AppState};
 use crate::now_playing::NowPlayingInfo;
+
+/// Open a standalone, non-singleton album-art viewer for ONE specific track —
+/// the "View Album Art" context-menu action, which targets the selected row,
+/// not the playing track. (The A6 [`open_or_focus`] window deliberately follows
+/// now-playing, so it can't show an arbitrary selection.) Artwork comes from
+/// the library row's `artwork_path`, falling back to an embedded/folder-image
+/// probe for files not yet indexed. No art → a "No album art" placeholder.
+pub(super) fn open_track_art(state: &Rc<RefCell<AppState>>, path: &std::path::Path) {
+    let path_str = path.to_string_lossy().into_owned();
+    let artwork_path = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .and_then(|ml| ml.track_by_path(&path_str).ok())
+        .and_then(|t| t.artwork_path.clone())
+        .or_else(|| crate::tags::read_track_tags(path).artwork_path);
+
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+    let win = gtk4::Window::builder()
+        .title(format!("Album Art — {}", gtk_safe(name)))
+        .default_width(420)
+        .default_height(420)
+        .build();
+
+    let child: gtk4::Widget = match artwork_path {
+        Some(p) => {
+            let pic = Picture::new();
+            pic.set_can_shrink(true);
+            pic.set_content_fit(ContentFit::Contain);
+            pic.set_hexpand(true);
+            pic.set_vexpand(true);
+            pic.set_filename(Some(&p));
+            pic.add_css_class("np-art");
+            pic.upcast()
+        }
+        None => {
+            let lbl = Label::new(Some("No album art"));
+            lbl.set_halign(Align::Center);
+            lbl.set_valign(Align::Center);
+            lbl.add_css_class("dim-label");
+            lbl.upcast()
+        }
+    };
+    win.set_child(Some(&child));
+
+    // Esc closes, matching the other satellite windows.
+    let key = EventControllerKey::new();
+    let win_esc = win.downgrade();
+    key.connect_key_pressed(move |_, keyval, _, _| {
+        if keyval == gdk::Key::Escape {
+            if let Some(w) = win_esc.upgrade() {
+                w.close();
+            }
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    win.add_controller(key);
+
+    win.present();
+}
 
 /// Open the album-art window: build it on first call, or bring the existing
 /// one forward on every call after.

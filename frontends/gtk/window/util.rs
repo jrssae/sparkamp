@@ -680,19 +680,16 @@ fn build_add_to_playlist_submenu(
         .and_then(|lib| lib.all_playlists().ok())
         .map(|v| v.into_iter().map(|p| (p.id, p.name)).collect())
         .unwrap_or_default();
-    if !playlists.is_empty() {
-        // Separator between "New" and the saved-playlist list — matches the
-        // macOS frontend's Add-to-Playlist submenu structure.
-        let saved_section = gio::Menu::new();
-        for (pid, name) in playlists {
-            let item = gio::MenuItem::new(Some(&name), None);
-            item.set_action_and_target_value(
-                Some(append_action),
-                Some(&pid.to_variant()),
-            );
-            saved_section.append_item(&item);
-        }
-        submenu.append_section(None, &saved_section);
+    // Flat (no separator section): a sectioned GtkPopoverMenu comes up too
+    // short and scrolls when its parent has no LayoutManager, so separator
+    // lines are dropped throughout the GTK context menus.
+    for (pid, name) in playlists {
+        let item = gio::MenuItem::new(Some(&name), None);
+        item.set_action_and_target_value(
+            Some(append_action),
+            Some(&pid.to_variant()),
+        );
+        submenu.append_item(&item);
     }
     submenu
 }
@@ -804,6 +801,26 @@ pub(super) struct SendToActions<'a> {
 // visible than that parameter type, which rustc flags as private_interfaces.
 // Widening AppState's own visibility is out of scope for this file.
 #[allow(private_interfaces)]
+/// Build a context `PopoverMenu` with NESTED (pop-out) submenus, so "Send to"
+/// and its sub-lists open as their own popovers.
+///
+/// NOTE: a `GtkPopoverMenu` built from a model comes up too short — the last
+/// item needs scrolling — when its parent has no LayoutManager, which is every
+/// list/scroller widget we parent to (GNOME discourse 34176; GTK 4.22+ adds
+/// `Gtk.PopoverBin`). `set_height_request` after layout DID fix the size but
+/// the resize made the popover reposition and autohide slammed it shut, so the
+/// real fix is to parent the popover to a LayoutManager-backed widget at the
+/// call site — done separately, not here.
+pub(super) fn context_popover(menu: &gio::Menu) -> gtk4::PopoverMenu {
+    use gtk4::prelude::*;
+    let popover =
+        gtk4::PopoverMenu::from_model_full(menu, gtk4::PopoverMenuFlags::NESTED);
+    // No arrow — a right-click menu points AT the cursor, it doesn't need a
+    // tail (WebKit disables it on context menus for the same reason).
+    popover.set_has_arrow(false);
+    popover
+}
+
 pub(super) fn build_send_to_menu(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
     actions: &SendToActions<'_>,

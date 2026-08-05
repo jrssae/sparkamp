@@ -282,6 +282,32 @@ extension SparkampModel {
         }
     }
 
+    /// Replace the active playlist with `paths` (files only) and start playing,
+    /// regardless of the append/replace setting — the explicit "Replace Current
+    /// Playlist" context action on the disc-data and device views. Unlike
+    /// `addFiles` (which honors the config setting), this always clears first.
+    func replacePlaylistWithPaths(_ paths: [String]) {
+        guard let ctx = ctx, !paths.isEmpty else { return }
+        sparkamp_playlist_clear(ctx)
+        var newIndices: [Int] = []
+        for p in paths {
+            let idx = p.withCString { sparkamp_playlist_add_fast(ctx, $0) }
+            if idx >= 0 { newIndices.append(Int(idx)) }
+        }
+        refreshPlaylist()
+        for i in newIndices {
+            sparkamp_scan_metadata(ctx, Int32(i))
+            sparkamp_probe_duration(ctx, Int32(i))
+        }
+        if !newIndices.isEmpty {
+            lastAddTime = Date()
+            sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
+            sparkamp_play(ctx)
+            refreshCurrentTrackInfo()
+            saveState()
+        }
+    }
+
     func removeTrack(at index: Int) {
         guard let ctx = ctx else { return }
         sparkamp_playlist_remove(ctx, Int32(index))

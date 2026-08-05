@@ -2757,6 +2757,140 @@ fn open_media_library_window(
         }
         dev_file_action_group.add_action(&action_lyrics);
 
+        // Replace the active playlist with the selected device files.
+        {
+            let sel_tracks = selected_device_tracks.clone();
+            let state_c = state.clone();
+            let rebuild = rebuild_playlist.clone();
+            let action = gio::SimpleAction::new("replace", None);
+            action.connect_activate(move |_, _| {
+                let tracks = sel_tracks();
+                if tracks.is_empty() {
+                    return;
+                }
+                let _ = state_c.borrow_mut().player.stop();
+                state_c.borrow_mut().playlist.clear();
+                for t in &tracks {
+                    if let Ok(track) = crate::model::Track::from_path(std::path::Path::new(&t.path)) {
+                        state_c.borrow_mut().playlist.add(track);
+                    }
+                }
+                if state_c.borrow().config.behavior.autoplay_on_add {
+                    state_c.borrow_mut().play_current();
+                }
+                rebuild();
+            });
+            dev_file_action_group.add_action(&action);
+        }
+
+        // View Album Art for the single selected device file.
+        {
+            let sel_tracks = selected_device_tracks.clone();
+            let state_c = state.clone();
+            let action = gio::SimpleAction::new("view-art", None);
+            action.connect_activate(move |_, _| {
+                let tracks = sel_tracks();
+                let Some(t) = tracks.first() else { return };
+                art_window::open_track_art(&state_c, std::path::Path::new(&t.path));
+            });
+            dev_file_action_group.add_action(&action);
+        }
+
+        // Delete the selected files FROM THE DEVICE (permanent). Device view is
+        // one of the two surfaces the Deletion Rule allows real file deletion
+        // from, and only after explicit confirmation — hence the AlertDialog.
+        {
+            let sel_tracks = selected_device_tracks.clone();
+            let devices_del = current_devices.clone();
+            let backend_del = selected_dev_backend.clone();
+            let reload_store = reload_device_store.clone();
+            let win_wk = win.downgrade();
+            let action = gio::SimpleAction::new("delete", None);
+            action.connect_activate(move |_, _| {
+                let tracks = sel_tracks();
+                if tracks.is_empty() {
+                    return;
+                }
+                let Some(b) = backend_del.borrow().clone() else { return };
+                let Some(dev) = devices_del.borrow().iter().find(|d| d.backend_id == b).cloned()
+                else {
+                    return;
+                };
+                let paths: Vec<std::path::PathBuf> =
+                    tracks.iter().map(|t| std::path::PathBuf::from(&t.path)).collect();
+                let n = paths.len();
+                let dialog = gtk4::AlertDialog::builder()
+                    .message(format!(
+                        "Delete {n} file{} from the device?",
+                        if n == 1 { "" } else { "s" }
+                    ))
+                    .detail("The files are permanently removed from the device.")
+                    .buttons(vec!["Cancel".to_string(), "Delete".to_string()])
+                    .cancel_button(0)
+                    .default_button(1)
+                    .modal(true)
+                    .build();
+                let dev2 = dev.clone();
+                let reload2 = reload_store.clone();
+                let win_wk2 = win_wk.clone();
+                dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
+                    if res != Ok(1) {
+                        return;
+                    }
+                    let deleted = crate::devices::plan::device_delete_files(&dev2, &paths);
+                    if deleted != paths.len() {
+                        show_alert_parented(
+                            win_wk2.upgrade().as_ref(),
+                            "Some files could not be deleted from the device.",
+                        );
+                    }
+                    reload2(dev2.clone());
+                });
+            });
+            dev_file_action_group.add_action(&action);
+        }
+
+        // `l` — View/Search Lyrics for the single selected device track in
+        // Specific mode. No-op on a multi-row or empty selection, matching the
+        // row menu. Rebuild reloads the device store so a tag edit from the
+        // lyrics window refreshes this view, mirroring the row action above.
+        {
+            let key = EventControllerKey::new();
+            let state_l = state.clone();
+            let sel_tracks = selected_device_tracks.clone();
+            let reload_store = reload_device_store.clone();
+            let devices_l = current_devices.clone();
+            let backend_l = selected_dev_backend.clone();
+            key.connect_key_pressed(move |_, keyval, _, _| {
+                if !matches!(keyval, gdk::Key::l | gdk::Key::L) {
+                    return glib::Propagation::Proceed;
+                }
+                let tracks = sel_tracks();
+                let [track] = tracks.as_slice() else {
+                    return glib::Propagation::Proceed;
+                };
+                let path = std::path::PathBuf::from(&track.path);
+                let artist = track.artist.clone().unwrap_or_default();
+                let title = track.title.clone().unwrap_or_default();
+                let album_artist = track.album_artist.clone().unwrap_or_default();
+                let reload = reload_store.clone();
+                let devices = devices_l.clone();
+                let backend = backend_l.clone();
+                let rebuild_cb: Rc<dyn Fn()> = Rc::new(move || {
+                    let Some(b) = backend.borrow().clone() else { return };
+                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned() {
+                        reload(dev);
+                    }
+                });
+                view_or_search_lyrics(
+                    &state_l, &path, &artist, &title, &album_artist, rebuild_cb,
+                    LyricsMode::Specific,
+                );
+                glib::Propagation::Stop
+            });
+            dev_col_view.add_controller(key);
+        }
+
         let sel_menu = selected_device_tracks.clone();
         let scroll_menu = dev_tracks_scroll.clone();
         let state_menu_dev = state.clone();
@@ -2767,18 +2901,9 @@ fn open_media_library_window(
             if sel.is_empty() {
                 return;
             }
-            let menu = gio::Menu::new();
-            // Only a single-file selection is editable (the editor binds one file).
-            if sel.len() == 1 {
-                menu.append_item(&gio::MenuItem::new(
-                    Some("🎵 View/Edit ID3"),
-                    Some("dev-file.edit-id3"),
-                ));
-                menu.append_item(&gio::MenuItem::new(
-                    Some("📝 View/Search Lyrics"),
-                    Some("dev-file.lyrics"),
-                ));
-            }
+            // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics · ─ ·
+            // Delete from Device. Matches the macOS device menu
+            // (DeviceDetailView). Delete permanently removes from the device.
             let send = build_send_to_menu(
                 &state_menu_dev,
                 &SendToActions {
@@ -2795,11 +2920,32 @@ fn open_media_library_window(
                         .map(|d| (d.id.clone(), d.label.clone())).collect(),
                 },
             );
-            menu.append_submenu(Some("Send to"), &send);
-            let popover = gtk4::PopoverMenu::from_model_full(
-                &menu,
-                gtk4::PopoverMenuFlags::NESTED,
-            );
+            let menu = gio::Menu::new();
+            menu.append_submenu(Some("↪ Send to"), &send);
+            menu.append_item(&gio::MenuItem::new(
+                Some("♻ Replace Current Playlist"),
+                Some("dev-file.replace"),
+            ));
+            // Single-file view items (bind one file).
+            if sel.len() == 1 {
+                menu.append_item(&gio::MenuItem::new(
+                    Some("🎵 View/Edit ID3"),
+                    Some("dev-file.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("🖼 View Album Art"),
+                    Some("dev-file.view-art"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("📝 View/Search Lyrics"),
+                    Some("dev-file.lyrics"),
+                ));
+            }
+            menu.append_item(&gio::MenuItem::new(
+                Some("🗑 Delete from Device"),
+                Some("dev-file.delete"),
+            ));
+            let popover = context_popover(&menu);
             popover.set_parent(&scroll_menu);
             // Unparent on close so a right-click doesn't leak a popover per use.
             popover.connect_closed(|p| p.unparent());
@@ -3410,6 +3556,45 @@ fn open_media_library_window(
             disc_files_action_group.add_action(&action);
         }
 
+        // Replace the active playlist with the selected disc files.
+        {
+            let sel_files = selected_disc_files.clone();
+            let state = state.clone();
+            let rebuild = rebuild_playlist.clone();
+            let action = gio::SimpleAction::new("replace", None);
+            action.connect_activate(move |_, _| {
+                let files = sel_files();
+                if files.is_empty() {
+                    return;
+                }
+                let _ = state.borrow_mut().player.stop();
+                state.borrow_mut().playlist.clear();
+                for f in &files {
+                    if let Ok(track) = crate::model::Track::from_path(&f.path) {
+                        state.borrow_mut().playlist.add(track);
+                    }
+                }
+                if state.borrow().config.behavior.autoplay_on_add {
+                    state.borrow_mut().play_current();
+                }
+                rebuild();
+            });
+            disc_files_action_group.add_action(&action);
+        }
+
+        // View Album Art for the single selected disc file.
+        {
+            let sel_files = selected_disc_files.clone();
+            let state = state.clone();
+            let action = gio::SimpleAction::new("view-art", None);
+            action.connect_activate(move |_, _| {
+                let files = sel_files();
+                let Some(f) = files.first() else { return };
+                art_window::open_track_art(&state, &f.path);
+            });
+            disc_files_action_group.add_action(&action);
+        }
+
         // Seed a brand new saved playlist from the selected disc files.
         {
             let sel_files = selected_disc_files.clone();
@@ -3598,6 +3783,38 @@ fn open_media_library_window(
             disc_files_action_group.add_action(&action);
         }
 
+        // `l` — View/Search Lyrics for the single selected disc file in Specific
+        // mode. No-op on a multi-row or empty selection, matching the row menu.
+        // DiscFile carries no artist/title, so the search fallback uses the file
+        // stem as the title, the same as the row action above.
+        {
+            let key = EventControllerKey::new();
+            let sel_files = selected_disc_files.clone();
+            let state_l = state.clone();
+            let rebuild_l = rebuild_playlist.clone();
+            key.connect_key_pressed(move |_, keyval, _, _| {
+                if !matches!(keyval, gdk::Key::l | gdk::Key::L) {
+                    return glib::Propagation::Proceed;
+                }
+                let files = sel_files();
+                let [f] = files.as_slice() else {
+                    return glib::Propagation::Proceed;
+                };
+                let title = f
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                view_or_search_lyrics(
+                    &state_l, &f.path, "", &title, "", rebuild_l.clone(),
+                    LyricsMode::Specific,
+                );
+                glib::Propagation::Stop
+            });
+            disc_files_col_view.add_controller(key);
+        }
+
         let sel_menu = selected_disc_files.clone();
         let scroll_menu = disc_files_scroll.clone();
         let state_menu = state.clone();
@@ -3608,22 +3825,9 @@ fn open_media_library_window(
             if sel_menu().is_empty() {
                 return;
             }
-            let menu = gio::Menu::new();
-            menu.append_item(&gio::MenuItem::new(
-                Some("Add to Library"),
-                Some("disc-files.add-to-library"),
-            ));
-            // Single selection only — the editor binds to one file.
-            if sel_menu().len() == 1 {
-                menu.append_item(&gio::MenuItem::new(
-                    Some("View/Edit ID3"),
-                    Some("disc-files.edit-id3"),
-                ));
-                menu.append_item(&gio::MenuItem::new(
-                    Some("View/Search Lyrics"),
-                    Some("disc-files.lyrics"),
-                ));
-            }
+            // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics. Matches
+            // the macOS disc data-files menu. "Add to Library" lives on the
+            // bottom-bar buttons, not this menu (parity with macOS).
             let this_drive = selected_disc_id_menu.borrow().clone();
             let send = build_send_to_menu(
                 &state_menu,
@@ -3643,9 +3847,29 @@ fn open_media_library_window(
                         .map(|d| (d.id.clone(), d.label.clone())).collect(),
                 },
             );
-            menu.append_submenu(Some("Send to"), &send);
+            let menu = gio::Menu::new();
+            menu.append_submenu(Some("↪ Send to"), &send);
+            menu.append_item(&gio::MenuItem::new(
+                Some("♻ Replace Current Playlist"),
+                Some("disc-files.replace"),
+            ));
+            // Single selection only — these bind one file.
+            if sel_menu().len() == 1 {
+                menu.append_item(&gio::MenuItem::new(
+                    Some("🎵 View/Edit ID3"),
+                    Some("disc-files.edit-id3"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("🖼 View Album Art"),
+                    Some("disc-files.view-art"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("📝 View/Search Lyrics"),
+                    Some("disc-files.lyrics"),
+                ));
+            }
             let popover =
-                gtk4::PopoverMenu::from_model_full(&menu, gtk4::PopoverMenuFlags::NESTED);
+                context_popover(&menu);
             // Parent on the group-holding widget and DON'T unparent on close:
             // the unparent severs the action-group link as a nested "Send to"
             // item dispatches (the bug fixed in the playlist editor). Match
@@ -4112,6 +4336,17 @@ fn open_media_library_window(
             );
         });
         ml_action_group.add_action(&action_lyrics);
+
+        // View Album Art for the single selected library row.
+        let ml_action_art_tracks = ml_selected_tracks.clone();
+        let ml_action_art_state = state.clone();
+        let action_view_art = gio::SimpleAction::new("view-art", None);
+        action_view_art.connect_activate(move |_, _| {
+            let tracks: Vec<_> = ml_action_art_tracks.borrow().clone();
+            let Some(path) = tracks.first().cloned() else { return };
+            art_window::open_track_art(&ml_action_art_state, &path);
+        });
+        ml_action_group.add_action(&action_view_art);
 
         // Rescan Metadata action
         let ml_action_rescan_state = state.clone();
@@ -4608,42 +4843,11 @@ fn open_media_library_window(
                             (x, y)
                         };
 
-                        // Build menu model
-                        let menu = gio::Menu::new();
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("Append to Playlist"),
-                            Some("ml.append"),
-                        ));
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("Replace current playlist"),
-                            Some("ml.replace"),
-                        ));
-
-                        // Only show View/Edit ID3 for single selection
-                        if selected_count == 1 {
-                            menu.append_item(&gio::MenuItem::new(
-                                Some("View/Edit ID3"),
-                                Some("ml.edit-id3"),
-                            ));
-                            menu.append_item(&gio::MenuItem::new(
-                                Some("View/Search Lyrics"),
-                                Some("ml.lyrics"),
-                            ));
-                        }
-
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("Rescan Metadata"),
-                            Some("ml.rescan"),
-                        ));
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("Calculate ReplayGain"),
-                            Some("ml.calc-rg"),
-                        ));
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("Remove from Media Library"),
-                            Some("ml.remove"),
-                        ));
-
+                        // Order: Send to · Replace · ─ · ID3 · Album Art ·
+                        // Lyrics · Rescan · Calc RG · ─ · Remove. Matches the
+                        // macOS Files row menu (MLFilesTable). "Append to
+                        // Playlist" is gone — Send to ▸ Active Playlist is the
+                        // append path, the same as macOS.
                         let send = build_send_to_menu(
                             &state_for_gest,
                             &SendToActions {
@@ -4660,24 +4864,54 @@ fn open_media_library_window(
                                     .collect(),
                             },
                         );
-                        menu.append_submenu(Some("Send to"), &send);
+                        let menu = gio::Menu::new();
+                        menu.append_submenu(Some("↪ Send to"), &send);
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("♻ Replace Current Playlist"),
+                            Some("ml.replace"),
+                        ));
+                        // Flat (no sections): single-only view items, then the
+                        // maintenance actions, then Remove last.
+                        if selected_count == 1 {
+                            menu.append_item(&gio::MenuItem::new(
+                                Some("🎵 View/Edit ID3"),
+                                Some("ml.edit-id3"),
+                            ));
+                            menu.append_item(&gio::MenuItem::new(
+                                Some("🖼 View Album Art"),
+                                Some("ml.view-art"),
+                            ));
+                            menu.append_item(&gio::MenuItem::new(
+                                Some("📝 View/Search Lyrics"),
+                                Some("ml.lyrics"),
+                            ));
+                        }
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("🔄 Rescan Metadata"),
+                            Some("ml.rescan"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("📊 Calculate ReplayGain"),
+                            Some("ml.calc-rg"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("✕ Remove from Library"),
+                            Some("ml.remove"),
+                        ));
 
-                        // Create popover menu — NESTED so the "Send to"
-                        // submenu opens as its own popover with an
-                        // independent height instead of sliding inside
-                        // the parent popover (which would clip it to the
-                        // parent's content height).
-                        let popover = gtk4::PopoverMenu::from_model_full(
-                            &menu,
-                            gtk4::PopoverMenuFlags::NESTED,
-                        );
+                        // NESTED (pop-out submenus) via the shared helper, which
+                        // also forces the popover to grow to its full height so
+                        // sectioned menus don't sprout scroll arrows. set_parent
+                        // BEFORE set_pointing_to so the anchor rect is in the
+                        // parent's coordinate space.
+                        let popover = context_popover(&menu);
+                        popover.set_parent(&col_popup);
                         popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
                             popup_x as i32,
                             popup_y as i32,
                             1,
                             1,
                         )));
-                        popover.set_parent(&col_popup);
                         popover.popup();
                         gest.set_state(gtk4::EventSequenceState::Claimed);
                     });
@@ -5375,6 +5609,53 @@ fn open_media_library_window(
             });
         }
 
+        // `l` — View/Search Lyrics for the single selected library row, in
+        // Specific mode (the Media Library never follows playback). No-op on a
+        // multi-row selection or an empty one, matching the row menu's
+        // single-selection rule.
+        {
+            let key = EventControllerKey::new();
+            let state_l = state.clone();
+            let live_sel = ml_live_selected_paths.clone();
+            let rebuild_l = rebuild_playlist.clone();
+            key.connect_key_pressed(move |_, keyval, _, _| {
+                if !matches!(keyval, gdk::Key::l | gdk::Key::L) {
+                    return glib::Propagation::Proceed;
+                }
+                let paths = live_sel();
+                if paths.len() != 1 {
+                    return glib::Propagation::Proceed;
+                }
+                let path = paths[0].clone();
+                let path_str = path.to_string_lossy().into_owned();
+                let (artist, title, album_artist) = {
+                    let s = state_l.borrow();
+                    let lt = s
+                        .media_lib
+                        .as_ref()
+                        .and_then(|ml| ml.track_by_path(&path_str).ok());
+                    match lt {
+                        Some(t) => (
+                            t.artist.clone().unwrap_or_default(),
+                            t.title.clone().unwrap_or_default(),
+                            t.album_artist.clone().unwrap_or_default(),
+                        ),
+                        None => (
+                            String::new(),
+                            path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string(),
+                            String::new(),
+                        ),
+                    }
+                };
+                view_or_search_lyrics(
+                    &state_l, &path, &artist, &title, &album_artist,
+                    rebuild_l.clone(), LyricsMode::Specific,
+                );
+                glib::Propagation::Stop
+            });
+            col_view.add_controller(key);
+        }
+
         // Customize columns dialog.
         {
             let state_rc = state.clone();
@@ -5891,7 +6172,61 @@ fn open_media_library_window(
                 }
             })
         };
-        build_album_gallery(&state, on_album_activate)
+        // Play/Enqueue an album straight from a tile's right-click menu —
+        // the same album_tracks → replace/append seam the drill-down's
+        // "Play Album" / "Enqueue Album" buttons use.
+        let on_album_play: Rc<dyn Fn(String, String)> = {
+            let state_p = state.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            Rc::new(move |album: String, album_artist: String| {
+                let artist_as_album =
+                    state_p.borrow().config.media_library.artist_as_album_artist;
+                let tracks: Vec<crate::media_library::LibTrack> = state_p
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
+                    .unwrap_or_default();
+                if tracks.is_empty() {
+                    return;
+                }
+                let _ = state_p.borrow_mut().player.stop();
+                state_p.borrow_mut().playlist.clear();
+                for lt in &tracks {
+                    state_p.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                }
+                if !state_p.borrow().playlist.is_empty() {
+                    state_p.borrow_mut().play_current();
+                }
+                rebuild_pl();
+            })
+        };
+        let on_album_enqueue: Rc<dyn Fn(String, String)> = {
+            let state_e = state.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            Rc::new(move |album: String, album_artist: String| {
+                let artist_as_album =
+                    state_e.borrow().config.media_library.artist_as_album_artist;
+                let tracks: Vec<crate::media_library::LibTrack> = state_e
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
+                    .unwrap_or_default();
+                if tracks.is_empty() {
+                    return;
+                }
+                let was_empty = state_e.borrow().playlist.is_empty();
+                for lt in &tracks {
+                    state_e.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                }
+                if state_e.borrow().config.behavior.autoplay_on_add && was_empty {
+                    state_e.borrow_mut().play_current();
+                }
+                rebuild_pl();
+            })
+        };
+        build_album_gallery(&state, on_album_activate, on_album_play, on_album_enqueue)
     };
     stack.add_named(&gallery_page, Some("albums"));
 
@@ -6380,6 +6715,20 @@ fn open_media_library_window(
         ed_action_group.add_action(&action);
     }
     {
+        // View Album Art for the right-clicked editor row.
+        let et = editing_tracks.clone();
+        let state_c = state.clone();
+        let ctx_c = ctx_canonical_idx.clone();
+        let action = gio::SimpleAction::new("view-art", None);
+        action.connect_activate(move |_, _| {
+            let c = ctx_c.get();
+            if c < 0 { return }
+            let path = et.borrow().get(c as usize).map(|t| std::path::PathBuf::from(&t.path));
+            if let Some(path) = path { art_window::open_track_art(&state_c, &path); }
+        });
+        ed_action_group.add_action(&action);
+    }
+    {
         // Remove from Playlist — same body as the old flat button.
         let et = editing_tracks.clone();
         let state_c = state.clone();
@@ -6848,26 +7197,9 @@ fn open_media_library_window(
                     *g_ed_ctx_idx.borrow_mut() = idxs.clone();
 
                     // ── Build the real menu model ---------------------
-                    let menu = gio::Menu::new();
-                    menu.append_item(&gio::MenuItem::new(
-                        Some("Replace Current Playlist"),
-                        Some("ed.replace"),
-                    ));
-                    // Edit / View ID3 (single + library only)
-                    if is_lib_track && sel_count <= 1 {
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("View/Edit ID3"),
-                            Some("ed.edit-id3"),
-                        ));
-                        menu.append_item(&gio::MenuItem::new(
-                            Some("View/Search Lyrics"),
-                            Some("ed.lyrics"),
-                        ));
-                    }
-                    menu.append_item(&gio::MenuItem::new(
-                        Some("Remove from Playlist"),
-                        Some("ed.remove"),
-                    ));
+                    // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics ·
+                    // ─ · Remove from Playlist. Matches the macOS editor menu
+                    // (MLPlaylistEditor.editorContextMenu).
                     let send = build_send_to_menu(
                         &g_state,
                         &SendToActions {
@@ -6882,12 +7214,33 @@ fn open_media_library_window(
                                 .map(|d| (d.id.clone(), d.label.clone())).collect(),
                         },
                     );
-                    menu.append_submenu(Some("Send to"), &send);
+                    let menu = gio::Menu::new();
+                    menu.append_submenu(Some("↪ Send to"), &send);
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("♻ Replace Current Playlist"),
+                        Some("ed.replace"),
+                    ));
+                    // ID3 / Album Art / Lyrics — single library row only.
+                    if is_lib_track && sel_count <= 1 {
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("🎵 View/Edit ID3"),
+                            Some("ed.edit-id3"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("🖼 View Album Art"),
+                            Some("ed.view-art"),
+                        ));
+                        menu.append_item(&gio::MenuItem::new(
+                            Some("📝 View/Search Lyrics"),
+                            Some("ed.lyrics"),
+                        ));
+                    }
+                    menu.append_item(&gio::MenuItem::new(
+                        Some("✕ Remove from Playlist"),
+                        Some("ed.remove"),
+                    ));
 
-                    let popover = gtk4::PopoverMenu::from_model_full(
-                        &menu,
-                        gtk4::PopoverMenuFlags::NESTED,
-                    );
+                    let popover = context_popover(&menu);
                     // EXACT mirror of the working Files-view context menu
                     // (~line 3630): parent the popover on the same widget the
                     // "ed" action group is installed on (track_scroll), and
@@ -7764,6 +8117,29 @@ fn open_media_library_window(
             let rb     = rebuild_track_list.clone();
             let st     = state.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, _mods| {
+                // `l` — View/Search Lyrics for the single selected editor row
+                // in Specific mode. No-op (Proceed) on a multi-row or empty
+                // selection, matching the row menu's single-selection rule.
+                if matches!(keyval, gdk::Key::l | gdk::Key::L) {
+                    let sel_tracks: Vec<crate::media_library::LibTrack> = (0..sel.n_items())
+                        .filter(|i| sel.is_selected(*i))
+                        .filter_map(|i| sel.item(i))
+                        .filter_map(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                        .map(|o| o.borrow::<EditorEntry>().track.clone())
+                        .collect();
+                    if let [t] = sel_tracks.as_slice() {
+                        let path = std::path::PathBuf::from(&t.path);
+                        let artist = t.artist.clone().unwrap_or_default();
+                        let title = t.title.clone().unwrap_or_default();
+                        let album_artist = t.album_artist.clone().unwrap_or_default();
+                        view_or_search_lyrics(
+                            &st, &path, &artist, &title, &album_artist,
+                            rb.clone(), LyricsMode::Specific,
+                        );
+                        return glib::Propagation::Stop;
+                    }
+                    return glib::Propagation::Proceed;
+                }
                 if keyval != gdk::Key::Delete && keyval != gdk::Key::KP_Delete {
                     return glib::Propagation::Proceed;
                 }
@@ -10349,6 +10725,9 @@ fn open_media_library_window(
             }
         })
     };
+    // Which entry indices the "Rip Track(s)" row menu wants pre-checked in the
+    // rip dialog; read (and cleared) by disc::connect_rip_ui on open.
+    let rip_preselect: Rc<RefCell<Option<Vec<usize>>>> = Rc::new(RefCell::new(None));
     {
         let picked = picked_disc_entries.clone();
         let add = add_disc_entries.clone();
@@ -10371,6 +10750,88 @@ fn open_media_library_window(
                 add(&[e], DiscAdd::Behavior);
             }
         });
+    }
+
+    // Right-click an audio-CD track → Enqueue to Playlist · Replace Current
+    // Playlist · ─ · Rip Track(s). Rip opens the rip dialog with only the
+    // selected rows pre-checked (rip_preselect + the toolbar Rip… button).
+    {
+        let group = gio::SimpleActionGroup::new();
+
+        let a_enqueue = gio::SimpleAction::new("enqueue", None);
+        {
+            let picked = picked_disc_entries.clone();
+            let add = add_disc_entries.clone();
+            a_enqueue.connect_activate(move |_, _| add(&picked(), DiscAdd::Enqueue));
+        }
+        group.add_action(&a_enqueue);
+
+        let a_replace = gio::SimpleAction::new("replace", None);
+        {
+            let picked = picked_disc_entries.clone();
+            let add = add_disc_entries.clone();
+            a_replace.connect_activate(move |_, _| add(&picked(), DiscAdd::PlayNow));
+        }
+        group.add_action(&a_replace);
+
+        let a_rip = gio::SimpleAction::new("rip", None);
+        {
+            let track_list = disc_track_list.clone();
+            let rip_preselect = rip_preselect.clone();
+            let rip_btn = disc_rip.clone();
+            a_rip.connect_activate(move |_, _| {
+                let idxs: Vec<usize> = track_list
+                    .selected_rows()
+                    .iter()
+                    .map(|r| r.index() as usize)
+                    .collect();
+                // Empty (nothing selected) → let the dialog default to the
+                // whole disc rather than pre-check nothing.
+                *rip_preselect.borrow_mut() = if idxs.is_empty() { None } else { Some(idxs) };
+                rip_btn.emit_clicked();
+            });
+        }
+        group.add_action(&a_rip);
+
+        disc_track_list.insert_action_group("disc-audio", Some(&group));
+
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+        let list_g = disc_track_list.clone();
+        gesture.connect_pressed(move |g, _, x, y| {
+            if let Some(row) = list_g.row_at_y(y as i32) {
+                if !row.is_selected() {
+                    list_g.select_row(Some(&row));
+                }
+            }
+            let menu = gio::Menu::new();
+            menu.append_item(&gio::MenuItem::new(
+                Some("➕ Enqueue to Playlist"),
+                Some("disc-audio.enqueue"),
+            ));
+            menu.append_item(&gio::MenuItem::new(
+                Some("♻ Replace Current Playlist"),
+                Some("disc-audio.replace"),
+            ));
+            menu.append_item(&gio::MenuItem::new(
+                Some("💿 Rip Track(s)"),
+                Some("disc-audio.rip"),
+            ));
+            let popover =
+                context_popover(&menu);
+            popover.set_parent(&list_g);
+            // Unparent on close so the popover doesn't linger as a child of the
+            // ListBox — the disc-populate rebuild clears track_list's children
+            // with `while first_child { remove }`, which would hit a leftover
+            // popover and log "Tried to remove non-child". Safe here (no nested
+            // "Send to" submenu, unlike the files/editor menus).
+            popover.connect_closed(|p| p.unparent());
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+            g.set_state(gtk4::EventSequenceState::Claimed);
+        });
+        disc_track_list.add_controller(gesture);
     }
 
     // ── gnudb identify + tag override (Phase 2) ─────────────────────────────
@@ -10696,6 +11157,7 @@ fn open_media_library_window(
         disc_cdtext.clone(),
         selected_disc_id.clone(),
         current_drives.clone(),
+        rip_preselect.clone(),
     );
 
     // Submit to gnudb (Phase 4): category picker + background POST; the

@@ -4,7 +4,7 @@
 /// configuration.  It intentionally contains no GTK widget references;
 /// those live in the surrounding closures.  This separation makes the core
 /// logic independently testable without a display server.
-struct AppState {
+pub(super) struct AppState {
     player: Player,
     playlist: Playlist,
     config: Config,
@@ -63,6 +63,12 @@ struct AppState {
     /// current track and refreshes the window's title + body. Called by the
     /// now-playing subscriber on every track change; cleared on window close.
     lyrics_refresh: Option<Rc<dyn Fn()>>,
+    /// The track path the open lyrics window is currently showing. Drives the
+    /// `l`-key toggle: pressing `l` on this same track closes the window, while
+    /// `l` on a different track retargets it. Updated on open and (in Current
+    /// mode) by the refresh closure; cleared on close. A shared cell so the
+    /// refresh closure can update it without a `borrow_mut` on `AppState`.
+    lyrics_shown_path: Rc<RefCell<Option<std::path::PathBuf>>>,
     /// The main window's key handler, published by `player.rs` once built, so
     /// satellite windows (the lyrics viewer) can forward the Winamp transport
     /// keys (z/x/c/v/b/j/r/s) to it (F15 revision, point 5).
@@ -552,6 +558,7 @@ impl AppState {
             lyrics_window: None,
             lyrics_mode: Rc::new(std::cell::Cell::new(LyricsMode::Specific)),
             lyrics_refresh: None,
+            lyrics_shown_path: Rc::new(RefCell::new(None)),
             transport_key_handler: None,
             art_window: None,
             mpris_guard: None,

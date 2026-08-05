@@ -66,6 +66,15 @@ extension SparkampModel {
     /// passes `.current`.
     func viewOrSearchLyrics(path: String, artist: String, title: String, albumArtist: String,
                             mode: LyricsMode = .specific) {
+        // Toggle: opening lyrics for the track the window is already showing
+        // closes it; a different track falls through and retargets the window.
+        // `lyricsEditPath` is the shown track (Current mode keeps it in step
+        // with playback), so this matches "same track → close" across modes.
+        // Setting the flag false is what PlayerWindow's onChange dismisses on.
+        if lyricsVisible && lyricsEditPath == path {
+            lyricsVisible = false
+            return
+        }
         loadLyrics(path: path, artist: artist, title: title, albumArtist: albumArtist,
                    mode: mode, bumpRequest: true)
     }

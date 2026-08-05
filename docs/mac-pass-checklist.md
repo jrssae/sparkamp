@@ -2367,6 +2367,21 @@ missed all of them.
       `SparkampModel+Lyrics.swift`, `PlayerWindow.swift`, `SparkampModel.swift`),
       so `project.pbxproj` is unchanged; the app builds against `sparkamp_lyrics_view`.
 
+- [ ] **UNVERIFIED (blind, 2026-08-04) — `l` toggle+retarget**: `viewOrSearchLyrics`
+      (`SparkampModel+Lyrics.swift`) now closes the window when opened for the track
+      it is already showing (`lyricsVisible && lyricsEditPath == path` → set
+      `lyricsVisible = false`, which `PlayerWindow.onChange` dismisses on), and
+      retargets when the track differs. Matches the GTK toggle (which lives in the
+      shared `view_or_search_lyrics`). Because it sits in the shared open path, the
+      row menus and the A1 "Lyrics" button toggle too, not just the `l` key.
+      Verify on hardware: (1) `l` on the playing track with the window open → closes;
+      (2) `l` on a different selected row → window retargets, does not close; (3) in
+      Current mode, `l` from the player after playback moved on → closes (shown path
+      tracks playback via `refreshCurrentLyricsIfNeeded`); (4) clicking the same
+      row's "View/Search Lyrics" menu twice toggles. `openLyricsForFocusedSurface`
+      (the `l`-key selected-row/Specific vs player/Current routing) already existed
+      and is unchanged.
+
 - [x] **PARITY GAP — FIXED 2026-08-04**: the GTK ID3 editor has a
       "Lyric" (USLT) field; the mac editor's `ID3FieldConfig.defaults`
       (Id3EditorWindow.swift) has NO USLT field (only "Lyricist"/TEXT), so it
@@ -2377,3 +2392,47 @@ missed all of them.
       this was a Swift-side change only: a multi-line Lyric row in
       `ID3FieldConfig.defaults`, hidden by default, force-shown via
       `model.id3ForceFieldId` when the lyrics window opens the editor.
+
+### 2026-08-04 — context-menu alignment (GTK ↔ macOS), BLIND on mac
+
+Every right-click menu was aligned to one canonical order + label set (GTK keeps
+emoji prefixes; macOS stays plain). GTK is built + tested green in the dev-box;
+**all macOS edits below are unverified — no Xcode build ran.** Verify each menu's
+order, labels, and the new actions on hardware.
+
+- [ ] **Active playlist** (`PlaylistView.buildContextMenu`): reordered to Play ·
+      Enqueue/Dequeue · Send to · ─ · View/Edit ID3 · **View Album Art** (new,
+      via `mlViewArtForPath`) · View/Search Lyrics · ─ · Remove.
+- [ ] **Files** (`MLFilesTable`): added **Rescan Metadata** (loops
+      `mlRescanTrack` over the selection) between Lyrics and Calculate ReplayGain.
+- [ ] **Playlist editor** (`MLPlaylistEditor.editorContextMenu`): the last item
+      was **"Remove from Library"** which called `mlRemoveTracks` — it deleted the
+      track from the whole library, a bug for a saved-playlist editor. Now
+      **"Remove from Playlist"**: drops the rows and rewrites the .m3u
+      (`mlSavePlaylist`); library + files untouched. Verify a removed row does NOT
+      vanish from other playlists or the Files view.
+- [ ] **Album gallery** (`MLAlbumGallery`): already Play Album / Enqueue Album —
+      unchanged (GTK gained a matching tile menu).
+- [ ] **Disc audio-CD** (`DiscDriveView`, `Int` selection): was Add to Playlist /
+      Add Whole Disc; now **Enqueue to Playlist** (`addSelected`, honors the
+      add-behavior setting — see nuance below) · **Replace Current Playlist**
+      (new `replaceWithDiscTracks`, force-replace + play) · ─ · **Rip Track(s)**
+      (`openRipSheet(preselect:)` opens the sheet with only the selected tracks
+      checked). NUANCE: "Enqueue" routes through `addDiscTracks`, which replaces
+      instead of appends when the user's playlist-add setting is "replace" — GTK's
+      Enqueue always appends. Confirm acceptable or force-append.
+- [ ] **Disc data files** (`DiscDriveView`, `String` selection): was Add to
+      Library / Send to / Lyrics; now **Send to · Replace Current Playlist**
+      (`replacePlaylistWithPaths`) · ─ · **View/Edit ID3** (new) · **View Album
+      Art** (new) · View/Search Lyrics. "Add to Library" dropped from the menu
+      (bottom-bar buttons keep it), matching GTK.
+- [ ] **Disc burn list** (`DiscDriveView`): added a right-click **Remove**
+      (`removeFromBurnList`) alongside the existing swipe-`.onDelete`.
+- [ ] **Device** (`DeviceDetailView`): reordered to **Send to · Replace Current
+      Playlist** (new, `replacePlaylistWithPaths`) · ─ · View/Edit ID3 · View
+      Album Art · View/Search Lyrics · ─ · Delete (contextual
+      `deleteActionLabel`: "Delete from Device" on All-files, "Remove from
+      Playlist" on a device-playlist chip — unchanged).
+- [ ] **New model methods** (verify they compile + behave): `replacePlaylistWithPaths`
+      (`SparkampModel+Transport.swift`), `replaceWithDiscTracks`
+      (`SparkampModel+Discs.swift`), `openRipSheet(preselect:)` param.

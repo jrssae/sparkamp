@@ -26,6 +26,10 @@
 fn build_album_gallery(
     state: &Rc<RefCell<AppState>>,
     on_album_activate: Rc<dyn Fn(String, String)>,
+    // Right-click "Play Album" / "Enqueue Album" — fire with (album,
+    // album_artist), the same identity `on_album_activate` uses.
+    on_album_play: Rc<dyn Fn(String, String)>,
+    on_album_enqueue: Rc<dyn Fn(String, String)>,
 ) -> (gtk4::Widget, Rc<dyn Fn()>) {
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
 
@@ -98,6 +102,79 @@ fn build_album_gallery(
                 .max_width_chars(18)
                 .build();
             cell.append(&artist);
+
+            // Right-click a tile → Play Album / Enqueue Album. `li.item()`
+            // returns the cell's CURRENTLY bound album at click time, so no
+            // per-cell stash is needed even though GridView recycles cells.
+            let gesture = gtk4::GestureClick::new();
+            gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+            let li_g = li.clone();
+            let play_cb = on_album_play.clone();
+            let enq_cb = on_album_enqueue.clone();
+            let cell_wk = cell.downgrade();
+            gesture.connect_pressed(move |g, _, x, y| {
+                let Some(boxed) = li_g
+                    .item()
+                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                else {
+                    return;
+                };
+                let (album, album_artist) = {
+                    let a = boxed.borrow::<crate::media_library::AlbumGroup>();
+                    (a.album.clone(), a.album_artist.clone())
+                };
+                let Some(cell) = cell_wk.upgrade() else { return };
+                // Parent the menu on the enclosing GridView, not the
+                // `.album-cell` box: parenting on the cell gave the popover the
+                // cell's style context (different look/spacing from every other
+                // menu) and left it as a child of a recycled cell. The GridView
+                // is the neutral, stable ancestor the other list menus use.
+                let Some(grid) = cell.ancestor(gtk4::GridView::static_type()) else { return };
+
+                let group = gio::SimpleActionGroup::new();
+                let a_play = gio::SimpleAction::new("play", None);
+                {
+                    let play_cb = play_cb.clone();
+                    let al = album.clone();
+                    let aa = album_artist.clone();
+                    a_play.connect_activate(move |_, _| play_cb(al.clone(), aa.clone()));
+                }
+                group.add_action(&a_play);
+                let a_enq = gio::SimpleAction::new("enqueue", None);
+                {
+                    let enq_cb = enq_cb.clone();
+                    a_enq.connect_activate(move |_, _| enq_cb(album.clone(), album_artist.clone()));
+                }
+                group.add_action(&a_enq);
+                // Group on the GridView so the popover's action walk (from its
+                // parent up) reaches it — the popover is parented on the grid.
+                grid.insert_action_group("album", Some(&group));
+
+                let menu = gio::Menu::new();
+                menu.append_item(&gio::MenuItem::new(
+                    Some("▶ Play Album"),
+                    Some("album.play"),
+                ));
+                menu.append_item(&gio::MenuItem::new(
+                    Some("➕ Enqueue Album"),
+                    Some("album.enqueue"),
+                ));
+                let popover =
+                    context_popover(&menu);
+                // Translate the click point into the GridView's coordinate
+                // space, and unparent on close (no nested submenu → safe).
+                let (px, py) = cell
+                    .compute_point(&grid, &gtk4::graphene::Point::new(x as f32, y as f32))
+                    .map(|p| (p.x() as i32, p.y() as i32))
+                    .unwrap_or((x as i32, y as i32));
+                popover.set_parent(&grid);
+                popover.connect_closed(|p| p.unparent());
+                let rect = gtk4::gdk::Rectangle::new(px, py, 1, 1);
+                popover.set_pointing_to(Some(&rect));
+                popover.popup();
+                g.set_state(gtk4::EventSequenceState::Claimed);
+            });
+            cell.add_controller(gesture);
 
             li.set_child(Some(&cell));
         });

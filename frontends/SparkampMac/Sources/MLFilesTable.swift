@@ -657,6 +657,12 @@ struct MLFilesTable: NSViewRepresentable {
                                                          title: t.title, albumArtist: t.albumArtist)
                 }
             })
+            // Re-read tags from disk for the selected rows (mirrors GTK's
+            // "Rescan Metadata"). Sits between Lyrics and Calculate ReplayGain,
+            // matching the GTK Files menu order.
+            menu.addItem(BlockMenuItem(title: "Rescan Metadata", enabled: !ids.isEmpty) {
+                for p in paths { self.parent.model.mlRescanTrack(path: p) }
+            })
             // Force a ReplayGain recompute of the selected rows (mirrors the
             // GTK "Calculate ReplayGain" context action). Disabled while an
             // analysis is already running.

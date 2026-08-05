@@ -1,3 +1,17 @@
+/// Wrap a settings tab's content in a vertical scroller so a tab taller than
+/// the window scrolls instead of being clipped. The scroller fills the tab
+/// area (the window carries a fixed default height and is resizable), so short
+/// tabs show empty space below rather than shrinking the window.
+fn settings_scroll_page(
+    child: &impl gtk4::prelude::IsA<gtk4::Widget>,
+) -> gtk4::ScrolledWindow {
+    gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .child(child)
+        .build()
+}
+
 fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -15,10 +29,25 @@ fn open_settings_window(
         return;
     }
 
+    // Default height = twice the width (480 → 960) so the taller tabs (Behavior
+    // has grown several sections) open with room to breathe, but never taller
+    // than the monitor so it can't open off-screen. Resizable so the user can
+    // grow or shrink from there; each tab is wrapped in a scroller below so a
+    // tab taller than the window scrolls rather than being clipped.
+    const SETTINGS_WIDTH: i32 = 480;
+    let default_height = {
+        let screen_h = gdk::Display::default()
+            .and_then(|d| d.monitors().item(0))
+            .and_downcast::<gdk::Monitor>()
+            .map(|m| m.geometry().height())
+            .unwrap_or(1000);
+        (SETTINGS_WIDTH * 2).min(((screen_h as f64) * 0.9) as i32)
+    };
+
     let win = gtk4::Window::new();
     win.set_title(Some("Settings — Sparkamp"));
-    win.set_default_size(480, 340);
-    win.set_resizable(false);
+    win.set_default_size(SETTINGS_WIDTH, default_height);
+    win.set_resizable(true);
     if let Some(p) = parent {
         win.set_transient_for(Some(p));
     }
@@ -326,7 +355,7 @@ fn open_settings_window(
         }
 
         let tab_lbl = Label::new(Some("Appearance"));
-        notebook.append_page(&root, Some(&tab_lbl));
+        notebook.append_page(&settings_scroll_page(&root), Some(&tab_lbl));
     }
 
     // ── Tab 1: Behavior ───────────────────────────────────────────────────
@@ -796,7 +825,7 @@ fn open_settings_window(
         }
 
         let tab_lbl = Label::new(Some("Behavior"));
-        notebook.append_page(&grid, Some(&tab_lbl));
+        notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
     // ── Tab 2: Visualizer ─────────────────────────────────────────────────
@@ -1355,7 +1384,7 @@ fn open_settings_window(
         grid.attach(&gr_settings_box, 0, 3, 2, 1);
 
         let tab_lbl = Label::new(Some("Visualizer"));
-        notebook.append_page(&grid, Some(&tab_lbl));
+        notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
     // ── Tab 3: Media Library (watched folders) ───────────────────────────
@@ -2290,7 +2319,7 @@ fn open_settings_window(
         grid.attach(&chk_skip_db_load, 1, 19, 1, 1);
 
         let tab_lbl = Label::new(Some("Media Library"));
-        notebook.append_page(&grid, Some(&tab_lbl));
+        notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
     // ── Tab: About ─────────────────────────────────────────────────────────

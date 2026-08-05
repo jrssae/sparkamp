@@ -377,11 +377,12 @@ struct DiscDriveView: View {
     /// Prefill the rip sheet: tracks from the table selection (or all),
     /// destination from config → first watched folder → ~/Music, quality
     /// from config.
-    private func openRipSheet() {
+    private func openRipSheet(preselect: Set<Int>? = nil) {
         if model.mlIsOpen { model.mlRefreshFolders() }
-        // Every track starts selected — ripping the whole disc is the common
-        // case; Select All / Deselect All in the sheet handle the rest.
-        ripSelection = Set(model.discTracks.map(\.number))
+        // Default: every track starts selected (whole-disc rip is the common
+        // case). The "Rip Track(s)" row menu passes only the selected track
+        // numbers so the dialog opens with just those checked.
+        ripSelection = preselect ?? Set(model.discTracks.map(\.number))
         if let ctx = model.ctx {
             let p = sparkamp_get_rip_dest(ctx)
             ripDest = p.map { String(cString: $0) } ?? ""
@@ -853,10 +854,21 @@ struct DiscDriveView: View {
         }
         .scrollContentBackground(.hidden)
         .background(theme.lcdBackground)
+        // Order: Enqueue to Playlist · Replace Current Playlist · ─ · Rip
+        // Track(s). Matches GTK's audio-CD row menu. Rip opens the sheet with
+        // only the selected tracks checked.
         .contextMenu(forSelectionType: Int.self) { ids in
-            Button("Add to Playlist") { addSelected(ids) }
+            Button("Enqueue to Playlist") { addSelected(ids) }
                 .disabled(ids.isEmpty)
-            Button("Add Whole Disc") { model.addDiscTracks(drive, entries: model.discTracks) }
+            Button("Replace Current Playlist") {
+                let picked = model.discTracks.filter { ids.contains($0.number) }
+                model.replaceWithDiscTracks(drive,
+                                            entries: picked.isEmpty ? model.discTracks : picked)
+            }
+            Divider()
+            Button("Rip Track(s)") {
+                openRipSheet(preselect: ids.isEmpty ? nil : ids)
+            }
         } primaryAction: { ids in
             // Double-click adds the clicked/selected tracks.
             addSelected(ids)
@@ -958,15 +970,21 @@ struct DiscDriveView: View {
                 .scrollContentBackground(.hidden)
                 .background(theme.lcdBackground)
                 .frame(minHeight: 120, maxHeight: 220)
+                // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics.
+                // Matches GTK's disc data-files menu. "Add to Library" lives on
+                // the bottom-bar buttons, not this menu (parity with GTK).
                 .contextMenu(forSelectionType: String.self) { ids in
-                    Button("Add to Library") {
-                        model.addDiscFilesToLibrary(model.discFiles.filter { ids.contains($0.id) })
-                    }
-                    .disabled(ids.isEmpty)
                     Menu("Send to") {
                         SendToMenu(paths: pathsFor(ids))
                     }
+                    Button("Replace Current Playlist") {
+                        model.replacePlaylistWithPaths(pathsFor(ids))
+                    }
+                    .disabled(ids.isEmpty)
                     if ids.count == 1, let p = ids.first {
+                        Divider()
+                        Button("View/Edit ID3") { model.mlOpenTagEditorForPath(p) }
+                        Button("View Album Art") { model.mlViewArtForPath(p) }
                         // Disc files carry no tags: use the file stem as the
                         // title with empty artist, matching GTK's disc surface.
                         Button("View/Search Lyrics") {
@@ -1104,6 +1122,16 @@ struct DiscDriveView: View {
                                 Text(String(format: "%d:%02d", d / 60, d % 60))
                                     .font(vars.bodyFont.monospacedDigit())
                                     .foregroundStyle(theme.playlistDurationText)
+                            }
+                        }
+                        // Right-click Remove — parity with GTK's burn-list row
+                        // menu (mac already had swipe-to-delete via .onDelete).
+                        .contextMenu {
+                            Button("Remove", role: .destructive) {
+                                if let idx = queue.firstIndex(where: { $0.id == e.id }) {
+                                    model.removeFromBurnList(driveId: drive.id,
+                                                             at: IndexSet(integer: idx))
+                                }
                             }
                         }
                     }

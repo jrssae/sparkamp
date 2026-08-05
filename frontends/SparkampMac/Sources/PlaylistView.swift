@@ -619,8 +619,16 @@ struct PlaylistView: View {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
+        // Order: Play · Enqueue/Dequeue · Send to · ─ · ID3 · Album Art ·
+        // Lyrics · ─ · Remove. Matches GTK's player.rs playlist row menu.
         menu.addItem(BlockMenuItem(title: "Play", enabled: !sorted.isEmpty) {
             if let first = sorted.first { model.jumpTo(index: first) }
+        })
+
+        // Enqueue / Dequeue the selection (manual play queue). Toggles each
+        // selected row's queue membership; the [n] badges update in place.
+        menu.addItem(BlockMenuItem(title: "Enqueue / Dequeue", enabled: !sorted.isEmpty) {
+            model.queueToggle(indices: sorted)
         })
 
         // Shared "Send to" submenu (Saved Playlist ▸ / Disc Drive /
@@ -630,18 +638,20 @@ struct PlaylistView: View {
         let paths = sorted.compactMap { model.playlistTrackPath(index: $0) }
         menu.addItem(model.sendToMenuItem(paths: paths, includeActive: false))
 
+        menu.addItem(.separator())
+
         menu.addItem(BlockMenuItem(title: "View/Edit ID3", enabled: sorted.count == 1) {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
         })
 
-        menu.addItem(BlockMenuItem(title: "View/Search Lyrics", enabled: sorted.count == 1) {
-            if let first = sorted.first { model.viewOrSearchLyricsForPlaylist(index: first) }
+        menu.addItem(BlockMenuItem(title: "View Album Art", enabled: sorted.count == 1) {
+            if let first = sorted.first, let p = model.playlistTrackPath(index: first) {
+                model.mlViewArtForPath(p)
+            }
         })
 
-        // Enqueue / Dequeue the selection (manual play queue). Toggles each
-        // selected row's queue membership; the [n] badges update in place.
-        menu.addItem(BlockMenuItem(title: "Enqueue / Dequeue", enabled: !sorted.isEmpty) {
-            model.queueToggle(indices: sorted)
+        menu.addItem(BlockMenuItem(title: "View/Search Lyrics", enabled: sorted.count == 1) {
+            if let first = sorted.first { model.viewOrSearchLyricsForPlaylist(index: first) }
         })
 
         menu.addItem(.separator())
