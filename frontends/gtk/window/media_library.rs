@@ -82,16 +82,15 @@ type CopyFilesHolder =
 /// queues and copy runner as this window's Files, Editor and Device views
 /// (Task 8).
 ///
-/// This replaces eight positional parameters. It exists so that the page
-/// builders extracted in later steps can take one `&MlCtx` instead of a
-/// growing argument list — the widgets they share (`win`, `stack`, `sidebar`)
-/// join it when the first page actually needs them, not before.
+/// This replaces eight positional parameters. Everything here crosses the
+/// window boundary; everything a page needs from *inside* the window lives on
+/// [`MlCtx`] instead, which wraps this.
 ///
 /// No visibility modifier: `media_library.rs` is `include!`d into
 /// `window/mod.rs`, so this is already the same module as its callers. Step 8
 /// of the plan converts those includes to real `mod`s, and that is when
 /// `pub(super)` becomes meaningful here.
-struct MlCtx {
+struct MlHost {
     state: Rc<RefCell<AppState>>,
     rebuild_playlist: Rc<dyn Fn()>,
     set_track: Rc<dyn Fn(&str)>,
@@ -105,26 +104,54 @@ struct MlCtx {
     burn_refresh_holder: RefreshHolder,
 }
 
+/// What an extracted page builder is handed: the host bundle plus the shared
+/// window chrome the page attaches itself to.
+///
+/// The split exists because the two halves are born in different places.
+/// `MlHost` is built by player.rs before this window is opened; the chrome
+/// below does not exist until `open_media_library_window` has built it, so it
+/// cannot be a parameter. `MlCtx` is therefore assembled part-way down that
+/// function, once its fields exist, and borrowed by each page from there on.
+///
+/// Fields join as a page actually needs them rather than up front — `win` and
+/// `sidebar` are still absent because nothing extracted so far touches them.
+/// The test for whether something belongs here is the plan's (§3.2): is it
+/// touched by more than one stack page? All three below are — Files and Albums
+/// share the drill-down filter and its back button, and every page adds itself
+/// to the stack. State touched by one page only stays in that page's module.
+struct MlCtx {
+    host: MlHost,
+    /// The page stack. Pages `add_named` themselves to it and switch to each
+    /// other through it.
+    stack: Stack,
+    /// The gallery drill-down: `Some((album, album_artist))` narrows the Files
+    /// page to one album's tracks. Written by Albums, read by Files.
+    album_filter: Rc<RefCell<Option<(String, String)>>>,
+    /// "◀ Albums" — lives in the Files search row but is shown and hidden by
+    /// the drill-down, so both pages touch it.
+    btn_album_back: Button,
+}
+
 fn open_media_library_window(
     parent: Option<&gtk4::Window>,
-    ctx: MlCtx,
+    host: MlHost,
     init_width: i32,
     init_height: i32,
 ) -> gtk4::Window {
     // The body below still refers to these by their original names. Rebinding
-    // rather than rewriting ~1,450 capture sites keeps this step a pure
-    // signature change with nothing to review for behaviour; each later
-    // extraction drops the alias it no longer needs and takes the field from
-    // `ctx` instead. Cloning an `Rc` is an integer increment, and `ctx` stays
-    // whole so it can be handed to page builders.
-    let state = ctx.state.clone();
-    let rebuild_playlist = ctx.rebuild_playlist.clone();
-    let set_track = ctx.set_track.clone();
-    let current_drives = ctx.current_drives.clone();
-    let current_devices = ctx.current_devices.clone();
-    let burn_queues = ctx.burn_queues.clone();
-    let copy_files_holder = ctx.copy_files_holder.clone();
-    let burn_refresh_holder = ctx.burn_refresh_holder.clone();
+    // rather than rewriting ~1,450 capture sites keeps this a pure signature
+    // change with nothing to review for behaviour; each later extraction drops
+    // the alias it no longer needs and takes the field from `ctx` instead.
+    // Cloning an `Rc` is an integer increment, and `host` stays whole so it can
+    // be moved into the `MlCtx` built further down.
+    let state = host.state.clone();
+    let rebuild_playlist = host.rebuild_playlist.clone();
+    let set_track = host.set_track.clone();
+    let current_drives = host.current_drives.clone();
+    let current_devices = host.current_devices.clone();
+    let burn_queues = host.burn_queues.clone();
+    let copy_files_holder = host.copy_files_holder.clone();
+    let burn_refresh_holder = host.burn_refresh_holder.clone();
 
     let win = gtk4::Window::new();
     win.set_title(Some("Media Library — Sparkamp"));
@@ -6184,121 +6211,21 @@ fn open_media_library_window(
         }));
     }
 
-    // ── Page: Albums (Phase 11 A5 — gallery grid, Task 4) ──────────────────
-    //
-    // Activating a cell (double-click / Enter) sets `album_filter` and
-    // switches straight to the Files page via `stack.set_visible_child_name`
-    // + the `rebuild_ml_callback` seam (same one background rebuilds use,
-    // see `state.borrow_mut().rebuild_ml_callback` just above) — deliberately
-    // NOT via `sidebar.select_row(&files_row)`, because the "files" branch
-    // of the sidebar's `connect_row_selected` (below) clears `album_filter`
-    // on entry, which would immediately undo the filter this callback just
-    // set. The tradeoff: the sidebar's visual selection stays on "Albums"
-    // while the stack shows Files. Acceptable — the Files content is what
-    // matters, and the user can click "Files" to explicitly return to the
-    // full library (which also updates the highlight).
-    let (gallery_page, rebuild_gallery): (gtk4::Widget, Rc<dyn Fn()>) = {
-        let on_album_activate: Rc<dyn Fn(String, String)> = {
-            let state_activate = state.clone();
-            let stack_activate = stack.clone();
-            let album_filter_activate = album_filter.clone();
-            let btn_album_back_activate = btn_album_back.clone();
-            Rc::new(move |album: String, album_artist: String| {
-                {
-                    *album_filter_activate.borrow_mut() = Some((album, album_artist));
-                }
-                // Reveal the back-to-gallery button now that we're in an
-                // album's track list.
-                btn_album_back_activate.set_visible(true);
-                stack_activate.set_visible_child_name("files");
-                let cb = state_activate.borrow().rebuild_ml_callback.clone();
-                if let Some(cb) = cb {
-                    cb();
-                }
-            })
-        };
-        // Play/Enqueue an album straight from a tile's right-click menu —
-        // the same album_tracks → replace/append seam the drill-down's
-        // "Play Album" / "Enqueue Album" buttons use.
-        let on_album_play: Rc<dyn Fn(String, String)> = {
-            let state_p = state.clone();
-            let rebuild_pl = rebuild_playlist.clone();
-            Rc::new(move |album: String, album_artist: String| {
-                let artist_as_album =
-                    state_p.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<crate::media_library::LibTrack> = state_p
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
-                    .unwrap_or_default();
-                if tracks.is_empty() {
-                    return;
-                }
-                let _ = state_p.borrow_mut().player.stop();
-                state_p.borrow_mut().playlist.clear();
-                for lt in &tracks {
-                    state_p.borrow_mut().playlist.add(crate::model::Track::from(lt));
-                }
-                if !state_p.borrow().playlist.is_empty() {
-                    state_p.borrow_mut().play_current();
-                }
-                rebuild_pl();
-            })
-        };
-        let on_album_enqueue: Rc<dyn Fn(String, String)> = {
-            let state_e = state.clone();
-            let rebuild_pl = rebuild_playlist.clone();
-            Rc::new(move |album: String, album_artist: String| {
-                let artist_as_album =
-                    state_e.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<crate::media_library::LibTrack> = state_e
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
-                    .unwrap_or_default();
-                if tracks.is_empty() {
-                    return;
-                }
-                let was_empty = state_e.borrow().playlist.is_empty();
-                for lt in &tracks {
-                    state_e.borrow_mut().playlist.add(crate::model::Track::from(lt));
-                }
-                if state_e.borrow().config.behavior.autoplay_on_add && was_empty {
-                    state_e.borrow_mut().play_current();
-                }
-                rebuild_pl();
-            })
-        };
-        build_album_gallery(&state, on_album_activate, on_album_play, on_album_enqueue)
+    // Every field this needs now exists, so the page context can be built.
+    // `host` is moved in — the eight aliases above were cloned off it at the
+    // top, so nothing below depends on it by that name any more.
+    let ctx = MlCtx {
+        host,
+        stack: stack.clone(),
+        album_filter: album_filter.clone(),
+        btn_album_back: btn_album_back.clone(),
     };
-    stack.add_named(&gallery_page, Some("albums"));
 
-    // Return from an album's track list to the gallery overview: clear the
-    // drill-down filter, hide the back button, show the gallery page and
-    // refresh it. Shared by the back button (in the Files search row) and by
-    // clicking the "Albums" sidebar row while drilled in.
-    let show_gallery_overview: Rc<dyn Fn()> = {
-        let album_filter_ov = album_filter.clone();
-        let btn_album_back_ov = btn_album_back.clone();
-        let stack_ov = stack.clone();
-        let rebuild_gallery_ov = rebuild_gallery.clone();
-        Rc::new(move || {
-            {
-                *album_filter_ov.borrow_mut() = None;
-            }
-            btn_album_back_ov.set_visible(false);
-            stack_ov.set_visible_child_name("albums");
-            rebuild_gallery_ov();
-        })
-    };
-    {
-        let show_ov = show_gallery_overview.clone();
-        btn_album_back.connect_clicked(move |_| {
-            show_ov();
-        });
-    }
+    // ── Page: Albums (Phase 11 A5 — gallery grid, Task 4) ──────────────────
+    // Extracted to `window/albums.rs` (plan step 2). Adds itself to the stack
+    // and returns the shared "back to the gallery overview" closure, which the
+    // sidebar wiring further down also calls.
+    let show_gallery_overview = albums::build(&ctx);
 
     // ── Page: Playlists ──────────────────────────────────────────────────
     //

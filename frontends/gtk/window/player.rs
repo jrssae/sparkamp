@@ -5211,7 +5211,7 @@ pub fn build(
             };
             let ml_win = open_media_library_window(
                 parent.as_ref(),
-                MlCtx {
+                MlHost {
                     state: state_rc.clone(),
                     rebuild_playlist: rebuild_pl.clone(),
                     set_track: set_track_ml.clone(),
@@ -5696,7 +5696,7 @@ pub fn build(
             let rebuild_pl = rebuild_playlist.clone();
             let ml_win = open_media_library_window(
                 Some(&window.upcast::<gtk4::Window>()),
-                MlCtx {
+                MlHost {
                     state: state_rc.clone(),
                     rebuild_playlist: rebuild_pl.clone(),
                     set_track: set_track_init_ml.clone(),

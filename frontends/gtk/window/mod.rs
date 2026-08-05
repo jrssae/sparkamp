@@ -86,6 +86,11 @@ mod now_playing;
 mod art_window;
 mod mpris;
 
+// Media Library "Albums" page (plan step 2, the breakup's first extraction).
+// A real child module, not an include! slice: it takes `&MlCtx` and reaches
+// back for `build_album_gallery`, so the compiler arbitrates its visibility.
+mod albums;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
