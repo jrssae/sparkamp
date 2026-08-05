@@ -201,7 +201,13 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                         srcs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
                     if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
                         if let Err(e) = lib.append_paths_to_playlist(pid, &path_strs) {
-                            eprintln!("append_paths_to_playlist {pid}: {e}");
+                            // `{e:#}`, not `{e}`: anyhow's Display prints only
+                            // the outermost context, so a plain `{e}` reports
+                            // "write playlist <path>" and hides the cause that
+                            // actually explains it (a read-only mount, a
+                            // permission denial). The alternate form walks the
+                            // whole chain.
+                            eprintln!("append_paths_to_playlist {pid}: {e:#}");
                             return false;
                         }
                     }
