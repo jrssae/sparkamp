@@ -177,45 +177,6 @@ fn open_media_library_window(
     // Latest detected devices — now a parameter (shared with player.rs's
     // active playlist Send-to menu), kept current by the poll below.
 
-    // Per-device (song, playlist) counts for the overview cards, keyed by
-    // backend_id. Computed off-thread on first show and cleared whenever a
-    // device's contents change (see reload_device_store). `counts_in_flight`
-    // guards against spawning the same count walk twice.
-    let device_counts: Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let counts_in_flight: Rc<RefCell<std::collections::HashSet<String>>> =
-        Rc::new(RefCell::new(std::collections::HashSet::new()));
-
-    // Live copy progress per device (backend_id → (done, total)); absent = idle.
-    // `device_card_progress` maps a backend_id to its overview card's progress
-    // bar (rebuilt each overview render). Together they let a copy show progress
-    // on the card and survive a poll-driven rebuild mid-transfer.
-    let device_transfers: Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let device_card_progress: Rc<RefCell<std::collections::HashMap<String, gtk4::ProgressBar>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
-
-    // Apply (or clear) a transfer's progress to a card's bar. The bar always
-    // occupies its space; idle just makes it transparent so the card never
-    // changes size between copying and not.
-    let update_card_progress: Rc<dyn Fn(&str, Option<(usize, usize)>)> = {
-        let transfers = device_transfers.clone();
-        let bars = device_card_progress.clone();
-        Rc::new(move |backend: &str, state: Option<(usize, usize)>| {
-            match state {
-                Some(v) => {
-                    transfers.borrow_mut().insert(backend.to_string(), v);
-                }
-                None => {
-                    transfers.borrow_mut().remove(backend);
-                }
-            }
-            if let Some(bar) = bars.borrow().get(backend) {
-                apply_card_progress(bar, state);
-            }
-        })
-    };
-
     // Sidebar DropTarget — accept FileList drags from the active playlist,
     // ML files view, or ML editor and append paths to the saved playlist
     // whose `pl:<id>` row is under the drop coordinate.  Drops landing on
@@ -497,73 +458,6 @@ fn open_media_library_window(
     // the two groups stay separate. Phase 1: detection + audio-CD playback.
     let discs_expanded = Rc::new(Cell::new(true));
     let disc_sub_rows: Rc<RefCell<Vec<ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
-    // current_drives is now a parameter (shared with player.rs's active
-    // playlist Send-to menu).
-    let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    // Per-drive burn queues — burn_queues is now a parameter (shared with
-    // player.rs's active playlist Send-to menu). Each drive's list is
-    // separate from the active playlist and from every other drive's list,
-    // fed from the Files view's context menu, consumed by the burn panel
-    // for the drive it shows.
-    // refresh_discs is built much later; the burn panel takes this holder so
-    // a finished burn can trigger a re-poll.
-    let refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
-    // Live burn progress, keyed by drive id (Task 7). The burn poller in
-    // `build_burn_panel` writes an entry on every `BurnMsg::Progress` and
-    // removes it on Done/Failed/Cancelled; `populate_disc_detail` reads it to
-    // decide whether the disc-detail overlay card should be showing when a
-    // drive is (re)selected — this is what makes navigate-away-and-back
-    // re-show a live burn instead of losing it. Borrows are always short and
-    // never held across a populate/select call (see disc.rs's crash note).
-    let burn_progress_map: Rc<RefCell<std::collections::HashMap<String, crate::disc::burn::BurnProgress>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
-        Rc::new(RefCell::new(Vec::new()));
-    // Task 9 — data-disc file browsing. True while a mount+walk or a
-    // to-library copy is in flight for the data-disc file list, so a second
-    // trigger (a poll tick landing mid-fetch) is skipped rather than piling
-    // on a second disc read.
-    let disc_files_busy: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-    // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
-    // user's current set (drives titles/artist/album, and rip/submit later);
-    // `disc_official` keeps the untouched gnudb match as the submission
-    // baseline. Both are seeded from the shared on-disk store so names survive
-    // restarts. `pending_disc_matches` parks a multi-match result (discid +
-    // candidates) when the user leaves the view before choosing.
-    let disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let disc_official: Rc<
-        RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>,
-    > = Rc::new(RefCell::new(std::collections::HashMap::new()));
-    {
-        let store = crate::disc::tagstore::DiscTagStore::load();
-        for (id, rec) in store.discs {
-            disc_tags.borrow_mut().insert(id.clone(), rec.user);
-            if let Some(o) = rec.official {
-                disc_official.borrow_mut().insert(id, o);
-            }
-        }
-    }
-    // CD-TEXT read off the physical disc (display-only, keyed by freedb id):
-    // a burned/commercial disc with no gnudb match still shows real names.
-    // Never persisted to the tag store; `disc_cdtext_tried` stops us
-    // re-reading the same disc on every populate.
-    let disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let disc_cdtext_tried: Rc<RefCell<std::collections::HashSet<String>>> =
-        Rc::new(RefCell::new(std::collections::HashSet::new()));
-    // Filled with populate_disc_detail after it's built, so the async CD-TEXT
-    // read can re-render the shown drive once names arrive.
-    let populate_holder: Rc<RefCell<Option<Rc<dyn Fn(&crate::disc::OpticalDrive)>>>> =
-        Rc::new(RefCell::new(None));
-    // Phase 3 rip state: a cancel flag shared with the worker thread, and a
-    // guard so only one rip runs at a time.
-    let rip_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
-        Rc::new(RefCell::new(None));
-    let rip_active = Rc::new(Cell::new(false));
-    // True until the first drive poll finishes, so the overview shows a
-    // "Detecting…" hint instead of a premature "No disc drives connected".
-    let disc_detecting = Rc::new(Cell::new(true));
     // Spinner shown in the sidebar header while that first poll runs; stopped
     // and hidden by refresh_discs once detection completes.
     let disc_detect_spinner = gtk4::Spinner::new();
@@ -666,6 +560,120 @@ fn open_media_library_window(
         });
         row.add_controller(gesture);
     }
+
+    // ── Page state moved down out of the sidebar block ──────────────────
+    // These cells belong to the Devices and Discs pages, not to the
+    // sidebar. They were declared above only because the file grew
+    // widgets-first; nothing between their old position and here used
+    // them. Parking them below leaves the sidebar contiguous so it can
+    // be extracted, and they travel to devices/ and discs/ in plan
+    // steps 6 and 5.
+    // Per-device (song, playlist) counts for the overview cards, keyed by
+    // backend_id. Computed off-thread on first show and cleared whenever a
+    // device's contents change (see reload_device_store). `counts_in_flight`
+    // guards against spawning the same count walk twice.
+    let device_counts: Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let counts_in_flight: Rc<RefCell<std::collections::HashSet<String>>> =
+        Rc::new(RefCell::new(std::collections::HashSet::new()));
+
+    // Live copy progress per device (backend_id → (done, total)); absent = idle.
+    // `device_card_progress` maps a backend_id to its overview card's progress
+    // bar (rebuilt each overview render). Together they let a copy show progress
+    // on the card and survive a poll-driven rebuild mid-transfer.
+    let device_transfers: Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let device_card_progress: Rc<RefCell<std::collections::HashMap<String, gtk4::ProgressBar>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+
+    // Apply (or clear) a transfer's progress to a card's bar. The bar always
+    // occupies its space; idle just makes it transparent so the card never
+    // changes size between copying and not.
+    let update_card_progress: Rc<dyn Fn(&str, Option<(usize, usize)>)> = {
+        let transfers = device_transfers.clone();
+        let bars = device_card_progress.clone();
+        Rc::new(move |backend: &str, state: Option<(usize, usize)>| {
+            match state {
+                Some(v) => {
+                    transfers.borrow_mut().insert(backend.to_string(), v);
+                }
+                None => {
+                    transfers.borrow_mut().remove(backend);
+                }
+            }
+            if let Some(bar) = bars.borrow().get(backend) {
+                apply_card_progress(bar, state);
+            }
+        })
+    };
+
+    // current_drives is now a parameter (shared with player.rs's active
+    // playlist Send-to menu).
+    let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // Per-drive burn queues — burn_queues is now a parameter (shared with
+    // player.rs's active playlist Send-to menu). Each drive's list is
+    // separate from the active playlist and from every other drive's list,
+    // fed from the Files view's context menu, consumed by the burn panel
+    // for the drive it shows.
+    // refresh_discs is built much later; the burn panel takes this holder so
+    // a finished burn can trigger a re-poll.
+    let refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    // Live burn progress, keyed by drive id (Task 7). The burn poller in
+    // `build_burn_panel` writes an entry on every `BurnMsg::Progress` and
+    // removes it on Done/Failed/Cancelled; `populate_disc_detail` reads it to
+    // decide whether the disc-detail overlay card should be showing when a
+    // drive is (re)selected — this is what makes navigate-away-and-back
+    // re-show a live burn instead of losing it. Borrows are always short and
+    // never held across a populate/select call (see disc.rs's crash note).
+    let burn_progress_map: Rc<RefCell<std::collections::HashMap<String, crate::disc::burn::BurnProgress>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    // Task 9 — data-disc file browsing. True while a mount+walk or a
+    // to-library copy is in flight for the data-disc file list, so a second
+    // trigger (a poll tick landing mid-fetch) is skipped rather than piling
+    // on a second disc read.
+    let disc_files_busy: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
+    // user's current set (drives titles/artist/album, and rip/submit later);
+    // `disc_official` keeps the untouched gnudb match as the submission
+    // baseline. Both are seeded from the shared on-disk store so names survive
+    // restarts. `pending_disc_matches` parks a multi-match result (discid +
+    // candidates) when the user leaves the view before choosing.
+    let disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let disc_official: Rc<
+        RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>,
+    > = Rc::new(RefCell::new(std::collections::HashMap::new()));
+    {
+        let store = crate::disc::tagstore::DiscTagStore::load();
+        for (id, rec) in store.discs {
+            disc_tags.borrow_mut().insert(id.clone(), rec.user);
+            if let Some(o) = rec.official {
+                disc_official.borrow_mut().insert(id, o);
+            }
+        }
+    }
+    // CD-TEXT read off the physical disc (display-only, keyed by freedb id):
+    // a burned/commercial disc with no gnudb match still shows real names.
+    // Never persisted to the tag store; `disc_cdtext_tried` stops us
+    // re-reading the same disc on every populate.
+    let disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let disc_cdtext_tried: Rc<RefCell<std::collections::HashSet<String>>> =
+        Rc::new(RefCell::new(std::collections::HashSet::new()));
+    // Filled with populate_disc_detail after it's built, so the async CD-TEXT
+    // read can re-render the shown drive once names arrive.
+    let populate_holder: Rc<RefCell<Option<Rc<dyn Fn(&crate::disc::OpticalDrive)>>>> =
+        Rc::new(RefCell::new(None));
+    // Phase 3 rip state: a cancel flag shared with the worker thread, and a
+    // guard so only one rip runs at a time.
+    let rip_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
+        Rc::new(RefCell::new(None));
+    let rip_active = Rc::new(Cell::new(false));
+    // True until the first drive poll finishes, so the overview shows a
+    // "Detecting…" hint instead of a premature "No disc drives connected".
+    let disc_detecting = Rc::new(Cell::new(true));
 
     // ── Devices content page widgets (added to the stack below) ───────────
     let dev_page = GtkBox::new(Orientation::Vertical, 8);
