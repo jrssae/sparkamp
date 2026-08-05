@@ -59,17 +59,26 @@ Two consequences:
    visibility — **cannot be validated on this machine**. Doing it blind here
    would repeat the phase-12 lesson at ten times the scale.
 
-### Unblock this first
+### Unblock this first — DONE 2026-08-05
 
-Before any extraction, add a `cargo check` workflow on `ubuntu-latest` with
-`libgtk-4-dev`. `refactor-plan.md:11` already suggested it; the difference
-now is that the repo has working, trusted GitHub Actions, so it is a small
-job. That gives compiler arbitration in ~2 minutes per push and turns the
-whole plan from "blind" into "iterate through CI".
+`.github/workflows/gtk-check.yml` runs `cargo check --all-targets` on
+`ubuntu-latest` with `libgtk-4-dev`, on every branch. `refactor-plan.md:11`
+suggested this in June; the repo now has working Actions, so it was a small
+job. **143 s cold, 58 s warm** — a usable per-extraction loop.
 
-**This is step 0 and nothing else should start before it.** Without it the
-plan's entire value — the compiler telling us which captures a given page
-actually needs — is unavailable.
+Verified by A/B/A rather than assumed: clean tree green, a deliberate
+`let _x: i32 = "not an integer"` at `media_library.rs:11930` red with
+`error[E0308]`, then green again once reverted. So the gate genuinely
+type-checks GTK source at depth, and `--all-targets` failed the bin *and* the
+test target, confirming test code is covered too.
+
+Two caveats. `RUSTFLAGS: -D warnings` passed first try, which confirms the
+Linux tree is warning-free — but a warning was never actually tested against
+the gate, so that half is assumed until the first extraction strands an
+import. And a note for reading errors: paths are reported through the
+`include!` indirection as `src/../frontends/gtk/window/…`, not repo-relative.
+
+Nothing about this covers runtime behaviour — see [§5](#5-smoke-tests).
 
 ---
 
@@ -248,22 +257,27 @@ harder than they already are.
 
 Every step is one commit. Never combine a move with a behaviour change.
 
-| # | Step | Lines | Risk | Gate |
-|---|---|---|---|---|
-| 0 | **CI `cargo check` on ubuntu + libgtk-4-dev** | ~40 | none | workflow green on unmodified tree |
-| 1 | `MlCtx` + `RefreshHolder` introduced, nothing extracted yet — pass `&ctx` where the 10 params went | ~150 | low | CI |
-| 2 | **`albums.rs`** — mechanism pilot | 116 | very low | CI |
-| 3 | `sidebar.rs` | 500 | medium | CI |
-| 4 | `files.rs` + `files_menu.rs` | 2,130 | medium | CI |
-| 5 | `discs/` — reunite 2964–3978 with 9821–11813 into the existing `mod disc` | 3,008 | **high** | CI |
-| 6 | `devices/` — reunite 598–2963 with 9408–9820 | 2,779 | **high** | CI |
-| 7 | `playlists/` | 3,150 | high | CI |
-| 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI |
+| # | Step | Lines | Risk | Gate | Manual test |
+|---|---|---|---|---|---|
+| 0 | ~~CI `cargo check` on ubuntu + libgtk-4-dev~~ **DONE `1f19f00`** | ~100 | none | ✅ A/B/A verified | — |
+| 1 | `MlCtx` + `RefreshHolder` introduced, nothing extracted yet — pass `&ctx` where the 10 params went | ~150 | low | CI | **A** |
+| 2 | **`albums.rs`** — mechanism pilot | 116 | very low | CI | **A + B** |
+| 3 | `sidebar.rs` | 500 | medium | CI | **A + C** (batchable with 4) |
+| 4 | `files.rs` + `files_menu.rs` | 2,130 | medium | CI | **A + D + X** |
+| 5 | `discs/` — reunite 2964–3978 with 9821–11813 into the existing `mod disc` | 3,008 | **high** | CI | **A + E + X** — needs discs, run twice |
+| 6 | `devices/` — reunite 598–2963 with 9408–9820 | 2,779 | **high** | CI | **A + F + X** — needs a USB device, run twice |
+| 7 | `playlists/` | 3,150 | high | CI | **A + G + X** |
+| 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
+
+Test groups are defined in [§5](#5-smoke-tests). Steps 5 and 6 run their group
+twice — once after the hoist commit, once after the extract.
 
 **Step 2 is the pilot for a reason.** Albums is 116 contiguous lines that
 already delegate to `album_gallery.rs`. It exercises the entire mechanism —
 `MlCtx`, a real `mod`, `pub(super)` visibility, the stack hookup — at a size
-where a mistake costs minutes. Do not skip it for something more impressive.
+where a mistake costs minutes. Do not skip it for something more impressive,
+and do not batch its test with a later step: the whole point is finding a
+wrong mechanism before six more steps are built on it.
 
 **Steps 5 and 6 are the dangerous ones** because they move code across ~7,000
 lines of intervening statements, and closure capture depends on declaration
@@ -271,15 +285,117 @@ order. Split each into two commits: first hoist the late wiring up next to
 its widgets *within* the existing function and confirm green; only then
 extract the reunited block to its own file.
 
-Runtime verification cannot happen in CI — `cargo check` proves it compiles,
-not that the UI still works. Each of steps 3–7 needs a pass on the Linux box:
-open the page, exercise its buttons, confirm the cross-page holders still
-fire (add from Files → the burn panel updates; eject a drive → the sidebar
-row disappears).
+### Handing off a test round
+
+Manual testing needs the Linux box, so it batches to whenever the user is at
+one — but the agent must not silently accumulate untested steps.
+
+**When a step with a manual test lands green in CI, stop and hand the user
+the exact checks for that step — the group letters, expanded into the actual
+numbered items, not a pointer to this file.** Then wait. Do not start the
+next step on the assumption the last one was fine; a holder that was never
+wired compiles perfectly and fails silently, and stacking a second extraction
+on top of it makes the bisect twice as expensive.
+
+The one exception is the 3+4 pair, which may be handed off together — both are
+low-risk, and Files exercises the sidebar anyway.
 
 ---
 
-## 5. `player.rs` — worth doing, but later
+## 5. Smoke tests
+
+Runtime verification cannot happen in CI: `cargo check` proves the code
+compiles, not that the UI works. It is specifically blind to the three things
+this refactor endangers — signals that no longer fire, `RefCell` borrows that
+now overlap, and holders that were never populated. **A `None` holder is not
+an error. Every call site silently does nothing.** There are 24 of them.
+
+Each group is a couple of minutes. Run group A every time; add the group(s)
+named for the step.
+
+### A — always (any step)
+
+1. `sparkamp --ui` starts, no GTK-CRITICAL or borrow panic on stderr.
+2. Open the Media Library. All six sidebar entries are present: Files, Albums,
+   Playlists, Disc Drives, Devices.
+3. Click each in turn — each shows its own page, none blank, no stderr noise.
+4. Close and reopen the window; it restores at the same size, still populated.
+
+### B — Albums (step 2)
+
+5. Gallery renders cover thumbnails, not placeholder squares.
+6. Change the sort; order actually changes.
+7. Change the zoom; tile size actually changes.
+8. Click an album → its tracks open.
+
+### C — Sidebar (step 3)
+
+9. Playlists chevron expands and collapses; sub-rows appear and disappear.
+10. Selecting a playlist sub-row opens that playlist in the editor.
+11. Disc Drives and Devices headers list currently-attached hardware — and
+    nothing when none is attached.
+
+### D — Files (step 4)
+
+12. Search filters rows; clearing it restores the full list.
+13. Click a column header — sorts; click again — reverses.
+14. Right-click a row: menu appears with the full item list, correct order.
+15. Status bar shows the right counts, and updates with the selection.
+16. Double-click a row → the track plays.
+
+### E — Discs (step 5) — needs an audio CD and a data disc
+
+17. Insert an audio CD → the track list populates without navigating away.
+18. Right-click tracks → Enqueue, and → Replace Current Playlist.
+19. Identify (gnudb) returns matches and the tag override sheet applies.
+20. Rip Track(s) opens with only the selected tracks checked.
+21. Insert a data disc → the file browser lists files with sizes.
+22. Eject → the list clears promptly and the sidebar row disappears.
+
+### F — Devices (step 6) — needs a USB device
+
+23. Attach → it appears in the sidebar and in the overview cards within ~2 s.
+24. Open it → its files list with full columns.
+25. Copy files to it → the progress bar advances and completes.
+26. Device playlist chips: create, rename, delete.
+27. Eject → spinner, then the row disappears; no stale detail page.
+
+### G — Playlists (step 7)
+
+28. New playlist → appears in both the sidebar and the manage list.
+29. Rename → both places update.
+30. Editor: add files, remove a row, reorder.
+31. **Revert** discards edits; the dirty indicator clears.
+32. **Save** persists — reopen the playlist and the change is there.
+33. Right-click a row → Remove from Playlist. The track survives in Files.
+34. Delete the playlist → gone from the sidebar, and the file is gone from
+    disk, but its *tracks* are still in the library (Deletion Rule).
+
+### X — cross-page holders (steps 4–8)
+
+The ones CI cannot see. Each spans two pages, so each is a holder an
+extraction can leave unwired.
+
+35. Files → select tracks → Send to ▸ Disc Drive → **the burn panel on that
+    drive updates live**, without navigating to it first (`burn_refresh_holder`).
+36. Eject a drive holding a burn queue → **the sidebar row disappears and the
+    queue is dropped**, no leftover panel (`refresh_discs_holder`).
+37. Save a playlist in the editor → **the sidebar sub-row label updates**.
+38. Rescan Metadata in Files → **the status count updates** without a manual
+    reload (`files_status_holder`).
+39. Add a track to the active playlist from any ML surface → **the main
+    player window's playlist reflects it immediately** (`rebuild_playlist`).
+
+### If something fails
+
+Report which numbered check, and what happened instead. A silent no-op points
+at an unwired holder — grep the extracted module for the holder's name and
+confirm something still calls `.replace(Some(...))` on it. A borrow panic
+points at two `.borrow_mut()` calls whose relative order the move changed.
+
+---
+
+## 6. `player.rs` — worth doing, but later
 
 5,754 lines, and again one function: `build()` at line 65 runs to the end.
 
@@ -322,7 +438,7 @@ applied to the window that everything else hangs off.
 
 ---
 
-## 6. `sparkamp_bridge.h` — from discipline to tooling
+## 7. `sparkamp_bridge.h` — from discipline to tooling
 
 Not part of the GTK breakup, but the same class of problem: a structure that
 is currently correct only because someone keeps remembering to keep it so.
@@ -388,7 +504,7 @@ wholesale and would conflict with anything touching it.
 
 ---
 
-## 7. Verification, every commit
+## 8. Verification, every commit
 
 1. CI `cargo check` on ubuntu — zero warnings.
 2. `cargo test` on macOS — core + TUI unaffected by GTK moves (baseline
