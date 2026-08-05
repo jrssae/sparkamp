@@ -276,6 +276,9 @@ extension SparkampModel {
                 sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
                 sparkamp_play(ctx)
                 refreshCurrentTrackInfo()
+                // Pre-dates the replace helpers but is the same omission: this
+                // starts a track, so the nonce observers have to hear about it.
+                announceNowPlaying()
             }
 
             saveState()
@@ -301,10 +304,18 @@ extension SparkampModel {
         }
         if !newIndices.isEmpty {
             lastAddTime = Date()
+            // Same three obligations `jumpTo` has, because this starts a track
+            // the same way: clear a pending stop-after-current (otherwise it
+            // survives the replace and halts playback after the first new
+            // track), and announce, or the nonce-driven observers — the lyrics
+            // window in Now-playing mode, the fullscreen track toast — stay on
+            // the song that was playing before the playlist was replaced.
+            setStopAfterCurrent(false)
             sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
             sparkamp_play(ctx)
             refreshCurrentTrackInfo()
             saveState()
+            announceNowPlaying()
         }
     }
 

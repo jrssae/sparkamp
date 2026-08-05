@@ -61,6 +61,14 @@ extension SparkampModel {
         if bumpRequest { lyricsRequest &+= 1 }
     }
 
+    /// Whether the lyrics window is on screen right now, asked of AppKit rather
+    /// than tracked in a flag. `LyricsWindow` sets its own `navigationTitle` to
+    /// "Lyrics" or "Lyrics — <song>", and `openLyricsForFocusedSurface` already
+    /// identifies windows by title for the same reason.
+    var lyricsWindowIsOpen: Bool {
+        NSApp.windows.contains { $0.isVisible && $0.title.hasPrefix("Lyrics") }
+    }
+
     /// Open the lyrics window for `path`. `mode` seeds the This-song/Now-playing
     /// toggle: playlist/ML rows pass `.specific`; the now-playing affordance
     /// passes `.current`.
@@ -71,7 +79,14 @@ extension SparkampModel {
         // `lyricsEditPath` is the shown track (Current mode keeps it in step
         // with playback), so this matches "same track → close" across modes.
         // Setting the flag false is what PlayerWindow's onChange dismisses on.
-        if lyricsVisible && lyricsEditPath == path {
+        //
+        // The open test asks AppKit, not `lyricsVisible`. That flag is raised
+        // on open and lowered by Esc, but NOT by the titlebar close button —
+        // LyricsWindow deliberately has no `.onDisappear` (SwiftUI teardown
+        // churn drove it false and really closed the window). So after a
+        // red-button close the flag reads true for a window that is gone, and
+        // keying the toggle off it swallowed the next `l` on the same track.
+        if lyricsWindowIsOpen && lyricsEditPath == path {
             lyricsVisible = false
             return
         }

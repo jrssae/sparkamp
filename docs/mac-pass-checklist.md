@@ -2436,3 +2436,44 @@ order, labels, and the new actions on hardware.
 - [ ] **New model methods** (verify they compile + behave): `replacePlaylistWithPaths`
       (`SparkampModel+Transport.swift`), `replaceWithDiscTracks`
       (`SparkampModel+Discs.swift`), `openRipSheet(preselect:)` param.
+
+### 2026-08-05 — code review of the blind pass above (compiled, not yet on hardware)
+
+The whole set now builds: `xcodebuild` arm64 Debug, BUILD SUCCEEDED, zero warnings.
+So "no Xcode build ran" no longer applies — but nothing above has been *run*, and
+those boxes stay open until someone drives the app. Four defects found by reading
+the diff against the surfaces it touches, all fixed in this commit:
+
+- **`l` was swallowed once after a titlebar close.** The new toggle tested
+  `lyricsVisible`, and phase 12 had deliberately removed `LyricsWindow`'s
+  `.onDisappear` (SwiftUI teardown churn drove the flag false and really closed the
+  window). A red-button close therefore left the flag true for a window that was
+  gone, so the next `l` on the same track only re-lowered it. The open test now asks
+  AppKit — `lyricsWindowIsOpen`, matching how `openLyricsForFocusedSurface` already
+  identifies windows by title.
+- **"Replace Current Playlist" never announced now-playing.** Both new helpers call
+  `sparkamp_playlist_jump` + `sparkamp_play` directly rather than going through
+  `jumpTo`, so they skipped `announceNowPlaying()` — the same defect this phase
+  fixed for `jumpTo` on 2026-08-04, in two fresh places. A Now-playing lyrics window
+  and the fullscreen toast both sat on the previous song.
+- **Neither cleared stop-after-current.** With `t` armed, replacing the entire
+  playlist left the flag set and playback halted after the first new track.
+- **`replaceWithDiscTracks` never saved.** Its `clearPlaylist()` persisted the empty
+  list and the added tracks were never written. The `willTerminate` save covers ⌘Q,
+  so this only lost the playlist on a crash.
+
+`addFiles`' autoplay-on-add branch had the same missing announce. It pre-dates this
+pass, but it is the most common way to start a track, so it was fixed alongside.
+
+Two things looked wrong and are not:
+
+- Dropping "Add to Library" from the disc data-files menu is safe — the bottom-bar
+  buttons still call `addDiscFilesToLibrary`.
+- The playlist editor's "Remove from Playlist" writes the .m3u immediately and
+  clears the dirty flag, silently committing any other pending edits. GTK's
+  `ed.remove` does exactly the same, so this is parity rather than a regression.
+
+Still open from the list above: the **Enqueue nuance** on the audio-CD menu. Mac's
+"Enqueue to Playlist" routes through `addDiscTracks`, which replaces rather than
+appends when the user's playlist-add setting is "replace", while GTK's Enqueue
+always appends. Left as-is pending a call on which behaviour is wanted.

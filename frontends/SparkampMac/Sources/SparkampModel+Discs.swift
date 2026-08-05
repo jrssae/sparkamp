@@ -451,10 +451,17 @@ extension SparkampModel {
                 }
             }
         }
+        // As in `replacePlaylistWithPaths`: clear a pending stop-after-current
+        // (it would otherwise halt playback after track 1), persist the new
+        // list (`clearPlaylist` above saved the EMPTY one), and announce so the
+        // lyrics window and the fullscreen toast follow the disc.
+        setStopAfterCurrent(false)
         sparkamp_playlist_jump(ctx, 0)
         sparkamp_play(ctx)
         refreshPlaylist()
         refreshCurrentTrackInfo()
+        saveState()
+        announceNowPlaying()
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
     }
 
