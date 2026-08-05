@@ -300,6 +300,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         let expanded_rc = playlists_expanded.clone();
         let sub_rows_rc  = pl_sub_rows.clone();
         let chev = chevron_lbl.clone();
+        let state_toggle = host.state.clone();
         gesture.connect_released(move |g, _n, x, _y| {
             // Only handle clicks in the right ~20px (chevron area)
             let widget = g.widget();
@@ -309,6 +310,13 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             }
             let new_val = !expanded_rc.get();
             expanded_rc.set(new_val);
+            // Mirror into the config immediately rather than only when the
+            // Media Library window closes. Quitting the app with this window
+            // still open runs the main window's close handler, which saves a
+            // clone of the config and never consults this cell — so a collapse
+            // made and never followed by an ML close was silently discarded.
+            // Keeping the config current makes every save path correct.
+            state_toggle.borrow_mut().config.window.ml_playlists_expanded = new_val;
             chev.set_text(if new_val { "▾" } else { "▸" });
             for r in sub_rows_rc.borrow().iter() {
                 r.set_visible(new_val);
