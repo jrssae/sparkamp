@@ -91,6 +91,11 @@ mod mpris;
 // back for `build_album_gallery`, so the compiler arbitrates its visibility.
 mod albums;
 
+// The Media Library's left-hand nav list (plan step 3). Owns the ListBox, its
+// DropTarget, the five static rows and the chevrons; routing stays with each
+// page, which registers its own row-selected handler.
+mod sidebar;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
