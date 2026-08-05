@@ -5211,14 +5211,16 @@ pub fn build(
             };
             let ml_win = open_media_library_window(
                 parent.as_ref(),
-                state_rc.clone(),
-                rebuild_pl.clone(),
-                set_track_ml.clone(),
-                current_drives.clone(),
-                current_devices.clone(),
-                burn_queues.clone(),
-                copy_files_holder.clone(),
-                burn_refresh_holder.clone(),
+                MlCtx {
+                    state: state_rc.clone(),
+                    rebuild_playlist: rebuild_pl.clone(),
+                    set_track: set_track_ml.clone(),
+                    current_drives: current_drives.clone(),
+                    current_devices: current_devices.clone(),
+                    burn_queues: burn_queues.clone(),
+                    copy_files_holder: copy_files_holder.clone(),
+                    burn_refresh_holder: burn_refresh_holder.clone(),
+                },
                 w,
                 h,
             );
@@ -5694,14 +5696,18 @@ pub fn build(
             let rebuild_pl = rebuild_playlist.clone();
             let ml_win = open_media_library_window(
                 Some(&window.upcast::<gtk4::Window>()),
-                state_rc.clone(),
-                rebuild_pl.clone(),
-                set_track_init_ml.clone(),
-                current_drives,
-                current_devices,
-                burn_queues,
-                copy_files_holder,
-                burn_refresh_holder,
+                MlCtx {
+                    state: state_rc.clone(),
+                    rebuild_playlist: rebuild_pl.clone(),
+                    set_track: set_track_init_ml.clone(),
+                    // Moved, not cloned — this restore path is the last use
+                    // of these bindings, as it was before.
+                    current_drives,
+                    current_devices,
+                    burn_queues,
+                    copy_files_holder,
+                    burn_refresh_holder,
+                },
                 init_ml_width,
                 init_ml_height,
             );

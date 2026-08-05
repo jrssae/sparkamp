@@ -59,28 +59,73 @@ fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
     ml_status_bar_for::<crate::media_library::LibTrack>(selection, |t| t.length_secs)
 }
 
-fn open_media_library_window(
-    parent: Option<&gtk4::Window>,
+/// A late-bound callback: declared empty, filled once the widget it drives
+/// exists. This is the shape the file already used twenty-four times over
+/// (`refresh_discs_holder`, `col_view_holder`, `files_status_holder`, …) to
+/// break "closure A needs widget B, which is built by closure A" cycles.
+/// Naming it makes it the explicit contract between pages once they live in
+/// separate modules — see docs/gtk-breakup-plan.md §3.1.
+///
+/// A holder left at `None` is not an error: every call site silently does
+/// nothing. That is the failure mode the smoke tests in §5 exist to catch.
+type RefreshHolder = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+/// Device-copy runner, shared with player.rs so the active playlist's
+/// Send-to menu drives the same copy as the Media Library's device views.
+type CopyFilesHolder =
+    Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>>;
+
+/// Everything the Media Library window receives from its host.
+///
+/// All of it is owned by player.rs's `build()` and shared rather than copied,
+/// so the active playlist's Send-to menu sees the same drives, devices, burn
+/// queues and copy runner as this window's Files, Editor and Device views
+/// (Task 8).
+///
+/// This replaces eight positional parameters. It exists so that the page
+/// builders extracted in later steps can take one `&MlCtx` instead of a
+/// growing argument list — the widgets they share (`win`, `stack`, `sidebar`)
+/// join it when the first page actually needs them, not before.
+///
+/// No visibility modifier: `media_library.rs` is `include!`d into
+/// `window/mod.rs`, so this is already the same module as its callers. Step 8
+/// of the plan converts those includes to real `mod`s, and that is when
+/// `pub(super)` becomes meaningful here.
+struct MlCtx {
     state: Rc<RefCell<AppState>>,
     rebuild_playlist: Rc<dyn Fn()>,
     set_track: Rc<dyn Fn(&str)>,
-    // Owned by player.rs's build() and threaded in here so the active
-    // playlist's Send-to menu shares the same drives/devices lists, burn
-    // queue, and device-copy runner as this window's Files/Editor/Device
-    // views (Task 8).
     current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
     current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
     burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
-    copy_files_holder: Rc<
-        RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>,
-    >,
-    // Filled by the burn panel with a closure that re-renders the shown
-    // drive's queue; the Send-to ▸ Disc Drive actions call it so an external
-    // add updates the open panel live (2026-07-16).
-    burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
+    copy_files_holder: CopyFilesHolder,
+    /// Filled by the burn panel with a closure that re-renders the shown
+    /// drive's queue; the Send-to ▸ Disc Drive actions call it so an external
+    /// add updates the open panel live (2026-07-16).
+    burn_refresh_holder: RefreshHolder,
+}
+
+fn open_media_library_window(
+    parent: Option<&gtk4::Window>,
+    ctx: MlCtx,
     init_width: i32,
     init_height: i32,
 ) -> gtk4::Window {
+    // The body below still refers to these by their original names. Rebinding
+    // rather than rewriting ~1,450 capture sites keeps this step a pure
+    // signature change with nothing to review for behaviour; each later
+    // extraction drops the alias it no longer needs and takes the field from
+    // `ctx` instead. Cloning an `Rc` is an integer increment, and `ctx` stays
+    // whole so it can be handed to page builders.
+    let state = ctx.state.clone();
+    let rebuild_playlist = ctx.rebuild_playlist.clone();
+    let set_track = ctx.set_track.clone();
+    let current_drives = ctx.current_drives.clone();
+    let current_devices = ctx.current_devices.clone();
+    let burn_queues = ctx.burn_queues.clone();
+    let copy_files_holder = ctx.copy_files_holder.clone();
+    let burn_refresh_holder = ctx.burn_refresh_holder.clone();
+
     let win = gtk4::Window::new();
     win.set_title(Some("Media Library — Sparkamp"));
     win.set_default_size(init_width, init_height);
