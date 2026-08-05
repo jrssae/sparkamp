@@ -85,8 +85,8 @@ Nothing about this covers runtime behaviour — see [§5](#5-smoke-tests).
 ## 2. Your hypothesis, checked
 
 You guessed each left-hand nav item gets its own file. That is close to
-right, and the stack confirms the boundaries — `add_named` gives exactly six
-destinations:
+right, and the stack confirms the boundaries — `add_named` gives five
+top-level destinations (six pages; Playlists nests two):
 
 | Page | Sidebar item |
 |---|---|
@@ -316,10 +316,16 @@ named for the step.
 ### A — always (any step)
 
 1. `sparkamp --ui` starts, no GTK-CRITICAL or borrow panic on stderr.
-2. Open the Media Library. All six sidebar entries are present: Files, Albums,
-   Playlists, Disc Drives, Devices.
+2. Open the Media Library. All five sidebar entries are present: Files,
+   Albums, Playlists, Disc Drives, Devices. (Five entries, six stack pages —
+   Playlists nests `pl-manage` and `pl-edit`.)
 3. Click each in turn — each shows its own page, none blank, no stderr noise.
-4. Close and reopen the window; it restores at the same size, still populated.
+4. Close and reopen the window from the toolbar button; it restores at the
+   same size, still populated.
+5. **Restart the app with the ML window left open at quit.** This is the
+   second, easily-forgotten construction path (player.rs's session-restore
+   call site, distinct from the toolbar button) — it must come back populated,
+   not blank.
 
 ### B — Albums (step 2)
 
