@@ -4,6 +4,8 @@ A compact, fast, open-source Winamp-style music player for the GNOME desktop and
 
 > **v1.1.0** — see [What's New](#whats-new-v110) for everything added in this release.
 
+Like the project and want to support it? https://ko-fi.com/sparkamp to donate to my AI tokens
+
 ---
 
 There are a number of various Winamp clones and other audio players available for linux and MacOS — but the specific combination of features that made Winamp my favorite audio player does not exist in the way I want it to in any other audio player I've found. Sparkamp is a personal attempt to build exactly that: an audio player that gives me the things from Winamp that I miss most since leaving Windows. If those are the things you've been missing too, this might be for you.

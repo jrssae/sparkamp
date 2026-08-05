@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the Developer ID signed build.
+  Notarization requires the hardened runtime; these are the exceptions
+  Sparkamp actually needs under it:
+
+  - allow-unsigned-executable-memory: GStreamer's liborc JIT-compiles its
+    SIMD kernels into RWX pages at runtime (without MAP_JIT), which the
+    hardened runtime otherwise forbids. Without this, audio playback dies
+    on the first orc-accelerated element.
+
+  The app is deliberately NOT sandboxed: it shells out to drutil for disc
+  burning, reads arbitrary /Volumes paths for device sync, and watches
+  user-chosen library folders — Developer ID distribution doesn't require
+  the App Sandbox.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

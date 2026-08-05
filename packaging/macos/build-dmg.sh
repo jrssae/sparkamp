@@ -107,6 +107,13 @@ cp target/release/libsparkamp_macos.a frontends/SparkampMac/libsparkamp_macos.a
 
 echo "==> [2/6] Archiving Xcode project (${HOST_ARCH} only)…"
 rm -rf "$ARCHIVE_PATH"
+# Capture the full log and fail loudly on error: piping xcodebuild straight
+# into a grep filter (the old approach) hid compile errors — Swift errors
+# print as "File.swift:line: error:", which a "^error:" filter drops, so a
+# broken archive looked like a silent no-op and only surfaced two steps
+# later as "archive not found".
+ARCHIVE_LOG="$(mktemp -t sparkamp-archive)"
+set +e
 xcodebuild \
     -project "$XCODEPROJ" \
     -scheme "$SCHEME" \
@@ -119,7 +126,15 @@ xcodebuild \
     CODE_SIGN_IDENTITY="-" \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGNING_ALLOWED=NO \
-    2>&1 | grep -E "^error:|ARCHIVE|BUILD " | tail -10 || true
+    > "$ARCHIVE_LOG" 2>&1
+archive_rc=$?
+set -e
+if [ $archive_rc -ne 0 ] || [ ! -d "$ARCHIVE_PATH" ]; then
+    echo "ERROR: xcodebuild archive failed. Diagnostics:" >&2
+    grep -E "error:|warning: .*error|ld: " "$ARCHIVE_LOG" | tail -30 >&2 \
+        || tail -40 "$ARCHIVE_LOG" >&2
+    exit 1
+fi
 echo "    Archive complete."
 
 # ── Step 3: Export .app ──────────────────────────────────────────────────────
@@ -142,6 +157,8 @@ cat > "$EXPORT_PLIST" <<'PLIST'
 </plist>
 PLIST
 
+EXPORT_LOG="$(mktemp -t sparkamp-export)"
+set +e
 xcodebuild \
     -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
@@ -149,7 +166,15 @@ xcodebuild \
     -exportOptionsPlist "$EXPORT_PLIST" \
     CODE_SIGN_IDENTITY="-" \
     CODE_SIGNING_REQUIRED=NO \
-    2>&1 | grep -E "^error:|Exported|EXPORT" | tail -5 || true
+    > "$EXPORT_LOG" 2>&1
+export_rc=$?
+set -e
+if [ $export_rc -ne 0 ]; then
+    echo "ERROR: xcodebuild -exportArchive failed. Diagnostics:" >&2
+    grep -E "error:|EXPORT FAILED" "$EXPORT_LOG" | tail -20 >&2 \
+        || tail -30 "$EXPORT_LOG" >&2
+    exit 1
+fi
 
 APP_BUNDLE="$(find "$EXPORT_DIR" -name "*.app" -maxdepth 2 | head -1)"
 if [ -z "$APP_BUNDLE" ]; then
@@ -159,7 +184,15 @@ fi
 echo "    Found: $APP_BUNDLE"
 
 FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
-PLUGINS_DIR="$APP_BUNDLE/Contents/Frameworks/gstreamer-1.0"
+# GStreamer plug-ins live under Resources, NOT Frameworks. codesign, sealing
+# the app, treats every entry directly under Contents/Frameworks as nested
+# code and expects a dylib or a real .framework; a plain plug-in directory
+# there ("gstreamer-1.0") fails Developer ID signing with "bundle format
+# unrecognized … In subcomponent: …/Frameworks/gstreamer-1.0". Resources is
+# not auto-descended as a nested bundle, so loose plug-in dylibs there sign
+# cleanly (each is still individually signed). Dep references use
+# @executable_path/../Frameworks, which resolves the same from either dir.
+PLUGINS_DIR="$APP_BUNDLE/Contents/Resources/gstreamer-1.0"
 MACOS_DIR="$APP_BUNDLE/Contents/MacOS"
 
 mkdir -p "$FRAMEWORKS_DIR"
@@ -294,20 +327,57 @@ mv "$MACOS_DIR/${APP_NAME}" "$REAL_BIN"
 cat > "$MACOS_DIR/${APP_NAME}" <<'LAUNCHER'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
-export GST_PLUGIN_PATH="$DIR/../Frameworks/gstreamer-1.0"
+export GST_PLUGIN_PATH="$DIR/../Resources/gstreamer-1.0"
 export GST_PLUGIN_SYSTEM_PATH=""
 export GIO_EXTRA_MODULES=""
 exec "$DIR/SparkampMac.bin" "$@"
 LAUNCHER
 chmod +x "$MACOS_DIR/${APP_NAME}"
 
-# ── Ad-hoc code sign ─────────────────────────────────────────────────────────
+# ── Code sign ────────────────────────────────────────────────────────────────
+#
+# SPARKAMP_SIGN_IDENTITY selects the signing mode:
+#   unset / "-"        → ad-hoc (local dev builds; Gatekeeper will block
+#                        downloads of these — the historical behavior).
+#   "Developer ID Application: … (TEAMID)"
+#                      → real signing with the hardened runtime + the
+#                        entitlements GStreamer needs, as notarization
+#                        requires. CI sets this when the cert secret is
+#                        configured; the DMG is then notarized + stapled
+#                        by the workflow after this script finishes.
+#
+# Order matters for real signatures: every Mach-O leaf (dylibs, GStreamer
+# plug-ins, the real binary) gets its own signature first, the bundle is
+# sealed last, and --deep is never used (it's deprecated and mis-signs
+# nested code; explicit inside-out signing is the supported way).
 
-echo "    Ad-hoc signing…"
-# Sign dylibs/plugins (leaves first, then the bundle)
-find "$APP_BUNDLE" \( -name "*.dylib" -o -name "*.so" \) -print0 \
-    | xargs -0 -I{} codesign --force --sign - {} 2>/dev/null || true
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+SIGN_ID="${SPARKAMP_SIGN_IDENTITY:--}"
+ENTITLEMENTS="$REPO_ROOT/packaging/macos/entitlements.plist"
+
+if [ "$SIGN_ID" = "-" ]; then
+    echo "    Ad-hoc signing…"
+    find "$APP_BUNDLE" \( -name "*.dylib" -o -name "*.so" \) -print0 \
+        | xargs -0 -I{} codesign --force --sign - {} 2>/dev/null || true
+    codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+else
+    echo "    Signing with: $SIGN_ID"
+    # Leaves: bundled dylibs + GStreamer plug-ins. Same identity as the app,
+    # so hardened-runtime library validation accepts them without a
+    # disable-library-validation entitlement.
+    find "$APP_BUNDLE" \( -name "*.dylib" -o -name "*.so" \) -print0 \
+        | xargs -0 -I{} codesign --force --timestamp --options runtime \
+            --sign "$SIGN_ID" {}
+    # The real executable (the launcher shell script is sealed as a bundle
+    # resource — scripts don't carry Mach-O signatures).
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_ID" "$MACOS_DIR/SparkampMac.bin"
+    # Seal the bundle.
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_ID" "$APP_BUNDLE"
+    codesign --verify --strict --verbose=1 "$APP_BUNDLE"
+fi
 
 # ── Step 6: Create DMG ───────────────────────────────────────────────────────
 
@@ -346,5 +416,11 @@ echo "╚═══════════════════════�
 echo
 echo "Installation:"
 echo "  1. Open the DMG and drag Sparkamp into Applications."
-echo "  2. First launch: right-click the app → Open to bypass Gatekeeper."
-echo "     Or run:  xattr -cr /Applications/SparkampMac.app"
+if [ "$SIGN_ID" = "-" ]; then
+    echo "  2. Ad-hoc build — macOS will block the first launch. Approve via"
+    echo "     System Settings → Privacy & Security → Open Anyway, or run:"
+    echo "       xattr -dr com.apple.quarantine /Applications/SparkampMac.app"
+else
+    echo "  2. Developer ID signed. After the workflow notarizes + staples"
+    echo "     the DMG, downloads open without Gatekeeper prompts."
+fi

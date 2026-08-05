@@ -104,8 +104,50 @@ jobs:
           cargo build --release \
             --manifest-path frontends/macos/Cargo.toml
 
+      # ── Code signing (Developer ID) ──────────────────────────────────────
+      # Runs only when the signing secrets are configured; without them the
+      # build falls back to the historical ad-hoc signature (forks, PRs).
+      # The cert lives in a throwaway keychain that a cleanup step deletes
+      # even when the build fails.
+      - name: Import Developer ID certificate
+        id: import-cert
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "No signing cert configured — building ad-hoc."
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/sparkamp-signing.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 16)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Allow codesign to use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user \
+            -s "$KEYCHAIN" ~/Library/Keychains/login.keychain-db
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$identity" ]; then
+            echo "ERROR: cert imported but no 'Developer ID Application' identity found" >&2
+            exit 1
+          fi
+          echo "Signing as: $identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
       # ── Build the DMG ─────────────────────────────────────────────────────
       - name: Build DMG
+        env:
+          SPARKAMP_SIGN_IDENTITY: ${{ steps.import-cert.outputs.identity || '-' }}
         run: bash packaging/macos/build-dmg.sh
 
       # ── Find the produced DMG (filename includes MARKETING_VERSION) ──────
@@ -119,6 +161,80 @@ jobs:
           fi
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
           echo "dmg_basename=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+
+      # ── Notarize + staple (signed builds only) ────────────────────────────
+      # Apple scans the DMG and issues a notarization ticket; stapling embeds
+      # it so Gatekeeper accepts the download even offline. Requires an App
+      # Store Connect API key with the Developer role.
+      - name: Notarize and staple DMG
+        if: ${{ steps.import-cert.outputs.identity != '' }}
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NOTARY_KEY_P8" ]; then
+            echo "Signing cert present but no notary API key — DMG is signed, NOT notarized." >&2
+            echo "Gatekeeper will still warn on downloads. Configure NOTARY_* secrets." >&2
+            exit 1
+          fi
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          DMG="${{ steps.locate-dmg.outputs.dmg }}"
+          AUTH=(--key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+
+          # Submit once, then poll resiliently. Every prior upload authenticated
+          # and was accepted for processing (a submission id is auth-gated), but
+          # `notarytool --wait` aborts the whole step on the first hiccup — twice
+          # a 30m wait elapsed with the ticket still "In Progress", once the
+          # runner's connection to appstoreconnect dropped mid-poll (NSURLError
+          # -1009). So: submit without waiting, then re-poll the SAME submission
+          # in a retry loop that survives transient timeouts/network blips, and
+          # read the definitive verdict with `notarytool info` at the end.
+          SUBMIT_JSON="$(xcrun notarytool submit "$DMG" "${AUTH[@]}" --output-format json)"
+          echo "$SUBMIT_JSON"
+          SUB_ID="$(printf '%s' "$SUBMIT_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+          echo "Submission id: $SUB_ID"
+
+          # Up to ~2h of patience, in blip-tolerant 10-minute polls.
+          for attempt in $(seq 1 12); do
+            if xcrun notarytool wait "$SUB_ID" "${AUTH[@]}" --timeout 10m; then
+              break
+            fi
+            echo "poll attempt $attempt did not resolve (timeout or network) — retrying in 30s…"
+            sleep 30
+          done
+
+          # Authoritative status, independent of how `wait` exited.
+          INFO_JSON="$(xcrun notarytool info "$SUB_ID" "${AUTH[@]}" --output-format json)"
+          echo "$INFO_JSON"
+          STATUS="$(printf '%s' "$INFO_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status",""))')"
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization status is '$STATUS' (not Accepted). Notary log:" >&2
+            xcrun notarytool log "$SUB_ID" "${AUTH[@]}" || true
+            exit 1
+          fi
+
+          rm -f "$RUNNER_TEMP/notary.p8"
+          # Staple the ticket onto the DMG and verify it. `stapler validate`
+          # IS the authoritative "this DMG is notarized" check for shipping.
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          # Informational only: `spctl --assess -t open` on a DMG reports
+          # "no usable signature" because a DMG isn't code-signed — it carries
+          # a stapled notarization TICKET, not a signature. That is expected
+          # and does NOT mean Gatekeeper will block it (the app inside is
+          # Developer ID signed + the DMG is stapled). Never fail the build on
+          # it; stapler validate above already proved the DMG is notarized.
+          spctl --assess --type open --context context:primary-signature -v "$DMG" \
+            || echo "note: spctl -t open flags the DMG as unsigned — expected for a stapled DMG; stapler validate is authoritative."
+
+      # ── Clean up the throwaway keychain (always) ──────────────────────────
+      - name: Remove signing keychain
+        if: ${{ always() && steps.import-cert.outputs.identity != '' }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sparkamp-signing.keychain-db" || true
+          security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
 
       # ── Upload artifact ───────────────────────────────────────────────────
       - name: Upload DMG as artifact

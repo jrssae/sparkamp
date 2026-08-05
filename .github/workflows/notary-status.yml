@@ -1,0 +1,54 @@
+# Manual diagnostic: read the real status + log of notarization submissions
+# using the repo's notary secrets on a correctly-clocked runner. No build.
+# Trigger: Actions ▸ "Notary Status" ▸ Run workflow (optionally pass an id).
+name: Notary Status
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: "Extra submission ID to fetch info+log for (optional)"
+        required: false
+        default: ""
+
+jobs:
+  status:
+    name: Query notary status
+    runs-on: macos-latest
+    steps:
+      - name: notarytool history + info + log
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          EXTRA_ID: ${{ github.event.inputs.submission_id }}
+        run: |
+          set -uo pipefail
+          if [ -z "$NOTARY_KEY_P8" ]; then
+            echo "::error::NOTARY_KEY_P8 secret is empty" >&2
+            exit 1
+          fi
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          AUTH=(--key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+
+          echo "======================== HISTORY ========================"
+          # The definitive list: every submission for this key + its final
+          # status (Accepted / Invalid / Rejected / In Progress).
+          xcrun notarytool history "${AUTH[@]}" || echo "(history call failed)"
+
+          # Known submission ids from the stuck CI runs, plus any passed in.
+          IDS="450b0880-1071-4de3-9328-0704158e479c \
+               f564227b-4c9e-4324-8b0a-581bcde284e3 \
+               7fb97731-545b-4504-94e1-fe6ef71212e8 \
+               5b991c18-f202-4f4f-ba2c-fe63ad959b5e \
+               $EXTRA_ID"
+          for id in $IDS; do
+            [ -z "$id" ] && continue
+            echo "======================== INFO $id ========================"
+            xcrun notarytool info "$id" "${AUTH[@]}" || echo "(info failed for $id)"
+            echo "------------------------ LOG  $id ------------------------"
+            # The log is the gold: for an Invalid result it lists the exact
+            # signing / entitlement / hardened-runtime issues per binary.
+            xcrun notarytool log "$id" "${AUTH[@]}" || echo "(log not available for $id)"
+          done
+          rm -f "$RUNNER_TEMP/notary.p8"

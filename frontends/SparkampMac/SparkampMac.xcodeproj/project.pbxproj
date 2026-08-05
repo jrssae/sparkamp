@@ -66,7 +66,6 @@
 		AA4000000000000000000007 /* MarqueeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarqueeView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000009 /* PlaylistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000010 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		AA4000000000000000000022 /* Theme+Guide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+Guide.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
@@ -100,6 +99,7 @@
 		AA4000000000000000000019 /* ArtworkWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtworkWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000020 /* MediaLibraryWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibraryWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000021 /* DeduplicatorWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeduplicatorWindow.swift; sourceTree = "<group>"; };
+		AA4000000000000000000022 /* Theme+Guide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme+Guide.swift"; sourceTree = "<group>"; };
 		AA4000000000000000000044 /* MLAlbumGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLAlbumGallery.swift; sourceTree = "<group>"; };
 		AA4000000000000000000045 /* LyricsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000099 /* PlaylistStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStatus.swift; sourceTree = "<group>"; };
@@ -281,7 +281,6 @@
 		};
 		AA2000000000000000000004 /* Embed Skin Guide */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 0;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -462,9 +461,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = HR3P54M383;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -479,6 +481,7 @@
 					"$(inherited)",
 					"$(SRCROOT)",
 				);
+				ARCHS = arm64;
 				MARKETING_VERSION = 1.1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -494,8 +497,9 @@
 					"-lgio-2.0",
 					"-lintl",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.SparkampMac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -507,9 +511,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = HR3P54M383;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -524,6 +531,7 @@
 					"$(inherited)",
 					"$(SRCROOT)",
 				);
+				ARCHS = arm64;
 				MARKETING_VERSION = 1.1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -539,8 +547,9 @@
 					"-lgio-2.0",
 					"-lintl",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.SparkampMac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
 				SWIFT_STRICT_CONCURRENCY = minimal;

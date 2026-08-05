@@ -338,8 +338,9 @@ final class SparkampModel: ObservableObject {
     @Published var discFilesBusy: Bool = false
     /// Set true when loadDiscFiles is called while busy; triggers a deferred
     /// reload once the in-flight load completes. Prevents stale mount paths
-    /// when fast unmount/remount occurs during load. Internal (not private):
-    /// the disc-load logic lives in the SparkampModel+Discs.swift extension.
+    /// when fast unmount/remount occurs during load. Not `private`: the disc
+    /// logic lives in the SparkampModel+Discs.swift extension (another file),
+    /// which reads and clears it — `private` scopes to this file only.
     var discFilesPendingReload: Bool = false
     /// Paths that failed the duration probe on the most recent "Send to ▸
     /// Disc Drive" — non-nil presents a one-shot alert listing them, then
