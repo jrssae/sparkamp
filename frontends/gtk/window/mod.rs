@@ -101,6 +101,10 @@ mod sidebar;
 // through it too.
 mod files;
 
+// The Files page's row context menu and Send-to actions (plan step 4), split
+// from files.rs so neither half sits far over the 800-line goal.
+mod files_menu;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
