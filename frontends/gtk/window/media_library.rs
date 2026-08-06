@@ -8305,11 +8305,15 @@ fn open_media_library_window(
         }
         group.add_action(&a_rip);
 
+        // Also on the ScrolledWindow, because that is what the popover below
+        // parents itself to and where the action lookup therefore starts.
         disc_track_list.insert_action_group("disc-audio", Some(&group));
+        disc_tracks_scroll.insert_action_group("disc-audio", Some(&group));
 
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
         let list_g = disc_track_list.clone();
+        let scroll_g = disc_tracks_scroll.clone();
         gesture.connect_pressed(move |g, _, x, y| {
             if let Some(row) = list_g.row_at_y(y as i32) {
                 if !row.is_selected() {
@@ -8331,13 +8335,20 @@ fn open_media_library_window(
             ));
             let popover =
                 context_popover(&menu);
-            popover.set_parent(&list_g);
-            // Unparent on close so the popover doesn't linger as a child of the
-            // ListBox — the disc-populate rebuild clears track_list's children
-            // with `while first_child { remove }`, which would hit a leftover
-            // popover and log "Tried to remove non-child". Safe here (no nested
-            // "Send to" submenu, unlike the files/editor menus).
-            popover.connect_closed(|p| p.unparent());
+            // Parent on the ScrolledWindow that holds the action group, and do
+            // NOT unparent on close — the same recipe the disc-files menu
+            // above documents. GTK4 closes a PopoverMenu *before* dispatching
+            // the chosen action, so unparenting in `closed` severs the
+            // action-group link a moment too early and the action silently
+            // never runs: the menu appeared, the click did nothing.
+            //
+            // Parenting on the scroll rather than the ListBox is what makes
+            // dropping the unparent safe. The old comment here unparented to
+            // keep a stale popover out of track_list's children, because
+            // populate clears them with `while first_child { remove }` and
+            // would log "Tried to remove non-child". A popover parented on the
+            // scroll is never in that child list to begin with.
+            popover.set_parent(&scroll_g);
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
