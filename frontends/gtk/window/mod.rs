@@ -96,6 +96,11 @@ mod albums;
 // page, which registers its own row-selected handler.
 mod sidebar;
 
+// The Media Library "Files" page (plan step 4): the library track table, its
+// search row, status bar and row context menu. The Albums drill-down renders
+// through it too.
+mod files;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
