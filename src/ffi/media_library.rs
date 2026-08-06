@@ -553,9 +553,14 @@ pub unsafe extern "C" fn sparkamp_ml_poll_watch_event(
         Err(_) => return std::ptr::null_mut(),
     };
 
+    // Kind 2 is new (a playlist file appeared). A mac frontend that only
+    // knows 0 and 1 still behaves: apply_watch_action below has already
+    // registered the playlist, and an unrecognised kind means it refreshes
+    // nothing rather than refreshing the wrong thing.
     let (kind, path) = match &action {
         crate::watch::WatchAction::Upsert(p) => (0, p.clone()),
         crate::watch::WatchAction::Remove(p) => (1, p.clone()),
+        crate::watch::WatchAction::PlaylistUpsert(p) => (2, p.clone()),
     };
 
     if let Some(ml) = &ctx.media_library {

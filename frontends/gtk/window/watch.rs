@@ -31,7 +31,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use super::{complete_ml_scan, start_ml_scan, update_ml_scan_progress, AppState, ScanType};
+use super::{
+    complete_ml_scan, notify_playlist_nav_refresh, start_ml_scan, update_ml_scan_progress,
+    AppState, ScanType,
+};
 use crate::watch::FolderWatcher;
 
 /// Sparkamp's own cache directory. Must match the prefix every other cache
@@ -143,25 +146,43 @@ pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
                 }
             }
             let mut applied_any = false;
+            // A playlist file needs a different refresh from a track: it
+            // changes the sidebar's Playlists sub-rows, which
+            // `rebuild_ml_callback` does not touch.
+            let mut applied_playlist = false;
             if !actions.is_empty() {
                 let remove_missing = s.config.media_library.remove_missing_on_rescan;
                 if let Some(ref lib) = s.media_lib {
                     for action in &actions {
                         match lib.apply_watch_action(action, remove_missing) {
-                            Ok(()) => applied_any = true,
+                            Ok(()) => {
+                                applied_any = true;
+                                if matches!(
+                                    action,
+                                    crate::watch::WatchAction::PlaylistUpsert(_)
+                                ) {
+                                    applied_playlist = true;
+                                }
+                            }
                             Err(e) => eprintln!("[watch] apply_watch_action failed: {e}"),
                         }
                     }
                 }
             }
             if applied_any {
-                s.rebuild_ml_callback.clone()
+                (s.rebuild_ml_callback.clone(), applied_playlist)
             } else {
-                None
+                (None, false)
             }
         };
+        let (rebuild_cb, refresh_playlist_nav) = rebuild_cb;
         if let Some(cb) = rebuild_cb {
             cb();
+        }
+        // Same borrow discipline as the callback above: `state` is no longer
+        // borrowed here, and the nav rebuild reads it.
+        if refresh_playlist_nav {
+            notify_playlist_nav_refresh();
         }
         glib::ControlFlow::Continue
     });

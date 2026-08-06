@@ -382,6 +382,18 @@ impl MediaLibrary {
                 };
                 self.upsert_path(path)
             }
+            WatchAction::PlaylistUpsert(path) => {
+                let Some(path) = path.to_str() else {
+                    eprintln!(
+                        "apply_watch_action: skipping non-UTF8 playlist path: {}",
+                        path.to_string_lossy()
+                    );
+                    return Ok(());
+                };
+                // Idempotent: add_playlist_file upserts, so a rewrite of an
+                // already-registered playlist is not an error.
+                self.add_playlist_file(path).map(|_| ())
+            }
             WatchAction::Remove(path) => {
                 if !remove_missing {
                     return Ok(());
@@ -561,21 +573,13 @@ impl MediaLibrary {
             }
         }
 
-        // Upsert .m3u8 / .m3u playlists.  Use ON CONFLICT … DO UPDATE
-        // (not INSERT OR REPLACE) so the row's id is preserved across
-        // rescans — REPLACE deletes + re-inserts, churning the id and
-        // invalidating any UI that captured the old value.
+        // Upsert .m3u8 / .m3u playlists through the shared helper, which
+        // preserves the row id across rescans and collapses two spellings of
+        // one file into one row.
         for m3u in &m3u_files {
             if let Some(name) = m3u.file_stem().and_then(|s| s.to_str()) {
                 let p = m3u.to_string_lossy();
-                self.conn.execute(
-                    "INSERT INTO playlists (path, folder_id, name)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(path) DO UPDATE SET
-                         folder_id = excluded.folder_id,
-                         name      = excluded.name",
-                    params![p.as_ref(), folder_id, name],
-                )?;
+                self.upsert_playlist_row(folder_id, p.as_ref(), name)?;
             }
         }
 
@@ -686,21 +690,13 @@ impl MediaLibrary {
         }
         self.conn.execute("COMMIT", [])?;
 
-        // Upsert .m3u8 / .m3u playlists.  Use ON CONFLICT … DO UPDATE
-        // (not INSERT OR REPLACE) so the row's id is preserved across
-        // rescans — REPLACE deletes + re-inserts, churning the id and
-        // invalidating any UI that captured the old value.
+        // Upsert .m3u8 / .m3u playlists through the shared helper, which
+        // preserves the row id across rescans and collapses two spellings of
+        // one file into one row.
         for m3u in &m3u_files {
             if let Some(name) = m3u.file_stem().and_then(|s| s.to_str()) {
                 let p = m3u.to_string_lossy();
-                self.conn.execute(
-                    "INSERT INTO playlists (path, folder_id, name)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(path) DO UPDATE SET
-                         folder_id = excluded.folder_id,
-                         name      = excluded.name",
-                    params![p.as_ref(), folder_id, name],
-                )?;
+                self.upsert_playlist_row(folder_id, p.as_ref(), name)?;
             }
         }
 

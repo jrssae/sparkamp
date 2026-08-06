@@ -38,6 +38,21 @@ pub(super) fn dehydrate_portal_path(path: &str) -> String {
     .unwrap_or_else(|| path.to_string())
 }
 
+/// Filesystem identity of `path`: `(device, inode)`.
+///
+/// The reliable way to ask "are these two paths the same file?" when the two
+/// spellings may differ by a symlink *or* by a bind mount. `fs::canonicalize`
+/// only handles the first; two bind-mounted views of one directory each
+/// resolve to themselves.
+///
+/// `None` when the file cannot be stat'd, which callers treat as "no match"
+/// rather than as an error.
+pub(super) fn file_identity(path: &str) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(path).ok()?;
+    Some((md.dev(), md.ino()))
+}
+
 // Bin build on macOS gates out GTK, leaving these FFI/GTK-reachable
 // methods unused there; mirrors the allow on the original impl block.
 #[allow(dead_code)]
@@ -639,8 +654,48 @@ impl MediaLibrary {
             AddFolderResult::New(id) | AddFolderResult::AlreadyExists(id) => id,
         };
         let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Unnamed");
+        // One file, one row — even when it arrives under two spellings.
+        //
+        // `INSERT OR IGNORE` deduplicates on the path string, which is not the
+        // same as deduplicating on the file. Saving a playlist registers the
+        // path the user chose (`/home/u/x.m3u8`); the filesystem watcher then
+        // reports the same write under the path `notify` resolves it to
+        // (`/var/home/u/x.m3u8`, because `/home` is a symlink on an
+        // image-based system). Two strings, one file, and the sidebar showed
+        // it twice.
+        self.upsert_playlist_row(folder_id, path, name)
+    }
+
+    /// Register (or refresh) one playlist row, collapsing spellings.
+    ///
+    /// The single place a playlist row is created. There are three callers —
+    /// this file's `add_playlist_file`, and the two folder-scan loops in
+    /// scan.rs — and before this they each ran their own `INSERT`, keyed on
+    /// the path string. That is what let one file become two rows: the
+    /// `folders` table can hold both `/home/u/f` and `/var/home/u/f` for one
+    /// directory, so a scan walks it twice and inserts each spelling. Fixing
+    /// only `add_playlist_file` fixed only the watcher's route in.
+    pub(super) fn upsert_playlist_row(
+        &self,
+        folder_id: i64,
+        path: &str,
+        name: &str,
+    ) -> Result<i64> {
+        if let Some(existing) = self.playlist_id_by_same_file(path)? {
+            // Same file under another name. Keep the row (and its id, which
+            // open UI may hold) and refresh the fields a rescan would.
+            self.conn.execute(
+                "UPDATE playlists SET folder_id = ?2, name = ?3 WHERE id = ?1",
+                params![existing, folder_id, name],
+            )?;
+            return Ok(existing);
+        }
         self.conn.execute(
-            "INSERT OR IGNORE INTO playlists (path, folder_id, name) VALUES (?1, ?2, ?3)",
+            "INSERT INTO playlists (path, folder_id, name)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(path) DO UPDATE SET
+                 folder_id = excluded.folder_id,
+                 name      = excluded.name",
             params![path, folder_id, name],
         )?;
         let id: i64 = self.conn.query_row(
@@ -649,6 +704,42 @@ impl MediaLibrary {
             |row| row.get(0),
         )?;
         Ok(id)
+    }
+
+    /// Find an already-registered playlist that is the same file as `path`,
+    /// whatever spelling it is stored under.
+    ///
+    /// Identity is `(device, inode)`, not the canonical path. Canonicalising
+    /// looks like the obvious answer and is wrong here: `/home` and
+    /// `/var/home` can be two *real* directories that bind-mount the same
+    /// content, in which case each canonicalises to itself and the comparison
+    /// never fires. That is exactly the case inside the container this is
+    /// developed in, and it is why an earlier canonical-path fix for this bug
+    /// silently did nothing. An inode is the same inode through a symlink, a
+    /// bind mount, or a hard link.
+    ///
+    /// A path whose metadata cannot be read (the file is gone) matches
+    /// nothing, so a stale row never captures a new registration.
+    fn playlist_id_by_same_file(&self, path: &str) -> Result<Option<i64>> {
+        let Some(want) = file_identity(path) else {
+            return Ok(None);
+        };
+        // Every row is checked, with no filename pre-filter. Narrowing by name
+        // is tempting and wrong: two names for one file need not share a
+        // basename (a hard link, a bind mount exposed under a different leaf),
+        // and the filter would skip exactly the rows this exists to find. The
+        // playlists table holds tens of rows, so a full pass is cheap.
+        let mut stmt = self.conn.prepare("SELECT id, path FROM playlists")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, stored) = row?;
+            if file_identity(&stored) == Some(want) {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
     }
 
     /// Increment the play count and update `last_played` for the track at `path`.

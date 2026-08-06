@@ -403,16 +403,17 @@ impl MediaLibrary {
     /// playlist editor silently declines to add it, which is how this was
     /// found.
     ///
-    /// Canonicalising the argument alone does not fix it, because the stored
-    /// side is usually the *un*-resolved spelling. Both sides have to be
-    /// resolved, so the fallback narrows by filename (few rows share one) and
-    /// compares canonical forms. Files that no longer exist cannot be
-    /// canonicalised and simply fall through to the error.
+    /// Identity is `(device, inode)`, not the canonical path. Canonicalising
+    /// handles a symlink but not a bind mount: `/home` and `/var/home` can be
+    /// two real directories serving the same content, each resolving to
+    /// itself. An inode is the same inode either way. The fallback narrows by
+    /// filename (few rows share one) and compares identities; a file that no
+    /// longer exists cannot be stat'd and falls through to the error.
     pub fn track_by_path(&self, path: &str) -> Result<LibTrack> {
         if let Some(t) = self.track_by_exact_path(path)? {
             return Ok(t);
         }
-        if let Some(t) = self.track_by_canonical_path(path)? {
+        if let Some(t) = self.track_by_same_file(path)? {
             return Ok(t);
         }
         Err(anyhow::anyhow!("track not found: {}", path))
@@ -437,8 +438,8 @@ impl MediaLibrary {
 
     /// Fallback for the two-spellings case. Only rows whose `filename` matches
     /// are considered, so this stays a short list even in a large library.
-    fn track_by_canonical_path(&self, path: &str) -> Result<Option<LibTrack>> {
-        let Ok(want) = std::fs::canonicalize(path) else {
+    fn track_by_same_file(&self, path: &str) -> Result<Option<LibTrack>> {
+        let Some(want) = super::playlists::file_identity(path) else {
             return Ok(None);
         };
         let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) else {
@@ -447,9 +448,9 @@ impl MediaLibrary {
         let sql = format!("{} WHERE filename = ?1", Self::TRACK_COLUMNS);
         let mut stmt = self.conn.prepare(&sql)?;
         let candidates = Self::collect_tracks(&mut stmt, params![name])?;
-        Ok(candidates.into_iter().find(|t| {
-            std::fs::canonicalize(&t.path).is_ok_and(|got| got == want)
-        }))
+        Ok(candidates
+            .into_iter()
+            .find(|t| super::playlists::file_identity(&t.path) == Some(want)))
     }
 
     /// Clear the cached artwork path for a track so it gets re-extracted on next read.
