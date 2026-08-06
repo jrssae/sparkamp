@@ -2109,3 +2109,53 @@ fn add_played_inside_library_attaches_to_folder() {
         "a played file under a watched folder must be attached to it, not NULL"
     );
 }
+
+// ── track_by_path: the two-spellings case ──────────────────────────────
+
+/// A file indexed under one spelling of its directory must still be found
+/// when looked up through another that resolves to the same place.
+///
+/// This is not hypothetical tidiness. On an image-based system `/home` is a
+/// symlink to `/var/home`, so a library scanned as `/home/u/x.mp3` and a file
+/// dialog returning `/var/home/u/x.mp3` disagree about one file. The exact
+/// match that `track_by_path` used to do rejected it, and the playlist editor
+/// read that rejection as "not in the library" and silently declined to add
+/// the track — a save that appeared to do nothing at all.
+#[test]
+fn track_by_path_resolves_a_symlinked_spelling_of_the_same_file() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+
+    // real/track.mp3, plus link/ -> real/, so the file has two valid names.
+    let real = root.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let file_path = real.join("track.mp3");
+    fs::write(&file_path, b"fake audio data").unwrap();
+
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // Index it under the real spelling, the way a folder scan would.
+    let indexed = file_path.to_str().unwrap();
+    let folder_id = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    lib.upsert_track(folder_id, indexed).unwrap();
+
+    // The indexed spelling still works — the fast path is untouched.
+    assert!(lib.track_by_path(indexed).is_ok(), "exact match must keep working");
+
+    // The symlinked spelling names the same file and must resolve to it.
+    let via_link = link.join("track.mp3");
+    let found = lib
+        .track_by_path(via_link.to_str().unwrap())
+        .expect("a symlinked spelling of an indexed file must be found");
+    assert_eq!(found.path, indexed, "must resolve to the indexed row, not a copy");
+
+    // A genuinely absent file must still be an error, not a false positive
+    // from the filename-narrowed fallback.
+    let absent = root.path().join("nowhere").join("track.mp3");
+    assert!(
+        lib.track_by_path(absent.to_str().unwrap()).is_err(),
+        "a path that does not exist must not match by filename alone"
+    );
+}

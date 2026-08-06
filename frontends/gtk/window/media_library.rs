@@ -8147,8 +8147,16 @@ fn open_media_library_window(
                         for p in &paths {
                             if let Some(p_str) = p.to_str() {
                                 if !existing.contains(p_str) {
-                                    if let Ok(t) = lib.track_by_path(p_str) {
-                                        et2.borrow_mut().push(t);
+                                    // A file the library does not know cannot
+                                    // be added, because the playlist is saved
+                                    // by row id. Say so rather than dropping
+                                    // it: silently ignoring the file the user
+                                    // just picked reads as "Save did nothing".
+                                    match lib.track_by_path(p_str) {
+                                        Ok(t) => et2.borrow_mut().push(t),
+                                        Err(e) => eprintln!(
+                                            "add to playlist: skipping {p_str}: {e:#}"
+                                        ),
                                     }
                                 }
                             }
@@ -8336,7 +8344,15 @@ fn open_media_library_window(
                 if id < 0 { return; }
                 let track_ids: Vec<i64> = et.borrow().iter().map(|t| t.id).collect();
                 if let Some(ref lib) = state_rc.borrow().media_lib {
-                    let _ = lib.save_playlist_tracks(id, &track_ids);
+                    // Report a failed write instead of discarding it. Save is
+                    // the one button whose whole purpose is a side effect, so
+                    // swallowing the Result made a failure indistinguishable
+                    // from success — and left `saved` claiming state that
+                    // never reached disk, so the dirty indicator cleared too.
+                    if let Err(e) = lib.save_playlist_tracks(id, &track_ids) {
+                        eprintln!("save_playlist_tracks {id}: {e:#}");
+                        return;
+                    }
                     *saved.borrow_mut() = track_ids;
                 }
             });

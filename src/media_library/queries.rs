@@ -4,6 +4,7 @@
 use anyhow::Result;
 use rusqlite::params;
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::play_stats::effective_album_artist;
 use crate::tags::read_track_tags;
@@ -390,19 +391,65 @@ impl MediaLibrary {
     }
 
     /// Look up a single track by its path.  Returns an error if not found.
+    /// Look a track up by path.
+    ///
+    /// The stored path is matched exactly first, which is the common case and
+    /// costs one indexed lookup. When that misses, the same file may still be
+    /// indexed under a different spelling of the same location: on an
+    /// image-based system `/home` is a symlink to `/var/home`, so a file
+    /// scanned as `/home/u/x.mp3` and later chosen from a file dialog as
+    /// `/var/home/u/x.mp3` is one file with two names. An exact match rejects
+    /// it, and every caller then treats an indexed track as unknown — the
+    /// playlist editor silently declines to add it, which is how this was
+    /// found.
+    ///
+    /// Canonicalising the argument alone does not fix it, because the stored
+    /// side is usually the *un*-resolved spelling. Both sides have to be
+    /// resolved, so the fallback narrows by filename (few rows share one) and
+    /// compares canonical forms. Files that no longer exist cannot be
+    /// canonicalised and simply fall through to the error.
     pub fn track_by_path(&self, path: &str) -> Result<LibTrack> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
-                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
-                    comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
-                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
-             FROM tracks WHERE path = ?1",
-        )?;
+        if let Some(t) = self.track_by_exact_path(path)? {
+            return Ok(t);
+        }
+        if let Some(t) = self.track_by_canonical_path(path)? {
+            return Ok(t);
+        }
+        Err(anyhow::anyhow!("track not found: {}", path))
+    }
+
+    /// Columns every `LibTrack` read needs, shared by the two lookups below.
+    const TRACK_COLUMNS: &'static str =
+        "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
+                length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                comment, album_artist, disc_num, disc_total, composer, original_artist,
+                copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+         FROM tracks";
+
+    fn track_by_exact_path(&self, path: &str) -> Result<Option<LibTrack>> {
+        let sql = format!("{} WHERE path = ?1", Self::TRACK_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = Self::collect_tracks(&mut stmt, params![path])?;
-        rows.pop()
-            .ok_or_else(|| anyhow::anyhow!("track not found: {}", path))
+        Ok(rows.pop())
+    }
+
+    /// Fallback for the two-spellings case. Only rows whose `filename` matches
+    /// are considered, so this stays a short list even in a large library.
+    fn track_by_canonical_path(&self, path: &str) -> Result<Option<LibTrack>> {
+        let Ok(want) = std::fs::canonicalize(path) else {
+            return Ok(None);
+        };
+        let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) else {
+            return Ok(None);
+        };
+        let sql = format!("{} WHERE filename = ?1", Self::TRACK_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let candidates = Self::collect_tracks(&mut stmt, params![name])?;
+        Ok(candidates.into_iter().find(|t| {
+            std::fs::canonicalize(&t.path).is_ok_and(|got| got == want)
+        }))
     }
 
     /// Clear the cached artwork path for a track so it gets re-extracted on next read.
