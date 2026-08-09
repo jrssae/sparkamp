@@ -115,6 +115,10 @@ mod disc_page;
 // split from disc_page.rs so neither half sits far over the 800-line goal.
 mod disc_data;
 
+// gnudb identify + the manual tag-override editor (plan step 5, third cut).
+// Declares nothing the rest of the page reads back, so it lifted cleanly.
+mod disc_gnudb;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
