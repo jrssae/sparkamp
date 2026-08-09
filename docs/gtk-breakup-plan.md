@@ -260,12 +260,12 @@ Every step is one commit. Never combine a move with a behaviour change.
 | # | Step | Lines | Risk | Gate | Manual test |
 |---|---|---|---|---|---|
 | 0 | ~~CI `cargo check` on ubuntu + libgtk-4-dev~~ **DONE `1f19f00`** | ~100 | none | ✅ A/B/A verified | — |
-| 1 | `MlCtx` + `RefreshHolder` introduced, nothing extracted yet — pass `&ctx` where the 10 params went | ~150 | low | CI | **A** |
-| 2 | **`albums.rs`** — mechanism pilot | 116 | very low | CI | **A + B** |
-| 3 | `sidebar.rs` | 500 | medium | CI | **A + C** (batchable with 4) |
-| 4 | `files.rs` + `files_menu.rs` | 2,130 | medium | CI | **A + D + X** |
-| 5 | `discs/` — reunite 2964–3978 with 9821–11813 into the existing `mod disc` | 3,008 | **high** | CI | **A + E + X** — needs discs, run twice |
-| 6 | `devices/` — reunite 598–2963 with 9408–9820 | 2,779 | **high** | CI | **A + F + X** — needs a USB device, run twice |
+| 1 | ~~`MlCtx` + `RefreshHolder` introduced~~ **DONE `6cbc556`** | ~150 | low | CI | **A** |
+| 2 | ~~**`albums.rs`** — mechanism pilot~~ **DONE `a80004e`** | 116 | very low | CI | **A + B** |
+| 3 | ~~`sidebar.rs`~~ **DONE `cbd4bcd`** | 500 | medium | CI | **A + C** (batchable with 4) |
+| 4 | ~~`files.rs` + `files_menu.rs`~~ **DONE `2d64bb8`, `7f0ceaa`** | 2,130 | medium | CI | **A + D + X** |
+| 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
+| 6 | `devices/` — reunite the widgets at 244–2678 with the wiring at 5905–6317 and 8758–9283 | 2,779 | **high** | CI | **A + F + X** — needs a USB device, run twice |
 | 7 | `playlists/` | 3,150 | high | CI | **A + G + X** |
 | 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
 
@@ -284,6 +284,46 @@ lines of intervening statements, and closure capture depends on declaration
 order. Split each into two commits: first hoist the late wiring up next to
 its widgets *within* the existing function and confirm green; only then
 extract the reunited block to its own file.
+
+### What step 5 actually did — 2026-08-09
+
+The hoist (5a) moved the *widgets down* to the wiring rather than the wiring
+up to the widgets, which is the opposite of the sketch above and is the
+cheaper direction: hoisting the wiring would have landed it above `stack`,
+the Files column holders, the playlist editor's `track_list` and four
+device-wiring closures it captures. Moving the widgets down crossed one
+reference — the stack hookup, which came along. That is the shape to copy for
+step 6, and its cost is on the record: the audio-CD row menu stopped
+dispatching, the hoist was reverted (`b844e67`), fixed (`8d0614b`) and
+reapplied (`eb4c994`).
+
+The extraction (5b) landed **flat siblings**, not the nested `discs/` group
+in [§3.3](#33-target-layout):
+
+| File | Lines | What |
+|---|---|---|
+| `disc_page.rs` | 1,556 | overview cards, drive detail, 2 s poll, audio-CD wiring |
+| `disc_data.rs` | 851 | the data-disc file browser (Task 9) |
+| `disc_gnudb.rs` | 372 | identify + manual tag override |
+| `disc.rs` | 1,815 | unchanged — disc logic + widget helpers the page calls |
+
+Flat because `use super::…` reaches the window module's private items
+directly; a nested `disc/page.rs` would spell every one of them
+`super::super`. `disc` stays what it was and re-exports nothing.
+
+`MlCtx` did not grow. The page takes `&Sidebar` as a second argument for the
+three cells `sidebar.rs` built for it — its sub-rows, the chevron state, the
+header spinner. By §3.2's test those are touched by one page only, so they
+are a module-to-module handoff rather than shared window state. Use the same
+shape in steps 6 and 7 instead of widening `MlCtx` toward the 51-cell sprawl
+the test exists to prevent.
+
+**`disc_page.rs` is still 1,556 against the ~800 target.** The seam that
+remains is the widgets-first/wiring-last one, ~30 widgets wide, and narrowing
+it means reordering statements a closure's capture depends on — a different
+job from moving code. Two narrow cuts existed and both were taken (the data
+browser, 4 names in / 5 out; gnudb, 8 in / 0 out). Expect the same residue in
+step 6 and do not force a third cut through a wide seam to hit the number.
 
 ### Handing off a test round
 
@@ -315,7 +355,9 @@ named for the step.
 
 ### A — always (any step)
 
-1. `sparkamp --ui` starts, no GTK-CRITICAL or borrow panic on stderr.
+1. `sparkamp` starts, no GTK-CRITICAL or borrow panic on stderr. (The GUI is
+   the default invocation. There is no `--ui` flag — clap rejects it; `--tui`
+   is the only mode flag. This document said `--ui` until 2026-08-09.)
 2. Open the Media Library. All five sidebar entries are present: Files,
    Albums, Playlists, Disc Drives, Devices. (Five entries, six stack pages —
    Playlists nests `pl-manage` and `pl-edit`.)
