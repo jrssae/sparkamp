@@ -111,6 +111,10 @@ mod files_menu;
 // already proved (`use super::…` reaches the window's items directly).
 mod disc_page;
 
+// The data-disc file browser inside that page (plan step 5, second cut),
+// split from disc_page.rs so neither half sits far over the 800-line goal.
+mod disc_data;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
