@@ -67,7 +67,6 @@ use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
 // module so it can use this file's private AppState/gtk_safe; new disc UI
 // (submit, burn) goes there, not here.
 mod disc;
-use disc::{disc_overview_detail_line, selected_disc_discid};
 
 // Live folder-watcher lifecycle (Phase 8 Task 10): rebuild/start/stop the
 // `notify` watcher, drain its event channel, and the startup-rescan trigger.
@@ -104,6 +103,13 @@ mod files;
 // The Files page's row context menu and Send-to actions (plan step 4), split
 // from files.rs so neither half sits far over the 800-line goal.
 mod files_menu;
+
+// The Media Library "Disc Drives" page (plan step 5): overview cards, the
+// drive detail view, the data-disc browser and the 2 s drive poll. A sibling
+// of `mod disc` rather than a child of it — `disc` is the disc *logic* and
+// widget helpers this page calls into, and the flat shape is what steps 2–4
+// already proved (`use super::…` reaches the window's items directly).
+mod disc_page;
 
 // ---------------------------------------------------------------------------
 // AppState
