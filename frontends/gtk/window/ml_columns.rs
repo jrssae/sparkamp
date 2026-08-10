@@ -520,6 +520,147 @@ fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// The artwork column's cell — shared by every view that renders ALL_COLUMNS
+// ---------------------------------------------------------------------------
+
+/// Edge length of the cached cover thumbnails the artwork column paints.
+pub(super) const ML_ARTWORK_THUMB_PX: i32 = 40;
+
+/// Builds and binds the artwork cell for a `ColumnView` over library tracks.
+///
+/// One per view, because the two caches it holds are per-view: which buttons
+/// already carry a click handler, and which thumbnails are mid-generation.
+///
+/// This exists because the three views that render `ALL_COLUMNS` had drifted
+/// into three different artwork cells. Files painted a real thumbnail; the
+/// playlist editor and the device view each showed a "View" text button, and
+/// all three carried a comment saying they mirrored the files view — true
+/// when written, and untrue from the moment Files gained thumbnails
+/// (2026-08-10). Sharing the cell is the only way that stays fixed.
+pub(super) struct ArtworkCells {
+    /// Buttons whose click handler is already wired for their current row.
+    handlers: Rc<RefCell<std::collections::HashMap<glib::Object, glib::SignalHandlerId>>>,
+    /// Source images with a thumbnail generation already running, so a
+    /// re-bind while scrolling doesn't spawn the same decode twice.
+    inflight: Rc<RefCell<std::collections::HashSet<PathBuf>>>,
+}
+
+impl ArtworkCells {
+    pub(super) fn new() -> Self {
+        ArtworkCells {
+            handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            inflight: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        }
+    }
+
+    /// The cell widget: a flat button wrapping the thumbnail image. Blank
+    /// until [`Self::bind`] finds or generates the cached PNG.
+    pub(super) fn setup(&self) -> Button {
+        let img = Image::builder().pixel_size(ML_ARTWORK_THUMB_PX).build();
+        Button::builder()
+            .child(&img)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(3)
+            .margin_bottom(3)
+            .hexpand(true)
+            .vexpand(true)
+            .halign(Align::Fill)
+            .valign(Align::Fill)
+            .build()
+    }
+
+    /// Paint `art_path` into this row's cell and wire its click.
+    ///
+    /// `current_art` reads the artwork path off a `ListItem` as it stands
+    /// *now*; the views differ in what their store holds (a `LibTrack` in
+    /// Files and the device view, an `EditorEntry` in the playlist editor),
+    /// so each supplies its own reader. It is called after the off-thread
+    /// decode finishes, to confirm the recycled cell still shows the same
+    /// track before painting — without it, scrolling fast paints thumbnails
+    /// onto whatever row happens to occupy the cell by then.
+    pub(super) fn bind(
+        &self,
+        li: &gtk4::ListItem,
+        art_path: Option<&str>,
+        current_art: impl Fn(&gtk4::ListItem) -> Option<String> + 'static,
+    ) {
+        let Some(btn) = li.child().and_then(|c| c.downcast::<Button>().ok()) else {
+            return;
+        };
+        let Some(art_path) = art_path else {
+            btn.set_visible(false);
+            return;
+        };
+        btn.set_visible(true);
+        btn.set_sensitive(true);
+
+        // Reconnect on every bind rather than once per button. `ColumnView`
+        // recycles cells, so a handler that captured the first row's path
+        // would keep opening that image for every later row in the same cell.
+        let key = btn.clone().upcast::<glib::Object>();
+        if let Some(old) = self.handlers.borrow_mut().remove(&key) {
+            btn.disconnect(old);
+        }
+        let art_for_click = art_path.to_string();
+        let id = btn.connect_clicked(move |_| open_image_viewer(&art_for_click));
+        self.handlers.borrow_mut().insert(key, id);
+
+        let Some(img) = btn.child().and_then(|c| c.downcast::<Image>().ok()) else {
+            return;
+        };
+        let src = PathBuf::from(art_path);
+        let Some(thumb) = crate::now_playing::thumb_path_for(&src, ML_ARTWORK_THUMB_PX as u32)
+        else {
+            return;
+        };
+        if thumb.exists() {
+            img.set_from_file(Some(&thumb));
+            return;
+        }
+        // Not cached yet: blank the cell so a recycled thumbnail isn't left
+        // showing, then generate off the main thread.
+        img.clear();
+        if !self.inflight.borrow_mut().insert(src.clone()) {
+            return; // already generating for this source
+        }
+        let inflight = self.inflight.clone();
+        let img_wk = img.downgrade();
+        let li_wk = li.downgrade();
+        glib::spawn_future_local(async move {
+            let src_blk = src.clone();
+            let thumb_blk = thumb.clone();
+            let ok = gio::spawn_blocking(move || -> Result<(), ()> {
+                if let Some(parent) = thumb_blk.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(
+                    &src_blk,
+                    ML_ARTWORK_THUMB_PX,
+                    ML_ARTWORK_THUMB_PX,
+                    true,
+                )
+                .map_err(|_| ())?;
+                pixbuf.savev(&thumb_blk, "png", &[]).map_err(|_| ())
+            })
+            .await;
+            // Done either way — stop treating this source as in flight.
+            inflight.borrow_mut().remove(&src);
+            if !matches!(ok, Ok(Ok(()))) {
+                return; // decode or encode failed; leave the cell blank
+            }
+            let (Some(li), Some(img)) = (li_wk.upgrade(), img_wk.upgrade()) else {
+                return;
+            };
+            if current_art(&li).as_deref() == src.to_str() {
+                img.set_from_file(Some(&thumb));
+            }
+        });
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Visualizer draw helpers (module-level so both build() and open_waveform_fullscreen can use them)
 // ---------------------------------------------------------------------------

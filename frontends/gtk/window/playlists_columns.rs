@@ -23,7 +23,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, Button, ColumnView, ColumnViewColumn, CustomSorter, DropTarget, Label,
+    gdk, gio, glib, Align, ColumnView, ColumnViewColumn, CustomSorter, DropTarget, Label,
     MultiSelection, ScrolledWindow, SortListModel,
 };
 use std::cell::{Cell, RefCell};
@@ -33,8 +33,8 @@ use super::art_window;
 use super::playlists::EditorEntry;
 use super::{
     apply_ml_columns_to, build_send_to_menu, context_popover, format_last_played, gtk_safe,
-    ml_sort_key, notify_playlist_changed, open_id3_editor_window, open_image_viewer,
-    run_playlist_save_dialog, show_playlist_save_error, view_or_search_lyrics, LyricsMode, MlCtx,
+    ml_sort_key, notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
+    show_playlist_save_error, view_or_search_lyrics, ArtworkCells, LyricsMode, MlCtx,
     SendToActions, ALL_COLUMNS,
 };
 
@@ -98,6 +98,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
     let ed_action_group = ui.ed_action_group.clone();
     let drag_selection = ui.drag_selection.clone();
     let reorder_allowed = ui.reorder_allowed.clone();
+    // The artwork column's cell, shared with the Files page and the device
+    // view so all three render the same thumbnail (see `ArtworkCells`).
+    let artwork_cells = Rc::new(ArtworkCells::new());
 
     // ── Editor columns: walk ALL_COLUMNS so files view + editor stay in
     //    lock-step on which columns exist and which order they default to.
@@ -459,24 +462,20 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let setup_devices    = current_devices.clone();
             let setup_id         = id_str.clone();
             let is_artwork_col   = id_str == "artwork_path";
+            let setup_cells      = artwork_cells.clone();
+            let bind_cells       = artwork_cells.clone();
             // F12.2: separate clone for connect_bind — setup_state above is
             // moved into connect_setup.
             let bind_state       = state.clone();
             factory.connect_setup(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
                 if li.child().is_some() { return }
-                // Artwork column gets a "View" Button instead of a Label —
-                // matches the files view affordance.  Drag-source / drop-
-                // target / right-click gesture attach to the Button just
-                // like they would to a Label (both are Widget).
+                // Artwork column gets the shared thumbnail cell instead of a
+                // Label. Drag-source / drop-target / right-click gesture
+                // attach to the Button just like they would to a Label (both
+                // are Widget).
                 let child: gtk4::Widget = if setup_id == "artwork_path" {
-                    let btn = Button::with_label("View");
-                    btn.add_css_class("link");
-                    btn.set_margin_start(4);
-                    btn.set_margin_end(4);
-                    btn.set_halign(Align::Start);
-                    btn.set_visible(false);
-                    btn.upcast::<gtk4::Widget>()
+                    setup_cells.setup().upcast::<gtk4::Widget>()
                 } else {
                     let lbl = Label::builder()
                         .margin_start(6).margin_end(6)
@@ -816,29 +815,11 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 // Artwork column gets the Button affordance, mirroring the
                 // files view.  Click opens the cached cover-art image.
                 if bind_id == "artwork_path" {
-                    let Some(btn) = li.child().and_then(|c| c.downcast::<Button>().ok())
-                    else { return };
-                    if let Some(art_path) = t.artwork_path.clone() {
-                        btn.set_visible(true);
-                        btn.set_sensitive(true);
-                        btn.set_label("View");
-                        // Replace any prior click handler so the captured
-                        // path always matches the row currently bound to
-                        // this recycled cell.
-                        let handler = btn.connect_clicked(move |_| {
-                            open_image_viewer(&art_path);
-                        });
-                        // Disconnect previous handler if present to avoid
-                        // accumulating across binds on the same widget.
-                        unsafe {
-                            if let Some(old) = btn.steal_data::<glib::SignalHandlerId>("art-handler") {
-                                btn.disconnect(old);
-                            }
-                            btn.set_data("art-handler", handler);
-                        }
-                    } else {
-                        btn.set_visible(false);
-                    }
+                    bind_cells.bind(li, t.artwork_path.as_deref(), |li| {
+                        li.item()
+                            .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                            .and_then(|b| b.borrow::<EditorEntry>().track.artwork_path.clone())
+                    });
                     return;
                 }
                 let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok())

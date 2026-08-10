@@ -5,8 +5,9 @@
 //! and what §3.3 of docs/gtk-breakup-plan.md sketched as `editor_menu.rs`.
 //!
 //! Add to / Replace the active playlist, Edit ID3 (single selection only),
-//! and Remove from Playlist. There is no album-art viewer entry here, unlike
-//! the Files and device menus, because the editor has no artwork column.
+//! and Remove from Playlist. Artwork is reached by clicking the thumbnail in
+//! the artwork column rather than through a menu entry, the same way it works
+//! in the Files and device views.
 //!
 //! **Deletion Rule**: "Remove" takes the row out of *this playlist only*. The
 //! file stays on disk and the track stays in the library — removing from a

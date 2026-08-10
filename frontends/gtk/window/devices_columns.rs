@@ -19,13 +19,13 @@
 //! the factories are built long before [`super::devices_menu`] fills it.
 
 use gtk4::prelude::*;
-use gtk4::{glib, Align, Button, ColumnView, ColumnViewColumn, CustomSorter, Label,
+use gtk4::{glib, Align, ColumnView, ColumnViewColumn, CustomSorter, Label,
     MultiSelection, SignalListItemFactory, SortListModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{
-    attach_cell_context_menu, gtk_safe, ml_cell_text, ml_sort_key, open_image_viewer, AppState,
+    attach_cell_context_menu, gtk_safe, ml_cell_text, ml_sort_key, AppState, ArtworkCells,
     MlColumnDef, ALL_COLUMNS,
 };
 
@@ -58,6 +58,9 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
     let dev_sort_model = ui.dev_sort_model.clone();
     let dev_pair_map = ui.dev_pair_map.clone();
     let dev_row_menu_holder = ui.dev_row_menu_holder.clone();
+    // The artwork column's cell, shared with the Files page and the playlist
+    // editor so all three render the same thumbnail (see `ArtworkCells`).
+    let artwork_cells = Rc::new(ArtworkCells::new());
 
     // Playlist-order column (front): shown only while a playlist filter is
     // active, then made the default sort — like the editor's position column.
@@ -192,10 +195,6 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
     }
 
     let mut dev_named_cols: Vec<(String, ColumnViewColumn)> = Vec::new();
-    // Buttons that already have a click handler wired (artwork "View"), so the
-    // device factory connects each button instance only once.
-    let dev_connected_artwork: Rc<RefCell<std::collections::HashSet<glib::Object>>> =
-        Rc::new(RefCell::new(std::collections::HashSet::new()));
     {
         // Columns that are library bookkeeping, not ID3 tags — irrelevant for a
         // device, so never shown here even if visible in the files view.
@@ -226,6 +225,8 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             }
             let id_str = c.id.to_string();
             let is_art = c.id == "artwork_path";
+            let setup_cells = artwork_cells.clone();
+            let bind_cells = artwork_cells.clone();
             let sel_ctx = dev_selection.clone();
             let anchor_ctx = dev_col_view.clone();
             let holder_ctx = dev_row_menu_holder.clone();
@@ -235,16 +236,10 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 if li.child().is_some() {
                     return;
                 }
-                // Artwork column shows a "View" button (mirrors the files view),
-                // every other column a plain label.
+                // Artwork column gets the shared thumbnail cell, every other
+                // column a plain label.
                 let child: gtk4::Widget = if is_art {
-                    let btn = Button::with_label("View");
-                    btn.add_css_class("link");
-                    btn.set_halign(Align::Start);
-                    btn.set_margin_start(4);
-                    btn.set_margin_end(4);
-                    btn.set_visible(false);
-                    btn.upcast::<gtk4::Widget>()
+                    setup_cells.setup().upcast::<gtk4::Widget>()
                 } else {
                     Label::builder()
                         .halign(Align::Start)
@@ -278,7 +273,6 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 );
             });
             let bind_id = id_str.clone();
-            let bind_connected = dev_connected_artwork.clone();
             let bind_state = state.clone();
             factory.connect_bind(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -296,20 +290,15 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 let artist_as_album_artist =
                     bind_state.borrow().config.media_library.artist_as_album_artist;
                 if is_art {
-                    let Some(btn) = li.child().and_then(|c| c.downcast::<Button>().ok()) else {
-                        return;
-                    };
-                    if let Some(ref art_path) = t.artwork_path {
-                        btn.set_visible(true);
-                        let btn_obj = btn.clone().upcast::<glib::Object>();
-                        if !bind_connected.borrow().contains(&btn_obj) {
-                            bind_connected.borrow_mut().insert(btn_obj);
-                            let art = art_path.clone();
-                            btn.connect_clicked(move |_| open_image_viewer(&art));
-                        }
-                    } else {
-                        btn.set_visible(false);
-                    }
+                    bind_cells.bind(li, t.artwork_path.as_deref(), |li| {
+                        li.item()
+                            .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                            .and_then(|b| {
+                                b.borrow::<crate::media_library::LibTrack>()
+                                    .artwork_path
+                                    .clone()
+                            })
+                    });
                     return;
                 }
                 let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
