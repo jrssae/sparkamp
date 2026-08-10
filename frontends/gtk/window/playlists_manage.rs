@@ -30,7 +30,8 @@ use std::rc::Rc;
 
 use super::sidebar::{self, Sidebar};
 use super::{
-    attach_pl_row_drag, gtk_safe, run_playlist_save_dialog, show_playlist_save_error,
+    attach_pl_row_drag, gtk_safe, make_view_search_row, run_playlist_save_dialog,
+    show_playlist_save_error,
     sidebar_pl_end_index, MlCtx, EDITOR_CURRENT_REFRESH_HOOK, EDITOR_REFRESH_HOOK,
     PLAYLIST_NAV_REFRESH_HOOK,
 };
@@ -65,6 +66,8 @@ pub(super) struct Manage {
     /// The editor header's title and path labels.
     pub edit_header: Label,
     pub edit_path_label: Label,
+    /// Shown beside the name when the playlist file can't be written.
+    pub edit_ro_badge: Label,
 }
 
 /// Build the `pl-manage` page and the load seam.
@@ -87,6 +90,58 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
     let pl_search_entry = ui.pl_search_entry.clone();
 
     // ── Helper: load a playlist by DB id into editing state ───────────────
+    // ── Editor header widgets ────────────────────────────────────────────
+    // Declared before `load_pl_by_id` because that closure is the one place
+    // that fills them in: every route into the editor — a sidebar sub-row,
+    // the manage list, a rename, a Save As, a Revert — goes through it, so
+    // the header, the path bar, the read-only badge and Save's sensitivity
+    // can never disagree about which playlist is open.
+    let edit_header: Label = Label::builder()
+        .label("Playlist Editor")
+        .halign(Align::Start)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .margin_start(8).margin_top(4).margin_bottom(0)
+        .build();
+    edit_header.add_css_class("ml-section-header");
+
+    let btn_rename_pl_inline: Button = {
+        let b = Button::with_label("Rename");
+        b.add_css_class("pl-btn");
+        b.set_margin_end(8);
+        b.set_margin_top(2);
+        b
+    };
+
+    // Read-only badge, beside the playlist's name. Shown when the playlist
+    // file itself can't be written, which is the only thing that now stops
+    // Save — the file's location does not (2026-08-10).
+    let edit_ro_badge: Label = Label::new(Some("🔒 Read-only"));
+    edit_ro_badge.add_css_class("badge");
+    edit_ro_badge.set_margin_end(8);
+    edit_ro_badge.set_visible(false);
+    edit_ro_badge.set_tooltip_text(Some(
+        "This playlist file is read-only, so Save is unavailable. \
+         Use Save As to write an editable copy.",
+    ));
+
+    // File path bar — shows where the .m3u lives, which Save now writes to
+    // in place.
+    let edit_path_label: Label = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .margin_start(8).margin_top(0).margin_bottom(4)
+        .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+        .selectable(true)
+        .build();
+    edit_path_label.add_css_class("status-label");
+
+    let btn_save_pl_outer: Button = {
+        let b = Button::with_label("Save");
+        b.add_css_class("pl-btn");
+        b
+    };
+
     let load_pl_by_id: Rc<dyn Fn(i64)> = {
         let state_rc   = state.clone();
         let et         = editing_tracks.clone();
@@ -96,8 +151,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         let apply_cols = apply_editor_columns.clone();
         let err_lbl    = edit_error_label.clone();
         let search     = pl_search_entry.clone();
+        let hdr_lbl    = edit_header.clone();
+        let path_lbl   = edit_path_label.clone();
+        let ro_badge   = edit_ro_badge.clone();
+        let save_btn   = btn_save_pl_outer.clone();
         Rc::new(move |id: i64| {
             ep_id.set(id);
+            // Header, path bar, read-only badge and Save's sensitivity, all
+            // from one place so no route into the editor can leave them
+            // describing a different playlist than the one loaded below.
+            if let Some(ref lib) = state_rc.borrow().media_lib {
+                if let Ok(pl) = lib.playlist_by_id(id) {
+                    hdr_lbl.set_text(&gtk_safe(&pl.name));
+                    path_lbl.set_text(&gtk_safe(&pl.path));
+                }
+                // Save writes the playlist's own file wherever it lives; only
+                // a read-only file stops it.
+                let writable = lib.playlist_is_writable(id);
+                save_btn.set_sensitive(writable);
+                ro_badge.set_visible(!writable);
+            }
             // A previous playlist's search query must not filter this one —
             // but F12.1: if remember_search is on, restore the "playlists"
             // view's saved query instead of clearing.
@@ -289,6 +362,40 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
     // ── Build "pl-manage" page ────────────────────────────────────────────
     {
         let manage_vbox = GtkBox::new(Orientation::Vertical, 0);
+
+        // ── Search ───────────────────────────────────────────────────────
+        // Every other list in the Media Library has one; this page never got
+        // it, which stopped mattering somewhere below a dozen playlists and
+        // started mattering well before forty (2026-08-10).
+        //
+        // A `ListBox` filters through `set_filter_func` rather than the
+        // `FilterListModel` the ColumnView pages use, and it applies to rows
+        // added later too — so a playlist created while a query is active
+        // obeys it without any extra wiring.
+        let (pl_search_row, pl_manage_search) = make_view_search_row("Search playlists…");
+        manage_vbox.append(&pl_search_row);
+        let manage_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+        {
+            let q = manage_query.clone();
+            pl_manage_list.set_filter_func(move |row| {
+                let needle = q.borrow();
+                if needle.is_empty() {
+                    return true;
+                }
+                row.child()
+                    .and_then(|c| c.downcast::<Label>().ok())
+                    .map(|l| l.label().to_lowercase().contains(needle.as_str()))
+                    .unwrap_or(true)
+            });
+        }
+        {
+            let q = manage_query.clone();
+            let list = pl_manage_list.clone();
+            pl_manage_search.connect_changed(move |e| {
+                *q.borrow_mut() = e.text().to_lowercase();
+                list.invalidate_filter();
+            });
+        }
 
         // Populate the manage list from DB
         let playlists_initial = state
@@ -588,48 +695,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         pl_sub_stack.add_named(&manage_vbox, Some("pl-manage"));
     }
 
-    // Hoisted: title + rename button + path label (sidebar handler updates
-    // the title text on selection change).
-    let edit_header: Label = Label::builder()
-        .label("Playlist Editor")
-        .halign(Align::Start)
-        .hexpand(true)
-        .ellipsize(gtk4::pango::EllipsizeMode::End)
-        .margin_start(8).margin_top(4).margin_bottom(0)
-        .build();
-    edit_header.add_css_class("ml-section-header");
-
-    let btn_rename_pl_inline: Button = {
-        let b = Button::with_label("Rename");
-        b.add_css_class("pl-btn");
-        b.set_margin_end(8);
-        b.set_margin_top(2);
-        b
-    };
-
-    // File path bar — shows the .m3u path so the user can see if it is an
-    // external playlist (not managed by Sparkamp).
-    let edit_path_label: Label = Label::builder()
-        .label("")
-        .halign(Align::Start)
-        .margin_start(8).margin_top(0).margin_bottom(4)
-        .ellipsize(gtk4::pango::EllipsizeMode::Middle)
-        .selectable(true)
-        .build();
-    edit_path_label.add_css_class("status-label");
-
-    // Save button (hoisted so the sidebar handler can toggle its sensitivity)
-    let btn_save_pl_outer: Button = {
-        let b = Button::with_label("Save");
-        b.add_css_class("pl-btn");
-        b
-    };
-
     Manage {
         load_pl_by_id,
         btn_rename_pl_inline,
         btn_save_pl_outer,
         edit_header,
         edit_path_label,
+        edit_ro_badge,
     }
 }

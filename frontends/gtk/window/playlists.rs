@@ -481,7 +481,28 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // canonical slot.  ColumnView recycles visible rows so this stays
     // cheap for big playlists.  Also rebuilds `position_map` for first-
     // occurrence path lookups by the cross-window drop target.
+    // ── Unsaved-changes indicator ────────────────────────────────────────
+    // Edits live in `editing_tracks` until Save writes them; `saved_track_ids`
+    // is the last state that reached disk. Until 2026-08-10 nothing showed the
+    // difference, so an editor with pending edits looked identical to a clean
+    // one and both Save and Revert read as doing nothing.
+    let edit_dirty_badge: Label = Label::new(Some("● Unsaved changes"));
+    edit_dirty_badge.add_css_class("badge");
+    edit_dirty_badge.set_margin_end(8);
+    edit_dirty_badge.set_visible(false);
+    let refresh_dirty: Rc<dyn Fn()> = {
+        let et = editing_tracks.clone();
+        let saved = saved_track_ids.clone();
+        let badge = edit_dirty_badge.clone();
+        Rc::new(move || {
+            // Order matters as much as membership — a reorder is an edit.
+            let current: Vec<i64> = et.borrow().iter().map(|t| t.id).collect();
+            badge.set_visible(current != *saved.borrow());
+        })
+    };
+
     let rebuild_track_list: Rc<dyn Fn()> = {
+        let refresh_dirty_rb = refresh_dirty.clone();
         let store    = edit_store.clone();
         let et       = editing_tracks.clone();
         let pos_map  = position_map.clone();
@@ -502,6 +523,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 .collect();
             drop(map);
             store.splice(0, store.n_items(), &items);
+            refresh_dirty_rb();
         })
     };
     // Populate the holder so the column factories' per-cell drop targets
@@ -534,6 +556,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         btn_save_pl_outer,
         edit_header,
         edit_path_label,
+        edit_ro_badge,
     } = playlists_manage::build(
         ctx,
         sb,
@@ -557,6 +580,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         let header_row = GtkBox::new(Orientation::Horizontal, 4);
         header_row.append(&edit_header);
+        header_row.append(&edit_dirty_badge);
+        header_row.append(&edit_ro_badge);
         header_row.append(&btn_rename_pl_inline);
         edit_vbox.append(&header_row);
         edit_vbox.append(&edit_path_label);
@@ -1047,27 +1072,24 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         }
 
         // ── Revert ────────────────────────────────────────────────────────
+        // Re-reads the playlist's file, discarding the in-memory edits (add,
+        // remove and reorder all stay in `editing_tracks` until Save).
+        //
+        // Reads `editing_pl_id`, which is the playlist actually open, rather
+        // than hunting the sidebar for a selected `pl:` row as it did until
+        // 2026-08-10. That scan stopped at the first selected row of any
+        // kind, so Revert silently did nothing whenever the selection was
+        // anywhere else — and it asked the sidebar a question the editor
+        // already knew the answer to.
         {
-            let load    = load_pl_by_id.clone();
-            let sidebar_ref = sidebar.clone();
+            let load  = load_pl_by_id.clone();
+            let ep_id = editing_pl_id.clone();
             btn_revert_pl.connect_clicked(move |_| {
-                // Find currently-selected sidebar pl: row
-                let mut i = 0i32;
-                loop {
-                    match sidebar_ref.row_at_index(i) {
-                        Some(row) => {
-                            let name = row.widget_name().to_string();
-                            if row.is_selected() {
-                                if let Some(id_str) = name.strip_prefix("pl:") {
-                                    if let Ok(id) = id_str.parse::<i64>() { load(id); }
-                                }
-                                break;
-                            }
-                            i += 1;
-                        }
-                        None => break,
-                    }
+                let id = ep_id.get();
+                if id < 0 {
+                    return;
                 }
+                load(id);
             });
         }
 
@@ -1158,6 +1180,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let et          = editing_tracks.clone();
             let saved       = saved_track_ids.clone();
             let ep_id       = editing_pl_id.clone();
+            let refresh_dirty_save = refresh_dirty.clone();
             btn_save_pl.connect_clicked(move |_| {
                 let id = ep_id.get();
                 if id < 0 { return; }
@@ -1174,6 +1197,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     }
                     *saved.borrow_mut() = track_ids;
                 }
+                refresh_dirty_save();
             });
         }
 
@@ -1432,11 +1456,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let stack_ref      = stack.clone();
         let pl_sub_ref     = pl_sub_stack.clone();
         let load           = load_pl_by_id.clone();
-        let state_rc       = state.clone();
         let expanded_rc    = playlists_expanded.clone();
-        let hdr_lbl        = edit_header.clone();
-        let path_lbl       = edit_path_label.clone();
-        let save_btn       = btn_save_pl_outer.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let row = match opt_row { Some(r) => r, None => return };
             let name = row.widget_name().to_string();
@@ -1451,19 +1471,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             } else if let Some(id_str) = name.strip_prefix("pl:") {
                 if let Ok(id) = id_str.parse::<i64>() {
                     stack_ref.set_visible_child_name("playlists");
+                    // `load` fills the header, the path bar, the read-only
+                    // badge and Save's sensitivity — see its definition in
+                    // playlists_manage.rs.
                     load(id);
                     pl_sub_ref.set_visible_child_name("pl-edit");
-                    // Update editor header, path bar, and Save sensitivity.
-                    if let Some(ref lib) = state_rc.borrow().media_lib {
-                        if let Ok(pl) = lib.playlist_by_id(id) {
-                            hdr_lbl.set_text(&gtk_safe(&pl.name));
-                            path_lbl.set_text(&gtk_safe(&pl.path));
-                            // Disable Save for external playlists; user should
-                            // use Save As to get a Sparkamp-managed copy.
-                            let is_managed = lib.playlist_is_managed(id);
-                            save_btn.set_sensitive(is_managed);
-                        }
-                    }
                 }
             }
         });

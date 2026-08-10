@@ -56,6 +56,26 @@ pub(super) fn file_identity(path: &str) -> Option<(u64, u64)> {
 // Bin build on macOS gates out GTK, leaving these FFI/GTK-reachable
 // methods unused there; mirrors the allow on the original impl block.
 #[allow(dead_code)]
+/// Whether this process can write `path`, by the OS's own answer rather than
+/// by reading permission bits — so a read-only mount, a missing write bit and
+/// an ownership mismatch all report the same way.
+#[cfg(unix)]
+fn path_is_writable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c` is a valid NUL-terminated path.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn path_is_writable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| !m.permissions().readonly())
+        .unwrap_or(false)
+}
+
 impl MediaLibrary {
 
     /// Return all playlists (without populating their tracks).
@@ -419,6 +439,7 @@ impl MediaLibrary {
     /// New playlists are written as `.m3u8` (UTF-8 explicit) rather than
     /// `.m3u`; the loader still reads both extensions so existing files
     /// remain accessible.
+    #[allow(dead_code)] // macOS FFI only; see playlist_is_managed
     pub fn create_playlist(&self, name: &str, ext: &str) -> Result<i64> {
         let dir = Self::playlists_dir();
         let safe = name
@@ -587,6 +608,7 @@ impl MediaLibrary {
     /// duration / artist / title are written as an `#EXTINF` line.  Stubs
     /// (paths not in the library) get a `-1` duration EXTINF using the
     /// filename as a display fallback.
+    #[allow(dead_code)] // macOS FFI only; see playlist_is_managed
     pub fn save_playlist_tracks_as(
         &self,
         new_name: &str,
@@ -613,6 +635,36 @@ impl MediaLibrary {
     /// External playlists (scanned from watched folders) should not be
     /// overwritten via Save — the UI should offer Save As instead so the user
     /// gets a managed copy without clobbering the original.
+    /// Whether this playlist's own file can be rewritten in place.
+    ///
+    /// Save writes back to `pl.path` wherever that is — a playlist imported
+    /// from a music folder is edited where it lives, not copied into the
+    /// managed directory first. The one thing that stops it is the file
+    /// itself being read-only, which is a property of the file rather than of
+    /// where it sits, so it is checked with `access(W_OK)` (the same test the
+    /// device code uses) rather than by inspecting the permission bits: that
+    /// catches a read-only mount and an ownership mismatch too, not just the
+    /// write bits.
+    ///
+    /// A playlist whose file has gone missing counts as writable when its
+    /// directory is, since Save will recreate it.
+    pub fn playlist_is_writable(&self, id: i64) -> bool {
+        let Ok(pl) = self.playlist_by_id(id) else { return false };
+        let path = Path::new(&pl.path);
+        if path.exists() {
+            return path_is_writable(path);
+        }
+        path.parent().map(path_is_writable).unwrap_or(false)
+    }
+
+    /// Whether this playlist lives in Sparkamp's own playlists directory.
+    ///
+    /// No longer gates Save — that asks [`Self::playlist_is_writable`]
+    /// instead, so an imported playlist is edited where it lives
+    /// (2026-08-10). Still exported to the macOS frontend through
+    /// `sparkamp_ml_playlist_is_managed`, which is the only caller left in
+    /// the binary's module tree and why this is allowed to look dead here.
+    #[allow(dead_code)]
     pub fn playlist_is_managed(&self, id: i64) -> bool {
         let Ok(pl) = self.playlist_by_id(id) else { return false };
         let pl_dir = Self::playlists_dir();
