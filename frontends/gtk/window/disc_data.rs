@@ -7,9 +7,9 @@
 //! This is the view shown in place of the audio-track list when the loaded
 //! media is present, not blank, and not an audio CD: a `ColumnView` of
 //! `crate::disc::mount::DiscFile` rows (#, Title, Length, Size), a status bar,
-//! and a right-click menu offering Add to Library plus the standard Send-to
-//! submenu. It appends both widgets to the drive detail box it is given, so
-//! it must be built at the point in the detail view where they belong.
+//! and a right-click menu whose Send-to submenu ends in "Copy to library".
+//! It appends both widgets to the drive detail box it is given, so it must be
+//! built at the point in the detail view where they belong.
 //!
 //! The audio side of the page owns *when* this is visible:
 //! `populate_disc_detail` shows or hides [`DataBrowser::scroll`] and calls
@@ -49,7 +49,7 @@ pub(super) struct DataBrowser {
     /// disc read.
     pub load: Rc<dyn Fn(crate::disc::OpticalDrive)>,
     /// Copy the given disc files into the library. Shared with the audio
-    /// side's "Add All to Library" path.
+    /// side's "Copy all to library" button.
     pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
 }
 
@@ -478,7 +478,7 @@ pub(super) fn build(
         });
     }
 
-    // ── Right-click context menu on data-disc files: Add to Library + the
+    // ── Right-click context menu on data-disc files: Copy to library + the
     // standard Send-to submenu ────────────────────────────────────────────
     // Gesture + action group live on the ScrolledWindow, not the ColumnView
     // (same GTK4 hover-popover dodge as the device view's context menu).
@@ -685,7 +685,7 @@ pub(super) fn build(
             disc_files_action_group.add_action(&action);
         }
 
-        // Add to Library.
+        // Copy to library (Send-to submenu; also the bottom bar's Copy all).
         {
             let sel_files = selected_disc_files.clone();
             let add_to_lib = add_disc_files_to_library.clone();
@@ -784,8 +784,20 @@ pub(super) fn build(
                 return;
             }
             // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics. Matches
-            // the macOS disc data-files menu. "Add to Library" lives on the
-            // bottom-bar buttons, not this menu (parity with macOS).
+            // the macOS disc data-files menu.
+            //
+            // "Copy to library" is the last entry of the Send-to submenu
+            // rather than a top-level item: the library is one more place the
+            // selection can be sent, and grouping it with the drives and
+            // devices is what a user looking for "put this somewhere" reads
+            // first. It was previously reachable only from the bottom-bar
+            // button, which testing found people did not associate with a
+            // row selection at all (2026-08-09).
+            //
+            // It is appended here, not inside `build_send_to_menu`, because
+            // that builder is shared with the Files view and the playlist
+            // editor — whose rows are already IN the library, so the item
+            // would be meaningless there.
             let this_drive = selected_disc_id_menu.borrow().clone();
             let send = build_send_to_menu(
                 &state_menu,
@@ -805,6 +817,10 @@ pub(super) fn build(
                         .map(|d| (d.id.clone(), d.label.clone())).collect(),
                 },
             );
+            send.append_item(&gio::MenuItem::new(
+                Some("📚 Copy to library"),
+                Some("disc-files.add-to-library"),
+            ));
             let menu = gio::Menu::new();
             menu.append_submenu(Some("↪ Send to"), &send);
             menu.append_item(&gio::MenuItem::new(

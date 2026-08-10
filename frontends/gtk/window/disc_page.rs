@@ -347,7 +347,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Data-disc-only (Task 9): copies every file currently listed in the
     // browser into the library. Hidden for audio/blank/no-disc states —
     // visibility set alongside the file browser in populate_disc_detail.
-    let disc_add_all_btn = Button::with_label("Add All to Library");
+    // "Copy", not "Add": the files are copied off read-only media into a
+    // watched folder, and the disc keeps its own. "Add" read as though the
+    // library would merely reference the disc (2026-08-09).
+    let disc_add_all_btn = Button::with_label("Copy all to library");
     let disc_enqueue = Button::with_label("Enqueue");
     let disc_play = Button::with_label("▶ Play");
     for b in [
@@ -375,9 +378,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     disc_actions.append(&disc_enqueue);
     disc_actions.append(&disc_play);
     disc_detail.append(&disc_actions);
-    // Add All to Library: every file currently listed in the data-disc
-    // browser, regardless of selection (the per-row context menu's "Add to
-    // Library" handles a selection).
+    // Copy all to library: every file currently listed in the data-disc
+    // browser, regardless of selection (the per-row context menu's
+    // Send to ▸ Copy to library handles a selection).
     {
         let store = disc_files_store.clone();
         let add_all = add_disc_files_to_library.clone();
