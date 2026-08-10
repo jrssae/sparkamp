@@ -11,6 +11,11 @@ its Phase 2b/2c left as one-liners.
 
 ## 1. What we are actually up against
 
+> **Resolved 2026-08-10, steps 1–7.** `media_library.rs` is now 461 lines and
+> `open_media_library_window` is 199. The section below is kept as written
+> because it is the argument the whole plan rests on, and because the
+> measurements in it are what every later step was chosen against.
+
 `frontends/gtk/window/media_library.rs` is 11,927 lines. That number
 undersells it. The file is **one function**: `open_media_library_window`
 spans lines 62–11814, or 11,752 lines, 574 KB, roughly 143k tokens. There is
@@ -277,7 +282,7 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 4 | ~~`files.rs` + `files_menu.rs`~~ **DONE `2d64bb8`, `7f0ceaa`** | 2,130 | medium | CI | **A + D + X** |
 | 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
 | 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
-| 7 | `playlists/` | 3,150 | high | CI | **A + G + X** |
+| 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ⏳ owed |
 | 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
 
 Test groups are defined in [§5](#5-smoke-tests). Steps 5 and 6 run their group
@@ -413,6 +418,45 @@ the five had nothing to do with Devices.
 Group X was not run as such; several of its items were covered incidentally by
 the Send-to fixes above. Remaining data-disc issues are known and deliberately
 deferred as lower priority than the remaining breakup steps.
+
+### What step 7 actually did — 2026-08-10
+
+**No hoist.** Measured first, as step 6 recommends, the Playlists block was
+already contiguous and declared **nothing** the rest of the window read back —
+its widgets and its wiring had never been separated by another page's code.
+That measurement is now three-for-three at deciding the shape of a step before
+any code moves.
+
+What it did find was one thing in the way, and not the kind step 6 saw: a
+single `connect_row_selected` handler routed Files, Albums *and* Playlists and
+merely happened to sit here. `d572f0f` gave Files and Albums their own, which
+is what `sidebar.rs` had documented all along, so the lift stayed a pure move.
+`albums::build` stopped returning its `show_gallery_overview` closure at the
+same time — its only two callers were the routing blocks that moved next to it.
+
+| File | Lines | Seam (in/out) |
+|---|---|---|
+| `playlists_columns.rs` | 1,024 | 17 / 4 |
+| `playlists_manage.rs` | 635 | 14 / 5 |
+| `playlists_menu.rs` | 430 | 14 / 0 |
+| `playlists.rs` | 1,471 | — |
+
+One non-move edit was needed: `EditorEntry` was declared *inside* `build()`,
+and the row menu reads the same wrapper back out of the store, so it moved to
+module scope as `pub(super)`.
+
+**The headline, and the reason this plan existed:**
+
+```
+media_library.rs            11,927 → 461 lines
+open_media_library_window   11,752 → 199 lines
+```
+
+That function is now under `refactor-plan.md`'s 300-line goal, and the file is
+what its name always implied: build the window and its chrome, assemble
+`MlCtx`, call six page builders, save state on close. Both alias blocks shrank
+with it — of `MlHost`'s eight fields only `state` is still aliased, and of the
+sidebar's, only the list and its scroller.
 
 ### Handing off a test round
 
