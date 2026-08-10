@@ -172,32 +172,94 @@ pub fn parse_v07t_readback(text: &str) -> CdText {
     out
 }
 
-/// Read CD-TEXT off the loaded disc via `cdrskin cdtext_to_v07t=-`. `None`
-/// when the disc carries no CD-TEXT or cdrskin fails. READS THE DISC — the
-/// caller MUST hold the exclusive-read guard (drive-contention rule).
+/// The external program [`read_cdtext`] shells out to on this platform.
+/// Named so a failure can say which tool is missing instead of leaving the
+/// user to guess.
 #[cfg(target_os = "linux")]
-pub fn read_cdtext(drive_id: &str) -> Option<CdText> {
-    let out = std::process::Command::new("cdrskin")
+pub const CDTEXT_TOOL: &str = "cdrskin";
+#[cfg(target_os = "macos")]
+pub const CDTEXT_TOOL: &str = "drutil";
+
+/// Why a CD-TEXT read produced no tags.
+///
+/// This distinction exists because the two cases look identical from the
+/// outside and mean opposite things to a user. A disc with no CD-TEXT is
+/// normal and there is nothing to do about it. A missing reader tool means
+/// **no disc will ever show CD-TEXT** until it is installed — and before
+/// 2026-08-09 both simply returned `None`, so the UI showed "Track 1…N" and
+/// said nothing. That cost a real debugging session: a disc whose CD-TEXT
+/// `cdrskin` reads perfectly looked, in the app, exactly like a disc that had
+/// none, because the host had no `cdrskin` at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CdTextMiss {
+    /// The read worked and the disc genuinely carries no CD-TEXT.
+    Absent,
+    /// The reader program is not installed. Carries its name.
+    ToolMissing(&'static str),
+    /// The program exists but could not be run (permissions, drive busy).
+    ToolFailed(String),
+}
+
+impl CdTextMiss {
+    /// A short line fit for a status bar, or `None` when the miss is the
+    /// unremarkable one (the disc simply has no CD-TEXT) and the UI should
+    /// stay quiet.
+    pub fn user_message(&self) -> Option<String> {
+        match self {
+            CdTextMiss::Absent => None,
+            CdTextMiss::ToolMissing(t) => {
+                Some(format!("CD-TEXT unavailable — '{t}' is not installed"))
+            }
+            CdTextMiss::ToolFailed(e) => Some(format!("CD-TEXT read failed — {e}")),
+        }
+    }
+}
+
+/// Read CD-TEXT off the loaded disc via `cdrskin cdtext_to_v07t=-`.
+/// READS THE DISC — the caller MUST hold the exclusive-read guard
+/// (drive-contention rule). See [`CdTextMiss`] for the error cases.
+#[cfg(target_os = "linux")]
+pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
+    let out = std::process::Command::new(CDTEXT_TOOL)
         .args([&format!("dev={drive_id}"), "cdtext_to_v07t=-"])
         .output()
-        .ok()?;
+        .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
     let cd = parse_v07t_readback(&String::from_utf8_lossy(&out.stdout));
-    (!cd.is_empty()).then_some(cd)
+    if cd.is_empty() {
+        Err(CdTextMiss::Absent)
+    } else {
+        Ok(cd)
+    }
 }
 
 /// Read CD-TEXT off the loaded disc on macOS via `drutil -drive <id> cdtext`.
 /// `drive_id` is the drutil enumeration index (`OpticalDrive::id`), the same
-/// value the mac burn/rip paths pass. `None` when the disc has no CD-TEXT or
-/// drutil fails. READS THE DISC — the caller MUST hold the exclusive-read
-/// guard (drive-contention rule).
+/// value the mac burn/rip paths pass. READS THE DISC — the caller MUST hold
+/// the exclusive-read guard (drive-contention rule).
 #[cfg(target_os = "macos")]
-pub fn read_cdtext(drive_id: &str) -> Option<CdText> {
-    let out = std::process::Command::new("drutil")
+pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
+    let out = std::process::Command::new(CDTEXT_TOOL)
         .args(["-drive", drive_id, "cdtext"])
         .output()
-        .ok()?;
+        .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
     let cd = parse_drutil_cdtext(&String::from_utf8_lossy(&out.stdout));
-    (!cd.is_empty()).then_some(cd)
+    if cd.is_empty() {
+        Err(CdTextMiss::Absent)
+    } else {
+        Ok(cd)
+    }
+}
+
+/// Split a failed `Command::output()` into "the tool isn't there" and
+/// everything else. `NotFound` is the case worth naming: it is not a property
+/// of the disc, and it will not fix itself on the next disc.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn classify_spawn_error(e: std::io::Error, tool: &'static str) -> CdTextMiss {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        CdTextMiss::ToolMissing(tool)
+    } else {
+        CdTextMiss::ToolFailed(e.to_string())
+    }
 }
 
 /// Parse `drutil cdtext` output into a [`CdText`].
@@ -402,6 +464,49 @@ Track 02 Artist     = 34. Charli Xcx
 
         // A disc with no CD-TEXT parses empty.
         assert!(parse_v07t_readback("Input Sheet Version = 0.7T\n").is_empty());
+    }
+
+    /// A disc with no CD-TEXT must stay quiet; a missing tool must not. These
+    /// two were the same `None` until 2026-08-09, which is how a host without
+    /// `cdrskin` looked exactly like a disc without CD-TEXT.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn only_a_tool_problem_produces_a_user_message() {
+        assert_eq!(CdTextMiss::Absent.user_message(), None);
+
+        let missing = CdTextMiss::ToolMissing(CDTEXT_TOOL).user_message().unwrap();
+        assert!(missing.contains(CDTEXT_TOOL), "message must name the tool: {missing}");
+        assert!(missing.contains("not installed"), "{missing}");
+
+        let failed = CdTextMiss::ToolFailed("permission denied".into())
+            .user_message()
+            .unwrap();
+        assert!(failed.contains("permission denied"), "{failed}");
+    }
+
+    /// Only `NotFound` means "install something". Anything else is a run-time
+    /// failure of a tool that IS present, and saying "not installed" for a
+    /// permissions error would send the user off fixing the wrong thing.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn spawn_errors_split_missing_from_broken() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            classify_spawn_error(Error::from(ErrorKind::NotFound), "toolname"),
+            CdTextMiss::ToolMissing("toolname")
+        );
+        assert!(matches!(
+            classify_spawn_error(Error::from(ErrorKind::PermissionDenied), "toolname"),
+            CdTextMiss::ToolFailed(_)
+        ));
+    }
+
+    /// An empty/garbage readback is `Absent`, not a tool problem — the tool ran
+    /// fine, the disc just had nothing on it.
+    #[test]
+    fn empty_readback_is_absent_not_a_tool_problem() {
+        assert!(parse_v07t_readback("Input Sheet Version = 0.7T\n").is_empty());
+        assert!(parse_v07t_readback("").is_empty());
     }
 
     #[test]
@@ -676,7 +781,7 @@ Track 02 Artist     = 34. Charli Xcx
         let dev = std::env::var("SPARKAMP_TEST_DRIVE").unwrap_or_else(|_| "/dev/sr0".into());
         let cd = read_cdtext(&dev);
         println!("CD-TEXT read from {dev}: {cd:?}");
-        assert!(cd.is_some(), "no CD-TEXT read from {dev}");
+        assert!(cd.is_ok(), "no CD-TEXT read from {dev}");
     }
 
     /// macOS counterpart, and the one command that answers "does the parser

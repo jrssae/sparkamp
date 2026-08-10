@@ -545,6 +545,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let disc_cdtext = disc_cdtext.clone();
         let disc_cdtext_tried = disc_cdtext_tried.clone();
         let populate_holder = populate_holder.clone();
+        // Where a failed CD-TEXT read reports itself. Without this the read is
+        // silent on failure, and a missing `cdrskin` is indistinguishable from
+        // a disc that carries no CD-TEXT (2026-08-09).
+        let cdtext_status = disc_status_lbl.clone();
         let current_drives_ct = current_drives.clone();
         let search_row = disc_search_row.clone();
         let search_entry = disc_search_entry.clone();
@@ -642,6 +646,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let cdtext = disc_cdtext.clone();
                     let holder = populate_holder.clone();
                     let drives = current_drives_ct.clone();
+                    let status_ct = cdtext_status.clone();
                     glib::spawn_future_local(async move {
                         let id_for_read = id2.clone();
                         let drive_id_for_read = drive_id.clone();
@@ -651,19 +656,30 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             crate::disc::detect::end_exclusive_read();
                             r.map(|cd| cd.to_xmcd(&id_for_read))
                         })
-                        .await
-                        .ok()
-                        .flatten();
-                        if let Some(x) = result {
-                            cdtext.borrow_mut().insert(id2.clone(), x);
-                            // Re-render only if that drive is still shown.
-                            let still =
-                                drives.borrow().iter().find(|d| d.id == drive_id).cloned();
-                            if let (Some(d), Some(p)) =
-                                (still, holder.borrow().clone())
-                            {
-                                p(&d);
+                        .await;
+                        match result {
+                            Ok(Ok(x)) => {
+                                cdtext.borrow_mut().insert(id2.clone(), x);
+                                // Re-render only if that drive is still shown.
+                                let still =
+                                    drives.borrow().iter().find(|d| d.id == drive_id).cloned();
+                                if let (Some(d), Some(p)) =
+                                    (still, holder.borrow().clone())
+                                {
+                                    p(&d);
+                                }
                             }
+                            // A disc with no CD-TEXT says nothing; a missing or
+                            // broken reader tool says so, because otherwise the
+                            // track list just reads "Track 1…N" forever with no
+                            // hint that anything went wrong.
+                            Ok(Err(miss)) => {
+                                if let Some(msg) = miss.user_message() {
+                                    status_ct.set_text(&msg);
+                                }
+                            }
+                            // The blocking task itself failed (pool shut down).
+                            Err(_) => {}
                         }
                     });
                 }

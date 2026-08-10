@@ -857,8 +857,10 @@ pub unsafe extern "C" fn sparkamp_disc_read_cdtext(
     let cd = crate::disc::cdtext::read_cdtext(&drive.id);
     crate::disc::detect::end_exclusive_read();
     match cd {
-        Some(cd) => json_out(&cd.to_xmcd(&discid)),
-        None => std::ptr::null_mut(),
+        Ok(cd) => json_out(&cd.to_xmcd(&discid)),
+        // The Swift side has no channel for a reason here, so every miss is
+        // still a null. `CdTextMiss` exists for the UIs that can say why.
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
