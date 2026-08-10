@@ -41,7 +41,7 @@ use gtk4::{
     EventControllerKey, GestureClick, Grid, GridView, Image, Label, ListBox, ListBoxRow,
     ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned, Picture, PolicyType,
     Scale, ScrolledWindow,
-    Separator, SignalListItemFactory, SortListModel, SpinButton, Stack, StackTransitionType,
+    Separator, SignalListItemFactory, SpinButton, Stack, StackTransitionType,
     TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
@@ -118,6 +118,13 @@ mod disc_data;
 // gnudb identify + the manual tag-override editor (plan step 5, third cut).
 // Declares nothing the rest of the page reads back, so it lifted cleanly.
 mod disc_gnudb;
+
+// The Media Library "Devices" page (plan step 6): overview cards, the device
+// detail view, device-playlist management and the 2 s udisks2 poll. Flat, like
+// the disc pages. Not to be confused with the `devices.rs` slice included
+// below — that is the *logic* (detection, mounts, copy/sync helpers) this page
+// drives; core device support proper lives in `crate::devices`.
+mod devices_page;
 
 // ---------------------------------------------------------------------------
 // AppState
