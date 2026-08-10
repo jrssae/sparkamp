@@ -118,10 +118,15 @@ struct MlHost {
 /// different slice of it and take it as a second `&Sidebar` argument instead.
 /// The test for whether something belongs here is the plan's (§3.2): is it
 /// touched by more than one stack page? Every field below is — Files and
-/// Albums share the drill-down filter and its back button, every page parents
-/// dialogs to the window and adds itself to the stack, and Files and the
-/// device views share the copy runner. State touched by one page only stays
-/// in that page's module.
+/// Albums share the drill-down filter and its back button, and every page
+/// parents dialogs to the window and adds itself to the stack. State touched
+/// by one page only stays in that page's module.
+///
+/// Cross-page *behaviour* does not belong here either: the two runners the
+/// device page owns and Files and the editor call (copy loose files, send a
+/// whole playlist) reach their callers through the holders already on
+/// [`MlHost`] and [`Sidebar`], not through a field. That indirection is what
+/// lets the device page be built after the pages that call it.
 struct MlCtx {
     host: MlHost,
     /// The window itself — pages parent their dialogs and file choosers to it.
@@ -140,9 +145,6 @@ struct MlCtx {
     /// their order and widths back out to save them.
     col_view_holder: Rc<RefCell<Option<ColumnView>>>,
     all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>>,
-    /// Copy loose files onto a device on a worker thread. Owned by the device
-    /// view; Files needs it for Send to ▸ Device.
-    copy_files_run: Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>,
 }
 
 fn open_media_library_window(
@@ -2752,7 +2754,6 @@ fn open_media_library_window(
         btn_album_back: btn_album_back.clone(),
         col_view_holder: col_view_holder.clone(),
         all_cols_holder: all_cols_holder.clone(),
-        copy_files_run: copy_files_run.clone(),
     };
 
     // ── Page: Files ──────────────────────────────────────────────────────
@@ -4948,7 +4949,7 @@ fn open_media_library_window(
             let devices = current_devices.clone();
             let ep_id = editing_pl_id.clone();
             let state_rc = state.clone();
-            let send = send_playlist_run.clone();
+            let send_holder = send_playlist_holder.clone();
             let action = gio::SimpleAction::new(
                 "send-playlist-device",
                 Some(glib::VariantTy::STRING),
@@ -4970,7 +4971,9 @@ fn open_media_library_window(
                     .and_then(|l| l.playlist_by_id(id).ok())
                     .map(|p| p.name)
                     .unwrap_or_default();
-                send(dev, id, name);
+                if let Some(send) = send_holder.borrow().clone() {
+                    send(dev, id, name);
+                }
             });
             ed_action_group.add_action(&action);
         }

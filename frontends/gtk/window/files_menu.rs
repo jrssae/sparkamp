@@ -58,7 +58,7 @@ pub(super) fn install(
     let current_devices = ctx.host.current_devices.clone();
     let burn_queues = ctx.host.burn_queues.clone();
     let burn_refresh_holder = ctx.host.burn_refresh_holder.clone();
-    let copy_files_run = ctx.copy_files_run.clone();
+    let copy_files_holder = ctx.host.copy_files_holder.clone();
     let win = ctx.win.clone();
     let col_view = col_view.clone();
     let multi_sel = multi_sel.clone();
@@ -279,7 +279,7 @@ pub(super) fn install(
         {
             let current_devices = current_devices.clone();
             let paths_src = ml_live_selected_paths.clone();
-            let copy_files_run = copy_files_run.clone();
+            let copy_files_holder = copy_files_holder.clone();
             let action = gio::SimpleAction::new(
                 "send-device",
                 Some(glib::VariantTy::STRING),
@@ -295,7 +295,9 @@ pub(super) fn install(
                 // Live selection at dispatch (G1).
                 let paths: Vec<_> = paths_src();
                 if let (Some(dev), false) = (dev, paths.is_empty()) {
-                    copy_files_run(dev, paths);
+                    if let Some(run) = copy_files_holder.borrow().clone() {
+                        run(dev, paths);
+                    }
                 }
             });
             ml_action_group.add_action(&action);
