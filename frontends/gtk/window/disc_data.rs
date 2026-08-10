@@ -18,14 +18,15 @@
 use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, Align, Box as GtkBox, ColumnView, ColumnViewColumn, CustomSorter,
-    EventControllerKey, GestureClick, Label, MultiSelection, PolicyType, ScrolledWindow,
+    EventControllerKey, Label, MultiSelection, PolicyType, ScrolledWindow,
     SignalListItemFactory, SortListModel,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{
-    art_window, build_send_to_menu, context_popover, disc, gtk_safe, ml_status_bar_for,
+    art_window, attach_cell_context_menu, build_send_to_menu, context_popover, disc,
+    gtk_safe, ml_status_bar_for,
     notify_playlist_changed, notify_playlist_nav_refresh, open_id3_editor_window,
     queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
     view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
@@ -92,13 +93,24 @@ pub(super) fn build(
         SortListModel::new(Some(disc_files_store.clone()), None::<gtk4::Sorter>);
     let disc_files_selection = MultiSelection::new(Some(disc_files_sort_model.clone()));
     let disc_files_col_view = ColumnView::new(Some(disc_files_selection.clone()));
+    // The row context menu, filled in further down once its action group and
+    // menu model exist. The cells below are built before any of that but each
+    // one needs to reach it, which is the holder pattern this file already
+    // leans on (docs/gtk-breakup-plan.md §3.1). Left None it is a silent
+    // no-op, which is exactly the bug being fixed here, so it is filled
+    // unconditionally at the end of the gesture block.
+    let row_menu_holder: Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>> =
+        Rc::new(RefCell::new(None));
     disc_files_col_view.add_css_class("ml-col-view");
     disc_files_col_view.set_hexpand(true);
     disc_files_col_view.set_vexpand(true);
     {
         // "#" — row position (mirrors dev_pos_col).
+        let sel_ctx = disc_files_selection.clone();
+        let anchor_ctx = disc_files_col_view.clone();
+        let holder_ctx = row_menu_holder.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
                 return;
@@ -111,6 +123,24 @@ pub(super) fn build(
                 .css_classes(["pl-duration"])
                 .build();
             li.set_child(Some(&lbl));
+            // Right-click has to be handled per cell: ColumnView has no
+            // `row_at_y`, so the ScrolledWindow-level gesture this used to
+            // rely on could not tell which row it hit.
+            attach_cell_context_menu(
+                li,
+                lbl.upcast_ref(),
+                &sel_ctx,
+                anchor_ctx.upcast_ref(),
+                {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
+                        }
+                    }
+                },
+            );
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -123,8 +153,11 @@ pub(super) fn build(
         disc_files_col_view.append_column(&col);
 
         // Title.
+        let sel_ctx = disc_files_selection.clone();
+        let anchor_ctx = disc_files_col_view.clone();
+        let holder_ctx = row_menu_holder.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
                 return;
@@ -138,6 +171,24 @@ pub(super) fn build(
                 .css_classes(["ml-col-label"])
                 .build();
             li.set_child(Some(&lbl));
+            // Right-click has to be handled per cell: ColumnView has no
+            // `row_at_y`, so the ScrolledWindow-level gesture this used to
+            // rely on could not tell which row it hit.
+            attach_cell_context_menu(
+                li,
+                lbl.upcast_ref(),
+                &sel_ctx,
+                anchor_ctx.upcast_ref(),
+                {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
+                        }
+                    }
+                },
+            );
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -166,8 +217,11 @@ pub(super) fn build(
         disc_files_col_view.append_column(&col);
 
         // Length — "M:SS", or "—" when the duration couldn't be probed.
+        let sel_ctx = disc_files_selection.clone();
+        let anchor_ctx = disc_files_col_view.clone();
+        let holder_ctx = row_menu_holder.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
                 return;
@@ -180,6 +234,24 @@ pub(super) fn build(
                 .css_classes(["pl-duration"])
                 .build();
             li.set_child(Some(&lbl));
+            // Right-click has to be handled per cell: ColumnView has no
+            // `row_at_y`, so the ScrolledWindow-level gesture this used to
+            // rely on could not tell which row it hit.
+            attach_cell_context_menu(
+                li,
+                lbl.upcast_ref(),
+                &sel_ctx,
+                anchor_ctx.upcast_ref(),
+                {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
+                        }
+                    }
+                },
+            );
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -211,8 +283,11 @@ pub(super) fn build(
         disc_files_col_view.append_column(&col);
 
         // Size in MB.
+        let sel_ctx = disc_files_selection.clone();
+        let anchor_ctx = disc_files_col_view.clone();
+        let holder_ctx = row_menu_holder.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
                 return;
@@ -225,6 +300,24 @@ pub(super) fn build(
                 .css_classes(["pl-duration"])
                 .build();
             li.set_child(Some(&lbl));
+            // Right-click has to be handled per cell: ColumnView has no
+            // `row_at_y`, so the ScrolledWindow-level gesture this used to
+            // rely on could not tell which row it hit.
+            attach_cell_context_menu(
+                li,
+                lbl.upcast_ref(),
+                &sel_ctx,
+                anchor_ctx.upcast_ref(),
+                {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
+                        }
+                    }
+                },
+            );
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -483,9 +576,6 @@ pub(super) fn build(
     // Gesture + action group live on the ScrolledWindow, not the ColumnView
     // (same GTK4 hover-popover dodge as the device view's context menu).
     {
-        let ctx_click = GestureClick::new();
-        ctx_click.set_button(3);
-
         let disc_files_action_group = gio::SimpleActionGroup::new();
         disc_files_scroll.insert_action_group("disc-files", Some(&disc_files_action_group));
 
@@ -779,7 +869,11 @@ pub(super) fn build(
         let drives_menu = current_drives.clone();
         let devices_menu = current_devices.clone();
         let selected_disc_id_menu = selected_disc_id.clone();
-        ctx_click.connect_pressed(move |gest, _, x, y| {
+        // Filled here rather than connected to the ScrolledWindow: each cell
+        // calls this through `row_menu_holder` after selecting its own row, so
+        // `x`/`y` arrive in ColumnView space and the selection is never empty.
+        let col_view_menu = disc_files_col_view.clone();
+        *row_menu_holder.borrow_mut() = Some(Rc::new(move |x: f64, y: f64| {
             if sel_menu().is_empty() {
                 return;
             }
@@ -849,12 +943,15 @@ pub(super) fn build(
             // item dispatches (the bug fixed in the playlist editor). Match
             // the working files-view recipe.
             popover.set_parent(&scroll_menu);
-            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            // The cell handed us ColumnView coordinates; the popover is
+            // parented to the ScrolledWindow, so make the last hop here.
+            let (sx, sy) = col_view_menu
+                .translate_coordinates(&scroll_menu, x, y)
+                .unwrap_or((x, y));
+            let rect = gtk4::gdk::Rectangle::new(sx as i32, sy as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
-            gest.set_state(gtk4::EventSequenceState::Claimed);
-        });
-        disc_files_scroll.add_controller(ctx_click);
+        }));
     }
 
     DataBrowser {

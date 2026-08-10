@@ -578,6 +578,11 @@ fn open_media_library_window(
     let dev_sort_model = SortListModel::new(Some(dev_filter_model), None::<gtk4::Sorter>);
     let dev_selection = MultiSelection::new(Some(dev_sort_model.clone()));
     let dev_col_view = ColumnView::new(Some(dev_selection.clone()));
+    // The device row context menu, filled in further down once its action
+    // group and menu model exist. Cells are built before that but each needs
+    // to reach it — the holder pattern (docs/gtk-breakup-plan.md §3.1).
+    let dev_row_menu_holder: Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>> =
+        Rc::new(RefCell::new(None));
     dev_col_view.add_css_class("ml-col-view");
     dev_col_view.set_hexpand(true);
     dev_col_view.set_vexpand(true);
@@ -585,8 +590,11 @@ fn open_media_library_window(
     // Playlist-order column (front): shown only while a playlist filter is
     // active, then made the default sort — like the editor's position column.
     let dev_pos_col = {
+        let sel_ctx = dev_selection.clone();
+        let anchor_ctx = dev_col_view.clone();
+        let holder_ctx = dev_row_menu_holder.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
                 return;
@@ -599,6 +607,25 @@ fn open_media_library_window(
                 .css_classes(["pl-duration"])
                 .build();
             li.set_child(Some(&lbl));
+            // Right-click has to be handled per cell: ColumnView has no
+            // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
+            // row it hit and the menu did nothing until a left-click had
+            // already selected something (2026-08-10).
+            attach_cell_context_menu(
+                li,
+                lbl.upcast_ref(),
+                &sel_ctx,
+                anchor_ctx.upcast_ref(),
+                {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
+                        }
+                    }
+                },
+            );
         });
         // The playlist view holds entries in order (no sort), so the row's
         // position in the model is its 1-based playlist position. Each duplicate
@@ -623,8 +650,11 @@ fn open_media_library_window(
     // live per-device pair map keyed by on-device path.
     {
         let pair_map = dev_pair_map.clone();
+        let sel_ctx = dev_selection.clone();
+        let anchor_ctx = dev_col_view.clone();
+        let holder_ctx = dev_row_menu_holder.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
                 return;
@@ -638,6 +668,25 @@ fn open_media_library_window(
                 .css_classes(["status-label"])
                 .build();
             li.set_child(Some(&lbl));
+            // Right-click has to be handled per cell: ColumnView has no
+            // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
+            // row it hit and the menu did nothing until a left-click had
+            // already selected something (2026-08-10).
+            attach_cell_context_menu(
+                li,
+                lbl.upcast_ref(),
+                &sel_ctx,
+                anchor_ctx.upcast_ref(),
+                {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
+                        }
+                    }
+                },
+            );
         });
         factory.connect_bind(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -705,6 +754,9 @@ fn open_media_library_window(
             }
             let id_str = c.id.to_string();
             let is_art = c.id == "artwork_path";
+            let sel_ctx = dev_selection.clone();
+            let anchor_ctx = dev_col_view.clone();
+            let holder_ctx = dev_row_menu_holder.clone();
             let factory = SignalListItemFactory::new();
             factory.connect_setup(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -733,6 +785,25 @@ fn open_media_library_window(
                         .upcast::<gtk4::Widget>()
                 };
                 li.set_child(Some(&child));
+                // Right-click has to be handled per cell: ColumnView has no
+                // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
+                // row it hit and the menu did nothing until a left-click had
+                // already selected something (2026-08-10).
+                attach_cell_context_menu(
+                    li,
+                    &child,
+                    &sel_ctx,
+                    anchor_ctx.upcast_ref(),
+                    {
+                        let holder = holder_ctx.clone();
+                        move |x, y| {
+                            let f = holder.borrow().clone();
+                            if let Some(f) = f {
+                                f(x, y);
+                            }
+                        }
+                    },
+                );
             });
             let bind_id = id_str.clone();
             let bind_connected = dev_connected_artwork.clone();
@@ -2147,8 +2218,6 @@ fn open_media_library_window(
     // Gesture + action group live on the ScrolledWindow, not the ColumnView, to
     // dodge the GTK4 bug where a PopoverMenu parented on the view misses hover.
     {
-        let ctx_click = GestureClick::new();
-        ctx_click.set_button(3); // right mouse button
 
         let dev_file_action_group = gio::SimpleActionGroup::new();
         dev_tracks_scroll.insert_action_group("dev-file", Some(&dev_file_action_group));
@@ -2542,7 +2611,12 @@ fn open_media_library_window(
         let state_menu_dev = state.clone();
         let drives_menu_dev = current_drives.clone();
         let devices_menu_dev = current_devices.clone();
-        ctx_click.connect_pressed(move |gest, _, x, y| {
+        // Filled here rather than connected to the ScrolledWindow: each cell
+        // calls this through `dev_row_menu_holder` after selecting its own
+        // row, so `x`/`y` arrive in ColumnView space and `sel` is never empty
+        // just because nothing had been left-clicked yet.
+        let col_view_menu_dev = dev_col_view.clone();
+        *dev_row_menu_holder.borrow_mut() = Some(Rc::new(move |x: f64, y: f64| {
             let sel = sel_menu();
             if sel.is_empty() {
                 return;
@@ -2595,12 +2669,15 @@ fn open_media_library_window(
             popover.set_parent(&scroll_menu);
             // Unparent on close so a right-click doesn't leak a popover per use.
             popover.connect_closed(|p| p.unparent());
-            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            // The cell handed us ColumnView coordinates; the popover is
+            // parented to the ScrolledWindow, so make the last hop here.
+            let (sx, sy) = col_view_menu_dev
+                .translate_coordinates(&scroll_menu, x, y)
+                .unwrap_or((x, y));
+            let rect = gtk4::gdk::Rectangle::new(sx as i32, sy as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
-            gest.set_state(gtk4::EventSequenceState::Claimed);
-        });
-        dev_tracks_scroll.add_controller(ctx_click);
+        }));
     }
 
     dev_page.append(&dev_detail);

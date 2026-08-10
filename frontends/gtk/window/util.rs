@@ -837,6 +837,69 @@ pub(super) fn context_popover(menu: &gio::Menu) -> gtk4::PopoverMenu {
     popover
 }
 
+/// Give one `ColumnView` cell the standard right-click behaviour: select the
+/// row under the pointer if it is not already part of the selection, then hand
+/// the caller the click point translated into `anchor`'s coordinate space so it
+/// can pop its menu there.
+///
+/// This has to be attached per cell, not to the scrolling container, and that
+/// is the whole point. GTK4 gives `ListBox` a `row_at_y` but `ColumnView` has
+/// no equivalent, so a container-level gesture cannot tell which row it hit —
+/// it can only read whatever was already selected. That is exactly how the disc
+/// and device views behaved: right-click did nothing at all until you had
+/// left-clicked a row first (reported 2026-08-10). A cell already knows its
+/// `ListItem`, so attaching here is what makes the row identifiable.
+///
+/// An existing multi-selection is preserved when the clicked row is part of it,
+/// so right-clicking inside a selection acts on the whole selection rather than
+/// collapsing it to one row.
+///
+/// Capture phase, because `ColumnView`'s own secondary-button handler would
+/// otherwise change the selection before this can inspect it.
+pub(super) fn attach_cell_context_menu(
+    li: &gtk4::ListItem,
+    child: &gtk4::Widget,
+    selection: &gtk4::MultiSelection,
+    anchor: &gtk4::Widget,
+    on_popup: impl Fn(f64, f64) + 'static,
+) {
+    use gtk4::prelude::*;
+    let gesture = gtk4::GestureClick::new();
+    gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+    gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let li_g = li.clone();
+    let sel = selection.clone();
+    let anchor_g = anchor.clone();
+    gesture.connect_pressed(move |gest, n_press, x, y| {
+        if n_press != 1 {
+            return;
+        }
+        let Some(item) = li_g.item() else { return };
+        let mut clicked: Option<u32> = None;
+        for i in 0..sel.n_items() {
+            if sel.item(i).map(|m| m == item).unwrap_or(false) {
+                clicked = Some(i);
+                break;
+            }
+        }
+        if let Some(idx) = clicked {
+            if !sel.is_selected(idx) {
+                sel.unselect_all();
+                sel.select_item(idx, true);
+            }
+        }
+        // The gesture reports coordinates in the cell's space; the popover is
+        // parented to `anchor`, so it needs them there instead.
+        let (px, py) = li_g
+            .child()
+            .and_then(|c| c.translate_coordinates(&anchor_g, x, y))
+            .unwrap_or((x, y));
+        on_popup(px, py);
+        gest.set_state(gtk4::EventSequenceState::Claimed);
+    });
+    child.add_controller(gesture);
+}
+
 pub(super) fn build_send_to_menu(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
     actions: &SendToActions<'_>,
