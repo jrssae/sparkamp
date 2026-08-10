@@ -37,7 +37,7 @@ use gtk4::prelude::*;
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn,
-    ContentFit, CustomSorter, DragSource, DrawingArea, DropDown, DropTarget, Entry,
+    ContentFit, DragSource, DrawingArea, DropDown, DropTarget, Entry,
     EventControllerKey, GestureClick, Grid, GridView, Image, Label, ListBox, ListBoxRow,
     ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned, Picture, PolicyType,
     Scale, ScrolledWindow,
@@ -145,6 +145,10 @@ mod devices_playlists;
 // The device track view's columns (plan step 6, fifth cut). Driven by the same
 // shared ALL_COLUMNS table as the Files view, plus two device-only columns.
 mod devices_columns;
+
+// The Media Library "Playlists" page (plan step 7): the saved-playlist
+// manager and the track editor, as two sub-pages of one stack page.
+mod playlists;
 
 // ---------------------------------------------------------------------------
 // AppState
