@@ -2792,24 +2792,33 @@ pub fn build(
             pl_action_group.add_action(&action);
         }
 
-        // Send to Removable Device: self-contained — copies straight onto the
-        // device using the same core plan/copy helpers as the Media Library's
-        // copy_files_run (device_plan_fs / device_recorded_relpath /
-        // device_record_pair / devices::io::for_device), but without any of
-        // that runner's ML-only widgets (sidebar row, progress bar, eject
-        // button — copy_files_run captures those directly and they don't
-        // exist until the ML window has been built). That coupling is why
-        // this path previously went through copy_files_holder and silently
-        // did nothing when the holder was still empty: the device already
-        // shows up in the menu via the app-start device poll, independent of
-        // the ML window. Progress goes to the playlist status label and the
-        // result to an alert on the playlist window, mirroring pl.send-drive.
+        // Send to Removable Device: the Media Library's copy runner when it is
+        // available, and a self-contained copy when it is not.
+        //
+        // The fallback copies straight onto the device using the same core
+        // plan/copy helpers as the ML's copy_files_run (device_plan_fs /
+        // device_recorded_relpath / device_record_pair / devices::io::
+        // for_device), but without any of that runner's ML-only widgets
+        // (sidebar row, progress bar, eject button — copy_files_run captures
+        // those directly and they don't exist until the ML window has been
+        // built). That coupling is why this path once went through
+        // copy_files_holder *unconditionally* and silently did nothing when
+        // the holder was still empty: the device shows up in this menu via the
+        // app-start device poll, independent of the ML window.
+        //
+        // Going holder-first-with-a-fallback keeps that fixed while restoring
+        // the progress UI when the ML window is open, which is what a user
+        // dragging the same files onto the same device already sees
+        // (2026-08-10). Fallback progress goes to the playlist status label
+        // and the result to an alert on the playlist window, mirroring
+        // pl.send-drive.
         {
             let current_devices = current_devices.clone();
             let pl_view_dev = pl_view.clone();
             let state_dev = state.clone();
             let status = pl_status_label.clone();
             let win_wk = playlist_win.downgrade();
+            let copy_files_holder = copy_files_holder.clone();
             let action = gio::SimpleAction::new(
                 "send-device",
                 Some(glib::VariantTy::STRING),
@@ -2840,6 +2849,18 @@ pub fn build(
                 let paths: Vec<std::path::PathBuf> =
                     paths.into_iter().filter(|p| p.exists()).collect();
                 if paths.is_empty() {
+                    return;
+                }
+                // Prefer the Media Library's copy runner when it exists, so
+                // this reports progress exactly where a drag-and-drop onto the
+                // same device does: the device's sidebar row and the detail
+                // view's bar. The standalone path below is the fallback for
+                // when the ML window has never been opened and the holder is
+                // still empty — see the comment above this block for why that
+                // fallback has to exist at all.
+                let ml_runner = copy_files_holder.borrow().clone();
+                if let Some(run) = ml_runner {
+                    run(dev, paths);
                     return;
                 }
                 let win_for_alert = || win_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
