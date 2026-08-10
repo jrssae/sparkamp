@@ -318,8 +318,22 @@ fn open_media_library_window(
     // below (filled in right after `edit_multi_sel` is constructed).
     let edit_multi_sel_holder: Rc<RefCell<Option<gtk4::MultiSelection>>> =
         Rc::new(RefCell::new(None));
+    //
+    // **Nothing selected means the whole playlist.** That is what the editor's
+    // other whole-list controls already do (▶ Play and Enqueue both ignore the
+    // selection and act on `editing_tracks`), and it is what a user reaching
+    // for "Send to ▾" with no rows highlighted means. Before 2026-08-10 every
+    // one of those five actions returned an empty Vec and bailed without a
+    // word, so the button looked dead — the failure mode this file's own
+    // §"holder" comments warn about, arrived at from the other direction.
+    //
+    // The fallback cannot leak into the per-row right-click menu: that
+    // gesture selects the clicked row before it pops the menu (see
+    // `g_sel.select_item` below), so the selection is never empty when the
+    // menu dispatches. Only the button can reach the fallback.
     let ed_selected_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
         let sel_holder = edit_multi_sel_holder.clone();
+        let all_tracks = editing_tracks.clone();
         Rc::new(move || {
             let Some(sel) = sel_holder.borrow().clone() else { return Vec::new() };
             let mut out = Vec::new();
@@ -332,6 +346,9 @@ fn open_media_library_window(
                         out.push(obj.borrow::<EditorEntry>().track.clone());
                     }
                 }
+            }
+            if out.is_empty() {
+                return all_tracks.borrow().clone();
             }
             out
         })
@@ -414,23 +431,65 @@ fn open_media_library_window(
         ed_action_group.add_action(&ed_action_drive);
     }
     {
-        // Send to Removable Device: hand off to the Files view's copy
-        // runner via the shared holder (populated once the Device view's
-        // widgets exist — see copy_files_holder's own doc comment).
+        // Send to Removable Device. Two runners, chosen by whether the user
+        // picked rows:
+        //
+        // - **Some rows selected** → the Files view's copy runner via
+        //   `copy_files_holder` (populated once the Device view's widgets
+        //   exist — see that holder's own doc comment). Files only; a subset
+        //   of a playlist is not a playlist, so no .m3u8 is written.
+        // - **Nothing selected** → the whole playlist, which means the
+        //   *playlist*, not just its audio: `send_playlist_holder` copies the
+        //   files AND writes the device .m3u8 and the sync baseline that the
+        //   device view's playlist chips and two-way sync are built on.
+        //
+        // Until 2026-08-10 the second case did nothing at all, and reaching
+        // the .m3u8 path took a separate "Entire playlist to device" submenu
+        // that duplicated this item for anyone who had not noticed the
+        // difference. That submenu is gone; this is the one way in.
         let current_devices = current_devices.clone();
         let copy_files_holder = copy_files_holder.clone();
+        let send_playlist_holder = send_playlist_holder.clone();
+        let sel_holder = edit_multi_sel_holder.clone();
         let sel_tracks = ed_selected_tracks.clone();
+        let ep_id = editing_pl_id.clone();
+        let state_dev = state.clone();
         ed_action_device.connect_activate(move |_, target| {
             let Some(dev_id) = target.and_then(|v| v.get::<String>()) else { return };
-            let dev = current_devices
+            let Some(dev) = current_devices
                 .borrow()
                 .iter()
                 .find(|d| d.id == dev_id)
-                .cloned();
-            // Live selection at dispatch (G1).
+                .cloned()
+            else { return };
+            // Live selection at dispatch (G1). Read the model rather than
+            // `sel_tracks()`, whose whole-playlist fallback is exactly the
+            // case being distinguished here.
+            let has_selection = sel_holder
+                .borrow()
+                .as_ref()
+                .map(|sel| (0..sel.n_items()).any(|i| sel.is_selected(i)))
+                .unwrap_or(false);
+            if !has_selection {
+                let id = ep_id.get();
+                if id < 0 {
+                    return;
+                }
+                let name = state_dev
+                    .borrow()
+                    .media_lib
+                    .as_ref()
+                    .and_then(|l| l.playlist_by_id(id).ok())
+                    .map(|p| p.name)
+                    .unwrap_or_default();
+                if let Some(send) = send_playlist_holder.borrow().clone() {
+                    send(dev, id, name);
+                }
+                return;
+            }
             let paths: Vec<std::path::PathBuf> = sel_tracks()
                 .iter().map(|t| std::path::PathBuf::from(&t.path)).collect();
-            if let (Some(dev), false) = (dev, paths.is_empty()) {
+            if !paths.is_empty() {
                 if let Some(run) = copy_files_holder.borrow().clone() {
                     run(dev, paths);
                 }
@@ -2394,7 +2453,7 @@ fn open_media_library_window(
         // Install "ed" directly on the button too — mirrors the files
         // view's btn_send_to: window-level alone enables the top-level
         // items but the NESTED submenu popovers (Saved Playlist ▸, Disc
-        // Drive ▸, Entire playlist to device ▸) resolve actions against
+        // Drive ▸, Removable Device ▸) resolve actions against
         // the button's own popover chain, so their items don't dispatch
         // unless the group also sits on the button itself.
         btn_send_to_ed.insert_action_group("ed", Some(&ed_action_group));
@@ -2431,44 +2490,6 @@ fn open_media_library_window(
         // the active playlist window.
         edit_vbox.reorder_child_after(&pl_status_bar, Some(&track_scroll));
 
-        // Whole playlist (files + .m3u8) to a device — the old flat
-        // "Send to…" popover's only action, now a target-parameterised
-        // action so it can live inside the standard Send-to ▾ menu as an
-        // appended "Entire playlist to device" submenu (one item per
-        // device). Body moved verbatim from the old per-device button.
-        {
-            let devices = current_devices.clone();
-            let ep_id = editing_pl_id.clone();
-            let state_rc = state.clone();
-            let send_holder = send_playlist_holder.clone();
-            let action = gio::SimpleAction::new(
-                "send-playlist-device",
-                Some(glib::VariantTy::STRING),
-            );
-            action.connect_activate(move |_, target| {
-                let Some(dev_id) = target.and_then(|v| v.get::<String>()) else { return };
-                let Some(dev) = devices.borrow().iter().find(|d| d.id == dev_id).cloned()
-                else {
-                    return;
-                };
-                let id = ep_id.get();
-                if id < 0 {
-                    return;
-                }
-                let name = state_rc
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|l| l.playlist_by_id(id).ok())
-                    .map(|p| p.name)
-                    .unwrap_or_default();
-                if let Some(send) = send_holder.borrow().clone() {
-                    send(dev, id, name);
-                }
-            });
-            ed_action_group.add_action(&action);
-        }
-
         // Rebuild the Send-to menu model fresh on every open — drives/
         // devices may have come or gone. `set_create_popup_func` is
         // invoked by GTK right before the popover is shown; mirrors the
@@ -2492,24 +2513,6 @@ fn open_media_library_window(
                             .map(|d| (d.id.clone(), d.label.clone())).collect(),
                     },
                 );
-                let devs = current_devices.borrow();
-                if !devs.is_empty() {
-                    let sub = gio::Menu::new();
-                    for d in devs.iter() {
-                        let label = if d.label.is_empty() {
-                            "Untitled device".to_string()
-                        } else {
-                            d.label.clone()
-                        };
-                        let item = gio::MenuItem::new(Some(&gtk_safe(&label)), None);
-                        item.set_action_and_target_value(
-                            Some("ed.send-playlist-device"),
-                            Some(&d.id.to_variant()),
-                        );
-                        sub.append_item(&item);
-                    }
-                    menu.append_submenu(Some("Entire playlist to device"), &sub);
-                }
                 btn.set_menu_model(Some(&menu));
             });
         }
