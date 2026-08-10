@@ -394,6 +394,8 @@ pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
         kind,
         free_bytes: st.free_blocks.unwrap_or(0) * 2048,
         capacity_bytes: (st.free_blocks.unwrap_or(0) + st.used_blocks.unwrap_or(0)) * 2048,
+        // drutil reports the typing itself, so reaching here means we read it.
+        typing_unknown: false,
     }
 }
 
@@ -585,6 +587,8 @@ pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
         kind,
         free_bytes: if blank { capacity_bytes } else { 0 },
         capacity_bytes,
+        // Parsing minfo output at all means the probe ran.
+        typing_unknown: false,
     })
 }
 
@@ -897,7 +901,12 @@ mod platform {
                 run("cdrskin", &[&format!("dev={node}"), "-minfo"])
                     .and_then(|o| super::parse_minfo(&o))
                     .map(|m| super::merge_minfo_typing(toc_media.clone(), m))
-                    .unwrap_or(toc_media)
+                    // No typing: flag it rather than let the defaults read as
+                    // "not blank, not rewritable", which `erase_decision` can
+                    // only treat as write-once-with-content. The usual cause
+                    // is the OS holding /dev/srN because it auto-mounted the
+                    // data disc, so cdrskin gets EBUSY (2026-08-10).
+                    .unwrap_or(MediaInfo { typing_unknown: true, ..toc_media })
             }
             // No readable TOC but the status ioctl said "disc ok" (the
             // caller only probes then): blank / just-erased media — type it
@@ -1241,6 +1250,35 @@ session status:           complete
         assert_eq!(m.free_bytes, 0);
 
         assert!(parse_minfo("cdrskin: no disc\n").is_none());
+    }
+
+    /// A mounted data disc makes `cdrskin -minfo` fail with EBUSY, so the
+    /// typing never merges. The TOC-derived defaults then read as "not blank,
+    /// not rewritable" — which `erase_decision` can only call
+    /// write-once-with-content and refuse, disabling both burn buttons on a
+    /// perfectly writable CD-RW. `typing_unknown` is what lets a frontend
+    /// tell that apart from a genuine CD-R (2026-08-10).
+    #[test]
+    fn untyped_media_is_flagged_not_silently_write_once() {
+        // What probe_drive builds when minfo yields nothing but a TOC read.
+        let toc_media = MediaInfo {
+            present: true,
+            is_audio_cd: false,
+            ..MediaInfo::none()
+        };
+        let untyped = MediaInfo { typing_unknown: true, ..toc_media.clone() };
+        assert!(!untyped.is_blank && !untyped.rewritable);
+        assert!(untyped.typing_unknown, "the frontend needs this to explain itself");
+
+        // A real write-once disc with content looks identical apart from the
+        // flag, which is exactly why the flag has to exist.
+        assert!(!toc_media.typing_unknown);
+
+        // Merging real typing in clears nothing and sets nothing: a parsed
+        // minfo is by definition known.
+        let minfo = parse_minfo(MINFO_BURNED_CDRW).expect("sample parses");
+        assert!(!minfo.typing_unknown);
+        assert!(!merge_minfo_typing(toc_media, minfo).typing_unknown);
         let ram = parse_minfo("Mounted media type:       DVD-RAM\ndisk status: empty\n").unwrap();
         assert_eq!(ram.kind, MediaKind::DvdRam);
     }

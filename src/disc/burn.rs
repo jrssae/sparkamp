@@ -1165,6 +1165,7 @@ mod tests {
                 kind,
                 free_bytes: 0,
                 capacity_bytes: 0,
+                typing_unknown: false,
             },
             toc: None,
             mount_path: None,
