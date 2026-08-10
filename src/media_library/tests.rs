@@ -665,7 +665,7 @@ fn needs_metadata_scan_never_scanned() {
     let path = file_path.to_str().unwrap();
 
     // Never scanned - should need scan
-    assert!(MediaLibrary::needs_metadata_scan(path, None));
+    assert!(MediaLibrary::needs_metadata_scan(path, None, None));
 }
 
 #[test]
@@ -673,7 +673,8 @@ fn needs_metadata_scan_file_missing() {
     // File doesn't exist - should need scan
     assert!(MediaLibrary::needs_metadata_scan(
         "/nonexistent/file.mp3",
-        Some("2024-01-15T10:30:00Z")
+        Some("2024-01-15T10:30:00Z"),
+        None
     ));
 }
 
@@ -690,7 +691,7 @@ fn needs_metadata_scan_file_changed_after_scan() {
     let old_timestamp = "2020-01-01T00:00:00Z";
 
     // File was modified after scan - should need scan
-    assert!(MediaLibrary::needs_metadata_scan(path, Some(old_timestamp)));
+    assert!(MediaLibrary::needs_metadata_scan(path, Some(old_timestamp), None));
 }
 
 #[test]
@@ -705,7 +706,83 @@ fn needs_metadata_scan_file_unchanged() {
     let current_ts = crate::timeutil::format_current_timestamp();
 
     // File hasn't changed since scan - should NOT need scan
-    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts)));
+    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts), None));
+}
+
+/// The bug the `file_mtime` comparison exists to fix: an mtime that moves
+/// BACKWARDS. Restoring from a backup, `rsync -t`, unzipping with preserved
+/// timestamps, or a tag editor that puts mtime back all leave a file that
+/// genuinely changed but now looks older than the scan that read it. The old
+/// `mtime > last_scanned + 2` rule returned false here, forever.
+#[test]
+fn needs_metadata_scan_catches_mtime_moving_backwards() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.mp3");
+    fs::write(&file_path, b"fake").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    // The file's mtime right now, and a scan that ran well after it.
+    let actual_mtime = crate::timeutil::format_system_time(
+        fs::metadata(&file_path).unwrap().modified().unwrap(),
+    );
+    let scanned_later = "2099-01-01T00:00:00Z";
+
+    // Recorded mtime matches the file: unchanged, even though last_scanned is
+    // in the future relative to it.
+    assert!(!MediaLibrary::needs_metadata_scan(
+        path,
+        Some(scanned_later),
+        Some(&actual_mtime)
+    ));
+
+    // Now the row remembers a DIFFERENT (newer) mtime than the file has —
+    // exactly the backwards case. It must rescan.
+    assert!(
+        MediaLibrary::needs_metadata_scan(path, Some(scanned_later), Some("2098-06-01T00:00:00Z")),
+        "an mtime older than the recorded one still means the file changed"
+    );
+}
+
+/// The other half: the old rule's 2-second buffer meant a file touched within
+/// 2 s of the scan that read it was never rescanned. An exact comparison has
+/// no window to fall through.
+#[test]
+fn needs_metadata_scan_has_no_two_second_blind_spot() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.mp3");
+    fs::write(&file_path, b"fake").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    let actual_mtime = crate::timeutil::format_system_time(
+        fs::metadata(&file_path).unwrap().modified().unwrap(),
+    );
+    // A scan stamped one second after the file's mtime — inside the old
+    // buffer, so the legacy rule skipped it.
+    let scanned = crate::timeutil::parse_iso_timestamp(&actual_mtime).unwrap() + 1;
+    let scanned_ts = crate::timeutil::format_system_time(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(scanned),
+    );
+
+    // Recorded mtime disagrees with the file -> rescan, buffer or not.
+    assert!(MediaLibrary::needs_metadata_scan(
+        path,
+        Some(&scanned_ts),
+        Some("2000-01-01T00:00:00Z")
+    ));
+}
+
+/// A row from before `file_mtime` existed passes `None` and must behave
+/// exactly as it did, so upgrading does not rescan an entire library.
+#[test]
+fn needs_metadata_scan_legacy_rows_keep_the_old_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.mp3");
+    fs::write(&file_path, b"fake").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    let current_ts = crate::timeutil::format_current_timestamp();
+    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts), None));
+    assert!(MediaLibrary::needs_metadata_scan(path, Some("2020-01-01T00:00:00Z"), None));
 }
 
 // ── scan_folder ─────────────────────────────────────────────────────────

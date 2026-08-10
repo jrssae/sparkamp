@@ -87,8 +87,12 @@ impl FileStatus {
 
 /// The two filesystem probes behind [`FileStatus`]. Touches no GTK state, so
 /// it is safe to run on a worker thread — which is the whole point.
-fn probe_file_status(path: &str, last_scanned: Option<&str>) -> FileStatus {
-    if crate::media_library::MediaLibrary::needs_metadata_scan(path, last_scanned) {
+fn probe_file_status(
+    path: &str,
+    last_scanned: Option<&str>,
+    stored_mtime: Option<&str>,
+) -> FileStatus {
+    if crate::media_library::MediaLibrary::needs_metadata_scan(path, last_scanned, stored_mtime) {
         return FileStatus::Changed;
     }
     if crate::media_library::is_read_only(std::path::Path::new(path)) {
@@ -276,13 +280,18 @@ pub(super) fn build(ctx: &MlCtx) {
                     return;
                 }
                 let last_scanned = t.last_scanned.clone();
+                let stored_mtime = t.file_mtime.clone();
                 let li_row = li.clone();
                 let cache_done = cache.clone();
                 let inflight_done = inflight.clone();
                 glib::spawn_future_local(async move {
                     let probe_path = path.clone();
                     let status = gio::spawn_blocking(move || {
-                        probe_file_status(&probe_path, last_scanned.as_deref())
+                        probe_file_status(
+                            &probe_path,
+                            last_scanned.as_deref(),
+                            stored_mtime.as_deref(),
+                        )
                     })
                     .await;
                     inflight_done.borrow_mut().remove(&path);

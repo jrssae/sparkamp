@@ -1036,12 +1036,38 @@ impl MediaLibrary {
         computed.or(tag_bitrate)
     }
 
-    /// Check if a file needs metadata scanning based on modification time vs last_scanned.
+    /// Check whether a file needs re-scanning: has it changed since the state
+    /// we recorded for it?
     ///
-    /// Returns `true` if:
-    /// - `last_scanned` is `None` (never scanned), or
-    /// - The file's modification time is newer than `last_scanned`
-    pub fn needs_metadata_scan(path: &str, last_scanned: Option<&str>) -> bool {
+    /// Returns `true` if `last_scanned` is `None` (never scanned), the file
+    /// cannot be stat'ed, or its current mtime differs from what the DB holds.
+    ///
+    /// `stored_mtime` is the row's `file_mtime` — the mtime observed when the
+    /// file was last scanned. **Prefer it over `last_scanned`**, because the
+    /// question is "is this the same file state I recorded?", not "is the file
+    /// newer than the clock reading when I happened to run a scan?". The old
+    /// rule asked the latter (`mtime > last_scanned + 2`) and missed two real
+    /// cases, both silently and permanently (fixed 2026-08-09):
+    ///
+    /// - **mtime moving backwards.** Restore from backup, `rsync -t`, unzip
+    ///   preserving timestamps, or a tag editor that puts mtime back — the file
+    ///   genuinely changed, but its mtime is now *older* than `last_scanned`,
+    ///   so a `>` comparison returns false for as long as the row survives.
+    /// - **The two-second buffer.** A file modified within 2 s of the scan that
+    ///   read it was never rescanned, so its metadata stayed stale forever.
+    ///
+    /// An exact inequality against the recorded mtime catches both, and needs
+    /// no fudge factor: the scan writes `file_mtime` from the very same
+    /// `SystemTime` it is compared against here, through the same formatter.
+    ///
+    /// Rows written before `file_mtime` existed pass `None` and keep the old
+    /// behaviour, so a legacy library degrades to what it did before rather
+    /// than rescanning itself wholesale on first run.
+    pub fn needs_metadata_scan(
+        path: &str,
+        last_scanned: Option<&str>,
+        stored_mtime: Option<&str>,
+    ) -> bool {
         let Some(last_scanned) = last_scanned else {
             return true; // Never scanned
         };
@@ -1055,14 +1081,17 @@ impl MediaLibrary {
             return true; // Can't get mtime
         };
 
+        // Preferred: compare against the mtime we recorded for this row.
+        if let Some(stored) = stored_mtime {
+            return timeutil::format_system_time(mtime) != stored;
+        }
+
+        // Legacy rows (scanned before `file_mtime` was stored): fall back to
+        // the original rule, buffer and all, so their behaviour is unchanged.
         let mtime_secs = mtime
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-
-        // Parse last_scanned (format: YYYY-MM-DDTHH:MM:SSZ)
-        // We use second-level precision, so add a 2-second buffer to handle timing
-        // edge cases where file mtime and scan timestamp are in the same second.
         if let Some(scanned_secs) = timeutil::parse_iso_timestamp(last_scanned) {
             return mtime_secs > scanned_secs + 2;
         }
@@ -1105,15 +1134,17 @@ impl MediaLibrary {
     {
         // Get all tracks in the folder
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, last_scanned, sample_rate FROM tracks WHERE folder_id = ?1",
+            "SELECT id, path, last_scanned, sample_rate, file_mtime FROM tracks \
+             WHERE folder_id = ?1",
         )?;
-        let tracks: Vec<(i64, String, Option<String>, Option<i64>)> = stmt
+        let tracks: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
             .query_map(params![folder_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })?
             .filter_map(|r| r.ok())
@@ -1124,10 +1155,15 @@ impl MediaLibrary {
         // Separate tracks into those needing scan and those to skip
         let paths_to_scan: Vec<(i64, String)> = tracks
             .into_iter()
-            .filter(|(_, path, last_scanned, sample_rate)| {
-                sample_rate.is_none() || Self::needs_metadata_scan(path, last_scanned.as_deref())
+            .filter(|(_, path, last_scanned, sample_rate, file_mtime)| {
+                sample_rate.is_none()
+                    || Self::needs_metadata_scan(
+                        path,
+                        last_scanned.as_deref(),
+                        file_mtime.as_deref(),
+                    )
             })
-            .map(|(id, path, _, _)| (id, path))
+            .map(|(id, path, _, _, _)| (id, path))
             .collect();
 
         let to_scan_count = paths_to_scan.len();
@@ -1191,15 +1227,17 @@ impl MediaLibrary {
         let mut total_to_scan = 0usize;
         for (folder_id, _) in &folders {
             let mut stmt = self.conn.prepare(
-                "SELECT id, path, last_scanned, sample_rate FROM tracks WHERE folder_id = ?1",
+                "SELECT id, path, last_scanned, sample_rate, file_mtime FROM tracks \
+                 WHERE folder_id = ?1",
             )?;
-            let tracks: Vec<(i64, String, Option<String>, Option<i64>)> = stmt
+            let tracks: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
                 .query_map(params![*folder_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 })?
                 .filter_map(|r| r.ok())
@@ -1207,9 +1245,13 @@ impl MediaLibrary {
 
             total_to_scan += tracks
                 .into_iter()
-                .filter(|(_, path, last_scanned, sample_rate)| {
+                .filter(|(_, path, last_scanned, sample_rate, file_mtime)| {
                     sample_rate.is_none()
-                        || Self::needs_metadata_scan(path, last_scanned.as_deref())
+                        || Self::needs_metadata_scan(
+                            path,
+                            last_scanned.as_deref(),
+                            file_mtime.as_deref(),
+                        )
                 })
                 .count();
         }
