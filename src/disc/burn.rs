@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(target_os = "macos"))]
 use std::sync::mpsc;
 
+use super::burnlist::BurnItem;
 use super::{MediaKind, OpticalDrive};
 
 /// Standard blank CD-R audio capacity in seconds (80-minute media). Used
@@ -224,20 +225,43 @@ pub fn drutil_erase_args(drive_index: &str) -> Vec<String> {
 /// audio files in burn order — the classic MP3-CD companion file most car
 /// stereos and players read. `use_m3u` mirrors the app-wide playlist-format
 /// setting (false = m3u8/UTF-8, the default).
+///
+/// `items` are the queue entries the staged files came from, in the same
+/// order, and supply each entry's `#EXTINF` line: a player reading the disc
+/// then shows "Artist - Title" and a running time instead of a file name.
+/// The queue already carries both — [`BurnItem::display`] and
+/// [`BurnItem::duration_secs`] — so nothing has to be re-read from the
+/// library here. An entry with no matching item is written bare, which is
+/// what every entry looked like before 2026-08-10.
+///
+/// The file name is deliberately generic rather than the source playlist's:
+/// a burn queue can be filled from several playlists and from loose files,
+/// so there is no one name to take, and `playlist.m3u8` at the disc root is
+/// the convention players look for.
 pub fn write_data_playlist(
     staged_dir: &Path,
     staged_files: &[PathBuf],
+    items: &[BurnItem],
     use_m3u: bool,
 ) -> Result<PathBuf, String> {
     let name = if use_m3u { "playlist.m3u" } else { "playlist.m3u8" };
     let path = staged_dir.join(name);
     let mut body = String::from("#EXTM3U\n");
-    for f in staged_files {
+    for (i, f) in staged_files.iter().enumerate() {
         // Entries are relative to the disc root (players resolve them there).
-        if let Some(n) = f.file_name() {
-            body.push_str(&n.to_string_lossy());
-            body.push('\n');
+        let Some(n) = f.file_name() else { continue };
+        if let Some(item) = items.get(i) {
+            // -1 for unknown length, matching the library's own writer.
+            let secs = item.duration_secs.map(|s| s as i64).unwrap_or(-1);
+            let display = if item.display.is_empty() {
+                n.to_string_lossy().into_owned()
+            } else {
+                item.display.clone()
+            };
+            body.push_str(&format!("#EXTINF:{secs},{display}\n"));
         }
+        body.push_str(&n.to_string_lossy());
+        body.push('\n');
     }
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
@@ -803,7 +827,7 @@ pub fn run_job(
                 if cancel.load(Ordering::Relaxed) {
                     return Err("cancelled".to_string());
                 }
-                write_data_playlist(&staged, &staged_files, use_m3u)?;
+                write_data_playlist(&staged, &staged_files, items, use_m3u)?;
                 #[cfg(target_os = "macos")]
                 burn_data(drive, &staged, verify)?;
                 #[cfg(not(target_os = "macos"))]
@@ -1107,7 +1131,7 @@ mod tests {
         assert_eq!(files.len(), 3);
         let staged = std::env::temp_dir().join(format!("sparkamp-hwdata-{}", std::process::id()));
         let staged_files = stage_data_files(&files, &staged).expect("stage");
-        let pl = write_data_playlist(&staged, &staged_files, false).expect("playlist");
+        let pl = write_data_playlist(&staged, &staged_files, &[], false).expect("playlist");
         println!("staged {} files + {}", staged_files.len(), pl.display());
         println!("burning… (data)");
         let started = std::time::Instant::now();
@@ -1268,14 +1292,73 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let staged = vec![dir.join("B Song.mp3"), dir.join("A Song.mp3")];
 
-        let p = write_data_playlist(&dir, &staged, false).unwrap();
+        let p = write_data_playlist(&dir, &staged, &[], false).unwrap();
         assert_eq!(p.file_name().unwrap(), "playlist.m3u8");
         let body = std::fs::read_to_string(&p).unwrap();
         // Burn order preserved, not alphabetized; entries disc-root relative.
+        // No queue items supplied, so no #EXTINF — the pre-2026-08-10 shape.
         assert_eq!(body, "#EXTM3U\nB Song.mp3\nA Song.mp3\n");
 
-        let p = write_data_playlist(&dir, &staged, true).unwrap();
+        let p = write_data_playlist(&dir, &staged, &[], true).unwrap();
         assert_eq!(p.file_name().unwrap(), "playlist.m3u");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn data_playlist_carries_extinf_from_the_queue() {
+        let dir = std::env::temp_dir().join(format!("sparkamp-m3ux-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let staged = vec![dir.join("B Song.mp3"), dir.join("A Song.mp3")];
+        let items = vec![
+            BurnItem {
+                path: PathBuf::from("/src/B Song.mp3"),
+                display: "Nina Simone - Sinnerman".to_string(),
+                duration_secs: Some(602),
+                bytes: 1,
+            },
+            // Unknown length is -1, the same convention the library's own
+            // playlist writer uses.
+            BurnItem {
+                path: PathBuf::from("/src/A Song.mp3"),
+                display: "Tuba Skinny - Jubilee Stomp".to_string(),
+                duration_secs: None,
+                bytes: 1,
+            },
+        ];
+
+        let p = write_data_playlist(&dir, &staged, &items, false).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            body,
+            "#EXTM3U\n\
+             #EXTINF:602,Nina Simone - Sinnerman\nB Song.mp3\n\
+             #EXTINF:-1,Tuba Skinny - Jubilee Stomp\nA Song.mp3\n"
+        );
+
+        // Fewer items than staged files: the extras stay bare rather than
+        // borrowing the wrong track's metadata.
+        let p = write_data_playlist(&dir, &staged, &items[..1], false).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            body,
+            "#EXTM3U\n\
+             #EXTINF:602,Nina Simone - Sinnerman\nB Song.mp3\n\
+             A Song.mp3\n"
+        );
+
+        // An item with no display line falls back to the file name, so the
+        // entry never renders as a bare comma.
+        let blank = vec![BurnItem {
+            path: PathBuf::from("/src/B Song.mp3"),
+            display: String::new(),
+            duration_secs: Some(5),
+            bytes: 1,
+        }];
+        let p = write_data_playlist(&dir, &staged[..1], &blank, false).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(body, "#EXTM3U\n#EXTINF:5,B Song.mp3\nB Song.mp3\n");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
