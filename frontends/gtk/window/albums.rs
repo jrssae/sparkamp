@@ -10,6 +10,7 @@
 use gtk4::prelude::*;
 use std::rc::Rc;
 
+use super::sidebar::Sidebar;
 use super::{build_album_gallery, MlCtx};
 
 /// Build the Albums page and attach it to `ctx.stack` under the name
@@ -19,7 +20,7 @@ use super::{build_album_gallery, MlCtx};
 /// call it: the sidebar's row-selected handler, and its row-activated handler
 /// for the case where "Albums" is clicked while already selected. It is
 /// idempotent, because both of those signals can fire for one click.
-pub(super) fn build(ctx: &MlCtx) -> Rc<dyn Fn()> {
+pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Activating a cell (double-click / Enter) sets `album_filter` and
     // switches straight to the Files page via `stack.set_visible_child_name`
     // + the `rebuild_ml_callback` seam (same one background rebuilds use,
@@ -139,5 +140,33 @@ pub(super) fn build(ctx: &MlCtx) -> Rc<dyn Fn()> {
         });
     }
 
-    show_gallery_overview
+    // ── Sidebar routing ─────────────────────────────────────────────────
+    // This page's own row-selected handler, split out of the shared
+    // Files/Albums/Playlists one on 2026-08-10 so the Playlists page could be
+    // extracted without taking the other two pages' navigation with it. Every
+    // handler on this signal keys off a disjoint `widget_name` with no
+    // catch-all, so registration order carries no meaning.
+    {
+        let show_ov = show_gallery_overview.clone();
+        sb.list.connect_row_selected(move |_, opt_row| {
+            let Some(row) = opt_row else { return };
+            if row.widget_name() == "albums" {
+                // Always land on the gallery overview (clears any drill-down).
+                show_ov();
+            }
+        });
+    }
+    // Clicking "Albums" while it is ALREADY selected (the user drilled into an
+    // album, so the row's highlight never left "Albums") does not re-emit
+    // `row-selected`, so that path can't return to the gallery. `row-activated`
+    // DOES fire on every click, so handle the return here too. Harmless when
+    // arriving from another row — both signals fire and this is idempotent.
+    {
+        let show_ov = show_gallery_overview.clone();
+        sb.list.connect_row_activated(move |_, row| {
+            if row.widget_name() == "albums" {
+                show_ov();
+            }
+        });
+    }
 }

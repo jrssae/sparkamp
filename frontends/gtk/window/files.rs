@@ -26,6 +26,8 @@ use std::rc::Rc;
 
 // Sibling modules this page drives.
 use super::watch;
+// The sidebar this page registers its own row-selected routing on.
+use super::sidebar::Sidebar;
 // Everything else is private to the parent module, which a child may still
 // use. The long list is what "the Files page" actually depends on: the shared
 // column model (ALL_COLUMNS / ml_cell_text / ml_sort_key), the row actions
@@ -109,7 +111,7 @@ type GlyphCache = Rc<RefCell<std::collections::HashMap<String, FileStatus>>>;
 type GlyphInflight = Rc<RefCell<std::collections::HashSet<String>>>;
 
 /// Build the Files page and attach it to `ctx.stack` under the name `"files"`.
-pub(super) fn build(ctx: &MlCtx) {
+pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page uses from its context, so the body below
     // reads as it did inside `open_media_library_window`. Same device step 1
     // used for MlHost's fields: cloning an `Rc` is an integer increment, and
@@ -1807,4 +1809,42 @@ pub(super) fn build(ctx: &MlCtx) {
         state.borrow_mut().rebuild_ml_callback = Some(Rc::new(move || {
             rf();
         }));
+
+        // ── Sidebar routing ──────────────────────────────────────────────
+        // This page's own row-selected handler. Until 2026-08-10 the Files,
+        // Albums and Playlists branches shared one handler that lived with
+        // the Playlists page, purely because that is where the code happened
+        // to sit; `sidebar.rs`'s doc has always said routing belongs to the
+        // page it routes to. Splitting it is what let the Playlists page be
+        // extracted without dragging the other two pages' navigation along.
+        //
+        // Every handler on this signal keys off a disjoint `widget_name`
+        // prefix with no catch-all branch, so all of them run on every
+        // selection and only one acts. That is why registration order carries
+        // no meaning here — see the same note in disc_page and devices_page.
+        {
+            let stack_ref = stack.clone();
+            let state_rc = state.clone();
+            let album_filter_sb = ctx.album_filter.clone();
+            let btn_album_back_sb = ctx.btn_album_back.clone();
+            sb.list.connect_row_selected(move |_, opt_row| {
+                let Some(row) = opt_row else { return };
+                if row.widget_name() != "files" {
+                    return;
+                }
+                // Explicitly returning to Files always means "show the full
+                // library" — clear any album drill-down left over from the
+                // gallery (Phase 11 A5) and rebuild through the same seam
+                // background rebuilds use.
+                {
+                    *album_filter_sb.borrow_mut() = None;
+                }
+                btn_album_back_sb.set_visible(false);
+                stack_ref.set_visible_child_name("files");
+                let cb = state_rc.borrow().rebuild_ml_callback.clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+            });
+        }
 }

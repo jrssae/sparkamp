@@ -229,7 +229,7 @@ fn open_media_library_window(
     // overview. Lives at the left of the Files search row; shown only while
     // `album_filter` is active (i.e. the user drilled in from the gallery),
     // hidden otherwise. Its click handler is connected further down, once
-    // `rebuild_gallery` exists (the shared `show_gallery_overview` closure).
+    // `rebuild_gallery` exists (albums.rs's `show_gallery_overview`).
     let btn_album_back = Button::with_label("◀ Albums");
     btn_album_back.add_css_class("pl-btn");
     btn_album_back.set_visible(false);
@@ -250,16 +250,15 @@ fn open_media_library_window(
     // ── Page: Files ──────────────────────────────────────────────────────
     // Extracted to `window/files.rs` (plan step 4). Builds the table, search
     // row, status bar and row context menu, and adds itself to the stack.
-    files::build(&ctx);
+    files::build(&ctx, &sb);
 
     // Every field this needs now exists, so the page context can be built.
     // `host` is moved in — the eight aliases above were cloned off it at the
     // top, so nothing below depends on it by that name any more.
     // ── Page: Albums (Phase 11 A5 — gallery grid, Task 4) ──────────────────
     // Extracted to `window/albums.rs` (plan step 2). Adds itself to the stack
-    // and returns the shared "back to the gallery overview" closure, which the
-    // sidebar wiring further down also calls.
-    let show_gallery_overview = albums::build(&ctx);
+    // and registers its own sidebar routing, so it hands nothing back.
+    albums::build(&ctx, &sb);
 
     // ── Page: Playlists ──────────────────────────────────────────────────
     //
@@ -3352,7 +3351,12 @@ fn open_media_library_window(
         stack.add_named(&pl_vbox, Some("playlists"));
     }
 
-    // Wire sidebar to stack.
+    // ── Sidebar routing ──────────────────────────────────────────────────
+    // This page's own row-selected handler. The Files and Albums branches
+    // that used to share it moved to `files.rs` and `albums.rs` on
+    // 2026-08-10 — they were only here because this is where the code sat,
+    // and keeping them would have dragged both pages' navigation into the
+    // Playlists module in step 7.
     {
         let stack_ref      = stack.clone();
         let pl_sub_ref     = pl_sub_stack.clone();
@@ -3362,31 +3366,11 @@ fn open_media_library_window(
         let hdr_lbl        = edit_header.clone();
         let path_lbl       = edit_path_label.clone();
         let save_btn       = btn_save_pl_outer.clone();
-        let album_filter_sb = album_filter.clone();
-        let btn_album_back_sb = btn_album_back.clone();
-        let show_gallery_overview_sb = show_gallery_overview.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let row = match opt_row { Some(r) => r, None => return };
             let name = row.widget_name().to_string();
 
-            if name == "files" {
-                // Explicitly returning to Files always means "show the full
-                // library" — clear any album drill-down left over from the
-                // gallery (Phase 11 A5) and rebuild through the same seam
-                // background rebuilds use.
-                {
-                    *album_filter_sb.borrow_mut() = None;
-                }
-                btn_album_back_sb.set_visible(false);
-                stack_ref.set_visible_child_name("files");
-                let cb = state_rc.borrow().rebuild_ml_callback.clone();
-                if let Some(cb) = cb {
-                    cb();
-                }
-            } else if name == "albums" {
-                // Always land on the gallery overview (clears any drill-down).
-                show_gallery_overview_sb();
-            } else if name == "playlists" {
+            if name == "playlists" {
                 stack_ref.set_visible_child_name("playlists");
                 pl_sub_ref.set_visible_child_name("pl-manage");
                 // Expand sub-rows on navigation
@@ -3410,21 +3394,6 @@ fn open_media_library_window(
                         }
                     }
                 }
-            }
-        });
-    }
-
-    // Clicking the "Albums" sidebar row while it is ALREADY selected (i.e. the
-    // user drilled into an album, so the row's highlight never left "Albums")
-    // does not re-emit `row-selected`, so that path can't return to the
-    // gallery. `row-activated` DOES fire on every click, so handle the
-    // return-to-overview here too. Harmless when arriving from another row
-    // (both signals fire; `show_gallery_overview` is idempotent).
-    {
-        let show_gallery_overview_ra = show_gallery_overview.clone();
-        sidebar.connect_row_activated(move |_, row| {
-            if row.widget_name() == "albums" {
-                show_gallery_overview_ra();
             }
         });
     }
