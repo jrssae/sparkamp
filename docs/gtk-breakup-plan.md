@@ -276,7 +276,7 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 3 | ~~`sidebar.rs`~~ **DONE `cbd4bcd`** | 500 | medium | CI | **A + C** (batchable with 4) |
 | 4 | ~~`files.rs` + `files_menu.rs`~~ **DONE `2d64bb8`, `7f0ceaa`** | 2,130 | medium | CI | **A + D + X** |
 | 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
-| 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F + X** ⏳ owed |
+| 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
 | 7 | `playlists/` | 3,150 | high | CI | **A + G + X** |
 | 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
 
@@ -391,6 +391,28 @@ is what made every decision in this step — including the decision in 6a.
 `devices_page.rs` is still 1,535, next to `disc_page.rs`'s 1,556, and for the
 same reason §"What step 5 actually did" gives. The selection handler alone
 reads 33 widgets. That seam was left rather than forced.
+
+**Manual test round: passed 2026-08-10** (groups A and F, on hardware, with a
+USB stick and a rewritable disc). Five defects came out of it, and it is worth
+recording that **none of them were caused by the extraction** — the move was
+byte-verified at every step and behaved identically throughout. What the round
+found was pre-existing:
+
+| Fix | What it was |
+|---|---|
+| `8412ad0` | active-playlist Send-to ▸ Device showed no progress in the ML |
+| `2fc2d64` | editor Send-to ▾ silently no-op'd with no rows selected |
+| `4a2610a` | data-disc `playlist.m3u8` carried no `#EXTINF` |
+| `60de50e`, `1e3195b` | a mounted data disc lost its media typing, so both burn buttons went dead with no explanation — including on the disc Sparkamp had just burned |
+
+The lesson to carry into step 7 is about the test round, not the refactor: a
+smoke-test group is worth running even when the diff is provably a move,
+because it is the only time anyone exercises these paths end to end. Four of
+the five had nothing to do with Devices.
+
+Group X was not run as such; several of its items were covered incidentally by
+the Send-to fixes above. Remaining data-disc issues are known and deliberately
+deferred as lower priority than the remaining breakup steps.
 
 ### Handing off a test round
 
