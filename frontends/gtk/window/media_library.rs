@@ -2625,6 +2625,12 @@ fn open_media_library_window(
             if sel.is_empty() {
                 return;
             }
+            // Retire the previous menu's popover first, while nothing of this
+            // one exists yet — see the note further down for why the order
+            // matters.
+            if let Some(old) = last_popover_dev.borrow_mut().take() {
+                old.unparent();
+            }
             // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics · ─ ·
             // Delete from Device. Matches the macOS device menu
             // (DeviceDetailView). Delete permanently removes from the device.
@@ -2678,13 +2684,14 @@ fn open_media_library_window(
             // Device, all of it (2026-08-10). The Files and disc views carry
             // the same warning and already avoid it; this one did not.
             //
-            // The leak that guard was for is instead bounded by dropping the
-            // PREVIOUS popover when the next one opens: at most one dead
-            // popover is parented at a time, and it is gone before the user
-            // can open another.
-            if let Some(old) = last_popover_dev.borrow_mut().take() {
-                old.unparent();
-            }
+            // The leak that guard was for is bounded by dropping the PREVIOUS
+            // popover instead — but at the TOP of this closure, before any of
+            // this one exists. Doing it here, after `set_parent`, removed a
+            // child from `scroll_menu` while the new popover was already
+            // attached to it, and the new popover did not survive its own
+            // popup: the two-right-clicks symptom came straight back
+            // (2026-08-10). From `set_parent` onward this now matches the
+            // Files and disc recipes exactly.
             *last_popover_dev.borrow_mut() = Some(popover.clone());
             // The cell handed us ColumnView coordinates; the popover is
             // parented to the ScrolledWindow, so make the last hop here.
