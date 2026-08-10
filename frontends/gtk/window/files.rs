@@ -38,6 +38,72 @@ use super::{
     ScanType, SendToActions, ALL_COLUMNS,
 };
 
+/// What the Files view's leading status column shows for one row.
+///
+/// Split out of the bind handler because working it out costs two blocking
+/// syscalls — a `stat` for the mtime compare and an `open(O_WRONLY)` for the
+/// read-only probe — and a `SignalListItemFactory` bind runs for **every row
+/// on every scroll**, on the GTK main thread. Measured at ~0.5 ms per row on a
+/// mounted volume, roughly thirty visible rows dropped frames continuously
+/// (2026-08-09). The probe now happens off-thread, once per path per session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileStatus {
+    /// No metadata was ever extracted — a pure DB answer, never probed.
+    Unscanned,
+    /// The file's mtime is newer than its last scan.
+    Changed,
+    /// The file cannot be opened for writing.
+    ReadOnly,
+    /// Scanned, unchanged, writable — nothing to show.
+    Clean,
+}
+
+impl FileStatus {
+    fn glyph(self) -> &'static str {
+        match self {
+            FileStatus::Unscanned => "❓",
+            FileStatus::Changed => "🔄",
+            FileStatus::ReadOnly => "🔒",
+            FileStatus::Clean => "",
+        }
+    }
+
+    fn tooltip(self) -> Option<&'static str> {
+        match self {
+            FileStatus::Unscanned => Some("Not scanned yet — metadata loads on the next scan"),
+            FileStatus::Changed => {
+                Some("File changed since last scan — rescan to refresh its metadata")
+            }
+            FileStatus::ReadOnly => Some("Read-only file"),
+            FileStatus::Clean => None,
+        }
+    }
+
+    fn apply(self, lbl: &Label) {
+        lbl.set_label(self.glyph());
+        lbl.set_tooltip_text(self.tooltip());
+    }
+}
+
+/// The two filesystem probes behind [`FileStatus`]. Touches no GTK state, so
+/// it is safe to run on a worker thread — which is the whole point.
+fn probe_file_status(path: &str, last_scanned: Option<&str>) -> FileStatus {
+    if crate::media_library::MediaLibrary::needs_metadata_scan(path, last_scanned) {
+        return FileStatus::Changed;
+    }
+    if crate::media_library::is_read_only(std::path::Path::new(path)) {
+        return FileStatus::ReadOnly;
+    }
+    FileStatus::Clean
+}
+
+/// Session cache of resolved row statuses, keyed by track path, plus the set
+/// of paths a probe is already running for so a scroll cannot queue the same
+/// work hundreds of times. Cleared when a scan finishes, since that is when
+/// the answers can actually have changed.
+type GlyphCache = Rc<RefCell<std::collections::HashMap<String, FileStatus>>>;
+type GlyphInflight = Rc<RefCell<std::collections::HashSet<String>>>;
+
 /// Build the Files page and attach it to `ctx.stack` under the name `"files"`.
 pub(super) fn build(ctx: &MlCtx) {
     // Local names for what this page uses from its context, so the body below
@@ -140,8 +206,16 @@ pub(super) fn build(ctx: &MlCtx) {
         let store_for_ctx = track_store.clone();
 
         // ── Unscanned indicator column (always first, always visible) ──────────
+        // The status is resolved off-thread and memoized per path: see
+        // `FileStatus`. A bind must never touch the filesystem, because it runs
+        // for every row on every scroll.
+        let glyph_cache: GlyphCache = Rc::new(RefCell::new(std::collections::HashMap::new()));
+        let glyph_inflight: GlyphInflight =
+            Rc::new(RefCell::new(std::collections::HashSet::new()));
         {
             let unscanned_factory = SignalListItemFactory::new();
+            let cache = glyph_cache.clone();
+            let inflight = glyph_inflight.clone();
 
             unscanned_factory.connect_setup(|_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -169,7 +243,6 @@ pub(super) fn build(ctx: &MlCtx) {
                 let Some(lbl) = lbl else {
                     return;
                 };
-                let path = std::path::Path::new(&t.path);
                 // A row can carry a `last_scanned` timestamp yet have no real
                 // metadata: `update_last_scanned` runs after every scan pass
                 // even when extraction produced nothing (e.g. the duration
@@ -179,27 +252,56 @@ pub(super) fn build(ctx: &MlCtx) {
                 //   ❓ never (properly) scanned — no metadata
                 //   🔄 scanned, but the file changed since (rescan to refresh)
                 //   🔒 read-only
-                let scanned = t.length_secs.is_some() && t.last_scanned.is_some();
-                if !scanned {
-                    lbl.set_label("❓");
-                    lbl.set_tooltip_text(Some(
-                        "Not scanned yet — metadata loads on the next scan",
-                    ));
-                } else if crate::media_library::MediaLibrary::needs_metadata_scan(
-                    &t.path,
-                    t.last_scanned.as_deref(),
-                ) {
-                    lbl.set_label("🔄");
-                    lbl.set_tooltip_text(Some(
-                        "File changed since last scan — rescan to refresh its metadata",
-                    ));
-                } else if crate::media_library::is_read_only(path) {
-                    lbl.set_label("🔒");
-                    lbl.set_tooltip_text(Some("Read-only file"));
-                } else {
-                    lbl.set_label("");
-                    lbl.set_tooltip_text(None);
+                //
+                // ❓ is answered entirely from the row's own DB fields, so it
+                // stays inline. The other two need the filesystem and must not
+                // run here — see `FileStatus`.
+                if t.length_secs.is_none() || t.last_scanned.is_none() {
+                    FileStatus::Unscanned.apply(&lbl);
+                    return;
                 }
+                let path = t.path.clone();
+                if let Some(known) = cache.borrow().get(&path).copied() {
+                    known.apply(&lbl);
+                    return;
+                }
+                // Not resolved yet. Show nothing this frame rather than spend
+                // it on two syscalls; the probe fills the glyph in a moment.
+                lbl.set_label("");
+                lbl.set_tooltip_text(None);
+                // Scrolling rebinds the same rows constantly, so one probe per
+                // path at a time — otherwise a fast scroll queues hundreds of
+                // duplicate reads of the same file.
+                if !inflight.borrow_mut().insert(path.clone()) {
+                    return;
+                }
+                let last_scanned = t.last_scanned.clone();
+                let li_row = li.clone();
+                let cache_done = cache.clone();
+                let inflight_done = inflight.clone();
+                glib::spawn_future_local(async move {
+                    let probe_path = path.clone();
+                    let status = gio::spawn_blocking(move || {
+                        probe_file_status(&probe_path, last_scanned.as_deref())
+                    })
+                    .await;
+                    inflight_done.borrow_mut().remove(&path);
+                    let Ok(status) = status else { return };
+                    cache_done.borrow_mut().insert(path.clone(), status);
+                    // The row may have been recycled onto a different track
+                    // while the probe ran — only paint it if it still shows
+                    // the path we probed.
+                    let still_here = li_row
+                        .item()
+                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                        .map(|b| b.borrow::<crate::media_library::LibTrack>().path == path)
+                        .unwrap_or(false);
+                    if still_here {
+                        if let Some(l) = li_row.child().and_then(|c| c.downcast::<Label>().ok()) {
+                            status.apply(&l);
+                        }
+                    }
+                });
             });
 
             let unscanned_col = ColumnViewColumn::new(Some(""), Some(unscanned_factory));
@@ -1266,6 +1368,10 @@ pub(super) fn build(ctx: &MlCtx) {
 
         // Add Folder handler.
         {
+            // A scan is the one thing that can change what the status column
+            // should say, so it is also the only thing that invalidates the
+            // memoized glyphs.
+            let glyph_cache_scan = glyph_cache.clone();
             let state_rc = state.clone();
             let win_wk = win.downgrade();
             let rebuild_ref = rebuild_files.clone();
@@ -1280,6 +1386,7 @@ pub(super) fn build(ctx: &MlCtx) {
                 let status_inner = status_ref.clone();
                 let cancel_btn = cancel_ref.clone();
                 let rescan_btn = rescan_ref.clone();
+                let glyph_cache_scan = glyph_cache_scan.clone();
                 if let Some(w) = win_wk.upgrade() {
                     chooser.select_folder(Some(&w), None::<&gio::Cancellable>, move |result| {
                         let Ok(file) = result else {
@@ -1406,6 +1513,7 @@ pub(super) fn build(ctx: &MlCtx) {
                                     s.media_lib = crate::media_library::MediaLibrary::open().ok();
                                 }
                                 complete_ml_scan(&state_inner);
+                                glyph_cache_scan.borrow_mut().clear();
                                 match result {
                                     Err(e) => status_inner.set_text(&e),
                                     Ok(_) => {
@@ -1428,12 +1536,14 @@ pub(super) fn build(ctx: &MlCtx) {
 
         // Rescan handler — runs in a background thread to avoid blocking the UI.
         {
+            let glyph_cache_rescan = glyph_cache.clone();
             let state_rc = state.clone();
             let rebuild_ref = rebuild_files.clone();
             let status_ref = files_status.clone();
             let cancel_ref = btn_cancel.clone();
             let rescan_ref = btn_rescan.clone();
             btn_rescan.connect_clicked(move |_| {
+                let glyph_cache_rescan = glyph_cache_rescan.clone();
                 let db_path = {
                     let s = state_rc.borrow();
                     match s.media_lib.as_ref() {
@@ -1489,6 +1599,7 @@ pub(super) fn build(ctx: &MlCtx) {
                             s.media_lib = crate::media_library::MediaLibrary::open().ok();
                         }
                         complete_ml_scan(&state_rc2);
+                        glyph_cache_rescan.borrow_mut().clear();
                         // Compact after a successful FULL rescan only, gated
                         // on the setting — VACUUM is too heavy to run after
                         // every fast folder-add, which is why this lives
