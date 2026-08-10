@@ -870,6 +870,7 @@ pub(super) fn attach_cell_context_menu(
     let li_g = li.clone();
     let sel = selection.clone();
     let anchor_g = anchor.clone();
+    let on_popup = std::rc::Rc::new(on_popup);
     gesture.connect_pressed(move |gest, n_press, x, y| {
         if n_press != 1 {
             return;
@@ -894,8 +895,19 @@ pub(super) fn attach_cell_context_menu(
             .child()
             .and_then(|c| c.translate_coordinates(&anchor_g, x, y))
             .unwrap_or((x, y));
-        on_popup(px, py);
         gest.set_state(gtk4::EventSequenceState::Claimed);
+        // Pop the menu on the next main-loop turn, NOT inline.
+        //
+        // The click above may have just changed the selection, and the menu
+        // that is about to be built reads that selection to decide what it
+        // acts on — and whether to appear at all. Popping in the same frame
+        // meant the first right-click on an unselected row built its menu
+        // against the pre-click selection and bailed out as "nothing
+        // selected", so it took two right-clicks: one to select, one to open
+        // (2026-08-10). Deferring lets the selection-changed cascade — and
+        // the row rebinding it triggers — finish first.
+        let cb = on_popup.clone();
+        gtk4::glib::idle_add_local_once(move || cb(px, py));
     });
     child.add_controller(gesture);
 }
