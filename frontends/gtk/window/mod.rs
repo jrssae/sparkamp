@@ -126,6 +126,26 @@ mod disc_gnudb;
 // drives; core device support proper lives in `crate::devices`.
 mod devices_page;
 
+// Scan / Eject / Sync (plan step 6, fourth cut) — the three device-wide
+// buttons, shared with the overview cards' per-row Eject and Sync.
+mod devices_actions;
+
+// Device detection (plan step 6, third cut): the 2 s udisks2 poll, the
+// overview cards, and the sidebar sub-rows they keep live.
+mod devices_poll;
+
+// The device track view's row context menu and Send-to actions (plan step 6,
+// second cut) — what files_menu.rs is to the Files page.
+mod devices_menu;
+
+// Device playlists (plan step 6, first cut): sending a library playlist to a
+// device, and New / Rename / Duplicate / Delete on the ones already there.
+mod devices_playlists;
+
+// The device track view's columns (plan step 6, fifth cut). Driven by the same
+// shared ALL_COLUMNS table as the Files view, plus two device-only columns.
+mod devices_columns;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
