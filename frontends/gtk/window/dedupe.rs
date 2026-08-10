@@ -453,6 +453,13 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
 
             let popover = gtk4::Popover::new();
             popover.set_child(Some(&pop_box));
+            // Same cursor anchoring as `context_popover` — this one holds
+            // buttons rather than a menu model, so it cannot use that helper,
+            // but it is still a right-click menu and must not centre itself
+            // on the pointer. See that function for why Start/Bottom.
+            popover.set_has_arrow(false);
+            popover.set_halign(gtk4::Align::Start);
+            popover.set_position(gtk4::PositionType::Bottom);
             popover.set_parent(&tree_view_rc);
             popover.set_pointing_to(Some(&gdk::Rectangle::new(
                 x as i32, y as i32, 1, 1,

@@ -818,6 +818,22 @@ pub(super) fn context_popover(menu: &gio::Menu) -> gtk4::PopoverMenu {
     // No arrow — a right-click menu points AT the cursor, it doesn't need a
     // tail (WebKit disables it on context menus for the same reason).
     popover.set_has_arrow(false);
+    // Open with the cursor at the menu's top-LEFT corner, which is what every
+    // other context menu on the desktop does.
+    //
+    // A GTK popover's default is to centre itself on its pointing-to rect,
+    // because it is built for "point at this widget" (a MenuButton's dropdown,
+    // where centring under the button is right). Callers here anchor to a 1x1
+    // rect at the pointer instead, and the default made every right-click menu
+    // straddle the cursor and hang below it (2026-08-09).
+    //
+    // `Align::Start` aligns the popover's start edge to the anchor's, so it
+    // grows right in LTR and left in RTL — matching the platform convention in
+    // both, which a hardcoded left would not. `Bottom` is already the default
+    // position; it is set explicitly so the pairing is not silently undone by
+    // a future change to that default.
+    popover.set_halign(gtk4::Align::Start);
+    popover.set_position(gtk4::PositionType::Bottom);
     popover
 }
 
