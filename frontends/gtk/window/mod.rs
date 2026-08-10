@@ -150,6 +150,16 @@ mod devices_columns;
 // manager and the track editor, as two sub-pages of one stack page.
 mod playlists;
 
+// The playlist editor's row context menu (plan step 7) — what files_menu.rs
+// is to the Files page.
+mod playlists_menu;
+
+// The saved-playlist manager and the load-a-playlist seam (plan step 7).
+mod playlists_manage;
+
+// The playlist editor's columns, cells and row gestures (plan step 7).
+mod playlists_columns;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
