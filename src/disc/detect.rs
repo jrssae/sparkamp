@@ -900,12 +900,18 @@ mod platform {
                 };
                 run("cdrskin", &[&format!("dev={node}"), "-minfo"])
                     .and_then(|o| super::parse_minfo(&o))
+                    // udisks answers with the disc mounted, which is when
+                    // -minfo can't open the device at all — the common case
+                    // right after burning a data disc, since the desktop
+                    // mounts what we just wrote (2026-08-10). It carries no
+                    // lead-out, so its capacity is nominal; that is why it is
+                    // second and not first.
+                    .or_else(|| crate::disc::udisks::optical_media(&node))
                     .map(|m| super::merge_minfo_typing(toc_media.clone(), m))
-                    // No typing: flag it rather than let the defaults read as
-                    // "not blank, not rewritable", which `erase_decision` can
-                    // only treat as write-once-with-content. The usual cause
-                    // is the OS holding /dev/srN because it auto-mounted the
-                    // data disc, so cdrskin gets EBUSY (2026-08-10).
+                    // Neither probe answered: flag it rather than let the
+                    // defaults read as "not blank, not rewritable", which
+                    // `erase_decision` can only treat as
+                    // write-once-with-content and refuse.
                     .unwrap_or(MediaInfo { typing_unknown: true, ..toc_media })
             }
             // No readable TOC but the status ioctl said "disc ok" (the
@@ -914,6 +920,7 @@ mod platform {
             // burn phases.
             None => run("cdrskin", &[&format!("dev={node}"), "-minfo"])
                 .and_then(|o| super::parse_minfo(&o))
+                .or_else(|| crate::disc::udisks::optical_media(&node))
                 .unwrap_or_else(MediaInfo::none),
         };
         OpticalDrive {

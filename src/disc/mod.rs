@@ -56,6 +56,10 @@ pub mod rip;
 pub mod source;
 pub mod tagstore;
 pub mod toc;
+/// udisks2 optical typing — the fallback when `cdrskin -minfo` finds the
+/// drive busy because the desktop mounted the disc. Linux only.
+#[cfg(target_os = "linux")]
+pub mod udisks;
 pub mod xmcd;
 
 /// One track's position on the disc. `start_frame` is the **CDDB-absolute**
