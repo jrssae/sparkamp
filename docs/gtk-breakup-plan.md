@@ -229,6 +229,17 @@ Every file lands under the 800-line goal but two, both close. The existing
 real `mod disc` (1,815 lines, drive-view helpers + rip worker) is the natural
 home for the `discs/` group — extend it rather than creating a rival.
 
+**What steps 5 and 6 actually built is flatter than this**, and the count is
+higher: `disc_page`/`disc_data`/`disc_gnudb` and
+`devices_page`/`devices_poll`/`devices_menu`/`devices_playlists`/
+`devices_actions`/`devices_columns`, all siblings of `window/`. Flat because
+`use super::…` reaches the window module's private items directly, where a
+nested `devices/detail.rs` would spell every one of them `super::super`. Six
+device files rather than four because the cuts were chosen by measured seam
+width rather than by this sketch's guesses — see the two "what step N
+actually did" sections in [§4](#4-sequence). Read the sketch as the shape of
+the answer, not the file list.
+
 ### 3.4 Alternatives considered
 
 **One file per nav item, no internal split.** Your original instinct.
@@ -265,7 +276,7 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 3 | ~~`sidebar.rs`~~ **DONE `cbd4bcd`** | 500 | medium | CI | **A + C** (batchable with 4) |
 | 4 | ~~`files.rs` + `files_menu.rs`~~ **DONE `2d64bb8`, `7f0ceaa`** | 2,130 | medium | CI | **A + D + X** |
 | 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
-| 6 | `devices/` — reunite the widgets at 244–2678 with the wiring at 5905–6317 and 8758–9283 | 2,779 | **high** | CI | **A + F + X** — needs a USB device, run twice |
+| 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F + X** ⏳ owed |
 | 7 | `playlists/` | 3,150 | high | CI | **A + G + X** |
 | 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
 
@@ -279,11 +290,13 @@ where a mistake costs minutes. Do not skip it for something more impressive,
 and do not batch its test with a later step: the whole point is finding a
 wrong mechanism before six more steps are built on it.
 
-**Steps 5 and 6 are the dangerous ones** because they move code across ~7,000
-lines of intervening statements, and closure capture depends on declaration
-order. Split each into two commits: first hoist the late wiring up next to
-its widgets *within* the existing function and confirm green; only then
-extract the reunited block to its own file.
+**Steps 5 and 6 were the dangerous ones** because they move code across
+thousands of lines of intervening statements, and closure capture depends on
+declaration order. Split each into separate commits: hoist first, *within*
+the existing function, and confirm green; only then extract the reunited
+block; only then cut it up. Both are now done — and step 6 added a step in
+front of the hoist that turned out to matter more than the hoist itself. See
+the two sections below.
 
 ### What step 5 actually did — 2026-08-09
 
@@ -324,6 +337,60 @@ it means reordering statements a closure's capture depends on — a different
 job from moving code. Two narrow cuts existed and both were taken (the data
 browser, 4 names in / 5 out; gnudb, 8 in / 0 out). Expect the same residue in
 step 6 and do not force a third cut through a wide seam to hit the number.
+
+### What step 6 actually did — 2026-08-10
+
+Four commits, not two. The extra one at the front is the reason the rest went
+so much more cheaply than step 5.
+
+**6a (`9caffd7`) — clear the way.** Before moving anything, the three names
+outside the Devices block that referred into it were checked. Only three
+existed across ~3,400 lines: `dev_page` (the `stack.add_named` call, which
+travels with the widget), `copy_files_run` (an `MlCtx` field) and
+`send_playlist_run` (captured by the playlist editor). The latter two already
+had a holder sitting next to them — `copy_files_holder` on `MlHost`,
+`send_playlist_holder` on `Sidebar` — and two call sites were simply
+bypassing it. Routing them through it made the block a closed set and cost
+one field on `MlCtx`.
+
+**Do this measurement first in step 7.** It is cheap, it is what decides
+whether the move is possible at all, and it turns "high risk" into a
+mechanical edit. The two directions are not symmetric: moving the wiring *up*
+would have stranded it above `stack`, above `ctx` and above the editor, while
+moving the widgets *down* crossed nothing once 6a landed.
+
+**6b (`cfd3cb3`) — the hoist.** 5,331 lines out, 5,331 in, file length
+unchanged. Two orderings changed and both were checked rather than assumed:
+Devices became the last page added to the stack (`Stack` resolves by name, so
+not observable), and its `connect_row_selected` handler moved from second to
+third of three. That last one is only safe because all three handlers
+dispatch on disjoint `widget_name` prefixes with no catch-all — worth
+re-checking in step 7, since Playlists' handler is one of them.
+
+**6c (`08b08ad`) — the lift.** `devices_page::build(&ctx, &sb)`, the same
+signature step 5 settled on. `media_library.rs` 7,077 → 3,628.
+
+**6d (`e3eb626`) — five cuts**, all verified verbatim against 6c:
+
+| File | Lines | Seam (in/out) |
+|---|---|---|
+| `devices_playlists.rs` | 617 | 17 / 1 |
+| `devices_menu.rs` | 569 | 18 / 0 |
+| `devices_poll.rs` | 497 | 12 / 4 |
+| `devices_actions.rs` | 433 | 13 / 0 |
+| `devices_columns.rs` | 356 | 6 / 2 |
+| `devices_page.rs` | 1,535 | — |
+
+**Measure candidate cuts, then choose.** The poll block reads 12 names; when
+it was measured together with the selection handler that follows it, it read
+40 and looked untouchable. The cut existed only because the two were measured
+separately. A short script that reports, for a line range, which names it
+defines that are read after it and which it reads that are defined before it,
+is what made every decision in this step — including the decision in 6a.
+
+`devices_page.rs` is still 1,535, next to `disc_page.rs`'s 1,556, and for the
+same reason §"What step 5 actually did" gives. The selection handler alone
+reads 33 widgets. That seam was left rather than forced.
 
 ### Handing off a test round
 
