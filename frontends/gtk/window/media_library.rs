@@ -2616,6 +2616,10 @@ fn open_media_library_window(
         // row, so `x`/`y` arrive in ColumnView space and `sel` is never empty
         // just because nothing had been left-clicked yet.
         let col_view_menu_dev = dev_col_view.clone();
+        // The previously-opened row popover, kept only so it can be unparented
+        // when the next one opens — see the note where it is set.
+        let last_popover_dev: Rc<RefCell<Option<gtk4::PopoverMenu>>> =
+            Rc::new(RefCell::new(None));
         *dev_row_menu_holder.borrow_mut() = Some(Rc::new(move |x: f64, y: f64| {
             let sel = sel_menu();
             if sel.is_empty() {
@@ -2667,8 +2671,21 @@ fn open_media_library_window(
             ));
             let popover = context_popover(&menu);
             popover.set_parent(&scroll_menu);
-            // Unparent on close so a right-click doesn't leak a popover per use.
-            popover.connect_closed(|p| p.unparent());
+            // Do NOT unparent on close. Activating an item closes the popover
+            // first, and unparenting there severs the link to the widget
+            // holding the "dev"/"dev-file" action groups, so every item in
+            // this menu silently did nothing — Send to, Replace, Delete from
+            // Device, all of it (2026-08-10). The Files and disc views carry
+            // the same warning and already avoid it; this one did not.
+            //
+            // The leak that guard was for is instead bounded by dropping the
+            // PREVIOUS popover when the next one opens: at most one dead
+            // popover is parented at a time, and it is gone before the user
+            // can open another.
+            if let Some(old) = last_popover_dev.borrow_mut().take() {
+                old.unparent();
+            }
+            *last_popover_dev.borrow_mut() = Some(popover.clone());
             // The cell handed us ColumnView coordinates; the popover is
             // parented to the ScrolledWindow, so make the last hop here.
             let (sx, sy) = col_view_menu_dev
