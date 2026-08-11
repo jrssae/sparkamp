@@ -287,7 +287,19 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
 | 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
 | 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ✅ 2026-08-11 |
-| 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **full sweep: A–G + X** ⏳ owed |
+| 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **29 automated ✅ 2026-08-11**, 20 manual ⏳ |
+
+**All nine steps are complete.** `window/mod.rs` holds no `include!`; it is 244
+lines of `mod` and `use` declarations plus the module docs.
+
+Two test debts remain, and neither blocks the breakup:
+
+- **Step 5's A + E + X round** was never run, so `disc_gnudb.rs` has still had
+  no manual pass. Needs an audio CD.
+- **20 of step 8's 49 checks** cannot be automated — GTK4 popovers and
+  image-in-button cells are invisible to AT-SPI, Wayland refuses synthetic
+  pointer events, and three checks eject or write to hardware. They are
+  itemised for a human in the step 8 close-out below.
 
 Test groups are defined in [§5](#5-smoke-tests). Steps 5 and 6 run their group
 twice — once after the hoist commit, once after the extract.
@@ -533,6 +545,51 @@ on `9ccf5b3` first: `disc::detect::exclusive_read_tests::refcount_nesting_and_un
 panics with "must start clear" under the parallel runner and passes alone —
 a global refcount in `src/disc/detect.rs` shared with another test. Untouched;
 it predates this step and is outside the plan.
+
+### Step 8's test round — 2026-08-11
+
+29 of the 49 checks were automated over AT-SPI and all 29 pass. The harness is
+`scratchpad/step8_all.py`: three launches, one for the normal case, one with
+the chevron collapsed, one restarting with the ML left open. It backs up and
+restores `config.toml`, and never clicks Eject, Rip, Burn, Copy, Save or
+Delete.
+
+Covered: window start and restore, all five pages rendering distinct content,
+search filter and restore, the status bar tracking selection, the playlist
+sub-row route into the editor, the data-disc browser (a disc happened to be in
+`sr0`), the attached USB device and its playlist chips, and the three step-7
+regressions — reopen time, RSS across five open/close cycles, and chevron
+persistence.
+
+The other 20 are listed in the artifact handed to the user, grouped by what
+blocks them: 8 need a real pointer, 4 need an audio CD, 3 write to or eject
+hardware, and 5 are the cross-page holders, all of which start from a
+right-click menu.
+
+**What the round actually caught, none of it from the extraction:**
+
+| Fix | What it was |
+|---|---|
+| `9e2c884` | Returning to Files from an album drill-down kept the album filter. My regression from `45e07d5`: the handler asked "was a filter set" when it needed "is this table showing one". |
+| `c3fb2c7` | The watch drain refreshed the UI on every tick that saw an event; a bulk ingest made that ~95% main-loop occupancy. |
+| `f367324` | **The freeze.** The drain applied an unbounded batch of events per tick, each a tag read off disk, synchronously on the GTK main thread. Now bounded to 100 ms of work per tick. |
+| `487931e` | `&s[..30]` on a lyric split a multi-byte char. Inside a bind callback, which cannot unwind, so it aborted the process. |
+| `ee80091` | `/mnt` vs `/var/mnt` stored the same file twice; 8,417 duplicate rows and climbing. This was the ingest driving the freeze. |
+
+**Automation has a ceiling, and knowing where it is has value.** Three checks
+were skipped on a wrong guess and later proved genuinely unreachable: gallery
+tiles expose only `listitem.scroll-to`, ColumnView headers are a label with no
+action, and `generate_keyboard_event` hangs under Wayland. Two more "failures"
+were bugs in the probe, not the app — the sidebar was identified as "the
+biggest list", which is the Files table whenever the chevron is collapsed, and
+the device track view as "the biggest table", which is its playlist chips.
+Both now match on content instead of size.
+
+**And the freeze was found by measurement, not by reading.** Two hypotheses of
+mine were wrong first — a probe-flood that turned out to be 34 flat threads at
+18 ms round-trips, and a rebuild storm whose fix did not stop the hang. What
+settled it was sampling `/proc` from a parent process while a child drove the
+UI, so the record survived the app going unresponsive.
 
 ### Handing off a test round
 
