@@ -123,6 +123,26 @@ pub(super) fn rebuild_watcher(state: &Rc<RefCell<AppState>>) {
 /// one file to a watched folder still feels live.
 const REBUILD_QUIET: Duration = Duration::from_millis(1000);
 
+/// How much of one 500 ms tick the drain may spend applying events.
+///
+/// `apply_watch_action` is not cheap: an Upsert runs
+/// `ProbedTrackMetadata::probe`, which reads the file's tags and audio header
+/// off disk, then writes a row — call it ~10 ms on a spinning disk. It runs
+/// here, synchronously, on the GTK main thread, because SQLite is not `Send`
+/// and the connection lives in `AppState`.
+///
+/// Until 2026-08-11 the tick drained the whole channel and applied every
+/// event it found, with no bound at all. A folder sync delivering ~700 files
+/// a minute therefore handed the main thread hundreds of disk reads in a
+/// single main-loop iteration, and the app stopped responding — a user
+/// scrolling the Files view through one had to force-quit it twice.
+///
+/// A budget rather than a fixed count, because it is disk time that matters
+/// and a fixed count means something different on an SSD than on the HDD this
+/// showed up on. Leftover events stay queued; a backlog drains at roughly
+/// 200 ms of work per second of wall clock instead of all at once.
+const APPLY_BUDGET: Duration = Duration::from_millis(100);
+
 /// Register the drain tick. Call exactly ONCE, at window build.
 ///
 /// Every 500 ms: drain all pending `WatchAction`s from `watch_rx` and apply
@@ -162,33 +182,29 @@ pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
             // interior mutability, and `mpsc::Receiver::try_recv` likewise),
             // so no field on `AppState` itself needs to change here.
             let s = state.borrow();
-            let mut actions = Vec::new();
-            if let Some(ref rx) = s.watch_rx {
-                while let Ok(action) = rx.try_recv() {
-                    actions.push(action);
-                }
-            }
             let mut applied_any = false;
             // A playlist file needs a different refresh from a track: it
             // changes the sidebar's Playlists sub-rows, which
             // `rebuild_ml_callback` does not touch.
             let mut applied_playlist = false;
-            if !actions.is_empty() {
+            if let (Some(rx), Some(lib)) = (s.watch_rx.as_ref(), s.media_lib.as_ref()) {
                 let remove_missing = s.config.media_library.remove_missing_on_rescan;
-                if let Some(ref lib) = s.media_lib {
-                    for action in &actions {
-                        match lib.apply_watch_action(action, remove_missing) {
-                            Ok(()) => {
-                                applied_any = true;
-                                if matches!(
-                                    action,
-                                    crate::watch::WatchAction::PlaylistUpsert(_)
-                                ) {
-                                    applied_playlist = true;
-                                }
+                // Apply as we receive, under a time budget, rather than
+                // draining the channel into a Vec and working through all of
+                // it. Anything left stays queued for the next tick.
+                let deadline = Instant::now() + APPLY_BUDGET;
+                while let Ok(action) = rx.try_recv() {
+                    match lib.apply_watch_action(&action, remove_missing) {
+                        Ok(()) => {
+                            applied_any = true;
+                            if matches!(action, crate::watch::WatchAction::PlaylistUpsert(_)) {
+                                applied_playlist = true;
                             }
-                            Err(e) => eprintln!("[watch] apply_watch_action failed: {e}"),
                         }
+                        Err(e) => eprintln!("[watch] apply_watch_action failed: {e}"),
+                    }
+                    if Instant::now() >= deadline {
+                        break;
                     }
                 }
             }
