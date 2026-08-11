@@ -26,10 +26,10 @@
 //! right after a successful lazy open.
 
 use gtk4::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     complete_ml_scan, notify_playlist_nav_refresh, start_ml_scan, update_ml_scan_progress,
@@ -117,13 +117,30 @@ pub(super) fn rebuild_watcher(state: &Rc<RefCell<AppState>>) {
     }
 }
 
+/// How long the watcher has to stay quiet before the drain tick refreshes the
+/// UI. One tick's worth of slack on top of the 500 ms period: long enough that
+/// a sustained ingest collapses to a single rebuild, short enough that adding
+/// one file to a watched folder still feels live.
+const REBUILD_QUIET: Duration = Duration::from_millis(1000);
+
 /// Register the drain tick. Call exactly ONCE, at window build.
 ///
 /// Every 500 ms: drain all pending `WatchAction`s from `watch_rx` and apply
 /// them to `media_lib` (the same DB writes a manual rescan produces), all
-/// under one short `borrow_mut()` — then, only if anything was actually
-/// applied, and only AFTER that borrow is dropped, invoke
-/// `rebuild_ml_callback` so an open Files view picks up the change live.
+/// under one short `borrow_mut()`. The UI refresh that follows is
+/// **coalesced**: the tick records that something changed and only invokes
+/// `rebuild_ml_callback` once the events have stopped arriving for
+/// [`REBUILD_QUIET`].
+///
+/// It refreshed on every tick that saw an event until 2026-08-11. That is
+/// fine for the one-file-at-a-time case it was written for, and ruinous for
+/// a bulk ingest: a folder sync delivering ~10 files/s makes every tick
+/// dirty, and each refresh is a full pass over the library — 474 ms at 39k
+/// tracks, on the GTK main thread, plus a whole-store `splice` that rebinds
+/// every visible row and re-reads its artwork. Twice a second that starves
+/// the main loop; a user dragging the scrollbar through one such ingest saw
+/// the view jump to the end mid-drag, and then the app hang hard enough to
+/// need a force-quit.
 ///
 /// Borrow discipline: the callback is never invoked while `state` is still
 /// borrowed. A callback that itself needs `state.borrow()` (very likely,
@@ -132,8 +149,14 @@ pub(super) fn rebuild_watcher(state: &Rc<RefCell<AppState>>) {
 /// force here since this tick runs unconditionally, forever, on a timer.
 pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
     let state = state.clone();
+    // Set when events have been applied but the UI has not caught up yet, and
+    // the moment the last one landed. A steady stream keeps pushing the
+    // deadline out, so one burst costs one rebuild instead of one per tick.
+    let dirty = Cell::new(false);
+    let dirty_playlist = Cell::new(false);
+    let last_event = Cell::new(Instant::now());
     glib::timeout_add_local(Duration::from_millis(500), move || {
-        let rebuild_cb = {
+        let applied = {
             // Immutable borrow only: `watch_rx.try_recv()` and
             // `media_lib.apply_watch_action()` both take `&self` (SQLite's
             // interior mutability, and `mpsc::Receiver::try_recv` likewise),
@@ -169,19 +192,31 @@ pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
                     }
                 }
             }
-            if applied_any {
-                (s.rebuild_ml_callback.clone(), applied_playlist)
-            } else {
-                (None, false)
-            }
+            (applied_any, applied_playlist)
         };
-        let (rebuild_cb, refresh_playlist_nav) = rebuild_cb;
+        let (applied_any, applied_playlist) = applied;
+
+        if applied_any {
+            dirty.set(true);
+            if applied_playlist {
+                dirty_playlist.set(true);
+            }
+            last_event.set(Instant::now());
+            // Still arriving — let the next tick decide.
+            return glib::ControlFlow::Continue;
+        }
+
+        if !dirty.get() || last_event.get().elapsed() < REBUILD_QUIET {
+            return glib::ControlFlow::Continue;
+        }
+        dirty.set(false);
+
+        // Borrow dropped above before either refresh runs; both read `state`.
+        let rebuild_cb = state.borrow().rebuild_ml_callback.clone();
         if let Some(cb) = rebuild_cb {
             cb();
         }
-        // Same borrow discipline as the callback above: `state` is no longer
-        // borrowed here, and the nav rebuild reads it.
-        if refresh_playlist_nav {
+        if dirty_playlist.replace(false) {
             notify_playlist_nav_refresh();
         }
         glib::ControlFlow::Continue

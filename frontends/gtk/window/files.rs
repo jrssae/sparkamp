@@ -766,6 +766,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // rendered rather than what someone remembered to record.
         let files_filtered = Rc::new(Cell::new(false));
 
+        // The track table's vertical adjustment, so a rebuild can put the view
+        // back where it was. Late-bound: the `ScrolledWindow` that owns it is
+        // built below, after this closure. Empty until then, which is correct
+        // — the first rebuild has no position worth keeping.
+        let vadj_holder: Rc<RefCell<Option<gtk4::Adjustment>>> = Rc::new(RefCell::new(None));
+
         let rebuild_files: Rc<dyn Fn() -> usize> = {
             let state_rc = state.clone();
             let store_ref = track_store.clone();
@@ -774,6 +780,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let btn_play_album_rc = btn_play_album.clone();
             let btn_enqueue_album_rc = btn_enqueue_album.clone();
             let files_filtered_rc = files_filtered.clone();
+            let vadj_rc = vadj_holder.clone();
             Rc::new(move || {
                 // Album drill-down (Phase 11 A5): when a gallery cell was
                 // activated, populate from that one album instead of the
@@ -823,7 +830,30 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let count = tracks.len();
                 let boxed: Vec<glib::BoxedAnyObject> =
                     tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
+
+                // `splice` empties the store before refilling it, so the
+                // adjustment's `upper` momentarily collapses to zero and GTK
+                // clamps `value` to 0 with it. Anyone mid-drag on the
+                // scrollbar was then tracking against a dead range and the
+                // view snapped to an extreme (2026-08-11). Put the offset
+                // back afterwards.
+                let saved = vadj_rc.borrow().as_ref().map(|a| a.value());
                 store_ref.splice(0, store_ref.n_items(), &boxed);
+                if let (Some(adj), Some(v)) = (vadj_rc.borrow().clone(), saved) {
+                    adj.set_value(v);
+                    // The ColumnView re-measures its content height after the
+                    // model settles, which clamps the value we just set
+                    // against a stale `upper`. Set it once more when that has
+                    // happened — unless something moved the view in between,
+                    // which would make this a yank rather than a restore.
+                    let clamped = adj.value();
+                    let adj_idle = adj.clone();
+                    glib::idle_add_local_once(move || {
+                        if (adj_idle.value() - clamped).abs() < 1.0 {
+                            adj_idle.set_value(v);
+                        }
+                    });
+                }
                 count
             })
         };
@@ -838,6 +868,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             .min_content_height(300)
             .child(&col_view)
             .build();
+        *vadj_holder.borrow_mut() = Some(track_scroll.vadjustment());
         files_vbox.append(&track_scroll);
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
