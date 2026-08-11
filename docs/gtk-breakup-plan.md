@@ -282,7 +282,7 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 4 | ~~`files.rs` + `files_menu.rs`~~ **DONE `2d64bb8`, `7f0ceaa`** | 2,130 | medium | CI | **A + D + X** |
 | 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
 | 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
-| 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ⏳ owed |
+| 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ✅ 2026-08-11 |
 | 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
 
 Test groups are defined in [§5](#5-smoke-tests). Steps 5 and 6 run their group
@@ -457,6 +457,34 @@ what its name always implied: build the window and its chrome, assemble
 `MlCtx`, call six page builders, save state on close. Both alias blocks shrank
 with it — of `MlHost`'s eight fields only `state` is still aliased, and of the
 sidebar's, only the list and its scroller.
+
+**Manual test round: passed 2026-08-11** (groups A, G and X, on hardware).
+It produced six fixes, and — as in step 6 — **none of them were caused by the
+extraction**. The moves were byte-verified and behaved identically throughout;
+what the round found was six pre-existing defects in paths nobody had
+exercised end to end:
+
+| Fix | What it was |
+|---|---|
+| `2b5910e` | three different artwork cells across the three views that share `ALL_COLUMNS`; Files had thumbnails, the editor and device views a "View" text button. Fixing it also removed a recycled-cell bug that opened the wrong image |
+| `940899c` | Save was gated on the playlist living in Sparkamp's own directory, so it was insensitive for all 44 of this library's — with nothing saying why. Plus: no dirty indicator existed, Revert found its playlist by scanning the sidebar, and the manage page had no search |
+| `eee4122` | five of the editor's mutation paths wrote the `.m3u8` immediately and two did not, so Revert could only undo half of an edit session |
+| `f553463` | navigating to Playlists set the chevron's expanded flag without expanding anything, and `close_request` persisted it |
+| `45e07d5` | the Files table was built twice on every window open — 474 ms of the 2.4 s |
+| `d7e00db` | the Media Library window was rebuilt and **leaked** on every reopen: ~126 MB and a fresh pair of 2 s pollers per cycle |
+
+The last two are worth separating from the rest. They were not visible as
+bugs — the app worked — and neither would ever have been found by reading a
+diff, because neither was in one. They were found by *measuring* the thing the
+user complained about ("2–3 seconds", "toggling multiple times"), which is a
+different discipline from reviewing a refactor and produced the two largest
+wins of the step: open time 2.37 s → 1.42 s → 0.26 s on reopen, and a leak
+that reached 1.6 GB in eight cycles.
+
+**Take a measurement before believing a cause.** Step 6's lesson was to
+measure seams before moving code; step 7 adds the runtime twin. Every
+hypothesis this round that was reasoned rather than measured — including two
+of mine about which code was at fault — was wrong.
 
 ### Handing off a test round
 
