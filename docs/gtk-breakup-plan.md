@@ -288,11 +288,13 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
 | 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ✅ 2026-08-11 |
 | 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **49/49 ✅ 2026-08-11** (29 automated, 20 by hand) |
+| 9 | ~~`player.rs` — `playlist_window.rs` + `dnd.rs` + `keys.rs`~~ **DONE** | 2,405 | medium | CI ✅ | **A + G** — owed |
 
-**All nine steps are complete, and so is the testing.** `window/mod.rs` holds
-no `include!`; it is 244 lines of `mod` and `use` declarations plus the module
-docs. Step 8's sweep ran all 49 checks — 29 automated, 20 by hand — and the
-E group in it discharges step 5's owed round, which had never been run.
+**All ten steps are complete.** `window/mod.rs` holds no `include!`; it is 250
+lines of `mod` and `use` declarations plus the module docs. Step 8's sweep ran
+all 49 checks — 29 automated, 20 by hand — and the E group in it discharges
+step 5's owed round, which had never been run. Step 9 owes a manual round of
+its own; see its close-out below for what to exercise.
 
 **19 of the 20 manual checks passed.** The one failure was X39 (Rescan
 Metadata's count), and the round turned up four more defects outside the
@@ -736,6 +738,11 @@ points at two `.borrow_mut()` calls whose relative order the move changed.
 
 ## 6. `player.rs` — worth doing, but later
 
+> **Done 2026-08-11 as step 9.** All three cuts landed and `player.rs` is
+> 3,426 lines. What follows is the survey the step was planned from; the
+> close-out after it records what actually happened, including where the
+> boundaries below turned out to be drawn in the wrong place.
+
 5,754 lines, and again one function: `build()` at line 65 runs to the end.
 
 | Region | Lines | Size |
@@ -774,6 +781,69 @@ widgets-first/wiring-last split to undo:
 `build()` needs the same `MlCtx` treatment under a different name (`PlayerCtx`),
 so doing the Media Library first means the pattern is proven before it is
 applied to the window that everything else hangs off.
+
+### What step 9 actually did — 2026-08-11
+
+| | Before | After |
+|---|---|---|
+| `player.rs` | 5,831 | **3,426** |
+| `build()` | 5,708 | **3,201** |
+| new modules | — | `playlist_window.rs` 1,092 · `dnd.rs` 1,241 · `keys.rs` 435 |
+
+`PlayerCtx` is 43 fields — the widgets, callbacks, holders and channels that
+more than one of the three new modules reads. It is assembled once, after the
+playlist window exists and before the first module needs it.
+
+**The order in the survey above is wrong, and measuring is what showed it.**
+Before touching anything, every fn-scope binding in `build()` was indexed
+against every line that reads it, and each candidate region scored on two
+numbers: how many bindings flow *in*, and how many declared inside it are
+still read *after* it. The second number is the one that decides difficulty,
+and it inverted the plan's ordering:
+
+| Cut | Flows in | Escapes | Shape |
+|---|---|---|---|
+| `dnd.rs` | 35 | **0** | `install(&ctx)` — pure sink |
+| `keys.rs` | 28 | **1** | `build(&ctx, …) -> Rc<dyn Fn(Key) -> Propagation>` |
+| `playlist_window.rs` | 10 | **21** | `build(Deps) -> PlaylistWin` |
+
+So drag-and-drop went first, not the playlist window. It reads a wide slice of
+the window and writes nothing back that anything later reads, which makes it
+the one cut that cannot break a caller — the right place to prove the
+mechanism, exactly as Albums was in step 2.
+
+Two boundaries in the survey were also drawn in the wrong place:
+
+- **The playlist window has to take the menu bar with it** (the survey listed
+  them as separate regions). Split, the menu bar's four `menu_button` calls
+  and its Select/Sort handlers kept reaching back into the window's widgets.
+  Together they are one 995-line unit that escapes 21 bindings instead of 23.
+- **`keys.rs` is 378 lines, not the ~1,654 the survey implies.** That figure
+  was "draw + key handling" lumped together; the `handle_key` `match` alone is
+  a fifth of it. The visualizer draw code beside it is a separate job.
+
+Everything that escapes comes back through `PlaylistWin`, which `build`
+destructures into locals of the same names. That is what kept the cut honest:
+not one line below the call site changed.
+
+**Every moved body was diffed against the original and is byte-identical** —
+the three modules re-alias what they need under the original names at the top
+of the function, so the moved code reads exactly as it did in `build`. A
+reviewer can check the claim mechanically rather than reading 2,400 lines.
+
+**The plan's goal is still not met.** `player.rs` is the largest file in the
+repo and `build()` is still one 3,201-line function — under the 800/300 bar
+only by a factor of four. What is left splits along visible seams:
+
+| Region | Lines | Escapes cleanly? |
+|---|---|---|
+| tick loop | ~640 | reads the whole window; needs `PlayerCtx` |
+| jump window | ~450 | its own window, like the playlist one |
+| add-file dialogs | ~260 | three handlers over one `FileFilter` |
+| visualizer draw | ~100 | already calls module-level helpers |
+
+Those four would take `build()` to roughly 800. They are not part of step 9
+and have not been scored the way the three above were.
 
 ---
 

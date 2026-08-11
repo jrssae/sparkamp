@@ -72,6 +72,23 @@ use crate::skin::{self, render_gtk_css, SkinVars};
 // disc UI (submit, burn) goes there, not here.
 mod disc;
 
+// Drag and drop for the active playlist: the DragSource that lifts selected
+// rows out of it and the DropTarget that accepts files dragged in. Split out
+// of player.rs (breakup step 9) — it reads a wide slice of the window and
+// writes nothing back, so it moved whole. player.rs calls `dnd::install(&ctx)`.
+mod dnd;
+
+// The playlist window: header, button bar, TreeView, status bar and the
+// Winamp-style menu bar. Split out of player.rs (breakup step 9) — a window
+// of its own, so it builds whole and hands back the parts player.rs still
+// reads. player.rs calls `playlist_window::build(Deps { .. })`.
+mod playlist_window;
+
+// The main window's keyval dispatcher — one match over every bound key,
+// shared by the five key controllers and the lyrics window. Split out of
+// player.rs (breakup step 9); player.rs calls `keys::build(&ctx, ...)`.
+mod keys;
+
 // Live folder-watcher lifecycle (Phase 8 Task 10): rebuild/start/stop the
 // `notify` watcher, drain its event channel, and the startup-rescan trigger.
 // A child module for the same reason as `disc` above — keeps this glue out
