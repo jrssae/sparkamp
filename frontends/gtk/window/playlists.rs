@@ -90,7 +90,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let stack = ctx.stack.clone();
     let sidebar = sb.list.clone();
     let pl_sub_rows = sb.pl_sub_rows.clone();
-    let playlists_expanded = sb.playlists_expanded.clone();
     let send_playlist_holder = sb.send_playlist_holder.clone();
 
     let pl_sub_stack: Rc<Stack> = Rc::new({
@@ -1436,7 +1435,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let stack_ref      = stack.clone();
         let pl_sub_ref     = pl_sub_stack.clone();
         let load           = load_pl_by_id.clone();
-        let expanded_rc    = playlists_expanded.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
             let row = match opt_row { Some(r) => r, None => return };
             let name = row.widget_name().to_string();
@@ -1444,10 +1442,14 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             if name == "playlists" {
                 stack_ref.set_visible_child_name("playlists");
                 pl_sub_ref.set_visible_child_name("pl-manage");
-                // Expand sub-rows on navigation
-                if !expanded_rc.get() {
-                    expanded_rc.set(true);
-                }
+                // Navigating here does NOT touch the chevron. It used to set
+                // the expanded flag true — the flag only, not the chevron
+                // glyph and not the sub-rows' visibility, which the real
+                // toggle in sidebar.rs updates together. So it never actually
+                // expanded anything; all it did was leave the flag disagreeing
+                // with the screen, and `close_request` then persisted the
+                // flag. Collapsing Playlists and clicking it once was enough
+                // to come back expanded next time (2026-08-11).
             } else if let Some(id_str) = name.strip_prefix("pl:") {
                 if let Ok(id) = id_str.parse::<i64>() {
                     stack_ref.set_visible_child_name("playlists");
