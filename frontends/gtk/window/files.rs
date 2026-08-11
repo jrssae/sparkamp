@@ -20,7 +20,7 @@ use gtk4::{
     CustomSorter, Entry, EventControllerKey, Label, MultiSelection, Orientation,
     PolicyType, ScrolledWindow, SignalListItemFactory, SortListModel,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // Sibling modules this page drives.
@@ -755,6 +755,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         btn_enqueue_album.add_css_class("pl-btn");
         btn_enqueue_album.set_sensitive(false);
 
+        // Whether the table currently *shows* a drill-down, which is not the
+        // same question as whether `album_filter` is currently set: pressing
+        // "◀ Albums" clears the filter and refreshes the gallery, leaving this
+        // table still holding one album's tracks. Keying the Files re-select
+        // rebuild off the filter alone therefore skipped a rebuild the table
+        // needed, and Files came back showing the album (2026-08-11).
+        //
+        // Written by `rebuild_files` itself, so it reports what was actually
+        // rendered rather than what someone remembered to record.
+        let files_filtered = Rc::new(Cell::new(false));
+
         let rebuild_files: Rc<dyn Fn() -> usize> = {
             let state_rc = state.clone();
             let store_ref = track_store.clone();
@@ -762,6 +773,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let album_filter_rc = album_filter.clone();
             let btn_play_album_rc = btn_play_album.clone();
             let btn_enqueue_album_rc = btn_enqueue_album.clone();
+            let files_filtered_rc = files_filtered.clone();
             Rc::new(move || {
                 // Album drill-down (Phase 11 A5): when a gallery cell was
                 // activated, populate from that one album instead of the
@@ -771,6 +783,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let active_filter = { album_filter_rc.borrow().clone() };
                 btn_play_album_rc.set_sensitive(active_filter.is_some());
                 btn_enqueue_album_rc.set_sensitive(active_filter.is_some());
+                files_filtered_rc.set(active_filter.is_some());
                 let tracks: Vec<crate::media_library::LibTrack> =
                     if let Some((album, album_artist)) = active_filter {
                         search_ref.set_placeholder_text(Some(&format!(
@@ -835,6 +848,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let btn_play_album_search = btn_play_album.clone();
             let btn_enqueue_album_search = btn_enqueue_album.clone();
             let btn_album_back_search = btn_album_back.clone();
+            let files_filtered_search = files_filtered.clone();
             let pending = Rc::new(RefCell::new(None::<glib::SourceId>));
             search_entry.connect_changed(move |entry| {
                 // Typing escapes any active album drill-down back to the full
@@ -843,6 +857,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 {
                     *album_filter_search.borrow_mut() = None;
                 }
+                // The debounced splice below repopulates from the query, not
+                // through `rebuild_files`, so record here that the table is no
+                // longer a drill-down.
+                files_filtered_search.set(false);
                 entry.set_placeholder_text(Some("Search artist, title, album…"));
                 btn_play_album_search.set_sensitive(false);
                 btn_enqueue_album_search.set_sensitive(false);
@@ -1724,6 +1742,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let state_rc = state.clone();
             let album_filter_sb = ctx.album_filter.clone();
             let btn_album_back_sb = ctx.btn_album_back.clone();
+            let files_filtered_sb = files_filtered.clone();
             sb.list.connect_row_selected(move |_, opt_row| {
                 let Some(row) = opt_row else { return };
                 if row.widget_name() != "files" {
@@ -1734,16 +1753,22 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // gallery (Phase 11 A5) and rebuild through the same seam
                 // background rebuilds use.
                 //
-                // Only when there was a drill-down to clear, though. Without
-                // one the table already shows every track, and rebuilding it
-                // is a full pass over the library — 474 ms at 37k tracks. The
-                // window paid that on every open, because the initial
-                // `select_row(0)` fires this handler against a table
-                // `files::build` has only just filled (2026-08-11).
-                let had_filter = album_filter_sb.borrow_mut().take().is_some();
+                // Only when the table is actually showing one, though. When it
+                // already lists every track, rebuilding is a full pass over
+                // the library — 474 ms at 37k tracks — and the window paid
+                // that on every open, because the initial `select_row(0)`
+                // fires this handler against a table `files::build` has only
+                // just filled (2026-08-11).
+                //
+                // The test is `files_filtered`, not whether `album_filter` is
+                // set: "◀ Albums" clears the filter without touching this
+                // table, so the filter is already None by the time we get here
+                // and the table is still showing one album (2026-08-11).
+                let stale = files_filtered_sb.get();
+                album_filter_sb.borrow_mut().take();
                 btn_album_back_sb.set_visible(false);
                 stack_ref.set_visible_child_name("files");
-                if had_filter {
+                if stale {
                     let cb = state_rc.borrow().rebuild_ml_callback.clone();
                     if let Some(cb) = cb {
                         cb();
