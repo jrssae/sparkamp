@@ -1,8 +1,10 @@
+use super::*;
+
 /// Initial text for an editor field. Everything comes from the file's tags
 /// except ReplayGain, which lives in the library DB (analysis stores it there
 /// whether or not it was also written into the file) — so it is passed in
 /// pre-resolved rather than dug out of `TagFields`, which has no such field.
-fn field_seed_value(
+pub(super) fn field_seed_value(
     fields: &crate::id3_editor::TagFields,
     id: &str,
     rg_seed: &str,
@@ -14,7 +16,7 @@ fn field_seed_value(
 }
 
 /// Get the display value for an ID3 editable field.
-fn get_id3_field_value(fields: &crate::id3_editor::TagFields, id: &str) -> String {
+pub(super) fn get_id3_field_value(fields: &crate::id3_editor::TagFields, id: &str) -> String {
     match id {
         "title" => fields.title.clone(),
         "artist" => fields.artist.clone(),
@@ -42,7 +44,7 @@ fn get_id3_field_value(fields: &crate::id3_editor::TagFields, id: &str) -> Strin
 // ID3 field customizer — two-column layout with up/down reorder and DnD
 // ---------------------------------------------------------------------------
 
-fn open_id3_field_customizer(
+pub(super) fn open_id3_field_customizer(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     on_close: Option<Rc<dyn Fn()>>,
@@ -402,12 +404,12 @@ fn open_id3_field_customizer(
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-enum ColumnCustomizerMode {
+pub(super) enum ColumnCustomizerMode {
     MediaLibrary,
     Id3Editor,
 }
 
-fn open_customize_columns_dialog(
+pub(super) fn open_customize_columns_dialog(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     title: &str,
@@ -699,7 +701,7 @@ fn open_customize_columns_dialog(
 ///
 /// This is a singleton: if an editor is already open, it will be updated
 /// with the new file instead of opening a second window.
-fn open_id3_editor_window(
+pub(super) fn open_id3_editor_window(
     _parent: Option<&impl gtk4::prelude::IsA<gtk4::Window>>,
     path: std::path::PathBuf,
     state: Rc<RefCell<AppState>>,
@@ -1418,7 +1420,7 @@ fn open_id3_editor_window(
 /// Modal asking for the gnudb/CDDB email, prefilled from config. On Save it
 /// stores + persists the address and runs `on_done` (e.g. retry the lookup);
 /// Cancel just closes. Used when a disc action needs an email that's unset.
-fn prompt_gnudb_email(
+pub(super) fn prompt_gnudb_email(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     on_done: Rc<dyn Fn()>,

@@ -1,3 +1,5 @@
+use super::*;
+
 // Phase 12 F15 (2026-08-01 revision) — the lyrics WINDOW and the single entry
 // point every GTK track-row surface calls. The window ALWAYS opens (no saved
 // lyrics shows "No lyrics available"); Search is an in-window button, not an
@@ -20,7 +22,7 @@ pub(crate) enum LyricsMode {
 /// `Specific`; the player's now-playing affordance passes `Current`.
 /// `rebuild_cb` is threaded to the "Edit in tag editor" link so a save from the
 /// editor refreshes the surface the user came from.
-fn view_or_search_lyrics(
+pub(super) fn view_or_search_lyrics(
     state: &Rc<RefCell<AppState>>,
     path: &std::path::Path,
     artist: &str,
@@ -50,7 +52,7 @@ fn view_or_search_lyrics(
 /// Open or replace the singleton lyrics window. Mirrors
 /// `open_id3_editor_window`'s take-then-close singleton discipline so the
 /// borrow is released before `close()` fires its synchronous handler.
-fn show_lyrics_window(
+pub(super) fn show_lyrics_window(
     state: &Rc<RefCell<AppState>>,
     path: &std::path::Path,
     artist: &str,

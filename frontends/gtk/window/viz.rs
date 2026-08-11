@@ -1,5 +1,7 @@
+use super::*;
+
 /// Parse a hex color string (`"#RRGGBB"`) to RGB components in [0, 1].
-fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
+pub(super) fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
     let hex = hex.trim_start_matches('#');
     if hex.len() >= 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f64 / 255.0;
@@ -14,7 +16,7 @@ fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
 /// Draw a single zone-coloured frequency bar.
 /// For singular mode: bar extends from bottom to `amp × height`.
 /// For mirrored mode: bar extends `amp × height / 2` above and below centre.
-fn draw_zoned_bar(
+pub(super) fn draw_zoned_bar(
     cr: &gtk4::cairo::Context,
     x: f64,
     bar_w: f64,
@@ -96,7 +98,7 @@ fn draw_zoned_bar(
 /// - **Lines** — draws the stroke only; each segment coloured by zone.
 /// - **Filled** — fills the area between the waveform and the centre
 ///   baseline, coloured per zone.
-fn draw_waveform(
+pub(super) fn draw_waveform(
     cr: &gtk4::cairo::Context,
     width: f64,
     height: f64,
@@ -190,7 +192,7 @@ fn draw_waveform(
 ///
 /// Double-clicking the mini visualiser or pressing `f` when the active mode is
 /// Waveform or Granite triggers this function. Bars is excluded.
-fn open_waveform_fullscreen(
+pub(super) fn open_waveform_fullscreen(
     state: Rc<RefCell<AppState>>,
     handle_key: Rc<dyn Fn(gdk::Key) -> glib::Propagation>,
     jump_win: gtk4::Window,
@@ -549,7 +551,7 @@ fn open_waveform_fullscreen(
 // ---------------------------------------------------------------------------
 
 /// Open a resizable window displaying the image at `path`.
-fn open_image_viewer(path: &str) {
+pub(super) fn open_image_viewer(path: &str) {
     use gtk4::ContentFit;
 
     let exists = std::path::Path::new(path).exists();

@@ -1,8 +1,10 @@
+use super::*;
+
 /// Wrap a settings tab's content in a vertical scroller so a tab taller than
 /// the window scrolls instead of being clipped. The scroller fills the tab
 /// area (the window carries a fixed default height and is resizable), so short
 /// tabs show empty space below rather than shrinking the window.
-fn settings_scroll_page(
+pub(super) fn settings_scroll_page(
     child: &impl gtk4::prelude::IsA<gtk4::Widget>,
 ) -> gtk4::ScrolledWindow {
     gtk4::ScrolledWindow::builder()
@@ -12,7 +14,7 @@ fn settings_scroll_page(
         .build()
 }
 
-fn open_settings_window(
+pub(super) fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     initial_tab: Option<u32>,

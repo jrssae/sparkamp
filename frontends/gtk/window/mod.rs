@@ -187,38 +187,51 @@ include!("util.rs");
 include!("player.rs");
 
 // ID3 editor window, field customizer, column customizer, gnudb email prompt
-include!("id3.rs");
+mod id3;
+use id3::*;
 
 // the Settings window (all tabs)
-include!("settings.rs");
+mod settings;
+use settings::*;
 
 // the Equalizer window
-include!("eq.rs");
+mod eq;
+use eq::*;
 
 // the Deduplicate Music window + its scan worker
-include!("dedupe.rs");
+mod dedupe;
+use dedupe::*;
 
 // Media Library / ID3 column definitions, cell text, sort keys
-include!("ml_columns.rs");
+mod ml_columns;
+use ml_columns::*;
 
 // visualizer draw helpers, fullscreen waveform window, image viewer
-include!("viz.rs");
+mod viz;
+use viz::*;
 
 // device-sync UI helpers: MTP enumeration, plans, conflict prompts
-include!("devices.rs");
+mod devices;
+use devices::*;
 
 // open_media_library_window(): files/playlists/devices/discs pages
 include!("media_library.rs");
-include!("queue_manager.rs");
+
+// the play-queue panel embedded in the Jump/Queue window
+mod queue_manager;
+use queue_manager::*;
 
 // Phase 11 A4: album gallery grid (build_album_gallery) — cover thumbnails,
-// zoom + sort controls, recycled GridView cells. Not yet wired into the ML
-// sidebar/stack (that's a follow-up task); media_library.rs will call it.
-include!("album_gallery.rs");
+// zoom + sort controls, recycled GridView cells.
+mod album_gallery;
+use album_gallery::*;
 
 // Phase 12 F15: read-only lyrics viewer + View/Search decision entry point
 // (view_or_search_lyrics) shared by every track-row surface.
-include!("lyrics.rs");
+mod lyrics;
+use lyrics::*;
 
-// unit tests (#[cfg(test)] mod tests)
-include!("tests.rs");
+// unit tests — a real child module (plan step 8); `use super::*` reaches the
+// window's private items exactly as the inline `mod tests` block used to.
+#[cfg(test)]
+mod tests;

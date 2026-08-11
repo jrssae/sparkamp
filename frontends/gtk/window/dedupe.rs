@@ -1,5 +1,7 @@
+use super::*;
+
 /// Messages sent from the background scan thread to the GTK tick loop.
-enum DedupeMsg {
+pub(super) enum DedupeMsg {
     Status(String),
     Done(Vec<crate::dedupe::DupeGroup>),
 }
@@ -32,7 +34,7 @@ enum DedupeMsg {
 /// | 9 | bool   | `true` → group row, `false` → track row          |
 /// |10 | i32    | Pango weight (700 group, 400 track)              |
 /// |11 | String | Full path (empty for group rows; for file-open)  |
-fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
+pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
     let win = gtk4::Window::new();

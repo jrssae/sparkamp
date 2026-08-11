@@ -1,19 +1,21 @@
+use super::*;
+
 /// Defines all columns that can appear in both the Media Library window
 /// and the ID3 tag editor.  `id3_editable` fields are shown as text entries
 /// in the ID3 editor; `read_only` fields are shown as non-editable labels.
-struct MlColumnDef {
-    id: &'static str,
-    header: &'static str,
-    expand: bool,
+pub(super) struct MlColumnDef {
+    pub(super) id: &'static str,
+    pub(super) header: &'static str,
+    pub(super) expand: bool,
     #[allow(dead_code)]
-    id3_editable: bool,
+    pub(super) id3_editable: bool,
     #[allow(dead_code)]
-    default_ml_visible: bool,
+    pub(super) default_ml_visible: bool,
     #[allow(dead_code)]
-    default_id3_visible: bool,
+    pub(super) default_id3_visible: bool,
 }
 
-const ALL_COLUMNS: &[MlColumnDef] = &[
+pub(super) const ALL_COLUMNS: &[MlColumnDef] = &[
     // ── Read-only file data ────────────────────────────────────────────────
     MlColumnDef {
         id: "num",
@@ -310,7 +312,7 @@ const ALL_COLUMNS: &[MlColumnDef] = &[
 /// precede the named ones (the files view has 0, the editor 2 = status +
 /// position, the device view 1 = playlist-order). Used so the files view, the
 /// playlist editor, and the device view all reflect the same column settings.
-fn apply_ml_columns_to(
+pub(super) fn apply_ml_columns_to(
     col_view: &ColumnView,
     named: &[(String, ColumnViewColumn)],
     state: &Rc<RefCell<AppState>>,
@@ -357,7 +359,7 @@ fn apply_ml_columns_to(
 }
 
 /// Human file size: whole KB under 1 MB, one-decimal MB above.
-fn format_file_size(bytes: i64) -> String {
+pub(super) fn format_file_size(bytes: i64) -> String {
     if bytes < 1_000_000 {
         format!("{} KB", bytes / 1_000)
     } else {
@@ -373,7 +375,7 @@ fn format_file_size(bytes: i64) -> String {
 /// `play_stats::effective_album_artist` for the "album_artist" column. A4
 /// (phase 11 album gallery) MUST also route its grouping through that same
 /// helper.
-fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str, artist_as_album_artist: bool) -> String {
+pub(super) fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str, artist_as_album_artist: bool) -> String {
     match id {
         "num" | "track_num" => t.track_num.map(|n| n.to_string()).unwrap_or_default(),
         "title" => t.title.clone().unwrap_or_else(|| t.filename.clone()),
@@ -469,7 +471,7 @@ fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str, artist_as_album_ar
     }
 }
 
-fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
+pub(super) fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
     match col {
         "num" => t.sort_keys.num.clone(),
         "title" => t.sort_keys.title.clone(),

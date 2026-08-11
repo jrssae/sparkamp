@@ -1,5 +1,7 @@
+use super::*;
+
 /// Filesystems Sparkamp can't reliably read/write yet — shown with a warning.
-fn device_fs_unsupported(fs_type: &str) -> bool {
+pub(super) fn device_fs_unsupported(fs_type: &str) -> bool {
     crate::devices::plan::device_fs_unsupported(fs_type)
 }
 
@@ -7,7 +9,7 @@ fn device_fs_unsupported(fs_type: &str) -> bool {
 /// belong to the Disc Drives group, not the removable-Devices list, so the
 /// device poll filters them out. `iso9660`/`udf` are the optical data
 /// filesystems; audio CDs have no filesystem and never reach the device list.
-fn is_optical_fs(fs_type: &str) -> bool {
+pub(super) fn is_optical_fs(fs_type: &str) -> bool {
     matches!(fs_type.to_ascii_lowercase().as_str(), "iso9660" | "udf")
 }
 
@@ -15,7 +17,7 @@ fn is_optical_fs(fs_type: &str) -> bool {
 /// track's visible text fields — the in-memory counterpart of the Files
 /// view's DB-backed search, used by the playlist-editor and device views.
 /// `q` must already be lowercased; an empty query matches everything.
-fn lib_track_matches_query(t: &crate::media_library::LibTrack, q: &str) -> bool {
+pub(super) fn lib_track_matches_query(t: &crate::media_library::LibTrack, q: &str) -> bool {
     if q.is_empty() {
         return true;
     }
@@ -29,7 +31,7 @@ fn lib_track_matches_query(t: &crate::media_library::LibTrack, q: &str) -> bool 
 
 /// A search entry + ✕ clear button row, styled like the Files view's search
 /// bar. Returns `(row, entry)`; the caller wires `connect_changed`.
-fn make_view_search_row(placeholder: &str) -> (GtkBox, Entry) {
+pub(super) fn make_view_search_row(placeholder: &str) -> (GtkBox, Entry) {
     let entry = Entry::new();
     entry.set_placeholder_text(Some(placeholder));
     entry.set_hexpand(true);
@@ -50,7 +52,7 @@ fn make_view_search_row(placeholder: &str) -> (GtkBox, Entry) {
 
 /// Leading status glyphs for a device label: ⚠ for an unsupported filesystem,
 /// 🔒 for read-only (matching the read-only file convention).
-fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
+pub(super) fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
     let mut p = String::new();
     if device_fs_unsupported(fs_type) {
         p.push_str("⚠ ");
@@ -63,14 +65,14 @@ fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
 
 /// Themed icon name for a device card. Generic removable-media icon for now;
 /// the MTP backend (Android phones) will map to a phone icon when added.
-fn device_icon_name(_dev: &crate::devices::Device) -> &'static str {
+pub(super) fn device_icon_name(_dev: &crate::devices::Device) -> &'static str {
     "drive-removable-media"
 }
 
 /// Apply a copy's progress to an overview card's bar. `Some((done, total))`
 /// shows the bar with an `x/y` label and fraction; `None` makes it transparent
 /// (idle) while still reserving its space, so the card never changes height.
-fn apply_card_progress(bar: &gtk4::ProgressBar, state: Option<(usize, usize)>) {
+pub(super) fn apply_card_progress(bar: &gtk4::ProgressBar, state: Option<(usize, usize)>) {
     match state {
         Some((done, total)) => {
             bar.set_opacity(1.0);
@@ -83,7 +85,7 @@ fn apply_card_progress(bar: &gtk4::ProgressBar, state: Option<(usize, usize)>) {
 
 /// Color a capacity LevelBar by fullness: normal < 75%, `cap-warn` ≥ 75%,
 /// `cap-full` ≥ 90%. The classes are styled in `skin.rs`.
-fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
+pub(super) fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
     bar.remove_css_class("cap-ok");
     bar.remove_css_class("cap-warn");
     bar.remove_css_class("cap-full");
@@ -104,7 +106,7 @@ fn set_levelbar_fullness(bar: &gtk4::LevelBar, used: f64) {
 /// and it goes insensitive, restored to `idle_label` when done. Used so the
 /// Sync button shows activity during the (sometimes slow over MTP) device
 /// communication before the sync dialog appears.
-fn set_button_busy(btn: &Button, busy: bool, idle_label: &str) {
+pub(super) fn set_button_busy(btn: &Button, busy: bool, idle_label: &str) {
     if busy {
         let spinner = gtk4::Spinner::new();
         spinner.start();
@@ -125,7 +127,7 @@ fn set_button_busy(btn: &Button, busy: bool, idle_label: &str) {
 /// that already has a `Music` folder, then one whose name looks "internal", else
 /// the first. Cached per device URI so the poll doesn't `read_dir` every tick;
 /// the cache self-heals if the path goes stale (replug).
-fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBuf {
+pub(super) fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBuf {
     // Thread-safe cache: this is called from a worker thread (off the UI thread)
     // so the FUSE read_dir never blocks the main loop.
     static CACHE: std::sync::OnceLock<
@@ -172,19 +174,19 @@ fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::path::PathBu
 /// Must run on the main thread (VolumeMonitor is a GLib main-context object).
 /// A device without a local FUSE path is skipped — `PosixIo` can't browse it
 /// until the gio IO backend (later phase) lands.
-struct MtpRaw {
-    uri: String,
-    fuse_root: std::path::PathBuf,
-    label: String,
-    id: String,
-    ejectable: bool,
+pub(super) struct MtpRaw {
+    pub(super) uri: String,
+    pub(super) fuse_root: std::path::PathBuf,
+    pub(super) label: String,
+    pub(super) id: String,
+    pub(super) ejectable: bool,
 }
 
 /// Enumerate MTP mount *metadata* via gio's VolumeMonitor. Cheap, no filesystem
 /// IO (so safe to run on the main thread): only cached GLib mount/volume props
 /// and URI→path mapping. The FUSE `read_dir` to find the storage root is done
 /// later, off-thread, by [`mtp_raw_to_device`].
-fn enumerate_mtp_raw() -> Vec<MtpRaw> {
+pub(super) fn enumerate_mtp_raw() -> Vec<MtpRaw> {
     let monitor = gio::VolumeMonitor::get();
     // gvfs can expose one MTP device as several mounts sharing the same root URI
     // (a friendly "Pixel 8" plus a generic "mtp"). Dedup by URI, best label wins.
@@ -248,9 +250,9 @@ fn enumerate_mtp_raw() -> Vec<MtpRaw> {
 /// a slow/wedged device, pinning the thread and delaying process exit and
 /// Ctrl-C. Not *starting* the read avoids that. (An already in-flight read can't
 /// be cancelled — that case is inherent to FUSE.)
-static DEVICE_IO_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(super) static DEVICE_IO_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn device_io_shutting_down() -> bool {
+pub(super) fn device_io_shutting_down() -> bool {
     DEVICE_IO_SHUTDOWN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -262,14 +264,14 @@ fn device_io_shutting_down() -> bool {
 /// a worker thread in uninterruptible IO — delaying process exit and Ctrl-C.
 /// Invalidated by [`invalidate_mtp_meta`] after any operation that changes the
 /// device, so capacity/visibility refresh then rather than on a timer.
-struct MtpMeta {
-    storage_root: std::path::PathBuf,
-    has_storage: bool,
-    total_bytes: u64,
-    free_bytes: u64,
+pub(super) struct MtpMeta {
+    pub(super) storage_root: std::path::PathBuf,
+    pub(super) has_storage: bool,
+    pub(super) total_bytes: u64,
+    pub(super) free_bytes: u64,
 }
 
-fn mtp_meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, MtpMeta>> {
+pub(super) fn mtp_meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, MtpMeta>> {
     static CACHE: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, MtpMeta>>,
     > = std::sync::OnceLock::new();
@@ -279,11 +281,11 @@ fn mtp_meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<Strin
 /// Drop a device's cached MTP metadata so the next poll re-reads it once — e.g.
 /// after a copy/sync/delete changed its contents, or on eject. No-op for
 /// non-MTP backend ids (their URIs are never cached here).
-fn invalidate_mtp_meta(uri: &str) {
+pub(super) fn invalidate_mtp_meta(uri: &str) {
     mtp_meta_cache().lock().unwrap().remove(uri);
 }
 
-fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> crate::devices::Device {
+pub(super) fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> crate::devices::Device {
     use crate::devices::DeviceBackend;
     crate::devices::Device {
         id: raw.id.clone(),
@@ -303,14 +305,14 @@ fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> crate::devices::Device {
 /// Whether a gvfs URI belongs to an Apple device (iPad/iPhone). gphoto2 URIs
 /// for Apple hardware embed the vendor, e.g.
 /// `gphoto2://Apple_Inc._iPad_00008020.../`.
-fn is_apple_device_uri(uri: &str) -> bool {
+pub(super) fn is_apple_device_uri(uri: &str) -> bool {
     uri.to_lowercase().contains("apple")
 }
 
 /// Banner text for a device Sparkamp can't sync to. Apple devices get the
 /// iOS-specific guidance; everything else on `gphoto2://` is a phone in
 /// photo-transfer (PTP) mode that should be switched to file-transfer/MTP.
-fn unsupported_device_banner(uri: &str) -> &'static str {
+pub(super) fn unsupported_device_banner(uri: &str) -> &'static str {
     if is_apple_device_uri(uri) {
         "⚠ iPad / iPhone detected. iOS doesn't allow third-party music transfer — \
          use Apple Music or Finder to add songs. Sparkamp can't sync to this device."
@@ -320,7 +322,7 @@ fn unsupported_device_banner(uri: &str) -> &'static str {
     }
 }
 
-fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
+pub(super) fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
     // gphoto2:// mounts are photo-transfer (PTP) interfaces: read-only, camera
     // roll only. Apple devices and Android-in-photo-mode both land here. They
     // are surfaced so the user sees the device is detected, but tagged
@@ -388,7 +390,7 @@ fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
 }
 
 /// "N songs · M playlists" with singular/plural agreement.
-fn counts_text(songs: usize, playlists: usize) -> String {
+pub(super) fn counts_text(songs: usize, playlists: usize) -> String {
     format!(
         "{songs} song{} · {playlists} playlist{}",
         if songs == 1 { "" } else { "s" },
@@ -397,19 +399,19 @@ fn counts_text(songs: usize, playlists: usize) -> String {
 }
 
 /// Tooltip shown on the device row / detail for an unsupported filesystem.
-const UNSUPPORTED_FS_TOOLTIP: &str =
+pub(super) const UNSUPPORTED_FS_TOOLTIP: &str =
     "Unsupported filesystem (NTFS/exFAT) — Sparkamp can't reliably read or write this device yet.";
 
 /// Device identity for sync pairs: the volume UUID, or a marker id written now
 /// (the first time a file is paired to this device).
-fn device_sync_id(dev: &crate::devices::Device) -> String {
+pub(super) fn device_sync_id(dev: &crate::devices::Device) -> String {
     crate::devices::plan::device_sync_id(dev)
 }
 
 /// The DB half of [`device_plan_one`]: the recorded sync-pair device relpath for
 /// `src` on this device, if any. Frontend shim over
 /// [`crate::devices::plan::recorded_relpath`] that pulls the open library.
-fn device_recorded_relpath(
+pub(super) fn device_recorded_relpath(
     state: &Rc<RefCell<AppState>>,
     device_id: &str,
     src: &std::path::Path,
@@ -424,7 +426,7 @@ fn device_recorded_relpath(
 /// is already present, using `metadata`/`exists` checks on the device. This is
 /// the part that can be slow over a gvfs/MTP FUSE mount, so callers run it on a
 /// worker thread.
-fn device_plan_fs(
+pub(super) fn device_plan_fs(
     mount: &std::path::Path,
     src: &std::path::Path,
     recorded: Option<std::path::PathBuf>,
@@ -444,7 +446,7 @@ fn device_plan_fs(
 ///
 /// Does filesystem IO; on a slow (MTP) device prefer the split
 /// [`device_recorded_relpath`] (main thread) + [`device_plan_fs`] (worker).
-fn device_plan_one(
+pub(super) fn device_plan_one(
     state: &Rc<RefCell<AppState>>,
     mount: &std::path::Path,
     device_id: &str,
@@ -455,7 +457,7 @@ fn device_plan_one(
 
 /// Record (or refresh) the sync pair for a just-copied file with its REAL tag
 /// baseline, so a later sync sees no change until a tag is actually edited.
-fn device_record_pair(
+pub(super) fn device_record_pair(
     state: &Rc<RefCell<AppState>>,
     device_id: &str,
     src: &std::path::Path,
@@ -469,14 +471,14 @@ fn device_record_pair(
 /// Sanitize a playlist name into the bare filename stem used for its `.m3u`/
 /// `.m3u8` on a device: strip path-hostile characters and surrounding dots/
 /// spaces, falling back to "Playlist" when nothing usable remains.
-fn safe_playlist_filename(name: &str) -> String {
+pub(super) fn safe_playlist_filename(name: &str) -> String {
     crate::devices::plan::safe_playlist_filename(name)
 }
 
 /// If a device playlist file is linked to a library playlist — i.e. some
 /// library playlist's safe filename equals the device file's stem — return its
 /// `(id, name)`. Device-only playlists (no library match) return `None`.
-fn linked_library_playlist(
+pub(super) fn linked_library_playlist(
     state: &Rc<RefCell<AppState>>,
     dev_playlist: &std::path::Path,
 ) -> Option<(i64, String)> {
@@ -488,15 +490,15 @@ fn linked_library_playlist(
 /// A validated plan for sending a whole playlist to a device: the files to
 /// copy (with their on-device paths), the device identity for sync pairs, and
 /// where the `.m3u8` will be written on the device.
-struct PlaylistSendPlan {
-    srcs: Vec<std::path::PathBuf>,
-    device_id: String,
-    m3u_path: std::path::PathBuf,
+pub(super) struct PlaylistSendPlan {
+    pub(super) srcs: Vec<std::path::PathBuf>,
+    pub(super) device_id: String,
+    pub(super) m3u_path: std::path::PathBuf,
 }
 
 /// Validate and build a [`PlaylistSendPlan`] for `playlist_id` on `dev`, or a
 /// user-facing error (read-only / unsupported device, empty playlist, no space).
-fn prepare_playlist_send(
+pub(super) fn prepare_playlist_send(
     state: &Rc<RefCell<AppState>>,
     dev: &crate::devices::Device,
     playlist_id: i64,
@@ -567,7 +569,7 @@ fn prepare_playlist_send(
 
 /// Compute the per-pair sync decisions for a device: for each recorded sync
 /// pair, hash the current tags on each side and decide the direction.
-fn device_sync_plan(
+pub(super) fn device_sync_plan(
     lib: &crate::media_library::MediaLibrary,
     dev: &crate::devices::Device,
 ) -> Vec<(crate::media_library::SyncPair, crate::devices::sync::SyncAction)> {
@@ -576,7 +578,7 @@ fn device_sync_plan(
 
 /// Apply one tag-sync direction to a single pair and refresh its baseline.
 /// `to_device` true = library→device, false = device→library. Returns ok.
-fn apply_tag_pair(
+pub(super) fn apply_tag_pair(
     state: &Rc<RefCell<AppState>>,
     dev: &crate::devices::Device,
     pair: &crate::media_library::SyncPair,
@@ -591,7 +593,7 @@ fn apply_tag_pair(
 /// Apply a sync plan: propagate the winning side's tags for the unambiguous
 /// directions (conflicts are handled separately by the prompt) and refresh each
 /// pair's baseline. Returns `(applied, failed)`.
-fn apply_device_sync(
+pub(super) fn apply_device_sync(
     state: &Rc<RefCell<AppState>>,
     dev: &crate::devices::Device,
     plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
@@ -605,7 +607,7 @@ fn apply_device_sync(
 /// Build the two-way playlist sync plan for a device: for each library playlist
 /// that is on the device (or was, per a stored baseline), decide whether to
 /// push to the device, pull into the library, or flag a conflict.
-fn device_playlist_sync_plan(
+pub(super) fn device_playlist_sync_plan(
     lib: &crate::media_library::MediaLibrary,
     dev: &crate::devices::Device,
     ext: &str,
@@ -618,7 +620,7 @@ fn device_playlist_sync_plan(
 /// file if the playlist was renamed, and refresh the baseline. Audio files for
 /// tracks removed from the playlist stay on the device (Deletion Rule).
 /// Returns `(files_copied, ok)`.
-fn apply_playlist_push(
+pub(super) fn apply_playlist_push(
     state: &Rc<RefCell<AppState>>,
     dev: &crate::devices::Device,
     item: &PlaylistSyncItem,
@@ -637,7 +639,7 @@ fn apply_playlist_push(
 /// lists the differing fields (computer vs device); the user keeps the computer
 /// copy (library→device), the device copy (device→library), or skips. After the
 /// last one, `done` runs.
-fn prompt_tag_conflicts(
+pub(super) fn prompt_tag_conflicts(
     state: Rc<RefCell<AppState>>,
     dev: crate::devices::Device,
     mut conflicts: Vec<TagConflictItem>,
@@ -682,14 +684,14 @@ fn prompt_tag_conflicts(
 
 /// Build the per-file tag-conflict items from a sync plan: for each pair marked
 /// `Conflict`, read both sides' tags and compute the differing fields.
-fn build_tag_conflicts(
+pub(super) fn build_tag_conflicts(
     dev: &crate::devices::Device,
     plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
 ) -> Vec<TagConflictItem> {
     crate::devices::plan::build_tag_conflicts(dev, plan)
 }
 
-fn prompt_playlist_conflicts(
+pub(super) fn prompt_playlist_conflicts(
     state: Rc<RefCell<AppState>>,
     dev: crate::devices::Device,
     mut conflicts: Vec<PlaylistSyncItem>,
@@ -733,7 +735,7 @@ fn prompt_playlist_conflicts(
 /// Pull a device playlist into the library: rewrite the library playlist file to
 /// mirror the device's order/membership (mapping device filenames back to
 /// library tracks by filename), then refresh the baseline. Returns ok.
-fn apply_playlist_pull(
+pub(super) fn apply_playlist_pull(
     state: &Rc<RefCell<AppState>>,
     item: &PlaylistSyncItem,
 ) -> bool {
@@ -746,7 +748,7 @@ fn apply_playlist_pull(
 /// Rewrite a device `.m3u`/`.m3u8`, dropping every track line whose filename
 /// (basename of the entry, `/` or `\` separated) is in `remove`. Comment/blank
 /// lines are preserved. Returns true if the file changed.
-fn device_m3u_remove_basenames(
+pub(super) fn device_m3u_remove_basenames(
     path: &std::path::Path,
     remove: &std::collections::HashSet<String>,
 ) -> bool {
@@ -756,7 +758,7 @@ fn device_m3u_remove_basenames(
 /// Delete files from a device and remove them from every device playlist that
 /// referenced them. `paths` are absolute on-device paths. Returns the number of
 /// files that couldn't be deleted.
-fn device_delete_files(dev: &crate::devices::Device, paths: &[std::path::PathBuf]) -> usize {
+pub(super) fn device_delete_files(dev: &crate::devices::Device, paths: &[std::path::PathBuf]) -> usize {
     crate::devices::plan::device_delete_files(dev, paths)
 }
 
