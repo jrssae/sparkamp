@@ -1733,14 +1733,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // library" — clear any album drill-down left over from the
                 // gallery (Phase 11 A5) and rebuild through the same seam
                 // background rebuilds use.
-                {
-                    *album_filter_sb.borrow_mut() = None;
-                }
+                //
+                // Only when there was a drill-down to clear, though. Without
+                // one the table already shows every track, and rebuilding it
+                // is a full pass over the library — 474 ms at 37k tracks. The
+                // window paid that on every open, because the initial
+                // `select_row(0)` fires this handler against a table
+                // `files::build` has only just filled (2026-08-11).
+                let had_filter = album_filter_sb.borrow_mut().take().is_some();
                 btn_album_back_sb.set_visible(false);
                 stack_ref.set_visible_child_name("files");
-                let cb = state_rc.borrow().rebuild_ml_callback.clone();
-                if let Some(cb) = cb {
-                    cb();
+                if had_filter {
+                    let cb = state_rc.borrow().rebuild_ml_callback.clone();
+                    if let Some(cb) = cb {
+                        cb();
+                    }
                 }
             });
         }
