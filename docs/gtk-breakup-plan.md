@@ -284,22 +284,20 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 2 | ~~**`albums.rs`** — mechanism pilot~~ **DONE `a80004e`** | 116 | very low | CI | **A + B** |
 | 3 | ~~`sidebar.rs`~~ **DONE `cbd4bcd`** | 500 | medium | CI | **A + C** (batchable with 4) |
 | 4 | ~~`files.rs` + `files_menu.rs`~~ **DONE `2d64bb8`, `7f0ceaa`** | 2,130 | medium | CI | **A + D + X** |
-| 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
+| 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ✅ 2026-08-11 (in step 8's sweep) |
 | 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
 | 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ✅ 2026-08-11 |
-| 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **29 automated ✅ 2026-08-11**, 20 manual ⏳ |
+| 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **49/49 ✅ 2026-08-11** (29 automated, 20 by hand) |
 
-**All nine steps are complete.** `window/mod.rs` holds no `include!`; it is 244
-lines of `mod` and `use` declarations plus the module docs.
+**All nine steps are complete, and so is the testing.** `window/mod.rs` holds
+no `include!`; it is 244 lines of `mod` and `use` declarations plus the module
+docs. Step 8's sweep ran all 49 checks — 29 automated, 20 by hand — and the
+E group in it discharges step 5's owed round, which had never been run.
 
-Two test debts remain, and neither blocks the breakup:
-
-- **Step 5's A + E + X round** was never run, so `disc_gnudb.rs` has still had
-  no manual pass. Needs an audio CD.
-- **20 of step 8's 49 checks** cannot be automated — GTK4 popovers and
-  image-in-button cells are invisible to AT-SPI, Wayland refuses synthetic
-  pointer events, and three checks eject or write to hardware. They are
-  itemised for a human in the step 8 close-out below.
+**19 of the 20 manual checks passed.** The one failure was X39 (Rescan
+Metadata's count), and the round turned up four more defects outside the
+checklist entirely. None of the five came from the extraction; all five are
+fixed. See "What the manual round found" in the step 8 close-out below.
 
 Test groups are defined in [§5](#5-smoke-tests). Steps 5 and 6 run their group
 twice — once after the hoist commit, once after the extract.
@@ -590,6 +588,33 @@ mine were wrong first — a probe-flood that turned out to be 34 flat threads at
 18 ms round-trips, and a rebuild storm whose fix did not stop the hang. What
 settled it was sampling `/proc` from a parent process while a child drove the
 UI, so the record survived the app going unresponsive.
+
+### What the manual round found — 2026-08-11
+
+19 of the 20 passed. The one failure was X39; the other four defects were
+found off the checklist entirely, which is the argument for a human round
+rather than a longer script.
+
+| Fix | What it was |
+|---|---|
+| `8f0f254` | **The one that mattered.** `is_read_only` answered "can I write this?" by opening the file for writing, and Linux emits `IN_CLOSE_WRITE` when that descriptor closes, written to or not. So the Files status column generated watch events for the rows it was inspecting; the watcher called them modifications and rebuilt the view; the rebuild rebound the rows, which probed more files. A closed loop that reset scroll and selection every 15-20 seconds with nothing touching the disk — fatal for building a multi-file selection. Now `access(W_OK)`, which is silent to inotify. Selection also survives a rebuild now, for the case a real file change triggers one. |
+| `ef76652` | Syncing a device froze the window until every file had copied. The planning half was already off-thread; the applying half never was. Now a worker with its own SQLite connection, driving the detail view's progress bar. |
+| `86292e0` | Ctrl+A did not select all in the playlist window (Ctrl+I inverted, so the gap was conspicuous); tracks added by path showed a blank duration the library already knew; and **X39** — cancelling a rescan only set the worker's flag, leaving `ml_scan` populated, so the stale totals stayed on screen and the next Rescan was silently refused. |
+| `229a659` | Scrolling queued one status probe per distinct row swept over, and the app worked through that backlog at ~24% of a core for 20 s after scrolling stopped. Probes now wait 150 ms and re-check the row is still there. |
+
+Also fixed during the round but properly a library bug, not a UI one:
+`ee80091`, one file stored twice under `/mnt` and `/var/mnt` — 8,417 duplicate
+rows, still growing, and the ingest driving all of the above. Its own plan is
+at `2026-08-11-path-canonicalization.md`.
+
+**Nothing here came from the module extraction.** Four predate the branch;
+one (`9e2c884`) was mine, from the perf fix in step 7's round rather than from
+step 8's conversion. That is the useful result: 17,386 lines moved between
+modules, and every defect the round surfaced was already there.
+
+One gap was found and deliberately not filled: **copy from a device to the
+computer** ("Copy to Library ▸ &lt;folder&gt;") is in the June design spec
+`a00041a` and was never built. Not a regression, and out of scope here.
 
 ### Handing off a test round
 
