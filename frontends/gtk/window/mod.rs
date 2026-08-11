@@ -72,6 +72,20 @@ use crate::skin::{self, render_gtk_css, SkinVars};
 // disc UI (submit, burn) goes there, not here.
 mod disc;
 
+// The playlist window's Add File / Add Files / Add Folder dialogs and the
+// two-phase scan behind them. Split out of player.rs (breakup step 9b).
+mod add_files;
+
+// The Jump window (`j`): search/jump-to plus Queue mode. Split out of
+// player.rs (breakup step 9b) as two functions — `jump::build` makes it,
+// `jump::connect` wires it after the key dispatcher exists.
+mod jump;
+
+// The 100 ms tick: seek bar, time display, marquee scroll, transport state,
+// the visualiser frame, and draining the probe/metadata channels. Split out
+// of player.rs (breakup step 9b); player.rs calls `tick::start(&ctx, ..)`.
+mod tick;
+
 // Drag and drop for the active playlist: the DragSource that lifts selected
 // rows out of it and the DropTarget that accepts files dragged in. Split out
 // of player.rs (breakup step 9) — it reads a wide slice of the window and

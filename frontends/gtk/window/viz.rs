@@ -606,3 +606,119 @@ pub(super) fn open_image_viewer(path: &str) {
     win.present();
 }
 
+
+/// Install the mini visualiser's draw function — the small box in the
+/// now-playing row. Bars, waveform and Granite all render through the
+/// module-level helpers above.
+///
+/// Split out of `player::build` (breakup step 9b). It reads two bindings
+/// and declares nothing anyone else wants.
+pub(super) fn install_mini_draw(state: &Rc<RefCell<AppState>>, viz: &DrawingArea) {
+    let state = state.clone();
+    let viz = viz.clone();
+
+    // Visualizer draw function (mini box in the now-playing row)
+    // ══════════════════════════════════════════════════════════════════════════
+    // Note: parse_hex_color / draw_zoned_bar / draw_waveform are module-level
+    // functions defined near the bottom of this file so they can also be called
+    // from open_waveform_fullscreen.
+
+    {
+        let state = state.clone();
+        viz.set_draw_func(move |_da, cr, width, height| {
+            // ── Background ────────────────────────────────────────────────
+            cr.set_source_rgb(0.05, 0.05, 0.05);
+            cr.paint().ok();
+
+            let s = state.borrow();
+            let is_playing = *s.player.state() == PlayerState::Playing;
+            let mode = s.config.visualizer.mode.clone();
+            let display_bands_count = s.config.visualizer.display_bands;
+            let bars_mirror = s.config.visualizer.bars_mirror;
+            let color_zones = s.config.visualizer.color_zones as usize;
+            let zone_colors = s.config.visualizer.zone_colors.clone();
+            let wf_zones = s.config.visualizer.waveform_color_zones as usize;
+            let wf_zone_colors = s.config.visualizer.waveform_zone_colors.clone();
+            let wf_style = s.config.visualizer.waveform_style.clone();
+
+            // Get spectrum and waveform data before dropping the borrow.
+            let display_bands_data = s.player.get_spectrum_display_bands(display_bands_count);
+            let waveform_samples = s.player.get_waveform_samples(width.max(64) as usize);
+            drop(s);
+
+            if !is_playing {
+                // Idle: flat dim centre line.
+                cr.set_source_rgb(0.0, 0.3, 0.1);
+                cr.set_line_width(1.0);
+                let mid = height as f64 / 2.0;
+                cr.move_to(0.0, mid);
+                cr.line_to(width as f64, mid);
+                cr.stroke().ok();
+                return;
+            }
+
+            match mode {
+                VisualizerMode::Bars => {
+                    let num_bars = display_bands_count.max(10) as usize;
+                    let bar_w = width as f64 / num_bars as f64;
+
+                    if !display_bands_data.iter().all(|&v| v == 0.0) {
+                        for (i, &amp) in display_bands_data.iter().enumerate() {
+                            let x = i as f64 * bar_w;
+                            draw_zoned_bar(
+                                &cr,
+                                x,
+                                bar_w,
+                                height as f64,
+                                amp,
+                                bars_mirror,
+                                color_zones,
+                                &zone_colors,
+                            );
+                        }
+                    } else {
+                        cr.set_source_rgb(0.0, 0.3, 0.1);
+                        cr.set_line_width(1.0);
+                        let mid = height as f64 / 2.0;
+                        cr.move_to(0.0, mid);
+                        cr.line_to(width as f64, mid);
+                        cr.stroke().ok();
+
+                        cr.set_source_rgb(0.0, 0.5, 0.2);
+                        let font_size = 10.0_f64.min(height as f64 * 0.4);
+                        cr.set_font_size(font_size);
+                        let text = "Retry";
+                        if let Ok(extents) = cr.text_extents(text) {
+                            let text_x =
+                                (width as f64 - extents.width()) / 2.0 - extents.x_bearing();
+                            let text_y =
+                                (height as f64 - extents.height()) / 2.0 - extents.y_bearing();
+                            cr.move_to(text_x, text_y);
+                            cr.show_text(text).ok();
+                        }
+                    }
+                }
+                VisualizerMode::Waveform => {
+                    draw_waveform(
+                        &cr,
+                        width as f64,
+                        height as f64,
+                        &waveform_samples,
+                        wf_zones,
+                        &wf_zone_colors,
+                        &wf_style,
+                    );
+                }
+                // Granite is rendered by a separate Picture widget swapped in
+                // via a Stack (see step 4); the Cairo DrawingArea sits behind
+                // the Picture and isn't visible while Granite is active. Draw
+                // nothing here so we don't waste cycles on a hidden surface.
+                VisualizerMode::Granite => {}
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+}

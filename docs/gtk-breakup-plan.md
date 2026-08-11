@@ -298,6 +298,7 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ✅ 2026-08-11 |
 | 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **49/49 ✅ 2026-08-11** (29 automated, 20 by hand) |
 | 9 | ~~`player.rs` — `playlist_window.rs` + `dnd.rs` + `keys.rs`~~ **DONE** | 2,405 | medium | CI ✅ | **A + G** — owed |
+| 9b | ~~`player.rs` — `add_files.rs` + `tick.rs` + `jump.rs` + the mini-viz draw~~ **DONE** | 1,338 | low | CI ✅ | **A + G** — owed |
 
 **All ten steps are complete.** `window/mod.rs` holds no `include!`; it is 250
 lines of `mod` and `use` declarations plus the module docs. Step 8's sweep ran
@@ -747,8 +748,9 @@ points at two `.borrow_mut()` calls whose relative order the move changed.
 
 ## 6. `player.rs` — worth doing, but later
 
-> **Done 2026-08-11 as step 9.** All three cuts landed and `player.rs` is
-> 3,426 lines. What follows is the survey the step was planned from; the
+> **Done 2026-08-11 as steps 9 and 9b.** All three cuts landed, four more
+> followed, and `player.rs` is 2,089 lines — `build()` 1,865, under the
+> 2,000-line ceiling [§9](#9-the-size-bar-measured--2026-08-11) sets. What follows is the survey the step was planned from; the
 > close-out after it records what actually happened, including where the
 > boundaries below turned out to be drawn in the wrong place.
 
@@ -840,19 +842,60 @@ the three modules re-alias what they need under the original names at the top
 of the function, so the moved code reads exactly as it did in `build`. A
 reviewer can check the claim mechanically rather than reading 2,400 lines.
 
-**The plan's goal is still not met.** `player.rs` is the largest file in the
-repo and `build()` is still one 3,201-line function — under the 800/300 bar
-only by a factor of four. What is left splits along visible seams:
+**The goal is not met yet.** `build()` is still one 3,201-line function. What
+is left splits along four visible seams — the tick loop (~640), the jump
+window (~450), the add-file dialogs (~260) and the visualizer draw (~100).
+They are not part of step 9 and have not been scored the way the three above
+were. Step 9b did exactly that; see its close-out below.
 
-| Region | Lines | Escapes cleanly? |
-|---|---|---|
-| tick loop | ~640 | reads the whole window; needs `PlayerCtx` |
-| jump window | ~450 | its own window, like the playlist one |
-| add-file dialogs | ~260 | three handlers over one `FileFilter` |
-| visualizer draw | ~100 | already calls module-level helpers |
+### What step 9b actually did — 2026-08-11
 
-Those four would take `build()` to roughly 800. They are not part of step 9
-and have not been scored the way the three above were.
+The four seams step 9 named, scored the same way and cut in escape order.
+
+| | Before 9 | After 9 | After 9b |
+|---|---|---|---|
+| `player.rs` | 5,831 | 3,426 | **2,089** |
+| `build()` | 5,708 | 3,201 | **1,865** |
+| live-scope area | 43,772 | 43,772 | **37,169** |
+| max binding span | 3,132 | 3,132 | **1,795** |
+
+| Cut | Lines | In | Escapes | Shape |
+|---|---|---|---|---|
+| `viz::install_mini_draw` | 104 | 2 | 0 | appended to the module that already owns its draw helpers |
+| `add_files.rs` | 261 | 12 | 0 | `install(&ctx, &btn_save_active, &btn_cancel)` |
+| `tick.rs` | 628 | 26 | 0 | `start(&ctx, Deps)` — receivers move, they are not `Clone` |
+| `jump.rs` | 384 | 4 | 7 | `build(&ctx, ..) -> JumpWin` **plus** `connect(&ctx, &jw)` |
+
+**`build()` is now under the 2,000-line ceiling and is no longer the largest
+function in the repo** — `settings.rs::open_settings_window` is, and
+[§10](#10-what-is-actually-left--2026-08-11) says to leave that one alone. Its
+median span is 341, still just over the 300 mark; its area has dropped to
+third behind `devices_page` and `disc_page`.
+
+**The jump window did not need the hoist steps 5 and 6 needed.** It has the
+same widgets-first/wiring-last shape — its handlers are wired 600 lines below
+the widgets, deliberately, because the jump window's key controller delegates
+transport keys to `handle_key` and so must be built after it. Rather than move
+code across that ordering, it became **two functions in one module**:
+`jump::build` returns the seven parts, `jump::connect` takes them back. The
+ordering constraint is preserved exactly, and nothing moved past anything.
+
+**Two things the binding analysis missed, both caught by the compiler.**
+`open_rx` is a *parameter* of `build`, not a fn-scope `let`, so the scan never
+saw it — the tick loop is its only consumer and it moved with the receivers.
+And several bindings reach `build` by destructuring `PlaylistWin` at indent 8,
+which the scan also skips; they are all `PlayerCtx` fields, so passing `&ctx`
+covered them. Neither is a hole in the *escape* half of the analysis, which is
+the half that decides whether a cut is safe: escapes are computed from what a
+region declares, and no region here declared anything by destructuring.
+
+All four bodies were diffed against the original and are byte-identical.
+
+What is left in `build()` is the main window itself — the now-playing row and
+its widgets (~590 lines), the shortcuts window (~194), the audio-CD watcher
+(~151), the device poll (~70) and the close handlers (~160). None is scored.
+
+---
 
 ---
 
@@ -1030,7 +1073,7 @@ count is there to separate a real capture web from a long template.
 |---|---|---|---|---|---|---|
 | 74,115 | 1,466 | 81 | 915 | 1,320 | 24 | `devices_page.rs::build` |
 | 66,526 | 1,514 | 74 | 899 | 1,494 | 24 | `disc_page.rs::build` |
-| 43,772 | 3,202 | 124 | 353 | 3,132 | 56 | `player.rs::build` |
+| 37,169 | 1,865 | 109 | 341 | 1,795 | 40 | `player.rs::build` *(after 9b; was 43,772 / 3,202 / 353 / 3,132)* |
 | 22,048 | 1,032 | 52 | 424 | 982 | 31 | `playlist_window.rs::build` |
 | 21,096 | 1,230 | 36 | 586 | 1,212 | 35 | `dnd.rs::install` |
 | 15,432 | 903 | 24 | 643 | 867 | 28 | `disc_data.rs::build` |
@@ -1078,7 +1121,7 @@ bindings feeding one CSS template, **zero closures**. Leave it too.
 
 | | |
 |---|---|
-| **Needed** | `player.rs::build` (over the 2,000 ceiling; four seams already named) · `devices_page.rs::build` · `disc_page.rs::build` |
+| **Needed** | `devices_page.rs::build` · `disc_page.rs::build` — `player.rs::build` came off this row when step 9b took it under the ceiling |
 | **Judgment, later** | `disc_data`, `playlists`, `build_burn_panel`, `playlists_manage`, and the two step 9 created (`dnd`, `playlist_window`) — all now independently cuttable, which is the part that matters |
 | **No change** | `settings.rs`, `skin.rs`, and every one of the 11 functions the 300-line rule flagged that this one does not |
 
