@@ -1115,7 +1115,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let _ = state_pa.borrow_mut().player.stop();
                 state_pa.borrow_mut().playlist.clear();
                 for lt in &tracks {
-                    state_pa.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                    super::playlist_add::add_track(&state_pa, crate::model::Track::from(lt), false);
                 }
                 if !state_pa.borrow().playlist.is_empty() {
                     state_pa.borrow_mut().play_current();
@@ -1149,7 +1149,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 let was_empty = state_ea.borrow().playlist.is_empty();
                 for lt in &tracks {
-                    state_ea.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                    super::playlist_add::add_track(&state_ea, crate::model::Track::from(lt), false);
                 }
                 if state_ea.borrow().config.behavior.autoplay_on_add && was_empty {
                     state_ea.borrow_mut().play_current();
@@ -1194,7 +1194,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         {
                             let t = obj.borrow::<crate::media_library::LibTrack>();
                             let track = crate::model::Track::from(&*t);
-                            state_rc.borrow_mut().playlist.add(track);
+                            super::playlist_add::add_track(&state_rc, track, false);
                             added += 1;
                         }
                     }
@@ -1273,7 +1273,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         let _ = state_rc.borrow_mut().player.stop();
                         state_rc.borrow_mut().playlist.clear();
                     }
-                    state_rc.borrow_mut().playlist.add(track);
+                    super::playlist_add::add_track(&state_rc, track, false);
                     // Autoplay when: the playlist was empty (append mode), or
                     // when replacing (the new track should always start playing).
                     if autoplay && (was_empty || should_replace) {

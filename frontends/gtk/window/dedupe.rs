@@ -354,9 +354,11 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                                 let tid: i64 =
                                     ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
                                 if let Some(info) = tm_borrow.get(&tid) {
-                                    st.borrow_mut()
-                                        .playlist
-                                        .add(crate::model::Track::from(&info.track));
+                                    super::playlist_add::add_track(
+                                        &st,
+                                        crate::model::Track::from(&info.track),
+                                        false,
+                                    );
                                 }
                                 #[allow(deprecated)]
                                 if !ts.iter_next(&ci) {

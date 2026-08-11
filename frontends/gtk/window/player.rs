@@ -291,6 +291,16 @@ pub fn build(
     let (current_track_meta_tx, current_track_meta_rx) =
         std::sync::mpsc::channel::<(std::path::PathBuf, String, String, String, String)>();
 
+    // ── Playlist row-finishing channel ────────────────────────────────────────
+    // Answers from the background pass that finishes a newly added row: is the
+    // file there, is it writable, and — only for files the media library has
+    // never seen — its tags and duration. Published on AppState so all 27 add
+    // sites reach it through `playlist_add` instead of each being handed a
+    // sender, which is how three of them ended up without one.
+    let (row_facts_tx, row_facts_rx) =
+        std::sync::mpsc::channel::<crate::file_status::RowFacts>();
+    state.borrow_mut().row_facts_tx = Some(row_facts_tx);
+
     // Populate durations from the on-disk cache for the already-loaded
     // playlist, then probe any tracks that are still unknown.
     {
@@ -1295,6 +1305,7 @@ pub fn build(
             broken_rx,
             current_track_meta_rx,
             open_rx,
+            row_facts_rx,
         },
     );
 

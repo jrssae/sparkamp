@@ -44,8 +44,6 @@ pub(super) fn install(ctx: &PlayerCtx) {
     let burn_queues = ctx.burn_queues.clone();
     let copy_files_holder = ctx.copy_files_holder.clone();
     let burn_refresh_holder = ctx.burn_refresh_holder.clone();
-    let probe_tx = ctx.probe_tx.clone();
-    let broken_tx = ctx.broken_tx.clone();
     let current_track_meta_tx = ctx.current_track_meta_tx.clone();
 
     // ── DragSource on the TreeView ──────────────────────────────────────────
@@ -250,8 +248,6 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let rebuild_dnd = rebuild_playlist.clone();
         let pl_view_dnd = pl_view.clone();
         let drag_sel_drop = pl_drag_selection.clone();
-        let probe_tx_dnd = probe_tx.clone();
-        let broken_tx_dnd = broken_tx.clone();
 
         drop_tgt.connect_drop(move |_, value, x, y| {
             let file_list = match value.get::<gdk::FileList>() {
@@ -301,10 +297,18 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 existing_src_indices = Vec::new();
                 new_paths = Vec::new();
                 let s = state_dnd.borrow();
+                // Index the playlist once. This used to scan it per dropped
+                // path, which is fine for the handful of files a file manager
+                // sends and quadratic for the 36,000 a "select all" in the
+                // Media Library sends.
+                let mut by_path: std::collections::HashMap<&std::path::Path, usize> =
+                    std::collections::HashMap::with_capacity(s.playlist.tracks.len());
+                for (i, t) in s.playlist.tracks.iter().enumerate() {
+                    by_path.entry(t.path.as_path()).or_insert(i);
+                }
                 for dp in &dropped {
-                    let idx = s.playlist.tracks.iter().position(|t| &t.path == dp);
-                    match idx {
-                        Some(i) => existing_src_indices.push(i),
+                    match by_path.get(dp.as_path()) {
+                        Some(i) => existing_src_indices.push(*i),
                         None    => new_paths.push(dp.clone()),
                     }
                 }
@@ -340,30 +344,12 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 moved_range = Some((insert_at, removed_n));
             }
 
-            // Where the appended tracks start, captured after the reorder above
-            // has finished moving rows around.
-            let add_start = state_dnd.borrow().playlist.len();
-            let mut did_add = false;
-            for p in new_paths {
-                if state_dnd.borrow_mut().add_path(&p).is_ok() { did_add = true; }
-            }
-            // Fill from the on-disk duration cache, then probe whatever is still
-            // unknown. `add_path` only supplies a duration the media library or
-            // the cache already holds, so a file neither has seen would sit blank
-            // until it played — the same gap the external file-manager drop
-            // below already closes, and this is the handler ML and editor drops
-            // arrive on.
-            if did_add {
-                state_dnd.borrow_mut().apply_cached_durations();
-                let uncached = state_dnd.borrow().uncached_paths_from(add_start);
-                if !uncached.is_empty() {
-                    duration_probe::spawn_probes(
-                        uncached,
-                        probe_tx_dnd.clone(),
-                        broken_tx_dnd.clone(),
-                    );
-                }
-            }
+            // Everything a dropped row needs comes from the library, and what
+            // does not is measured in the background. This used to call
+            // `add_path` per file, which opens and re-parses each one on the
+            // main thread — 27.974 ms apiece, so a Media Library "select all"
+            // dropped here froze the window for about seventeen minutes.
+            let did_add = playlist_add::add_paths(&state_dnd, &new_paths).any();
             // Clear the press-time selection snapshot so a subsequent
             // single-row drag doesn't accidentally reorder the whole set.
             drag_sel_drop.borrow_mut().clear();
@@ -419,22 +405,17 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let state_fd = state.clone();
         let rebuild_fd = rebuild_playlist.clone();
         let status_fd = pl_status_label.clone();
-        let probe_tx_fd = probe_tx.clone();
-        let broken_tx_fd = broken_tx.clone();
         file_drop.connect_drop(move |_, value, _, _| {
             let file_list = match value.get::<gdk::FileList>() {
                 Ok(fl) => fl,
                 Err(_) => return false,
             };
-            let before = state_fd.borrow().playlist.tracks.len();
-            let mut added = 0usize;
-            for file in file_list.files() {
-                if let Some(path) = file.path() {
-                    if state_fd.borrow_mut().add_path(&path).is_ok() {
-                        added += 1;
-                    }
-                }
-            }
+            let dropped: Vec<std::path::PathBuf> =
+                file_list.files().iter().filter_map(|f| f.path()).collect();
+            // Same shared path as every other add: library rows are a data
+            // copy, anything unknown is read on the background pass, and a
+            // dropped folder still expands to the files under it.
+            let added = playlist_add::add_paths(&state_fd, &dropped).count;
             if added > 0 {
                 status_fd.set_text(&format!(
                     "Dropped {} file{}",
@@ -442,10 +423,6 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     if added == 1 { "" } else { "s" }
                 ));
                 rebuild_fd();
-                let paths = state_fd.borrow().uncached_paths_from(before);
-                if !paths.is_empty() {
-                    duration_probe::spawn_probes(paths, probe_tx_fd.clone(), broken_tx_fd.clone());
-                }
             }
             added > 0
         });

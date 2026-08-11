@@ -47,6 +47,19 @@ pub(super) struct AppState {
     /// Paired with `watch` above — the channel its debounced events arrive
     /// on. Drained by the tick registered once in `watch::start_drain_tick`.
     pub(super) watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
+    /// Where the background pass that finishes a newly added playlist row
+    /// sends its answers. Set once by `player::build`, and read by every add
+    /// site through `playlist_add`.
+    ///
+    /// It lives here rather than being threaded through because the alternative
+    /// was proved not to work: there are 27 places that add to the active
+    /// playlist, and when the duration probe had to be passed in, three of them
+    /// silently went without it. A field every site can reach is what makes one
+    /// shared add path possible.
+    ///
+    /// `None` outside the GTK window — the FFI and test paths add rows without
+    /// a main loop to deliver results to, and simply skip the background work.
+    pub(super) row_facts_tx: Option<std::sync::mpsc::Sender<crate::file_status::RowFacts>>,
     /// The media library browser window, if one is currently open.
     pub(super) ml_window: Option<gtk4::Window>,
     /// The settings window, if one is currently open. Singleton (like
@@ -581,6 +594,7 @@ impl AppState {
             media_lib,
             watch: None,
             watch_rx: None,
+            row_facts_tx: None,
             ml_window: None,
             settings_window: None,
             id3_editor_window: None,
@@ -1190,6 +1204,12 @@ impl AppState {
     /// are *showing* a duration the moment before the drop, and it looked like
     /// a bug for it to vanish on landing (reported 2026-08-11). Anything still
     /// unknown is left for the background prober, as before.
+    // Superseded for every GTK add path by `playlist_add`, which resolves
+    // against the library in one batched query instead of one lookup per file
+    // and defers the filesystem checks to the background pass. Kept because
+    // `add_track_from_path` still backs the unit tests below it, and because
+    // both remain the correct shape for adding a single known path.
+    #[allow(dead_code)]
     fn fill_known_duration(&self, track: &mut Track) {
         if track.duration.is_some() {
             return;
@@ -1210,6 +1230,7 @@ impl AppState {
     }
 
     /// on failure.  Use [`add_path`] when the input might be a directory.
+    #[allow(dead_code)]
     pub(super) fn add_track_from_path(&mut self, raw_path: &str) -> Result<String, String> {
         let path = std::path::Path::new(raw_path.trim());
         match Track::from_path(path) {
@@ -1233,6 +1254,7 @@ impl AppState {
     ///
     /// Returns a human-readable summary string suitable for the status bar, or
     /// an error string if the path does not exist / cannot be resolved at all.
+    #[allow(dead_code)]
     pub(super) fn add_path(&mut self, path: &std::path::Path) -> Result<String, String> {
         if path.is_dir() {
             // Recursively collect all audio files under the directory.

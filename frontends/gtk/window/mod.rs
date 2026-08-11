@@ -92,6 +92,11 @@ mod tick;
 // writes nothing back, so it moved whole. player.rs calls `dnd::install(&ctx)`.
 mod dnd;
 
+// The one way rows enter the active playlist: resolve against the media
+// library, insert without touching the filesystem, and hand the rest to the
+// background pass in `crate::file_status`. Replaces 27 hand-rolled add sites.
+mod playlist_add;
+
 // The playlist window: header, button bar, TreeView, status bar and the
 // Winamp-style menu bar. Split out of player.rs (breakup step 9) — a window
 // of its own, so it builds whole and hands back the parts player.rs still

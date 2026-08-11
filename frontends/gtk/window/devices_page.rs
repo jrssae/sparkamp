@@ -1054,7 +1054,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let _ = state.borrow_mut().player.stop();
             state.borrow_mut().playlist.clear();
             for lt in &tracks {
-                state.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                super::playlist_add::add_track(&state, crate::model::Track::from(lt), false);
             }
             if !state.borrow().playlist.is_empty() {
                 state.borrow_mut().play_current();
@@ -1076,7 +1076,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             }
             let was_empty = state.borrow().playlist.is_empty();
             for lt in &tracks {
-                state.borrow_mut().playlist.add(crate::model::Track::from(lt));
+                super::playlist_add::add_track(&state, crate::model::Track::from(lt), false);
             }
             if state.borrow().config.behavior.autoplay_on_add && was_empty {
                 state.borrow_mut().play_current();

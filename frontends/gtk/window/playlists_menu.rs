@@ -118,12 +118,16 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                 if tracks.is_empty() { return }
                 let was_empty = state_rc.borrow().playlist.is_empty();
                 let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
+                let add_start = state_rc.borrow().playlist.tracks.len();
                 {
                     let mut s = state_rc.borrow_mut();
                     for lt in &tracks {
                         s.playlist.add(crate::model::Track::from(lt));
                     }
                 }
+                // The rows are in; their ⚠ / 🔒 markers arrive from the
+                // background pass rather than costing two syscalls apiece here.
+                super::playlist_add::schedule_from(&state_rc, add_start, false);
                 if autoplay && was_empty {
                     if let Some(display) = state_rc.borrow_mut().play_current() {
                         set_track2(&display);
@@ -159,6 +163,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                         s.playlist.add(crate::model::Track::from(lt));
                     }
                 }
+                super::playlist_add::schedule_from(&state_rc, 0, false);
                 if autoplay {
                     if let Some(display) = state_rc.borrow_mut().play_current() {
                         set_track2(&display);
@@ -401,7 +406,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                     let _ = state_rc.borrow_mut().player.stop();
                     state_rc.borrow_mut().playlist.clear();
                 }
-                state_rc.borrow_mut().playlist.add(crate::model::Track::from(&lt));
+                super::playlist_add::add_track(&state_rc, crate::model::Track::from(&lt), false);
                 if autoplay && (was_empty || should_replace) {
                     if let Some(display) = state_rc.borrow_mut().play_current() {
                         set_track_pe(&display);

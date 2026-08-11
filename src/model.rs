@@ -285,11 +285,15 @@ impl Track {
 impl From<&crate::media_library::LibTrack> for Track {
     fn from(lib: &crate::media_library::LibTrack) -> Self {
         let path = PathBuf::from(&lib.path);
-        // A file that no longer exists at this path is broken from the
-        // outset, so adding it to the active playlist shows the unavailable
-        // status immediately rather than only after a failed play attempt.
-        let exists = path.exists();
-        let read_only = exists && crate::media_library::is_read_only(&path);
+        // Deliberately no filesystem access. This used to `stat` twice here —
+        // once for `exists`, once for `is_read_only` — so that the ⚠ and 🔒
+        // markers were correct the instant a row appeared. That is two
+        // syscalls per track on the GTK main thread, which is 72,000 of them
+        // when the user selects a 36k library and adds it to the playlist.
+        //
+        // Both flags start clear and are filled in by the background status
+        // pass the add helper schedules (`window/playlist_add.rs`), so the
+        // rows appear immediately and the markers a moment later.
         Track {
             path,
             title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
@@ -299,8 +303,8 @@ impl From<&crate::media_library::LibTrack> for Track {
             duration: lib
                 .length_secs
                 .and_then(|s| Duration::try_from_secs_f64(s).ok()),
-            broken: !exists,
-            read_only,
+            broken: false,
+            read_only: false,
             id: 0,
         }
     }

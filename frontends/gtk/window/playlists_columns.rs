@@ -157,10 +157,12 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             if tracks.is_empty() { return }
             let was_empty = state_c.borrow().playlist.is_empty();
             let autoplay = state_c.borrow().config.behavior.autoplay_on_add;
+            let add_start = state_c.borrow().playlist.tracks.len();
             {
                 let mut s = state_c.borrow_mut();
                 for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
             }
+            super::playlist_add::schedule_from(&state_c, add_start, false);
             if autoplay && was_empty {
                 if let Some(d) = state_c.borrow_mut().play_current() { set_track_c(&d); }
             }
@@ -189,6 +191,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 s.playlist = crate::model::Playlist::new();
                 for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
             }
+            super::playlist_add::schedule_from(&state_c, 0, false);
             if autoplay {
                 if let Some(d) = state_c.borrow_mut().play_current() { set_track_c(&d); }
             }

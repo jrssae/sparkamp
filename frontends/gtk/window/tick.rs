@@ -27,6 +27,7 @@ pub(super) struct Deps {
     pub(super) current_track_meta_rx:
         std::sync::mpsc::Receiver<(PathBuf, String, String, String, String)>,
     pub(super) open_rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+    pub(super) row_facts_rx: std::sync::mpsc::Receiver<crate::file_status::RowFacts>,
 }
 
 /// Start the 100 ms tick: seek bar and time display, marquee scroll,
@@ -63,14 +64,11 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
     let granite_render_h = d.granite_render_h.clone();
     let viz_shutting_down = d.viz_shutting_down.clone();
     let fs_viz_open = d.fs_viz_open.clone();
-    // Senders, for the probes the "Open with" path spawns below; the
-    // receivers beside them are drained by the tick itself.
-    let probe_tx = ctx.probe_tx.clone();
-    let broken_tx = ctx.broken_tx.clone();
     let probe_rx = d.probe_rx;
     let broken_rx = d.broken_rx;
     let current_track_meta_rx = d.current_track_meta_rx;
     let open_rx = d.open_rx;
+    let row_facts_rx = d.row_facts_rx;
 
     {
         let state = state.clone();
@@ -94,8 +92,6 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
         let rebuild_playlist_tick = rebuild_playlist.clone();
         let play_update_tick = play_and_update.clone();
         let scroll_tick = scroll_to_row_if_needed.clone();
-        let probe_tx_tick = probe_tx.clone();
-        let broken_tx_tick = broken_tx.clone();
         // Granite-mode renderer state captured by the tick closure. Weak
         // refs so the timer doesn't keep widgets alive after the main window
         // closes — calling `set_paintable` on a destroyed widget triggers a
@@ -147,6 +143,22 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 let changed = state.borrow_mut().apply_probed_durations(&probe_batch);
                 for idx in changed {
                     patch_pl_row(idx);
+                }
+            }
+            // 0a2. Drain the row-finishing pass: existence and writability for
+            // every newly added row, plus tags and duration for the ones the
+            // media library had never seen. Capped like the probe drain above
+            // so a 36k add patches rows steadily instead of in one long stall.
+            {
+                let mut done = 0usize;
+                while done < 500 {
+                    let Ok(facts) = row_facts_rx.try_recv() else {
+                        break;
+                    };
+                    for idx in playlist_add::apply_facts(&state, &facts) {
+                        patch_pl_row(idx);
+                    }
+                    done += 1;
                 }
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.
@@ -233,31 +245,14 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     }
                 }
 
-                let insert_start = state.borrow().playlist.len();
-                for path in &paths {
-                    if let Ok(track) = crate::model::Track::from_path_fast(path) {
-                        state.borrow_mut().playlist.tracks.push(track);
-                    }
-                }
-                let inserted = state.borrow().playlist.len() - insert_start;
-                if inserted == 0 {
+                // The shared add path: library rows are a data copy, and a
+                // file the library has never seen gets a placeholder row now
+                // and its tags, duration and markers from the background pass.
+                let added = playlist_add::add_paths(&state, &paths);
+                if !added.any() {
                     continue;
                 }
-                // Fill from the on-disk duration cache, then probe whatever is
-                // still unknown — the same two steps the Add Files / Add Folder
-                // scan takes when it finishes. `from_path_fast` deliberately
-                // skips the duration read, so without these a file opened from
-                // the file manager or the command line sits with a blank
-                // duration until it is played and GStreamer reports one.
-                state.borrow_mut().apply_cached_durations();
-                let uncached = state.borrow().uncached_paths_from(insert_start);
-                if !uncached.is_empty() {
-                    duration_probe::spawn_probes(
-                        uncached,
-                        probe_tx_tick.clone(),
-                        broken_tx_tick.clone(),
-                    );
-                }
+                let insert_start = added.start;
                 rebuild_playlist_tick();
 
                 if autoplay

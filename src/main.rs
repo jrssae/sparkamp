@@ -24,6 +24,7 @@ mod dedupe;
 mod disc;
 mod duration_cache;
 mod duration_probe;
+mod file_status;
 mod engine;
 // Consumed by the GTK frontend (Linux) and the C FFI in the lib target
 // (macOS app). In the macOS *bin* neither exists, so the whole module is

@@ -419,6 +419,41 @@ impl MediaLibrary {
         Err(anyhow::anyhow!("track not found: {}", path))
     }
 
+    /// Resolve many paths to their library rows in one pass.
+    ///
+    /// [`track_by_path`](Self::track_by_path) costs two queries per path and,
+    /// on a miss, a `stat` for the dev+inode fallback. That is the right shape
+    /// for one file and the wrong shape for a bulk add — putting 36k library
+    /// rows into the active playlist that way is tens of thousands of round
+    /// trips on the GTK main thread. This does exact-path matching only,
+    /// chunked to stay inside SQLite's bound-variable limit, and touches no
+    /// filesystem at all.
+    ///
+    /// Paths with no row are simply absent from the map; the caller decides
+    /// what to do with them. A caller that needs the dev+inode fallback for a
+    /// single path still wants `track_by_path`.
+    pub fn tracks_by_exact_paths(
+        &self,
+        paths: &[String],
+    ) -> Result<std::collections::HashMap<String, LibTrack>> {
+        let mut found = std::collections::HashMap::with_capacity(paths.len());
+        // SQLITE_MAX_VARIABLE_NUMBER is 999 on builds older than 3.32; stay
+        // well inside it rather than depending on the runtime's limit.
+        for chunk in paths.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("{} WHERE path IN ({placeholders})", Self::TRACK_COLUMNS);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = Self::collect_tracks(&mut stmt, rusqlite::params_from_iter(chunk.iter()))?;
+            for t in rows {
+                found.insert(t.path.clone(), t);
+            }
+        }
+        Ok(found)
+    }
+
     /// Columns every `LibTrack` read needs, shared by the two lookups below.
     const TRACK_COLUMNS: &'static str =
         "SELECT id, path, artist, title, album, track_num, genre, year, bpm,

@@ -191,7 +191,7 @@ pub(super) fn install(
             }
             let was_empty = ml_action_append_state.borrow().playlist.is_empty();
             for track in ml_append_resolve(&tracks) {
-                ml_action_append_state.borrow_mut().playlist.add(track);
+                super::playlist_add::add_track(&ml_action_append_state, track, false);
             }
             if ml_action_append_state
                 .borrow()
@@ -317,7 +317,7 @@ pub(super) fn install(
             let _ = ml_action_replace_state.borrow_mut().player.stop();
             ml_action_replace_state.borrow_mut().playlist.clear();
             for track in ml_replace_resolve(&tracks) {
-                ml_action_replace_state.borrow_mut().playlist.add(track);
+                super::playlist_add::add_track(&ml_action_replace_state, track, false);
             }
             if ml_action_replace_state
                 .borrow()
