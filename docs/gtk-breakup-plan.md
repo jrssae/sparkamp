@@ -7,6 +7,15 @@ and never started it. That document's goal still stands: **no source file
 over ~800 lines, no function over ~300.** This one supplies the architecture
 its Phase 2b/2c left as one-liners.
 
+> **The 300-line half of that goal is wrong, and [§9](#9-the-size-bar-measured--2026-08-11)
+> replaces it.** It was inherited as general craft advice, not measured against
+> the thing it is supposed to protect. 300 lines of this codebase is 3.5k
+> tokens — 1.7% of a 200k context window. Nothing breaks there. What breaks is
+> how far apart a binding's declaration and its use sit, which is independent
+> of length. The 800-line file goal survives; the function goal becomes
+> **800 for capture-dense code, 2,000 hard ceiling, and a median binding span
+> under ~300 as the thing that actually decides.**
+
 ---
 
 ## 1. What we are actually up against
@@ -922,3 +931,157 @@ wholesale and would conflict with anything touching it.
 3. `git diff --stat` — a move should be ~1:1 adds to deletes. A large
    imbalance means something was rewritten, not moved.
 4. Steps 3–7: manual pass on Linux before the next step starts.
+
+---
+
+## 9. The size bar, measured — 2026-08-11
+
+Written after step 9, because that step is what made the old bar's error
+visible: `player.rs` was cut by 2,405 lines **without the file ever being read
+end to end**, which a length-based rule cannot explain.
+
+### What a line costs
+
+| | bytes/line | ~tokens/line |
+|---|---|---|
+| `frontends/gtk/window/` | 45.1 | 11.3 |
+| `src/` | 38.4 | 9.6 |
+| `frontends/tui/` | 38.8 | 9.7 |
+
+Against a 200k context window, at the GTK rate:
+
+| lines | ~tokens | share of the window |
+|---|---|---|
+| 300 | 3.5k | 1.7% |
+| 800 | 9.3k | 4.6% |
+| 1,500 | 17.4k | 8.7% |
+| 2,000 | 23.2k | 11.6% |
+| 3,200 | 37.1k | 18.6% |
+| 5,708 | 66.2k | 33.1% |
+
+So the old 300-line bar is conservative by roughly a factor of five *as a size
+rule*, and 5,708 — `build()` before step 9 — is the first number on that list
+that is genuinely alarming, because a third of the window spent on one
+function leaves no room for its callers, the reasoning, and several rounds of
+diff.
+
+### Length is not what makes a function hard
+
+Two functions in this repo, scored on how far apart a binding's declaration
+and its last use sit:
+
+| | lines | fn-scope bindings | median span |
+|---|---|---|---|
+| `settings.rs::open_settings_window` | **2,474** | 5 | **29** |
+| `files.rs::build` | 1,708 | 11 | **1,154** |
+
+`open_settings_window` is the second-largest function in the repo and is easy:
+five bindings, and the rest is independent per-tab blocks. Any 200 lines of it
+can be read and edited in isolation. `files.rs::build` is a third shorter and
+much harder — its bindings stay live across two-thirds of the body.
+
+`player.rs::build` before step 9 scored 124 bindings, median span 353, **max
+span 3,132**. That last figure is the one that hurt: a `let` at line 200 held
+against a use at line 3,300.
+
+### The bar
+
+```
+hard ceiling     2,000 lines   Read's default cap — one call gets the whole fn
+target             800 lines   capture-dense code: GTK builders, closure webs
+                 2,000 lines   flat sequences: templates, match arms, tab blocks
+real predictor   median binding span <= ~300 lines
+```
+
+Swapping `>300 lines` for `>1,500 lines OR span >300` moves what is flagged
+here from 27 functions to 16, and the swap is the useful part:
+
+- **No longer flagged, correctly:** `id3.rs:704` (699 lines, span 60),
+  `album_gallery.rs:27` (515, 77), `keys.rs:17` (419, 38).
+- **Newly flagged, correctly:** `playlists_menu.rs:57` — only 358 lines, but a
+  span of 316.
+
+### Where the metric lies
+
+`skin.rs::render_gtk_css` scores 537 lines / span 471 and is flagged, but it
+is twenty `let x = v.foo.to_hex()` lines feeding one CSS template. Nothing
+about it is hard. Span is a signal to go and look, not a gate — no automatic
+number survives contact on its own, which is exactly the mistake the 300-line
+bar made in the other direction.
+
+### Consequence for the plan
+
+The 800-line **file** goal stands and is nearly met. The 300-line **function**
+goal is retired. Under the replacement, `player.rs::build` (3,202 lines, span
+353) still fails on both counts and its four remaining seams are still worth
+cutting. Most of the rest of the GTK layer becomes a judgment call rather than
+an automatic violation — see the audit in
+[§10](#10-what-is-actually-left--2026-08-11).
+
+---
+
+## 10. What is actually left — 2026-08-11
+
+Every function over 340 lines, scored on **live-scope area** (fn-scope bindings
+× median span) — a rough proxy for how much has to be held at once. Closure
+count is there to separate a real capture web from a long template.
+
+| area | lines | binds | med span | max span | closures | function |
+|---|---|---|---|---|---|---|
+| 74,115 | 1,466 | 81 | 915 | 1,320 | 24 | `devices_page.rs::build` |
+| 66,526 | 1,514 | 74 | 899 | 1,494 | 24 | `disc_page.rs::build` |
+| 43,772 | 3,202 | 124 | 353 | 3,132 | 56 | `player.rs::build` |
+| 22,048 | 1,032 | 52 | 424 | 982 | 31 | `playlist_window.rs::build` |
+| 21,096 | 1,230 | 36 | 586 | 1,212 | 35 | `dnd.rs::install` |
+| 15,432 | 903 | 24 | 643 | 867 | 28 | `disc_data.rs::build` |
+| 15,180 | 1,390 | 44 | 345 | 1,347 | 32 | `playlists.rs::build` |
+| 13,146 | 866 | 42 | 313 | 849 | 26 | `disc.rs::build_burn_panel` |
+| 12,694 | 1,708 | 11 | 1,154 | 1,664 | 38 | `files.rs::build` |
+| 11,760 | 633 | 21 | 560 | 613 | 17 | `playlists_manage.rs::build` |
+| 9,420 | 537 | 20 | 471 | 533 | **0** | `skin.rs::render_gtk_css` |
+| 8,376 | 883 | 24 | 349 | 841 | 21 | `playlists_columns.rs::build` |
+| 6,409 | 614 | 17 | 377 | 606 | 14 | `dedupe.rs::open_dedupe_window` |
+| 5,535 | 513 | 15 | 369 | 415 | 18 | `devices_menu.rs::connect` |
+| 3,476 | 358 | 11 | 316 | 323 | 11 | `playlists_menu.rs::connect` |
+| **145** | **2,474** | 5 | 29 | 2,440 | 82 | `settings.rs::open_settings_window` |
+
+### The finding nobody had
+
+**`devices_page.rs::build` and `disc_page.rs::build` are harder than
+`player.rs::build`**, by 70% and 52% respectively, at half its length. Neither
+has ever been on a list. They came *out* of steps 5 and 6 and were signed off
+because they landed under 1,600 lines.
+
+That is exactly the failure the old bar produces. Steps 5 and 6 pushed
+*behaviour* into siblings — `devices_menu`, `devices_poll`,
+`devices_playlists`, `devices_columns`; `disc_data`, `disc_gnudb` — while the
+**shared scope those siblings read stayed behind**. The files got shorter; the
+scope those files hold open did not. 81 and 74 bindings live across ~900 lines,
+167 and 226 `.clone()` calls.
+
+Fixing them is not another file split. It is the `MlCtx` move applied one level
+down: give each page a context struct of its own so its sections stop being one
+scope.
+
+### And one thing comes off the list
+
+`settings.rs::open_settings_window` is the **second-largest function in the
+repo and needs no work at all**. Five fn-scope bindings, median span 29 — it is
+a flat sequence of independent tab blocks, and any 200 lines of it can be read
+and edited alone. Under the old 300-line rule it was the number-two offender.
+Under this one it is the cleanest large function here. Leave it.
+
+`skin.rs::render_gtk_css` is the metric's own false positive — 20 `to_hex()`
+bindings feeding one CSS template, **zero closures**. Leave it too.
+
+### Verdict
+
+| | |
+|---|---|
+| **Needed** | `player.rs::build` (over the 2,000 ceiling; four seams already named) · `devices_page.rs::build` · `disc_page.rs::build` |
+| **Judgment, later** | `disc_data`, `playlists`, `build_burn_panel`, `playlists_manage`, and the two step 9 created (`dnd`, `playlist_window`) — all now independently cuttable, which is the part that matters |
+| **No change** | `settings.rs`, `skin.rs`, and every one of the 11 functions the 300-line rule flagged that this one does not |
+
+Net, the sharper bar **reduces** the work: 27 flagged functions become 16, of
+which 3 are worth doing now. It also moves the top of the list off the file
+everyone was looking at.

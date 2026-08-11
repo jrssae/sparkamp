@@ -13,6 +13,10 @@
   Phase 4 goes with Phase 2: its GTK consumer is the larger half.
 
 Goal: no source file over ~800 lines, no function over ~300, so smaller
+<!-- The ~300 figure was superseded 2026-08-11; see gtk-breakup-plan.md §9.
+     300 lines is 1.7% of a 200k context window — length was never the
+     constraint. The replacement is 800 lines for capture-dense code, a
+     2,000-line hard ceiling, and a median binding span under ~300. -->
 models (Opus/Sonnet) can work on any file without losing context. Zero
 functional change — every step is a mechanical move or a named-function
 extraction, verified by `cargo build && cargo test` (zero warnings) and,
