@@ -1566,6 +1566,21 @@ pub(super) fn open_settings_window(
                                     return;
                                 }
                             };
+                            // `add_folder` stores the folder's canonical path.
+                            // If tracks were already indexed under another
+                            // spelling of it (a symlinked pick — /mnt vs
+                            // /var/mnt), the scan below would insert a second
+                            // row for every one of them. Repair first; the
+                            // check is pure SQL, and this is already a worker
+                            // thread.
+                            if lib.needs_path_normalization() {
+                                match lib.normalize_track_paths() {
+                                    Ok((moved, merged)) => eprintln!(
+                                        "[library] path normalization: {moved} moved, {merged} duplicates merged"
+                                    ),
+                                    Err(e) => eprintln!("[library] path normalization failed: {e}"),
+                                }
+                            }
                             if let Err(e) =
                                 lib.rescan_folder_fast(folder_id, &path_for_thread, remove_missing)
                             {
@@ -1652,6 +1667,19 @@ pub(super) fn open_settings_window(
                                 return;
                             }
                         };
+
+                        // Same repair as the other add-folder path above: the
+                        // folder is stored canonicalized, so tracks indexed
+                        // under a different spelling of it must be moved
+                        // before the scan re-adds them.
+                        if lib.needs_path_normalization() {
+                            match lib.normalize_track_paths() {
+                                Ok((moved, merged)) => eprintln!(
+                                    "[library] path normalization: {moved} moved, {merged} duplicates merged"
+                                ),
+                                Err(e) => eprintln!("[library] path normalization failed: {e}"),
+                            }
+                        }
 
                         // Phase 1: fast scan
                         if let Err(e) =

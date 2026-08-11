@@ -365,6 +365,7 @@ impl MediaLibrary {
         &self,
         path: &str,
     ) -> (Option<f64>, Option<String>, Option<String>) {
+        let path = &Self::canonical_track_path(path);
         self.conn
             .query_row(
                 "SELECT length_secs, artist, title FROM tracks WHERE path = ?1",
@@ -831,6 +832,7 @@ impl MediaLibrary {
     /// mutating it. Returns an all-`None` snapshot when the path is not in
     /// the library.
     pub fn play_snapshot(&self, path: &str) -> PlaySnapshot {
+        let path = &Self::canonical_track_path(path);
         self.conn
             .query_row(
                 "SELECT play_count, last_played FROM tracks WHERE path = ?1",

@@ -2349,3 +2349,96 @@ fn add_playlist_file_dedupes_a_hard_link_not_just_a_symlink() {
     assert_eq!(first, again, "one inode must mean one playlist row");
     assert_eq!(lib.all_playlists().unwrap().len(), 1);
 }
+
+// ── path canonicalization (2026-08-11) ─────────────────────────────────
+//
+// A symlinked folder must not make the library hold every file twice. The
+// live case was `/mnt` -> `var/mnt` on Fedora ostree, which grew 8,417
+// duplicate rows before it was noticed.
+
+/// `dir` plus a sibling symlink pointing at it, so the same files have two
+/// valid spellings.
+#[cfg(unix)]
+fn dir_with_symlink_alias() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let parent = tempfile::tempdir().unwrap();
+    let real = parent.path().join("real_music");
+    fs::create_dir(&real).unwrap();
+    for i in 0..3 {
+        fs::write(real.join(format!("t{i}.mp3")), b"fake audio data").unwrap();
+    }
+    let alias = parent.path().join("alias_music");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    (parent, real, alias)
+}
+
+#[cfg(unix)]
+#[test]
+fn scanning_through_a_symlink_does_not_duplicate_rows() {
+    let (_parent, real, alias) = dir_with_symlink_alias();
+    let (lib, _db) = temp_lib();
+
+    // Add via the symlink first — the spelling a file chooser would hand us.
+    let id = lib.add_folder(alias.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(id, alias.to_str().unwrap(), false)
+        .unwrap();
+    let after_alias: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after_alias, 3, "three files, three rows");
+
+    // Now the real path. Same files, so still three rows and one folder.
+    let id2 = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(id2, real.to_str().unwrap(), false)
+        .unwrap();
+    let after_real: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after_real, 3, "the same files must not be added twice");
+    assert_eq!(id, id2, "both spellings resolve to one folder row");
+}
+
+#[cfg(unix)]
+#[test]
+fn normalize_track_paths_merges_an_alias_row_and_keeps_its_plays() {
+    let (_parent, real, alias) = dir_with_symlink_alias();
+    let (lib, _db) = temp_lib();
+    let fid = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(fid, real.to_str().unwrap(), false)
+        .unwrap();
+
+    // Forge the pre-fix state: a second row for one file under the alias
+    // spelling, carrying the play history the canonical row lacks.
+    let canonical = real.join("t0.mp3").to_string_lossy().into_owned();
+    let aliased = alias.join("t0.mp3").to_string_lossy().into_owned();
+    lib.conn
+        .execute(
+            "INSERT INTO tracks (path, folder_id, filename, play_count, last_played)
+             VALUES (?1, ?2, 't0.mp3', 7, '2026-08-01T00:00:00Z')",
+            rusqlite::params![aliased, fid],
+        )
+        .unwrap();
+    assert!(lib.needs_path_normalization(), "the alias row is detectable");
+
+    let (moved, merged) = lib.normalize_track_paths().unwrap();
+    assert_eq!((moved, merged), (0, 1), "one alias merged, none relocated");
+
+    let total: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(total, 3, "the duplicate is gone");
+
+    let (plays, last): (i64, Option<String>) = lib
+        .conn
+        .query_row(
+            "SELECT play_count, last_played FROM tracks WHERE path = ?1",
+            rusqlite::params![canonical],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(plays, 7, "play history survives the merge");
+    assert_eq!(last.as_deref(), Some("2026-08-01T00:00:00Z"));
+    assert!(!lib.needs_path_normalization(), "and it stays repaired");
+}

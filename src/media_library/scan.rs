@@ -108,6 +108,26 @@ impl MediaLibrary {
             .into_owned()
     }
 
+    /// The stored form of a track path: symlinks resolved, same rule the
+    /// folder rows use.
+    ///
+    /// One file must produce one string no matter which spelling reached us.
+    /// `/mnt` is a symlink to `var/mnt` on Fedora ostree (and `/var` to
+    /// `/private/var` on macOS), so a library scanned before a folder row was
+    /// canonicalized holds `/mnt/x.mp3` while every later scan of the same
+    /// file reports `/var/mnt/x.mp3`. The existence checks here are all exact
+    /// string compares, so the second spelling read as a new file and the
+    /// library grew a duplicate row per track — 8,417 of them before this was
+    /// found (2026-08-11).
+    ///
+    /// Callers on the bulk path should resolve the folder root once and let
+    /// `walk_dir` inherit it rather than calling this per file.
+    pub(super) fn canonical_track_path(path: &str) -> String {
+        crate::pathutil::canonicalize_lenient(Path::new(path))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// Check if a folder path is already in the watch list.
     /// Returns `Ok(Some(id))` if found, `Ok(None)` if not found.
     ///
@@ -228,6 +248,175 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Rewrite every stored path to its canonical spelling, merging the rows
+    /// that collide.
+    ///
+    /// The companion to [`Self::dedup_folders`], which runs on every
+    /// `MediaLibrary::open` and has always repaired duplicate *folder* rows
+    /// and re-homed their tracks by `folder_id` — but never rewrote
+    /// `tracks.path`. That gap is how a
+    /// library ends up holding one file twice: the folder row gets
+    /// canonicalized, later scans walk from the canonical root, and the
+    /// exact-string existence checks miss the rows written under the old
+    /// spelling. Found 2026-08-11 with 8,417 duplicate rows.
+    ///
+    /// Three tables carry a filesystem path and all three move together, or
+    /// saved playlists lose the tracks they point at:
+    /// - `tracks.path`
+    /// - `playlists.path`
+    /// - `device_sync_pairs.library_path`
+    ///
+    /// **Files on disk are never touched.** A `.m3u` still naming the old
+    /// spelling keeps resolving, because the lookups that read one
+    /// (`metadata_by_path`, `track_by_path`) canonicalize their argument.
+    ///
+    /// Costs one `stat` per row, so it is minutes on a spinning disk with a
+    /// large library — call it from a worker, never from a timer tick.
+    /// Returns `(rows_rewritten, duplicate_rows_removed)`.
+    /// Cheap "is [`Self::normalize_track_paths`] worth running?" test.
+    ///
+    /// Pure SQL — no `stat`, so it is safe to call at startup and after every
+    /// folder add. A track whose path does not begin with its own folder's
+    /// path is stored under some other spelling of that folder, which is
+    /// exactly the state the migration repairs.
+    ///
+    /// `instr(...) <> 1` rather than `NOT LIKE f.path || '%'`: a real music
+    /// folder is entitled to contain `%` or `_`, and LIKE would treat them as
+    /// wildcards.
+    pub fn needs_path_normalization(&self) -> bool {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracks t
+                 JOIN folders f ON t.folder_id = f.id
+                 WHERE instr(t.path, f.path) <> 1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    pub fn normalize_track_paths(&self) -> Result<(usize, usize)> {
+        let mut rewritten = 0usize;
+        let mut removed = 0usize;
+
+        // tracks: the only table where a collision has data worth keeping.
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare("SELECT id, path FROM tracks")?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        for (id, stored) in rows {
+            let canonical = Self::canonical_track_path(&stored);
+            if canonical == stored {
+                continue;
+            }
+            let twin: Option<(i64, i64, Option<String>)> = self
+                .conn
+                .query_row(
+                    "SELECT id, play_count, last_played FROM tracks WHERE path = ?1",
+                    params![canonical],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .ok();
+            match twin {
+                // Nothing at the canonical spelling — just move this row.
+                None => {
+                    self.conn.execute(
+                        "UPDATE tracks SET path = ?1 WHERE id = ?2",
+                        params![canonical, id],
+                    )?;
+                    rewritten += 1;
+                }
+                // Both spellings present. Keep the canonical row, but carry
+                // over any play history the alias accumulated: whichever side
+                // was played more is the truth, and the later timestamp wins.
+                Some((twin_id, twin_plays, twin_last)) => {
+                    let (plays, last): (i64, Option<String>) = self.conn.query_row(
+                        "SELECT play_count, last_played FROM tracks WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    let merged_plays = plays.max(twin_plays);
+                    let merged_last = match (last, twin_last) {
+                        (Some(a), Some(b)) => Some(if a >= b { a } else { b }),
+                        (Some(a), None) => Some(a),
+                        (None, b) => b,
+                    };
+                    self.conn.execute(
+                        "UPDATE tracks SET play_count = ?1, last_played = ?2 WHERE id = ?3",
+                        params![merged_plays, merged_last, twin_id],
+                    )?;
+                    self.conn
+                        .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
+                    removed += 1;
+                }
+            }
+        }
+
+        // playlists: a collision means the same playlist file is registered
+        // twice, so the alias row is redundant. `upsert_playlist_row` already
+        // collapses these on rescan; this catches the ones already stored.
+        let pls: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare("SELECT id, path FROM playlists")?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+        for (id, stored) in pls {
+            let canonical = Self::canonical_track_path(&stored);
+            if canonical == stored {
+                continue;
+            }
+            let exists: bool = self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM playlists WHERE path = ?1",
+                    params![canonical],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            if exists {
+                self.conn
+                    .execute("DELETE FROM playlists WHERE id = ?1", params![id])?;
+                removed += 1;
+            } else {
+                self.conn.execute(
+                    "UPDATE playlists SET path = ?1 WHERE id = ?2",
+                    params![canonical, id],
+                )?;
+                rewritten += 1;
+            }
+        }
+
+        // device_sync_pairs: no id column to key on, and a pair is identified
+        // by (device_id, device_relpath), so rewrite in place and let the
+        // table's own uniqueness rules drop anything that collides.
+        let pairs: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT DISTINCT library_path FROM device_sync_pairs")?;
+            let mapped = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+        for stored in pairs {
+            let canonical = Self::canonical_track_path(&stored);
+            if canonical == stored {
+                continue;
+            }
+            let changed = self.conn.execute(
+                "UPDATE OR REPLACE device_sync_pairs SET library_path = ?1
+                 WHERE library_path = ?2",
+                params![canonical, stored],
+            )?;
+            rewritten += changed;
+        }
+
+        self.conn.execute("COMMIT", [])?;
+        Ok((rewritten, removed))
+    }
+
     /// Remove a folder and all its tracks and playlists from the library.
     ///
     /// Does nothing (no error) if `folder_id` does not exist.
@@ -330,6 +519,12 @@ impl MediaLibrary {
         let folders = self.list_folders()?;
         let mut added = 0;
         for path in paths {
+            // Caller-supplied spellings (a file chooser, a drop, an FFI call)
+            // are normalized here rather than trusted — see
+            // `canonical_track_path`. Small, user-initiated batches, so the
+            // per-path stat this costs is not the bulk-scan hot loop.
+            let canonical = Self::canonical_track_path(path);
+            let path = canonical.as_str();
             let Some(folder_id) = Self::best_matching_folder(path, &folders) else {
                 continue;
             };
@@ -405,8 +600,9 @@ impl MediaLibrary {
                     );
                     return Ok(());
                 };
+                let canonical = Self::canonical_track_path(path);
                 self.conn
-                    .execute("DELETE FROM tracks WHERE path = ?1", params![path])?;
+                    .execute("DELETE FROM tracks WHERE path = ?1", params![canonical])?;
                 Ok(())
             }
         }
@@ -420,6 +616,10 @@ impl MediaLibrary {
     /// first play) — a played file must land in the library the same way a
     /// fs watch event would, NULL-folder_id bucket included.
     fn upsert_path(&self, path: &str) -> Result<()> {
+        // A watcher event names the file however `notify` saw it, which need
+        // not be the spelling already in the table — see `canonical_track_path`.
+        let canonical = Self::canonical_track_path(path);
+        let path = canonical.as_str();
         let folder_id = self.owning_folder_id(path)?;
 
         let filename = Path::new(path)
@@ -458,6 +658,8 @@ impl MediaLibrary {
     /// folder-resolution rules as `apply_watch_action`'s `Upsert` arm) and
     /// returns `Ok(true)`.
     pub fn add_played_track(&self, path: &str) -> Result<bool> {
+        let canonical = Self::canonical_track_path(path);
+        let path = canonical.as_str();
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM tracks WHERE path = ?1",
             params![path],
@@ -525,8 +727,12 @@ impl MediaLibrary {
     ) -> Result<(usize, usize)> {
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
+        // Resolve the root once; every path `walk_dir` produces then carries
+        // the canonical prefix, so the rows below are canonical for free —
+        // no per-file `canonicalize` and no extra stat.
+        let folder_root = crate::pathutil::canonicalize_lenient(Path::new(folder_path));
         Self::walk_dir(
-            Path::new(folder_path),
+            &folder_root,
             AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
@@ -621,16 +827,20 @@ impl MediaLibrary {
     ) -> Result<(usize, usize)> {
         let mut audio_files: Vec<PathBuf> = Vec::new();
         let mut m3u_files: Vec<PathBuf> = Vec::new();
+        // Resolve the root once; every path `walk_dir` produces then carries
+        // the canonical prefix, so the rows below are canonical for free —
+        // no per-file `canonicalize` and no extra stat.
+        let folder_root = crate::pathutil::canonicalize_lenient(Path::new(folder_path));
         Self::walk_dir(
-            Path::new(folder_path),
+            &folder_root,
             AUDIO_EXTENSIONS,
             &mut audio_files,
             &mut m3u_files,
             self.folder_recurse(folder_id).unwrap_or(true),
         );
 
-        // Use paths as-is for fast insert. Skipping canonicalize() removes a stat
-        // call per file — the main bottleneck for large libraries.
+        // Paths are canonical already: the walk root was resolved above, so
+        // this stays a plain string collect with no per-file stat.
         let audio_paths: Vec<String> = audio_files
             .iter()
             .filter_map(|p| p.to_str().map(String::from))

@@ -151,6 +151,9 @@ pub fn build(
     // media_lib availability and degrades gracefully — see watch.rs.
     watch::rebuild_watcher(&state);
     watch::start_drain_tick(&state);
+    // Before the watcher's events can add to the damage: collapse any track
+    // rows stored under a stale spelling of their folder (see watch.rs).
+    watch::start_path_normalization(&state);
     if state.borrow().config.media_library.rescan_on_startup {
         watch::trigger_startup_rescan(&state);
     }

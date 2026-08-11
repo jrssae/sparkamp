@@ -143,6 +143,61 @@ const REBUILD_QUIET: Duration = Duration::from_millis(1000);
 /// 200 ms of work per second of wall clock instead of all at once.
 const APPLY_BUDGET: Duration = Duration::from_millis(100);
 
+/// Repair track paths stored under a non-canonical spelling of their folder,
+/// on a worker thread. Call once, at window build.
+///
+/// `MediaLibrary::open` canonicalizes folder rows on every start
+/// (`dedup_folders`) but has never rewritten the track rows underneath them,
+/// so a library can hold the same file twice — once per spelling — and every
+/// scan adds more. See `normalize_track_paths`.
+///
+/// The decision to run is pure SQL and costs nothing; the repair itself is one
+/// `stat` per row, which is why it goes to a worker with its own connection
+/// (rusqlite `Connection` is not `Send`) rather than blocking the window.
+pub(super) fn start_path_normalization(state: &Rc<RefCell<AppState>>) {
+    let needed = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .map(|lib| lib.needs_path_normalization())
+        .unwrap_or(false);
+    if !needed {
+        return;
+    }
+    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+    let state = state.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, usize)>();
+    std::thread::spawn(move || {
+        let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) else {
+            return;
+        };
+        match lib.normalize_track_paths() {
+            Ok(counts) => {
+                let _ = tx.send(counts);
+            }
+            Err(e) => eprintln!("[watch] path normalization failed: {e}"),
+        }
+    });
+    // Reopen the main connection once the worker is done, so the window stops
+    // reading rows the migration has moved out from under it, then refresh.
+    let rx = RefCell::new(rx);
+    glib::timeout_add_local(Duration::from_millis(500), move || {
+        let Ok((moved, merged)) = rx.borrow().try_recv() else {
+            return glib::ControlFlow::Continue;
+        };
+        eprintln!("[watch] path normalization: {moved} moved, {merged} duplicates merged");
+        {
+            let mut s = state.borrow_mut();
+            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+        }
+        let cb = state.borrow().rebuild_ml_callback.clone();
+        if let Some(cb) = cb {
+            cb();
+        }
+        glib::ControlFlow::Break
+    });
+}
+
 /// Register the drain tick. Call exactly ONCE, at window build.
 ///
 /// Every 500 ms: drain all pending `WatchAction`s from `watch_rx` and apply
