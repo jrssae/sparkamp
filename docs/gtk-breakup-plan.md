@@ -947,6 +947,27 @@ Also pre-existing, and from the same commit as the selection bug: `cb4dbb8`
 added this branch, and `1bd2bc9` has the identical gap. Fixed by taking the
 two steps the scan takes, before the rebuild so cached durations show at once.
 
+**A drop onto the playlist view had the same gap**, found by re-testing. There
+are two drop targets: the one on the playlist `TreeView` — which also receives
+cross-window drops from the Media Library and the editor — and a second for
+the external file manager. Only the second probed. `add_path` supplies a
+duration the library or the cache already holds, which is why it looked fine
+on library files and only failed on one nothing had seen.
+
+Auditing every route into the active playlist afterwards, rather than waiting
+for a third report:
+
+| Route | Handler | Probed before |
+|---|---|---|
+| Session restore at startup | `player.rs:297` | yes |
+| Add File / Files / Folder | `add_files.rs` → the scan poller | yes |
+| Drop from an external file manager | `dnd.rs:447` | yes |
+| **Open with / command line** | `tick.rs`, `open_rx` | **no — fixed** |
+| **Drop on the playlist view (ML, editor)** | `dnd.rs:348` | **no — fixed** |
+
+Five routes, three of which had it. Both gaps are closed the same way, with
+the two steps the scan poller established.
+
 Worth noting how it hid. The duration probe has one test against a real audio
 file, and it is `#[ignore]`d on top of an `exists()` guard that already makes
 it CI-safe — so it had never run. It passes.

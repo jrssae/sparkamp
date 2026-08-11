@@ -250,6 +250,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let rebuild_dnd = rebuild_playlist.clone();
         let pl_view_dnd = pl_view.clone();
         let drag_sel_drop = pl_drag_selection.clone();
+        let probe_tx_dnd = probe_tx.clone();
+        let broken_tx_dnd = broken_tx.clone();
 
         drop_tgt.connect_drop(move |_, value, x, y| {
             let file_list = match value.get::<gdk::FileList>() {
@@ -338,9 +340,29 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 moved_range = Some((insert_at, removed_n));
             }
 
+            // Where the appended tracks start, captured after the reorder above
+            // has finished moving rows around.
+            let add_start = state_dnd.borrow().playlist.len();
             let mut did_add = false;
             for p in new_paths {
                 if state_dnd.borrow_mut().add_path(&p).is_ok() { did_add = true; }
+            }
+            // Fill from the on-disk duration cache, then probe whatever is still
+            // unknown. `add_path` only supplies a duration the media library or
+            // the cache already holds, so a file neither has seen would sit blank
+            // until it played — the same gap the external file-manager drop
+            // below already closes, and this is the handler ML and editor drops
+            // arrive on.
+            if did_add {
+                state_dnd.borrow_mut().apply_cached_durations();
+                let uncached = state_dnd.borrow().uncached_paths_from(add_start);
+                if !uncached.is_empty() {
+                    duration_probe::spawn_probes(
+                        uncached,
+                        probe_tx_dnd.clone(),
+                        broken_tx_dnd.clone(),
+                    );
+                }
             }
             // Clear the press-time selection snapshot so a subsequent
             // single-row drag doesn't accidentally reorder the whole set.
