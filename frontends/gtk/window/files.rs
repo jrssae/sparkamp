@@ -87,6 +87,51 @@ impl FileStatus {
     }
 }
 
+/// The paths of every currently selected row, in no particular order.
+///
+/// Paths rather than positions: a rebuild re-sorts as well as re-fills, so a
+/// position means nothing across it, and a path identifies the same track
+/// wherever it lands.
+fn selected_paths_of(sel: &MultiSelection) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let bitset = sel.selection();
+    for i in 0..bitset.size() {
+        let pos = bitset.nth(i as u32);
+        if let Some(obj) = sel.item(pos) {
+            if let Ok(b) = obj.downcast::<glib::BoxedAnyObject>() {
+                out.insert(b.borrow::<crate::media_library::LibTrack>().path.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Re-select the rows holding `paths`, wherever the rebuild put them.
+///
+/// Tracks that no longer exist are simply not re-selected, which is the right
+/// answer: a file that vanished mid-selection cannot be acted on anyway.
+fn restore_selection(sel: &MultiSelection, paths: &std::collections::HashSet<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let mask = gtk4::Bitset::new_empty();
+    for pos in 0..sel.n_items() {
+        let Some(obj) = sel.item(pos) else { continue };
+        let Ok(b) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        let hit = paths.contains(&b.borrow::<crate::media_library::LibTrack>().path);
+        if hit {
+            mask.add(pos);
+        }
+    }
+    if mask.size() > 0 {
+        // One call, so listeners see a single selection change rather than one
+        // per row — the status bar recomputes on every notification.
+        sel.set_selection(&mask, &gtk4::Bitset::new_range(0, sel.n_items()));
+    }
+}
+
 /// Is this recycled row still bound to the track we started work for?
 ///
 /// `ColumnView` reuses one widget for many rows, so anything asynchronous has
@@ -796,6 +841,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let btn_enqueue_album_rc = btn_enqueue_album.clone();
             let files_filtered_rc = files_filtered.clone();
             let vadj_rc = vadj_holder.clone();
+            let sel_ref = multi_sel.clone();
             Rc::new(move || {
                 // Album drill-down (Phase 11 A5): when a gallery cell was
                 // activated, populate from that one album instead of the
@@ -852,8 +898,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // scrollbar was then tracking against a dead range and the
                 // view snapped to an extreme (2026-08-11). Put the offset
                 // back afterwards.
+                // A rebuild replaces every row, which drops the selection on
+                // the floor. That is only tolerable if it is invisible: a
+                // background rescan must not throw away a multi-select the
+                // user is part-way through building a playlist from. Remember
+                // the chosen tracks by path and put them back afterwards.
+                let selected_paths = selected_paths_of(&sel_ref);
                 let saved = vadj_rc.borrow().as_ref().map(|a| a.value());
                 store_ref.splice(0, store_ref.n_items(), &boxed);
+                restore_selection(&sel_ref, &selected_paths);
                 if let (Some(adj), Some(v)) = (vadj_rc.borrow().clone(), saved) {
                     adj.set_value(v);
                     // The ColumnView re-measures its content height after the
