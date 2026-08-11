@@ -127,6 +127,24 @@ pub(super) fn refresh_device_cache(
     });
 }
 
+/// Shorten `s` for a one-line cell or label, counting **characters**.
+///
+/// `&s[..n]` is a byte index, and it panics outright when `n` lands inside a
+/// multi-byte character. A Spanish lyric ("Quién lo diría…") did exactly that
+/// to the Files view's lyric column, and because the slice happens inside a
+/// `SignalListItemFactory` bind — a GTK callback that cannot unwind — the
+/// panic aborted the process rather than raising (2026-08-11).
+///
+/// Newlines become spaces: every caller is painting a single-line widget, and
+/// a raw `\n` there makes one row taller than its neighbours.
+pub(super) fn truncate_display(s: &str, max_chars: usize) -> String {
+    let flat = s.replace(['\n', '\r'], " ");
+    match flat.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}…", &flat[..byte_idx]),
+        None => flat,
+    }
+}
+
 pub(super) fn sanitize_id3_numeric(s: &str) -> String {
     let trimmed = s.trim();
     let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();

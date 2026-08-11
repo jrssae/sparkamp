@@ -1712,11 +1712,7 @@ pub(super) fn open_settings_window(
                             match result {
                                 Err(e) => status_rc.set_text(&e),
                                 Ok((_, count)) => {
-                                    let path_short = if path_str_clone.len() > 40 {
-                                        format!("{}…", &path_str_clone[..40])
-                                    } else {
-                                        path_str_clone.clone()
-                                    };
+                                    let path_short = truncate_display(&path_str_clone, 40);
                                     status_rc.set_text(&format!(
                                         "Added: {} ({} tracks)",
                                         path_short, count

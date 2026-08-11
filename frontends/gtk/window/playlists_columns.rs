@@ -34,7 +34,7 @@ use super::playlists::EditorEntry;
 use super::{
     apply_ml_columns_to, build_send_to_menu, context_popover, format_last_played, gtk_safe,
     ml_sort_key, notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
-    show_playlist_save_error, view_or_search_lyrics, ArtworkCells, LyricsMode, MlCtx,
+    show_playlist_save_error, view_or_search_lyrics, truncate_display, ArtworkCells, LyricsMode, MlCtx,
     SendToActions, ALL_COLUMNS,
 };
 
@@ -829,12 +829,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     "url" => t.url.as_deref().unwrap_or("").to_string(),
                     "encoded_by" => t.encoded_by.as_deref().unwrap_or("").to_string(),
                     "bpm" => t.bpm.as_deref().unwrap_or("").to_string(),
-                    "lyric" => {
-                        let ly = t.lyric.as_deref().unwrap_or("");
-                        if ly.is_empty() { String::new() }
-                        else if ly.len() > 30 { format!("{}…", &ly[..30]) }
-                        else { ly.to_string() }
-                    }
+                    "lyric" => truncate_display(t.lyric.as_deref().unwrap_or(""), 30),
                     "comment" => t.comment.as_deref().unwrap_or("").to_string(),
                     "artwork_path" => if t.artwork_path.is_some() { "Yes".to_string() } else { String::new() },
                     _ => String::new(),

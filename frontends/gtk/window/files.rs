@@ -34,7 +34,7 @@ use super::sidebar::Sidebar;
 use super::{
     analyze_job, build_send_to_menu, cancel_ml_scan, cancel_rg_job, complete_ml_scan,
     context_popover, format_last_played, gtk_safe, ml_cell_text, ml_sort_key, ml_status_bar,
-    open_customize_columns_dialog, start_ml_scan, sync_rg_ui,
+    open_customize_columns_dialog, start_ml_scan, sync_rg_ui, truncate_display,
     update_ml_scan_progress, view_or_search_lyrics, ArtworkCells, ColumnCustomizerMode, LyricsMode,
     MlCtx,
     ScanType, SendToActions, ALL_COLUMNS,
@@ -646,16 +646,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         "url" => t.url.as_deref().unwrap_or("").to_string(),
                         "encoded_by" => t.encoded_by.as_deref().unwrap_or("").to_string(),
                         "bpm" => t.bpm.as_deref().unwrap_or("").to_string(),
-                        "lyric" => {
-                            let ly = t.lyric.as_deref().unwrap_or("");
-                            if ly.is_empty() {
-                                String::new()
-                            } else if ly.len() > 30 {
-                                format!("{}…", &ly[..30])
-                            } else {
-                                ly.to_string()
-                            }
-                        }
+                        "lyric" => truncate_display(t.lyric.as_deref().unwrap_or(""), 30),
                         "comment" => t.comment.as_deref().unwrap_or("").to_string(),
                         "artwork_path" => {
                             if t.artwork_path.is_some() {

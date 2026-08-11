@@ -834,3 +834,29 @@ fn sanitize_id3_text_unbounded_preserves_long_multiline_lyrics() {
         "line one\nline twoline three\ttab"
     );
 }
+
+// ── truncate_display ──────────────────────────────────────────────────────
+
+#[test]
+fn truncate_display_splits_on_chars_not_bytes() {
+    // The exact lyric that aborted the Files view on 2026-08-11: byte 30
+    // lands inside the 'í' of "diría".
+    let lyric = "Quién lo diría\nQue se podría hacer el amor por telepatía";
+    let out = truncate_display(lyric, 30);
+    assert!(out.ends_with('…'));
+    assert_eq!(out.chars().count(), 31, "30 chars plus the ellipsis");
+    assert!(!out.contains('\n'), "newlines flattened for a one-line cell");
+    assert!(out.starts_with("Quién lo diría Que se "));
+}
+
+#[test]
+fn truncate_display_leaves_short_text_alone() {
+    assert_eq!(truncate_display("", 30), "");
+    assert_eq!(truncate_display("short", 30), "short");
+    // Exactly at the limit is not truncated.
+    let exact: String = std::iter::repeat('é').take(30).collect();
+    assert_eq!(truncate_display(&exact, 30), exact);
+    // One over is.
+    let over: String = std::iter::repeat('é').take(31).collect();
+    assert!(truncate_display(&over, 30).ends_with('…'));
+}
