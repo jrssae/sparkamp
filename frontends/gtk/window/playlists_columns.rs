@@ -47,7 +47,6 @@ pub(super) struct ColumnUi<'a> {
     pub track_list: &'a Rc<ColumnView>,
     pub edit_multi_sel: &'a MultiSelection,
     pub edit_sort_model: &'a SortListModel,
-    pub editing_pl_id: &'a Rc<Cell<i64>>,
     pub editing_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
     /// Recorded by each cell's right-click so single-row actions hit the
     /// exact row, duplicates included.
@@ -90,7 +89,6 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
     let track_list = ui.track_list.clone();
     let edit_multi_sel = ui.edit_multi_sel.clone();
     let edit_sort_model = ui.edit_sort_model.clone();
-    let editing_pl_id = ui.editing_pl_id.clone();
     let editing_tracks = ui.editing_tracks.clone();
     let ctx_canonical_idx = ui.ctx_canonical_idx.clone();
     let ed_ctx_indices = ui.ed_ctx_indices.clone();
@@ -262,8 +260,6 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
     {
         // Remove from Playlist — same body as the old flat button.
         let et = editing_tracks.clone();
-        let state_c = state.clone();
-        let ep_id = editing_pl_id.clone();
         let rb_holder = rebuild_track_list_holder.clone();
         let idxs_src = ed_ctx_indices.clone();
         let action = gio::SimpleAction::new("remove", None);
@@ -277,20 +273,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     if *i < e.len() { e.remove(*i); }
                 }
             }
-            let pid = ep_id.get();
-            if pid >= 0 {
-                let s = state_c.borrow();
-                if let Some(lib) = s.media_lib.as_ref() {
-                    let paths: Vec<String> = et.borrow()
-                        .iter().map(|t| t.path.clone()).collect();
-                    if let Ok(pl) = lib.playlist_by_id(pid) {
-                        let _ = lib.save_playlist_tracks_to_path(
-                            std::path::Path::new(&pl.path),
-                            &paths,
-                        );
-                    }
-                }
-            }
+            // No write here — see the same note in playlists.rs. Edits stay in
+            // `editing_tracks` until Save (2026-08-10).
             if let Some(rb) = rb_holder.borrow().as_ref() { rb(); }
         });
         ed_action_group.add_action(&action);
@@ -449,7 +433,6 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let setup_state      = state.clone();
             let setup_ctx_id     = ctx_canonical_idx.clone();
             let setup_et         = editing_tracks.clone();
-            let setup_ep_id      = editing_pl_id.clone();
             let setup_drag_sel   = drag_selection.clone();
             let setup_ra         = reorder_allowed.clone();
             // rebuild_track_list isn't yet defined at this point of the
@@ -501,8 +484,6 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
                     let dt_li      = li.clone();
                     let dt_et      = setup_et.clone();
-                    let dt_state   = setup_state.clone();
-                    let dt_ep_id   = setup_ep_id.clone();
                     let dt_ra      = setup_ra.clone();
                     let dt_dragsel = setup_drag_sel.clone();
                     let dt_rebuild = setup_rebuild.clone();
@@ -549,27 +530,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                             }
                         }
 
-                        // Persist canonical order through the library so
-                        // the on-disk M3U8 reflects the reorder immediately.
-                        // Rewrites the existing playlist file in place;
-                        // `add_playlist_file` upserts the row so registering
-                        // the same path again is a no-op.
-                        let pid = dt_ep_id.get();
-                        if pid >= 0 {
-                            let s = dt_state.borrow();
-                            if let Some(lib) = s.media_lib.as_ref() {
-                                let paths: Vec<String> = dt_et.borrow()
-                                    .iter().map(|t| t.path.clone()).collect();
-                                if let Ok(pl) = lib.playlist_by_id(pid) {
-                                    if let Err(e) = lib.save_playlist_tracks_to_path(
-                                        std::path::Path::new(&pl.path),
-                                        &paths,
-                                    ) {
-                                        eprintln!("editor reorder persist {pid}: {e}");
-                                    }
-                                }
-                            }
-                        }
+                        // No write here — see the same note in playlists.rs. Edits stay in
+                        // `editing_tracks` until Save (2026-08-10).
 
                         // Drag completed — clear selection so a stray
                         // subsequent drop (e.g. external) doesn't reorder.

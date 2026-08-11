@@ -464,7 +464,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             track_list: &track_list,
             edit_multi_sel: &edit_multi_sel,
             edit_sort_model: &edit_sort_model,
-            editing_pl_id: &editing_pl_id,
             editing_tracks: &editing_tracks,
             ctx_canonical_idx: &ctx_canonical_idx,
             ed_ctx_indices: &ed_ctx_indices,
@@ -615,7 +614,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let key = EventControllerKey::new();
             let sel    = edit_multi_sel.clone();
             let et     = editing_tracks.clone();
-            let ep_id  = editing_pl_id.clone();
             let rb     = rebuild_track_list.clone();
             let st     = state.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, _mods| {
@@ -659,20 +657,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         if *i < e.len() { e.remove(*i); }
                     }
                 }
-                let pid = ep_id.get();
-                if pid >= 0 {
-                    let s = st.borrow();
-                    if let Some(lib) = s.media_lib.as_ref() {
-                        let paths: Vec<String> = et.borrow()
-                            .iter().map(|t| t.path.clone()).collect();
-                        if let Ok(pl) = lib.playlist_by_id(pid) {
-                            let _ = lib.save_playlist_tracks_to_path(
-                                std::path::Path::new(&pl.path),
-                                &paths,
-                            );
-                        }
-                    }
-                }
+                // No write here. Every editor mutation stays in `editing_tracks`
+                // until Save; the "● Unsaved changes" badge tracks the difference and
+                // Revert reloads the file (2026-08-10). This path used to rewrite the
+                // .m3u8 immediately, so a drag or a Delete could not be reverted while
+                // a button edit could — one playlist, two rules depending on how you
+                // touched it.
                 rb();
                 glib::Propagation::Stop
             });
@@ -785,21 +775,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         }
                     }
 
-                    if pid >= 0 {
-                        let s = state_drop.borrow();
-                        if let Some(lib) = s.media_lib.as_ref() {
-                            let paths_now: Vec<String> = et_drop.borrow()
-                                .iter().map(|t| t.path.clone()).collect();
-                            if let Ok(pl) = lib.playlist_by_id(pid) {
-                                if let Err(e) = lib.save_playlist_tracks_to_path(
-                                    std::path::Path::new(&pl.path),
-                                    &paths_now,
-                                ) {
-                                    eprintln!("editor reorder persist {pid}: {e}");
-                                }
-                            }
-                        }
-                    }
+                    // No write here. Every editor mutation stays in `editing_tracks`
+                    // until Save; the "● Unsaved changes" badge tracks the difference and
+                    // Revert reloads the file (2026-08-10). This path used to rewrite the
+                    // .m3u8 immediately, so a drag or a Delete could not be reverted while
+                    // a button edit could — one playlist, two rules depending on how you
+                    // touched it.
                     dragsel_drop.borrow_mut().clear();
                     let rb = rebuild_drop.clone();
                     glib::idle_add_local_once(move || rb());
@@ -1429,7 +1410,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 track_scroll_holder: &track_scroll_holder,
                 track_list: &track_list,
                 ctx_canonical_idx: &ctx_canonical_idx,
-                editing_pl_id: &editing_pl_id,
                 editing_tracks: &editing_tracks,
                 rebuild_track_list: &rebuild_track_list,
                 ple_action_group_holder: &ple_action_group_holder,

@@ -43,8 +43,7 @@ pub(super) struct EditorMenuUi<'a> {
     /// cell gesture so single-row actions hit the exact row even when the
     /// playlist lists duplicates of one path.
     pub ctx_canonical_idx: &'a Rc<Cell<i64>>,
-    /// The playlist being edited, and its tracks.
-    pub editing_pl_id: &'a Rc<Cell<i64>>,
+    /// The tracks being edited.
     pub editing_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
     /// Re-render the editor table after a removal.
     pub rebuild_track_list: &'a Rc<dyn Fn()>,
@@ -65,7 +64,6 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
     let track_scroll_holder = ui.track_scroll_holder.clone();
     let track_list = ui.track_list.clone();
     let ctx_canonical_idx = ui.ctx_canonical_idx.clone();
-    let editing_pl_id = ui.editing_pl_id.clone();
     let editing_tracks = ui.editing_tracks.clone();
     let rebuild_track_list = ui.rebuild_track_list.clone();
     let ple_action_group_holder = ui.ple_action_group_holder.clone();
@@ -228,9 +226,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
         // track from the media library — the user's library DB is
         // untouched.
         {
-            let state_rc = state.clone();
             let et       = editing_tracks.clone();
-            let ep_id    = editing_pl_id.clone();
             let rebuild  = rebuild_track_list.clone();
             let pick_idxs = selected_canonical_indices.clone();
             let action   = gio::SimpleAction::new("remove", None);
@@ -244,22 +240,9 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                         if *i < e.len() { e.remove(*i); }
                     }
                 }
-                let pid = ep_id.get();
-                if pid >= 0 {
-                    let s = state_rc.borrow();
-                    if let Some(lib) = s.media_lib.as_ref() {
-                        let paths: Vec<String> = et.borrow()
-                            .iter().map(|t| t.path.clone()).collect();
-                        if let Ok(pl) = lib.playlist_by_id(pid) {
-                            if let Err(e) = lib.save_playlist_tracks_to_path(
-                                std::path::Path::new(&pl.path),
-                                &paths,
-                            ) {
-                                eprintln!("ple.remove persist {pid}: {e}");
-                            }
-                        }
-                    }
-                }
+                // No write here — see the same note in playlists.rs. Removing
+                // a row is an edit like any other: it lands on disk when the
+                // user presses Save (2026-08-10).
                 rebuild();
             });
             action_group.add_action(&action);
