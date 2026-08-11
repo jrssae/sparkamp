@@ -192,13 +192,17 @@ pub(super) fn start_ml_scan(
     let cancel_clone = cancel_flag.clone();
     {
         let mut s = state.borrow_mut();
+        // A cancelled scan is already cleared (see `cancel_ml_scan`), so only
+        // count a background op when we are not replacing a live one.
+        if s.ml_scan.is_none() {
+            s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+        }
         s.ml_scan = Some(ScanState {
             scan_type,
             current: 0,
             total,
             cancel: cancel_clone,
         });
-        s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
         cb();
@@ -221,11 +225,19 @@ pub(super) fn update_ml_scan_progress(state: &Rc<RefCell<AppState>>, current: us
 }
 
 /// Shared helper: complete an ML scan and notify UI.
+///
+/// No-ops when there is nothing to complete. A cancelled scan is torn down at
+/// the moment of cancelling, so its worker's eventual "finished" message
+/// arrives after the fact and must not decrement `pending_bg_ops` a second
+/// time or clear a scan the user has since started.
 pub(super) fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
     {
         let mut s = state.borrow_mut();
+        if s.ml_scan.is_none() {
+            return;
+        }
         s.ml_scan = None;
-        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+        s.pending_bg_ops.set(s.pending_bg_ops.get().saturating_sub(1));
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
         cb();
@@ -233,12 +245,27 @@ pub(super) fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
 }
 
 /// Shared helper: cancel an ML scan and notify UI.
+///
+/// Clears the scan straight away rather than waiting for the worker to notice
+/// the flag. The worker checks it between files, so on a slow disk that wait
+/// is seconds long — and until 2026-08-11 the scan stayed "in flight" for all
+/// of it: the progress numbers kept the cancelled scan's totals on screen, and
+/// starting a new scan was silently refused by the `ml_scan.is_some()` guard
+/// every caller has. Cancel then Rescan appeared to do nothing at all.
+///
+/// The worker still runs to its next check and exits on its own.
+/// [`complete_ml_scan`] ignores its late "finished" message. Its last progress
+/// message can still land on a scan started in the meantime, moving the bar by
+/// one file; the next real update corrects it. Closing that window properly
+/// needs the worker's cancel flag at the update site, and it is moved into the
+/// worker thread at all six of them.
 pub(super) fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
     {
-        let s = state.borrow_mut();
-        if let Some(ref scan) = s.ml_scan {
+        let mut s = state.borrow_mut();
+        if let Some(scan) = s.ml_scan.take() {
             scan.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            s.pending_bg_ops.set(s.pending_bg_ops.get().saturating_sub(1));
         }
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
@@ -1150,11 +1177,44 @@ impl AppState {
     ///
     /// Leading and trailing whitespace is trimmed before the path is
     /// resolved.  Returns `Ok(display_name)` on success or `Err(message)`
+    /// Fill in a duration we already know but the track was built without.
+    ///
+    /// `Track::from_path` reads tags, not length — measuring a duration means
+    /// decoding, which is far too slow to do while a drop of several hundred
+    /// files is in flight. So a track added by path arrives with `duration:
+    /// None` and the playlist shows a blank length.
+    ///
+    /// Two places already hold the answer, both free to consult: the library
+    /// row (`length_secs`, filled during the scan) and the on-disk duration
+    /// cache. Dragging from the Files view is the obvious case — those rows
+    /// are *showing* a duration the moment before the drop, and it looked like
+    /// a bug for it to vanish on landing (reported 2026-08-11). Anything still
+    /// unknown is left for the background prober, as before.
+    fn fill_known_duration(&self, track: &mut Track) {
+        if track.duration.is_some() {
+            return;
+        }
+        let path = track.path.to_string_lossy();
+        let secs = self
+            .media_lib
+            .as_ref()
+            .and_then(|lib| lib.track_by_path(&path).ok())
+            .and_then(|t| t.length_secs);
+        if let Some(secs) = secs {
+            track.duration = Some(Duration::from_secs_f64(secs));
+            return;
+        }
+        if let Some(d) = self.duration_cache.get(&track.path) {
+            track.duration = Some(d);
+        }
+    }
+
     /// on failure.  Use [`add_path`] when the input might be a directory.
     pub(super) fn add_track_from_path(&mut self, raw_path: &str) -> Result<String, String> {
         let path = std::path::Path::new(raw_path.trim());
         match Track::from_path(path) {
-            Ok(track) => {
+            Ok(mut track) => {
+                self.fill_known_duration(&mut track);
                 let name = track.display_name();
                 self.playlist.add(track);
                 Ok(name)
@@ -1183,7 +1243,8 @@ impl AppState {
             }
             let mut added = 0usize;
             for file in files {
-                if let Ok(track) = Track::from_path(&file) {
+                if let Ok(mut track) = Track::from_path(&file) {
+                    self.fill_known_duration(&mut track);
                     self.playlist.add(track);
                     added += 1;
                 }

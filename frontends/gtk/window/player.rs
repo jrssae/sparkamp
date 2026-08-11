@@ -5067,6 +5067,13 @@ pub fn build(
                         wrap_invert_selection();
                         return glib::Propagation::Stop;
                     }
+                    // Ctrl+A → select every row, the standard gesture for
+                    // "act on the whole list". Ctrl+I inverts, so this was the
+                    // conspicuous gap.
+                    gdk::Key::a | gdk::Key::A => {
+                        lyr_pl_view.selection().select_all();
+                        return glib::Propagation::Stop;
+                    }
                     _ => {}
                 }
             }
