@@ -25,12 +25,20 @@ use std::sync::mpsc::Sender;
 pub struct RowCheck {
     pub path: PathBuf,
     pub needs_tags: bool,
+    /// The playlist entry's stable session id, so the answer can be applied to
+    /// the right row in O(1) even after a reorder. Matching on the path instead
+    /// meant scanning the whole playlist per result, which on a 36k add is
+    /// millions of comparisons per tick — the difference between a background
+    /// pass and a locked machine.
+    pub id: u64,
 }
 
 /// What the pass learned about one row.
 pub struct RowFacts {
-    /// Identifies the row. Matched by path rather than index, so results stay
-    /// correct across a reorder, a removal, or a second add landing first.
+    /// The entry this answers for. Stable across reorders and removals, and
+    /// unique even when the same file sits in the playlist twice.
+    pub id: u64,
+    /// Kept for the duration cache, which is keyed by path.
     pub path: PathBuf,
     /// False when the file is gone — the row's ⚠ marker.
     pub exists: bool,
@@ -79,6 +87,7 @@ pub fn spawn_row_checks(rows: Vec<RowCheck>, tx: Sender<RowFacts>) {
                 None
             };
             let facts = RowFacts {
+                id: row.id,
                 path: row.path,
                 exists,
                 read_only,
@@ -100,6 +109,7 @@ mod tests {
         RowCheck {
             path: PathBuf::from(path),
             needs_tags,
+            id: 1,
         }
     }
 

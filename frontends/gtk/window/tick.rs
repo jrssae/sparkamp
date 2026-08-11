@@ -150,15 +150,21 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
             // media library had never seen. Capped like the probe drain above
             // so a 36k add patches rows steadily instead of in one long stall.
             {
-                let mut done = 0usize;
-                while done < 500 {
+                // Collect first, then apply in one pass — a per-result apply
+                // scanned the whole playlist each time, which is what turned a
+                // 36k add into a machine-wide lockup.
+                let mut batch = Vec::new();
+                // Capped like the probe drain: `patch_pl_row` finds its row by
+                // position in a GtkListStore, which is not O(1) deep in a large
+                // list, so a tick patches a bounded number of rows.
+                while batch.len() < 500 {
                     let Ok(facts) = row_facts_rx.try_recv() else {
                         break;
                     };
-                    for idx in playlist_add::apply_facts(&state, &facts) {
-                        patch_pl_row(idx);
-                    }
-                    done += 1;
+                    batch.push(facts);
+                }
+                for idx in playlist_add::apply_facts(&state, &batch) {
+                    patch_pl_row(idx);
                 }
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.

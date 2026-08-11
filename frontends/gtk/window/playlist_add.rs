@@ -97,11 +97,13 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
                 // straight away. Everything real about it arrives from the pass.
                 None => (placeholder(path), true),
             };
-            checks.push(crate::file_status::RowCheck {
-                path: track.path.clone(),
-                needs_tags,
-            });
+            let path = track.path.clone();
             s.playlist.add(track);
+            checks.push(crate::file_status::RowCheck {
+                path,
+                needs_tags,
+                id: s.playlist.tracks.last().map(|t| t.id).unwrap_or(0),
+            });
         }
         tx = s.row_facts_tx.clone();
     }
@@ -160,12 +162,18 @@ pub(super) fn add_track(
     let check = crate::file_status::RowCheck {
         path: track.path.clone(),
         needs_tags,
+        id: 0,
     };
-    let tx = {
+    let (tx, id) = {
         let mut s = state.borrow_mut();
         s.playlist.add(track);
-        s.row_facts_tx.clone()
+        // `add` stamps the entry id; take it back so the answer can be applied
+        // to this exact row without searching for it.
+        let id = s.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
+        (s.row_facts_tx.clone(), id)
     };
+    let mut check = check;
+    check.id = id;
     schedule(vec![check], tx);
 }
 
@@ -182,6 +190,7 @@ pub(super) fn schedule_from(state: &Rc<RefCell<AppState>>, start: usize, needs_t
             .map(|t| crate::file_status::RowCheck {
                 path: t.path.clone(),
                 needs_tags,
+                id: t.id,
             })
             .collect();
         (checks, s.row_facts_tx.clone())
@@ -232,22 +241,34 @@ fn flush_pending() {
     }
 }
 
-/// Apply one background answer, returning every row index it changed.
+/// Apply a whole batch of background answers in ONE pass over the playlist.
 ///
-/// Matched by path, not by index, because the playlist can have been reordered,
-/// filtered or added to since the pass started — and because the same file can
-/// legitimately sit in the playlist twice, in which case both rows are correct
-/// to update.
+/// The batch matters. The first version of this applied a single result at a
+/// time and scanned the playlist for a matching path on each one — O(rows ×
+/// results). With 36,000 rows and 500 results a tick that is eighteen million
+/// path comparisons every 33 ms, which did not merely stall the UI, it took
+/// the machine down with it. The probe drain immediately above the call site
+/// carries a comment warning about exactly this shape, added when the same
+/// mistake was fixed there.
+///
+/// Now results are keyed by the entry id `Playlist::add` stamps, so the batch
+/// becomes a map and the playlist is walked once, O(rows + results), with an
+/// O(1) lookup per row.
 pub(super) fn apply_facts(
     state: &Rc<RefCell<AppState>>,
-    facts: &crate::file_status::RowFacts,
+    batch: &[crate::file_status::RowFacts],
 ) -> Vec<usize> {
+    if batch.is_empty() {
+        return Vec::new();
+    }
+    let by_id: std::collections::HashMap<u64, &crate::file_status::RowFacts> =
+        batch.iter().map(|f| (f.id, f)).collect();
     let mut changed = Vec::new();
     let mut s = state.borrow_mut();
     for (i, t) in s.playlist.tracks.iter_mut().enumerate() {
-        if t.path != facts.path {
+        let Some(facts) = by_id.get(&t.id) else {
             continue;
-        }
+        };
         let mut touched = false;
         if t.broken != !facts.exists {
             t.broken = !facts.exists;
@@ -285,9 +306,11 @@ pub(super) fn apply_facts(
             changed.push(i);
         }
     }
-    // Remember any measured duration so the next session starts with it.
-    if let Some(d) = facts.tags.as_ref().and_then(|t| t.duration) {
-        s.duration_cache.insert(&facts.path, d);
+    // Remember any measured durations so the next session starts with them.
+    for facts in batch {
+        if let Some(d) = facts.tags.as_ref().and_then(|t| t.duration) {
+            s.duration_cache.insert(&facts.path, d);
+        }
     }
     changed
 }
