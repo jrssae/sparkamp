@@ -79,49 +79,61 @@ pub(super) fn install(ctx: &PlayerCtx) {
         });
     }
 
-    // Press-time selection restorer — re-applies the multi-select
-    // visually so the drag-icon shows every dragged row's highlight,
-    // not just the row under the cursor.  GTK's default press handler
-    // collapses selection to the clicked row; we schedule an idle
-    // restore that runs after that collapse but before drag-icon
-    // rendering settles.
+    // Snapshot upkeep around a press.
+    //
+    // GTK collapses the selection to the clicked row on press, and a drag may
+    // or may not follow. The snapshot therefore has to survive the press — a
+    // drag needs it — and be reconciled on *release*, once it is known that no
+    // drag happened and the collapse is what the user meant.
+    //
+    // The visual multi-select restore used to run from here and now runs from
+    // `connect_drag_begin` below. On press it fired for every click that
+    // landed inside the snapshot, so after Select All — where the snapshot is
+    // every row — each click re-applied the whole set and the selection could
+    // not be changed with the mouse at all, with or without Ctrl/Shift.
+    // Invert Selection had the same effect for the same reason; Select None
+    // did not, because it empties the snapshot.
     {
         let press = GestureClick::new();
         press.set_button(gtk4::gdk::BUTTON_PRIMARY);
         let pl_view_p = pl_view.clone();
+        let pl_view_rel = pl_view.clone();
         let snap = pl_drag_selection.clone();
+        let snap_rel = pl_drag_selection.clone();
         let active_press = pl_drag_active.clone();
+        let active_rel = pl_drag_active.clone();
         press.connect_pressed(move |_, _n, x, y| {
             #[allow(deprecated)]
             let row_under = pl_view_p.path_at_pos(x as i32, y as i32)
                 .and_then(|(p, _, _, _)| p)
                 .and_then(|p| p.indices().first().copied())
                 .map(|i| i as usize);
-            let snapshot = snap.borrow().clone();
-            if snapshot.len() > 1 && row_under.map_or(false, |r| snapshot.contains(&r)) {
-                let pv = pl_view_p.clone();
-                let snap_c = snapshot.clone();
-                glib::idle_add_local_once(move || {
-                    #[allow(deprecated)]
-                    let selection = pv.selection();
-                    #[allow(deprecated)]
-                    selection.unselect_all();
-                    #[allow(deprecated)]
-                    if let Some(model) = pv.model() {
-                        for idx in &snap_c {
-                            if let Some(iter) = model.iter_nth_child(None, *idx as i32) {
-                                #[allow(deprecated)]
-                                selection.select_iter(&iter);
-                            }
-                        }
-                    }
-                });
-            } else if !active_press.get() {
+            let inside_multi = {
+                let s = snap.borrow();
+                s.len() > 1 && row_under.map_or(false, |r| s.contains(&r))
+            };
+            if !inside_multi && !active_press.get() {
                 // Click landed outside the multi-selection (and no drag is in
                 // progress) → forget the snapshot, so a later click on a row
                 // that used to be selected doesn't resurrect the whole group.
                 snap.borrow_mut().clear();
             }
+        });
+        // The button came back up without a drag starting, so the collapse GTK
+        // did on press is the selection the user asked for. Mirror it back into
+        // the snapshot — this is what lets a plain click out of a
+        // multi-selection actually stick.
+        press.connect_released(move |_, _n, _x, _y| {
+            if active_rel.get() {
+                return; // a drag owns the snapshot until it ends
+            }
+            #[allow(deprecated)]
+            let (paths, _model) = pl_view_rel.selection().selected_rows();
+            *snap_rel.borrow_mut() = paths
+                .iter()
+                .filter_map(|p| p.indices().first().copied())
+                .map(|i| i as usize)
+                .collect();
         });
         pl_view.add_controller(press);
     }
@@ -140,8 +152,32 @@ pub(super) fn install(ctx: &PlayerCtx) {
         // observer doesn't wipe the snapshot during the drag chain.
         {
             let active = pl_drag_active.clone();
+            let snap_begin = pl_drag_selection.clone();
+            let pl_view_begin = pl_view.clone();
             drag_src.connect_drag_begin(move |_, _| {
                 active.set(true);
+                // Re-apply the multi-select GTK collapsed on press, so the drag
+                // icon shows every dragged row highlighted rather than just the
+                // one under the cursor. `connect_prepare` has already run and
+                // written the final source indices here, so this is exactly the
+                // set being dragged. Restoring here instead of on press is what
+                // keeps a plain click from re-selecting the whole group.
+                let rows = snap_begin.borrow().clone();
+                if rows.len() > 1 {
+                    #[allow(deprecated)]
+                    let selection = pl_view_begin.selection();
+                    #[allow(deprecated)]
+                    selection.unselect_all();
+                    #[allow(deprecated)]
+                    if let Some(model) = pl_view_begin.model() {
+                        for idx in &rows {
+                            if let Some(iter) = model.iter_nth_child(None, *idx as i32) {
+                                #[allow(deprecated)]
+                                selection.select_iter(&iter);
+                            }
+                        }
+                    }
+                }
             });
         }
         {

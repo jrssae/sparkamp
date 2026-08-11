@@ -897,6 +897,47 @@ its widgets (~590 lines), the shortcuts window (~194), the audio-CD watcher
 
 ---
 
+### What the step 9/9b test round found — 2026-08-11
+
+Twelve of sixteen checks run by hand. **One real defect, and it was not from
+the extraction** — every moved body is byte-identical, so the round was really
+a test of ordering and of holders that stopped being filled. Neither broke.
+
+**Select All froze the mouse selection** (`dnd.rs`). After Select All — or
+Invert Selection — clicking a row did nothing, with or without Ctrl/Shift.
+Select None worked.
+
+The cause is the press-time selection restorer. It exists so a drag that
+starts inside a multi-selection shows every dragged row highlighted, because
+GTK collapses the selection to the clicked row on press. But it fired on
+*every* press that landed inside the snapshot, and after Select All the
+snapshot is every row — so each click re-applied the whole set. Select None
+was unaffected only because it empties the snapshot.
+
+Pre-existing, and not reachable from either step: `git log -S` dates the
+restorer to `cb4dbb8` and the Select All menu item to `d9a25d0`. The two have
+been mutually incompatible since they met; step 9 only moved the code.
+
+Fixed by splitting press from release. The snapshot is still held across the
+press, since a drag may follow. The visual restore moved to
+`connect_drag_begin`, where `connect_prepare` has already settled the source
+indices, so it runs only when a drag genuinely starts. A new `connect_released`
+mirrors the live selection back into the snapshot when no drag happened — that
+is what lets a plain click out of a multi-selection stick.
+
+Three checks reported as failures were not defects:
+
+| Check | What it was |
+|---|---|
+| "Open with Sparkamp" into a running instance | The app runs in the distrobox; the file manager is on the host. The host has no handler pointing into the container, so the `open` signal is never sent. Test it from inside the container: `sparkamp <file>` with one already running. |
+| `VK_SUBOPTIMAL_KHR` on quit | GDK's Vulkan renderer noting the swapchain no longer exactly matches the surface. Says in its own message that it still presents correctly. Not our code. |
+| Durations not filling progressively | `add_path` calls `fill_known_duration`, which reads `length_secs` from the library. On a fully-scanned 36k library every added file already has a duration, `uncached_paths_from` returns empty and no probe is spawned. Needs a file the library has never seen — the mechanism itself traces intact from `spawn_probes` to `tick.rs`'s drain. |
+
+Check 11 is obsolete: the playlist window's `+ File` / `+ Files` / `+ Folder`
+buttons are submenu items now. The paths behind them still work.
+
+---
+
 ---
 
 ## 7. `sparkamp_bridge.h` — from discipline to tooling
