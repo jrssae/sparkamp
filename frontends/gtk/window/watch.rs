@@ -103,9 +103,15 @@ pub(super) fn rebuild_watcher(state: &Rc<RefCell<AppState>>) {
 
     match FolderWatcher::start(folders, audio_exts, cache_prefix()) {
         Ok((watcher, rx)) => {
-            let mut s = state.borrow_mut();
-            s.watch = Some(watcher);
-            s.watch_rx = Some(rx);
+            {
+                let mut s = state.borrow_mut();
+                s.watch = Some(watcher);
+                s.watch_rx = Some(rx);
+            }
+            // There is now a channel to drain. The tick stops itself whenever
+            // there isn't, so restarting it here is what turns watching back
+            // on after a Settings toggle.
+            start_drain_tick(state);
         }
         Err(e) => {
             // Not surfaced in the UI — this mirrors how other background
@@ -198,7 +204,22 @@ pub(super) fn start_path_normalization(state: &Rc<RefCell<AppState>>) {
     });
 }
 
-/// Register the drain tick. Call exactly ONCE, at window build.
+thread_local! {
+    /// Whether a drain tick is currently registered.
+    ///
+    /// The tick drives the one `AppState` and GTK is single-threaded, so a
+    /// thread-local flag is enough. Guards against a second timer being
+    /// registered when `rebuild_watcher` runs again while one is still live.
+    static DRAIN_TICK_RUNNING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Register the drain tick, unless one is already running.
+///
+/// Safe to call repeatedly: [`rebuild_watcher`] calls it every time it starts
+/// a watcher, and window build calls it once. The tick stops itself when there
+/// is no channel left to drain — watching switched off in Settings, no watched
+/// folders, or the library not open — so it exists exactly while it has work
+/// to do rather than waking 120 times a minute to look at a `None`.
 ///
 /// Every 500 ms: drain all pending `WatchAction`s from `watch_rx` and apply
 /// them to `media_lib` (the same DB writes a manual rescan produces), all
@@ -223,6 +244,9 @@ pub(super) fn start_path_normalization(state: &Rc<RefCell<AppState>>) {
 /// project's core `Rc<RefCell<AppState>>` rule, and it applies with extra
 /// force here since this tick runs unconditionally, forever, on a timer.
 pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
+    if DRAIN_TICK_RUNNING.with(|f| f.replace(true)) {
+        return;
+    }
     let state = state.clone();
     // Set when events have been applied but the UI has not caught up yet, and
     // the moment the last one landed. A steady stream keeps pushing the
@@ -237,6 +261,14 @@ pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
             // interior mutability, and `mpsc::Receiver::try_recv` likewise),
             // so no field on `AppState` itself needs to change here.
             let s = state.borrow();
+            // Nothing to drain: watching was switched off, the folder list is
+            // empty, or the library isn't open. Stand down rather than wake
+            // twice a second to re-discover that. `rebuild_watcher` starts a
+            // fresh tick the moment a channel exists again.
+            if s.watch_rx.is_none() {
+                DRAIN_TICK_RUNNING.with(|f| f.set(false));
+                return glib::ControlFlow::Break;
+            }
             let mut applied_any = false;
             // A playlist file needs a different refresh from a track: it
             // changes the sidebar's Playlists sub-rows, which

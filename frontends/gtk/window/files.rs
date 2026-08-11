@@ -87,6 +87,18 @@ impl FileStatus {
     }
 }
 
+/// Is this recycled row still bound to the track we started work for?
+///
+/// `ColumnView` reuses one widget for many rows, so anything asynchronous has
+/// to re-check before it acts: by the time it resumes, the row it was launched
+/// from may be showing a completely different track.
+fn row_shows_path(li: &gtk4::ListItem, path: &str) -> bool {
+    li.item()
+        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+        .map(|b| b.borrow::<crate::media_library::LibTrack>().path == path)
+        .unwrap_or(false)
+}
+
 /// The two filesystem probes behind [`FileStatus`]. Touches no GTK state, so
 /// it is safe to run on a worker thread — which is the whole point.
 fn probe_file_status(
@@ -281,6 +293,24 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let cache_done = cache.clone();
                 let inflight_done = inflight.clone();
                 glib::spawn_future_local(async move {
+                    // Let the view settle before touching the disk.
+                    //
+                    // A row that scrolls past is bound and rebound in far less
+                    // than this, so waiting first means only the rows the user
+                    // actually lands on are ever probed. Without it, dragging
+                    // the scrollbar across the library queued one probe per
+                    // distinct row it swept over — each a `stat` plus an
+                    // `open(O_WRONLY)` — and the app kept working through that
+                    // backlog at ~24% of a core for 20 s after the scrolling
+                    // stopped, painting glyphs onto rows nobody was looking at
+                    // any more (measured 2026-08-11).
+                    glib::timeout_future(std::time::Duration::from_millis(150)).await;
+                    if !row_shows_path(&li_row, &path) {
+                        // Scrolled away. Drop the reservation so a later bind
+                        // of this same path can still probe it.
+                        inflight_done.borrow_mut().remove(&path);
+                        return;
+                    }
                     let probe_path = path.clone();
                     let status = gio::spawn_blocking(move || {
                         probe_file_status(
@@ -293,15 +323,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     inflight_done.borrow_mut().remove(&path);
                     let Ok(status) = status else { return };
                     cache_done.borrow_mut().insert(path.clone(), status);
-                    // The row may have been recycled onto a different track
-                    // while the probe ran — only paint it if it still shows
-                    // the path we probed.
-                    let still_here = li_row
-                        .item()
-                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                        .map(|b| b.borrow::<crate::media_library::LibTrack>().path == path)
-                        .unwrap_or(false);
-                    if still_here {
+                    // Recycled while the probe ran — the answer is still worth
+                    // caching, but paint it only if this row still shows it.
+                    if row_shows_path(&li_row, &path) {
                         if let Some(l) = li_row.child().and_then(|c| c.downcast::<Label>().ok()) {
                             status.apply(&l);
                         }
