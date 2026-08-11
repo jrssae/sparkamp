@@ -55,6 +55,10 @@ So `state.rs`, `util.rs`, `player.rs`, `media_library.rs` and friends are
 **not modules**. They are `include!()` byte slices sharing one namespace.
 Only `disc`, `watch`, `now_playing`, `art_window` and `mpris` are real `mod`s.
 
+> **Resolved 2026-08-11 by step 8** (`d328c1c`, `6b7ee5c`). Every one of them
+> is a real `mod` now, and `window/mod.rs` contains no `include!`. The rest of
+> this section is kept as the problem statement the plan was written against.
+
 Two consequences:
 
 1. A physical re-split into more `include!` files is provable offline
@@ -283,7 +287,7 @@ Every step is one commit. Never combine a move with a behaviour change.
 | 5 | ~~Discs — hoist, then extract~~ **DONE `eb4c994` (5a), `cd88e67` `2a64c0f` (5b)** | 2,499 | **high** | CI ✅ | **A + E + X** ⏳ owed |
 | 6 | ~~`devices/` — reunite the widgets with the wiring, then extract~~ **DONE `9caffd7` `cfd3cb3` (6a/6b), `08b08ad` `e3eb626` (6c/6d)** | 3,456 | **high** | CI ✅ | **A + F** ✅ 2026-08-10 |
 | 7 | ~~`playlists/`~~ **DONE `d572f0f` (7a), `0167817` (7b), `c58ed1c` (7c)** | 3,139 | high | CI ✅ | **A + G + X** ✅ 2026-08-11 |
-| 8 | Convert the remaining `include!`s in `window/mod.rs` to real `mod`s | — | medium | CI | **full sweep: A–G + X** |
+| 8 | ~~Convert the remaining `include!`s in `window/mod.rs` to real `mod`s~~ **DONE `d328c1c` (11 slices), `6b7ee5c` (the last 4)** | 17,386 | medium | CI ✅ | **full sweep: A–G + X** ⏳ owed |
 
 Test groups are defined in [§5](#5-smoke-tests). Steps 5 and 6 run their group
 twice — once after the hoist commit, once after the extract.
@@ -485,6 +489,50 @@ that reached 1.6 GB in eight cycles.
 measure seams before moving code; step 7 adds the runtime twin. Every
 hypothesis this round that was reasoned rather than measured — including two
 of mine about which code was at fault — was wrong.
+
+### What step 8 actually did — 2026-08-11
+
+All 15 `include!` slices became real `mod`s in two commits. The recipe was the
+same for every file and took three lines of Python to apply:
+
+1. `use super::*;` at the head of the file. A child module can see its
+   ancestors' private items, so this reproduces exactly what the slice saw
+   when it was spliced into `window/mod.rs`.
+2. `pub(super)` on every top-level item, so the parent can re-export it.
+3. `mod x; use x::*;` in `mod.rs`.
+
+Step 3 is the part worth explaining. The re-export keeps the window module's
+namespace identical to what it was, so the 232 names the page modules from
+steps 2–7 already pull in through `use super::{…}` still resolve, and **not
+one call site had to change**. The alternative — `pub(super)` in the child and
+`super::x::foo` at every reader — would have rewritten every one of those
+imports and each of their use sites, for the same compiled output.
+
+What the compiler found that the recipe did not, all of it in the last four
+files:
+
+| Found | Why it only surfaced now |
+|---|---|
+| Struct **fields** (`MlColumnDef`, `MtpRaw`, `MtpMeta`, `PlaylistSendPlan`, `MlHost`, `MlCtx`, `AppState`×37, `ScanState`, `RgJobState`) | field privacy is per-struct, and `pub(super)` on the struct says nothing about them |
+| `impl AppState`'s 22 bare methods | same reason |
+| `thread_local!` statics in util.rs | `pub(super)` has to go *inside* the macro body |
+| `use crate::skin::…` at the foot of state.rs | it was serving player.rs — invisible while both were one module |
+| build()'s 38-line doc comment stranded at the end of state.rs | the 2026-07-11 byte cut fell between the doc and its `fn`; a real `mod` boundary made it a parse error |
+
+That last one is the most useful thing the step turned up. The doc block had
+been 4.5k lines away from `pub fn build` for a month, rendering on nothing.
+`include!` cannot tell you that; a module boundary can.
+
+**Cost:** 17,386 lines of code changed module, essentially all of it by
+script; the hand-written part is the five rows in the table above plus the
+comment rewrites. No behaviour touched. `window/mod.rs` is 244 lines —
+declarations and module docs, nothing else. Tests: 825 pass.
+
+One pre-existing failure was confirmed *not* to be ours by running the suite
+on `9ccf5b3` first: `disc::detect::exclusive_read_tests::refcount_nesting_and_underflow`
+panics with "must start clear" under the parallel runner and passes alone —
+a global refcount in `src/disc/detect.rs` shared with another test. Untouched;
+it predates this step and is outside the plan.
 
 ### Handing off a test round
 
