@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use super::sidebar::Sidebar;
 use super::{
-    apply_device_sync, apply_playlist_pull, apply_playlist_push, build_tag_conflicts,
+    build_tag_conflicts,
     device_io_shutting_down, device_playlist_sync_plan, device_sync_plan, find_row_by_name,
     invalidate_mtp_meta, prompt_playlist_conflicts, prompt_tag_conflicts, set_button_busy,
     show_alert_parented, MlCtx, PlaylistSyncItem,
@@ -48,6 +48,9 @@ pub(super) struct ActionUi<'a> {
     pub eject_run_holder: &'a Rc<RefCell<Option<Rc<dyn Fn(String)>>>>,
     /// Filled here, called by each overview card's Sync button.
     pub sync_run_holder: &'a Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Button)>>>>,
+    /// The detail view's progress bar, shared with the copy/playlist actions.
+    /// Sync drives it from a worker thread now that it no longer blocks.
+    pub dev_progress: &'a gtk4::ProgressBar,
 }
 
 /// Wire Scan, Eject and Sync, and publish the latter two through their holders.
@@ -193,6 +196,7 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
         let state_sync = state.clone();
         let win_wk = win.downgrade();
         let reload_sync = reload_device_store.clone();
+        let progress_sync = ui.dev_progress.clone();
         Rc::new(move |dev: crate::devices::Device, sync_btn: Button| {
             use crate::devices::sync::{PlaylistSyncDir, SyncAction};
             // Show activity while the device is read/planned (slow over MTP);
@@ -213,6 +217,7 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
             let state_sync = state_sync.clone();
             let win_wk = win_wk.clone();
             let reload_sync = reload_sync.clone();
+            let progress_sync = progress_sync.clone();
             glib::spawn_future_local(async move {
                 let dev_b = dev.clone();
                 let (plan, pl_plan) = gio::spawn_blocking(move || {
@@ -314,6 +319,8 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
             let pl_plan2 = pl_plan;
             let win_wk2 = win_wk.clone();
             let reload2 = reload_sync.clone();
+            let sync_btn2 = sync_btn.clone();
+            let progress2 = progress_sync.clone();
             dialog.choose(
                 win_wk.upgrade().as_ref(),
                 None::<&gio::Cancellable>,
@@ -321,94 +328,143 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                     if res != Ok(1) {
                         return;
                     }
-                    let (applied, failed) = apply_device_sync(&state2, &dev2, &plan2);
-                    // Auto-apply the unambiguous playlist directions; collect the
-                    // both-changed conflicts to prompt for afterwards.
-                    let mut pl_updated = 0usize;
-                    let mut pl_copied = 0usize;
-                    let mut conflicts: Vec<PlaylistSyncItem> = Vec::new();
-                    for item in &pl_plan2 {
-                        match item.dir {
-                            PlaylistSyncDir::Push => {
-                                let (c, ok) = apply_playlist_push(&state2, &dev2, item);
-                                pl_copied += c;
-                                if ok {
-                                    pl_updated += 1;
-                                }
-                            }
-                            PlaylistSyncDir::Pull => {
-                                if apply_playlist_pull(&state2, item) {
-                                    pl_updated += 1;
-                                }
-                            }
-                            PlaylistSyncDir::Conflict => conflicts.push(item.clone()),
-                            PlaylistSyncDir::None => {}
-                        }
-                    }
-                    reload2(dev2.clone());
+                    // The apply is disk work: copying songs and rewriting
+                    // playlists on removable media. Doing it here froze the
+                    // whole app until it finished (reported 2026-08-11) — the
+                    // planning above was already off-thread, the applying
+                    // never was. It runs on a worker with its own SQLite
+                    // connection now, feeding the detail view's progress bar,
+                    // and the conflict prompts and summary below resume on the
+                    // main thread once it lands.
+                    set_button_busy(&sync_btn2, true, "Sync");
+                    progress2.set_fraction(0.0);
+                    progress2.set_visible(true);
 
-                    let summary = {
-                        let tail = if failed > 0 {
-                            format!(", {failed} failed")
-                        } else {
-                            String::new()
+                    let (prog_tx, prog_rx) = std::sync::mpsc::channel::<(usize, usize)>();
+                    type SyncOutcome = (usize, usize, usize, usize, Vec<PlaylistSyncItem>);
+                    let (res_tx, res_rx) = std::sync::mpsc::channel::<SyncOutcome>();
+                    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                    let dev_w = dev2.clone();
+                    let plan_w = plan2.clone();
+                    let pl_plan_w = pl_plan2.clone();
+                    std::thread::spawn(move || {
+                        let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) else {
+                            let _ = res_tx.send((0, 0, 0, 0, Vec::new()));
+                            return;
                         };
-                        let pl_tail = if pl_updated > 0 {
-                            format!(
-                                "; updated {pl_updated} playlist{} ({pl_copied} new file{} copied)",
-                                if pl_updated == 1 { "" } else { "s" },
-                                if pl_copied == 1 { "" } else { "s" },
-                            )
-                        } else {
-                            String::new()
-                        };
-                        format!(
-                            "Synced {applied} song{}{pl_tail}{tail}.",
-                            if applied == 1 { "" } else { "s" }
-                        )
-                    };
-
-                    // Per-file tag conflicts (both sides changed a song's tags).
-                    let tag_conflicts = build_tag_conflicts(&dev2, &plan2);
-
-                    // Final step: refresh + show the summary.
-                    let final_done: Rc<dyn Fn()> = {
-                        let reload_done = reload2.clone();
-                        let dev_done = dev2.clone();
-                        let win_done = win_wk2.clone();
-                        Rc::new(move || {
-                            reload_done(dev_done.clone());
-                            show_alert_parented(win_done.upgrade().as_ref(), &summary);
-                        })
-                    };
-                    // After tag conflicts, resolve playlist conflicts, then finish.
-                    let after_tags: Rc<dyn Fn()> = if conflicts.is_empty() {
-                        final_done
-                    } else {
-                        let state_pl = state2.clone();
-                        let dev_pl = dev2.clone();
-                        let win_pl = win_wk2.clone();
-                        Rc::new(move || {
-                            prompt_playlist_conflicts(
-                                state_pl.clone(),
-                                dev_pl.clone(),
-                                conflicts.clone(),
-                                win_pl.clone(),
-                                final_done.clone(),
+                        let (applied, failed) =
+                            crate::devices::plan::apply_device_sync_with_progress(
+                                &lib,
+                                &dev_w,
+                                &plan_w,
+                                &mut |done, total| {
+                                    let _ = prog_tx.send((done, total));
+                                },
                             );
-                        })
-                    };
-                    if tag_conflicts.is_empty() {
-                        (after_tags)();
-                    } else {
-                        prompt_tag_conflicts(
-                            state2.clone(),
-                            dev2.clone(),
-                            tag_conflicts,
-                            win_wk2.clone(),
-                            after_tags,
-                        );
-                    }
+                        let mut pl_updated = 0usize;
+                        let mut pl_copied = 0usize;
+                        let mut conflicts: Vec<PlaylistSyncItem> = Vec::new();
+                        for item in &pl_plan_w {
+                            match item.dir {
+                                PlaylistSyncDir::Push => {
+                                    let (c, ok) =
+                                        crate::devices::plan::apply_playlist_push(&lib, &dev_w, item);
+                                    pl_copied += c;
+                                    if ok {
+                                        pl_updated += 1;
+                                    }
+                                }
+                                PlaylistSyncDir::Pull => {
+                                    if crate::devices::plan::apply_playlist_pull(&lib, item) {
+                                        pl_updated += 1;
+                                    }
+                                }
+                                PlaylistSyncDir::Conflict => conflicts.push(item.clone()),
+                                PlaylistSyncDir::None => {}
+                            }
+                        }
+                        let _ = res_tx.send((applied, failed, pl_updated, pl_copied, conflicts));
+                    });
+
+                    let prog_rx = std::cell::RefCell::new(prog_rx);
+                    let res_rx = std::cell::RefCell::new(res_rx);
+                    glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                        while let Ok((done, total)) = prog_rx.borrow().try_recv() {
+                            progress2.set_fraction(done as f64 / total.max(1) as f64);
+                        }
+                        let Ok((applied, failed, pl_updated, pl_copied, conflicts)) =
+                            res_rx.borrow().try_recv()
+                        else {
+                            return glib::ControlFlow::Continue;
+                        };
+                        progress2.set_visible(false);
+                        set_button_busy(&sync_btn2, false, "Sync");
+                        reload2(dev2.clone());
+
+                        let summary = {
+                            let tail = if failed > 0 {
+                                format!(", {failed} failed")
+                            } else {
+                                String::new()
+                            };
+                            let pl_tail = if pl_updated > 0 {
+                                format!(
+                                    "; updated {pl_updated} playlist{} ({pl_copied} new file{} copied)",
+                                    if pl_updated == 1 { "" } else { "s" },
+                                    if pl_copied == 1 { "" } else { "s" },
+                                )
+                            } else {
+                                String::new()
+                            };
+                            format!(
+                                "Synced {applied} song{}{pl_tail}{tail}.",
+                                if applied == 1 { "" } else { "s" }
+                            )
+                        };
+
+                        // Per-file tag conflicts (both sides changed a song's tags).
+                        let tag_conflicts = build_tag_conflicts(&dev2, &plan2);
+
+                        // Final step: refresh + show the summary.
+                        let final_done: Rc<dyn Fn()> = {
+                            let reload_done = reload2.clone();
+                            let dev_done = dev2.clone();
+                            let win_done = win_wk2.clone();
+                            Rc::new(move || {
+                                reload_done(dev_done.clone());
+                                show_alert_parented(win_done.upgrade().as_ref(), &summary);
+                            })
+                        };
+                        // After tag conflicts, resolve playlist conflicts, then finish.
+                        let after_tags: Rc<dyn Fn()> = if conflicts.is_empty() {
+                            final_done
+                        } else {
+                            let state_pl = state2.clone();
+                            let dev_pl = dev2.clone();
+                            let win_pl = win_wk2.clone();
+                            Rc::new(move || {
+                                prompt_playlist_conflicts(
+                                    state_pl.clone(),
+                                    dev_pl.clone(),
+                                    conflicts.clone(),
+                                    win_pl.clone(),
+                                    final_done.clone(),
+                                );
+                            })
+                        };
+                        if tag_conflicts.is_empty() {
+                            (after_tags)();
+                        } else {
+                            prompt_tag_conflicts(
+                                state2.clone(),
+                                dev2.clone(),
+                                tag_conflicts,
+                                win_wk2.clone(),
+                                after_tags,
+                            );
+                        }
+                        glib::ControlFlow::Break
+                    });
                 },
             );
             });

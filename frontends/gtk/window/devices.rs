@@ -590,20 +590,6 @@ pub(super) fn apply_tag_pair(
     }
 }
 
-/// Apply a sync plan: propagate the winning side's tags for the unambiguous
-/// directions (conflicts are handled separately by the prompt) and refresh each
-/// pair's baseline. Returns `(applied, failed)`.
-pub(super) fn apply_device_sync(
-    state: &Rc<RefCell<AppState>>,
-    dev: &crate::devices::Device,
-    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
-) -> (usize, usize) {
-    match state.borrow().media_lib.as_ref() {
-        Some(lib) => crate::devices::plan::apply_device_sync(lib, dev, plan),
-        None => (0, 0),
-    }
-}
-
 /// Build the two-way playlist sync plan for a device: for each library playlist
 /// that is on the device (or was, per a stored baseline), decide whether to
 /// push to the device, pull into the library, or flag a conflict.

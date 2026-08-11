@@ -1530,6 +1530,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             refresh_devices: &refresh_devices,
             eject_run_holder: &eject_run_holder,
             sync_run_holder: &sync_run_holder,
+            dev_progress: &dev_progress,
         },
     );
 }
