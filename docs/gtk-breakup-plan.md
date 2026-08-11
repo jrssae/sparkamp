@@ -931,7 +931,25 @@ Three checks reported as failures were not defects:
 |---|---|
 | "Open with Sparkamp" into a running instance | The app runs in the distrobox; the file manager is on the host. The host has no handler pointing into the container, so the `open` signal is never sent. Test it from inside the container: `sparkamp <file>` with one already running. |
 | `VK_SUBOPTIMAL_KHR` on quit | GDK's Vulkan renderer noting the swapchain no longer exactly matches the surface. Says in its own message that it still presents correctly. Not our code. |
-| Durations not filling progressively | `add_path` calls `fill_known_duration`, which reads `length_secs` from the library. On a fully-scanned 36k library every added file already has a duration, `uncached_paths_from` returns empty and no probe is spawned. Needs a file the library has never seen — the mechanism itself traces intact from `spawn_probes` to `tick.rs`'s drain. |
+| Durations not filling progressively | **Real, and a second defect.** See below. |
+
+**A file opened from the file manager or the command line never got a
+duration** (`tick.rs`, the `open_rx` branch). It reached the playlist through
+`Track::from_path_fast`, which deliberately skips the duration read, and
+nothing afterwards filled it in: no duration-cache lookup, no probe. The
+duration only appeared once the track played and GStreamer reported one.
+
+Every other add path does both steps — the Add Files / Add Folder scan calls
+`apply_cached_durations` and then `spawn_probes` for whatever is left. The
+"Open with" path was written without them.
+
+Also pre-existing, and from the same commit as the selection bug: `cb4dbb8`
+added this branch, and `1bd2bc9` has the identical gap. Fixed by taking the
+two steps the scan takes, before the rebuild so cached durations show at once.
+
+Worth noting how it hid. The duration probe has one test against a real audio
+file, and it is `#[ignore]`d on top of an `exists()` guard that already makes
+it CI-safe — so it had never run. It passes.
 
 Check 11 is obsolete: the playlist window's `+ File` / `+ Files` / `+ Folder`
 buttons are submenu items now. The paths behind them still work.

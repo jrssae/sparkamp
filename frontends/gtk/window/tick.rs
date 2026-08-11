@@ -63,6 +63,10 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
     let granite_render_h = d.granite_render_h.clone();
     let viz_shutting_down = d.viz_shutting_down.clone();
     let fs_viz_open = d.fs_viz_open.clone();
+    // Senders, for the probes the "Open with" path spawns below; the
+    // receivers beside them are drained by the tick itself.
+    let probe_tx = ctx.probe_tx.clone();
+    let broken_tx = ctx.broken_tx.clone();
     let probe_rx = d.probe_rx;
     let broken_rx = d.broken_rx;
     let current_track_meta_rx = d.current_track_meta_rx;
@@ -90,6 +94,8 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
         let rebuild_playlist_tick = rebuild_playlist.clone();
         let play_update_tick = play_and_update.clone();
         let scroll_tick = scroll_to_row_if_needed.clone();
+        let probe_tx_tick = probe_tx.clone();
+        let broken_tx_tick = broken_tx.clone();
         // Granite-mode renderer state captured by the tick closure. Weak
         // refs so the timer doesn't keep widgets alive after the main window
         // closes — calling `set_paintable` on a destroyed widget triggers a
@@ -236,6 +242,21 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 let inserted = state.borrow().playlist.len() - insert_start;
                 if inserted == 0 {
                     continue;
+                }
+                // Fill from the on-disk duration cache, then probe whatever is
+                // still unknown — the same two steps the Add Files / Add Folder
+                // scan takes when it finishes. `from_path_fast` deliberately
+                // skips the duration read, so without these a file opened from
+                // the file manager or the command line sits with a blank
+                // duration until it is played and GStreamer reports one.
+                state.borrow_mut().apply_cached_durations();
+                let uncached = state.borrow().uncached_paths_from(insert_start);
+                if !uncached.is_empty() {
+                    duration_probe::spawn_probes(
+                        uncached,
+                        probe_tx_tick.clone(),
+                        broken_tx_tick.clone(),
+                    );
                 }
                 rebuild_playlist_tick();
 
