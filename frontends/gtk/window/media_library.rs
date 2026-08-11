@@ -1,3 +1,5 @@
+use super::*;
+
 /// Bottom status bar for a Media Library list view: `N tracks · MM:SS total ·
 /// MM:SS selected`, matching the active playlist. Works over any MultiSelection
 /// whose items are `BoxedAnyObject<T>`; `secs_of` pulls each row's duration out
@@ -7,7 +9,7 @@
 /// Label (append it to the view's page box) and a refresh closure (already
 /// wired to selection + model changes; also call it once after the store is
 /// first populated).
-fn ml_status_bar_for<T: 'static>(
+pub(super) fn ml_status_bar_for<T: 'static>(
     selection: &MultiSelection,
     secs_of: impl Fn(&T) -> Option<f64> + 'static,
 ) -> (Label, std::rc::Rc<dyn Fn()>) {
@@ -55,7 +57,7 @@ fn ml_status_bar_for<T: 'static>(
 }
 
 /// LibTrack-boxed views (Files, Devices, Playlists) — the common case.
-fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
+pub(super) fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
     ml_status_bar_for::<crate::media_library::LibTrack>(selection, |t| t.length_secs)
 }
 
@@ -68,11 +70,11 @@ fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
 ///
 /// A holder left at `None` is not an error: every call site silently does
 /// nothing. That is the failure mode the smoke tests in §5 exist to catch.
-type RefreshHolder = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+pub(super) type RefreshHolder = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 /// Device-copy runner, shared with player.rs so the active playlist's
 /// Send-to menu drives the same copy as the Media Library's device views.
-type CopyFilesHolder =
+pub(super) type CopyFilesHolder =
     Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>>;
 
 /// Everything the Media Library window receives from its host.
@@ -86,22 +88,20 @@ type CopyFilesHolder =
 /// window boundary; everything a page needs from *inside* the window lives on
 /// [`MlCtx`] instead, which wraps this.
 ///
-/// No visibility modifier: `media_library.rs` is `include!`d into
-/// `window/mod.rs`, so this is already the same module as its callers. Step 8
-/// of the plan converts those includes to real `mod`s, and that is when
-/// `pub(super)` becomes meaningful here.
-struct MlHost {
-    state: Rc<RefCell<AppState>>,
-    rebuild_playlist: Rc<dyn Fn()>,
-    set_track: Rc<dyn Fn(&str)>,
-    current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
-    current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
-    burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
-    copy_files_holder: CopyFilesHolder,
+/// `pub(super)` throughout: this file became a real `mod` in plan step 8, and
+/// every page module reads these fields through the window module above it.
+pub(super) struct MlHost {
+    pub(super) state: Rc<RefCell<AppState>>,
+    pub(super) rebuild_playlist: Rc<dyn Fn()>,
+    pub(super) set_track: Rc<dyn Fn(&str)>,
+    pub(super) current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
+    pub(super) current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
+    pub(super) burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
+    pub(super) copy_files_holder: CopyFilesHolder,
     /// Filled by the burn panel with a closure that re-renders the shown
     /// drive's queue; the Send-to ▸ Disc Drive actions call it so an external
     /// add updates the open panel live (2026-07-16).
-    burn_refresh_holder: RefreshHolder,
+    pub(super) burn_refresh_holder: RefreshHolder,
 }
 
 /// What an extracted page builder is handed: the host bundle plus the shared
@@ -127,27 +127,27 @@ struct MlHost {
 /// whole playlist) reach their callers through the holders already on
 /// [`MlHost`] and [`Sidebar`], not through a field. That indirection is what
 /// lets the device page be built after the pages that call it.
-struct MlCtx {
-    host: MlHost,
+pub(super) struct MlCtx {
+    pub(super) host: MlHost,
     /// The window itself — pages parent their dialogs and file choosers to it.
-    win: gtk4::Window,
+    pub(super) win: gtk4::Window,
     /// The page stack. Pages `add_named` themselves to it and switch to each
     /// other through it.
-    stack: Stack,
+    pub(super) stack: Stack,
     /// The gallery drill-down: `Some((album, album_artist))` narrows the Files
     /// page to one album's tracks. Written by Albums, read by Files.
-    album_filter: Rc<RefCell<Option<(String, String)>>>,
+    pub(super) album_filter: Rc<RefCell<Option<(String, String)>>>,
     /// "◀ Albums" — lives in the Files search row but is shown and hidden by
     /// the drill-down, so both pages touch it.
-    btn_album_back: Button,
+    pub(super) btn_album_back: Button,
     /// The Files `ColumnView` and its columns, late-bound because both are
     /// built inside the Files page but the window's close-request has to read
     /// their order and widths back out to save them.
-    col_view_holder: Rc<RefCell<Option<ColumnView>>>,
-    all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>>,
+    pub(super) col_view_holder: Rc<RefCell<Option<ColumnView>>>,
+    pub(super) all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>>,
 }
 
-fn open_media_library_window(
+pub(super) fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     host: MlHost,
     init_width: i32,
@@ -376,7 +376,7 @@ fn open_media_library_window(
 /// by a `glib::timeout_add_local` on the main loop, which is also the only
 /// place `rg_job`/`AppState.media_lib` get touched again — never from the
 /// worker thread.
-fn analyze_job(
+pub(super) fn analyze_job(
     state: &Rc<RefCell<AppState>>,
     tracks: Vec<crate::media_library::LibTrack>,
     force: bool,

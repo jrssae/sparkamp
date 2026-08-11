@@ -1,10 +1,12 @@
+use super::*;
+
 /// Keyboard-shortcut reference shown in the help window (`i`). This is the
 /// single source of truth for GTK bindings (phase 6): the help builder renders
 /// it and a test asserts every bound key appears here, so the dialog can never
 /// silently drift from what the handlers actually do. Keep entries in sync with
 /// the mac `KeyboardShortcutsView.swift` sections.
 #[allow(clippy::type_complexity)]
-fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
+pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
     &[
         ("Playback", &[
             ("z",          "Previous track / restart"),
@@ -62,6 +64,44 @@ fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'st
     ]
 }
 
+/// Build and present the Sparkamp main window and companion playlist window.
+///
+/// ## Layout overview
+///
+/// **Main window** (always visible):
+/// ```text
+/// [mini viz | title / artist]   ← now-playing row
+/// [seek bar                  ]
+/// [⏮ ▶ ⏸ ⏹ ⏭  VOL  PL     ]   ← transport + PL toggle
+/// [status bar                ]
+/// ```
+///
+/// **Playlist window** (shown/hidden with `p` or the PL button):
+/// ```text
+/// [Playlist — N tracks              ]
+/// [+ File] [+ Files] [+ Folder] [✕ Remove]
+/// [scrollable playlist ListBox      ]
+/// [status bar                       ]
+/// ```
+///
+/// ## Playlist window positioning / snap
+///
+/// GTK4 on Wayland does **not** allow applications to control window
+/// positions programmatically — the compositor exclusively manages
+/// placement.  We use `set_transient_for` to hint to the window manager
+/// that the playlist window belongs with the main window; most WMs will
+/// group them in the taskbar and may place the playlist near the main
+/// window on first display.
+///
+/// On X11 / XWayland, position control is possible via platform-specific
+/// GDK APIs (`gdk_x11_surface_get_xid` + `XMoveWindow`), but doing so
+/// requires `unsafe` FFI and is not implemented here to keep the code
+/// portable.  The Winamp-style "snap within 10–20 px" behaviour would
+/// require that platform path.
+///
+/// In practice, with `set_transient_for` and a modern WM the windows
+/// behave as a logical unit: they share the taskbar and are typically
+/// raised/lowered together.
 pub fn build(
     app: &Application,
     playlist: Playlist,

@@ -62,10 +62,14 @@ use crate::{
 // produced/consumed by that logic and the frontend, so they are shared from
 // core rather than redefined here.
 use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
+// Skin CSS. Lived at the foot of state.rs while every file was one flat
+// module; it belongs here now that they are real `mod`s, because player.rs is
+// what reads it.
+use crate::skin::{self, render_gtk_css, SkinVars};
 
 // Disc (optical media) UI: rip dialog/worker + drive-view helpers. A child
-// module so it can use this file's private AppState/gtk_safe; new disc UI
-// (submit, burn) goes there, not here.
+// module so it can use the window module's private AppState/gtk_safe; new
+// disc UI (submit, burn) goes there, not here.
 mod disc;
 
 // Live folder-watcher lifecycle (Phase 8 Task 10): rebuild/start/stop the
@@ -75,8 +79,8 @@ mod disc;
 mod watch;
 
 // A1 expandable now-playing panel (art + tags + wiki links). A child module
-// (not include!d) so its widget-building code stays out of player.rs's
-// already-large body; player.rs calls it as `now_playing::build_panel(...)`.
+// so its widget-building code stays out of player.rs's already-large body;
+// player.rs calls it as `now_playing::build_panel(...)`.
 mod now_playing;
 
 // A6 standalone album-art window (`k` key / A1 art click). A child module
@@ -86,8 +90,7 @@ mod art_window;
 mod mpris;
 
 // Media Library "Albums" page (plan step 2, the breakup's first extraction).
-// A real child module, not an include! slice: it takes `&MlCtx` and reaches
-// back for `build_album_gallery`, so the compiler arbitrates its visibility.
+// It takes `&MlCtx` and reaches back for `build_album_gallery`.
 mod albums;
 
 // The Media Library's left-hand nav list (plan step 3). Owns the ListBox, its
@@ -121,9 +124,9 @@ mod disc_gnudb;
 
 // The Media Library "Devices" page (plan step 6): overview cards, the device
 // detail view, device-playlist management and the 2 s udisks2 poll. Flat, like
-// the disc pages. Not to be confused with the `devices.rs` slice included
-// below — that is the *logic* (detection, mounts, copy/sync helpers) this page
-// drives; core device support proper lives in `crate::devices`.
+// the disc pages. Not to be confused with `mod devices` below — that is the
+// *logic* (detection, mounts, copy/sync helpers) this page drives; core device
+// support proper lives in `crate::devices`.
 mod devices_page;
 
 // Scan / Eject / Sync (plan step 6, fourth cut) — the three device-wide
@@ -161,30 +164,33 @@ mod playlists_manage;
 mod playlists_columns;
 
 // ---------------------------------------------------------------------------
-// AppState
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Physical file split (2026-07-11)
+// The original window.rs, one module per section (2026-07-11, 2026-08-11)
 // ---------------------------------------------------------------------------
 // window.rs reached ~21k lines, unworkable for review or for smaller models.
-// The sections below are include!d verbatim: every file is a plain byte slice
-// of the old window.rs, so the compiler sees the exact same single module and
-// nothing needed visibility or import surgery. This split was produced on a
-// machine that cannot compile the (Linux-only) GTK frontend, so include! was
-// chosen because byte-identity is provable offline. Converting these to real
-// `mod` submodules (pub(super) items + per-file imports) is a follow-up to do
-// ON the Linux box, one file at a time, where the compiler can arbitrate.
+// It was first cut into the files below as `include!` byte slices, because
+// that split was produced on a machine that cannot compile the (Linux-only)
+// GTK frontend and byte-identity is provable offline. Plan step 8 finished
+// the job on the Linux box: each is now a real `mod`, with `use super::*;` at
+// its head and `pub(super)` on the items its neighbours read.
+//
+// Each `mod` is paired with a `use <name>::*;` so the window module's own
+// namespace is unchanged — every `super::foo` in the page modules above still
+// resolves, and no call site had to move. Narrowing those globs to named
+// imports is a separate job, and a mechanical one.
 
 // AppState + scan state and the AppState impl (core-side logic, no widgets)
-include!("state.rs");
+mod state;
+use state::*;
 
 // small shared UI helpers: icons, gtk_safe, sanitizers, dialogs, notify_* hooks
-include!("util.rs");
+mod util;
+use util::*;
 
 // build(): the main player window (transport, playlist pane, viz, key handling)
-include!("player.rs");
+mod player;
+// `pub use` rather than `use`: `build` is this module's entry point, called
+// from frontends/gtk/mod.rs.
+pub use player::*;
 
 // ID3 editor window, field customizer, column customizer, gnudb email prompt
 mod id3;
@@ -215,7 +221,8 @@ mod devices;
 use devices::*;
 
 // open_media_library_window(): files/playlists/devices/discs pages
-include!("media_library.rs");
+mod media_library;
+use media_library::*;
 
 // the play-queue panel embedded in the Jump/Queue window
 mod queue_manager;
