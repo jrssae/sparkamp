@@ -330,15 +330,21 @@ fn open_media_library_window(
                 s.config.window.ml_sidebar_width = paned_ref.position();
                 s.config.media_library.ml_file_col_order = col_order;
                 s.config.media_library.ml_file_col_widths = col_widths;
-                s.rebuild_ml_callback = None;
             }
             let _ = state.borrow().config.save();
-            state.borrow_mut().ml_window = None;
-            // Drop the editor-refresh hooks so we don't pin closed-window
-            // Rcs in thread-local storage across an ML reopen.
-            EDITOR_REFRESH_HOOK.with(|h| *h.borrow_mut() = None);
-            EDITOR_CURRENT_REFRESH_HOOK.with(|h| *h.borrow_mut() = None);
-            PLAYLIST_NAV_REFRESH_HOOK.with(|h| *h.borrow_mut() = None);
+            // The window is kept, not dropped. `set_hide_on_close(true)` in
+            // player.rs means closing only hides it, so clearing
+            // `state.ml_window` here did not free anything — it only threw
+            // away the handle the toolbar button reuses. GTK still owned the
+            // hidden toplevel, so every reopen built a second window on top
+            // of a first that could never be reached again: ~126 MB and a
+            // fresh pair of 2 s pollers per close/open cycle, measured
+            // (2026-08-11).
+            //
+            // Holding the handle makes a reopen a `present()` instead of a
+            // rebuild, so `rebuild_ml_callback` and the editor-refresh hooks
+            // stay live too — they belong to a window that is still there and
+            // will be shown again.
             glib::Propagation::Proceed
         }
     });
