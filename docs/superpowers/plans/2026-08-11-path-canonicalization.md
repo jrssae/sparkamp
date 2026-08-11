@@ -1,6 +1,23 @@
 # Path canonicalization — one file, one row
 
-**Status:** proposed, not started. Found 2026-08-11 while diagnosing a UI freeze.
+**Status:** DONE `ee80091`, 2026-08-11. Found while diagnosing a UI freeze.
+
+Run against the live library the same day: **27,961 rows moved, 8,417
+duplicates merged**. Every track row is now under `/var/mnt`, none under
+`/mnt`, all 42 playlist rows migrated, and the total held flat at 36,328
+across a minute — the runaway ingest that caused the freezes is gone. No
+`.m3u` was rewritten, and a spot-checked playlist still resolves its entries
+(the file says `/mnt/…`, the lookup canonicalizes and finds the row).
+
+Two things the live run turned up that the plan did not predict:
+
+- Some `.m3u` files hold a **third** spelling — Flatpak portal paths like
+  `/run/user/1000/doc/4f1f2acb/Music/…`, left by an earlier sandboxed run.
+  Those resolve only while that mount exists, which is a pre-existing gap this
+  work neither fixes nor worsens.
+- `dedup_folders` (not `normalize_folder_paths`, which does not exist) is the
+  folder-side migration, and it runs on every `MediaLibrary::open`. That is
+  what silently moved the folder row and started the duplication.
 
 ## The problem in three sentences
 
