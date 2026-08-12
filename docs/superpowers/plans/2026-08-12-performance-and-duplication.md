@@ -949,8 +949,26 @@ on the rotational volume the library sits on, **269 us warm** on NVMe. So a 36k 
 order of fifteen minutes of pointless background I/O on spinning storage and seconds on flash
 — real either way, but storage-dependent, and not the 48 ms first claimed.
 
-**Do Task 2 first.** It removes the 370 ms `all_tracks()` call from this same function, which
-is the larger cost and is on the synchronous path.
+**There are two such sites, not one.** A systematic sweep of every `rayon::spawn` and
+`Track::from_path` in `src/ffi/` found the same block twice:
+
+| site | function | when it runs |
+|---|---|---|
+| `src/ffi/media_library.rs:1170` | `sparkamp_ml_add_tracks_to_playlist` | user adds selected library tracks |
+| `src/ffi/media_library.rs:1259` | `sparkamp_ml_set_current_playlist` | **user opens a saved playlist** |
+
+The second is the more commonly hit of the two — opening a playlist is routine, bulk-adding
+is not — and it was missed by the original review. Its rows come from
+`load_playlist_tracks`, which returns library rows carrying duration and tags, and its own
+comment says so ("Inherit duration + tags from the ML row … Background probes below still
+refine missing values") immediately before re-reading every file. Fix both identically.
+
+**Deliberately NOT changed:** `sparkamp_scan_metadata` (`src/ffi/playlist.rs:489`) also calls
+`Track::from_path` on a rayon task, but that is Swift explicitly asking for one file to be
+read — it is the documented contract of that call, not redundant work.
+
+**Do Task 2 first.** It removes the 370 ms `all_tracks()` call from the first of these two
+functions, which is the larger cost and is on the synchronous path.
 
 Two further defects in the same block:
 - It uses the **global** rayon pool, bypassing the bounded `shared_probe_pool()`.
@@ -1033,9 +1051,16 @@ distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo t
 
 Expected: FAIL to compile until the helpers above are in place; then PASS, proving `resolve` gives the right answer. The FFI change in Step 4 is what makes the FFI *use* it.
 
-- [ ] **Step 4: Replace the probe fan-out**
+- [ ] **Step 4: Replace the probe fan-out — in BOTH functions**
 
-In `src/ffi/media_library.rs`, replace lines 1168–1190:
+Apply the same change at `src/ffi/media_library.rs:1168-1190`
+(`sparkamp_ml_add_tracks_to_playlist`) and at `src/ffi/media_library.rs:1258-1279`
+(`sparkamp_ml_set_current_playlist`). The second iterates `tracks` rather than a playlist
+index range, so its filter reads `.filter(|(_, t)| t.duration.is_none() || t.title.is_empty())`
+over `ctx.playlist.tracks[start..]` after the same `Track::from` push loop — restructure it to
+match the first so the two stay legible as one pattern.
+
+First site, lines 1168–1190:
 
 ```rust
     // Kick off metadata + duration probing for the newly added tracks.
@@ -1381,27 +1406,33 @@ distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo t
 
 If `fmt_duration_of_nothing_is_a_placeholder_not_a_zero` fails, read `src/model.rs:328` and change the **test** to match what the function actually does — this task must not change behaviour.
 
-- [ ] **Step 5: Replace the open-coded sites**
+- [ ] **Step 5: Replace only the sites that already agree**
 
-Replace each with `fmt_duration` where the input is an `Option<Duration>`, or with a shared seconds-taking helper where it is a raw `u64`. The sites:
+**Scope correction from the second-pass audit:** the review counted 15 open-coded sites and
+implied all 15 were replaceable. They are not — roughly half render something different for
+an absent duration, so swapping them changes what the user sees. Surveyed:
+
+| behaviour on `None` | sites | action |
+|---|---|---|
+| `"-:--"` — same as `fmt_duration` | `media_library/mod.rs:288`, `ml_columns.rs:393`, `playlists_columns.rs:806`, `files.rs:681` | **replace** |
+| `"—"` (em dash) | `disc_data.rs:265`, `dedupe.rs:165` | **leave** — different glyph on purpose |
+| `{:>2}` right-padded for column alignment | `tui/ui/media_library.rs:640`, `:1059` | **leave** — padding is load-bearing |
+| leading `-` for remaining time | `state.rs:1163`, `tick.rs:525` | **leave** — sign is at the call site |
+| embedded in a sentence | `disc.rs:35` (`"{}:{:02} of audio"`) | **leave** |
+
+Replace only the first group, and add a one-line comment at each site left behind saying why,
+so the next reader does not re-open this. The sites to change:
 
 ```
 src/media_library/mod.rs:288
 frontends/gtk/window/ml_columns.rs:393
 frontends/gtk/window/playlists_columns.rs:806
-frontends/gtk/window/state.rs:1163, 1165
-frontends/gtk/window/disc.rs:35
-frontends/gtk/window/disc_data.rs:265
-frontends/gtk/window/disc_page.rs:742
-frontends/gtk/window/dedupe.rs:165
 frontends/gtk/window/files.rs:681
-frontends/gtk/window/tick.rs:525, 531
-frontends/tui/ui/media_library.rs:640, 1059
 ```
 
-Two of these are **not** plain `mm:ss` and must keep their own shape — `state.rs:1163` and `tick.rs:525` emit a leading `-` for remaining-time. Leave the sign at the call site and use the shared formatter for the digits. `tick.rs:525/531` were already rewritten in Task 8; fold them in there rather than touching them twice.
-
-`frontends/tui/ui/media_library.rs:640` and `:1059` use `{:>2}` padding for column alignment — if the shared formatter does not pad, leave those two and note why in a comment.
+`fmt_duration(None)` returns `"-:--"` (`src/model.rs:334`), which is exactly what these four
+already produce — so this group is a true no-op refactor. Everything else in the table above
+stays as it is.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -1419,10 +1450,11 @@ refresh_ml_sort and refresh_ml_search had byte-identical bodies — same
 21 statements, same 5 fields read and written. One now delegates.
 
 Fifteen sites open-coded format!(\"{}:{:02}\", s / 60, s % 60) alongside
-fmt_duration, in three spellings that disagreed about padding and about
-what an unknown duration should read as. Those that are plain mm:ss now
-use the shared one; the remaining-time and column-padded variants keep
-their shape, with a note saying why.
+fmt_duration, but only four of them actually render what fmt_duration
+renders. The rest differ deliberately: two use an em dash for an unknown
+duration, two right-pad for column alignment, two carry a leading minus
+for remaining time, one is embedded in a sentence. Only the four exact
+matches are replaced; the others gain a comment saying why they stay.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1472,6 +1504,13 @@ Recorded so they are not silently dropped:
 ## Task 8: Move the media-library column table into core
 Move the media-library column table into core
 
+> **Worth an explicit decision before starting.** This is the one task whose justification
+> did not survive the audit, and it is also the largest refactor left: 35 column definitions
+> moved to core plus two frontends rewired, in exchange for "26 columns render `?` in the TUI
+> if you select them in GTK". A cheaper fix for the actual symptom is to have the TUI fall
+> back to the core table's header and skip unknown ids gracefully, without moving anything.
+> **Confirm with the user which they want before writing code.**
+>
 > **Demoted by the second-pass audit.** The original justification — that `"num"` meant the
 > row ordinal in GTK and the ID3 track number in the TUI — **was wrong**.
 > `frontends/gtk/window/ml_columns.rs:380` reads `"num" | "track_num" => t.track_num...`, and
