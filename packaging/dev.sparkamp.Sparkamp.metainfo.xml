@@ -28,6 +28,32 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.3.0" date="2026-08-12">
+      <description>
+        <p>A stability release. No new headline feature: the work went into the
+        two largest files in the tree and into the defects that came out from
+        under them. A bulk folder ingest could pin the interface until the app
+        had to be force-quit; the folder-watch drain is now bounded so it cannot
+        starve the main loop. A folder reached through a symlink was indexed as
+        a second copy of every track it held, growing thousands of duplicate
+        rows; track paths are now canonicalized on the way in, and existing
+        duplicates are merged on upgrade with their play counts intact.</p>
+        <p>The Media Library window reopens roughly nine times faster and no
+        longer leaks on every close. The playlist editor can actually save
+        playlists that live outside Sparkamp's own directory, Revert undoes a
+        whole editing session rather than half of one, and unsaved changes are
+        marked. Optical disc support improves across both frontends: data discs
+        browse and import on macOS, discs no longer appear among sync devices,
+        a disc that mounts as a whole device is readable, blocked burns explain
+        themselves instead of dimming silently, and unreadable CD-TEXT is
+        reported rather than shown as placeholder track names.</p>
+        <p>About thirty smaller fixes round it out, covering context-menu
+        dispatch and placement, duration probing on every route into the
+        playlist, Select All no longer freezing mouse selection, device sync
+        moved off the interface thread, and consistent artwork rendering across
+        all three library views.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-08-05">
       <description>
         <p>Winamp parity reaches its full 12-phase roadmap. Now Playing grows an

@@ -14,6 +14,19 @@ There are a number of various Winamp clones and other audio players available fo
 
 ---
 
+## What's New (v1.3.0)
+
+A stability release. No new headline feature — the work went into the two
+largest files in the tree, and into the defects that came out from under them.
+
+- **The freeze is gone.** A bulk folder ingest could pin the GTK main loop until the app had to be force-quit; the watch drain is now bounded to 100 ms of work per tick.
+- **One row per file.** A folder reached through a symlink (`/mnt` vs `/var/mnt`, `/var` vs `/private/var`) was indexed as a second copy of every track — 8,417 duplicate rows on the test library, still climbing. Paths are canonicalized on the way in, and existing duplicates are merged on upgrade, keeping play counts.
+- **Media Library opens ~9× faster on reopen** (2.4 s → 0.26 s) and no longer leaks the window each time it is closed, which had reached 1.6 GB over eight cycles.
+- **Playlist editor saves.** Save was silently inert for any playlist outside Sparkamp's own directory, Revert could only undo half an edit session, and there was no dirty indicator. All three fixed.
+- **Optical discs.** Data discs browse and import on macOS, no longer show up under Devices, and a disc that mounts as a whole device (a DVD+RW burned from an ISO) is now readable. Burn buttons say why they are blocked instead of dimming silently, and CD-TEXT says when it cannot be read.
+- **Roughly thirty smaller fixes** across context menus (first-right-click dispatch, cursor placement), duration probing on every route into the playlist, Select All no longer freezing mouse selection, device sync moved off the UI thread, and artwork rendering the same way in all three library views.
+- **Under the hood:** `media_library.rs` went from 11,927 lines to 467 and `player.rs` from 5,831 to 2,100, split into 45 real modules instead of one namespace stitched together with `include!`. No behaviour was meant to change, and every moved body was verified byte-identical.
+
 ## What's New (v1.2.0)
 
 The Winamp-parity roadmap ships in full — 12 phases, one release.
