@@ -298,7 +298,12 @@ impl From<&crate::media_library::LibTrack> for Track {
             path,
             title: lib.title.clone().unwrap_or_else(|| lib.filename.clone()),
             artist: lib.artist.clone().unwrap_or_default(),
-            album_artist: String::new(),
+            // The library knows this; it used to be dropped here and then
+            // backfilled by a background file read — the row-check worker on
+            // Linux, a rayon probe in the macOS bridge. Copying it means the
+            // field is right the moment the row appears, and means those
+            // probes have nothing left to discover for a scanned track.
+            album_artist: lib.album_artist.clone().unwrap_or_default(),
             album: lib.album.clone().unwrap_or_default(),
             duration: lib
                 .length_secs
@@ -1205,7 +1210,7 @@ mod tests {
             play_count: 5,
             last_played: Some("2024-01-15T10:30:00".into()),
             comment: None,
-            album_artist: None,
+            album_artist: Some("Test Album Artist".into()),
             disc_num: None,
             disc_total: None,
             composer: None,
@@ -1234,8 +1239,70 @@ mod tests {
         assert_eq!(track.title, "Test Title");
         assert_eq!(track.artist, "Test Artist");
         assert_eq!(track.album, "Test Album");
+        // This test was named "copies_all_fields" while passing an
+        // album_artist of None, so it never noticed that the conversion
+        // dropped the field — leaving it to be backfilled by a background
+        // file read, and left empty entirely on paths that skip one.
+        assert_eq!(track.album_artist, "Test Album Artist");
         assert_eq!(track.duration, Some(Duration::from_secs_f64(180.5)));
         assert!(!track.broken);
+    }
+
+    /// `display_name` falls back to the album artist when there is no artist,
+    /// which is the same rule the media library applies to its own rows. While
+    /// the conversion dropped album_artist, library rows silently lost that
+    /// fallback and showed a bare title.
+    #[test]
+    fn track_from_libtrack_keeps_the_album_artist_display_fallback() {
+        use crate::media_library::{LibTrack, SortKeys};
+        let lib = LibTrack {
+            path: "/music/a.mp3".into(),
+            filename: "a.mp3".into(),
+            title: Some("Song".into()),
+            artist: None,
+            album_artist: Some("Various Artists".into()),
+            ..LibTrack {
+                id: 0,
+                path: String::new(),
+                artist: None,
+                title: None,
+                album: None,
+                track_num: None,
+                genre: None,
+                year: None,
+                bpm: None,
+                length_secs: None,
+                bitrate: None,
+                channels: None,
+                filetype: None,
+                filename: String::new(),
+                play_count: 0,
+                last_played: None,
+                comment: None,
+                album_artist: None,
+                disc_num: None,
+                disc_total: None,
+                composer: None,
+                original_artist: None,
+                copyright: None,
+                url: None,
+                encoded_by: None,
+                lyric: None,
+                artwork_path: None,
+                last_scanned: None,
+                sample_rate: None,
+                file_size: None,
+                file_mtime: None,
+                added_at: None,
+                bitrate_mode: None,
+                rg_track_gain: None,
+                rg_track_peak: None,
+                rg_album_gain: None,
+                rg_album_peak: None,
+                sort_keys: SortKeys::default(),
+            }
+        };
+        assert_eq!(Track::from(&lib).display_name(), "Various Artists - Song");
     }
 
     #[test]

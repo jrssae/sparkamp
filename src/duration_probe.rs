@@ -249,7 +249,12 @@ const PROBE_THREADS: usize = 4;
 ///
 /// `None` if the pool could not be built, which the caller answers by probing
 /// sequentially rather than by failing.
-fn probe_pool() -> Option<&'static rayon::ThreadPool> {
+/// The bounded pool every file-reading background job shares, built once.
+///
+/// Deliberately small — see [`PROBE_THREADS`]. Exposed so the macOS bridge's
+/// row probes use it too rather than the global rayon pool, which would put
+/// an unbounded number of readers on the same disk.
+pub(crate) fn shared_probe_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
@@ -286,7 +291,7 @@ pub fn spawn_probes(
                 let _ = result_tx.send((path.clone(), dur));
             }
         };
-        match probe_pool() {
+        match shared_probe_pool() {
             Some(pool) => pool.install(|| {
                 use rayon::prelude::*;
                 paths.par_iter().for_each(probe_one);

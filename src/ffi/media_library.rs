@@ -1135,29 +1135,13 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
     // These pushed straight into `tracks`, so the new entries still hold the
     // id-0 sentinel — stamp them before anything reads ids for the queue.
     super::queue::sync_queue_to_playlist(ctx);
-    // Kick off metadata + duration probing for the newly added tracks.
+    // Finish only the rows the library could not describe.
     let n = ctx.playlist.tracks.len();
-    for idx in start_idx..n {
-        let meta_tx = ctx.meta_tx.clone();
-        let duration_tx = ctx.duration_tx.clone();
-        let path = ctx.playlist.tracks[idx].path.clone();
-        rayon::spawn(move || {
-            if let Ok(track) = crate::model::Track::from_path(&path) {
-                let _ = meta_tx.send((
-                    idx,
-                    track.title.clone(),
-                    track.artist.clone(),
-                    track.album_artist.clone(),
-                ));
-            }
-        });
-        let path2 = ctx.playlist.tracks[idx].path.clone();
-        rayon::spawn(move || {
-            if let Some(dur) = crate::duration_probe::probe_duration(&path2) {
-                let _ = duration_tx.send((idx, dur));
-            }
-        });
-    }
+    let unfinished: Vec<(usize, std::path::PathBuf)> = (start_idx..n)
+        .filter(|&idx| needs_probe(&ctx.playlist.tracks[idx]))
+        .map(|idx| (idx, ctx.playlist.tracks[idx].path.clone()))
+        .collect();
+    spawn_row_probes(ctx, unfinished);
 }
 
 /// Return the number of saved playlists in the library.
@@ -1225,27 +1209,69 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
     }
     // Wholesale replacement — every previously queued entry is gone.
     super::queue::sync_queue_to_playlist(ctx);
-    // Kick off background metadata + duration probing.
-    for (i, t) in tracks.iter().enumerate() {
+    // Finish only the rows the library could not describe. The playlist was
+    // cleared above, so a track's index is its position in `tracks`.
+    let unfinished: Vec<(usize, std::path::PathBuf)> = ctx
+        .playlist
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| needs_probe(t))
+        .map(|(i, t)| (i, t.path.clone()))
+        .collect();
+    spawn_row_probes(ctx, unfinished);
+}
+
+/// Whether a playlist row still needs to be read off disk.
+///
+/// A row built from a scanned library record already carries its title,
+/// artist, album, album artist and duration, so reading the file again spends
+/// ~24 ms (cold, on rotational storage) to learn what is already in hand. Only
+/// a row the library could not describe — a path-only entry from the fast
+/// insert, or one whose duration probe failed — has anything left to find.
+///
+/// Duration is the signal: the fast insert writes path and filename and
+/// nothing else, so an unscanned row has none. Title is not, because
+/// `Track::from` falls back to the filename and is therefore never empty.
+fn needs_probe(t: &crate::model::Track) -> bool {
+    t.duration.is_none()
+}
+
+/// Read the given rows off disk and report tags and duration back.
+///
+/// KNOWN GAP: results are keyed by playlist index. A reorder or a remove while
+/// probes are in flight lands tags on the wrong row. GTK and the TUI key on the
+/// stable entry id (`Track::id`) for exactly this reason; fixing it here means
+/// changing the `meta_tx`/`duration_tx` message shape, which the Swift side
+/// drains — a coordinated change rather than a drive-by. Narrower than it was,
+/// since only unscanned rows are probed at all now.
+///
+/// Both probes for one file run on a single task rather than two: they open
+/// the same file, so doing them back to back keeps the second read on a warm
+/// page cache and halves the opens. Runs on the shared bounded pool rather
+/// than the global one, so a large add cannot gang up on the disk with the
+/// duration probes already running there.
+fn spawn_row_probes(ctx: &SparkampCtx, rows: Vec<(usize, std::path::PathBuf)>) {
+    for (idx, path) in rows {
         let meta_tx = ctx.meta_tx.clone();
         let duration_tx = ctx.duration_tx.clone();
-        let path = std::path::PathBuf::from(&t.path);
-        rayon::spawn(move || {
+        let probe = move || {
             if let Ok(track) = crate::model::Track::from_path(&path) {
                 let _ = meta_tx.send((
-                    i,
+                    idx,
                     track.title.clone(),
                     track.artist.clone(),
                     track.album_artist.clone(),
                 ));
             }
-        });
-        let path2 = std::path::PathBuf::from(&t.path);
-        rayon::spawn(move || {
-            if let Some(dur) = crate::duration_probe::probe_duration(&path2) {
-                let _ = duration_tx.send((i, dur));
+            if let Some(dur) = crate::duration_probe::probe_duration(&path) {
+                let _ = duration_tx.send((idx, dur));
             }
-        });
+        };
+        match crate::duration_probe::shared_probe_pool() {
+            Some(pool) => pool.spawn(probe),
+            None => probe(),
+        }
     }
 }
 
@@ -1667,3 +1693,50 @@ mod album_gallery_tests {
     }
 }
 
+
+#[cfg(test)]
+mod probe_gating_tests {
+    use super::*;
+    use crate::model::Track;
+
+    fn row(duration: Option<std::time::Duration>) -> Track {
+        Track {
+            path: std::path::PathBuf::from("/music/a.mp3"),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            album_artist: "Various".to_string(),
+            album: "Album".to_string(),
+            duration,
+            broken: false,
+            read_only: false,
+            id: 1,
+        }
+    }
+
+    /// A row the library described needs nothing read off disk. This is the
+    /// whole point: the mac bridge used to spawn two rayon tasks per track for
+    /// answers already in hand, ~24 ms each on cold rotational storage.
+    #[test]
+    fn a_row_with_a_duration_is_not_probed() {
+        assert!(!needs_probe(&row(Some(std::time::Duration::from_secs(210)))));
+    }
+
+    /// The fast insert writes path and filename and nothing else, so an
+    /// unscanned row has no duration — that is the one that must be read.
+    #[test]
+    fn a_row_without_a_duration_is_probed() {
+        assert!(needs_probe(&row(None)));
+    }
+
+    /// Title is never the signal: `Track::from` falls back to the filename, so
+    /// it is never empty and gating on it would probe nothing at all.
+    #[test]
+    fn a_blank_title_alone_does_not_trigger_a_probe() {
+        let mut t = row(Some(std::time::Duration::from_secs(1)));
+        t.title = String::new();
+        assert!(
+            !needs_probe(&t),
+            "duration is the signal; a title can be blank on a fully scanned row"
+        );
+    }
+}
