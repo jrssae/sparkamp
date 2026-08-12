@@ -472,8 +472,58 @@ mod tests {
         assert!(parse_submit_response("501 Invalid DISCID\n").is_err());
     }
 
-    /// Live query against gnudb with the real test disc's TOC — run with
-    /// `cargo test --lib live_gnudb -- --ignored --nocapture`.
+    /// Query gnudb for the disc that is actually in the drive, and fetch the
+    /// first match's xmcd record.
+    ///
+    /// [`live_gnudb_query_real_disc`] below does not do this despite its name —
+    /// it queries `sample_toc()`, a fixture, so its answer is the same whatever
+    /// disc is loaded (and it swallows errors into a `println!`, so it passes
+    /// even offline). This one reads the drive.
+    ///
+    /// `cargo test --lib live_gnudb_inserted_disc -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_gnudb_inserted_disc() {
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            eprintln!("no audio CD in any drive — skipping");
+            return;
+        };
+        let Some(toc) = drive.toc.as_ref() else {
+            eprintln!("no TOC for {} — skipping", drive.id);
+            return;
+        };
+        let discid = crate::disc::discid::freedb_discid(toc);
+        eprintln!(
+            "{} — {} tracks, discid {discid}",
+            drive.id,
+            toc.tracks.len()
+        );
+
+        let matches = query(toc, "sparkamp@fastmail.com").expect("gnudb query");
+        eprintln!("{} match(es):", matches.len());
+        for m in &matches {
+            eprintln!(
+                "  [{}] {} {} — {}",
+                if m.exact { "exact" } else { "inexact" },
+                m.category,
+                m.discid,
+                m.title
+            );
+        }
+        let first = matches
+            .first()
+            .expect("this disc is supposed to be in gnudb");
+        let xmcd = read(&first.category, &first.discid, "sparkamp@fastmail.com")
+            .expect("read should succeed for a query match");
+        eprintln!("--- xmcd ({} bytes) ---", xmcd.len());
+        for line in xmcd.lines().filter(|l| !l.starts_with('#')).take(20) {
+            eprintln!("{line}");
+        }
+    }
+
+    /// Fixture query — kept as a smoke test of the request/parse round trip.
+    /// It does *not* look at the drive; use `live_gnudb_inserted_disc` for that.
     #[test]
     #[ignore]
     fn live_gnudb_query_real_disc() {
