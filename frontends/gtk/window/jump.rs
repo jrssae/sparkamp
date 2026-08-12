@@ -310,13 +310,60 @@ pub(super) fn connect(ctx: &PlayerCtx, jw: &JumpWin) {
     // delegate transport shortcuts to it).
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Typing in the jump entry: immediately refilter results.
+    // Typing in the jump entry: refilter once typing pauses.
+    //
+    // Not immediate, because a rebuild is not cheap on a large playlist:
+    // `search_indices` builds a lowercase haystack per track (measured at
+    // 14-37 ms over 36,329 tracks), `ensure_ids` walks every entry, and up to
+    // MAX_JUMP_RESULTS Label/ListBoxRow trees are built and thrown away. Doing
+    // that per character, on the main loop, is felt as typing lag.
+    //
+    // 300 ms of quiet, cancelling any rebuild still pending — the same shape
+    // the Files-view search uses. Only this path is debounced: the clear
+    // button, the queue-badge refresh and the key dispatcher all still rebuild
+    // at once, because those follow a deliberate action rather than a
+    // keystroke.
+    let jump_pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     jump_entry.connect_changed({
         let rebuild_jump = rebuild_jump.clone();
+        let jump_pending = jump_pending.clone();
         move |_| {
-            rebuild_jump();
+            if let Some(src) = jump_pending.borrow_mut().take() {
+                src.remove();
+            }
+            let rebuild = rebuild_jump.clone();
+            let pending_inner = jump_pending.clone();
+            let src = glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                // Clear the slot before rebuilding: `rebuild_jump` can re-enter
+                // this handler (it does not today, but it touches the entry),
+                // and a stale SourceId here would be removed after it fired.
+                *pending_inner.borrow_mut() = None;
+                rebuild();
+                glib::ControlFlow::Break
+            });
+            *jump_pending.borrow_mut() = Some(src);
         }
     });
+
+    // Bring the results list up to date right now, if a debounced rebuild is
+    // still waiting.
+    //
+    // Anything that acts on the list has to call this first. Type a query and
+    // press Enter inside the debounce window and `jump_indices` still holds
+    // the previous query's rows — on the very first query it holds none at
+    // all, so Enter would close the window having played nothing. A no-op when
+    // nothing is pending, which is the common case.
+    let flush_jump: Rc<dyn Fn()> = {
+        let rebuild_jump = rebuild_jump.clone();
+        let jump_pending = jump_pending.clone();
+        Rc::new(move || {
+            let pending = jump_pending.borrow_mut().take();
+            if let Some(src) = pending {
+                src.remove();
+                rebuild_jump();
+            }
+        })
+    };
 
     // Enter: play the selected (or first) result and close the window.
     jump_entry.connect_activate({
@@ -326,7 +373,11 @@ pub(super) fn connect(ctx: &PlayerCtx, jw: &JumpWin) {
         let jump_box = jump_box.clone();
         let jump_indices = jump_indices.clone();
         let jump_win_wk = jump_win.downgrade();
+        let flush_jump = flush_jump.clone();
         move |_| {
+            // Enter can arrive mid-debounce; act on the current query, not the
+            // one the list happens to be showing.
+            flush_jump();
             let sel_row_idx = jump_box.selected_row().map(|r| r.index() as usize);
             if let Some(list_pos) = sel_row_idx {
                 if let Some(&track_idx) = jump_indices.borrow().get(list_pos) {

@@ -860,3 +860,35 @@ fn truncate_display_leaves_short_text_alone() {
     let over: String = std::iter::repeat('é').take(31).collect();
     assert!(truncate_display(&over, 30).ends_with('…'));
 }
+
+// ── jump window search ─────────────────────────────────────────────────
+
+/// The jump window runs `search_indices` over the whole playlist on every
+/// keystroke — measured at 14–37 ms against a 36,329-track playlist, on the
+/// main thread. Debouncing must change only *when* results arrive, never what
+/// they are, so pin the parts the existing tests above do not cover:
+/// whitespace-only input, AND-not-OR word semantics, and result ordering.
+#[test]
+fn search_indices_holds_the_contract_the_debounce_relies_on() {
+    let mut pl = Playlist::new();
+    pl.add(named_track("Black", "Pearl Jam"));
+    pl.add(named_track("Alive", "Pearl Jam"));
+    pl.add(named_track("Creep", "Radiohead"));
+
+    // Whitespace-only is as empty as empty: no haystack is built at all.
+    assert!(pl.search_indices("   ").is_empty());
+
+    // Every word must match, not any — otherwise a two-word query would
+    // widen the results instead of narrowing them.
+    assert_eq!(pl.search_indices("pearl"), vec![0, 1]);
+    assert_eq!(pl.search_indices("pearl black"), vec![0]);
+    assert!(
+        pl.search_indices("pearl radiohead").is_empty(),
+        "words are ANDed across the combined fields, not ORed"
+    );
+
+    // Ascending playlist order: `jump_indices` maps a clicked row back to a
+    // playlist position by index, so the order is load-bearing.
+    let hits = pl.search_indices("a");
+    assert!(hits.windows(2).all(|w| w[0] < w[1]), "ascending playlist order");
+}
