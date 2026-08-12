@@ -395,3 +395,45 @@ fn albums_tab_renders_album_list() {
 }
 
 // -----------------------------------------------------------------------
+
+// Playlist render cost
+// -----------------------------------------------------------------------
+
+/// How long a frame takes with a large playlist.
+///
+/// `draw_playlist` used to build a `ListItem` for every track in the
+/// playlist, and `draw` runs on every tick and every keypress — so this is
+/// the cost paid ten times a second for as long as the playlist is loaded,
+/// not a one-off. Formatting only the visible slice is supposed to make it
+/// independent of playlist length; this is how to check that rather than
+/// assume it.
+///
+/// `cargo test --lib perf_playlist_frame -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn perf_playlist_frame() {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    for n in [100usize, 1_000, 10_000, 36_329] {
+        let mut app = make_app();
+        app.playlist_visible = true;
+        for i in 0..n {
+            app.playlist.add(fake_track(&format!("Track {i}")));
+        }
+        // A realistic terminal, and the cursor parked at the far end so the
+        // window is doing the most work it can.
+        app.playlist_cursor = n.saturating_sub(1);
+        let mut term = Terminal::new(TestBackend::new(120, 40)).expect("test backend");
+
+        // One frame first so any lazy setup is not charged to the measurement.
+        term.draw(|f| crate::tui::ui::draw(f, &app)).unwrap();
+
+        let frames = 60;
+        let started = std::time::Instant::now();
+        for _ in 0..frames {
+            term.draw(|f| crate::tui::ui::draw(f, &app)).unwrap();
+        }
+        let per_frame = started.elapsed() / frames;
+        eprintln!("{n:>6} tracks: {per_frame:?} per frame");
+    }
+}

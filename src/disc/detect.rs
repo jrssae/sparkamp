@@ -88,8 +88,35 @@ static EXCLUSIVE_READ_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic:
 /// Enter an exclusive-read scope. Must be paired with [`end_exclusive_read`];
 /// nesting/overlapping scopes are additive (the guard stays up until every
 /// entered scope has exited).
+#[cfg_attr(test, track_caller)]
 pub fn begin_exclusive_read() {
+    #[cfg(test)]
+    record_last_begin(std::panic::Location::caller());
     EXCLUSIVE_READ_DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Where the most recent `begin` came from. Tests only, and only so that a
+/// failure which depends on what else is running names its cause instead of
+/// looking like a flake.
+#[cfg(test)]
+fn record_last_begin(loc: &'static std::panic::Location<'static>) {
+    if let Ok(mut slot) = LAST_BEGIN.lock() {
+        *slot = Some(loc);
+    }
+}
+
+#[cfg(test)]
+static LAST_BEGIN: std::sync::Mutex<Option<&'static std::panic::Location<'static>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn last_begin() -> String {
+    LAST_BEGIN
+        .lock()
+        .ok()
+        .and_then(|s| *s)
+        .map(|l| format!("{}:{}", l.file(), l.line()))
+        .unwrap_or_else(|| "nowhere".into())
 }
 
 /// Exit an exclusive-read scope entered with [`begin_exclusive_read`].
@@ -113,13 +140,39 @@ pub(crate) fn exclusive_read() -> bool {
     EXCLUSIVE_READ_DEPTH.load(std::sync::atomic::Ordering::Relaxed) > 0
 }
 
+/// The raw depth. Tests only — production asks [`exclusive_read`], because
+/// what a caller may act on is "is anyone holding it", never how many.
+#[cfg(test)]
+pub(crate) fn exclusive_read_depth() -> usize {
+    EXCLUSIVE_READ_DEPTH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Serializes every test that touches the process-wide exclusive-read
 /// depth — cargo's parallel runner would otherwise interleave them. Any test
 /// that calls into code taking the guard needs this too, not only the tests
 /// asserting on the depth: `rip::run_job` holds it for the length of a rip,
 /// which is long enough to be observed by an assertion elsewhere.
 #[cfg(test)]
-pub(crate) static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the exclusive-read test lock. **Every test that can reach a
+/// `begin_exclusive_read`, directly or through production code, must hold this
+/// for its duration.**
+///
+/// The lock existed and said "every test" but only the two tests in this file
+/// took it, so nothing enforced the claim. `burn::run_job` and `rip::run_job`
+/// both enter an exclusive-read scope, and their cancel tests run them for
+/// real — so `refcount_nesting_and_underflow`, which asserts the counter
+/// starts clear, failed whenever cargo happened to schedule them together.
+/// That looked like a flake for as long as nobody read the depth: it is
+/// always exactly 1, and always somebody else's live scope.
+///
+/// Recovering from poisoning is deliberate — one panicking test must not
+/// cascade into every other test failing to acquire.
+#[cfg(test)]
+pub(crate) fn exclusive_read_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    EXCLUSIVE_READ_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 #[cfg(test)]
 mod exclusive_read_tests {
@@ -130,8 +183,13 @@ mod exclusive_read_tests {
     // guard (cargo runs `#[test]`s concurrently by default).
     #[test]
     fn refcount_nesting_and_underflow() {
-        let _guard = EXCLUSIVE_READ_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        assert!(!exclusive_read(), "must start clear");
+        let _guard = exclusive_read_test_guard();
+        assert!(
+            !exclusive_read(),
+            "must start clear, saw depth {} — last begin_exclusive_read was {}",
+            exclusive_read_depth(),
+            last_begin()
+        );
 
         begin_exclusive_read();
         begin_exclusive_read();
@@ -1368,7 +1426,7 @@ session status:           complete
     #[test]
     #[cfg(target_os = "linux")]
     fn exclusive_read_freezes_polling() {
-        let _guard = EXCLUSIVE_READ_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = exclusive_read_test_guard();
         let fake = vec![OpticalDrive {
             id: "/dev/sr-test".into(),
             label: "FAKE".into(),

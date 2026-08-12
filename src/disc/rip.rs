@@ -597,11 +597,9 @@ mod tests {
 
     #[test]
     fn run_job_honors_preset_cancel() {
-        // `run_job` raises the process-wide exclusive-read guard even on the
-        // cancel path, which the depth assertions in `disc::detect` can see.
-        let _guard = crate::disc::detect::EXCLUSIVE_READ_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        // `run_job` enters an exclusive-read scope, so this must not overlap
+        // the tests asserting on that counter.
+        let _guard = crate::disc::detect::exclusive_read_test_guard();
         // Cancel already set: the loop must exit before touching GStreamer,
         // reporting cancelled with no progress callbacks.
         let entries = vec![crate::disc::DiscTrackEntry {
@@ -665,6 +663,8 @@ mod tests {
 
     #[test]
     fn run_job_fails_fast_on_unwritable_dest() {
+        // Same reason as above: `run_job` holds the exclusive-read guard.
+        let _guard = crate::disc::detect::exclusive_read_test_guard();
         use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("sparkamp-ro-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();

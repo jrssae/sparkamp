@@ -607,14 +607,7 @@ impl Player {
             }
             format!("cdda://{track}")
         } else {
-            let was_active = self
-                .cdda_device
-                .lock()
-                .map(|mut slot| slot.take().is_some())
-                .unwrap_or(false);
-            if was_active {
-                crate::disc::detect::end_exclusive_read();
-            }
+            self.release_cdda_guard();
             uri.to_string()
         };
 
@@ -685,10 +678,30 @@ impl Player {
         // Idempotent, so an ordinary stop that cut a fade short lands here too.
         self.cancel_fadeout();
         self.state = PlayerState::Stopped;
-        // Null released the device — detection polling may resume, but only
-        // end the guard if a cdda session actually `begin`-ed it (matches
-        // `load`'s cdda branch above); stopping a non-disc track must not
-        // send an unmatched `end`.
+        // Null released the device — detection polling may resume.
+        self.release_cdda_guard();
+        if let Ok(mut spec) = self.spectrum_data.write() {
+            spec.clear();
+        }
+        if let Ok(mut wb) = self.waveform_data.write() {
+            wb.clear();
+        }
+        Ok(())
+    }
+
+    /// Leave the current cdda session, if there is one, and release the
+    /// exclusive-read guard it took.
+    ///
+    /// `cdda_device` being `Some` *is* the record that this player holds one
+    /// count of the guard, so taking the slot and ending the scope have to
+    /// happen together or not at all — an unmatched `end` trips a
+    /// `debug_assert`, and a missing one wedges disc detection off for the rest
+    /// of the session.
+    ///
+    /// One place rather than three, because there are three ways out of a cdda
+    /// session — `stop`, loading a non-disc track, and dropping the player —
+    /// and the third one was missing this entirely.
+    fn release_cdda_guard(&self) {
         let was_active = self
             .cdda_device
             .lock()
@@ -697,13 +710,6 @@ impl Player {
         if was_active {
             crate::disc::detect::end_exclusive_read();
         }
-        if let Ok(mut spec) = self.spectrum_data.write() {
-            spec.clear();
-        }
-        if let Ok(mut wb) = self.waveform_data.write() {
-            wb.clear();
-        }
-        Ok(())
     }
 
     /// Return the current [`PlayerState`] without changing it.
@@ -1322,8 +1328,15 @@ impl Drop for Player {
     ///
     /// Setting the state to `Null` releases the audio device and all
     /// associated resources, preventing resource leaks on exit.
+    ///
+    /// Dropping a player that was mid-CD is a third way out of a cdda session,
+    /// alongside `stop` and loading something else, and it used to be the one
+    /// that leaked: the exclusive-read guard stayed up for the rest of the
+    /// process, so disc detection never polled again — no disc change, no
+    /// eject, nothing — with no error anywhere to say why.
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
+        self.release_cdda_guard();
     }
 }
 
@@ -1370,6 +1383,44 @@ mod live_cdda_tests {
             (actual - expected).abs() < 1e-6,
             "expected volume {expected}, got {actual}"
         );
+    }
+
+    /// The three ways out of a cdda session must each release the guard, and
+    /// exactly once.
+    ///
+    /// Dropping the player was the one that did not: the count stayed up for
+    /// the rest of the process and disc detection silently never polled again.
+    /// No hardware needed — `load` only parses the URI and sets a property;
+    /// the device is not opened until playback starts.
+    #[test]
+    fn every_exit_from_a_cdda_session_releases_the_guard() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        gst::init().unwrap();
+        use crate::disc::detect::{exclusive_read, exclusive_read_depth};
+        assert_eq!(exclusive_read_depth(), 0, "must start clear");
+
+        // 1. stop()
+        let mut p = Player::new().unwrap();
+        p.load("cdda://1?device=/dev/sr0").unwrap();
+        assert!(exclusive_read(), "a cdda load takes the guard");
+        p.stop().unwrap();
+        assert_eq!(exclusive_read_depth(), 0, "stop released it");
+
+        // 2. Loading something that is not a disc track.
+        p.load("cdda://2?device=/dev/sr0").unwrap();
+        assert!(exclusive_read());
+        p.load("file:///nonexistent.mp3").unwrap();
+        assert_eq!(exclusive_read_depth(), 0, "a non-cdda load released it");
+
+        // Back-to-back cdda loads are one session, not two — otherwise
+        // advancing tracks on the same disc would leave the count too high.
+        p.load("cdda://3?device=/dev/sr0").unwrap();
+        p.load("cdda://4?device=/dev/sr0").unwrap();
+        assert_eq!(exclusive_read_depth(), 1, "still one session, not two");
+
+        // 3. Drop, with no stop() first.
+        drop(p);
+        assert_eq!(exclusive_read_depth(), 0, "drop released it");
     }
 
     /// The whole fadeout contract in one pass: it attenuates while running,
@@ -1457,6 +1508,51 @@ mod live_cdda_tests {
         assert!(!p.poll_fadeout(), "not reported as a fade completion");
         assert!(!p.is_fading_out());
         assert_volume(&p, 0.9); // restored
+    }
+
+    /// The end-to-end form of the guard bug, against a real drive: play a CD
+    /// track, drop the player without stopping, and check that detection
+    /// actually polls the device again.
+    ///
+    /// The unit test above proves the counter returns to zero. This proves what
+    /// that was for — before the fix, disc detection went silently dead for the
+    /// rest of the process, and nothing surfaced an error to say so.
+    ///
+    /// `cargo test --lib live_drop_mid_cdda -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_drop_mid_cdda_lets_detection_resume() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        gst::init().unwrap();
+        use crate::disc::detect::{exclusive_read, exclusive_read_depth, list_drives};
+
+        let before = list_drives();
+        assert!(
+            before.iter().any(|d| d.media.is_audio_cd),
+            "this test needs an audio CD in the drive"
+        );
+        assert_eq!(exclusive_read_depth(), 0, "must start clear");
+
+        let mut p = Player::new().unwrap();
+        p.load("cdda://1?device=/dev/sr0").unwrap();
+        p.play().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        assert!(
+            p.position().is_some_and(|pos| pos > Duration::ZERO),
+            "the disc should actually be playing"
+        );
+        assert!(exclusive_read(), "playback owns the drive");
+
+        // No stop() — this is the path that leaked.
+        drop(p);
+        assert_eq!(exclusive_read_depth(), 0, "dropping released the guard");
+
+        // And detection is alive again: a fresh probe still sees the disc.
+        let after = list_drives();
+        assert!(
+            after.iter().any(|d| d.media.is_audio_cd),
+            "detection must poll the device again once the guard is released"
+        );
     }
 
     #[test]

@@ -200,4 +200,58 @@ mod tests {
             self.track.duration.is_none()
         }
     }
+
+    /// Live measurement against this machine's real library: resolve every
+    /// track it knows, and compare against what reading the same files costs.
+    ///
+    /// This is the claim the module exists for, so it is worth being able to
+    /// check rather than assert. Needs a populated library.
+    ///
+    /// `cargo test --lib live_resolve_whole_library -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_resolve_whole_library() {
+        let Some(lib) = MediaLibrary::open().ok() else {
+            eprintln!("no media library on this machine — skipping");
+            return;
+        };
+        let Ok(tracks) = lib.all_tracks_sorted("path", false) else {
+            eprintln!("could not read the library — skipping");
+            return;
+        };
+        if tracks.is_empty() {
+            eprintln!("library is empty — skipping");
+            return;
+        }
+        let paths: Vec<PathBuf> = tracks.iter().map(|t| PathBuf::from(&t.path)).collect();
+        let n = paths.len();
+
+        let started = std::time::Instant::now();
+        let rows = resolve(Some(&lib), &paths);
+        let resolved_in = started.elapsed();
+
+        let unknown = rows.iter().filter(|r| r.needs_tags).count();
+        eprintln!("resolve: {n} paths in {resolved_in:?}");
+        eprintln!("         {} from the library, {unknown} needing a file read", n - unknown);
+
+        // What the old add path cost, sampled rather than run 36,000 times.
+        let sample = paths.iter().take(50).collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let read = sample
+            .iter()
+            .filter(|p| crate::model::Track::from_path(p).is_ok())
+            .count();
+        let per_file = started.elapsed() / sample.len().max(1) as u32;
+        eprintln!(
+            "Track::from_path: {:?} per file over {read}/{} readable",
+            per_file,
+            sample.len()
+        );
+        eprintln!(
+            "         extrapolated over {n} paths: {:?}",
+            per_file * n as u32
+        );
+
+        assert_eq!(rows.len(), n, "one row per path");
+    }
 }
