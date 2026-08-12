@@ -191,6 +191,26 @@ enum DeviceService {
 
     // MARK: Volume enumeration (pure Swift; safe off the main thread)
 
+    /// Is this disk optical media (CD/DVD/BD)?
+    ///
+    /// Checks the disk itself and then its whole-disk parent, because the two
+    /// disagree for the case that matters: a mounted data disc's volume node
+    /// reports a generic `IOMedia` and only the parent reports `IOCDMedia`.
+    /// Testing both covers an audio CD (volume node IS the whole disk) and a
+    /// data disc (volume node is a partition child) with one rule.
+    private static func isOpticalMedia(_ disk: DADisk) -> Bool {
+        func kindIsOptical(_ d: DADisk) -> Bool {
+            guard let desc = DADiskCopyDescription(d) as? [String: Any],
+                  let kind = desc[kDADiskDescriptionMediaKindKey as String] as? String
+            else { return false }
+            return kind.contains("CDMedia") || kind.contains("DVDMedia")
+                || kind.contains("BDMedia")
+        }
+        if kindIsOptical(disk) { return true }
+        guard let whole = DADiskCopyWholeDisk(disk) else { return false }
+        return kindIsOptical(whole)
+    }
+
     /// Enumerate removable/ejectable volumes under /Volumes, skipping the boot
     /// disk. Capacity + read-only come from URLResourceValues; fs type, BSD
     /// name and volume UUID from DiskArbitration.
@@ -237,12 +257,19 @@ enum DeviceService {
             if let session = session,
                let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL) {
                 if let bsdC = DADiskGetBSDName(disk) { bsd = String(cString: bsdC) }
+                // Optical media kind has to be read off the WHOLE disk, not the
+                // node the volume path resolves to.
+                //
+                // A data CD/DVD has a filesystem, so it mounts as a partition
+                // child (disk12s0) whose DAMediaKind is a generic "IOMedia";
+                // only the parent (disk12) says "IOCDMedia". Checking the
+                // volume node alone therefore never matched, and every data
+                // disc fell through into the sync-device list next to the USB
+                // sticks. An audio CD hid the bug: it has no filesystem, so its
+                // volume node IS the whole disk — and the .TOC.plist check
+                // above already caught it (2026-08-12).
+                if isOpticalMedia(disk) { isOptical = true }
                 if let desc = DADiskCopyDescription(disk) as? [String: Any] {
-                    if let mediaKind = desc[kDADiskDescriptionMediaKindKey as String] as? String,
-                       mediaKind.contains("CDMedia") || mediaKind.contains("DVDMedia")
-                        || mediaKind.contains("BDMedia") {
-                        isOptical = true
-                    }
                     fsType = desc[kDADiskDescriptionVolumeKindKey as String] as? String ?? ""
                     if let raw = desc[kDADiskDescriptionVolumeUUIDKey as String] {
                         // The value is a CFUUID; render it as a string.
