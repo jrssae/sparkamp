@@ -204,6 +204,61 @@ mod tests {
             "/dev/null exists and must not be reported as missing"
         );
     }
+
+    /// A batch far larger than the pool must still get through all of it.
+    ///
+    /// The probes run in a bounded pool of their own now; wiring that up wrong
+    /// — a pool that never starts, or one whose work is dropped past the first
+    /// `PROBE_THREADS` items — would silently leave most rows unfinished.
+    #[test]
+    fn spawn_probes_reports_every_path_in_a_batch_larger_than_the_pool() {
+        let n = super::PROBE_THREADS * 5;
+        let paths: Vec<PathBuf> = (0..n)
+            .map(|i| PathBuf::from(format!("/no/such/probe{i}.mp3")))
+            .collect();
+        let (result_tx, _result_rx) = std::sync::mpsc::channel();
+        let (missing_tx, missing_rx) = std::sync::mpsc::channel();
+        spawn_probes(paths.clone(), result_tx, missing_tx);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..n {
+            let got = missing_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("every missing path is reported");
+            seen.insert(got);
+        }
+        assert_eq!(seen, paths.into_iter().collect());
+    }
+}
+
+/// How many files are read at once.
+///
+/// Deliberately small and fixed rather than one per core. Probing is dominated
+/// by file I/O, not by arithmetic, so past a handful of concurrent readers
+/// there is no throughput left to win — and on rotational media or a network
+/// mount there is throughput to lose, because every extra reader is another
+/// seek competing for the same head or the same link. A 36k folder add on a
+/// 16-core machine would otherwise put sixteen readers on the disk at once.
+const PROBE_THREADS: usize = 4;
+
+/// The pool the probes run in, built once and shared.
+///
+/// Their own pool, not Rayon's global one. The global pool also serves every
+/// `rayon::spawn` in the FFI — library scans, ReplayGain, dedupe — and a
+/// `par_iter` over 36,000 paths occupies every worker in it until it finishes,
+/// so those jobs would queue behind the whole probe run.
+///
+/// `None` if the pool could not be built, which the caller answers by probing
+/// sequentially rather than by failing.
+fn probe_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(PROBE_THREADS)
+            .thread_name(|i| format!("sparkamp-probe-{i}"))
+            .build()
+            .ok()
+    })
+    .as_ref()
 }
 
 pub fn spawn_probes(
@@ -211,10 +266,13 @@ pub fn spawn_probes(
     result_tx: std::sync::mpsc::Sender<(PathBuf, Duration)>,
     missing_tx: std::sync::mpsc::Sender<PathBuf>,
 ) {
-    // Spawn a single OS thread to drive Rayon without blocking the GTK loop.
+    if paths.is_empty() {
+        return;
+    }
+    // Spawn a single OS thread to drive the pool without blocking the caller's
+    // main loop.
     std::thread::spawn(move || {
-        use rayon::prelude::*;
-        paths.par_iter().for_each(|path| {
+        let probe_one = |path: &PathBuf| {
             // If the file is not on disk at all, notify the caller immediately
             // so it can mark the track broken without waiting for playback.
             if !path.exists() {
@@ -227,6 +285,13 @@ pub fn spawn_probes(
             if let Some(dur) = dur {
                 let _ = result_tx.send((path.clone(), dur));
             }
-        });
+        };
+        match probe_pool() {
+            Some(pool) => pool.install(|| {
+                use rayon::prelude::*;
+                paths.par_iter().for_each(probe_one);
+            }),
+            None => paths.iter().for_each(probe_one),
+        }
     });
 }
