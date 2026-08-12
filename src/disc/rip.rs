@@ -597,6 +597,11 @@ mod tests {
 
     #[test]
     fn run_job_honors_preset_cancel() {
+        // `run_job` raises the process-wide exclusive-read guard even on the
+        // cancel path, which the depth assertions in `disc::detect` can see.
+        let _guard = crate::disc::detect::EXCLUSIVE_READ_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Cancel already set: the loop must exit before touching GStreamer,
         // reporting cancelled with no progress callbacks.
         let entries = vec![crate::disc::DiscTrackEntry {

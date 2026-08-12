@@ -802,6 +802,13 @@ impl MediaLibrary {
     /// (`YYYY-MM-DDTHH:MM:SSZ`).  Does nothing if no track with that path
     /// exists in the database.
     pub fn record_play(&self, path: &str) -> Result<()> {
+        // Rows are stored under the resolved spelling, but the path here comes
+        // from the playlist, which holds whatever spelling the user's file
+        // chooser produced. Without this the UPDATE matched nothing for every
+        // track reached through a symlinked ancestor — `/var` → `/private/var`
+        // on macOS, `/home` → `/var/home` on ostree — so plays silently never
+        // counted while `play_snapshot`, which does resolve, read the row fine.
+        let path = &Self::canonical_track_path(path);
         // Build an ISO-8601 UTC timestamp from the current system time.
         let now = timeutil::format_current_timestamp();
 

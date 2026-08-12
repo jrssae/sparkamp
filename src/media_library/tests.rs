@@ -2368,6 +2368,11 @@ fn dir_with_symlink_alias() -> (tempfile::TempDir, std::path::PathBuf, std::path
     }
     let alias = parent.path().join("alias_music");
     std::os::unix::fs::symlink(&real, &alias).unwrap();
+    // `real` has to be the spelling the library will store, because callers
+    // compare it against `path` columns directly. On macOS the tempdir itself
+    // sits under `/var` -> `/private/var`, so the unresolved form is already an
+    // alias and every such comparison missed.
+    let real = real.canonicalize().unwrap();
     (parent, real, alias)
 }
 

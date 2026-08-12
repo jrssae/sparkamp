@@ -114,9 +114,12 @@ pub(crate) fn exclusive_read() -> bool {
 }
 
 /// Serializes every test that touches the process-wide exclusive-read
-/// depth — cargo's parallel runner would otherwise interleave them.
+/// depth — cargo's parallel runner would otherwise interleave them. Any test
+/// that calls into code taking the guard needs this too, not only the tests
+/// asserting on the depth: `rip::run_job` holds it for the length of a rip,
+/// which is long enough to be observed by an assertion elsewhere.
 #[cfg(test)]
-static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod exclusive_read_tests {

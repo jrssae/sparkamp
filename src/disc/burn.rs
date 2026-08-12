@@ -1573,6 +1573,11 @@ mod tests {
     /// would-fail) prepare, reporting the cancel rather than a prep error.
     #[test]
     fn run_job_audio_cancel_between_tracks() {
+        // `run_job` raises the process-wide exclusive-read guard, which the
+        // depth assertions in `disc::detect` can see.
+        let _guard = crate::disc::detect::EXCLUSIVE_READ_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         gstreamer::init().expect("gst init");
         let tmp = std::env::temp_dir().join(format!("sparkamp-runjob-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
