@@ -17,7 +17,9 @@
 use std::path::Path;
 
 /// Hidden id file written at the device mount root.
-const MARKER_FILE: &str = ".sparkamp-device-id";
+/// The identity file itself. `pub(crate)` so the live device test can put
+/// a device back exactly as it found it.
+pub(crate) const MARKER_FILE: &str = ".sparkamp-device-id";
 
 /// Return the marker id already present at `mount`, or `None` when absent,
 /// empty, or unreadable.

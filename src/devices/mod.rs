@@ -94,3 +94,117 @@ pub struct Device {
     /// instead of empty playlist/file lists.
     pub fs_visible: bool,
 }
+
+#[cfg(test)]
+mod live_device_tests {
+    use std::path::PathBuf;
+
+    /// Exercise the whole external-device path against a real removable
+    /// volume: detect it, identify it, browse it, copy a file onto it, and
+    /// clean up after itself.
+    ///
+    /// Everything else in this module is tested against fakes — `null_io`,
+    /// temp directories — so nothing here had ever run against real removable
+    /// hardware, on a path both the GTK and macOS frontends depend on.
+    ///
+    /// Writes into `Sparkamp Live Test/` at the root of the device and removes
+    /// it again. Needs a writable external volume plugged in.
+    ///
+    /// `cargo test --lib live_external_device -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_external_device_round_trip() {
+        let devices = match crate::devices::detect::list_devices() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("udisks2 unavailable ({e}) — skipping");
+                return;
+            }
+        };
+        eprintln!("{} external device(s):", devices.len());
+        for d in &devices {
+            eprintln!(
+                "  {} [{}] {} — {} free of {} — ro={} ejectable={}",
+                if d.label.is_empty() { "(no label)" } else { &d.label },
+                d.fs_type,
+                d.mount_path.display(),
+                d.free_bytes,
+                d.total_bytes,
+                d.read_only,
+                d.ejectable
+            );
+        }
+        let Some(dev) = devices.iter().find(|d| !d.read_only) else {
+            eprintln!("no writable external device — skipping");
+            return;
+        };
+        let mount = dev.mount_path.clone();
+
+        // Identity must be stable: the same device answers the same id twice,
+        // which is what pairs synced files to a device across sessions.
+        assert!(!dev.id.is_empty(), "a device must have a stable id");
+        // `ensure_marker` writes a real identity file that production keeps.
+        // Note whether it was already there, so a device that had never been
+        // paired with Sparkamp does not silently acquire one from a test run.
+        let marker_preexisting = crate::devices::marker::read_marker(&mount).is_some();
+        let marker = crate::devices::marker::ensure_marker(&mount)
+            .expect("marker should be writable on a writable device");
+        let again = crate::devices::marker::ensure_marker(&mount).expect("second marker read");
+        assert_eq!(marker, again, "the marker id must not change between reads");
+        assert_eq!(
+            crate::devices::marker::read_marker(&mount).as_deref(),
+            Some(marker.as_str())
+        );
+
+        // Browsing must not blow up on a real filesystem, whatever is on it.
+        let audio = crate::devices::browse::list_audio_files(&mount);
+        let playlists = crate::devices::browse::device_playlist_files(&mount);
+        eprintln!(
+            "browse: {} audio file(s), {} playlist(s)",
+            audio.len(),
+            playlists.len()
+        );
+
+        // Copy something real onto it, then verify and remove it.
+        let src_dir = std::env::temp_dir().join(format!("sparkamp-devsrc-{}", std::process::id()));
+        std::fs::create_dir_all(&src_dir).expect("temp source dir");
+        let src = src_dir.join("Live Test Track.mp3");
+        let payload: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&src, &payload).expect("write temp source");
+
+        let relpath = PathBuf::from("Sparkamp Live Test").join("Live Test Track.mp3");
+        let outcome = crate::devices::transfer::copy_to_device(&src, &mount, &relpath)
+            .expect("copy to a writable device");
+        assert_eq!(outcome, crate::devices::transfer::CopyOutcome::Copied);
+
+        let dest = mount.join(&relpath);
+        let written = std::fs::read(&dest).expect("read the file back off the device");
+        assert_eq!(written, payload, "the bytes on the device must match the source");
+
+        // Copying the same file again is skipped, not duplicated — the check
+        // that stops a re-sync rewriting everything already there.
+        let second = crate::devices::transfer::copy_to_device(&src, &mount, &relpath)
+            .expect("second copy");
+        assert_eq!(
+            second,
+            crate::devices::transfer::CopyOutcome::SkippedPresent,
+            "an identical file already there must not be copied again"
+        );
+
+        eprintln!("copied and verified {} bytes at {}", payload.len(), dest.display());
+
+        // Clean up: the device is the user's, not a scratch dir.
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir(mount.join("Sparkamp Live Test"));
+        let _ = std::fs::remove_dir_all(&src_dir);
+        if !marker_preexisting {
+            let _ = std::fs::remove_file(mount.join(crate::devices::marker::MARKER_FILE));
+        }
+        assert!(!dest.exists(), "the test must leave the device as it found it");
+        assert_eq!(
+            crate::devices::marker::read_marker(&mount).is_some(),
+            marker_preexisting,
+            "the marker must be left exactly as it was found"
+        );
+    }
+}
