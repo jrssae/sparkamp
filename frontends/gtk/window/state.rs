@@ -1142,6 +1142,37 @@ impl AppState {
         changed
     }
 
+    /// Mark every row whose file has gone missing, in one pass.
+    ///
+    /// Same shape as [`Self::apply_probed_durations`] above, and for the same
+    /// two reasons. A pass per notification is O(rows × notifications), and
+    /// stopping at the first match leaves duplicate rows of one file
+    /// unmarked — a playlist may hold the same path more than once, which
+    /// `Playlist::add` supports deliberately, so the second entry went on
+    /// looking playable after the file was gone.
+    ///
+    /// Returns the indices of every row this changed, for per-row repaints.
+    /// A row already marked is not reported again, so a repeated notification
+    /// does not schedule a repaint of a row that already looks right.
+    pub(super) fn mark_broken(
+        &mut self,
+        missing: &std::collections::HashSet<std::path::PathBuf>,
+    ) -> Vec<usize> {
+        if missing.is_empty() {
+            return Vec::new();
+        }
+        self.playlist
+            .tracks
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, t)| !t.broken && missing.contains(&t.path))
+            .map(|(idx, t)| {
+                t.broken = true;
+                idx
+            })
+            .collect()
+    }
+
     /// Format a time display string for the given seek `fraction` [0.0, 1.0].
     ///
     /// Uses the live GStreamer duration when the pipeline is loaded, or falls

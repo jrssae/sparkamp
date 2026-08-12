@@ -168,20 +168,18 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 }
             }
             // 0b. Drain missing-file notifications; mark those tracks broken.
-            while let Ok(path) = broken_rx.try_recv() {
-                let found_idx = {
-                    let mut s = state.borrow_mut();
-                    let mut found = None;
-                    for (idx, track) in s.playlist.tracks.iter_mut().enumerate() {
-                        if track.path == path {
-                            track.broken = true;
-                            found = Some(idx);
-                            break;
-                        }
-                    }
-                    found
-                };
-                if let Some(idx) = found_idx {
+            // Collected into a set and applied in ONE pass, like the two drains
+            // above: a pass per message was O(rows × messages), and stopping at
+            // the first match left a second entry for the same file showing as
+            // playable after it was gone.
+            {
+                let mut missing: std::collections::HashSet<std::path::PathBuf> =
+                    std::collections::HashSet::new();
+                while let Ok(path) = broken_rx.try_recv() {
+                    missing.insert(path);
+                }
+                let changed = state.borrow_mut().mark_broken(&missing);
+                for idx in changed {
                     patch_pl_row(idx);
                 }
             }

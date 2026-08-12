@@ -892,3 +892,57 @@ fn search_indices_holds_the_contract_the_debounce_relies_on() {
     let hits = pl.search_indices("a");
     assert!(hits.windows(2).all(|w| w[0] < w[1]), "ascending playlist order");
 }
+
+// ── missing-file marking ───────────────────────────────────────────────
+
+/// A playlist can hold the same file more than once — `Playlist::add` stamps
+/// distinct ids for duplicate paths precisely so it can. When that file goes
+/// missing, every entry pointing at it must show the warning.
+///
+/// The drain this replaces scanned the playlist once per message and `break`ed
+/// on the first match, so the second entry kept showing as playable after the
+/// file was gone. `apply_probed_durations` next door already carries the same
+/// lesson in its doc comment; this drain never got the treatment.
+#[test]
+fn every_row_pointing_at_a_missing_file_is_marked() {
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    s.playlist.add(fake_track("b"));
+    s.playlist.add(fake_track("a")); // same path as row 0, distinct entry
+
+    let broken: std::collections::HashSet<PathBuf> =
+        [PathBuf::from("/fake/a.mp3")].into_iter().collect();
+    let changed = s.mark_broken(&broken);
+
+    assert_eq!(changed, vec![0, 2], "both entries for the missing file");
+    assert!(s.playlist.tracks[0].broken);
+    assert!(!s.playlist.tracks[1].broken, "the present file is untouched");
+    assert!(s.playlist.tracks[2].broken);
+}
+
+/// Nothing missing, nothing changed — and no repaint requested, since the
+/// caller repaints exactly the rows this returns.
+#[test]
+fn marking_broken_with_no_matches_changes_nothing() {
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let broken: std::collections::HashSet<PathBuf> =
+        [PathBuf::from("/fake/gone.mp3")].into_iter().collect();
+    assert!(s.mark_broken(&broken).is_empty());
+    assert!(!s.playlist.tracks[0].broken);
+}
+
+/// A row already marked is not reported again, so a repeated notification
+/// does not schedule a pointless repaint of a row that already looks right.
+#[test]
+fn marking_broken_twice_reports_the_row_once() {
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let broken: std::collections::HashSet<PathBuf> =
+        [PathBuf::from("/fake/a.mp3")].into_iter().collect();
+    assert_eq!(s.mark_broken(&broken), vec![0]);
+    assert!(
+        s.mark_broken(&broken).is_empty(),
+        "already-broken rows are not re-reported"
+    );
+}
