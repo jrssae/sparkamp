@@ -259,21 +259,12 @@ extension SparkampModel {
         saveState()
     }
 
-    func mlSetCurrentPlaylist(_ index: Int) {
-        guard let ctx = ctx else { return }
-        sparkamp_ml_set_current_playlist(ctx, Int32(index))
-        refreshAll()
-        saveState()
-    }
-
     func mlReplacePlaylistWith(ids: [Int64]) {
         guard let ctx = ctx else { return }
         clearPlaylist()
         mlAddToPlaylist(ids: ids)
         if sparkamp_get_autoplay_on_add(ctx) {
-            sparkamp_playlist_jump(ctx, 0)
-            sparkamp_play(ctx)
-            refreshCurrentTrackInfo()
+            startTrack(at: 0)
         }
     }
 
@@ -298,19 +289,16 @@ extension SparkampModel {
         if shouldReplace {
             clearPlaylist()
             mlAddToPlaylist(ids: ids)
-            if autoplay {
-                sparkamp_playlist_jump(ctx, 0)
-                sparkamp_play(ctx)
-            }
+            if autoplay { startTrack(at: 0) } else { refreshCurrentTrackInfo() }
         } else {
             mlAddToPlaylist(ids: ids)
             // Don't interrupt a track the user is already listening to.
             if autoplay && wasEmpty {
-                sparkamp_playlist_jump(ctx, Int32(indexBefore))
-                sparkamp_play(ctx)
+                startTrack(at: indexBefore)
+            } else {
+                refreshCurrentTrackInfo()
             }
         }
-        refreshCurrentTrackInfo()
     }
 
     /// Load album artwork from a file path and open the artwork zoom window.
@@ -392,14 +380,6 @@ extension SparkampModel {
         defer { buf.deallocate() }
         let count = sparkamp_ml_get_playlist_tracks(ctx, id, buf, Int32(limit))
         return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
-    }
-
-    /// Create a new empty playlist.  Returns the new playlist's row ID, or -1 on failure.
-    func mlCreatePlaylist(name: String) -> Int64 {
-        guard let ctx = ctx else { return -1 }
-        let id = name.withCString { sparkamp_ml_create_playlist(ctx, $0) }
-        if id >= 0 { mlRefreshSavedPlaylists() }
-        return id
     }
 
     /// Delete a playlist by row ID (DB only; playlist file is kept on disk).

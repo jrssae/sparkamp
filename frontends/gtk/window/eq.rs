@@ -1,3 +1,5 @@
+use super::*;
+
 /// Open the 10-band parametric equalizer window.
 ///
 /// The window shows a row of 10 vertical `Scale` sliders (one per band),
@@ -6,7 +8,7 @@
 /// All control changes update `state.config.equalizer` immediately AND apply
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
-fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
+pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
     use crate::config::EQ_PRESETS;
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 

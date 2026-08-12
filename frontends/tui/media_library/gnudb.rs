@@ -68,7 +68,7 @@ impl App {
             crate::disc::detect::begin_exclusive_read();
             let cd = crate::disc::cdtext::read_cdtext(&drive_id);
             crate::disc::detect::end_exclusive_read();
-            if let Some(cd) = cd {
+            if let Ok(cd) = cd {
                 // Receiver dropped = user closed the library; ignore send error.
                 let _ = tx.send((discid.clone(), cd.to_xmcd(&discid)));
             }

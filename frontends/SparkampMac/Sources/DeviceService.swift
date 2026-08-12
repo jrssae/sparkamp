@@ -141,7 +141,6 @@ struct DevicePlaylist: Codable, Identifiable {
 
 struct ApplyResult: Codable { var applied: Int; var skipped: Int }
 struct CopyResult: Codable { var copied: Int; var skipped: Int; var bytes: UInt64 }
-struct PlaylistApplyResult: Codable { var pushed: Int; var pulled: Int; var skipped: Int }
 
 /// One removable volume Swift enumerated, sent to the core for canonicalization.
 struct VolumeInfo: Encodable {
@@ -170,39 +169,47 @@ struct VolumeInfo: Encodable {
 /// nothing here captures the non-Sendable `ctx`.
 enum DeviceService {
 
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return d
-    }()
-    private static let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.keyEncodingStrategy = .convertToSnakeCase
-        return e
-    }()
-
     // MARK: FFI string helpers
+    //
+    // Thin names over `SparkampFFI`, which owns the one copy of the C-string
+    // ownership contract and the snake_case coders. Kept as local aliases so
+    // the ~20 call sites below read the way they always did.
 
-    /// Take ownership of a core-returned C string, freeing it after copying.
     private static func takeString(_ ptr: UnsafeMutablePointer<CChar>?) -> String? {
-        guard let ptr = ptr else { return nil }
-        defer { sparkamp_free_string(ptr) }
-        return String(cString: ptr)
+        SparkampFFI.takeString(ptr)
     }
 
     private static func encodeJSON<T: Encodable>(_ value: T) -> String? {
-        guard let data = try? encoder.encode(value) else { return nil }
-        return String(data: data, encoding: .utf8)
+        SparkampFFI.encodeJSON(value)
     }
 
     private static func decodeJSON<T: Decodable>(_ s: String?) -> T? {
-        guard let s = s, let data = s.data(using: .utf8) else { return nil }
-        return try? decoder.decode(T.self, from: data)
+        SparkampFFI.decodeJSON(s)
     }
 
     private static func deviceJSON(_ device: Device) -> String? { encodeJSON(device) }
 
     // MARK: Volume enumeration (pure Swift; safe off the main thread)
+
+    /// Is this disk optical media (CD/DVD/BD)?
+    ///
+    /// Checks the disk itself and then its whole-disk parent, because the two
+    /// disagree for the case that matters: a mounted data disc's volume node
+    /// reports a generic `IOMedia` and only the parent reports `IOCDMedia`.
+    /// Testing both covers an audio CD (volume node IS the whole disk) and a
+    /// data disc (volume node is a partition child) with one rule.
+    private static func isOpticalMedia(_ disk: DADisk) -> Bool {
+        func kindIsOptical(_ d: DADisk) -> Bool {
+            guard let desc = DADiskCopyDescription(d) as? [String: Any],
+                  let kind = desc[kDADiskDescriptionMediaKindKey as String] as? String
+            else { return false }
+            return kind.contains("CDMedia") || kind.contains("DVDMedia")
+                || kind.contains("BDMedia")
+        }
+        if kindIsOptical(disk) { return true }
+        guard let whole = DADiskCopyWholeDisk(disk) else { return false }
+        return kindIsOptical(whole)
+    }
 
     /// Enumerate removable/ejectable volumes under /Volumes, skipping the boot
     /// disk. Capacity + read-only come from URLResourceValues; fs type, BSD
@@ -250,12 +257,19 @@ enum DeviceService {
             if let session = session,
                let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL) {
                 if let bsdC = DADiskGetBSDName(disk) { bsd = String(cString: bsdC) }
+                // Optical media kind has to be read off the WHOLE disk, not the
+                // node the volume path resolves to.
+                //
+                // A data CD/DVD has a filesystem, so it mounts as a partition
+                // child (disk12s0) whose DAMediaKind is a generic "IOMedia";
+                // only the parent (disk12) says "IOCDMedia". Checking the
+                // volume node alone therefore never matched, and every data
+                // disc fell through into the sync-device list next to the USB
+                // sticks. An audio CD hid the bug: it has no filesystem, so its
+                // volume node IS the whole disk — and the .TOC.plist check
+                // above already caught it (2026-08-12).
+                if isOpticalMedia(disk) { isOptical = true }
                 if let desc = DADiskCopyDescription(disk) as? [String: Any] {
-                    if let mediaKind = desc[kDADiskDescriptionMediaKindKey as String] as? String,
-                       mediaKind.contains("CDMedia") || mediaKind.contains("DVDMedia")
-                        || mediaKind.contains("BDMedia") {
-                        isOptical = true
-                    }
                     fsType = desc[kDADiskDescriptionVolumeKindKey as String] as? String ?? ""
                     if let raw = desc[kDADiskDescriptionVolumeUUIDKey as String] {
                         // The value is a CFUUID; render it as a string.
@@ -396,18 +410,6 @@ enum DeviceService {
         let out = dj.withCString { d in sj.withCString { s in
             sparkamp_device_copy(nil, d, s)
         } }
-        return decodeJSON(takeString(out))
-    }
-
-    static func playlistPlan(device: Device, format: Int32) -> [PlaylistSyncItem] {
-        guard let dj = deviceJSON(device) else { return [] }
-        let out = dj.withCString { sparkamp_device_playlist_plan(nil, $0, format) }
-        return decodeJSON(takeString(out)) ?? []
-    }
-
-    static func playlistApply(device: Device, format: Int32) -> PlaylistApplyResult? {
-        guard let dj = deviceJSON(device) else { return nil }
-        let out = dj.withCString { sparkamp_device_playlist_apply(nil, $0, format) }
         return decodeJSON(takeString(out))
     }
 

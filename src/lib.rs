@@ -8,6 +8,7 @@ pub mod dedupe;
 pub mod disc;
 pub mod duration_cache;
 pub mod duration_probe;
+pub mod file_status;
 pub mod engine;
 pub mod devices;
 pub mod granite;

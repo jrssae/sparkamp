@@ -75,13 +75,15 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 notify = "6"
 notify-debouncer-mini = "0.4"
 
+# statvfs/access for free-space and writability checks, used by any unix build.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # GTK4 GUI — Linux only; not needed on macOS where SwiftUI replaces it.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
 # udisks2 client for external-device detection + eject over the system D-Bus.
 zbus = "5"
-# statvfs for device free-space reporting (already a transitive dep).
-libc = "0.2"
 
 [dev-dependencies]
 # Temporary files for ID3 editor tests

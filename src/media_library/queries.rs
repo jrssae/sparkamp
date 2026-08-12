@@ -4,6 +4,7 @@
 use anyhow::Result;
 use rusqlite::params;
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::play_stats::effective_album_artist;
 use crate::tags::read_track_tags;
@@ -390,19 +391,101 @@ impl MediaLibrary {
     }
 
     /// Look up a single track by its path.  Returns an error if not found.
+    /// Look a track up by path.
+    ///
+    /// The stored path is matched exactly first, which is the common case and
+    /// costs one indexed lookup. When that misses, the same file may still be
+    /// indexed under a different spelling of the same location: on an
+    /// image-based system `/home` is a symlink to `/var/home`, so a file
+    /// scanned as `/home/u/x.mp3` and later chosen from a file dialog as
+    /// `/var/home/u/x.mp3` is one file with two names. An exact match rejects
+    /// it, and every caller then treats an indexed track as unknown — the
+    /// playlist editor silently declines to add it, which is how this was
+    /// found.
+    ///
+    /// Identity is `(device, inode)`, not the canonical path. Canonicalising
+    /// handles a symlink but not a bind mount: `/home` and `/var/home` can be
+    /// two real directories serving the same content, each resolving to
+    /// itself. An inode is the same inode either way. The fallback narrows by
+    /// filename (few rows share one) and compares identities; a file that no
+    /// longer exists cannot be stat'd and falls through to the error.
     pub fn track_by_path(&self, path: &str) -> Result<LibTrack> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
-                    length_secs, bitrate, channels, filetype, filename, play_count, last_played,
-                    comment, album_artist, disc_num, disc_total, composer, original_artist,
-                    copyright, url, encoded_by, lyric, artwork_path, last_scanned,
-                    sample_rate, file_size, file_mtime, added_at, bitrate_mode,
-                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
-             FROM tracks WHERE path = ?1",
-        )?;
+        if let Some(t) = self.track_by_exact_path(path)? {
+            return Ok(t);
+        }
+        if let Some(t) = self.track_by_same_file(path)? {
+            return Ok(t);
+        }
+        Err(anyhow::anyhow!("track not found: {}", path))
+    }
+
+    /// Resolve many paths to their library rows in one pass.
+    ///
+    /// [`track_by_path`](Self::track_by_path) costs two queries per path and,
+    /// on a miss, a `stat` for the dev+inode fallback. That is the right shape
+    /// for one file and the wrong shape for a bulk add — putting 36k library
+    /// rows into the active playlist that way is tens of thousands of round
+    /// trips on the GTK main thread. This does exact-path matching only,
+    /// chunked to stay inside SQLite's bound-variable limit, and touches no
+    /// filesystem at all.
+    ///
+    /// Paths with no row are simply absent from the map; the caller decides
+    /// what to do with them. A caller that needs the dev+inode fallback for a
+    /// single path still wants `track_by_path`.
+    pub fn tracks_by_exact_paths(
+        &self,
+        paths: &[String],
+    ) -> Result<std::collections::HashMap<String, LibTrack>> {
+        let mut found = std::collections::HashMap::with_capacity(paths.len());
+        // SQLITE_MAX_VARIABLE_NUMBER is 999 on builds older than 3.32; stay
+        // well inside it rather than depending on the runtime's limit.
+        for chunk in paths.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("{} WHERE path IN ({placeholders})", Self::TRACK_COLUMNS);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = Self::collect_tracks(&mut stmt, rusqlite::params_from_iter(chunk.iter()))?;
+            for t in rows {
+                found.insert(t.path.clone(), t);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Columns every `LibTrack` read needs, shared by the two lookups below.
+    const TRACK_COLUMNS: &'static str =
+        "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
+                length_secs, bitrate, channels, filetype, filename, play_count, last_played,
+                comment, album_artist, disc_num, disc_total, composer, original_artist,
+                copyright, url, encoded_by, lyric, artwork_path, last_scanned,
+                sample_rate, file_size, file_mtime, added_at, bitrate_mode,
+                rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+         FROM tracks";
+
+    fn track_by_exact_path(&self, path: &str) -> Result<Option<LibTrack>> {
+        let sql = format!("{} WHERE path = ?1", Self::TRACK_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = Self::collect_tracks(&mut stmt, params![path])?;
-        rows.pop()
-            .ok_or_else(|| anyhow::anyhow!("track not found: {}", path))
+        Ok(rows.pop())
+    }
+
+    /// Fallback for the two-spellings case. Only rows whose `filename` matches
+    /// are considered, so this stays a short list even in a large library.
+    fn track_by_same_file(&self, path: &str) -> Result<Option<LibTrack>> {
+        let Some(want) = super::playlists::file_identity(path) else {
+            return Ok(None);
+        };
+        let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) else {
+            return Ok(None);
+        };
+        let sql = format!("{} WHERE filename = ?1", Self::TRACK_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let candidates = Self::collect_tracks(&mut stmt, params![name])?;
+        Ok(candidates
+            .into_iter()
+            .find(|t| super::playlists::file_identity(&t.path) == Some(want)))
     }
 
     /// Clear the cached artwork path for a track so it gets re-extracted on next read.

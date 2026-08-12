@@ -923,9 +923,10 @@ struct DiscDriveView: View {
     /// Browsable file list for a non-blank, non-audio disc (a burned data
     /// disc, or any pressed/appended data media) — shown above the burn
     /// panel so its erase/reuse controls stay reachable for rewritable media.
-    /// "Add to Library" copies into the first watched folder first (files on
+    /// "Copy to library" copies into the first watched folder first (files on
     /// the disc's mount vanish on eject — see `addDiscFilesToLibrary`'s doc);
-    /// "Send to" reuses the same shared menu every other file view uses.
+    /// "Send to" reuses the same shared menu every other file view uses, with
+    /// the copy action appended to it.
     private var dataDiscView: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
@@ -971,11 +972,24 @@ struct DiscDriveView: View {
                 .background(theme.lcdBackground)
                 .frame(minHeight: 120, maxHeight: 220)
                 // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics.
-                // Matches GTK's disc data-files menu. "Add to Library" lives on
-                // the bottom-bar buttons, not this menu (parity with GTK).
+                // Matches GTK's disc data-files menu.
+                //
+                // "Copy to library" is the last entry of the Send-to submenu
+                // rather than a top-level item: the library is one more place
+                // the selection can be sent, and grouping it with the drives
+                // and devices is what a user looking for "put this somewhere"
+                // reads first. It was previously reachable only from the
+                // bottom-bar buttons, which testing found people did not
+                // associate with a row selection at all (2026-08-09).
                 .contextMenu(forSelectionType: String.self) { ids in
                     Menu("Send to") {
                         SendToMenu(paths: pathsFor(ids))
+                        Divider()
+                        Button("Copy to library") {
+                            model.addDiscFilesToLibrary(
+                                model.discFiles.filter { ids.contains($0.id) })
+                        }
+                        .disabled(ids.isEmpty)
                     }
                     Button("Replace Current Playlist") {
                         model.replacePlaylistWithPaths(pathsFor(ids))
@@ -1025,12 +1039,16 @@ struct DiscDriveView: View {
 
                 HStack(spacing: 10) {
                     Spacer()
-                    Button("Add Selected to Library") {
+                    // "Copy", not "Add": the files are copied off read-only
+                    // media into a watched folder, and the disc keeps its own.
+                    // "Add" read as though the library would merely reference
+                    // the disc (2026-08-09).
+                    Button("Copy selected to library") {
                         model.addDiscFilesToLibrary(
                             model.discFiles.filter { discFilesSelection.contains($0.id) })
                     }
                     .disabled(discFilesSelection.isEmpty)
-                    Button("Add All to Library") {
+                    Button("Copy all to library") {
                         model.addDiscFilesToLibrary(model.discFiles)
                     }
                     .disabled(model.discFiles.isEmpty)

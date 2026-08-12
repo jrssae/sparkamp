@@ -352,12 +352,36 @@ pub fn tech_summary(ro: &ReadOnlyTrackFields) -> String {
 /// This method works reliably for all filesystem types including network shares
 /// (SMB/CIFS/NFS) and system-level read-only mounts.
 pub fn is_read_only(path: &std::path::Path) -> bool {
-    match std::fs::OpenOptions::new().write(true).open(path) {
-        Ok(_) => false,
-        Err(e) => matches!(
-            e.kind(),
-            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
-        ),
+    // Ask the kernel whether we *could* write, rather than opening the file to
+    // find out.
+    //
+    // This used to be `OpenOptions::new().write(true).open(path)`, which gives
+    // the same answer and then emits an `IN_CLOSE_WRITE` inotify event when the
+    // handle drops — Linux reports that for any descriptor opened for writing,
+    // whether or not a byte was written. The folder watcher saw those events,
+    // called them modifications, rewrote the rows and rebuilt the Files view;
+    // rebuilding rebound the rows, whose status column probed more files, which
+    // emitted more events. A closed loop that reset the user's scroll position
+    // and selection every 15-20 seconds with nothing touching the disk
+    // (2026-08-11).
+    //
+    // `access(W_OK)` answers from the mount flags and the permission bits
+    // without a descriptor, so it catches a read-only mount as well as a
+    // read-only file, and is cheaper besides.
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: `c` is a valid NUL-terminated path.
+        unsafe { libc::access(c.as_ptr(), libc::W_OK) != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::metadata(path)
+            .map(|m| m.permissions().readonly())
+            .unwrap_or(false)
     }
 }
 

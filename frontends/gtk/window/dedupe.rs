@@ -1,5 +1,7 @@
+use super::*;
+
 /// Messages sent from the background scan thread to the GTK tick loop.
-enum DedupeMsg {
+pub(super) enum DedupeMsg {
     Status(String),
     Done(Vec<crate::dedupe::DupeGroup>),
 }
@@ -32,7 +34,7 @@ enum DedupeMsg {
 /// | 9 | bool   | `true` → group row, `false` → track row          |
 /// |10 | i32    | Pango weight (700 group, 400 track)              |
 /// |11 | String | Full path (empty for group rows; for file-open)  |
-fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
+pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
     let win = gtk4::Window::new();
@@ -352,9 +354,11 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
                                 let tid: i64 =
                                     ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
                                 if let Some(info) = tm_borrow.get(&tid) {
-                                    st.borrow_mut()
-                                        .playlist
-                                        .add(crate::model::Track::from(&info.track));
+                                    super::playlist_add::add_track(
+                                        &st,
+                                        crate::model::Track::from(&info.track),
+                                        false,
+                                    );
                                 }
                                 #[allow(deprecated)]
                                 if !ts.iter_next(&ci) {
@@ -453,6 +457,13 @@ fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>
 
             let popover = gtk4::Popover::new();
             popover.set_child(Some(&pop_box));
+            // Same cursor anchoring as `context_popover` — this one holds
+            // buttons rather than a menu model, so it cannot use that helper,
+            // but it is still a right-click menu and must not centre itself
+            // on the pointer. See that function for why Start/Bottom.
+            popover.set_has_arrow(false);
+            popover.set_halign(gtk4::Align::Start);
+            popover.set_position(gtk4::PositionType::Bottom);
             popover.set_parent(&tree_view_rc);
             popover.set_pointing_to(Some(&gdk::Rectangle::new(
                 x as i32, y as i32, 1, 1,

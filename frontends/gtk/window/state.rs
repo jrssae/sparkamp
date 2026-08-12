@@ -1,3 +1,5 @@
+use super::*;
+
 /// All mutable runtime state backing the GTK4 window.
 ///
 /// This struct is the single source of truth for the player, playlist, and
@@ -5,12 +7,12 @@
 /// those live in the surrounding closures.  This separation makes the core
 /// logic independently testable without a display server.
 pub(super) struct AppState {
-    player: Player,
-    playlist: Playlist,
-    config: Config,
+    pub(super) player: Player,
+    pub(super) playlist: Playlist,
+    pub(super) config: Config,
     /// Session-only shuffle and playback-history state.
     /// Not persisted — reset on each launch.
-    shuffle_state: ShuffleState,
+    pub(super) shuffle_state: ShuffleState,
     /// Manual play queue (session-only). Drained ahead of shuffle/linear in
     /// `play_next`; keyed on `Track.id`.
     pub(crate) queue: crate::queue::Queue,
@@ -18,22 +20,22 @@ pub(super) struct AppState {
     /// playing.  Set when the user scrubs the seek bar while the player is
     /// Stopped (pipeline not loaded), so the desired position is remembered and
     /// applied once GStreamer has a duration to seek against.
-    pending_seek: Option<f64>,
+    pub(super) pending_seek: Option<f64>,
     /// The most recently observed track duration.  Updated every tick while
     /// playing or paused.  Kept after stop so that seek-bar drags in the
     /// Stopped state (where GStreamer cannot report duration) can still
     /// compute and display the correct time offset.
-    last_duration: Option<Duration>,
+    pub(super) last_duration: Option<Duration>,
     /// When `Some(vol)`, the player was muted before play to hide the brief
     /// audio from position 0 while GStreamer starts.  The tick loop restores
     /// this volume after the pending seek is applied.
-    mute_pending: Option<f64>,
+    pub(super) mute_pending: Option<f64>,
     /// On-disk cache of audio file durations, keyed by canonical path.
     /// Populated by background probes and saved periodically to
     /// `~/.cache/gnomamp/duration_cache.toml`.
-    duration_cache: DurationCache,
+    pub(super) duration_cache: DurationCache,
     /// Media library — open on startup, or `None` when the DB cannot be opened.
-    media_lib: Option<crate::media_library::MediaLibrary>,
+    pub(super) media_lib: Option<crate::media_library::MediaLibrary>,
     /// Live filesystem watcher over the watched folders (Phase 8 Task 10).
     /// `None` whenever watching is off (`config.media_library.watch_folders`
     /// false), `media_lib` is unavailable, or the underlying OS watcher
@@ -41,128 +43,141 @@ pub(super) struct AppState {
     /// last case is graceful degradation, never a hard error. Rebuilt via
     /// `watch::rebuild_watcher` whenever folders, per-folder recurse, or the
     /// toggle change.
-    watch: Option<crate::watch::FolderWatcher>,
+    pub(super) watch: Option<crate::watch::FolderWatcher>,
     /// Paired with `watch` above — the channel its debounced events arrive
     /// on. Drained by the tick registered once in `watch::start_drain_tick`.
-    watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
+    pub(super) watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
+    /// Where the background pass that finishes a newly added playlist row
+    /// sends its answers. Set once by `player::build`, and read by every add
+    /// site through `playlist_add`.
+    ///
+    /// It lives here rather than being threaded through because the alternative
+    /// was proved not to work: there are 27 places that add to the active
+    /// playlist, and when the duration probe had to be passed in, three of them
+    /// silently went without it. A field every site can reach is what makes one
+    /// shared add path possible.
+    ///
+    /// `None` outside the GTK window — the FFI and test paths add rows without
+    /// a main loop to deliver results to, and simply skip the background work.
+    pub(super) row_facts_tx: Option<std::sync::mpsc::Sender<crate::file_status::RowFacts>>,
     /// The media library browser window, if one is currently open.
-    ml_window: Option<gtk4::Window>,
+    pub(super) ml_window: Option<gtk4::Window>,
     /// The settings window, if one is currently open. Singleton (like
     /// `ml_window`): a second open request just `present()`s this one.
-    settings_window: Option<gtk4::Window>,
+    pub(super) settings_window: Option<gtk4::Window>,
     /// The ID3 tag editor window, if one is currently open.
-    id3_editor_window: Option<gtk4::Window>,
+    pub(super) id3_editor_window: Option<gtk4::Window>,
     /// The read-only lyrics viewer window (F15), if one is open. Singleton
     /// like `id3_editor_window`: opening for another track replaces content.
-    lyrics_window: Option<gtk4::Window>,
+    pub(super) lyrics_window: Option<gtk4::Window>,
     /// Whether the open lyrics window tracks a fixed song or the currently
     /// playing one (F15 revision, point 4). A `Cell` so the now-playing
     /// subscriber can read it without a `borrow_mut` on `AppState`.
-    lyrics_mode: Rc<std::cell::Cell<LyricsMode>>,
+    pub(super) lyrics_mode: Rc<std::cell::Cell<LyricsMode>>,
     /// Set while the lyrics window is open in Current mode: re-reads the
     /// current track and refreshes the window's title + body. Called by the
     /// now-playing subscriber on every track change; cleared on window close.
-    lyrics_refresh: Option<Rc<dyn Fn()>>,
+    pub(super) lyrics_refresh: Option<Rc<dyn Fn()>>,
     /// The track path the open lyrics window is currently showing. Drives the
     /// `l`-key toggle: pressing `l` on this same track closes the window, while
     /// `l` on a different track retargets it. Updated on open and (in Current
     /// mode) by the refresh closure; cleared on close. A shared cell so the
     /// refresh closure can update it without a `borrow_mut` on `AppState`.
-    lyrics_shown_path: Rc<RefCell<Option<std::path::PathBuf>>>,
+    pub(super) lyrics_shown_path: Rc<RefCell<Option<std::path::PathBuf>>>,
     /// The main window's key handler, published by `player.rs` once built, so
     /// satellite windows (the lyrics viewer) can forward the Winamp transport
     /// keys (z/x/c/v/b/j/r/s) to it (F15 revision, point 5).
-    transport_key_handler: Option<Rc<dyn Fn(gtk4::gdk::Key) -> gtk4::glib::Propagation>>,
+    pub(super) transport_key_handler: Option<Rc<dyn Fn(gtk4::gdk::Key) -> gtk4::glib::Propagation>>,
     /// The A6 standalone album-art window, once built. Unlike `ml_window` /
     /// `id3_editor_window` this is never cleared back to `None` — it is
     /// built once, kept alive for the app's lifetime (hidden, not destroyed,
     /// on close), and reused on every `k` / art-click via `present()` so its
     /// `now_playing` subscription is only ever registered once.
-    art_window: Option<gtk4::Window>,
+    pub(super) art_window: Option<gtk4::Window>,
     /// Owns the MPRIS D-Bus bus-name + object registration for the app's
     /// lifetime (dropping it would unexport the service). Set once by
     /// `mpris::init`; `#[allow(dead_code)]` — held only to own the lifetime.
     #[allow(dead_code)]
-    mpris_guard: Option<mpris::MprisGuard>,
+    pub(super) mpris_guard: Option<mpris::MprisGuard>,
     /// Callback to refresh the media library window, registered by the window itself.
-    rebuild_ml_callback: Option<Rc<dyn Fn()>>,
+    pub(super) rebuild_ml_callback: Option<Rc<dyn Fn()>>,
     /// Callback that re-polls the ML window's disc drives, registered by the
     /// ML window — the audio-CD insertion watcher uses it so navigation
     /// doesn't wait for the window's own 10 s poll.
-    disc_refresh_callback: Option<Rc<dyn Fn()>>,
+    pub(super) disc_refresh_callback: Option<Rc<dyn Fn()>>,
     /// Drive id the ML window should navigate to after its next disc
     /// refresh. Set by the insertion watcher (auto-open setting); consumed
     /// once the refresh has built that drive's sidebar row.
-    pending_disc_nav: Option<String>,
+    pub(super) pending_disc_nav: Option<String>,
     /// True while a rip holds the optical drive. EVERY poller must stay
     /// completely off the device then — even the "harmless" status ioctls
     /// interleave SCSI commands with the streaming reads and make flaky
     /// drives fault mid-read (verified live: one CDROM_DRIVE_STATUS during
     /// cdda streaming killed the stream).
-    disc_reading: std::cell::Cell<bool>,
+    pub(super) disc_reading: std::cell::Cell<bool>,
     /// Callback to update ML scan UI in all windows, registered by each window.
-    ml_scan_ui_callback: Option<Rc<dyn Fn()>>,
+    pub(super) ml_scan_ui_callback: Option<Rc<dyn Fn()>>,
     /// Callback to rebuild the playlist widget, set during build().
-    rebuild_pl_callback: Option<Rc<dyn Fn()>>,
+    pub(super) rebuild_pl_callback: Option<Rc<dyn Fn()>>,
     /// Callback that plays the current track and updates all UI labels, set during build().
-    play_and_update_callback: Option<Rc<dyn Fn()>>,
+    pub(super) play_and_update_callback: Option<Rc<dyn Fn()>>,
     /// Callback that updates the marquee with a new display string, set during build().
-    set_track_callback: Option<Rc<dyn Fn(&str)>>,
+    pub(super) set_track_callback: Option<Rc<dyn Fn(&str)>>,
     /// Subscribers notified whenever a new track starts (A1 panel, A6 window,
     /// phase-3 MPRIS). Fan-out only — callers must never hold a `borrow_mut()`
     /// across the notify loop; extract the Vec under a short borrow first.
-    now_playing_subscribers: Vec<Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>>,
+    pub(super) now_playing_subscribers: Vec<Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>>,
     /// Now-playing info for the currently loaded track, set at play-start
     /// alongside the `now_playing_subscribers` fan-out (see `play_and_update`
     /// in player.rs). Lets a panel built or shown mid-playback (A1 toggle,
     /// A6 window open) populate immediately via `current_now_playing()`
     /// instead of waiting for the *next* track change, which is the only
     /// thing that fires the subscriber fan-out.
-    current_now_playing: Option<crate::now_playing::NowPlayingInfo>,
+    pub(super) current_now_playing: Option<crate::now_playing::NowPlayingInfo>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
-    pending_bg_ops: std::cell::Cell<usize>,
+    pub(super) pending_bg_ops: std::cell::Cell<usize>,
     /// Path whose play has already been recorded in the media library this session.
     /// Reset to `None` when a new track starts playing so the same track can be
     /// counted again after a user-initiated restart.
-    counted_play_path: Option<String>,
+    pub(super) counted_play_path: Option<String>,
     /// Scan state for media library operations.
-    ml_scan: Option<ScanState>,
+    pub(super) ml_scan: Option<ScanState>,
     /// Scan state for playlist operations.
-    playlist_scan: Option<ScanState>,
+    pub(super) playlist_scan: Option<ScanState>,
     /// Progress/cancel state for a background ReplayGain analysis job (the
     /// Files-view bulk "Analyze ReplayGain" button, or the per-selection
     /// "Calculate ReplayGain" force action). Kept separate from `ml_scan`
     /// rather than reusing it: the existing `ml_scan` UI pollers hard-code
     /// "Reading tags…" status text, which would be the wrong label while
     /// analysis is running.
-    rg_job: Option<RgJobState>,
+    pub(super) rg_job: Option<RgJobState>,
     /// One-shot completion/error message for the last ReplayGain job, set when
     /// the job finishes and consumed (taken) by whichever view's poller
     /// renders it next. Lets the Settings window and the Files view show the
     /// same "Analyzed N track(s)" result without either one writing the shared
     /// status label directly (which raced the progress poller).
-    rg_ui_msg: Option<String>,
+    pub(super) rg_ui_msg: Option<String>,
 }
 
 /// State for tracking background scan operations.
 #[derive(Clone)]
 #[allow(dead_code)]
-struct ScanState {
+pub(super) struct ScanState {
     /// Type of scan operation.
-    scan_type: ScanType,
+    pub(super) scan_type: ScanType,
     /// Number of files processed so far.
-    current: usize,
+    pub(super) current: usize,
     /// Total number of files to process.
-    total: usize,
+    pub(super) total: usize,
     /// Flag to signal cancellation.
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Type of scan operation.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum ScanType {
+pub(super) enum ScanType {
     AddFolder,
     AddFiles,
     Rescan,
@@ -173,15 +188,15 @@ enum ScanType {
 /// here) but lives in its own `AppState.rg_job` field; see that field's doc
 /// comment for why it isn't folded into `ml_scan`.
 #[derive(Clone)]
-struct RgJobState {
+pub(super) struct RgJobState {
     /// Tracks analyzed so far (see `crate::replaygain::RgJobProgress::done`).
-    current: usize,
-    total: usize,
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) current: usize,
+    pub(super) total: usize,
+    pub(super) cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Shared helper: start an ML scan with the given scan type and total count.
-fn start_ml_scan(
+pub(super) fn start_ml_scan(
     state: &Rc<RefCell<AppState>>,
     scan_type: ScanType,
     total: usize,
@@ -190,13 +205,17 @@ fn start_ml_scan(
     let cancel_clone = cancel_flag.clone();
     {
         let mut s = state.borrow_mut();
+        // A cancelled scan is already cleared (see `cancel_ml_scan`), so only
+        // count a background op when we are not replacing a live one.
+        if s.ml_scan.is_none() {
+            s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
+        }
         s.ml_scan = Some(ScanState {
             scan_type,
             current: 0,
             total,
             cancel: cancel_clone,
         });
-        s.pending_bg_ops.set(s.pending_bg_ops.get() + 1);
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
         cb();
@@ -205,7 +224,7 @@ fn start_ml_scan(
 }
 
 /// Shared helper: update ML scan progress and notify UI.
-fn update_ml_scan_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
+pub(super) fn update_ml_scan_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
     {
         let mut s = state.borrow_mut();
         if let Some(ref mut scan) = s.ml_scan {
@@ -219,11 +238,19 @@ fn update_ml_scan_progress(state: &Rc<RefCell<AppState>>, current: usize, total:
 }
 
 /// Shared helper: complete an ML scan and notify UI.
-fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
+///
+/// No-ops when there is nothing to complete. A cancelled scan is torn down at
+/// the moment of cancelling, so its worker's eventual "finished" message
+/// arrives after the fact and must not decrement `pending_bg_ops` a second
+/// time or clear a scan the user has since started.
+pub(super) fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
     {
         let mut s = state.borrow_mut();
+        if s.ml_scan.is_none() {
+            return;
+        }
         s.ml_scan = None;
-        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+        s.pending_bg_ops.set(s.pending_bg_ops.get().saturating_sub(1));
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
         cb();
@@ -231,12 +258,27 @@ fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
 }
 
 /// Shared helper: cancel an ML scan and notify UI.
-fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
+///
+/// Clears the scan straight away rather than waiting for the worker to notice
+/// the flag. The worker checks it between files, so on a slow disk that wait
+/// is seconds long — and until 2026-08-11 the scan stayed "in flight" for all
+/// of it: the progress numbers kept the cancelled scan's totals on screen, and
+/// starting a new scan was silently refused by the `ml_scan.is_some()` guard
+/// every caller has. Cancel then Rescan appeared to do nothing at all.
+///
+/// The worker still runs to its next check and exits on its own.
+/// [`complete_ml_scan`] ignores its late "finished" message. Its last progress
+/// message can still land on a scan started in the meantime, moving the bar by
+/// one file; the next real update corrects it. Closing that window properly
+/// needs the worker's cancel flag at the update site, and it is moved into the
+/// worker thread at all six of them.
+pub(super) fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
     {
-        let s = state.borrow_mut();
-        if let Some(ref scan) = s.ml_scan {
+        let mut s = state.borrow_mut();
+        if let Some(scan) = s.ml_scan.take() {
             scan.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            s.pending_bg_ops.set(s.pending_bg_ops.get().saturating_sub(1));
         }
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
@@ -249,7 +291,7 @@ fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
 /// up a worker-local `MediaLibrary` writer, and while SQLite's WAL mode
 /// tolerates the concurrent writes just fine, running two background jobs
 /// against the library at once is confusing UI-wise for no benefit.
-fn start_rg_job(
+pub(super) fn start_rg_job(
     state: &Rc<RefCell<AppState>>,
     total: usize,
 ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
@@ -271,7 +313,7 @@ fn start_rg_job(
 }
 
 /// Shared helper: update RG analysis job progress.
-fn update_rg_job_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
+pub(super) fn update_rg_job_progress(state: &Rc<RefCell<AppState>>, current: usize, total: usize) {
     let mut s = state.borrow_mut();
     if let Some(ref mut job) = s.rg_job {
         job.current = current;
@@ -281,7 +323,7 @@ fn update_rg_job_progress(state: &Rc<RefCell<AppState>>, current: usize, total: 
 
 /// Shared helper: complete an RG analysis job, stashing the one-shot result
 /// message (`msg`) for whichever view's poller renders it next.
-fn complete_rg_job(state: &Rc<RefCell<AppState>>, msg: String) {
+pub(super) fn complete_rg_job(state: &Rc<RefCell<AppState>>, msg: String) {
     let mut s = state.borrow_mut();
     s.rg_job = None;
     s.rg_ui_msg = Some(msg);
@@ -289,7 +331,7 @@ fn complete_rg_job(state: &Rc<RefCell<AppState>>, msg: String) {
 }
 
 /// Shared helper: signal cancellation of the running RG analysis job.
-fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
+pub(super) fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
     let s = state.borrow();
     if let Some(ref job) = s.rg_job {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -315,7 +357,7 @@ fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
 ///
 /// Returns the current running state; callers store it for next tick's
 /// `prev_running`.
-fn sync_rg_ui(
+pub(super) fn sync_rg_ui(
     state: &Rc<RefCell<AppState>>,
     analyze_btn: &gtk4::Button,
     cancel_btn: &gtk4::Button,
@@ -356,7 +398,7 @@ fn sync_rg_ui(
 /// Shared helper: update scan UI elements based on current ml_scan state.
 /// Returns true if scanning is in progress.
 #[allow(dead_code)]
-fn update_scan_ui_elements(
+pub(super) fn update_scan_ui_elements(
     state: &Rc<RefCell<AppState>>,
     status_label: &gtk4::Label,
     rescan_btn: &gtk4::Button,
@@ -390,7 +432,7 @@ fn update_scan_ui_elements(
 /// folder watcher via `watch::rebuild_watcher` — under `skip_db_load` the
 /// watcher stays dormant until this fires (binding user decision: never
 /// force the DB open at startup just because `watch_folders` is on).
-fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
+pub(super) fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
     if state.borrow().media_lib.is_some() {
         return;
     }
@@ -415,7 +457,7 @@ fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
 
 /// Build the engine's ReplayGain chain shape from config. Shared by startup
 /// and the settings-change apply path so they never drift.
-fn rg_chain(cfg: &Config) -> crate::engine::RgChain {
+pub(super) fn rg_chain(cfg: &Config) -> crate::engine::RgChain {
     let rg = &cfg.playback.replaygain;
     crate::engine::RgChain {
         enabled: rg.enabled,
@@ -446,7 +488,7 @@ impl AppState {
     /// pipeline) without waiting for the next track. `load()` applies the
     /// pending chain at Null; the pending-seek machinery (see `play_current`)
     /// restores the position on the next tick.
-    fn reload_current_at_position(&mut self) {
+    pub(super) fn reload_current_at_position(&mut self) {
         let (pos, dur) = (self.player.position(), self.player.duration());
         let Some(track) = self.playlist.current() else {
             return;
@@ -499,7 +541,7 @@ impl AppState {
     /// Creates a new GStreamer player and immediately applies the configured
     /// volume.  Returns an error if the GStreamer `playbin` element is
     /// unavailable.
-    fn new(playlist: Playlist, config: Config) -> Result<Self> {
+    pub(super) fn new(playlist: Playlist, config: Config) -> Result<Self> {
         let mut player = Player::new()?;
         player.set_volume(config.playback.volume);
         // Apply the saved EQ config so the correct settings are active from
@@ -552,6 +594,7 @@ impl AppState {
             media_lib,
             watch: None,
             watch_rx: None,
+            row_facts_tx: None,
             ml_window: None,
             settings_window: None,
             id3_editor_window: None,
@@ -586,7 +629,7 @@ impl AppState {
     /// Returns `Some(display_name)` so the caller can update the marquee, or
     /// `None` if the playlist is empty.  Load / play errors surface on the
     /// next `poll_bus()` call in the tick loop.
-    fn play_current(&mut self) -> Option<String> {
+    pub(super) fn play_current(&mut self) -> Option<String> {
         // Manual play cancels a pending stop-after-current (phase 6). The EOS
         // auto-advance in the tick uses play_current_no_record, not this seam.
         self.player.set_stop_after_current(false);
@@ -639,7 +682,7 @@ impl AppState {
 
     /// Same as `play_current()` but does not record to shuffle history.
     /// Used for back navigation via history to avoid corrupting the history cursor.
-    fn play_current_no_record(&mut self) -> Option<String> {
+    pub(super) fn play_current_no_record(&mut self) -> Option<String> {
         let track = self.playlist.current()?;
         let uri = track.uri();
         let display = track.display_name();
@@ -697,7 +740,7 @@ impl AppState {
     /// UI callback here (which may itself need to borrow `state`) risks a
     /// borrow panic. An open Files view simply won't show the new row until
     /// its next natural refresh.
-    fn maybe_auto_add_played(&self, path: &std::path::Path) {
+    pub(super) fn maybe_auto_add_played(&self, path: &std::path::Path) {
         if !self.config.media_library.auto_add_played {
             return;
         }
@@ -789,7 +832,7 @@ impl AppState {
     /// Pop the next still-present queued entry's playlist index (draining any
     /// ids no longer present), or `None`. Mirrors `Controller::queue_next_index`
     /// — GTK runs its own advance loop rather than the shared controller.
-    fn queue_next_index(&mut self) -> Option<usize> {
+    pub(super) fn queue_next_index(&mut self) -> Option<usize> {
         while let Some(id) = self.queue.pop_next() {
             if let Some(idx) = self.playlist.tracks.iter().position(|t| t.id == id) {
                 return Some(idx);
@@ -805,7 +848,7 @@ impl AppState {
         self.queue.retain_ids(&live);
     }
 
-    fn play_next(&mut self) -> Option<String> {
+    pub(super) fn play_next(&mut self) -> Option<String> {
         // Manual skip cancels a pending stop-after-current (phase 6).
         self.player.set_stop_after_current(false);
         let total = self.playlist.len();
@@ -862,7 +905,7 @@ impl AppState {
     /// - < 5 s elapsed + shuffle off → linear previous track (wraps with Repeat::Playlist).
     ///
     /// Returns `Some(display_name)` of the track that will now play.
-    fn play_prev(&mut self) -> Option<String> {
+    pub(super) fn play_prev(&mut self) -> Option<String> {
         // Manual skip cancels a pending stop-after-current (phase 6).
         self.player.set_stop_after_current(false);
         let pos = self.player.position().unwrap_or(Duration::ZERO);
@@ -919,7 +962,7 @@ impl AppState {
     /// Cycle the visualizer to the next built-in mode.
     ///
     /// Cycle order: Bars → Waveform → Granite → Bars.
-    fn toggle_visualizer_mode(&mut self) {
+    pub(super) fn toggle_visualizer_mode(&mut self) {
         self.config.visualizer.mode = match self.config.visualizer.mode {
             VisualizerMode::Bars => VisualizerMode::Waveform,
             VisualizerMode::Waveform => VisualizerMode::Granite,
@@ -930,7 +973,7 @@ impl AppState {
     /// Attempt to retry spectrum initialization.
     ///
     /// Returns Ok(()) if retry was initiated, Err if spectrum is not available.
-    fn retry_spectrum(&mut self) -> Result<(), &'static str> {
+    pub(super) fn retry_spectrum(&mut self) -> Result<(), &'static str> {
         if !self.player.has_spectrum() {
             return Err("Spectrum element not available");
         }
@@ -950,7 +993,7 @@ impl AppState {
     ///
     /// Values outside the range are clamped silently.  Does nothing if no
     /// track duration is available yet (e.g. during initial buffering).
-    fn seek_fraction(&mut self, fraction: f64) {
+    pub(super) fn seek_fraction(&mut self, fraction: f64) {
         let fraction = fraction.clamp(0.0, 1.0);
         // Use the live GStreamer duration first; fall back to the cached
         // last_duration so seeks work even when the pipeline just started
@@ -973,7 +1016,7 @@ impl AppState {
     /// GStreamer has a duration to seek against.
     ///
     /// This is the canonical entry point for seek-bar interaction.
-    fn seek_fraction_or_pend(&mut self, fraction: f64) {
+    pub(super) fn seek_fraction_or_pend(&mut self, fraction: f64) {
         let fraction = fraction.clamp(0.0, 1.0);
         if *self.player.state() == PlayerState::Stopped {
             self.pending_seek = Some(fraction);
@@ -987,7 +1030,7 @@ impl AppState {
     ///
     /// The new position is clamped to `[0, duration]`.  Does nothing if no
     /// position or duration is available (pipeline not loaded).
-    fn seek_delta_secs(&mut self, secs: f64) {
+    pub(super) fn seek_delta_secs(&mut self, secs: f64) {
         if let (Some(pos), Some(dur)) = (self.player.position(), self.player.duration()) {
             let new_secs = (pos.as_secs_f64() + secs).clamp(0.0, dur.as_secs_f64());
             let _ = self.player.seek(Duration::from_secs_f64(new_secs));
@@ -1000,7 +1043,7 @@ impl AppState {
     ///
     /// Also seeds `last_duration` for the current track so that seek-bar drags
     /// in the initial Stopped state work without waiting for a probe result.
-    fn apply_cached_durations(&mut self) {
+    pub(super) fn apply_cached_durations(&mut self) {
         for track in &mut self.playlist.tracks {
             if track.duration.is_none() {
                 track.duration = self.duration_cache.get(&track.path);
@@ -1022,7 +1065,7 @@ impl AppState {
     /// Collect paths of tracks added at or after `start` that still lack a
     /// cached duration.  Pass the result straight to `duration_probe::spawn_probes`
     /// to schedule background header reads for newly-added files.
-    fn uncached_paths_from(&self, start: usize) -> Vec<std::path::PathBuf> {
+    pub(super) fn uncached_paths_from(&self, start: usize) -> Vec<std::path::PathBuf> {
         self.playlist.tracks[start..]
             .iter()
             .filter(|t| t.duration.is_none())
@@ -1040,7 +1083,7 @@ impl AppState {
     /// received their duration.
     ///
     /// Returns the indices of every updated row for per-row repaints.
-    fn apply_probed_durations(
+    pub(super) fn apply_probed_durations(
         &mut self,
         batch: &std::collections::HashMap<std::path::PathBuf, Duration>,
     ) -> Vec<usize> {
@@ -1074,7 +1117,7 @@ impl AppState {
     ///
     /// Returns `None` when no duration is available at all (e.g. on first
     /// launch with no track ever loaded).
-    fn time_display_for_fraction(&self, fraction: f64, show_remaining: bool) -> Option<String> {
+    pub(super) fn time_display_for_fraction(&self, fraction: f64, show_remaining: bool) -> Option<String> {
         let dur = self
             .player
             .duration()
@@ -1102,7 +1145,7 @@ impl AppState {
     /// needn't change; `Some("")` means "clear it" (playlist emptied — the
     /// removed song's name must not linger).  Returns `None` immediately for
     /// out-of-bounds indices (playlist is unchanged).
-    fn remove_track(&mut self, index: usize) -> Option<String> {
+    pub(super) fn remove_track(&mut self, index: usize) -> Option<String> {
         if index >= self.playlist.tracks.len() {
             return None;
         }
@@ -1148,11 +1191,51 @@ impl AppState {
     ///
     /// Leading and trailing whitespace is trimmed before the path is
     /// resolved.  Returns `Ok(display_name)` on success or `Err(message)`
+    /// Fill in a duration we already know but the track was built without.
+    ///
+    /// `Track::from_path` reads tags, not length — measuring a duration means
+    /// decoding, which is far too slow to do while a drop of several hundred
+    /// files is in flight. So a track added by path arrives with `duration:
+    /// None` and the playlist shows a blank length.
+    ///
+    /// Two places already hold the answer, both free to consult: the library
+    /// row (`length_secs`, filled during the scan) and the on-disk duration
+    /// cache. Dragging from the Files view is the obvious case — those rows
+    /// are *showing* a duration the moment before the drop, and it looked like
+    /// a bug for it to vanish on landing (reported 2026-08-11). Anything still
+    /// unknown is left for the background prober, as before.
+    // Superseded for every GTK add path by `playlist_add`, which resolves
+    // against the library in one batched query instead of one lookup per file
+    // and defers the filesystem checks to the background pass. Kept because
+    // `add_track_from_path` still backs the unit tests below it, and because
+    // both remain the correct shape for adding a single known path.
+    #[allow(dead_code)]
+    fn fill_known_duration(&self, track: &mut Track) {
+        if track.duration.is_some() {
+            return;
+        }
+        let path = track.path.to_string_lossy();
+        let secs = self
+            .media_lib
+            .as_ref()
+            .and_then(|lib| lib.track_by_path(&path).ok())
+            .and_then(|t| t.length_secs);
+        if let Some(secs) = secs {
+            track.duration = Some(Duration::from_secs_f64(secs));
+            return;
+        }
+        if let Some(d) = self.duration_cache.get(&track.path) {
+            track.duration = Some(d);
+        }
+    }
+
     /// on failure.  Use [`add_path`] when the input might be a directory.
-    fn add_track_from_path(&mut self, raw_path: &str) -> Result<String, String> {
+    #[allow(dead_code)]
+    pub(super) fn add_track_from_path(&mut self, raw_path: &str) -> Result<String, String> {
         let path = std::path::Path::new(raw_path.trim());
         match Track::from_path(path) {
-            Ok(track) => {
+            Ok(mut track) => {
+                self.fill_known_duration(&mut track);
                 let name = track.display_name();
                 self.playlist.add(track);
                 Ok(name)
@@ -1171,7 +1254,8 @@ impl AppState {
     ///
     /// Returns a human-readable summary string suitable for the status bar, or
     /// an error string if the path does not exist / cannot be resolved at all.
-    fn add_path(&mut self, path: &std::path::Path) -> Result<String, String> {
+    #[allow(dead_code)]
+    pub(super) fn add_path(&mut self, path: &std::path::Path) -> Result<String, String> {
         if path.is_dir() {
             // Recursively collect all audio files under the directory.
             let files = Playlist::collect_audio_files(path);
@@ -1181,7 +1265,8 @@ impl AppState {
             }
             let mut added = 0usize;
             for file in files {
-                if let Ok(track) = Track::from_path(&file) {
+                if let Ok(mut track) = Track::from_path(&file) {
+                    self.fill_known_duration(&mut track);
                     self.playlist.add(track);
                     added += 1;
                 }
@@ -1203,60 +1288,14 @@ impl AppState {
     /// Returns `Some(BusEvent)` when the current track ended or failed, or
     /// `None` when nothing noteworthy is pending.  The caller is responsible
     /// for marking broken tracks and advancing the playlist.
-    fn poll_bus(&mut self) -> Option<BusEvent> {
+    pub(super) fn poll_bus(&mut self) -> Option<BusEvent> {
         self.player.poll_bus()
     }
 
     /// Advance a stop-with-fadeout ramp (Shift+V). Returns true on the tick
     /// that finishes it, by which point the player is already stopped — the
     /// caller uses that to reset the seek bar and status line.
-    fn poll_fadeout(&mut self) -> bool {
+    pub(super) fn poll_fadeout(&mut self) -> bool {
         self.player.poll_fadeout()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Window construction
-// ---------------------------------------------------------------------------
-
-/// Build and present the Sparkamp main window and companion playlist window.
-///
-/// ## Layout overview
-///
-/// **Main window** (always visible):
-/// ```text
-/// [mini viz | title / artist]   ← now-playing row
-/// [seek bar                  ]
-/// [⏮ ▶ ⏸ ⏹ ⏭  VOL  PL     ]   ← transport + PL toggle
-/// [status bar                ]
-/// ```
-///
-/// **Playlist window** (shown/hidden with `p` or the PL button):
-/// ```text
-/// [Playlist — N tracks              ]
-/// [+ File] [+ Files] [+ Folder] [✕ Remove]
-/// [scrollable playlist ListBox      ]
-/// [status bar                       ]
-/// ```
-///
-/// ## Playlist window positioning / snap
-///
-/// GTK4 on Wayland does **not** allow applications to control window
-/// positions programmatically — the compositor exclusively manages
-/// placement.  We use `set_transient_for` to hint to the window manager
-/// that the playlist window belongs with the main window; most WMs will
-/// group them in the taskbar and may place the playlist near the main
-/// window on first display.
-///
-/// On X11 / XWayland, position control is possible via platform-specific
-/// GDK APIs (`gdk_x11_surface_get_xid` + `XMoveWindow`), but doing so
-/// requires `unsafe` FFI and is not implemented here to keep the code
-/// portable.  The Winamp-style "snap within 10–20 px" behaviour would
-/// require that platform path.
-///
-/// In practice, with `set_transient_for` and a modern WM the windows
-/// behave as a logical unit: they share the taskbar and are typically
-/// raised/lowered together.
-/// Re-export built-in skin CSS from the skin module for use in this file.
-use crate::skin::{self, render_gtk_css, SkinVars};
-

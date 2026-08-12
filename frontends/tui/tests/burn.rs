@@ -63,6 +63,7 @@ fn fake_drive(id: &str, label: &str) -> crate::disc::OpticalDrive {
             kind: crate::disc::MediaKind::CdR,
             free_bytes: 700_000_000,
             capacity_bytes: 700_000_000,
+            typing_unknown: false,
         },
         toc: None,
         mount_path: None,

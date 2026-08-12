@@ -1,10 +1,11 @@
+use super::*;
+
 // Phase 11 A4: album gallery — a recycled-cell `GridView` of album cover
 // thumbnails, with a zoom control and a sort dropdown.
 //
-// This module is a plain `include!`d file (see the note at the top of
-// `mod.rs`), so it shares the flat window module with `media_library.rs`,
-// `util.rs`, etc. and can call their private helpers directly (`gtk_safe`,
-// `load_logo_pixbuf`, `ensure_media_lib_open`) with no `crate::` prefix.
+// `use super::*` above reaches the window module's private helpers directly
+// (`gtk_safe`, `load_logo_pixbuf`, `ensure_media_lib_open`) with no `crate::`
+// prefix, the same way this file saw them when it was `include!`d.
 //
 // Scope: build the grid + zoom + sort + lazy thumbnails + no-art
 // placeholder only. Sidebar/stack wiring, the album→Files drill-down, and
@@ -23,7 +24,7 @@
 ///
 /// Guards against `media_lib == None` (F12.3 `skip_db_load`): the grid is
 /// simply empty until the DB is opened, never a panic.
-fn build_album_gallery(
+pub(super) fn build_album_gallery(
     state: &Rc<RefCell<AppState>>,
     on_album_activate: Rc<dyn Fn(String, String)>,
     // Right-click "Play Album" / "Enqueue Album" — fire with (album,
@@ -543,7 +544,7 @@ fn build_album_gallery(
 /// scaled to the current thumb size. Same embedded `LOGO_BYTES` and
 /// opacity as the A1/A6 placeholders (`now_playing.rs`/`art_window.rs`),
 /// just without the caption text so it fits a small grid tile.
-fn set_gallery_placeholder(img: &Image, px: i32) {
+pub(super) fn set_gallery_placeholder(img: &Image, px: i32) {
     img.set_opacity(0.5);
     match load_logo_pixbuf(px) {
         Some(pb) => img.set_from_pixbuf(Some(&pb)),
@@ -554,7 +555,7 @@ fn set_gallery_placeholder(img: &Image, px: i32) {
 /// Dropdown index (0/1/2) for the current `gallery_sort` config string.
 /// Unknown values fall back to Artist, matching `gallery_sort_from_idx`'s
 /// own default.
-fn gallery_sort_idx(sort: &str) -> u32 {
+pub(super) fn gallery_sort_idx(sort: &str) -> u32 {
     match sort {
         "album" => 1,
         "year" => 2,
@@ -563,7 +564,7 @@ fn gallery_sort_idx(sort: &str) -> u32 {
 }
 
 /// Map a sort-dropdown selection to `AlbumSort`.
-fn gallery_sort_from_idx(idx: u32) -> crate::media_library::AlbumSort {
+pub(super) fn gallery_sort_from_idx(idx: u32) -> crate::media_library::AlbumSort {
     match idx {
         1 => crate::media_library::AlbumSort::Album,
         2 => crate::media_library::AlbumSort::Year,
@@ -573,7 +574,7 @@ fn gallery_sort_from_idx(idx: u32) -> crate::media_library::AlbumSort {
 
 /// The `gallery_sort` config string for an `AlbumSort` value — inverse of
 /// `gallery_sort_from_idx`/`gallery_sort_idx`.
-fn gallery_sort_key(sort: crate::media_library::AlbumSort) -> &'static str {
+pub(super) fn gallery_sort_key(sort: crate::media_library::AlbumSort) -> &'static str {
     match sort {
         crate::media_library::AlbumSort::Artist => "artist",
         crate::media_library::AlbumSort::Album => "album",

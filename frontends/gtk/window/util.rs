@@ -1,8 +1,10 @@
+use super::*;
+
 /// Read the user's GNOME accent-colour choice from gsettings and return
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.
 /// Returns the label for the repeat button based on the current mode.
-fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
+pub(super) fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
     match mode {
         // Song mode shows the dedicated "repeat single" icon. Off and All
         // share the generic "repeat" icon — the .mode-btn-active class on
@@ -15,7 +17,7 @@ fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
 
 /// Returns the visible text for the repeat button — mirrors the macOS
 /// PlayerWindow repeatLabel ("Repeat", "Repeat 1", "Repeat All").
-fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
+pub(super) fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
     match mode {
         crate::shuffle::RepeatMode::Off => "Repeat",
         crate::shuffle::RepeatMode::Song => "Repeat 1",
@@ -23,7 +25,7 @@ fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
     }
 }
 
-fn gtk_safe(s: &str) -> String {
+pub(super) fn gtk_safe(s: &str) -> String {
     if s.contains('\0') {
         s.replace('\0', "")
     } else {
@@ -31,7 +33,7 @@ fn gtk_safe(s: &str) -> String {
     }
 }
 
-fn sanitize_id3_text(s: &str) -> String {
+pub(super) fn sanitize_id3_text(s: &str) -> String {
     gtk_safe(s.trim())
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
@@ -43,7 +45,7 @@ fn sanitize_id3_text(s: &str) -> String {
 /// length cap. USLT lyrics are legitimately long, multi-line content — the
 /// 256-char cap was sized for single-line tag text (title/artist/...), and
 /// applying it to lyrics silently truncated anything longer on save.
-fn sanitize_id3_text_unbounded(s: &str) -> String {
+pub(super) fn sanitize_id3_text_unbounded(s: &str) -> String {
     gtk_safe(s.trim())
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
@@ -54,7 +56,7 @@ fn sanitize_id3_text_unbounded(s: &str) -> String {
 /// the shared cache has already been written (or cleared). Distinguishes a
 /// udisks listing failure — worth diagnosing (permissions, missing udisks2,
 /// ...) — from a panicked worker thread, which has no useful error to show.
-enum DeviceRefreshOutcome {
+pub(super) enum DeviceRefreshOutcome {
     Ok,
     UdisksError(zbus::Error),
     WorkerPanicked,
@@ -74,7 +76,7 @@ enum DeviceRefreshOutcome {
 /// runs after the cache is updated — ML passes its UI-rebuild hook, the
 /// player passes a no-op — so a future filter change here reaches both
 /// pollers instead of silently missing one.
-fn refresh_device_cache(
+pub(super) fn refresh_device_cache(
     current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
     in_flight: Rc<Cell<bool>>,
     on_done: Rc<dyn Fn(DeviceRefreshOutcome)>,
@@ -125,13 +127,31 @@ fn refresh_device_cache(
     });
 }
 
-fn sanitize_id3_numeric(s: &str) -> String {
+/// Shorten `s` for a one-line cell or label, counting **characters**.
+///
+/// `&s[..n]` is a byte index, and it panics outright when `n` lands inside a
+/// multi-byte character. A Spanish lyric ("Quién lo diría…") did exactly that
+/// to the Files view's lyric column, and because the slice happens inside a
+/// `SignalListItemFactory` bind — a GTK callback that cannot unwind — the
+/// panic aborted the process rather than raising (2026-08-11).
+///
+/// Newlines become spaces: every caller is painting a single-line widget, and
+/// a raw `\n` there makes one row taller than its neighbours.
+pub(super) fn truncate_display(s: &str, max_chars: usize) -> String {
+    let flat = s.replace(['\n', '\r'], " ");
+    match flat.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}…", &flat[..byte_idx]),
+        None => flat,
+    }
+}
+
+pub(super) fn sanitize_id3_numeric(s: &str) -> String {
     let trimmed = s.trim();
     let numeric: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
     numeric.chars().take(8).collect()
 }
 
-fn format_last_played(iso_timestamp: &str) -> String {
+pub(super) fn format_last_played(iso_timestamp: &str) -> String {
     if iso_timestamp.is_empty() {
         return String::new();
     }
@@ -163,7 +183,7 @@ fn format_last_played(iso_timestamp: &str) -> String {
 }
 
 #[allow(deprecated)] // EntryCompletion/ListStore — no GTK4 replacement yet
-fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
+pub(super) fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
     // Free-text entry with typeahead over the predefined ID3v1 list only —
     // matches the mac editor (D13): suggestions come from the list, but
     // any typed value is accepted and saved verbatim.
@@ -187,7 +207,7 @@ fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
 
 /// Make a sidebar/manage playlist row draggable, carrying `pl:<id>` so a drop
 /// onto a device row can send the whole playlist.
-fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
+pub(super) fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
     let src = gtk4::DragSource::new();
     src.set_actions(gdk::DragAction::COPY);
     let payload = format!("pl:{id}");
@@ -200,7 +220,7 @@ fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
 /// Index of the ML sidebar's Devices header (= the end of the Playlists
 /// section). New playlist rows insert here so they land inside the Playlists
 /// section rather than below Devices.
-fn sidebar_pl_end_index(sidebar: &gtk4::ListBox) -> i32 {
+pub(super) fn sidebar_pl_end_index(sidebar: &gtk4::ListBox) -> i32 {
     let mut idx = 0i32;
     while let Some(r) = sidebar.row_at_index(idx) {
         if r.widget_name() == "devices" {
@@ -212,7 +232,7 @@ fn sidebar_pl_end_index(sidebar: &gtk4::ListBox) -> i32 {
 }
 
 /// Find a ListBoxRow by its widget name.
-fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
+pub(super) fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
     let mut child = listbox.first_child();
     while let Some(c) = child {
         if let Ok(row) = c.clone().downcast::<gtk4::ListBoxRow>() {
@@ -227,7 +247,7 @@ fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBox
 
 /// Show a modal alert parented to `parent` (avoids the "GtkDialog mapped
 /// without a transient parent" warning).
-fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
+pub(super) fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
     let alert = gtk4::AlertDialog::builder()
         .message("Sparkamp")
         .detail(msg)
@@ -315,12 +335,12 @@ pub(super) fn queue_paths_to_drive(
 
 /// Embedded app logo PNG bytes (compiled into the binary).
 /// Replace `square logo.png` in the project root with the Sparkamp logo asset.
-static LOGO_BYTES: &[u8] = include_bytes!("../../../square logo.png");
+pub(super) static LOGO_BYTES: &[u8] = include_bytes!("../../../square logo.png");
 
 /// Load the app logo as a pixbuf scaled to `size × size` pixels.
 /// Returns `None` if the PNG fails to decode (handled gracefully so the
 /// rest of the UI still starts up even if the asset is missing).
-fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
+pub(super) fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
     let loader = gdk_pixbuf::PixbufLoader::new();
     loader.write(LOGO_BYTES).ok()?;
     loader.close().ok()?;
@@ -346,7 +366,7 @@ fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
 /// 3. **Metadata phase** – patch `playlist.tracks[scan_start + idx]` in O(1);
 ///    rebuild every 5 ticks (~500 ms) so tags fill in gradually.
 /// 4. **Done** – drain any remaining metadata, final rebuild, clear scan state.
-fn start_playlist_scan_poller(
+pub(super) fn start_playlist_scan_poller(
     state: std::rc::Rc<RefCell<AppState>>,
     status: Label,
     rebuild: std::rc::Rc<dyn Fn()>,
@@ -552,7 +572,7 @@ fn start_playlist_scan_poller(
 /// Avoids defaulting to Sparkamp's managed `~/.config/sparkamp/playlists/`
 /// directory — saving there has the side effect of registering that
 /// internal dir as a watched folder via `add_playlist_file`.
-fn default_playlist_save_dir(
+pub(super) fn default_playlist_save_dir(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
 ) -> std::path::PathBuf {
     if let Some(lib) = state.borrow().media_lib.as_ref() {
@@ -577,7 +597,7 @@ fn default_playlist_save_dir(
 /// absolute path (extension is forced to `.m3u8` if the user didn't add
 /// one).  Single helper used by every playlist-creation flow so all
 /// paths share the same defaults.
-fn run_playlist_save_dialog<W, F>(
+pub(super) fn run_playlist_save_dialog<W, F>(
     state: std::rc::Rc<std::cell::RefCell<AppState>>,
     win: W,
     initial_stem: &str,
@@ -618,14 +638,14 @@ thread_local! {
     /// target playlist id so the open editor reloads when its current
     /// playlist is the one being modified.  No-op when no ML window is
     /// open or the hook hasn't been registered yet.
-    static EDITOR_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn(i64)>>> =
+    pub(super) static EDITOR_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn(i64)>>> =
         const { RefCell::new(None) };
 
     /// Refresh the editor's currently-open playlist, regardless of which
     /// pid changed.  Fired after a track is recorded as played so the
     /// editor reflects updated last_played / play_count + the unread
     /// glyph clears alongside the files view's own refresh.
-    static EDITOR_CURRENT_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
+    pub(super) static EDITOR_CURRENT_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
         const { RefCell::new(None) };
 
     /// Re-sync the ML window's playlist navigation (sidebar sub-rows +
@@ -633,11 +653,11 @@ thread_local! {
     /// created outside the ML window (e.g. "Add to new playlist" in the
     /// active-playlist window) so it appears immediately.  No-op when no
     /// ML window is open.
-    static PLAYLIST_NAV_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
+    pub(super) static PLAYLIST_NAV_REFRESH_HOOK: RefCell<Option<Rc<dyn Fn()>>> =
         const { RefCell::new(None) };
 }
 
-fn notify_playlist_changed(pid: i64) {
+pub(super) fn notify_playlist_changed(pid: i64) {
     EDITOR_REFRESH_HOOK.with(|h| {
         if let Some(cb) = h.borrow().as_ref() {
             cb(pid);
@@ -645,7 +665,7 @@ fn notify_playlist_changed(pid: i64) {
     });
 }
 
-fn notify_editor_refresh() {
+pub(super) fn notify_editor_refresh() {
     EDITOR_CURRENT_REFRESH_HOOK.with(|h| {
         if let Some(cb) = h.borrow().as_ref() {
             cb();
@@ -653,7 +673,7 @@ fn notify_editor_refresh() {
     });
 }
 
-fn notify_playlist_nav_refresh() {
+pub(super) fn notify_playlist_nav_refresh() {
     PLAYLIST_NAV_REFRESH_HOOK.with(|h| {
         if let Some(cb) = h.borrow().as_ref() {
             cb();
@@ -666,7 +686,7 @@ fn notify_playlist_nav_refresh() {
 /// playlist (each bound to `append_action(<playlist-id>: i64)`).  Always
 /// returns a menu — "New Playlist…" is shown even when no saved playlists
 /// exist so the user can seed a fresh playlist from any selection.
-fn build_add_to_playlist_submenu(
+pub(super) fn build_add_to_playlist_submenu(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
     new_action: &str,
     append_action: &str,
@@ -700,7 +720,7 @@ fn build_add_to_playlist_submenu(
 /// relative to `root`.  Used by the editor's drop target to resolve a drop
 /// coordinate that lands between two rows — the picked widget at that y is
 /// the inner ListView, not a cell, so a coordinate-to-row scan is needed.
-fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32)> {
+pub(super) fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32)> {
     use gtk4::prelude::*;
     let mut out: Vec<(usize, f32, f32)> = Vec::new();
     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -736,7 +756,7 @@ fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32)> {
 
 /// Show a modal AlertDialog reporting a playlist-save failure.
 /// Caller-side error reporting for [`run_playlist_save_dialog`] callbacks.
-fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err: &anyhow::Error) {
+pub(super) fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err: &anyhow::Error) {
     let dialog = gtk4::AlertDialog::builder()
         .message("Couldn't save playlist")
         .detail(format!(
@@ -818,7 +838,98 @@ pub(super) fn context_popover(menu: &gio::Menu) -> gtk4::PopoverMenu {
     // No arrow — a right-click menu points AT the cursor, it doesn't need a
     // tail (WebKit disables it on context menus for the same reason).
     popover.set_has_arrow(false);
+    // Open with the cursor at the menu's top-LEFT corner, which is what every
+    // other context menu on the desktop does.
+    //
+    // A GTK popover's default is to centre itself on its pointing-to rect,
+    // because it is built for "point at this widget" (a MenuButton's dropdown,
+    // where centring under the button is right). Callers here anchor to a 1x1
+    // rect at the pointer instead, and the default made every right-click menu
+    // straddle the cursor and hang below it (2026-08-09).
+    //
+    // `Align::Start` aligns the popover's start edge to the anchor's, so it
+    // grows right in LTR and left in RTL — matching the platform convention in
+    // both, which a hardcoded left would not. `Bottom` is already the default
+    // position; it is set explicitly so the pairing is not silently undone by
+    // a future change to that default.
+    popover.set_halign(gtk4::Align::Start);
+    popover.set_position(gtk4::PositionType::Bottom);
     popover
+}
+
+/// Give one `ColumnView` cell the standard right-click behaviour: select the
+/// row under the pointer if it is not already part of the selection, then hand
+/// the caller the click point translated into `anchor`'s coordinate space so it
+/// can pop its menu there.
+///
+/// This has to be attached per cell, not to the scrolling container, and that
+/// is the whole point. GTK4 gives `ListBox` a `row_at_y` but `ColumnView` has
+/// no equivalent, so a container-level gesture cannot tell which row it hit —
+/// it can only read whatever was already selected. That is exactly how the disc
+/// and device views behaved: right-click did nothing at all until you had
+/// left-clicked a row first (reported 2026-08-10). A cell already knows its
+/// `ListItem`, so attaching here is what makes the row identifiable.
+///
+/// An existing multi-selection is preserved when the clicked row is part of it,
+/// so right-clicking inside a selection acts on the whole selection rather than
+/// collapsing it to one row.
+///
+/// Capture phase, because `ColumnView`'s own secondary-button handler would
+/// otherwise change the selection before this can inspect it.
+pub(super) fn attach_cell_context_menu(
+    li: &gtk4::ListItem,
+    child: &gtk4::Widget,
+    selection: &gtk4::MultiSelection,
+    anchor: &gtk4::Widget,
+    on_popup: impl Fn(f64, f64) + 'static,
+) {
+    use gtk4::prelude::*;
+    let gesture = gtk4::GestureClick::new();
+    gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+    gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let li_g = li.clone();
+    let sel = selection.clone();
+    let anchor_g = anchor.clone();
+    let on_popup = std::rc::Rc::new(on_popup);
+    gesture.connect_pressed(move |gest, n_press, x, y| {
+        if n_press != 1 {
+            return;
+        }
+        let Some(item) = li_g.item() else { return };
+        let mut clicked: Option<u32> = None;
+        for i in 0..sel.n_items() {
+            if sel.item(i).map(|m| m == item).unwrap_or(false) {
+                clicked = Some(i);
+                break;
+            }
+        }
+        if let Some(idx) = clicked {
+            if !sel.is_selected(idx) {
+                sel.unselect_all();
+                sel.select_item(idx, true);
+            }
+        }
+        // The gesture reports coordinates in the cell's space; the popover is
+        // parented to `anchor`, so it needs them there instead.
+        let (px, py) = li_g
+            .child()
+            .and_then(|c| c.translate_coordinates(&anchor_g, x, y))
+            .unwrap_or((x, y));
+        gest.set_state(gtk4::EventSequenceState::Claimed);
+        // Pop the menu on the next main-loop turn, NOT inline.
+        //
+        // The click above may have just changed the selection, and the menu
+        // that is about to be built reads that selection to decide what it
+        // acts on — and whether to appear at all. Popping in the same frame
+        // meant the first right-click on an unselected row built its menu
+        // against the pre-click selection and bailed out as "nothing
+        // selected", so it took two right-clicks: one to select, one to open
+        // (2026-08-10). Deferring lets the selection-changed cascade — and
+        // the row rebinding it triggers — finish first.
+        let cb = on_popup.clone();
+        gtk4::glib::idle_add_local_once(move || cb(px, py));
+    });
+    child.add_controller(gesture);
 }
 
 pub(super) fn build_send_to_menu(
@@ -889,10 +1000,9 @@ pub(super) fn build_send_to_menu(
     menu
 }
 
-// Named `send_to_tests` (not `tests`) because util.rs is `include!`d flat
-// into the `window` module alongside tests.rs, which already defines a
-// `mod tests` in that same namespace — a second `mod tests` here would
-// collide.
+// Named `send_to_tests` rather than `tests` — a leftover from when this file
+// was `include!`d flat into the `window` module next to tests.rs. Kept so the
+// test paths in CI logs and `cargo test <filter>` habits stay put.
 #[cfg(test)]
 mod send_to_tests {
     use super::*;

@@ -311,28 +311,6 @@ pub unsafe extern "C" fn sparkamp_set_autoplay_on_add(ctx: *mut SparkampCtx, val
     ctx.config.behavior.autoplay_on_add = value;
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_get_ml_rescan_interval(ctx: *const SparkampCtx) -> c_int {
-    if ctx.is_null() {
-        return 0;
-    }
-    let ctx = &*ctx;
-    ctx.config.media_library.rescan_interval_mins as c_int
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_set_ml_rescan_interval(ctx: *mut SparkampCtx, mins: c_int) {
-    if ctx.is_null() {
-        return;
-    }
-    let ctx = &mut *ctx;
-    ctx.config.media_library.rescan_interval_mins = if mins <= 0 {
-        0
-    } else {
-        (mins as u64).max(1)
-    };
-}
-
 // ---------------------------------------------------------------------------
 // Watch folders (Phase 8 Task 9) — live background filesystem watcher.
 // Plain config mutators, mirroring the sparkamp_get/set_stop_after_current

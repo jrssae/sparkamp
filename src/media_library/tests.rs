@@ -665,7 +665,7 @@ fn needs_metadata_scan_never_scanned() {
     let path = file_path.to_str().unwrap();
 
     // Never scanned - should need scan
-    assert!(MediaLibrary::needs_metadata_scan(path, None));
+    assert!(MediaLibrary::needs_metadata_scan(path, None, None));
 }
 
 #[test]
@@ -673,7 +673,8 @@ fn needs_metadata_scan_file_missing() {
     // File doesn't exist - should need scan
     assert!(MediaLibrary::needs_metadata_scan(
         "/nonexistent/file.mp3",
-        Some("2024-01-15T10:30:00Z")
+        Some("2024-01-15T10:30:00Z"),
+        None
     ));
 }
 
@@ -690,7 +691,7 @@ fn needs_metadata_scan_file_changed_after_scan() {
     let old_timestamp = "2020-01-01T00:00:00Z";
 
     // File was modified after scan - should need scan
-    assert!(MediaLibrary::needs_metadata_scan(path, Some(old_timestamp)));
+    assert!(MediaLibrary::needs_metadata_scan(path, Some(old_timestamp), None));
 }
 
 #[test]
@@ -705,7 +706,83 @@ fn needs_metadata_scan_file_unchanged() {
     let current_ts = crate::timeutil::format_current_timestamp();
 
     // File hasn't changed since scan - should NOT need scan
-    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts)));
+    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts), None));
+}
+
+/// The bug the `file_mtime` comparison exists to fix: an mtime that moves
+/// BACKWARDS. Restoring from a backup, `rsync -t`, unzipping with preserved
+/// timestamps, or a tag editor that puts mtime back all leave a file that
+/// genuinely changed but now looks older than the scan that read it. The old
+/// `mtime > last_scanned + 2` rule returned false here, forever.
+#[test]
+fn needs_metadata_scan_catches_mtime_moving_backwards() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.mp3");
+    fs::write(&file_path, b"fake").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    // The file's mtime right now, and a scan that ran well after it.
+    let actual_mtime = crate::timeutil::format_system_time(
+        fs::metadata(&file_path).unwrap().modified().unwrap(),
+    );
+    let scanned_later = "2099-01-01T00:00:00Z";
+
+    // Recorded mtime matches the file: unchanged, even though last_scanned is
+    // in the future relative to it.
+    assert!(!MediaLibrary::needs_metadata_scan(
+        path,
+        Some(scanned_later),
+        Some(&actual_mtime)
+    ));
+
+    // Now the row remembers a DIFFERENT (newer) mtime than the file has —
+    // exactly the backwards case. It must rescan.
+    assert!(
+        MediaLibrary::needs_metadata_scan(path, Some(scanned_later), Some("2098-06-01T00:00:00Z")),
+        "an mtime older than the recorded one still means the file changed"
+    );
+}
+
+/// The other half: the old rule's 2-second buffer meant a file touched within
+/// 2 s of the scan that read it was never rescanned. An exact comparison has
+/// no window to fall through.
+#[test]
+fn needs_metadata_scan_has_no_two_second_blind_spot() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.mp3");
+    fs::write(&file_path, b"fake").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    let actual_mtime = crate::timeutil::format_system_time(
+        fs::metadata(&file_path).unwrap().modified().unwrap(),
+    );
+    // A scan stamped one second after the file's mtime — inside the old
+    // buffer, so the legacy rule skipped it.
+    let scanned = crate::timeutil::parse_iso_timestamp(&actual_mtime).unwrap() + 1;
+    let scanned_ts = crate::timeutil::format_system_time(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(scanned),
+    );
+
+    // Recorded mtime disagrees with the file -> rescan, buffer or not.
+    assert!(MediaLibrary::needs_metadata_scan(
+        path,
+        Some(&scanned_ts),
+        Some("2000-01-01T00:00:00Z")
+    ));
+}
+
+/// A row from before `file_mtime` existed passes `None` and must behave
+/// exactly as it did, so upgrading does not rescan an entire library.
+#[test]
+fn needs_metadata_scan_legacy_rows_keep_the_old_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.mp3");
+    fs::write(&file_path, b"fake").unwrap();
+    let path = file_path.to_str().unwrap();
+
+    let current_ts = crate::timeutil::format_current_timestamp();
+    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts), None));
+    assert!(MediaLibrary::needs_metadata_scan(path, Some("2020-01-01T00:00:00Z"), None));
 }
 
 // ── scan_folder ─────────────────────────────────────────────────────────
@@ -2108,4 +2185,265 @@ fn add_played_inside_library_attaches_to_folder() {
         Some(folder_id),
         "a played file under a watched folder must be attached to it, not NULL"
     );
+}
+
+// ── track_by_path: the two-spellings case ──────────────────────────────
+
+/// A file indexed under one spelling of its directory must still be found
+/// when looked up through another that resolves to the same place.
+///
+/// This is not hypothetical tidiness. On an image-based system `/home` is a
+/// symlink to `/var/home`, so a library scanned as `/home/u/x.mp3` and a file
+/// dialog returning `/var/home/u/x.mp3` disagree about one file. The exact
+/// match that `track_by_path` used to do rejected it, and the playlist editor
+/// read that rejection as "not in the library" and silently declined to add
+/// the track — a save that appeared to do nothing at all.
+#[test]
+fn track_by_path_resolves_a_symlinked_spelling_of_the_same_file() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+
+    // real/track.mp3, plus link/ -> real/, so the file has two valid names.
+    let real = root.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let file_path = real.join("track.mp3");
+    fs::write(&file_path, b"fake audio data").unwrap();
+
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // Index it under the real spelling, the way a folder scan would.
+    let indexed = file_path.to_str().unwrap();
+    let folder_id = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    lib.upsert_track(folder_id, indexed).unwrap();
+
+    // The indexed spelling still works — the fast path is untouched.
+    assert!(lib.track_by_path(indexed).is_ok(), "exact match must keep working");
+
+    // The symlinked spelling names the same file and must resolve to it.
+    let via_link = link.join("track.mp3");
+    let found = lib
+        .track_by_path(via_link.to_str().unwrap())
+        .expect("a symlinked spelling of an indexed file must be found");
+    assert_eq!(found.path, indexed, "must resolve to the indexed row, not a copy");
+
+    // A genuinely absent file must still be an error, not a false positive
+    // from the filename-narrowed fallback.
+    let absent = root.path().join("nowhere").join("track.mp3");
+    assert!(
+        lib.track_by_path(absent.to_str().unwrap()).is_err(),
+        "a path that does not exist must not match by filename alone"
+    );
+}
+
+/// The same playlist file registered under two spellings must produce one row.
+///
+/// Saving a playlist registers the path the user picked; the filesystem
+/// watcher then reports the same write under the path `notify` resolved it
+/// to. On a system where `/home` is a symlink to `/var/home` those are
+/// different strings for one file, and `INSERT OR IGNORE` — which
+/// deduplicates on the string — let both in, so the sidebar listed the
+/// playlist twice.
+#[test]
+fn add_playlist_file_does_not_duplicate_a_symlinked_spelling() {
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+
+    let real = root.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let pl = real.join("mix.m3u8");
+    fs::write(&pl, b"#EXTM3U\n").unwrap();
+
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let first = lib.add_playlist_file(pl.to_str().unwrap()).unwrap();
+    let again = lib
+        .add_playlist_file(link.join("mix.m3u8").to_str().unwrap())
+        .unwrap();
+
+    assert_eq!(first, again, "both spellings must resolve to one playlist row");
+    assert_eq!(
+        lib.all_playlists().unwrap().len(),
+        1,
+        "the sidebar reads all_playlists, so a second row is a visible duplicate"
+    );
+
+    // A genuinely different playlist with the same filename elsewhere must
+    // still register separately — the filename narrowing must not over-match.
+    let other = root.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let other_pl = other.join("mix.m3u8");
+    fs::write(&other_pl, b"#EXTM3U\n").unwrap();
+    let third = lib.add_playlist_file(other_pl.to_str().unwrap()).unwrap();
+    assert_ne!(third, first, "a different file sharing a name is not the same playlist");
+    assert_eq!(lib.all_playlists().unwrap().len(), 2);
+}
+
+/// A folder scan must not re-add a playlist under a second spelling.
+///
+/// The `folders` table can hold two names for one directory (`/home/u/f` and
+/// `/var/home/u/f` where `/home` is a symlink). Scanning both walked the same
+/// playlist twice, and the scan loops had their own INSERT keyed on the path
+/// string — so guarding only `add_playlist_file` left this route wide open,
+/// which is exactly how the duplicate survived the first fix.
+#[test]
+fn scanning_a_folder_twice_under_two_spellings_adds_one_playlist() {
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+
+    let real = root.path().join("real");
+    fs::create_dir(&real).unwrap();
+    fs::write(real.join("set.m3u8"), b"#EXTM3U\n").unwrap();
+
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // Both spellings registered as folders, as a real library ends up.
+    let a = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    let b = lib.add_folder(link.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(a, real.to_str().unwrap(), false).unwrap();
+    lib.rescan_folder_fast(b, link.to_str().unwrap(), false).unwrap();
+
+    assert_eq!(
+        lib.all_playlists().unwrap().len(),
+        1,
+        "one playlist file must yield one row however many spellings scan it"
+    );
+}
+
+/// Two names for one file with no symlink anywhere must still be one row.
+///
+/// A hard link is the testable stand-in for the case that actually bit:
+/// `/home` and `/var/home` bind-mounting the same content. Neither is a
+/// symlink, so `fs::canonicalize` resolves each name to itself and a
+/// canonical-path comparison reports two different files. Two fixes built on
+/// that comparison shipped and changed nothing. `(device, inode)` is the
+/// identity that survives it — this test fails under canonicalisation and
+/// passes under stat.
+#[test]
+fn add_playlist_file_dedupes_a_hard_link_not_just_a_symlink() {
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+
+    let a = dir.path().join("a.m3u8");
+    fs::write(&a, b"#EXTM3U\n").unwrap();
+    // Same inode, different path, and neither path is a link to the other as
+    // far as path resolution is concerned.
+    let b = dir.path().join("b.m3u8");
+    fs::hard_link(&a, &b).unwrap();
+    assert_eq!(
+        fs::canonicalize(&a).unwrap().parent(),
+        fs::canonicalize(&b).unwrap().parent(),
+        "sanity: same directory",
+    );
+    assert_ne!(
+        fs::canonicalize(&a).unwrap(),
+        fs::canonicalize(&b).unwrap(),
+        "canonicalize cannot see that these are one file — the whole point",
+    );
+
+    let first = lib.add_playlist_file(a.to_str().unwrap()).unwrap();
+    let again = lib.add_playlist_file(b.to_str().unwrap()).unwrap();
+    assert_eq!(first, again, "one inode must mean one playlist row");
+    assert_eq!(lib.all_playlists().unwrap().len(), 1);
+}
+
+// ── path canonicalization (2026-08-11) ─────────────────────────────────
+//
+// A symlinked folder must not make the library hold every file twice. The
+// live case was `/mnt` -> `var/mnt` on Fedora ostree, which grew 8,417
+// duplicate rows before it was noticed.
+
+/// `dir` plus a sibling symlink pointing at it, so the same files have two
+/// valid spellings.
+#[cfg(unix)]
+fn dir_with_symlink_alias() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let parent = tempfile::tempdir().unwrap();
+    let real = parent.path().join("real_music");
+    fs::create_dir(&real).unwrap();
+    for i in 0..3 {
+        fs::write(real.join(format!("t{i}.mp3")), b"fake audio data").unwrap();
+    }
+    let alias = parent.path().join("alias_music");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    // `real` has to be the spelling the library will store, because callers
+    // compare it against `path` columns directly. On macOS the tempdir itself
+    // sits under `/var` -> `/private/var`, so the unresolved form is already an
+    // alias and every such comparison missed.
+    let real = real.canonicalize().unwrap();
+    (parent, real, alias)
+}
+
+#[cfg(unix)]
+#[test]
+fn scanning_through_a_symlink_does_not_duplicate_rows() {
+    let (_parent, real, alias) = dir_with_symlink_alias();
+    let (lib, _db) = temp_lib();
+
+    // Add via the symlink first — the spelling a file chooser would hand us.
+    let id = lib.add_folder(alias.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(id, alias.to_str().unwrap(), false)
+        .unwrap();
+    let after_alias: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after_alias, 3, "three files, three rows");
+
+    // Now the real path. Same files, so still three rows and one folder.
+    let id2 = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(id2, real.to_str().unwrap(), false)
+        .unwrap();
+    let after_real: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after_real, 3, "the same files must not be added twice");
+    assert_eq!(id, id2, "both spellings resolve to one folder row");
+}
+
+#[cfg(unix)]
+#[test]
+fn normalize_track_paths_merges_an_alias_row_and_keeps_its_plays() {
+    let (_parent, real, alias) = dir_with_symlink_alias();
+    let (lib, _db) = temp_lib();
+    let fid = lib.add_folder(real.to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(fid, real.to_str().unwrap(), false)
+        .unwrap();
+
+    // Forge the pre-fix state: a second row for one file under the alias
+    // spelling, carrying the play history the canonical row lacks.
+    let canonical = real.join("t0.mp3").to_string_lossy().into_owned();
+    let aliased = alias.join("t0.mp3").to_string_lossy().into_owned();
+    lib.conn
+        .execute(
+            "INSERT INTO tracks (path, folder_id, filename, play_count, last_played)
+             VALUES (?1, ?2, 't0.mp3', 7, '2026-08-01T00:00:00Z')",
+            rusqlite::params![aliased, fid],
+        )
+        .unwrap();
+    assert!(lib.needs_path_normalization(), "the alias row is detectable");
+
+    let (moved, merged) = lib.normalize_track_paths().unwrap();
+    assert_eq!((moved, merged), (0, 1), "one alias merged, none relocated");
+
+    let total: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(total, 3, "the duplicate is gone");
+
+    let (plays, last): (i64, Option<String>) = lib
+        .conn
+        .query_row(
+            "SELECT play_count, last_played FROM tracks WHERE path = ?1",
+            rusqlite::params![canonical],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(plays, 7, "play history survives the merge");
+    assert_eq!(last.as_deref(), Some("2026-08-01T00:00:00Z"));
+    assert!(!lib.needs_path_normalization(), "and it stays repaired");
 }

@@ -358,6 +358,20 @@ pub(super) fn build_burn_panel(
     empty_hint.add_css_class("dim-label");
     root.append(&empty_hint);
 
+    // Why both burn buttons are insensitive, when the reason isn't the queue.
+    // A dead button with no explanation is the worst version of this: the disc
+    // is writable, the burn would even unmount it itself (burn.rs's
+    // `unmount_for_burn`), but detection couldn't type the media and
+    // `erase_decision` has to refuse what it can't identify.
+    let burn_block_hint = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .visible(false)
+        .build();
+    burn_block_hint.add_css_class("broken");
+    root.append(&burn_block_hint);
+
     // Capacity meters — over-capacity turns the line red and blocks that
     // mode's burn button.
     let audio_meter = Label::builder().halign(Align::Start).xalign(0.0).build();
@@ -469,6 +483,7 @@ pub(super) fn build_burn_panel(
         let queue = queue.clone();
         let queue_scroll = queue_scroll.clone();
         let empty_hint = empty_hint.clone();
+        let burn_block_hint = burn_block_hint.clone();
         let audio_meter = audio_meter.clone();
         let data_meter = data_meter.clone();
         let btn_audio = btn_audio.clone();
@@ -569,6 +584,21 @@ pub(super) fn build_burn_panel(
             btn_audio.set_sensitive(idle && writable && !empty && !over_audio);
             btn_data.set_sensitive(idle && writable && !empty && !over_data);
             meta_row.set_visible(writable);
+
+            // Say why, when "why" isn't visible anywhere else on the panel.
+            // An over-capacity queue already turns its own meter red and an
+            // empty queue has its own hint, so this covers the one case with
+            // no other tell: the media couldn't be typed, so `erase_decision`
+            // refused a disc that is very likely writable.
+            burn_block_hint.set_visible(!writable && drive.media.typing_unknown);
+            if drive.media.typing_unknown {
+                burn_block_hint.set_text(
+                    "Can't identify this disc — the system has the drive open, \
+                     which is usually because it mounted the disc to browse it. \
+                     Unmount it (from Files, or `udisksctl unmount -b <device>`) \
+                     and this panel will pick it up within a couple of seconds.",
+                );
+            }
         })
     };
 

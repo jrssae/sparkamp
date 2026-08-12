@@ -1,8 +1,10 @@
+use super::*;
+
 /// Wrap a settings tab's content in a vertical scroller so a tab taller than
 /// the window scrolls instead of being clipped. The scroller fills the tab
 /// area (the window carries a fixed default height and is resizable), so short
 /// tabs show empty space below rather than shrinking the window.
-fn settings_scroll_page(
+pub(super) fn settings_scroll_page(
     child: &impl gtk4::prelude::IsA<gtk4::Widget>,
 ) -> gtk4::ScrolledWindow {
     gtk4::ScrolledWindow::builder()
@@ -12,7 +14,7 @@ fn settings_scroll_page(
         .build()
 }
 
-fn open_settings_window(
+pub(super) fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
     initial_tab: Option<u32>,
@@ -1564,6 +1566,21 @@ fn open_settings_window(
                                     return;
                                 }
                             };
+                            // `add_folder` stores the folder's canonical path.
+                            // If tracks were already indexed under another
+                            // spelling of it (a symlinked pick — /mnt vs
+                            // /var/mnt), the scan below would insert a second
+                            // row for every one of them. Repair first; the
+                            // check is pure SQL, and this is already a worker
+                            // thread.
+                            if lib.needs_path_normalization() {
+                                match lib.normalize_track_paths() {
+                                    Ok((moved, merged)) => eprintln!(
+                                        "[library] path normalization: {moved} moved, {merged} duplicates merged"
+                                    ),
+                                    Err(e) => eprintln!("[library] path normalization failed: {e}"),
+                                }
+                            }
                             if let Err(e) =
                                 lib.rescan_folder_fast(folder_id, &path_for_thread, remove_missing)
                             {
@@ -1651,6 +1668,19 @@ fn open_settings_window(
                             }
                         };
 
+                        // Same repair as the other add-folder path above: the
+                        // folder is stored canonicalized, so tracks indexed
+                        // under a different spelling of it must be moved
+                        // before the scan re-adds them.
+                        if lib.needs_path_normalization() {
+                            match lib.normalize_track_paths() {
+                                Ok((moved, merged)) => eprintln!(
+                                    "[library] path normalization: {moved} moved, {merged} duplicates merged"
+                                ),
+                                Err(e) => eprintln!("[library] path normalization failed: {e}"),
+                            }
+                        }
+
                         // Phase 1: fast scan
                         if let Err(e) =
                             lib.rescan_folder_fast(folder_id, &path_for_thread, remove_missing)
@@ -1710,11 +1740,7 @@ fn open_settings_window(
                             match result {
                                 Err(e) => status_rc.set_text(&e),
                                 Ok((_, count)) => {
-                                    let path_short = if path_str_clone.len() > 40 {
-                                        format!("{}…", &path_str_clone[..40])
-                                    } else {
-                                        path_str_clone.clone()
-                                    };
+                                    let path_short = truncate_display(&path_str_clone, 40);
                                     status_rc.set_text(&format!(
                                         "Added: {} ({} tracks)",
                                         path_short, count

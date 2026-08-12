@@ -162,13 +162,6 @@ struct CopyResult {
 }
 
 #[derive(Serialize)]
-struct PlaylistApplyResult {
-    pushed: usize,
-    pulled: usize,
-    skipped: usize,
-}
-
-#[derive(Serialize)]
 struct PlaylistSendResult {
     copied: usize,
     ok: bool,
@@ -344,56 +337,6 @@ pub unsafe extern "C" fn sparkamp_device_copy(
         }
     }
     json_out(&CopyResult { copied, skipped, bytes })
-}
-
-/// Plan playlist sync: JSON array of the device's per-playlist sync items.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_device_playlist_plan(
-    _ctx: *mut SparkampCtx,
-    device_json: *const c_char,
-    playlist_format: c_int,
-) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
-        return std::ptr::null_mut();
-    };
-    json_out(&plan::device_playlist_sync_plan(&lib, &dev, ext_for_format(playlist_format)))
-}
-
-/// Apply playlist sync. The live plan is re-derived (the call is advisory); each
-/// non-conflict item is pushed or pulled. Returns `{pushed, pulled, skipped}`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_device_playlist_apply(
-    _ctx: *mut SparkampCtx,
-    device_json: *const c_char,
-    playlist_format: c_int,
-) -> *mut c_char {
-    let (Some(lib), Some(dev)) = (open_lib(), json_in::<Device>(device_json)) else {
-        return std::ptr::null_mut();
-    };
-    use crate::devices::sync::PlaylistSyncDir;
-    let ext = ext_for_format(playlist_format);
-    let (mut pushed, mut pulled, mut skipped) = (0usize, 0usize, 0usize);
-    for item in plan::device_playlist_sync_plan(&lib, &dev, ext) {
-        match item.dir {
-            PlaylistSyncDir::Push => {
-                let (_, ok) = plan::apply_playlist_push(&lib, &dev, &item);
-                if ok {
-                    pushed += 1;
-                } else {
-                    skipped += 1;
-                }
-            }
-            PlaylistSyncDir::Pull => {
-                if plan::apply_playlist_pull(&lib, &item) {
-                    pulled += 1;
-                } else {
-                    skipped += 1;
-                }
-            }
-            PlaylistSyncDir::None | PlaylistSyncDir::Conflict => skipped += 1,
-        }
-    }
-    json_out(&PlaylistApplyResult { pushed, pulled, skipped })
 }
 
 /// Send one library playlist (by DB id) to the device as a unit: copy its

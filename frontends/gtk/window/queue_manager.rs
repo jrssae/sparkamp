@@ -1,10 +1,11 @@
+use super::*;
+
 // Play-queue panel — the "Queue mode" content of the combined Jump/Queue
 // window (player.rs). Lists the manual play queue in order with reorder /
 // remove / clear / randomize controls and double-click "play now". Built once
 // and embedded in the jump window; its rebuild closure is stashed in a
 // thread_local so advance paths that drain the queue during playback can
 // live-refresh it (see `refresh_queue_manager`).
-// (include!d into window/mod.rs, so no module-level `//!` docs here.)
 
 use std::cell::RefCell as StdRefCell;
 
@@ -20,7 +21,7 @@ thread_local! {
 }
 
 /// Register the jump-window search-list rebuild closure (see `JUMP_LIST_REFRESH`).
-fn set_jump_refresh(cb: Rc<dyn Fn()>) {
+pub(super) fn set_jump_refresh(cb: Rc<dyn Fn()>) {
     JUMP_LIST_REFRESH.with(|r| *r.borrow_mut() = Some(cb));
 }
 
@@ -28,7 +29,7 @@ fn set_jump_refresh(cb: Rc<dyn Fn()>) {
 /// queue panel AND the Jump-mode search list (both show `[n]` badges). Called
 /// from the GTK advance paths after a queued entry is consumed and from the
 /// enqueue actions. Cheap (reads `state.queue`); a no-op for lists not built.
-fn refresh_queue_manager() {
+pub(super) fn refresh_queue_manager() {
     let panel = QUEUE_MANAGER_REFRESH.with(|r| r.borrow().clone());
     if let Some(cb) = panel {
         cb();
@@ -49,7 +50,7 @@ fn refresh_queue_manager() {
 ///
 /// Returns the panel widget (to embed in the jump window) and its list-rebuild
 /// closure (also stashed in `QUEUE_MANAGER_REFRESH`).
-fn build_queue_panel(
+pub(super) fn build_queue_panel(
     state: Rc<RefCell<AppState>>,
     refresh_main: Rc<dyn Fn()>,
     play_and_update: Rc<dyn Fn()>,

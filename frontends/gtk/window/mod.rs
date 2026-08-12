@@ -37,11 +37,11 @@ use gtk4::prelude::*;
 use gtk4::{
     gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
     Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn,
-    ContentFit, CustomSorter, DragSource, DrawingArea, DropDown, DropTarget, Entry,
+    ContentFit, DragSource, DrawingArea, DropDown, DropTarget, Entry,
     EventControllerKey, GestureClick, Grid, GridView, Image, Label, ListBox, ListBoxRow,
     ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned, Picture, PolicyType,
     Scale, ScrolledWindow,
-    Separator, SignalListItemFactory, SortListModel, SpinButton, Stack, StackTransitionType,
+    Separator, SignalListItemFactory, SpinButton, Stack, StackTransitionType,
     TreeView, TreeViewColumn,
 };
 use std::cell::{Cell, RefCell};
@@ -62,12 +62,51 @@ use crate::{
 // produced/consumed by that logic and the frontend, so they are shared from
 // core rather than redefined here.
 use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
+// Skin CSS. Lived at the foot of state.rs while every file was one flat
+// module; it belongs here now that they are real `mod`s, because player.rs is
+// what reads it.
+use crate::skin::{self, render_gtk_css, SkinVars};
 
 // Disc (optical media) UI: rip dialog/worker + drive-view helpers. A child
-// module so it can use this file's private AppState/gtk_safe; new disc UI
-// (submit, burn) goes there, not here.
+// module so it can use the window module's private AppState/gtk_safe; new
+// disc UI (submit, burn) goes there, not here.
 mod disc;
-use disc::{disc_overview_detail_line, selected_disc_discid};
+
+// The playlist window's Add File / Add Files / Add Folder dialogs and the
+// two-phase scan behind them. Split out of player.rs (breakup step 9b).
+mod add_files;
+
+// The Jump window (`j`): search/jump-to plus Queue mode. Split out of
+// player.rs (breakup step 9b) as two functions — `jump::build` makes it,
+// `jump::connect` wires it after the key dispatcher exists.
+mod jump;
+
+// The 100 ms tick: seek bar, time display, marquee scroll, transport state,
+// the visualiser frame, and draining the probe/metadata channels. Split out
+// of player.rs (breakup step 9b); player.rs calls `tick::start(&ctx, ..)`.
+mod tick;
+
+// Drag and drop for the active playlist: the DragSource that lifts selected
+// rows out of it and the DropTarget that accepts files dragged in. Split out
+// of player.rs (breakup step 9) — it reads a wide slice of the window and
+// writes nothing back, so it moved whole. player.rs calls `dnd::install(&ctx)`.
+mod dnd;
+
+// The one way rows enter the active playlist: resolve against the media
+// library, insert without touching the filesystem, and hand the rest to the
+// background pass in `crate::file_status`. Replaces 27 hand-rolled add sites.
+mod playlist_add;
+
+// The playlist window: header, button bar, TreeView, status bar and the
+// Winamp-style menu bar. Split out of player.rs (breakup step 9) — a window
+// of its own, so it builds whole and hands back the parts player.rs still
+// reads. player.rs calls `playlist_window::build(Deps { .. })`.
+mod playlist_window;
+
+// The main window's keyval dispatcher — one match over every bound key,
+// shared by the five key controllers and the lyrics window. Split out of
+// player.rs (breakup step 9); player.rs calls `keys::build(&ctx, ...)`.
+mod keys;
 
 // Live folder-watcher lifecycle (Phase 8 Task 10): rebuild/start/stop the
 // `notify` watcher, drain its event channel, and the startup-rescan trigger.
@@ -76,8 +115,8 @@ use disc::{disc_overview_detail_line, selected_disc_discid};
 mod watch;
 
 // A1 expandable now-playing panel (art + tags + wiki links). A child module
-// (not include!d) so its widget-building code stays out of player.rs's
-// already-large body; player.rs calls it as `now_playing::build_panel(...)`.
+// so its widget-building code stays out of player.rs's already-large body;
+// player.rs calls it as `now_playing::build_panel(...)`.
 mod now_playing;
 
 // A6 standalone album-art window (`k` key / A1 art click). A child module
@@ -86,65 +125,156 @@ mod now_playing;
 mod art_window;
 mod mpris;
 
-// ---------------------------------------------------------------------------
-// AppState
-// ---------------------------------------------------------------------------
+// Media Library "Albums" page (plan step 2, the breakup's first extraction).
+// It takes `&MlCtx` and reaches back for `build_album_gallery`.
+mod albums;
 
+// The Media Library's left-hand nav list (plan step 3). Owns the ListBox, its
+// DropTarget, the five static rows and the chevrons; routing stays with each
+// page, which registers its own row-selected handler.
+mod sidebar;
+
+// The Media Library "Files" page (plan step 4): the library track table, its
+// search row, status bar and row context menu. The Albums drill-down renders
+// through it too.
+mod files;
+
+// The Files page's row context menu and Send-to actions (plan step 4), split
+// from files.rs so neither half sits far over the 800-line goal.
+mod files_menu;
+
+// The Media Library "Disc Drives" page (plan step 5): overview cards, the
+// drive detail view, the data-disc browser and the 2 s drive poll. A sibling
+// of `mod disc` rather than a child of it — `disc` is the disc *logic* and
+// widget helpers this page calls into, and the flat shape is what steps 2–4
+// already proved (`use super::…` reaches the window's items directly).
+mod disc_page;
+
+// The data-disc file browser inside that page (plan step 5, second cut),
+// split from disc_page.rs so neither half sits far over the 800-line goal.
+mod disc_data;
+
+// gnudb identify + the manual tag-override editor (plan step 5, third cut).
+// Declares nothing the rest of the page reads back, so it lifted cleanly.
+mod disc_gnudb;
+
+// The Media Library "Devices" page (plan step 6): overview cards, the device
+// detail view, device-playlist management and the 2 s udisks2 poll. Flat, like
+// the disc pages. Not to be confused with `mod devices` below — that is the
+// *logic* (detection, mounts, copy/sync helpers) this page drives; core device
+// support proper lives in `crate::devices`.
+mod devices_page;
+
+// Scan / Eject / Sync (plan step 6, fourth cut) — the three device-wide
+// buttons, shared with the overview cards' per-row Eject and Sync.
+mod devices_actions;
+
+// Device detection (plan step 6, third cut): the 2 s udisks2 poll, the
+// overview cards, and the sidebar sub-rows they keep live.
+mod devices_poll;
+
+// The device track view's row context menu and Send-to actions (plan step 6,
+// second cut) — what files_menu.rs is to the Files page.
+mod devices_menu;
+
+// Device playlists (plan step 6, first cut): sending a library playlist to a
+// device, and New / Rename / Duplicate / Delete on the ones already there.
+mod devices_playlists;
+
+// The device track view's columns (plan step 6, fifth cut). Driven by the same
+// shared ALL_COLUMNS table as the Files view, plus two device-only columns.
+mod devices_columns;
+
+// The Media Library "Playlists" page (plan step 7): the saved-playlist
+// manager and the track editor, as two sub-pages of one stack page.
+mod playlists;
+
+// The playlist editor's row context menu (plan step 7) — what files_menu.rs
+// is to the Files page.
+mod playlists_menu;
+
+// The saved-playlist manager and the load-a-playlist seam (plan step 7).
+mod playlists_manage;
+
+// The playlist editor's columns, cells and row gestures (plan step 7).
+mod playlists_columns;
 
 // ---------------------------------------------------------------------------
-// Physical file split (2026-07-11)
+// The original window.rs, one module per section (2026-07-11, 2026-08-11)
 // ---------------------------------------------------------------------------
 // window.rs reached ~21k lines, unworkable for review or for smaller models.
-// The sections below are include!d verbatim: every file is a plain byte slice
-// of the old window.rs, so the compiler sees the exact same single module and
-// nothing needed visibility or import surgery. This split was produced on a
-// machine that cannot compile the (Linux-only) GTK frontend, so include! was
-// chosen because byte-identity is provable offline. Converting these to real
-// `mod` submodules (pub(super) items + per-file imports) is a follow-up to do
-// ON the Linux box, one file at a time, where the compiler can arbitrate.
+// It was first cut into the files below as `include!` byte slices, because
+// that split was produced on a machine that cannot compile the (Linux-only)
+// GTK frontend and byte-identity is provable offline. Plan step 8 finished
+// the job on the Linux box: each is now a real `mod`, with `use super::*;` at
+// its head and `pub(super)` on the items its neighbours read.
+//
+// Each `mod` is paired with a `use <name>::*;` so the window module's own
+// namespace is unchanged — every `super::foo` in the page modules above still
+// resolves, and no call site had to move. Narrowing those globs to named
+// imports is a separate job, and a mechanical one.
 
 // AppState + scan state and the AppState impl (core-side logic, no widgets)
-include!("state.rs");
+mod state;
+use state::*;
 
 // small shared UI helpers: icons, gtk_safe, sanitizers, dialogs, notify_* hooks
-include!("util.rs");
+mod util;
+use util::*;
 
 // build(): the main player window (transport, playlist pane, viz, key handling)
-include!("player.rs");
+mod player;
+// `pub use` rather than `use`: `build` is this module's entry point, called
+// from frontends/gtk/mod.rs.
+pub use player::*;
 
 // ID3 editor window, field customizer, column customizer, gnudb email prompt
-include!("id3.rs");
+mod id3;
+use id3::*;
 
 // the Settings window (all tabs)
-include!("settings.rs");
+mod settings;
+use settings::*;
 
 // the Equalizer window
-include!("eq.rs");
+mod eq;
+use eq::*;
 
 // the Deduplicate Music window + its scan worker
-include!("dedupe.rs");
+mod dedupe;
+use dedupe::*;
 
 // Media Library / ID3 column definitions, cell text, sort keys
-include!("ml_columns.rs");
+mod ml_columns;
+use ml_columns::*;
 
 // visualizer draw helpers, fullscreen waveform window, image viewer
-include!("viz.rs");
+mod viz;
+use viz::*;
 
 // device-sync UI helpers: MTP enumeration, plans, conflict prompts
-include!("devices.rs");
+mod devices;
+use devices::*;
 
 // open_media_library_window(): files/playlists/devices/discs pages
-include!("media_library.rs");
-include!("queue_manager.rs");
+mod media_library;
+use media_library::*;
+
+// the play-queue panel embedded in the Jump/Queue window
+mod queue_manager;
+use queue_manager::*;
 
 // Phase 11 A4: album gallery grid (build_album_gallery) — cover thumbnails,
-// zoom + sort controls, recycled GridView cells. Not yet wired into the ML
-// sidebar/stack (that's a follow-up task); media_library.rs will call it.
-include!("album_gallery.rs");
+// zoom + sort controls, recycled GridView cells.
+mod album_gallery;
+use album_gallery::*;
 
 // Phase 12 F15: read-only lyrics viewer + View/Search decision entry point
 // (view_or_search_lyrics) shared by every track-row surface.
-include!("lyrics.rs");
+mod lyrics;
+use lyrics::*;
 
-// unit tests (#[cfg(test)] mod tests)
-include!("tests.rs");
+// unit tests — a real child module (plan step 8); `use super::*` reaches the
+// window's private items exactly as the inline `mod tests` block used to.
+#[cfg(test)]
+mod tests;

@@ -26,7 +26,6 @@ void         sparkamp_tick(SparkampCtx *ctx);
 
 /* ── Playback ────────────────────────────────────────────────────────────── */
 
-void    sparkamp_load_and_play(SparkampCtx *ctx, const char *uri);
 void    sparkamp_play(SparkampCtx *ctx);
 void    sparkamp_pause(SparkampCtx *ctx);
 void    sparkamp_stop(SparkampCtx *ctx);
@@ -114,7 +113,6 @@ void    sparkamp_toggle_shuffle(SparkampCtx *ctx);
 /* ── Config persistence ──────────────────────────────────────────────────── */
 
 void sparkamp_save_config(SparkampCtx *ctx);
-void sparkamp_load_config(SparkampCtx *ctx);
 
 /* ── Callbacks ───────────────────────────────────────────────────────────── */
 
@@ -281,7 +279,6 @@ char   *sparkamp_eq_preset_name(SparkampCtx *ctx, int preset_index);
 float   sparkamp_get_preamp(SparkampCtx *ctx);
 void    sparkamp_set_preamp(SparkampCtx *ctx, float multiplier);
 void    sparkamp_reset_eq(SparkampCtx *ctx);
-char   *sparkamp_eq_band_label(int band);
 
 /* EQ / pre-amp limit constants — mirror core's clamp ranges so frontends
  * don't have to hardcode the same numeric ranges and risk drift. */
@@ -306,8 +303,6 @@ int     sparkamp_get_playlist_format(SparkampCtx *ctx);
 void    sparkamp_set_playlist_format(SparkampCtx *ctx, int value);
 bool    sparkamp_get_autoplay_on_add(SparkampCtx *ctx);
 void    sparkamp_set_autoplay_on_add(SparkampCtx *ctx, bool value);
-int     sparkamp_get_ml_rescan_interval(SparkampCtx *ctx);
-void    sparkamp_set_ml_rescan_interval(SparkampCtx *ctx, int mins);
 
 /* ── Watch folders (Phase 8 Task 9) ──────────────────────────────────────────
    sparkamp_set_watch_folders also starts/stops the live background
@@ -437,9 +432,6 @@ SparkampTagCtx *sparkamp_tag_open(const char *path);
 void            sparkamp_tag_close(SparkampTagCtx *tag);
 char           *sparkamp_tag_get(SparkampTagCtx *tag, const char *frame_id);
 void            sparkamp_tag_set(SparkampTagCtx *tag, const char *frame_id, const char *value);
-int             sparkamp_tag_frame_count(SparkampTagCtx *tag);
-char           *sparkamp_tag_frame_id(SparkampTagCtx *tag, int index);
-char           *sparkamp_tag_frame_value(SparkampTagCtx *tag, int index);
 int             sparkamp_tag_save(SparkampTagCtx *tag);
 uint8_t        *sparkamp_tag_get_artwork_data(SparkampTagCtx *tag, int *len_out);
 void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
@@ -681,9 +673,6 @@ int32_t sparkamp_rg_analyze_is_running(const SparkampCtx *ctx);
 /** Writes current analysis progress into *done_out and *total_out. */
 void    sparkamp_rg_analyze_progress(const SparkampCtx *ctx, int32_t *done_out, int32_t *total_out);
 
-/** Number of tracks matching query ("" = all). */
-int32_t sparkamp_ml_track_count(const SparkampCtx *ctx, const char *query);
-
 /**
  * Fetch a page of tracks into caller-allocated array.
  * sort_col: "title"|"artist"|"album"|"duration"|"num"|"year"|"genre"|"bitrate"|"filename" (NULL = default).
@@ -760,10 +749,6 @@ int64_t sparkamp_ml_save_playlist_as(SparkampCtx *ctx, const char *new_name,
     library.  Returns new row id or -1 on failure. */
 int64_t sparkamp_ml_save_playlist_to_path(SparkampCtx *ctx, const char *target_path,
                                           const char **paths, int32_t count);
-/** Register an existing .m3u8 / .m3u file on disk as a playlist in the library.
-    Use after the frontend has written the file itself (e.g. NSSavePanel).
-    Returns the new playlist row id, or -1 on failure. */
-int64_t sparkamp_ml_add_playlist_file(SparkampCtx *ctx, const char *path);
 /** Append raw track paths to a saved playlist's file (no DB change). */
 void    sparkamp_ml_append_paths_to_playlist(SparkampCtx *ctx, int64_t playlist_id,
                                              const char **paths, int32_t count);
@@ -859,18 +844,6 @@ char *sparkamp_device_apply_sync(SparkampCtx *ctx,
 char *sparkamp_device_copy(SparkampCtx *ctx,
                            const char *device_json,
                            const char *src_paths_json);
-
-/** Device playlist sync plan (JSON array). playlist_format: 0 = m3u8, 1 = m3u.
-    Free with sparkamp_free_string. */
-char *sparkamp_device_playlist_plan(SparkampCtx *ctx,
-                                    const char *device_json,
-                                    int playlist_format);
-
-/** Apply device playlist sync. Returns {"pushed":N,"pulled":M,"skipped":K}.
-    playlist_format: 0 = m3u8, 1 = m3u. Free with sparkamp_free_string. */
-char *sparkamp_device_playlist_apply(SparkampCtx *ctx,
-                                     const char *device_json,
-                                     int playlist_format);
 
 /** Send one library playlist (by DB id) to the device — copy its tracks under
     Music/<file> and write the device .m3u. playlist_format: 0 = m3u8, 1 = m3u.
@@ -993,14 +966,6 @@ char *sparkamp_gnudb_suggest_category(SparkampCtx *ctx, const char *genre);
     shape (x@y.z) and not the unset/retired app-wide default. Every
     frontend's prompt gates on this. */
 bool sparkamp_gnudb_email_valid(SparkampCtx *ctx, const char *email);
-
-/** Rip ONE track to a tagged MP3 (job JSON: source/dest_root/quality/tag
-    values — see RipJobIn in src/ffi/disc.rs). Blocks for the whole encode
-    (optical reads run at drive speed) — worker thread only; loop per track
-    for progress/cancel. {"ok":"<written path>"} or {"error":"…"}. Free with
-    sparkamp_free_string. Prefer the job API below — it adds the destination
-    write pre-flight and within-track progress. */
-char *sparkamp_disc_rip_track(SparkampCtx *ctx, const char *job_json);
 
 /** Start ripping a whole selection on a core worker thread (job JSON:
     {entries:[DiscTrackEntry…], dest_root, quality, tags:XmcdEntry,

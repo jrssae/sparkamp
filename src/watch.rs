@@ -24,7 +24,20 @@ use std::time::{Duration, Instant};
 pub enum WatchAction {
     Upsert(PathBuf),
     Remove(PathBuf),
+    /// A playlist file (`.m3u8` / `.m3u`) appeared or changed on disk.
+    ///
+    /// Separate from [`WatchAction::Upsert`] because a playlist is not a
+    /// track: it registers in the `playlists` table, not `tracks`, and the
+    /// frontends refresh a different part of their UI for it. Without this
+    /// the watcher discarded playlist files entirely, so one created outside
+    /// Sparkamp stayed invisible in the sidebar until the next restart even
+    /// though it was already in the database.
+    PlaylistUpsert(PathBuf),
 }
+
+/// Playlist file extensions the watcher reacts to. Matches the pair the
+/// playlist loader already accepts (`.m3u8` preferred, `.m3u` legacy).
+pub const PLAYLIST_EXTENSIONS: &[&str] = &["m3u8", "m3u"];
 
 /// Tracks paths Sparkamp itself just wrote (e.g. tag edits, cached artwork)
 /// so a filesystem watcher doesn't treat our own writes as external changes.
@@ -87,9 +100,21 @@ pub fn classify_paths(
         .filter(|path| !path.starts_with(cache_prefix))
         .filter(|path| !guard.is_suppressed(path))
         .filter_map(|path| {
+            let is_playlist = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| {
+                    PLAYLIST_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(ext))
+                });
             if path.exists() {
+                if is_playlist {
+                    return Some(WatchAction::PlaylistUpsert(path.clone()));
+                }
                 has_audio_ext(path).then(|| WatchAction::Upsert(path.clone()))
             } else {
+                // A deleted playlist is deliberately not actioned: playlist
+                // rows are removed through the library's own delete path,
+                // which also honours the Deletion Rule.
                 has_audio_ext(path).then(|| WatchAction::Remove(path.clone()))
             }
         })
@@ -225,6 +250,36 @@ mod tests {
         let guard = SelfWriteGuard::new(Duration::from_secs(5));
         let actions = classify_paths(&[txt], &exts(), Path::new("/no-cache"), &guard);
         assert!(actions.is_empty());
+    }
+
+    /// A playlist file created outside Sparkamp must reach the library.
+    ///
+    /// It is not an audio file, so before this it was discarded here and the
+    /// sidebar's Playlists sub-rows stayed stale until the next restart —
+    /// even though the Send-to menu, which re-reads the database on every
+    /// open, already listed it.
+    #[test]
+    fn playlist_files_are_classified_for_upsert() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = SelfWriteGuard::new(Duration::from_secs(5));
+        let cache = Path::new("/no-cache");
+
+        for name in ["new.m3u8", "legacy.m3u", "SHOUTY.M3U8"] {
+            let pl = dir.path().join(name);
+            std::fs::write(&pl, b"#EXTM3U\n").unwrap();
+            let actions = classify_paths(&[pl.clone()], &exts(), cache, &guard);
+            assert_eq!(
+                actions,
+                vec![WatchAction::PlaylistUpsert(pl)],
+                "{name} should classify as a playlist upsert"
+            );
+        }
+
+        // A deleted playlist is not actioned: playlist rows are removed
+        // through the library's own delete path, which honours the Deletion
+        // Rule. Classifying it here would route a delete around that.
+        let gone = dir.path().join("gone.m3u8");
+        assert!(classify_paths(&[gone], &exts(), cache, &guard).is_empty());
     }
 
     #[test]

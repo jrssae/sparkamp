@@ -114,9 +114,12 @@ pub(crate) fn exclusive_read() -> bool {
 }
 
 /// Serializes every test that touches the process-wide exclusive-read
-/// depth — cargo's parallel runner would otherwise interleave them.
+/// depth — cargo's parallel runner would otherwise interleave them. Any test
+/// that calls into code taking the guard needs this too, not only the tests
+/// asserting on the depth: `rip::run_job` holds it for the length of a rip,
+/// which is long enough to be observed by an assertion elsewhere.
 #[cfg(test)]
-static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod exclusive_read_tests {
@@ -394,6 +397,8 @@ pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
         kind,
         free_bytes: st.free_blocks.unwrap_or(0) * 2048,
         capacity_bytes: (st.free_blocks.unwrap_or(0) + st.used_blocks.unwrap_or(0)) * 2048,
+        // drutil reports the typing itself, so reaching here means we read it.
+        typing_unknown: false,
     }
 }
 
@@ -414,10 +419,17 @@ pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
 /// here is surfaced as "no data-disc browsing" rather than retried).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_mount_output(out: &str, device_node: &str) -> Option<PathBuf> {
+    // Two shapes, both real. A disc carrying a partition scheme mounts a slice
+    // (`/dev/disk12s0`); a disc written as one plain filesystem image mounts
+    // the whole device with no suffix at all (`/dev/disk12`), which is what a
+    // DVD+RW burned from an ISO does. Matching only the slice missed the
+    // second kind entirely, so its files never reached the disc view
+    // (2026-08-12). Comparing the whole node by equality rather than by prefix
+    // keeps `/dev/disk13` from matching `/dev/disk130`, same as the "s" does.
     let slice_prefix = format!("{device_node}s");
     out.lines().find_map(|line| {
         let dev = line.split_whitespace().next()?;
-        if !dev.starts_with(&slice_prefix) {
+        if dev != device_node && !dev.starts_with(&slice_prefix) {
             return None;
         }
         let rest = line.strip_prefix(dev)?.trim_start();
@@ -585,6 +597,8 @@ pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
         kind,
         free_bytes: if blank { capacity_bytes } else { 0 },
         capacity_bytes,
+        // Parsing minfo output at all means the probe ran.
+        typing_unknown: false,
     })
 }
 
@@ -896,8 +910,19 @@ mod platform {
                 };
                 run("cdrskin", &[&format!("dev={node}"), "-minfo"])
                     .and_then(|o| super::parse_minfo(&o))
+                    // udisks answers with the disc mounted, which is when
+                    // -minfo can't open the device at all — the common case
+                    // right after burning a data disc, since the desktop
+                    // mounts what we just wrote (2026-08-10). It carries no
+                    // lead-out, so its capacity is nominal; that is why it is
+                    // second and not first.
+                    .or_else(|| crate::disc::udisks::optical_media(&node))
                     .map(|m| super::merge_minfo_typing(toc_media.clone(), m))
-                    .unwrap_or(toc_media)
+                    // Neither probe answered: flag it rather than let the
+                    // defaults read as "not blank, not rewritable", which
+                    // `erase_decision` can only treat as
+                    // write-once-with-content and refuse.
+                    .unwrap_or(MediaInfo { typing_unknown: true, ..toc_media })
             }
             // No readable TOC but the status ioctl said "disc ok" (the
             // caller only probes then): blank / just-erased media — type it
@@ -905,6 +930,7 @@ mod platform {
             // burn phases.
             None => run("cdrskin", &[&format!("dev={node}"), "-minfo"])
                 .and_then(|o| super::parse_minfo(&o))
+                .or_else(|| crate::disc::udisks::optical_media(&node))
                 .unwrap_or_else(MediaInfo::none),
         };
         OpticalDrive {
@@ -1241,6 +1267,35 @@ session status:           complete
         assert_eq!(m.free_bytes, 0);
 
         assert!(parse_minfo("cdrskin: no disc\n").is_none());
+    }
+
+    /// A mounted data disc makes `cdrskin -minfo` fail with EBUSY, so the
+    /// typing never merges. The TOC-derived defaults then read as "not blank,
+    /// not rewritable" — which `erase_decision` can only call
+    /// write-once-with-content and refuse, disabling both burn buttons on a
+    /// perfectly writable CD-RW. `typing_unknown` is what lets a frontend
+    /// tell that apart from a genuine CD-R (2026-08-10).
+    #[test]
+    fn untyped_media_is_flagged_not_silently_write_once() {
+        // What probe_drive builds when minfo yields nothing but a TOC read.
+        let toc_media = MediaInfo {
+            present: true,
+            is_audio_cd: false,
+            ..MediaInfo::none()
+        };
+        let untyped = MediaInfo { typing_unknown: true, ..toc_media.clone() };
+        assert!(!untyped.is_blank && !untyped.rewritable);
+        assert!(untyped.typing_unknown, "the frontend needs this to explain itself");
+
+        // A real write-once disc with content looks identical apart from the
+        // flag, which is exactly why the flag has to exist.
+        assert!(!toc_media.typing_unknown);
+
+        // Merging real typing in clears nothing and sets nothing: a parsed
+        // minfo is by definition known.
+        let minfo = parse_minfo(MINFO_BURNED_CDRW).expect("sample parses");
+        assert!(!minfo.typing_unknown);
+        assert!(!merge_minfo_typing(toc_media, minfo).typing_unknown);
         let ram = parse_minfo("Mounted media type:       DVD-RAM\ndisk status: empty\n").unwrap();
         assert_eq!(ram.kind, MediaKind::DvdRam);
     }
@@ -1447,6 +1502,55 @@ session status:           complete
             parse_mount_output(out, "/dev/disk13"),
             Some(PathBuf::from("/Volumes/MY_DATA_CD"))
         );
+    }
+
+    /// A disc written as one plain filesystem image (no partition scheme)
+    /// mounts the whole device with no slice suffix. Verbatim from a DVD+RW
+    /// burned from an ISO, which is the case that reported no files at all.
+    #[test]
+    fn mount_output_finds_whole_disk_mount() {
+        let out = "\
+/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)\n\
+/dev/disk12 on /Volumes/ISOIMAGE (cd9660, local, nodev, nosuid, read-only, noowners)\n";
+        assert_eq!(
+            parse_mount_output(out, "/dev/disk12"),
+            Some(PathBuf::from("/Volumes/ISOIMAGE"))
+        );
+    }
+
+    /// LIVE: with a data disc loaded, the detected drive must carry a mount
+    /// path and that path must list files. Both halves of the browse chain the
+    /// disc view depends on, which unit tests can only cover as text.
+    /// `cargo test --lib live_data_disc_browse -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn live_data_disc_browse() {
+        // The per-file tag read falls back to GStreamer's Discoverer, which
+        // panics without init — same reason mount.rs's live test does this.
+        gstreamer::init().ok();
+        let drives = list_drives();
+        let Some(d) = drives.iter().find(|d| d.media.present && !d.media.is_audio_cd) else {
+            println!("no data disc loaded — skipping");
+            return;
+        };
+        println!("drive {} ({}): {}", d.id, d.label, d.media_summary());
+        let mount = d.mount_path.as_ref().expect("a mounted data disc has a mount path");
+        println!("mounted at {}", mount.display());
+        let files = crate::disc::mount::list_disc_files(mount);
+        println!("{} file(s)", files.len());
+        for f in files.iter().take(10) {
+            println!("  {}  ({} bytes)", f.display, f.bytes);
+        }
+        assert!(!files.is_empty(), "a data disc with content must list files");
+    }
+
+    /// The whole-disk match must not loosen the numeric-prefix guard: a bare
+    /// `/dev/disk130` line is a different disk from `/dev/disk13`.
+    #[test]
+    fn mount_output_whole_disk_does_not_match_a_longer_number() {
+        let out = "/dev/disk130 on /Volumes/Unrelated (cd9660, local)\n";
+        assert_eq!(parse_mount_output(out, "/dev/disk13"), None);
     }
 
     #[test]

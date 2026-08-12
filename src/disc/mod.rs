@@ -56,6 +56,10 @@ pub mod rip;
 pub mod source;
 pub mod tagstore;
 pub mod toc;
+/// udisks2 optical typing — the fallback when `cdrskin -minfo` finds the
+/// drive busy because the desktop mounted the disc. Linux only.
+#[cfg(target_os = "linux")]
+pub mod udisks;
 pub mod xmcd;
 
 /// One track's position on the disc. `start_frame` is the **CDDB-absolute**
@@ -101,6 +105,19 @@ pub struct MediaInfo {
     pub kind: MediaKind,
     pub free_bytes: u64,
     pub capacity_bytes: u64,
+    /// True when the media-typing probe could not run, so `is_blank`,
+    /// `rewritable`, `kind` and the capacities are defaults rather than
+    /// readings.
+    ///
+    /// On Linux the typing comes from `cdrskin -minfo`, which needs to open
+    /// the device, and the OS auto-mounts every data disc — so a burned data
+    /// CD-RW types as "not blank, not rewritable", which
+    /// [`burn::erase_decision`] can only read as write-once-with-content and
+    /// refuse. The disc is fine; we just couldn't look at it. Frontends use
+    /// this to say so instead of leaving a burn button mysteriously dead
+    /// (2026-08-10).
+    #[serde(default)]
+    pub typing_unknown: bool,
 }
 
 impl MediaInfo {
@@ -114,6 +131,7 @@ impl MediaInfo {
             kind: MediaKind::Unknown,
             free_bytes: 0,
             capacity_bytes: 0,
+            typing_unknown: false,
         }
     }
 }

@@ -330,12 +330,25 @@ pub(crate) fn apply_tag_pair(
 /// Apply a sync plan: propagate the winning side's tags for the unambiguous
 /// directions (conflicts are handled separately by the prompt) and refresh each
 /// pair's baseline. Returns `(applied, failed)`.
-pub(crate) fn apply_device_sync(
+/// Apply a sync plan, reporting progress as it goes.
+///
+/// `on_progress(done, total)` is called after each pair, where `total` counts
+/// only the pairs this will actually act on. Copying a song is disk work, so a
+/// large sync takes long enough that the caller must be able to show a bar —
+/// and, since this now runs on a worker, must be able to tell when it is over.
+pub(crate) fn apply_device_sync_with_progress(
     lib: &MediaLibrary,
     dev: &Device,
     plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+    on_progress: &mut dyn FnMut(usize, usize),
 ) -> (usize, usize) {
     use crate::devices::sync::SyncAction;
+    let total = plan
+        .iter()
+        .filter(|(_, a)| {
+            matches!(a, SyncAction::LibraryToDevice | SyncAction::DeviceToLibrary)
+        })
+        .count();
     let (mut applied, mut failed) = (0usize, 0usize);
     for (pair, action) in plan {
         let to_device = match action {
@@ -348,8 +361,19 @@ pub(crate) fn apply_device_sync(
         } else {
             failed += 1;
         }
+        on_progress(applied + failed, total);
     }
     (applied, failed)
+}
+
+/// [`apply_device_sync_with_progress`] without the reporting, for callers that
+/// have nowhere to show it.
+pub(crate) fn apply_device_sync(
+    lib: &MediaLibrary,
+    dev: &Device,
+    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+) -> (usize, usize) {
+    apply_device_sync_with_progress(lib, dev, plan, &mut |_, _| {})
 }
 
 /// One song whose tags changed on both the computer and the device since the

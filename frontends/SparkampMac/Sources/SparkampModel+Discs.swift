@@ -422,12 +422,17 @@ extension SparkampModel {
                 }
             }
         }
-        if autoplay && wasEmpty {
-            sparkamp_playlist_jump(ctx, Int32(indexBefore))
-            sparkamp_play(ctx)
-        }
         refreshPlaylist()
         refreshCurrentTrackInfo()
+        // In replace mode `clearPlaylist()` above already persisted the EMPTY
+        // list, so without a save here the tracks are on screen and nowhere
+        // else — they were gone on the next launch. `startTrack` saves; the
+        // path that does not start a track has to do it itself.
+        if autoplay && wasEmpty {
+            startTrack(at: indexBefore)
+        } else {
+            saveState()
+        }
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
     }
 
@@ -451,17 +456,9 @@ extension SparkampModel {
                 }
             }
         }
-        // As in `replacePlaylistWithPaths`: clear a pending stop-after-current
-        // (it would otherwise halt playback after track 1), persist the new
-        // list (`clearPlaylist` above saved the EMPTY one), and announce so the
-        // lyrics window and the fullscreen toast follow the disc.
-        setStopAfterCurrent(false)
-        sparkamp_playlist_jump(ctx, 0)
-        sparkamp_play(ctx)
-        refreshPlaylist()
-        refreshCurrentTrackInfo()
-        saveState()
-        announceNowPlaying()
+        // `.everything` because the list itself just changed — `clearPlaylist`
+        // above emptied it and these entries are new.
+        startTrack(at: 0, refresh: .everything)
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
     }
 
