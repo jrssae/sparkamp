@@ -125,6 +125,43 @@ pub(super) fn schedule_from(state: &Rc<RefCell<AppState>>, start: usize, needs_t
 ///
 /// A batch that finds nothing pending sends nothing, which is the common case
 /// once a screenful has settled — scrolling a resolved playlist is free.
+/// How long a row's file status is trusted before the viewport pass asks
+/// again.
+///
+/// Matches the Media Library's own status cache. A status check is two cheap
+/// syscalls — `stat` plus `access` — with no file read, so re-confirming the
+/// forty-odd rows on screen every ten seconds is not measurable, while leaving
+/// them decided forever means a permission change made outside Sparkamp never
+/// shows up.
+const ROW_RECHECK_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Ask the background worker about one specific row, whatever its last answer
+/// was.
+///
+/// Used when the user acts on a row — playing it — where waiting for the
+/// viewport pass to come round would read as the marker being stuck.
+pub(super) fn request_row(state: &Rc<RefCell<AppState>>, idx: usize) {
+    let (check, tx) = {
+        let mut s = state.borrow_mut();
+        let Some(t) = s.playlist.tracks.get(idx) else {
+            return;
+        };
+        let (id, path) = (t.id, t.path.clone());
+        // A status-only check: the library or an earlier pass already answered
+        // for the tags, and this is about the markers.
+        let needs_tags = s.pending_rows.get(&id).copied().unwrap_or(false);
+        s.pending_rows.remove(&id);
+        s.row_checked_at.insert(id, std::time::Instant::now());
+        (
+            crate::file_status::RowCheck { path, needs_tags, id },
+            s.row_check_tx.clone(),
+        )
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(vec![check]);
+    }
+}
+
 pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: usize) {
     let (batch, tx) = {
         let mut s = state.borrow_mut();
@@ -135,26 +172,41 @@ pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: u
         // rather than at the fourteen sites that clear the playlist, because a
         // rule every call site has to remember is the exact failure this module
         // was written to end.
-        if s.pending_rows.len() > n + 4096 {
+        if s.pending_rows.len() + s.row_checked_at.len() > 2 * n + 4096 {
             let live: std::collections::HashSet<u64> =
                 s.playlist.tracks.iter().map(|t| t.id).collect();
             s.pending_rows.retain(|id, _| live.contains(id));
+            s.row_checked_at.retain(|id, _| live.contains(id));
         }
-        if s.pending_rows.is_empty() || n == 0 || first >= n {
+        if n == 0 || first >= n {
             return;
         }
         let end = last.min(n - 1);
         // Ids are `Copy`, so the range can be read without cloning any paths —
         // most scans find nothing pending and should cost almost nothing.
         let ids: Vec<u64> = s.playlist.tracks[first..=end].iter().map(|t| t.id).collect();
+        // A row is worth asking about when it has never been looked at, or when
+        // the last answer has aged out. The second case is what keeps the ⚠ and
+        // 🔒 markers honest after the file changes underneath us; it asks for no
+        // tags, so it stays two syscalls.
         let wanted: Vec<(usize, u64, bool)> = ids
             .iter()
             .enumerate()
-            .filter_map(|(k, id)| s.pending_rows.get(id).map(|nt| (first + k, *id, *nt)))
+            .filter_map(|(k, id)| {
+                if let Some(nt) = s.pending_rows.get(id) {
+                    return Some((first + k, *id, *nt));
+                }
+                let stale = s
+                    .row_checked_at
+                    .get(id)
+                    .is_none_or(|at| at.elapsed() >= ROW_RECHECK_TTL);
+                stale.then(|| (first + k, *id, false))
+            })
             .collect();
         let mut batch = Vec::with_capacity(wanted.len());
         for (idx, id, needs_tags) in wanted {
             s.pending_rows.remove(&id);
+            s.row_checked_at.insert(id, std::time::Instant::now());
             if let Some(t) = s.playlist.tracks.get(idx) {
                 batch.push(crate::file_status::RowCheck {
                     path: t.path.clone(),

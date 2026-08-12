@@ -595,6 +595,13 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 if changed {
                     *last_np_key.borrow_mut() = current_key;
                     refresh_now_playing_tick();
+                    // Re-confirm the row's ⚠ / 🔒 markers now rather than
+                    // waiting for the viewport pass to age them out. Acting on
+                    // a track is exactly when a stale marker is most visible,
+                    // and this is the one place that notices a track change
+                    // whatever started it.
+                    let idx = state.borrow().playlist.current_index;
+                    playlist_add::request_row(&state, idx);
                 }
             }
 

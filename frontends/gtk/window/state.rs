@@ -78,6 +78,14 @@ pub(super) struct AppState {
     /// two. Ids of removed tracks are simply never looked up again; they cost
     /// eight bytes each until the playlist is cleared.
     pub(super) pending_rows: std::collections::HashMap<u64, bool>,
+    /// When each playlist entry's file status was last confirmed.
+    ///
+    /// `pending_rows` answers "has this row ever been looked at"; this answers
+    /// "how long ago". Without it the ⚠ and 🔒 markers were decided once per
+    /// session and never revisited, so clearing a file's read-only bit left the
+    /// lock showing until the playlist was rebuilt — the ID3 editor reported
+    /// the file writable while the playlist still showed it locked.
+    pub(super) row_checked_at: std::collections::HashMap<u64, std::time::Instant>,
     /// The media library browser window, if one is currently open.
     pub(super) ml_window: Option<gtk4::Window>,
     /// The settings window, if one is currently open. Singleton (like
@@ -628,6 +636,7 @@ impl AppState {
             row_facts_tx: None,
             row_check_tx: None,
             pending_rows,
+            row_checked_at: std::collections::HashMap::new(),
             ml_window: None,
             settings_window: None,
             id3_editor_window: None,

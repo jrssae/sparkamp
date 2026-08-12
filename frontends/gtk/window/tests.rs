@@ -946,3 +946,100 @@ fn marking_broken_twice_reports_the_row_once() {
         "already-broken rows are not re-reported"
     );
 }
+
+// ── playlist row status re-checks ──────────────────────────────────────
+
+/// Clearing a file's read-only bit must clear the row's lock marker.
+///
+/// `apply_facts` compares both ways, so this half always worked — what did
+/// not was ever asking again. The row was checked once when it first scrolled
+/// into view and never revisited, so the marker was decided for the session.
+#[test]
+fn a_row_that_becomes_writable_loses_its_lock_marker() {
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let id = s.playlist.tracks[0].id;
+    let path = s.playlist.tracks[0].path.clone();
+    s.playlist.tracks[0].read_only = true;
+
+    let state = Rc::new(RefCell::new(s));
+    let changed = super::playlist_add::apply_facts(
+        &state,
+        &[crate::file_status::RowFacts {
+            id,
+            path,
+            exists: true,
+            read_only: false,
+            tags: None,
+        }],
+    );
+    assert_eq!(changed, vec![0], "the row must be repainted");
+    assert!(!state.borrow().playlist.tracks[0].read_only);
+}
+
+/// The viewport pass asks again once an answer has aged out, so a permission
+/// change made outside Sparkamp reaches the markers.
+#[test]
+fn the_viewport_pass_re_asks_about_a_stale_row() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let id = s.playlist.tracks[0].id;
+    s.row_check_tx = Some(tx);
+    // Already answered for, a long time ago.
+    s.pending_rows.clear();
+    s.row_checked_at
+        .insert(id, std::time::Instant::now() - std::time::Duration::from_secs(3600));
+
+    let state = Rc::new(RefCell::new(s));
+    super::playlist_add::request_range(&state, 0, 0);
+    let batch = rx.try_recv().expect("a stale row must be asked about again");
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].id, id);
+    assert!(
+        !batch[0].needs_tags,
+        "a re-check is about the markers; the tags are already answered for"
+    );
+}
+
+/// A freshly answered row is left alone, so scrolling a settled playlist still
+/// costs nothing.
+#[test]
+fn the_viewport_pass_leaves_a_freshly_checked_row_alone() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let id = s.playlist.tracks[0].id;
+    s.row_check_tx = Some(tx);
+    s.pending_rows.clear();
+    s.row_checked_at.insert(id, std::time::Instant::now());
+
+    let state = Rc::new(RefCell::new(s));
+    super::playlist_add::request_range(&state, 0, 0);
+    assert!(
+        rx.try_recv().is_err(),
+        "a row answered a moment ago must not be asked about again"
+    );
+}
+
+/// Acting on a row asks about it immediately rather than waiting for the
+/// viewport pass to age it out — playing a track is when a stale marker is
+/// most obvious.
+#[test]
+fn playing_a_row_asks_about_it_immediately() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    s.playlist.add(fake_track("b"));
+    let id = s.playlist.tracks[1].id;
+    s.row_check_tx = Some(tx);
+    s.pending_rows.clear();
+    // Answered a moment ago — the viewport pass would skip it.
+    s.row_checked_at.insert(id, std::time::Instant::now());
+
+    let state = Rc::new(RefCell::new(s));
+    super::playlist_add::request_row(&state, 1);
+    let batch = rx.try_recv().expect("the acted-on row is asked about regardless");
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].id, id);
+}
