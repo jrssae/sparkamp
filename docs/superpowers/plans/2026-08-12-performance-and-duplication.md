@@ -4,7 +4,46 @@
 
 **Goal:** Remove the measured hot spots and the cross-frontend logic duplication found in the 2026-08-12 codebase review, in descending order of user-visible impact.
 
-**Architecture:** Seven independent tasks. Task 1 removes redundant writes from the library metadata scan. **Tasks 2 and 3 were cancelled after measurement** — see the note below; the scan is bound by cold disk I/O that no software change reaches. The remaining tasks are the frontend work: the macOS FFI add path, the two undebounced searches, the shared column table, tick hygiene, and mechanical dedupes.
+**Architecture:** Eight independent tasks, ordered by measured impact. Task 1 removes redundant writes from the library metadata scan. **Tasks 2 and 3 were cancelled after measurement** — see the note below; the scan is bound by cold disk I/O that no software change reaches. The remaining tasks are the frontend work: the macOS FFI add path, the two undebounced searches, the shared column table, tick hygiene, and mechanical dedupes.
+
+## Audit, 2026-08-12 (second pass)
+
+Every remaining task's premise was re-checked against the running code and the real
+36,329-track library. Three claims did not survive.
+
+| task | claim | verdict |
+|---|---|---|
+| Targeted lookups | *(not in the original review)* | **new — biggest confirmed win, 370 ms → 116 us** |
+| GTK jump debounce | expensive per keystroke | **confirmed: 14–37 ms per keystroke** |
+| TUI search debounce | expensive per keystroke | **confirmed: 13–40 ms of SQL per keystroke** |
+| macOS FFI add | re-reads files the library described | confirmed, but the per-file cost was wrong (see below) |
+| Column table | *"num" means different things in GTK and TUI* | **FALSE — withdrawn** |
+| Tick hygiene | label writes, marquee, framebuffer copy | **noise — three of four items withdrawn** |
+| Dedupes | identical fns, 15 open-coded `mm:ss` | confirmed, cosmetic |
+
+**The column divergence was not real.** `frontends/gtk/window/ml_columns.rs:380` reads
+`"num" | "track_num" => t.track_num...` — GTK renders `"num"` as the ID3 track number,
+exactly as the TUI does, and both label it `"#"`. The claimed defect was inferred from the
+`"#"` header without reading the value extractor. What is actually true is narrower: the TUI
+implements 9 of the 35 column ids, so the other 26 render as `"?"` if a user selects them in
+GTK and then opens the TUI, and `"Duration"` is spelled `"Len"`. Real duplication, no
+semantic defect — so this drops down the order.
+
+**Most of the tick work is below measurement.** `gtk_label_set_text` short-circuits on an
+identical string (measured: 128 ns vs 402 ns), so guarding the time label saves about 4 us
+per second against a 33 ms frame budget. The marquee's per-tick allocations are the same
+order. And the Granite framebuffer is not 640x360: `GRANITE_RENDER_EXPANDED` is 100 and
+`VIZ_HEIGHT_COLLAPSED` is 52, so the buffer is at most 400x100x4 = 160 KB, making the
+`glib::Bytes::from` copy about 16 us a frame — 0.05% of the budget, not the "27 MB/s" the
+review claimed. `Bytes::from(&[u8])` really does copy and `from_owned` really does not, but
+at this size it does not matter. Only the `broken_rx` item survives, and as a **correctness**
+bug rather than a performance one: the per-message loop `break`s on the first match, so a
+second playlist entry pointing at the same missing file never gets its warning.
+
+**The macOS FFI per-file figure was wrong.** The review said ~48 ms per file. Measured:
+~24 ms cold on the rotational volume that holds the library, 269 us warm on NVMe. The waste
+is still real — those rows already carry their tags and duration — but the number was
+inflated and is storage-dependent.
 
 ## Cancelled: parallelising the metadata scan (was Tasks 2–3)
 
@@ -75,6 +114,7 @@ Four concurrent readers move the disk head around. `duration_probe.rs` already d
 ---
 
 ## Task 1: Stop the metadata scan writing every row twice  ✅ done (b17b279 + follow-up)
+Stop the metadata scan writing every row twice  ✅ done (b17b279 + follow-up)
 
 > **Outcome, recorded after the fact.** The redundant `UPDATE` removal landed and holds. The
 > transaction did **not**: wrapping the loop in `BEGIN IMMEDIATE` takes SQLite's single write
@@ -290,9 +330,627 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Point the macOS FFI add path at `playlist_ingest`
+## Task 2: Stop fetching the whole library to pick a few rows
+Stop fetching the whole library to pick a few rows
 
-`src/ffi/media_library.rs:1170` spawns **two** rayon tasks per added track — a full `Track::from_path` tag read and a duration probe — for rows that came out of the library on line 1162 and already carry title, artist, album and `length_secs`. A 36k add is 72,000 tasks and 72,000 file opens for answers already held. GTK and the TUI were fixed for this; the macOS frontend was not.
+**Not in the original review — found during the second-pass audit, and the largest confirmed
+interactive win in the plan.**
+
+`sparkamp_ml_add_tracks_to_playlist` (`src/ffi/media_library.rs:1150`) reads *every* row in
+the library and then filters in Rust:
+
+```rust
+    // Fetch all tracks then filter by id — avoids N individual queries.
+    let all = ml.all_tracks().unwrap_or_default();
+    let by_id: HashMap<i64, &LibTrack> = all.iter().map(|t| (t.id, t)).collect();
+```
+
+The comment is right that N individual queries would be wrong, and wrong that the alternative
+is fetching everything. Measured against the real library:
+
+| | |
+|---|---|
+| `all_tracks()` — 36,329 rows | **370–390 ms** |
+| targeted `WHERE id IN (...)` for 5 ids | **116 us** |
+
+Roughly **3,200x**, on a synchronous FFI call, every time the user adds tracks to the
+playlist. `tracks_by_exact_paths` (`src/media_library/queries.rs:435`) already implements
+exactly this chunked-`IN` pattern for paths, so the shape to copy is in the file.
+
+Four sites do this. Two more fetch all 37 columns when they want two.
+
+| site | filter | fix |
+|---|---|---|
+| `src/ffi/media_library.rs:1150` | by id set | `tracks_by_ids` |
+| `src/ffi/media_library.rs:896` | by id set | `tracks_by_ids` |
+| `frontends/gtk/window/playlists.rs:1015` | `path.starts_with(folder)` | `WHERE path LIKE ?1 \|\| '%'` |
+| `src/ffi/media_library.rs:867` | `replaygain::needs_analysis` | leave — the predicate is Rust logic over several columns |
+| `src/devices/plan.rs:229` | builds `filename -> path` for the whole library | genuinely wants every row, but only 2 of 37 columns |
+| `src/devices/plan.rs:868` | same | same |
+
+Legitimately unchanged: `files.rs:884`, `files.rs:986`, `files.rs:1674`, `settings.rs:2141` —
+the Files browse view and the ReplayGain jobs really do want every track.
+
+**Files:**
+- Modify: `src/media_library/queries.rs` (add `tracks_by_ids`, `filename_path_index`)
+- Modify: `src/ffi/media_library.rs:896`, `:1150`
+- Modify: `frontends/gtk/window/playlists.rs:1015`
+- Modify: `src/devices/plan.rs:229`, `:868`
+- Test: `src/media_library/tests.rs`
+
+**Interfaces:**
+- Produces:
+  - `pub fn tracks_by_ids(&self, ids: &[i64]) -> Result<HashMap<i64, LibTrack>>` — chunked at 500 like `tracks_by_exact_paths`.
+  - `pub fn filename_path_index(&self) -> Result<HashMap<String, String>>` — `SELECT filename, path` only, for the device sync planner.
+  - `pub fn tracks_under_path_prefix(&self, prefix: &str) -> Result<Vec<LibTrack>>`
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+/// Picking a handful of rows must not read the whole table. The FFI add path
+/// did, at ~370 ms on a 36k library, on a synchronous call.
+#[test]
+fn tracks_by_ids_returns_only_what_was_asked_for() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 5);
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true).unwrap();
+
+    let all = lib.all_tracks().unwrap();
+    assert_eq!(all.len(), 5);
+    let want: Vec<i64> = all.iter().take(2).map(|t| t.id).collect();
+
+    let got = lib.tracks_by_ids(&want).unwrap();
+    assert_eq!(got.len(), 2, "exactly the rows asked for");
+    for id in &want {
+        assert!(got.contains_key(id), "id {id} should be present");
+    }
+}
+
+/// An empty request must not degenerate into "SELECT everything" — the exact
+/// failure mode this task exists to remove.
+#[test]
+fn tracks_by_ids_of_nothing_is_nothing() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true).unwrap();
+    assert!(lib.tracks_by_ids(&[]).unwrap().is_empty());
+}
+
+/// More ids than SQLite's variable limit must still work — the chunking that
+/// `tracks_by_exact_paths` already does for paths.
+#[test]
+fn tracks_by_ids_handles_more_ids_than_the_sqlite_variable_limit() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(folder_id, dir.path().to_str().unwrap(), true).unwrap();
+    let real: Vec<i64> = lib.all_tracks().unwrap().iter().map(|t| t.id).collect();
+
+    // 1200 ids, only 3 of which exist: well past the 999-variable limit.
+    let mut ids: Vec<i64> = (100_000..101_200).collect();
+    ids.extend(&real);
+    let got = lib.tracks_by_ids(&ids).unwrap();
+    assert_eq!(got.len(), real.len(), "only the real rows come back");
+}
+
+/// The prefix lookup must match on a path boundary, not a bare string prefix,
+/// or "/music/rock" would also pull in "/music/rockabilly".
+#[test]
+fn tracks_under_path_prefix_does_not_match_a_sibling_folder() {
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+    let rock = root.path().join("rock");
+    let rockabilly = root.path().join("rockabilly");
+    std::fs::create_dir_all(&rock).unwrap();
+    std::fs::create_dir_all(&rockabilly).unwrap();
+    std::fs::write(rock.join("a.mp3"), b"x").unwrap();
+    std::fs::write(rockabilly.join("b.mp3"), b"x").unwrap();
+    let folder_id = lib.add_folder(root.path().to_str().unwrap()).unwrap().id();
+    lib.rescan_folder_fast(folder_id, root.path().to_str().unwrap(), true).unwrap();
+
+    let got = lib.tracks_under_path_prefix(rock.to_str().unwrap()).unwrap();
+    assert_eq!(got.len(), 1, "only the rock/ track, not rockabilly/");
+    assert!(got[0].path.ends_with("a.mp3"));
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cargo test --lib tracks_by_ids 2>&1 | tail -20'
+```
+
+Expected: FAIL to compile — `no method named 'tracks_by_ids'`.
+
+- [ ] **Step 3: Add the three lookups**
+
+In `src/media_library/queries.rs`, next to `tracks_by_exact_paths`:
+
+```rust
+    /// Fetch exactly the rows named by `ids`.
+    ///
+    /// The FFI add path used to read every row in the library and filter in
+    /// Rust, which measured 370 ms against a 36k library where this measures
+    /// 116 us. Chunked like `tracks_by_exact_paths` for the same reason: the
+    /// SQLite variable limit is 999 on builds older than 3.32.
+    pub fn tracks_by_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, LibTrack>> {
+        let mut found = std::collections::HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("{} WHERE id IN ({placeholders})", Self::TRACK_COLUMNS);
+            let mut stmt = self.conn.prepare(&sql)?;
+            for t in Self::collect_tracks(&mut stmt, rusqlite::params_from_iter(chunk.iter()))? {
+                found.insert(t.id, t);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Every track whose path sits under `prefix`.
+    ///
+    /// Matches on a path boundary so `/music/rock` does not also pull in
+    /// `/music/rockabilly`. `LIKE` treats `%` and `_` as wildcards, so the
+    /// prefix is escaped and the escape character declared.
+    pub fn tracks_under_path_prefix(&self, prefix: &str) -> Result<Vec<LibTrack>> {
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{}{}%", escaped, std::path::MAIN_SEPARATOR);
+        let sql = format!(
+            "{} WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+            Self::TRACK_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Self::collect_tracks(&mut stmt, params![prefix, pattern])
+    }
+
+    /// A `filename -> path` index over the whole library.
+    ///
+    /// The device sync planner genuinely wants every row, but only two of the
+    /// 37 columns; reading the rest builds 36k `LibTrack`s to throw away.
+    pub fn filename_path_index(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT filename, path FROM tracks")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+```
+
+- [ ] **Step 4: Run to verify the tests pass**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib "tracks_by_ids\|tracks_under_path_prefix" 2>&1 | tail -20'
+```
+
+Expected: all four PASS.
+
+- [ ] **Step 5: Point the call sites at them**
+
+`src/ffi/media_library.rs:1150`:
+
+```rust
+    let by_id = ml.tracks_by_ids(id_slice).unwrap_or_default();
+    let start_idx = ctx.playlist.tracks.len();
+    for &id in id_slice {
+        if let Some(t) = by_id.get(&id) {
+            ctx.playlist.tracks.push(Track::from(t));
+        }
+    }
+```
+
+`src/ffi/media_library.rs:896` — replace the `all_tracks().filter(|t| want.contains(&t.id))`
+with `ml.tracks_by_ids(id_slice).unwrap_or_default().into_values().collect()`.
+
+`frontends/gtk/window/playlists.rs:1015`:
+
+```rust
+                        let new_tracks: Vec<_> = lib
+                            .tracks_under_path_prefix(folder_str)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|t| !existing.contains(&t.path))
+                            .collect();
+```
+
+`src/devices/plan.rs:229` and `:868` — replace the `all_tracks()...map(|t| (t.filename, t.path))`
+collect with `lib.filename_path_index().unwrap_or_default()`.
+
+Note the behaviour change at `playlists.rs:1015`: the old `starts_with(folder_str)` had no
+path-boundary check, so adding `/music/rock` also swept in `/music/rockabilly`. The new
+lookup does not. That is a fix, and the test above pins it.
+
+- [ ] **Step 6: Run the full suite**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "perf(library): fetch the rows we want, not the whole table
+
+sparkamp_ml_add_tracks_to_playlist read every row in the library and then
+filtered by id in Rust. On a 36,329-track library all_tracks() measures
+370-390 ms; the equivalent WHERE id IN (...) measures 116 us. That ran
+synchronously on every add.
+
+Add tracks_by_ids (chunked like tracks_by_exact_paths, which already had
+this shape for paths), tracks_under_path_prefix, and filename_path_index,
+and point the four sites that were filtering a full table read at them.
+The device sync planner still wants every row but only two of the 37
+columns, so it gets the narrow index.
+
+tracks_under_path_prefix matches on a path boundary, which the
+starts_with it replaces did not: adding /music/rock used to sweep in
+/music/rockabilly too.
+
+Left alone: the Files browse view and the ReplayGain jobs genuinely want
+every track.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 3: Debounce the GTK jump window
+Debounce the GTK jump window
+
+`frontends/gtk/window/jump.rs:314` calls `rebuild_jump()` straight off `connect_changed`. Per keystroke on a 36k playlist: `ensure_ids()` walks every entry, `search_indices()` builds a `format!` of six `to_lowercase()` allocations *per track* (~250k allocations), and 500 `Label`+`ListBoxRow` widget trees are built and thrown away.
+
+`frontends/gtk/window/files.rs:979` already solves this with a 300 ms cancelling debounce. Copy that shape.
+
+**Files:**
+- Modify: `frontends/gtk/window/jump.rs:307-320`
+- Test: `frontends/gtk/window/tests.rs` (append) — the pure part only; GTK signal timing is not unit-testable here.
+
+**Interfaces:**
+- Consumes: `Playlist::search_indices(&self, query: &str) -> Vec<usize>` — unchanged.
+- Produces: no signature changes. `rebuild_jump: Rc<dyn Fn()>` keeps its type; only its trigger changes.
+
+- [ ] **Step 1: Write the failing test**
+
+`search_indices` is the allocation hot spot and it *is* unit-testable. Append to `frontends/gtk/window/tests.rs`:
+
+```rust
+/// The jump window runs this on every keystroke over the whole playlist, so
+/// it has to be correct on the cheap paths as well as the interesting ones.
+/// An empty or whitespace-only query must short-circuit rather than build a
+/// per-track lowercase haystack for a match that cannot happen.
+#[test]
+fn search_indices_short_circuits_on_an_empty_query() {
+    let mut pl = crate::model::Playlist::new();
+    for i in 0..100 {
+        pl.add(named_track(i, &format!("Track {i}"), &format!("/m/{i}.mp3")));
+    }
+    assert!(pl.search_indices("").is_empty());
+    assert!(pl.search_indices("   ").is_empty());
+}
+
+/// Cross-field matching is the behaviour the jump window is for; keep it
+/// pinned while the trigger around it changes.
+#[test]
+fn search_indices_matches_across_fields() {
+    let mut pl = crate::model::Playlist::new();
+    let mut t = named_track(1, "Black", "/m/black.mp3");
+    t.artist = "Pearl Jam".to_string();
+    pl.add(t);
+    pl.add(named_track(2, "Alive", "/m/alive.mp3"));
+
+    assert_eq!(pl.search_indices("pearl black"), vec![0]);
+    assert_eq!(pl.search_indices("alive"), vec![1]);
+    assert!(pl.search_indices("pearl alive").is_empty());
+}
+```
+
+- [ ] **Step 2: Run to verify**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp search_indices_ 2>&1 | tail -20'
+```
+
+Expected: PASS. These pin existing behaviour so the debounce cannot change results, only when they arrive.
+
+- [ ] **Step 3: Add the debounce**
+
+In `frontends/gtk/window/jump.rs`, replace the handler at line 314:
+
+```rust
+    jump_entry.connect_changed({
+        let rebuild_jump = rebuild_jump.clone();
+        move |_| {
+            rebuild_jump();
+        }
+    });
+```
+
+with:
+
+```rust
+    // Debounced, not immediate: each keystroke otherwise walks the whole
+    // playlist (a lowercase haystack per track) and builds up to 500 widget
+    // trees, which on a large playlist is felt as typing lag. 300 ms of quiet
+    // is the same interval the Files-view search uses.
+    let jump_pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    jump_entry.connect_changed({
+        let rebuild_jump = rebuild_jump.clone();
+        let jump_pending = jump_pending.clone();
+        move |_| {
+            if let Some(src) = jump_pending.borrow_mut().take() {
+                src.remove();
+            }
+            let rebuild = rebuild_jump.clone();
+            let pending_inner = jump_pending.clone();
+            let src = glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                *pending_inner.borrow_mut() = None;
+                rebuild();
+                glib::ControlFlow::Break
+            });
+            *jump_pending.borrow_mut() = Some(src);
+        }
+    });
+```
+
+Check the file's existing `use` lines for `RefCell`, `Rc` and `glib`; add whichever are missing.
+
+- [ ] **Step 4: Verify the window still closes cleanly**
+
+A pending `SourceId` that fires after the window is gone would touch dropped widgets. `rebuild_jump` captures `Rc` clones of live objects, so the closure keeps them alive and the fire is harmless — but confirm the jump window's `connect_close_request` (search the file for it) does not assume no timers are outstanding.
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && grep -n "connect_close_request" -A 10 frontends/gtk/window/jump.rs'
+```
+
+- [ ] **Step 5: Run the suite**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
+```
+
+- [ ] **Step 6: Manual check**
+
+Launch the GTK UI with the 36k playlist loaded, press `j` for the jump window, and type a several-character query at speed. Typing should stay responsive and the list should settle once, not per character.
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run -- --ui'
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add frontends/gtk/window/jump.rs frontends/gtk/window/tests.rs
+git commit -m "perf(gtk): debounce the jump window's search
+
+Typing in the jump window rebuilt on every keystroke. On a 36k playlist
+that is a full ensure_ids pass, a lowercase haystack built per track
+(six allocations each), and up to 500 Label/ListBoxRow trees built and
+thrown away — per character.
+
+Wait 300 ms for quiet, cancelling any pending rebuild, which is what the
+Files-view search already does. Results are unchanged; only when they
+arrive changes.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 4: Debounce the TUI media-library search
+Debounce the TUI media-library search
+
+`frontends/tui/media_library/mod.rs:745` re-queries SQLite synchronously on the event-loop thread on every keystroke. Measured against the real 36,329-track library:
+
+| query | SQL |
+|---|---|
+| `all_tracks_sorted` (no WHERE) | 13.0 ms |
+| `"pearl jam"` (2 words, 18 hits) | 29.8 ms |
+| `"p"` (1 char, 34,732 hits) | 39.6 ms |
+
+On top of the SQL, up to 34,732 `LibTrack` structs are materialized into `s.tracks`, each with ~15 `Option<String>` allocations.
+
+The TUI has no timer source; the debounce is a deadline checked in `tick()`, which already runs at 100 ms.
+
+**Files:**
+- Modify: `frontends/tui/mod.rs` (add the deadline field to `App`; check it in `tick`)
+- Modify: `frontends/tui/media_library/mod.rs:242-256` (the two search-key call sites)
+- Test: `frontends/tui/tests/views.rs` (append)
+
+**Interfaces:**
+- Consumes: `App::refresh_ml_search(&mut self)` — unchanged (Task 9 collapses it with `refresh_ml_sort`; this task must land first or after, not interleaved).
+- Produces:
+  - `App.ml_search_due: Option<std::time::Instant>` — set when the query changes, cleared when the search runs.
+  - `App::note_ml_search_changed(&mut self)` — records the deadline instead of searching immediately.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `frontends/tui/tests/views.rs`:
+
+```rust
+/// Typing must not re-query per keystroke: the search is deferred to a
+/// deadline the tick checks. Measured on the real 36k library, one broad
+/// query is ~40 ms of SQL plus materializing tens of thousands of rows —
+/// per character, on the thread that reads input.
+#[test]
+fn typing_in_the_library_search_defers_the_query() {
+    let mut app = test_app();
+    app.open_media_library();
+
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE); // activate search
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+
+    assert!(
+        app.ml_search_due.is_some(),
+        "a keystroke must arm the deferred search, not run it"
+    );
+
+    // More typing pushes the deadline out rather than queuing a second query.
+    let first = app.ml_search_due.unwrap();
+    app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    let second = app.ml_search_due.unwrap();
+    assert!(second >= first, "further typing must push the deadline out");
+}
+
+/// The deferred query must actually run. A deadline that is armed and never
+/// fires is worse than no debounce at all — the list would simply stop
+/// updating.
+#[test]
+fn the_deferred_library_search_runs_once_its_deadline_passes() {
+    let mut app = test_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(app.ml_search_due.is_some());
+
+    // Pull the deadline into the past rather than sleeping.
+    app.ml_search_due = Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    app.tick();
+
+    assert!(
+        app.ml_search_due.is_none(),
+        "the tick must run the search and disarm the deadline"
+    );
+}
+```
+
+If `test_app()` does not already exist in that file, check `frontends/tui/tests/mod.rs` for the existing constructor (it has `fake_track` and `named_track` helpers) and use whatever the neighbouring tests use.
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp library_search 2>&1 | tail -20'
+```
+
+Expected: FAIL to compile — `no field 'ml_search_due' on type 'App'`.
+
+- [ ] **Step 3: Add the deadline field**
+
+In `frontends/tui/mod.rs`, add to the `App` struct:
+
+```rust
+    /// When the deferred media-library search should run, or `None` when
+    /// nothing is pending.
+    ///
+    /// The library search is a full-table LIKE scan across eight columns —
+    /// ~40 ms on a 36k library for a one-character query — plus materializing
+    /// every matched row. Running that per keystroke on the thread that reads
+    /// input is felt as typing lag, so a keystroke only records a deadline and
+    /// `tick` runs the query once typing stops.
+    pub(crate) ml_search_due: Option<std::time::Instant>,
+```
+
+Initialize it in `App::new` alongside the other fields:
+
+```rust
+            ml_search_due: None,
+```
+
+- [ ] **Step 4: Arm the deadline instead of searching**
+
+In `frontends/tui/mod.rs`, add to `impl App`:
+
+```rust
+    /// Record that the search query changed; `tick` runs the query once the
+    /// deadline passes. Further typing pushes the deadline out.
+    pub(crate) fn note_ml_search_changed(&mut self) {
+        self.ml_search_due =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+    }
+```
+
+In `frontends/tui/media_library/mod.rs`, change **both** call sites at lines 248 and 254 from:
+
+```rust
+                    self.refresh_ml_search();
+```
+
+to:
+
+```rust
+                    self.note_ml_search_changed();
+```
+
+Leave the third call site (`frontends/tui/mod.rs:1269`) alone — check what triggers it first; if it is not per-keystroke typing it should stay immediate.
+
+- [ ] **Step 5: Fire it from the tick**
+
+In `frontends/tui/mod.rs`, inside `tick()`, after the existing drain sections (1, 1b, 1b2, 1c) and before the playback handling:
+
+```rust
+        // Deferred media-library search: run it once typing has stopped.
+        if let Some(due) = self.ml_search_due {
+            if std::time::Instant::now() >= due {
+                self.ml_search_due = None;
+                self.refresh_ml_search();
+            }
+        }
+```
+
+- [ ] **Step 6: Run the tests**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp library_search 2>&1 | tail -20'
+```
+
+Expected: both PASS.
+
+- [ ] **Step 7: Run the full suite**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
+```
+
+- [ ] **Step 8: Manual check**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run'
+```
+
+Open the media library (`l`), press `/`, and type quickly. Characters should appear without lag and the list should settle once.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add frontends/tui/mod.rs frontends/tui/media_library/mod.rs frontends/tui/tests/views.rs
+git commit -m "perf(tui): defer the library search until typing stops
+
+Every keystroke ran a full-table LIKE scan across eight columns and
+materialized every match, synchronously, on the thread that reads input.
+Measured on a 36,329-track library: 13.0 ms for the unfiltered sorted
+read, 29.8 ms for a two-word query, 39.6 ms for a one-character one that
+matches 34,732 rows — and then that many LibTracks built, per character.
+
+A keystroke now records a deadline and the 100 ms tick runs the query once
+250 ms of quiet has passed. The TUI has no timer source, so the tick is
+the natural place for it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 5: Point the macOS FFI add path at `playlist_ingest`
+Point the macOS FFI add path at `playlist_ingest`
+
+`src/ffi/media_library.rs:1170` spawns **two** rayon tasks per added track — a full `Track::from_path` tag read and a duration probe — for rows that came out of the library a few lines earlier and already carry title, artist, album and `length_secs` (`Track::from(&LibTrack)` copies `duration` at `src/model.rs:303`; the code's own comment says "duration + tags are inherited synchronously" and then probes anyway). GTK and the TUI were fixed for this; the macOS frontend was not.
+
+**Corrected cost.** The review said ~48 ms per file. Measured on this machine: **~24 ms cold**
+on the rotational volume the library sits on, **269 us warm** on NVMe. So a 36k add is on the
+order of fifteen minutes of pointless background I/O on spinning storage and seconds on flash
+— real either way, but storage-dependent, and not the 48 ms first claimed.
+
+**Do Task 2 first.** It removes the 370 ms `all_tracks()` call from this same function, which
+is the larger cost and is on the synchronous path.
 
 Two further defects in the same block:
 - It uses the **global** rayon pool, bypassing the bounded `shared_probe_pool()`.
@@ -486,6 +1144,9 @@ already carry title, artist, album and length_secs. On a 36k add that is
 72,000 tasks and 72,000 file opens for answers already held. GTK and the
 TUI were fixed for this; this frontend was not.
 
+Cost per skipped file is ~24 ms cold on the rotational volume holding the
+library, 269 us warm on NVMe — measured, not the ~48 ms first assumed.
+
 Probe only rows the library could not answer for, and put them on the
 shared bounded pool rather than the global one so they cannot gang up on
 the disk with the duration probes. The two probes for one file are now one
@@ -500,586 +1161,94 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 3: Debounce the GTK jump window
+## Task 6: Mark every row that points at a missing file
 
-`frontends/gtk/window/jump.rs:314` calls `rebuild_jump()` straight off `connect_changed`. Per keystroke on a 36k playlist: `ensure_ids()` walks every entry, `search_indices()` builds a `format!` of six `to_lowercase()` allocations *per track* (~250k allocations), and 500 `Label`+`ListBoxRow` widget trees are built and thrown away.
+**Reclassified from performance to correctness by the second-pass audit.** The review listed
+four items here; three measured as noise and were withdrawn:
 
-`frontends/gtk/window/files.rs:979` already solves this with a 300 ms cancelling debounce. Copy that shape.
+- `gtk_label_set_text` short-circuits on an identical string (128 ns vs 402 ns measured), so
+  guarding the time label saves ~4 us/sec against a 33 ms frame budget.
+- The marquee's per-tick allocations are the same order.
+- The Granite framebuffer is at most 400x100x4 = 160 KB (`GRANITE_RENDER_EXPANDED` is 100,
+  `VIZ_HEIGHT_COLLAPSED` is 52 — not the 640x360 the review assumed), so the
+  `glib::Bytes::from` copy is ~16 us a frame, 0.05% of budget. The copy is real; the size
+  makes it irrelevant.
 
-**Files:**
-- Modify: `frontends/gtk/window/jump.rs:307-320`
-- Test: `frontends/gtk/window/tests.rs` (append) — the pure part only; GTK signal timing is not unit-testable here.
-
-**Interfaces:**
-- Consumes: `Playlist::search_indices(&self, query: &str) -> Vec<usize>` — unchanged.
-- Produces: no signature changes. `rebuild_jump: Rc<dyn Fn()>` keeps its type; only its trigger changes.
-
-- [ ] **Step 1: Write the failing test**
-
-`search_indices` is the allocation hot spot and it *is* unit-testable. Append to `frontends/gtk/window/tests.rs`:
+What survives is a bug. `frontends/gtk/window/tick.rs:171` scans the playlist per message and
+`break`s on the first match:
 
 ```rust
-/// The jump window runs this on every keystroke over the whole playlist, so
-/// it has to be correct on the cheap paths as well as the interesting ones.
-/// An empty or whitespace-only query must short-circuit rather than build a
-/// per-track lowercase haystack for a match that cannot happen.
-#[test]
-fn search_indices_short_circuits_on_an_empty_query() {
-    let mut pl = crate::model::Playlist::new();
-    for i in 0..100 {
-        pl.add(named_track(i, &format!("Track {i}"), &format!("/m/{i}.mp3")));
-    }
-    assert!(pl.search_indices("").is_empty());
-    assert!(pl.search_indices("   ").is_empty());
-}
-
-/// Cross-field matching is the behaviour the jump window is for; keep it
-/// pinned while the trigger around it changes.
-#[test]
-fn search_indices_matches_across_fields() {
-    let mut pl = crate::model::Playlist::new();
-    let mut t = named_track(1, "Black", "/m/black.mp3");
-    t.artist = "Pearl Jam".to_string();
-    pl.add(t);
-    pl.add(named_track(2, "Alive", "/m/alive.mp3"));
-
-    assert_eq!(pl.search_indices("pearl black"), vec![0]);
-    assert_eq!(pl.search_indices("alive"), vec![1]);
-    assert!(pl.search_indices("pearl alive").is_empty());
-}
-```
-
-- [ ] **Step 2: Run to verify**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp search_indices_ 2>&1 | tail -20'
-```
-
-Expected: PASS. These pin existing behaviour so the debounce cannot change results, only when they arrive.
-
-- [ ] **Step 3: Add the debounce**
-
-In `frontends/gtk/window/jump.rs`, replace the handler at line 314:
-
-```rust
-    jump_entry.connect_changed({
-        let rebuild_jump = rebuild_jump.clone();
-        move |_| {
-            rebuild_jump();
-        }
-    });
-```
-
-with:
-
-```rust
-    // Debounced, not immediate: each keystroke otherwise walks the whole
-    // playlist (a lowercase haystack per track) and builds up to 500 widget
-    // trees, which on a large playlist is felt as typing lag. 300 ms of quiet
-    // is the same interval the Files-view search uses.
-    let jump_pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-    jump_entry.connect_changed({
-        let rebuild_jump = rebuild_jump.clone();
-        let jump_pending = jump_pending.clone();
-        move |_| {
-            if let Some(src) = jump_pending.borrow_mut().take() {
-                src.remove();
-            }
-            let rebuild = rebuild_jump.clone();
-            let pending_inner = jump_pending.clone();
-            let src = glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-                *pending_inner.borrow_mut() = None;
-                rebuild();
-                glib::ControlFlow::Break
-            });
-            *jump_pending.borrow_mut() = Some(src);
-        }
-    });
-```
-
-Check the file's existing `use` lines for `RefCell`, `Rc` and `glib`; add whichever are missing.
-
-- [ ] **Step 4: Verify the window still closes cleanly**
-
-A pending `SourceId` that fires after the window is gone would touch dropped widgets. `rebuild_jump` captures `Rc` clones of live objects, so the closure keeps them alive and the fire is harmless — but confirm the jump window's `connect_close_request` (search the file for it) does not assume no timers are outstanding.
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && grep -n "connect_close_request" -A 10 frontends/gtk/window/jump.rs'
-```
-
-- [ ] **Step 5: Run the suite**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
-```
-
-- [ ] **Step 6: Manual check**
-
-Launch the GTK UI with the 36k playlist loaded, press `j` for the jump window, and type a several-character query at speed. Typing should stay responsive and the list should settle once, not per character.
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run -- --ui'
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add frontends/gtk/window/jump.rs frontends/gtk/window/tests.rs
-git commit -m "perf(gtk): debounce the jump window's search
-
-Typing in the jump window rebuilt on every keystroke. On a 36k playlist
-that is a full ensure_ids pass, a lowercase haystack built per track
-(six allocations each), and up to 500 Label/ListBoxRow trees built and
-thrown away — per character.
-
-Wait 300 ms for quiet, cancelling any pending rebuild, which is what the
-Files-view search already does. Results are unchanged; only when they
-arrive changes.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
-
----
-
-## Task 4: Debounce the TUI media-library search
-
-`frontends/tui/media_library/mod.rs:745` re-queries SQLite synchronously on the event-loop thread on every keystroke. Measured against the real 36,329-track library:
-
-| query | SQL |
-|---|---|
-| `all_tracks_sorted` (no WHERE) | 13.0 ms |
-| `"pearl jam"` (2 words, 18 hits) | 29.8 ms |
-| `"p"` (1 char, 34,732 hits) | 39.6 ms |
-
-On top of the SQL, up to 34,732 `LibTrack` structs are materialized into `s.tracks`, each with ~15 `Option<String>` allocations.
-
-The TUI has no timer source; the debounce is a deadline checked in `tick()`, which already runs at 100 ms.
-
-**Files:**
-- Modify: `frontends/tui/mod.rs` (add the deadline field to `App`; check it in `tick`)
-- Modify: `frontends/tui/media_library/mod.rs:242-256` (the two search-key call sites)
-- Test: `frontends/tui/tests/views.rs` (append)
-
-**Interfaces:**
-- Consumes: `App::refresh_ml_search(&mut self)` — unchanged (Task 9 collapses it with `refresh_ml_sort`; this task must land first or after, not interleaved).
-- Produces:
-  - `App.ml_search_due: Option<std::time::Instant>` — set when the query changes, cleared when the search runs.
-  - `App::note_ml_search_changed(&mut self)` — records the deadline instead of searching immediately.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `frontends/tui/tests/views.rs`:
-
-```rust
-/// Typing must not re-query per keystroke: the search is deferred to a
-/// deadline the tick checks. Measured on the real 36k library, one broad
-/// query is ~40 ms of SQL plus materializing tens of thousands of rows —
-/// per character, on the thread that reads input.
-#[test]
-fn typing_in_the_library_search_defers_the_query() {
-    let mut app = test_app();
-    app.open_media_library();
-
-    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE); // activate search
-    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-
-    assert!(
-        app.ml_search_due.is_some(),
-        "a keystroke must arm the deferred search, not run it"
-    );
-
-    // More typing pushes the deadline out rather than queuing a second query.
-    let first = app.ml_search_due.unwrap();
-    app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
-    let second = app.ml_search_due.unwrap();
-    assert!(second >= first, "further typing must push the deadline out");
-}
-
-/// The deferred query must actually run. A deadline that is armed and never
-/// fires is worse than no debounce at all — the list would simply stop
-/// updating.
-#[test]
-fn the_deferred_library_search_runs_once_its_deadline_passes() {
-    let mut app = test_app();
-    app.open_media_library();
-    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-    assert!(app.ml_search_due.is_some());
-
-    // Pull the deadline into the past rather than sleeping.
-    app.ml_search_due = Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
-    app.tick();
-
-    assert!(
-        app.ml_search_due.is_none(),
-        "the tick must run the search and disarm the deadline"
-    );
-}
-```
-
-If `test_app()` does not already exist in that file, check `frontends/tui/tests/mod.rs` for the existing constructor (it has `fake_track` and `named_track` helpers) and use whatever the neighbouring tests use.
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp library_search 2>&1 | tail -20'
-```
-
-Expected: FAIL to compile — `no field 'ml_search_due' on type 'App'`.
-
-- [ ] **Step 3: Add the deadline field**
-
-In `frontends/tui/mod.rs`, add to the `App` struct:
-
-```rust
-    /// When the deferred media-library search should run, or `None` when
-    /// nothing is pending.
-    ///
-    /// The library search is a full-table LIKE scan across eight columns —
-    /// ~40 ms on a 36k library for a one-character query — plus materializing
-    /// every matched row. Running that per keystroke on the thread that reads
-    /// input is felt as typing lag, so a keystroke only records a deadline and
-    /// `tick` runs the query once typing stops.
-    pub(crate) ml_search_due: Option<std::time::Instant>,
-```
-
-Initialize it in `App::new` alongside the other fields:
-
-```rust
-            ml_search_due: None,
-```
-
-- [ ] **Step 4: Arm the deadline instead of searching**
-
-In `frontends/tui/mod.rs`, add to `impl App`:
-
-```rust
-    /// Record that the search query changed; `tick` runs the query once the
-    /// deadline passes. Further typing pushes the deadline out.
-    pub(crate) fn note_ml_search_changed(&mut self) {
-        self.ml_search_due =
-            Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
-    }
-```
-
-In `frontends/tui/media_library/mod.rs`, change **both** call sites at lines 248 and 254 from:
-
-```rust
-                    self.refresh_ml_search();
-```
-
-to:
-
-```rust
-                    self.note_ml_search_changed();
-```
-
-Leave the third call site (`frontends/tui/mod.rs:1269`) alone — check what triggers it first; if it is not per-keystroke typing it should stay immediate.
-
-- [ ] **Step 5: Fire it from the tick**
-
-In `frontends/tui/mod.rs`, inside `tick()`, after the existing drain sections (1, 1b, 1b2, 1c) and before the playback handling:
-
-```rust
-        // Deferred media-library search: run it once typing has stopped.
-        if let Some(due) = self.ml_search_due {
-            if std::time::Instant::now() >= due {
-                self.ml_search_due = None;
-                self.refresh_ml_search();
-            }
-        }
-```
-
-- [ ] **Step 6: Run the tests**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp library_search 2>&1 | tail -20'
-```
-
-Expected: both PASS.
-
-- [ ] **Step 7: Run the full suite**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
-```
-
-- [ ] **Step 8: Manual check**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run'
-```
-
-Open the media library (`l`), press `/`, and type quickly. Characters should appear without lag and the list should settle once.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add frontends/tui/mod.rs frontends/tui/media_library/mod.rs frontends/tui/tests/views.rs
-git commit -m "perf(tui): defer the library search until typing stops
-
-Every keystroke ran a full-table LIKE scan across eight columns and
-materialized every match, synchronously, on the thread that reads input.
-Measured on a 36,329-track library: 13.0 ms for the unfiltered sorted
-read, 29.8 ms for a two-word query, 39.6 ms for a one-character one that
-matches 34,732 rows — and then that many LibTracks built, per character.
-
-A keystroke now records a deadline and the 100 ms tick runs the query once
-250 ms of quiet has passed. The TUI has no timer source, so the tick is
-the natural place for it.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
-
----
-
-## Task 5: Move the media-library column table into core
-
-GTK's `ALL_COLUMNS` (`frontends/gtk/window/ml_columns.rs:18`) defines **35** columns. The TUI reimplements label, width and value extraction for **9** (`frontends/tui/ui/media_library.rs:600-653`). Both read the same persisted config key, `config.media_library.visible_columns`.
-
-They have already diverged, and the divergence is user-visible:
-
-```
-GTK   id "num" → header "#"     → row ordinal
-TUI   id "num" → t.track_num    → ID3 track number
-```
-
-Same key, two meanings. GTK's `"Duration"` is the TUI's `"Len"`. The other 26 ids render `"?"` in the TUI.
-
-**Files:**
-- Create: `src/ml_columns.rs`
-- Modify: `src/lib.rs` (or `src/main.rs`, whichever declares the module list — check both)
-- Modify: `frontends/gtk/window/ml_columns.rs:1-230` (consume the core table)
-- Modify: `frontends/tui/ui/media_library.rs:590-655` (consume the core table)
-- Test: `src/ml_columns.rs` (its own `#[cfg(test)] mod tests`)
-
-**Interfaces:**
-- Produces, in `crate::ml_columns`:
-  - `pub struct ColumnDef { pub id: &'static str, pub header: &'static str, pub tui_width: u16, pub expand: bool, pub id3_editable: bool, pub default_ml_visible: bool, pub default_id3_visible: bool }`
-  - `pub const ALL: &[ColumnDef]` — all 35, carrying GTK's existing headers verbatim.
-  - `pub fn by_id(id: &str) -> Option<&'static ColumnDef>`
-  - `pub fn value(id: &str, t: &crate::media_library::LibTrack, row_ordinal: usize) -> std::borrow::Cow<'_, str>` — the single value extractor. `row_ordinal` is 1-based and used only by `"num"`.
-- GTK keeps `MlColumnDef` as a type alias to `crate::ml_columns::ColumnDef` so its ~20 existing references compile unchanged.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `src/ml_columns.rs` with only the test module first:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The divergence this module exists to end: GTK read "num" as the row
-    /// ordinal while the TUI read it as the ID3 track number, from the same
-    /// persisted config key. One table, one meaning.
-    #[test]
-    fn num_is_the_row_ordinal_and_track_num_is_the_tag() {
-        assert_eq!(by_id("num").unwrap().header, "#");
-        assert_eq!(by_id("track_num").unwrap().header, "Track #");
-    }
-
-    /// Every id in the table must resolve, and no id may appear twice — a
-    /// duplicate would make `by_id` silently pick one and the other dead.
-    #[test]
-    fn every_column_id_is_unique_and_resolvable() {
-        let mut seen = std::collections::HashSet::new();
-        for c in ALL {
-            assert!(seen.insert(c.id), "duplicate column id: {}", c.id);
-            assert!(by_id(c.id).is_some(), "{} does not resolve", c.id);
-            assert!(!c.header.is_empty(), "{} has no header", c.id);
-        }
-        assert_eq!(ALL.len(), 35, "the GTK table had 35 columns; keep them all");
-    }
-
-    /// An unknown id must not panic — configs are user-editable TOML and can
-    /// name a column that no longer exists.
-    #[test]
-    fn an_unknown_column_id_is_none_not_a_panic() {
-        assert!(by_id("no_such_column").is_none());
-    }
-}
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib ml_columns 2>&1 | tail -20'
-```
-
-Expected: FAIL — the module is not declared and `ALL`/`by_id` do not exist.
-
-- [ ] **Step 3: Build the core table**
-
-Extract the 35 entries from `frontends/gtk/window/ml_columns.rs:18-230` verbatim into `src/ml_columns.rs`, adding a `tui_width` to each (take the nine known widths from `frontends/tui/ui/media_library.rs:590-607`; give the other 26 a sensible default of `12`, and `6` for the numeric ones). Declare `pub mod ml_columns;` alongside the other modules.
-
-Then add:
-
-```rust
-pub fn by_id(id: &str) -> Option<&'static ColumnDef> {
-    ALL.iter().find(|c| c.id == id)
-}
-```
-
-Move the value extraction from the TUI's `ml_col_value` and GTK's sort-key match into one `value()`, resolving `"num"` to the row ordinal (GTK's meaning — it is the one the header `"#"` describes, and the one the default visible set was written against).
-
-- [ ] **Step 4: Run the core tests**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib ml_columns 2>&1 | tail -20'
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Point GTK at it**
-
-In `frontends/gtk/window/ml_columns.rs`, delete the local `MlColumnDef` struct and the `ALL_COLUMNS` array, replacing them with:
-
-```rust
-pub(super) type MlColumnDef = crate::ml_columns::ColumnDef;
-pub(super) use crate::ml_columns::ALL as ALL_COLUMNS;
-```
-
-Every existing `ALL_COLUMNS.iter().find(...)` and `MlColumnDef` reference then compiles unchanged.
-
-- [ ] **Step 6: Point the TUI at it**
-
-In `frontends/tui/ui/media_library.rs`, delete `ml_col_label`, `ml_col_value` and the width match, replacing the call sites with `crate::ml_columns::by_id(id)` and `crate::ml_columns::value(id, t, ordinal)`. The renderer knows the row's position, so pass `offset + row + 1` as the ordinal.
-
-- [ ] **Step 7: Run the full suite**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
-```
-
-- [ ] **Step 8: Manual parity check**
-
-Set a shared column set and confirm both frontends now agree:
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run -- --ui'   # set columns in Settings
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run'           # confirm the TUI shows the same
-```
-
-Add `track_num` and `num` both to the visible set and confirm they now show different values in both, with matching headers.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add src/ml_columns.rs src/lib.rs frontends/gtk/window/ml_columns.rs frontends/tui/ui/media_library.rs
-git commit -m "fix(library): one column table for every frontend
-
-GTK defined 35 media-library columns; the TUI independently reimplemented
-label, width and value for 9 of them. Both read the same persisted key,
-config.media_library.visible_columns — so the two tables had to agree, and
-they had already stopped.
-
-The visible consequence: id \"num\" was the row ordinal in GTK and the ID3
-track number in the TUI, from the same config. \"Duration\" was \"Len\". The
-other 26 ids rendered as \"?\".
-
-Move the table to core as crate::ml_columns and have both frontends read
-it. \"num\" is the row ordinal everywhere, which is what its \"#\" header
-describes and what the default visible set was written against;
-\"track_num\" is the tag.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
-
----
-
-## Task 6: Tick hygiene
-
-The GTK tick runs at 33 ms. Three things in it repeat work that has not changed, and one copies a megabyte per frame.
-
-**Files:**
-- Modify: `frontends/gtk/window/tick.rs:171-187` (the `broken_rx` drain)
-- Modify: `frontends/gtk/window/tick.rs:518-538` (the time label)
-- Modify: `frontends/gtk/window/tick.rs:692-700` (the Granite framebuffer copy)
-- Test: `frontends/gtk/window/tests.rs` (append)
-
-**Interfaces:**
-- Consumes: nothing new.
-- Produces: no signature changes.
-
-- [ ] **Step 1: Write the failing test**
-
-The batching is the testable part. Append to `frontends/gtk/window/tests.rs`:
-
-```rust
-/// The broken-file drain scanned the whole playlist once per message. The two
-/// drains immediately above it in the tick were batched for exactly this
-/// reason — one pass for the whole batch, not one pass per result. Prove the
-/// batch form marks every matching row, including duplicates of one path,
-/// which the per-message `break` never did.
-#[test]
-fn a_batch_of_broken_paths_marks_every_matching_row() {
-    let mut pl = crate::model::Playlist::new();
-    pl.add(named_track(1, "One", "/m/a.mp3"));
-    pl.add(named_track(2, "Two", "/m/b.mp3"));
-    pl.add(named_track(3, "Dup", "/m/a.mp3")); // same file, second entry
-
-    let broken: std::collections::HashSet<std::path::PathBuf> =
-        [std::path::PathBuf::from("/m/a.mp3")].into_iter().collect();
-
-    let mut marked = Vec::new();
-    for (idx, t) in pl.tracks.iter_mut().enumerate() {
-        if broken.contains(&t.path) {
-            t.broken = true;
-            marked.push(idx);
-        }
-    }
-
-    assert_eq!(
-        marked,
-        vec![0, 2],
-        "both entries pointing at the missing file must be marked, not just the first"
-    );
-    assert!(!pl.tracks[1].broken);
-}
-```
-
-- [ ] **Step 2: Run to verify**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp a_batch_of_broken_paths 2>&1 | tail -20'
-```
-
-Expected: PASS — it describes the shape Step 3 must produce.
-
-- [ ] **Step 3: Batch the broken drain**
-
-Replace `frontends/gtk/window/tick.rs:171-187`:
-
-```rust
-            // 0b. Drain missing-file notifications; mark those tracks broken.
             while let Ok(path) = broken_rx.try_recv() {
-                let found_idx = {
-                    let mut s = state.borrow_mut();
-                    let mut found = None;
                     for (idx, track) in s.playlist.tracks.iter_mut().enumerate() {
                         if track.path == path {
                             track.broken = true;
                             found = Some(idx);
                             break;
-                        }
-                    }
-                    found
-                };
-                if let Some(idx) = found_idx {
-                    patch_pl_row(idx);
-                }
-            }
 ```
 
-with:
+A playlist holding the same file twice — trivially common, and `Playlist::add` explicitly
+supports duplicate paths — marks only the first entry. The second keeps showing as playable
+after the file is gone. The TUI's equivalent (`frontends/tui/mod.rs:1189`) already batches and
+gets this right.
+
+**Files:**
+- Modify: `frontends/gtk/window/tick.rs:171-187`
+- Test: `frontends/gtk/window/tests.rs`
+
+**Interfaces:** no signature changes.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+/// A playlist can hold the same file more than once — `Playlist::add` stamps
+/// distinct ids for duplicate paths precisely so it can. When that file goes
+/// missing, every entry pointing at it must show the warning, not just the
+/// first one the scan happens to reach.
+#[test]
+fn every_row_pointing_at_a_missing_file_is_marked() {
+    let mut pl = crate::model::Playlist::new();
+    pl.add(named_track(1, "One", "/m/a.mp3"));
+    pl.add(named_track(2, "Two", "/m/b.mp3"));
+    pl.add(named_track(3, "Dup", "/m/a.mp3"));
+
+    let broken: std::collections::HashSet<std::path::PathBuf> =
+        [std::path::PathBuf::from("/m/a.mp3")].into_iter().collect();
+
+    let marked: Vec<usize> = pl
+        .tracks
+        .iter_mut()
+        .enumerate()
+        .filter(|(_, t)| broken.contains(&t.path))
+        .map(|(idx, t)| {
+            t.broken = true;
+            idx
+        })
+        .collect();
+
+    assert_eq!(marked, vec![0, 2], "both entries for the missing file");
+    assert!(!pl.tracks[1].broken, "the present file is untouched");
+}
+```
+
+- [ ] **Step 2: Run it**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cargo test --bin sparkamp every_row_pointing_at_a_missing_file 2>&1 | tail -10'
+```
+
+Expected: PASS — it describes the shape Step 3 must produce.
+
+- [ ] **Step 3: Batch the drain**
+
+Replace `frontends/gtk/window/tick.rs:171-187` with:
 
 ```rust
             // 0b. Drain missing-file notifications; mark those tracks broken.
-            // Batched like the two drains above: a pass per message was
-            // O(rows × messages). The batch also marks EVERY entry pointing at
-            // the missing file, not just the first — the old `break` left
-            // duplicate rows of one path unmarked.
+            // Collected into a set first so EVERY entry pointing at a missing
+            // file is marked: the per-message loop this replaces broke on the
+            // first match, leaving a second entry for the same file showing as
+            // playable. Batching also drops the per-message playlist scan,
+            // matching the two drains above and the TUI's equivalent.
             {
                 let mut broken_batch: std::collections::HashSet<std::path::PathBuf> =
                     std::collections::HashSet::new();
@@ -1107,88 +1276,31 @@ with:
             }
 ```
 
-- [ ] **Step 4: Guard the time label**
-
-The time display changes once a second but is rebuilt 30 times. Add a cached-last-value `Rc<RefCell<String>>` next to the other tick locals, then at lines 525 and 531 build the string and only call `set_text` when it differs:
-
-```rust
-                    let text = if show_rem {
-                        match dur_opt {
-                            Some(dur) => {
-                                let rs = dur.saturating_sub(pos).as_secs();
-                                format!("-{}:{:02}", rs / 60, rs % 60)
-                            }
-                            None => "--:--".to_string(),
-                        }
-                    } else {
-                        let ps = pos.as_secs();
-                        format!("{}:{:02}", ps / 60, ps % 60)
-                    };
-                    if *last_time_text.borrow() != text {
-                        time_disp_label.set_text(&text);
-                        *last_time_text.borrow_mut() = text;
-                    }
-```
-
-- [ ] **Step 5: Stop copying the Granite framebuffer**
-
-At line 692, `glib::Bytes::from(&buf[..])` copies the whole buffer. At 640×360 that is ~921 KB memcpy'd 30 times a second, about 27 MB/s, purely to hand it to `MemoryTexture`.
-
-Replace the borrow-and-copy with an owned handoff. Change the buffer local from `Rc<RefCell<Vec<u8>>>` usage at that site to take the buffer, wrap it without copying, and put a fresh one back:
-
-```rust
-                        // `Bytes::from(&[u8])` copies; `from_owned` does not.
-                        // At 30 fps this was ~27 MB/s of memcpy for nothing.
-                        let taken = std::mem::take(&mut *buf);
-                        let bytes = glib::Bytes::from_owned(taken);
-                        let texture = gdk::MemoryTexture::new(
-                            w as i32,
-                            h as i32,
-                            gdk::MemoryFormat::R8g8b8a8,
-                            &bytes,
-                            (w * 4) as usize,
-                        );
-                        pic.set_paintable(Some(&texture));
-                        // The next frame resizes an empty buffer back to `need`.
-                        *buf = vec![0u8; need];
-```
-
-The `if buf.len() != need { buf.resize(need, 0); }` above already handles a wrong-sized buffer, so the reallocation is a plain per-frame `Vec` allocation of the same size the copy used to cost — strictly cheaper than the copy plus the retained buffer. If a later measurement shows the allocation is worse than the copy, say so and revert this step alone.
-
-- [ ] **Step 6: Run the suite**
+- [ ] **Step 4: Run the full suite**
 
 ```bash
 distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
 ```
 
-- [ ] **Step 7: Manual check**
+- [ ] **Step 5: Manual check**
 
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run -- --ui'
-```
+Add the same file to the playlist twice, play something else, delete the file from disk, and
+confirm **both** rows gain the warning marker.
 
-Play a track. Confirm: the time display still counts, the Granite visualizer still animates without tearing or a stale frame, and a file deleted underneath a playing playlist still gets its ⚠.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add frontends/gtk/window/tick.rs frontends/gtk/window/tests.rs
-git commit -m "perf(gtk): stop the tick redoing unchanged work every frame
+git commit -m "fix(gtk): mark every playlist row that points at a missing file
 
-Three things in the 33 ms tick repeated work that had not changed.
+The missing-file drain scanned the playlist once per message and broke on
+the first match, so a playlist holding the same file twice marked only one
+of them. The other kept showing as playable after the file was gone.
+Playlist::add stamps distinct ids for duplicate paths specifically so a
+file can appear more than once, so this is reachable.
 
-The broken-file drain scanned the whole playlist once per message — the
-one drain that never got the batching its two neighbours carry comments
-explaining. Batching also fixes a real gap: the old per-message loop broke
-on the first match, so a second playlist entry pointing at the same
-missing file never got its warning.
-
-The time display was rebuilt and re-set 30 times a second for a value that
-changes once. It now writes only on change.
-
-The Granite path handed its framebuffer to MemoryTexture through
-Bytes::from(&[u8]), which copies — about 921 KB at 30 fps, 27 MB/s of
-memcpy. Bytes::from_owned takes the buffer instead.
+Batch the drain and mark every matching entry, which is what the TUI's
+equivalent already does. Dropping the per-message scan is incidental.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1196,6 +1308,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ---
 
 ## Task 7: Collapse the mechanical duplicates
+Collapse the mechanical duplicates
 
 Three independent dedupes, no behaviour change.
 
@@ -1316,6 +1429,24 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+## Order, and why
+
+Re-derived from the second-pass measurements rather than from the original review's
+impressions:
+
+| # | task | measured basis |
+|---|---|---|
+| 1 | scan writes each row once | done; ~2% of a scan |
+| 2 | targeted library lookups | **370 ms → 116 us**, synchronous, per add |
+| 3 | GTK jump debounce | **14–37 ms per keystroke** on the main thread |
+| 4 | TUI search debounce | **13–40 ms of SQL per keystroke**, on the input thread |
+| 5 | macOS FFI redundant probing | ~24 ms cold per needlessly-read file |
+| 6 | missing-file marking | correctness, not speed |
+| 7 | mechanical dedupes | no behaviour change |
+| 8 | column table | duplication cleanup; the defect it claimed was not real |
+
+Tasks 2 and 5 touch the same FFI function, so 2 lands first.
+
 ## Deferred, deliberately
 
 Recorded so they are not silently dropped:
@@ -1338,3 +1469,169 @@ Recorded so they are not silently dropped:
 **Placeholder scan.** No "TBD", no "add error handling", no "similar to Task N". Every code step carries the actual code. Task 7 Steps 3, 5 and 6 describe a mechanical extraction of 35 entries rather than reproducing them — that is a transcription, and the source lines are named exactly.
 
 **Type consistency.** Re-checked after Tasks 2–3 were cancelled and the rest renumbered. `shared_probe_pool()` was to be created by the cancelled parallel-scan task; **Task 2 now creates it**, and is its only consumer. `ml_search_due: Option<Instant>` is declared in Task 4 Step 3 and read in Steps 1 and 5. `crate::ml_columns::{ColumnDef, ALL, by_id, value}` are defined in Task 5 Step 3 and consumed in Steps 5–6. No remaining task references `upsert_probed` or `ProbedTrackMetadata`, both of which belonged to the cancelled work.
+## Task 8: Move the media-library column table into core
+Move the media-library column table into core
+
+> **Demoted by the second-pass audit.** The original justification — that `"num"` meant the
+> row ordinal in GTK and the ID3 track number in the TUI — **was wrong**.
+> `frontends/gtk/window/ml_columns.rs:380` reads `"num" | "track_num" => t.track_num...`, and
+> both frontends label it `"#"`. They agree. The claim came from reading the header and not
+> the value extractor. This task is now duplication cleanup with one small user-visible edge,
+> not a defect fix, so it sits last.
+
+GTK's `ALL_COLUMNS` (`frontends/gtk/window/ml_columns.rs:18`) defines **35** columns. The TUI
+reimplements label, width and value extraction for **9** (`frontends/tui/ui/media_library.rs:600-653`).
+Both read the same persisted config key, `config.media_library.visible_columns`.
+
+What actually diverges:
+
+- The TUI implements 9 of the 35 ids. A user who selects any of the other 26 in GTK and then
+  opens the TUI gets `"?"` for those columns. Reachable, minor.
+- `"Duration"` in GTK is `"Len"` in the TUI. Plausibly deliberate — the TUI is width-bound —
+  so preserve it rather than "fixing" it.
+- GTK maps both `"num"` and `"track_num"` to the same value with different headers (`"#"` and
+  `"Track #"`). Odd, pre-existing, and out of scope here.
+
+**Files:**
+- Create: `src/ml_columns.rs`
+- Modify: `src/lib.rs` (or `src/main.rs`, whichever declares the module list — check both)
+- Modify: `frontends/gtk/window/ml_columns.rs:1-230` (consume the core table)
+- Modify: `frontends/tui/ui/media_library.rs:590-655` (consume the core table)
+- Test: `src/ml_columns.rs` (its own `#[cfg(test)] mod tests`)
+
+**Interfaces:**
+- Produces, in `crate::ml_columns`:
+  - `pub struct ColumnDef { pub id: &'static str, pub header: &'static str, pub tui_width: u16, pub expand: bool, pub id3_editable: bool, pub default_ml_visible: bool, pub default_id3_visible: bool }`
+  - `pub const ALL: &[ColumnDef]` — all 35, carrying GTK's existing headers verbatim.
+  - `pub fn by_id(id: &str) -> Option<&'static ColumnDef>`
+  - `pub fn value(id: &str, t: &crate::media_library::LibTrack, row_ordinal: usize) -> std::borrow::Cow<'_, str>` — the single value extractor. `row_ordinal` is 1-based and used only by `"num"`.
+- GTK keeps `MlColumnDef` as a type alias to `crate::ml_columns::ColumnDef` so its ~20 existing references compile unchanged.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/ml_columns.rs` with only the test module first:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both frontends already agree that "num" is the ID3 track number under a
+    /// "#" header; pin that so consolidating the two tables cannot quietly
+    /// change it. (An earlier reading of this plan claimed they disagreed —
+    /// they do not.)
+    #[test]
+    fn num_and_track_num_keep_their_existing_headers() {
+        assert_eq!(by_id("num").unwrap().header, "#");
+        assert_eq!(by_id("track_num").unwrap().header, "Track #");
+    }
+
+    /// Every id in the table must resolve, and no id may appear twice — a
+    /// duplicate would make `by_id` silently pick one and the other dead.
+    #[test]
+    fn every_column_id_is_unique_and_resolvable() {
+        let mut seen = std::collections::HashSet::new();
+        for c in ALL {
+            assert!(seen.insert(c.id), "duplicate column id: {}", c.id);
+            assert!(by_id(c.id).is_some(), "{} does not resolve", c.id);
+            assert!(!c.header.is_empty(), "{} has no header", c.id);
+        }
+        assert_eq!(ALL.len(), 35, "the GTK table had 35 columns; keep them all");
+    }
+
+    /// An unknown id must not panic — configs are user-editable TOML and can
+    /// name a column that no longer exists.
+    #[test]
+    fn an_unknown_column_id_is_none_not_a_panic() {
+        assert!(by_id("no_such_column").is_none());
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib ml_columns 2>&1 | tail -20'
+```
+
+Expected: FAIL — the module is not declared and `ALL`/`by_id` do not exist.
+
+- [ ] **Step 3: Build the core table**
+
+Extract the 35 entries from `frontends/gtk/window/ml_columns.rs:18-230` verbatim into `src/ml_columns.rs`, adding a `tui_width` to each (take the nine known widths from `frontends/tui/ui/media_library.rs:590-607`; give the other 26 a sensible default of `12`, and `6` for the numeric ones). Declare `pub mod ml_columns;` alongside the other modules.
+
+Then add:
+
+```rust
+pub fn by_id(id: &str) -> Option<&'static ColumnDef> {
+    ALL.iter().find(|c| c.id == id)
+}
+```
+
+Move the value extraction from the TUI's `ml_col_value` and GTK's sort-key match into one `value()`, resolving `"num"` to the row ordinal (GTK's meaning — it is the one the header `"#"` describes, and the one the default visible set was written against).
+
+- [ ] **Step 4: Run the core tests**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib ml_columns 2>&1 | tail -20'
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Point GTK at it**
+
+In `frontends/gtk/window/ml_columns.rs`, delete the local `MlColumnDef` struct and the `ALL_COLUMNS` array, replacing them with:
+
+```rust
+pub(super) type MlColumnDef = crate::ml_columns::ColumnDef;
+pub(super) use crate::ml_columns::ALL as ALL_COLUMNS;
+```
+
+Every existing `ALL_COLUMNS.iter().find(...)` and `MlColumnDef` reference then compiles unchanged.
+
+- [ ] **Step 6: Point the TUI at it**
+
+In `frontends/tui/ui/media_library.rs`, delete `ml_col_label`, `ml_col_value` and the width match, replacing the call sites with `crate::ml_columns::by_id(id)` and `crate::ml_columns::value(id, t, ordinal)`. The renderer knows the row's position, so pass `offset + row + 1` as the ordinal.
+
+- [ ] **Step 7: Run the full suite**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
+```
+
+- [ ] **Step 8: Manual parity check**
+
+Set a shared column set and confirm both frontends now agree:
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run -- --ui'   # set columns in Settings
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run'           # confirm the TUI shows the same
+```
+
+Add `track_num` and `num` both to the visible set and confirm they now show different values in both, with matching headers.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/ml_columns.rs src/lib.rs frontends/gtk/window/ml_columns.rs frontends/tui/ui/media_library.rs
+git commit -m "fix(library): one column table for every frontend
+
+GTK defined 35 media-library columns; the TUI independently reimplemented
+label, width and value for 9 of them. Both read the same persisted key,
+config.media_library.visible_columns, so the two tables have to agree.
+
+The reachable consequence is narrow: select any of the other 26 columns in
+GTK and the TUI renders \"?\" for them.
+
+Move the table to core as crate::ml_columns and have both frontends read
+it, preserving every existing header and value — including \"Len\", which
+the TUI uses because it is width-bound.
+
+No semantic change: an earlier draft of this claimed GTK and the TUI
+disagreed about \"num\". They do not; both render the ID3 track number.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
