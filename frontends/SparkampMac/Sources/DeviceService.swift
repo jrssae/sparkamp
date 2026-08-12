@@ -141,7 +141,6 @@ struct DevicePlaylist: Codable, Identifiable {
 
 struct ApplyResult: Codable { var applied: Int; var skipped: Int }
 struct CopyResult: Codable { var copied: Int; var skipped: Int; var bytes: UInt64 }
-struct PlaylistApplyResult: Codable { var pushed: Int; var pulled: Int; var skipped: Int }
 
 /// One removable volume Swift enumerated, sent to the core for canonicalization.
 struct VolumeInfo: Encodable {
@@ -384,18 +383,6 @@ enum DeviceService {
         let out = dj.withCString { d in sj.withCString { s in
             sparkamp_device_copy(nil, d, s)
         } }
-        return decodeJSON(takeString(out))
-    }
-
-    static func playlistPlan(device: Device, format: Int32) -> [PlaylistSyncItem] {
-        guard let dj = deviceJSON(device) else { return [] }
-        let out = dj.withCString { sparkamp_device_playlist_plan(nil, $0, format) }
-        return decodeJSON(takeString(out)) ?? []
-    }
-
-    static func playlistApply(device: Device, format: Int32) -> PlaylistApplyResult? {
-        guard let dj = deviceJSON(device) else { return nil }
-        let out = dj.withCString { sparkamp_device_playlist_apply(nil, $0, format) }
         return decodeJSON(takeString(out))
     }
 

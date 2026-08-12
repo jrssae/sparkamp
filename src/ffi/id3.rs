@@ -140,51 +140,6 @@ pub unsafe extern "C" fn sparkamp_tag_set(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_tag_frame_count(tag: *const SparkampTagCtx) -> c_int {
-    if tag.is_null() {
-        return 0;
-    }
-    let tag = &*tag;
-    tag.extra_frames.len() as c_int
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_tag_frame_id(
-    tag: *const SparkampTagCtx,
-    index: c_int,
-) -> *mut c_char {
-    if tag.is_null() || index < 0 {
-        return CString::new("").unwrap().into_raw();
-    }
-    let tag = &*tag;
-    let idx = index as usize;
-    if idx >= tag.extra_frames.len() {
-        return CString::new("").unwrap().into_raw();
-    }
-    CString::new(tag.extra_frames[idx].id.as_str())
-        .unwrap_or_default()
-        .into_raw()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_tag_frame_value(
-    tag: *const SparkampTagCtx,
-    index: c_int,
-) -> *mut c_char {
-    if tag.is_null() || index < 0 {
-        return CString::new("").unwrap().into_raw();
-    }
-    let tag = &*tag;
-    let idx = index as usize;
-    if idx >= tag.extra_frames.len() {
-        return CString::new("").unwrap().into_raw();
-    }
-    CString::new(tag.extra_frames[idx].value.as_str())
-        .unwrap_or_default()
-        .into_raw()
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
     if tag.is_null() {
         return -2;

@@ -2,16 +2,13 @@
 //! persistence, and background duration probing.
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_double, c_int};
+use std::os::raw::{c_double, c_int};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::config::Config;
 use crate::controller::{Controller, NavResult};
 use crate::duration_probe;
 use crate::engine::PlayerState;
-use crate::model::Playlist;
 use crate::shuffle::RepeatMode;
 
 use super::SparkampCtx;
@@ -29,21 +26,6 @@ static DISCOVER_LOCK: Mutex<()> = Mutex::new(());
 // ---------------------------------------------------------------------------
 // Playback
 // ---------------------------------------------------------------------------
-
-/// Load a URI and immediately begin playing it.
-///
-/// The URI must be a `file://` URL or an absolute path; the player converts
-/// plain paths to `file://` internally via `Track::uri()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_load_and_play(ctx: *mut SparkampCtx, uri: *const c_char) {
-    if ctx.is_null() || uri.is_null() {
-        return;
-    }
-    let ctx = &mut *ctx;
-    let s = CStr::from_ptr(uri).to_string_lossy();
-    ctx.player.load(s.as_ref()).ok();
-    ctx.player.play().ok();
-}
 
 /// Resume playback (no-op if already playing; resumes if paused).
 /// If stopped and the playlist has a current track, loads its URI first.
@@ -367,25 +349,6 @@ pub unsafe extern "C" fn sparkamp_save_config(ctx: *mut SparkampCtx) {
     ctx.config.playback.shuffle_enabled = ctx.shuffle_state.enabled;
     ctx.playlist.save_last().ok();
     ctx.config.save().ok();
-}
-
-/// Reload config and playlist from disk, applying the new settings immediately.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_load_config(ctx: *mut SparkampCtx) {
-    if ctx.is_null() {
-        return;
-    }
-    let ctx = &mut *ctx;
-    if let Ok(cfg) = Config::load() {
-        let vol = cfg.playback.volume;
-        let shuffle = cfg.playback.shuffle_enabled;
-        ctx.config = cfg;
-        ctx.player.set_volume(vol);
-        ctx.shuffle_state.enabled = shuffle;
-    }
-    if let Ok(pl) = Playlist::load_last() {
-        ctx.playlist = pl;
-    }
 }
 
 // ---------------------------------------------------------------------------

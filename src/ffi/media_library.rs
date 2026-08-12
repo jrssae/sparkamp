@@ -939,35 +939,6 @@ pub unsafe extern "C" fn sparkamp_rg_analyze_progress(
 // Media Library — track queries
 // ---------------------------------------------------------------------------
 
-/// Return the number of tracks matching `query` (UTF-8 search string).
-///
-/// Pass an empty string or null to count all tracks.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_track_count(
-    ctx: *const SparkampCtx,
-    query: *const c_char,
-) -> c_int {
-    if ctx.is_null() {
-        return 0;
-    }
-    let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
-    let q = if query.is_null() {
-        ""
-    } else {
-        match CStr::from_ptr(query).to_str() {
-            Ok(s) => s,
-            Err(_) => "",
-        }
-    };
-    let tracks = if q.is_empty() {
-        ml.all_tracks()
-    } else {
-        ml.search_tracks(q)
-    };
-    tracks.map(|v| v.len() as c_int).unwrap_or(0)
-}
-
 /// Fetch a page of tracks into a caller-allocated array.
 ///
 /// - `query`: UTF-8 search string; null or empty means all tracks.
@@ -1383,28 +1354,6 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist_to_path(
     match ml.save_playlist_tracks_to_path(Path::new(target), &track_paths) {
         Ok(id) => id,
         Err(e) => { eprintln!("[sparkamp] save_playlist_to_path: {e}"); -1 }
-    }
-}
-
-/// Register an existing `.m3u` / `.m3u8` file on disk as a playlist in
-/// the library.
-///
-/// Use after the frontend has written the file itself, so the new
-/// playlist appears in the sidebar without a full library rescan.  Returns
-/// the new playlist row id, or -1 on error (including malformed UTF-8 in
-/// `path`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_add_playlist_file(
-    ctx: *mut SparkampCtx,
-    path: *const c_char,
-) -> i64 {
-    if ctx.is_null() || path.is_null() { return -1; }
-    let ctx = &mut *ctx;
-    let Some(ml) = &ctx.media_library else { return -1 };
-    let Ok(p) = CStr::from_ptr(path).to_str() else { return -1 };
-    match ml.add_playlist_file(p) {
-        Ok(id) => id,
-        Err(e) => { eprintln!("[sparkamp] add_playlist_file: {e}"); -1 }
     }
 }
 

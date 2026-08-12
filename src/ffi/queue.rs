@@ -60,6 +60,11 @@ pub unsafe extern "C" fn sparkamp_queue_position(ctx: *const SparkampCtx, index:
 }
 
 /// Number of entries currently in the queue.
+///
+/// Not called by any frontend today — the Swift side reads the queue through
+/// `sparkamp_queue_position` per row. Kept because this file's tests use it
+/// and `sparkamp_queue_entry_index` below as the read half for asserting on
+/// `queue_toggle`, `queue_move` and `queue_clear`, all of which are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_queue_count(ctx: *const SparkampCtx) -> c_int {
     if ctx.is_null() {

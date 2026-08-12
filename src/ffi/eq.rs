@@ -146,15 +146,6 @@ pub unsafe extern "C" fn sparkamp_reset_eq(ctx: *mut SparkampCtx) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_eq_band_label(band: c_int) -> *mut c_char {
-    if band < 0 || band as usize >= crate::config::EQ_BAND_FREQS.len() {
-        return CString::new("").unwrap().into_raw();
-    }
-    let label = crate::config::EQ_BAND_FREQS[band as usize];
-    CString::new(label).unwrap_or_default().into_raw()
-}
-
 // ---------------------------------------------------------------------------
 // EQ / pre-amp limit constants (read-only, mirror core's clamp ranges)
 // ---------------------------------------------------------------------------

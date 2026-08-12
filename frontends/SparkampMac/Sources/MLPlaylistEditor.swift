@@ -284,16 +284,6 @@ struct MLPlaylistEditor: View {
         }
     }
 
-    /// Sparkamp's managed-playlists directory, used as the initial location
-    /// for the Save-As panel.  Returns nil if it can't be resolved.
-    private static func defaultPlaylistsDir() -> URL? {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/sparkamp/playlists")
-        try? FileManager.default.createDirectory(at: dir,
-                                                 withIntermediateDirectories: true)
-        return dir
-    }
-
     /// Preferred default location for Save Playlist As…  Delegates to the
     /// shared `mlDefaultSaveAsDir` on the model so this view and the
     /// active-playlist "New Playlist" action stay in sync.

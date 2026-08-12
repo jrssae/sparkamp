@@ -742,24 +742,3 @@ struct PlaylistRow: View {
     }
 }
 
-// MARK: - Playlist control button style
-
-struct PlaylistControlButtonStyle: ButtonStyle {
-    let theme: SkinTheme
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(theme.modeBtnText)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(configuration.isPressed ? theme.transportActiveBg : theme.modeBtnBg)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 3)
-                            .stroke(theme.modeBtnBorder, lineWidth: 1)
-                    )
-            )
-            .opacity(configuration.isPressed ? 0.8 : 1.0)
-    }
-}
