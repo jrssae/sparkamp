@@ -215,21 +215,50 @@ impl CdTextMiss {
     }
 }
 
+/// How many times an empty CD-TEXT read is retried before believing it.
+///
+/// A drive sometimes returns no CD-TEXT packs for a disc that has them, and
+/// `cdrskin` reports that as success: exit status 0, a v07t sheet with a header
+/// and nothing in it. Since "empty sheet" is also exactly how a disc with no
+/// CD-TEXT reads, a transient miss is indistinguishable from a real absence,
+/// and the answer silently flips between the two.
+///
+/// Measured on a disc with confirmed CD-TEXT (15 tracks, "Bespoke Bounce"): 207
+/// bytes instead of 1714 on roughly one read in ten to one in thirty,
+/// unpredictably, with no error anywhere. Checking the exit status does not
+/// help — it is 0 either way.
+///
+/// Three attempts, because the cost is asymmetric: a disc that truly has none
+/// pays two extra subprocess spawns once, on a path that runs when a disc is
+/// inserted rather than in any loop, while a disc that has CD-TEXT stops
+/// showing bare "Track 1, Track 2…" a tenth of the time.
+#[cfg(target_os = "linux")]
+const CDTEXT_ATTEMPTS: usize = 3;
+
 /// Read CD-TEXT off the loaded disc via `cdrskin cdtext_to_v07t=-`.
 /// READS THE DISC — the caller MUST hold the exclusive-read guard
 /// (drive-contention rule). See [`CdTextMiss`] for the error cases.
+///
+/// An empty result is retried — see [`CDTEXT_ATTEMPTS`]. A spawn failure is
+/// not: a missing tool will still be missing on the next go.
 #[cfg(target_os = "linux")]
 pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
-    let out = std::process::Command::new(CDTEXT_TOOL)
-        .args([&format!("dev={drive_id}"), "cdtext_to_v07t=-"])
-        .output()
-        .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
-    let cd = parse_v07t_readback(&String::from_utf8_lossy(&out.stdout));
-    if cd.is_empty() {
-        Err(CdTextMiss::Absent)
-    } else {
-        Ok(cd)
+    for attempt in 0..CDTEXT_ATTEMPTS {
+        let out = std::process::Command::new(CDTEXT_TOOL)
+            .args([&format!("dev={drive_id}"), "cdtext_to_v07t=-"])
+            .output()
+            .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
+        let cd = parse_v07t_readback(&String::from_utf8_lossy(&out.stdout));
+        if !cd.is_empty() {
+            return Ok(cd);
+        }
+        // Give the drive a moment to settle before asking again; the misses
+        // cluster when it has just been busy.
+        if attempt + 1 < CDTEXT_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
     }
+    Err(CdTextMiss::Absent)
 }
 
 /// Read CD-TEXT off the loaded disc on macOS via `drutil -drive <id> cdtext`.

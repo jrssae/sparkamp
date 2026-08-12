@@ -1536,11 +1536,20 @@ mod live_cdda_tests {
         let mut p = Player::new().unwrap();
         p.load("cdda://1?device=/dev/sr0").unwrap();
         p.play().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(750));
-        assert!(
-            p.position().is_some_and(|pos| pos > Duration::ZERO),
-            "the disc should actually be playing"
-        );
+        // Wait for the drive rather than guessing at it: spin-up varies by
+        // drive and by disc, and a fixed sleep long enough for one is a
+        // coin-flip for the next.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut playing = false;
+        while std::time::Instant::now() < deadline {
+            let _ = p.poll_bus();
+            if p.position().is_some_and(|pos| pos > Duration::ZERO) {
+                playing = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(playing, "the disc should actually be playing");
         assert!(exclusive_read(), "playback owns the drive");
 
         // No stop() — this is the path that leaked.
