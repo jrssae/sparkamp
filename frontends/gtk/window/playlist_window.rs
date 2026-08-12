@@ -58,6 +58,43 @@ pub(super) struct PlaylistWin {
 /// Split out of `player::build` (breakup step 9). It is a window of its own
 /// with its own widget tree, which is what made it a natural unit even
 /// though it hands more back than the other two cuts did.
+/// The text of a playlist row's position column: its 1-based number, plus the
+/// lock marker when the file cannot be written.
+///
+/// Shared by the full rebuild and the single-row patch. They used to compose
+/// this separately and had drifted: only the rebuild appended the lock, so a
+/// row whose read-only status was discovered by the background pass — which
+/// repaints through the patch — never showed it. The file was locked, the ID3
+/// editor said so, and the playlist did not.
+fn row_position_text(index: usize, read_only: bool) -> String {
+    format!("{}.{}", index + 1, if read_only { " 🔒" } else { "" })
+}
+
+/// The text of a playlist row's name column: queue badge, state marker, and
+/// the track's display name.
+///
+/// Shared by the rebuild and the patch for the same reason as
+/// [`row_position_text`] — two copies of this is how the lock marker went
+/// missing in the first place.
+fn row_display_text(
+    track: &crate::model::Track,
+    queue: &crate::queue::Queue,
+    is_active: bool,
+) -> String {
+    let badge = queue
+        .position_of(track.id)
+        .map(|p| format!("[{}] ", p + 1))
+        .unwrap_or_default();
+    let name = track.display_name();
+    if track.broken {
+        format!("{badge}⚠ {name}")
+    } else if is_active {
+        format!("{badge}▶ {name}")
+    } else {
+        format!("{badge}{name}")
+    }
+}
+
 pub(super) fn build(d: Deps) -> PlaylistWin {
     // Aliased under their original names so the moved body is unchanged.
     let state = d.state.clone();
@@ -514,23 +551,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             #[allow(deprecated)]
             pl_store.clear();
             for (i, t) in s.playlist.tracks.iter().enumerate() {
-                let lock_suffix = if t.read_only { " 🔒" } else { "" };
-                let pos = format!("{}.{}", i + 1, lock_suffix);
-                let name = t.display_name();
                 let is_active = is_playing && i == current;
-                // Manual-queue position badge (prefix, Winamp JTFE style).
-                let badge = s
-                    .queue
-                    .position_of(t.id)
-                    .map(|p| format!("[{}] ", p + 1))
-                    .unwrap_or_default();
-                let display = if t.broken {
-                    format!("{}⚠ {}", badge, name)
-                } else if is_active {
-                    format!("{}▶ {}", badge, name)
-                } else {
-                    format!("{}{}", badge, name)
-                };
+                let pos = row_position_text(i, t.read_only);
+                let display = row_display_text(t, &s.queue, is_active);
                 let weight: i32 = if is_active { 700 } else { 400 };
                 // Compute foreground color.  Active (playing) rows get the
                 // skin's highlight/accent; everything else (including the
@@ -632,33 +655,23 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let accent_rgba = accent_rgba.clone();
         let text_rgba = text_rgba.clone();
         Rc::new(move |idx: usize| {
-            let (display, duration_str, weight, is_active) = {
+            let (display, duration_str, weight, is_active, pos) = {
                 let s = state.borrow();
                 let Some(t) = s.playlist.tracks.get(idx) else {
                     return;
                 };
-                let name = t.display_name();
                 let is_playing = matches!(
                     *s.player.state(),
                     PlayerState::Playing | PlayerState::Paused
                 );
                 let is_active = is_playing && idx == s.playlist.current_index;
-                // Manual-queue position badge (prefix) — kept in sync here so
-                // in-place patches (z/b, queue toggle) don't erase it.
-                let badge = s
-                    .queue
-                    .position_of(t.id)
-                    .map(|p| format!("[{}] ", p + 1))
-                    .unwrap_or_default();
-                let display = if t.broken {
-                    format!("{}⚠ {}", badge, name)
-                } else if is_active {
-                    format!("{}▶ {}", badge, name)
-                } else {
-                    format!("{}{}", badge, name)
-                };
+                let display = row_display_text(t, &s.queue, is_active);
                 let weight: i32 = if is_active { 700 } else { 400 };
-                (display, fmt_duration(t.duration), weight, is_active)
+                // The position column carries the lock marker, so a patch has
+                // to rewrite it too — the background status pass repaints
+                // through here, and that is where read-only is discovered.
+                let pos = row_position_text(idx, t.read_only);
+                (display, fmt_duration(t.duration), weight, is_active, pos)
             };
             #[allow(deprecated)]
             let Some(iter) = pl_store.iter_nth_child(None, idx as i32) else {
@@ -684,11 +697,13 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                     text_rgba.borrow().clone()
                 }
             };
-            // Update name, duration, weight, and foreground color columns.
+            // Update position (with its lock marker), name, duration, weight,
+            // and foreground color columns.
             #[allow(deprecated)]
             pl_store.set(
                 &iter,
                 &[
+                    (0, &gtk_safe(&pos) as &dyn ToValue),
                     (1, &gtk_safe(&display) as &dyn ToValue),
                     (2, &gtk_safe(&duration_str) as &dyn ToValue),
                     (3, &weight as &dyn ToValue),
@@ -1169,5 +1184,70 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         queue_toggle_selection,
         invert_selection,
         open_settings,
+    }
+}
+
+#[cfg(test)]
+mod row_text_tests {
+    use super::*;
+    use crate::model::Track;
+
+    fn track(id: u64, title: &str) -> Track {
+        Track {
+            path: std::path::PathBuf::from(format!("/m/{title}.mp3")),
+            title: title.to_string(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id,
+        }
+    }
+
+    /// The lock marker rides in the position column. The full rebuild appended
+    /// it and the single-row patch did not, so a file whose read-only status
+    /// was discovered by the background pass — which repaints through the
+    /// patch — never showed it. One composer now serves both.
+    #[test]
+    fn a_read_only_row_carries_the_lock_marker() {
+        assert_eq!(row_position_text(0, false), "1.");
+        assert_eq!(row_position_text(0, true), "1. 🔒");
+        assert_eq!(row_position_text(41, true), "42. 🔒");
+    }
+
+    /// A missing file gets the warning marker, matching the media library.
+    #[test]
+    fn a_broken_row_carries_the_warning_marker() {
+        let mut t = track(1, "Gone");
+        t.broken = true;
+        let q = crate::queue::Queue::new();
+        assert_eq!(row_display_text(&t, &q, false), "⚠ Gone");
+    }
+
+    /// The playing row gets the play marker — unless it is also broken, where
+    /// the warning wins, because a file that cannot be found is the more
+    /// urgent fact.
+    #[test]
+    fn the_playing_row_carries_the_play_marker() {
+        let t = track(1, "Now");
+        let q = crate::queue::Queue::new();
+        assert_eq!(row_display_text(&t, &q, true), "▶ Now");
+
+        let mut broken = track(2, "Gone");
+        broken.broken = true;
+        assert_eq!(row_display_text(&broken, &q, true), "⚠ Gone");
+    }
+
+    /// A queued row is prefixed with its 1-based queue position, and that
+    /// badge survives alongside the state marker.
+    #[test]
+    fn a_queued_row_is_prefixed_with_its_queue_position() {
+        let t = track(7, "Queued");
+        let mut q = crate::queue::Queue::new();
+        q.enqueue(7);
+        assert_eq!(row_display_text(&t, &q, false), "[1] Queued");
+        assert_eq!(row_display_text(&t, &q, true), "[1] ▶ Queued");
     }
 }

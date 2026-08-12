@@ -48,8 +48,11 @@ use super::{
 /// on every scroll**, on the GTK main thread. Measured at ~0.5 ms per row on a
 /// mounted volume, roughly thirty visible rows dropped frames continuously
 /// (2026-08-09). The probe now happens off-thread, once per path per session.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FileStatus {
+    /// The file is no longer on disk. Decided before every other check: a
+    /// path that cannot be stat'd has nothing else worth asking about.
+    Missing,
     /// No metadata was ever extracted — a pure DB answer, never probed.
     Unscanned,
     /// The file's mtime is newer than its last scan.
@@ -63,6 +66,8 @@ enum FileStatus {
 impl FileStatus {
     fn glyph(self) -> &'static str {
         match self {
+            // Same marker the playlist uses for the same fact.
+            FileStatus::Missing => "⚠",
             FileStatus::Unscanned => "❓",
             FileStatus::Changed => "🔄",
             FileStatus::ReadOnly => "🔒",
@@ -72,6 +77,7 @@ impl FileStatus {
 
     fn tooltip(self) -> Option<&'static str> {
         match self {
+            FileStatus::Missing => Some("File is missing — it has been moved, renamed, or deleted"),
             FileStatus::Unscanned => Some("Not scanned yet — metadata loads on the next scan"),
             FileStatus::Changed => {
                 Some("File changed since last scan — rescan to refresh its metadata")
@@ -148,9 +154,23 @@ fn row_shows_path(li: &gtk4::ListItem, path: &str) -> bool {
 /// it is safe to run on a worker thread — which is the whole point.
 fn probe_file_status(
     path: &str,
+    unscanned: bool,
     last_scanned: Option<&str>,
     stored_mtime: Option<&str>,
 ) -> FileStatus {
+    // Missing first. `needs_metadata_scan` answers `true` for a path it cannot
+    // stat, because it cannot tell "modified since the scan" from "no longer
+    // there" — so without this a deleted track reported Changed and the view
+    // advised a rescan, while the playlist marked the same file ⚠.
+    if !std::path::Path::new(path).exists() {
+        return FileStatus::Missing;
+    }
+    // A row whose metadata was never read has nothing further to say: the ❓
+    // stands until a scan fills it in. Only its disappearance, handled above,
+    // is worth overriding that with.
+    if unscanned {
+        return FileStatus::Unscanned;
+    }
     if crate::media_library::MediaLibrary::needs_metadata_scan(path, last_scanned, stored_mtime) {
         return FileStatus::Changed;
     }
@@ -160,11 +180,21 @@ fn probe_file_status(
     FileStatus::Clean
 }
 
-/// Session cache of resolved row statuses, keyed by track path, plus the set
-/// of paths a probe is already running for so a scroll cannot queue the same
-/// work hundreds of times. Cleared when a scan finishes, since that is when
-/// the answers can actually have changed.
-type GlyphCache = Rc<RefCell<std::collections::HashMap<String, FileStatus>>>;
+/// How long a resolved row status is trusted before it is probed again.
+///
+/// The cache exists to stop a scroll re-probing the same rows hundreds of
+/// times, and a scroll storm lasts a second or two — so a short life absorbs
+/// all of it. Caching for the whole session, which is what this used to do,
+/// meant a permission change made outside Sparkamp stayed invisible until a
+/// scan happened to run: the ID3 editor reported the file read-only while the
+/// Files view went on showing it as clean.
+const GLYPH_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Cache of resolved row statuses, keyed by track path, plus the set of paths
+/// a probe is already running for so a scroll cannot queue the same work
+/// hundreds of times. Entries expire after [`GLYPH_TTL`]; a finished scan
+/// clears the whole map, since that is when many answers change at once.
+type GlyphCache = Rc<RefCell<std::collections::HashMap<String, (FileStatus, std::time::Instant)>>>;
 type GlyphInflight = Rc<RefCell<std::collections::HashSet<String>>>;
 
 /// Build the Files page and attach it to `ctx.stack` under the name `"files"`.
@@ -313,19 +343,28 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // ❓ is answered entirely from the row's own DB fields, so it
                 // stays inline. The other two need the filesystem and must not
                 // run here — see `FileStatus`.
-                if t.length_secs.is_none() || t.last_scanned.is_none() {
-                    FileStatus::Unscanned.apply(&lbl);
-                    return;
-                }
+                let unscanned = t.length_secs.is_none() || t.last_scanned.is_none();
                 let path = t.path.clone();
-                if let Some(known) = cache.borrow().get(&path).copied() {
+                let fresh = cache
+                    .borrow()
+                    .get(&path)
+                    .filter(|(_, at)| at.elapsed() < GLYPH_TTL)
+                    .map(|(status, _)| *status);
+                if let Some(known) = fresh {
                     known.apply(&lbl);
                     return;
                 }
-                // Not resolved yet. Show nothing this frame rather than spend
-                // it on two syscalls; the probe fills the glyph in a moment.
-                lbl.set_label("");
-                lbl.set_tooltip_text(None);
+                // Not resolved yet. Paint the answer the row's own DB fields
+                // already give — ❓ for never-scanned, nothing otherwise —
+                // rather than spending this frame on syscalls. The probe
+                // refines it in a moment, and for an unscanned row the only
+                // refinement it can make is ⚠ when the file has gone.
+                if unscanned {
+                    FileStatus::Unscanned.apply(&lbl);
+                } else {
+                    lbl.set_label("");
+                    lbl.set_tooltip_text(None);
+                }
                 // Scrolling rebinds the same rows constantly, so one probe per
                 // path at a time — otherwise a fast scroll queues hundreds of
                 // duplicate reads of the same file.
@@ -360,6 +399,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let status = gio::spawn_blocking(move || {
                         probe_file_status(
                             &probe_path,
+                            unscanned,
                             last_scanned.as_deref(),
                             stored_mtime.as_deref(),
                         )
@@ -367,7 +407,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .await;
                     inflight_done.borrow_mut().remove(&path);
                     let Ok(status) = status else { return };
-                    cache_done.borrow_mut().insert(path.clone(), status);
+                    cache_done
+                        .borrow_mut()
+                        .insert(path.clone(), (status, std::time::Instant::now()));
                     // Recycled while the probe ran — the answer is still worth
                     // caching, but paint it only if this row still shows it.
                     if row_shows_path(&li_row, &path) {
@@ -1875,4 +1917,91 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
             });
         }
+}
+
+#[cfg(test)]
+mod file_status_tests {
+    use super::*;
+
+    /// A file that is gone must read as missing, not as "changed".
+    ///
+    /// `needs_metadata_scan` answers `true` for a path it cannot stat — it
+    /// cannot tell "modified since the scan" from "no longer there" — so a
+    /// deleted track used to show 🔄 with the tooltip "rescan to refresh its
+    /// metadata". The playlist marks the same file ⚠. Two views, one file,
+    /// opposite stories.
+    #[test]
+    fn a_deleted_file_reads_as_missing_not_changed() {
+        let status = probe_file_status("/no/such/file.mp3", false, Some("2026-01-01T00:00:00Z"), None);
+        assert_eq!(status, FileStatus::Missing);
+        assert_eq!(status.glyph(), "⚠");
+    }
+
+    /// Missing is checked before anything that touches the file, so a path
+    /// that cannot be stat'd never reaches the read-only or mtime probes.
+    #[test]
+    fn missing_is_decided_before_the_other_probes() {
+        // No stored mtime and no scan timestamp would normally mean "changed".
+        assert_eq!(probe_file_status("/no/such/file.mp3", false, None, None), FileStatus::Missing);
+    }
+
+    /// A writable file that has not changed shows nothing at all.
+    #[test]
+    fn an_unchanged_writable_file_is_clean() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_string_lossy().into_owned();
+        let mtime = crate::timeutil::format_system_time(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+        );
+        let status = probe_file_status(&path, false, Some("2026-01-01T00:00:00Z"), Some(&mtime));
+        assert_eq!(status, FileStatus::Clean);
+        assert_eq!(status.glyph(), "");
+    }
+
+    /// A read-only file reports read-only. Changing permissions does not touch
+    /// mtime, so the file still counts as unchanged and the lock is what the
+    /// user needs to see.
+    #[test]
+    fn a_read_only_file_reports_read_only() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_string_lossy().into_owned();
+        let mtime = crate::timeutil::format_system_time(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+        );
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let status = probe_file_status(&path, false, Some("2026-01-01T00:00:00Z"), Some(&mtime));
+        // Running as root defeats the permission bits entirely; skip rather
+        // than assert something the kernel will not honour.
+        if !crate::media_library::is_read_only(std::path::Path::new(&path)) {
+            eprintln!("write access survives chmod (running as root?) — skipping");
+            return;
+        }
+        assert_eq!(status, FileStatus::ReadOnly);
+        assert_eq!(status.glyph(), "🔒");
+    }
+
+    /// A file that vanishes before it was ever scanned still reads as missing.
+    /// The ❓ says "metadata loads on the next scan", which is not going to
+    /// happen for a file that is gone.
+    #[test]
+    fn an_unscanned_file_that_has_gone_reads_as_missing() {
+        assert_eq!(
+            probe_file_status("/no/such/file.mp3", true, None, None),
+            FileStatus::Missing
+        );
+    }
+
+    /// But an unscanned file that is still there keeps its ❓ — that indicator
+    /// matters, and nothing about a never-read row justifies replacing it.
+    #[test]
+    fn an_unscanned_file_that_is_present_stays_unscanned() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_string_lossy().into_owned();
+        let status = probe_file_status(&path, true, None, None);
+        assert_eq!(status, FileStatus::Unscanned);
+        assert_eq!(status.glyph(), "❓");
+    }
 }
