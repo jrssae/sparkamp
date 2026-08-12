@@ -2571,3 +2571,87 @@ fn scan_folder_commits_work_done_before_a_cancel() {
         "the three tracks read before the cancel must be committed, not rolled back"
     );
 }
+
+/// A running scan must leave gaps for other writers.
+///
+/// The scan competes for SQLite's single write lock with `record_play` —
+/// which the GTK tick calls from the main loop — plus the folder watcher and
+/// the ID3 editor. Holding one transaction for a whole folder made that a
+/// hard failure: the other connection blocked for the full 5 s `busy_timeout`
+/// and then got "database is locked", freezing its caller for those 5 s. On a
+/// real 36k library, where reading each file costs ~48 ms, the lock would have
+/// been held for around half an hour.
+///
+/// The observer sets `busy_timeout=0` so an attempt either finds the lock free
+/// right now or fails immediately. It polls only while the scan is running, so
+/// the question is not "does it eventually succeed" — after the final commit
+/// anything succeeds — but "does a gap ever appear mid-scan". A whole-folder
+/// transaction never opens one; a time-budgeted one opens several.
+#[test]
+fn a_running_scan_leaves_gaps_for_other_writers() {
+    gstreamer::init().ok();
+    let db = NamedTempFile::with_suffix(".db").unwrap();
+    let lib = MediaLibrary::open_at(db.path()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    // Tiny and numerous, so the scan comfortably outlives several budgets.
+    let n = 4000usize;
+    for i in 0..n {
+        write_test_wav(&dir.path().join(format!("t_{i}.wav")), 8_000, 1, 0.01);
+    }
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    let observer = MediaLibrary::open_at(db.path()).unwrap();
+    // Fail instantly rather than waiting: we are sampling for a free moment,
+    // not trying to get the write done.
+    observer.conn.execute_batch("PRAGMA busy_timeout=0;").unwrap();
+    let target = dir.path().join("t_0.wav").to_str().unwrap().to_string();
+
+    let scanning = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let found_gap = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let poller = {
+        let scanning = scanning.clone();
+        let found_gap = found_gap.clone();
+        let attempts = attempts.clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering as O;
+            while !scanning.load(O::Relaxed) {
+                std::thread::yield_now();
+            }
+            // Keep sampling for the whole scan rather than stopping at the
+            // first success, so `attempts` measures the window that was
+            // actually available to sample.
+            while scanning.load(O::Relaxed) {
+                attempts.fetch_add(1, O::Relaxed);
+                if observer.record_play(&target).is_ok() {
+                    found_gap.store(true, O::Relaxed);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        })
+    };
+
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    lib.scan_folder(folder_id, &cancel, |done, _| {
+        if done == 1 {
+            scanning.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .unwrap();
+    scanning.store(false, std::sync::atomic::Ordering::Relaxed);
+    poller.join().unwrap();
+
+    let tries = attempts.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        tries > 5,
+        "the poller needs a real window to sample; it only tried {tries} times \
+         — the scan finished too fast for this test to mean anything"
+    );
+    assert!(
+        found_gap.load(std::sync::atomic::Ordering::Relaxed),
+        "in {tries} attempts spread across the whole scan, the write lock was \
+         never free — the scan is holding one transaction for the entire folder"
+    );
+}

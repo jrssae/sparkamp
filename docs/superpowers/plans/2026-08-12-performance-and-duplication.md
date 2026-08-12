@@ -4,7 +4,7 @@
 
 **Goal:** Remove the measured hot spots and the cross-frontend logic duplication found in the 2026-08-12 codebase review, in descending order of user-visible impact.
 
-**Architecture:** Nine independent tasks. Tasks 1–3 attack the library metadata scan (the single largest cost in the app) by first removing redundant writes, then splitting the file-read from the DB-write, then running the reads on the existing bounded probe pool. Task 4 points the macOS FFI at the `playlist_ingest` path GTK and the TUI already use. Tasks 5–6 debounce the two searches that still run per keystroke. Task 7 moves the media-library column table into core so all three frontends agree. Tasks 8–9 are tick hygiene and mechanical dedupes.
+**Architecture:** Nine independent tasks. Tasks 1–3 attack the library metadata scan (the single largest cost in the app) by first removing redundant writes, then splitting the file-read from the DB-write, then running the reads on the existing bounded probe pool. The scan is probe-bound — ~48 ms of file reading against ~3 ms of DB work per track — so Task 3 carries essentially the whole win; Tasks 1 and 2 exist to make it safe and small. Task 4 points the macOS FFI at the `playlist_ingest` path GTK and the TUI already use. Tasks 5–6 debounce the two searches that still run per keystroke. Task 7 moves the media-library column table into core so all three frontends agree. Tasks 8–9 are tick hygiene and mechanical dedupes.
 
 **Tech Stack:** Rust 2021, rusqlite 0.31 (SQLite, WAL), rayon 1, GTK4 (gtk4-rs 0.9, feature `v4_12`), Ratatui 0.29, GStreamer, serde/toml.
 
@@ -40,7 +40,20 @@
 
 ---
 
-## Task 1: Stop the metadata scan writing every row twice
+## Task 1: Stop the metadata scan writing every row twice  ✅ done (b17b279 + follow-up)
+
+> **Outcome, recorded after the fact.** The redundant `UPDATE` removal landed and holds. The
+> transaction did **not**: wrapping the loop in `BEGIN IMMEDIATE` takes SQLite's single write
+> lock, and the loop reads each file *inside* it, so a folder-wide transaction holds the lock
+> for the whole scan — half an hour on a 36k library. Measured: another connection blocked
+> 5.005 s and then failed with `database is locked`, and that connection is the 33 Hz GTK tick
+> calling `record_play`. Chunking the transaction on a time budget does not rescue it either:
+> `COMMIT` and the next `BEGIN IMMEDIATE` are consecutive statements, so the gap is nanoseconds
+> and a polling writer never gets in (measured: 735 attempts, zero gaps).
+>
+> **The batching moved to Task 3**, where probes run off-thread and the writes are a short
+> burst that can safely hold the lock. `a_running_scan_leaves_gaps_for_other_writers` guards
+> the invariant and fails on both rejected designs.
 
 `scan_folder` is the production metadata pass (`scan_all_folders → scan_folder`; `rescan_folder_metadata` is test-only, see `src/media_library/tests.rs:438`). It has two defects that cost writes on every single track:
 
@@ -132,7 +145,7 @@ Expected: FAIL. `scan_folder_writes_each_row_once` asserts `written == 2` but ge
 
 `scan_folder_still_stamps_last_scanned` should PASS already; it is the guard that stops Step 3 from over-deleting.
 
-- [ ] **Step 3: Remove the redundant stamp and add the transaction**
+- [x] **Step 3: Remove the redundant stamp** *(the transaction was tried, measured, and rejected — see the note at the top of this task)*
 
 In `src/media_library/scan.rs`, replace the `scan_folder` loop (currently lines 1380–1396):
 
@@ -666,8 +679,18 @@ In `src/media_library/scan.rs`, replace the `scan_folder` loop written in Task 1
         // thousands of probed rows — a lyric sheet alone can be kilobytes —
         // in memory while SQLite works through them.
         //
-        // One transaction for the whole folder, as before: work done before
-        // a cancel is still committed.
+        // One transaction around the WRITES only.
+        //
+        // This is safe here and was not in Task 1: probing has moved to the
+        // worker pool, so the lock covers a burst of ~0.2 ms inserts rather
+        // than a chain of ~48 ms file reads. Task 1 measured what the unsafe
+        // version costs — another connection blocked 5.005 s and then failed
+        // with "database is locked", on the thread that runs the GTK tick.
+        //
+        // `a_running_scan_leaves_gaps_for_other_writers` must still pass after
+        // this task. If it does not, the write burst is too long and the
+        // transaction needs splitting by count, not restored to per-statement
+        // autocommit.
         let (tx, rx) = std::sync::mpsc::sync_channel::<(String, ProbedTrackMetadata)>(64);
         let probe_paths: Vec<String> = paths_to_scan.into_iter().map(|(_, p)| p).collect();
         let cancel_ref = &*cancel;
@@ -728,6 +751,15 @@ distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo t
 ```
 
 Expected: per-file time roughly a quarter of the Step 2 baseline. **If it is not, say so in the commit message rather than claiming the win** — a `PROBE_THREADS`-bound job on a slow disk may be IO-bound, in which case the honest result is "no better, and here is the number".
+
+- [ ] **Step 5b: Confirm the scan still leaves the database writable**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && for i in 1 2 3 4 5; do cargo test --lib a_running_scan_leaves_gaps 2>&1 | grep "test result"; done'
+```
+
+Expected: 5/5 PASS. This is the guard on the regression Task 1 shipped and reverted; a
+transaction that spans the probes rather than the writes will fail it.
 
 - [ ] **Step 6: Run the full suite twice**
 

@@ -1379,12 +1379,25 @@ impl MediaLibrary {
         let to_scan_count = paths_to_scan.len();
         let mut scanned = 0usize;
 
-        // One transaction for the whole folder. Without it SQLite syncs on
-        // every statement, which on a large folder is the dominant cost of
-        // the scan — `rescan_folder_metadata` has always done this; the
-        // production path never did. Work finished before a cancel is still
-        // committed, so stopping a long scan keeps the rows already read.
-        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        // Deliberately NOT wrapped in a transaction, even though batching the
+        // writes would save a sync per track.
+        //
+        // `BEGIN IMMEDIATE` takes SQLite's single write lock, and this loop
+        // reads each file inside it — ~48 ms for real music. A folder-wide
+        // transaction would therefore hold the lock for the length of the
+        // whole scan, half an hour on a 36k library, and every other writer
+        // (`record_play` from the 33 Hz tick, a watch-folder event, an ID3
+        // edit) would wait out `busy_timeout` and fail with "database is
+        // locked" — freezing its caller for 5 s first.
+        //
+        // Chunking the transaction does not rescue it either: `COMMIT` and the
+        // next `BEGIN IMMEDIATE` are consecutive statements, so the gap is
+        // nanoseconds and a waiting writer still never gets in.
+        //
+        // The batching becomes safe once reading a file no longer happens
+        // under the lock — see the parallel scan, where probes run off-thread
+        // and the writes are a short burst. Until then, per-statement
+        // autocommit is what keeps the rest of the app usable during a scan.
         for (_, path) in paths_to_scan {
             if cancel.load(Ordering::Relaxed) {
                 break;
@@ -1396,7 +1409,6 @@ impl MediaLibrary {
             }
             progress(scanned, to_scan_count);
         }
-        let _ = self.conn.execute("COMMIT", []);
 
         let skipped = total - scanned;
 
