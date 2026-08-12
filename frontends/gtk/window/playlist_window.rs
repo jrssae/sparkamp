@@ -918,6 +918,23 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 // same-path replay, which the tick-loop choke point would skip).
                 refresh_now_playing();
             }
+            // Re-confirm the row's own ⚠ / 🔒 markers, which are otherwise
+            // settled once per row per session.
+            //
+            // Here rather than only at the tick's now-playing choke point:
+            // that one is keyed on the path, so it skips a REPLAY of the
+            // current track — which is exactly when someone who has just
+            // changed a file's permissions presses play to see the marker
+            // catch up. `rescan_library_row_on_play` above is the same idea
+            // for the library's own row, and is why the Media Library view
+            // kept up while the playlist did not.
+            //
+            // Outside the success branch deliberately: a play that FAILED is
+            // the strongest hint a file has gone, and that is when ⚠ matters
+            // most. The index is re-read rather than reusing `old_idx`, since
+            // a failed load can leave the current row somewhere else.
+            let idx_now = state.borrow().playlist.current_index;
+            playlist_add::request_row(&state, idx_now);
         })
     };
 
