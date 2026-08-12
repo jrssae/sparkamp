@@ -4,7 +4,41 @@
 
 **Goal:** Remove the measured hot spots and the cross-frontend logic duplication found in the 2026-08-12 codebase review, in descending order of user-visible impact.
 
-**Architecture:** Nine independent tasks. Tasks 1–3 attack the library metadata scan (the single largest cost in the app) by first removing redundant writes, then splitting the file-read from the DB-write, then running the reads on the existing bounded probe pool. The scan is probe-bound — ~48 ms of file reading against ~3 ms of DB work per track — so Task 3 carries essentially the whole win; Tasks 1 and 2 exist to make it safe and small. Task 4 points the macOS FFI at the `playlist_ingest` path GTK and the TUI already use. Tasks 5–6 debounce the two searches that still run per keystroke. Task 7 moves the media-library column table into core so all three frontends agree. Tasks 8–9 are tick hygiene and mechanical dedupes.
+**Architecture:** Seven independent tasks. Task 1 removes redundant writes from the library metadata scan. **Tasks 2 and 3 were cancelled after measurement** — see the note below; the scan is bound by cold disk I/O that no software change reaches. The remaining tasks are the frontend work: the macOS FFI add path, the two undebounced searches, the shared column table, tick hygiene, and mechanical dedupes.
+
+## Cancelled: parallelising the metadata scan (was Tasks 2–3)
+
+The review claimed the scan was probe-bound at ~48 ms/file and that running the probes on the bounded pool would cut it roughly fourfold. Measured against the real library on 2026-08-12, that is wrong in a way that reverses the recommendation.
+
+**Where the time goes.** 150 files, cold, on the 14.6 TB rotational volume holding the library:
+
+| | ms/file |
+|---|---|
+| `read_track_tags` (first touch of the file) | 24.165 |
+| `probe_duration` | 0.346 |
+| `probe_technical` | 0.123 |
+| `mp3_bitrate_mode` | 0.118 |
+| **total** | **24.752** |
+
+**98% is the first touch.** Every later read in `probe` hits the page cache. So reading the file once instead of four times — the obvious next idea — wins nothing.
+
+**Parallel probing is slower, not faster.** Three runs, disjoint contiguous blocks in path order, treatments alternated:
+
+| method | speedup |
+|---|---|
+| random sample | 0.93x |
+| path-ordered, serial first | 0.82x |
+| path-ordered, parallel first (control) | 0.80x |
+
+Four concurrent readers move the disk head around. `duration_probe.rs` already documents exactly this — "on rotational media or a network mount there is throughput to lose, because every extra reader is another seek competing for the same head" — and the plan failed to apply it to the very disk the library sits on.
+
+**Sequential read-ahead is noise.** A prefetch thread 48 files ahead measured 1.10x then 0.96x on adjacent blocks; it flips, so there is no effect.
+
+**The Discoverer worry was unfounded.** `discover_duration` fired 0 times in 254 sampled files. It is not a factor.
+
+**Conclusion.** The scan reads ~40 cold files/second because that is what the disk does. Task 1's redundant-`UPDATE` removal (~2%) is the only software win available, and it has landed. Tasks 2 and 3 are cancelled: Task 2 existed solely to enable Task 3.
+
+**This is a property of the storage, not of the code.** The same probe against 104 MP3s on NVMe costs 269 us/file — a hundred times less — where parallelism would very likely pay. `live_probe_cost` in `src/media_library/scan.rs` re-measures it; if the library moves to flash, re-run it and reopen this. Task 4 points the macOS FFI at the `playlist_ingest` path GTK and the TUI already use. Tasks 5–6 debounce the two searches that still run per keystroke. Task 7 moves the media-library column table into core so all three frontends agree. Tasks 8–9 are tick hygiene and mechanical dedupes.
 
 **Tech Stack:** Rust 2021, rusqlite 0.31 (SQLite, WAL), rayon 1, GTK4 (gtk4-rs 0.9, feature `v4_12`), Ratatui 0.29, GStreamer, serde/toml.
 
@@ -27,15 +61,15 @@
 
 | File | Responsibility | Tasks |
 |---|---|---|
-| `src/media_library/scan.rs` | Folder walking, track upsert, metadata scan loop | 1, 2, 3 |
-| `src/media_library/tests.rs` | Media-library test suite | 1, 2, 3 |
-| `src/ffi/media_library.rs` | macOS FFI: library browse + add-to-playlist | 4 |
-| `frontends/gtk/window/jump.rs` | GTK jump-to-file window | 5 |
-| `frontends/tui/media_library/mod.rs` | TUI media-library tab dispatch + Files-tab ops | 6, 9 |
-| `src/ml_columns.rs` *(new)* | Canonical media-library column table, shared by all frontends | 7 |
+| `src/media_library/scan.rs` | Folder walking, track upsert, metadata scan loop | 1 |
+| `src/media_library/tests.rs` | Media-library test suite | 1 |
+| `src/ffi/media_library.rs` | macOS FFI: library browse + add-to-playlist | 2 |
+| `frontends/gtk/window/jump.rs` | GTK jump-to-file window | 3 |
+| `frontends/tui/media_library/mod.rs` | TUI media-library tab dispatch + Files-tab ops | 4, 7 |
+| `src/ml_columns.rs` *(new)* | Canonical media-library column table, shared by all frontends | 5 |
 | `frontends/gtk/window/ml_columns.rs` | GTK column widgets, consuming the core table | 7 |
 | `frontends/tui/ui/media_library.rs` | TUI column rendering, consuming the core table | 7 |
-| `frontends/gtk/window/tick.rs` | GTK 33 ms main-loop tick | 8 |
+| `frontends/gtk/window/tick.rs` | GTK 33 ms main-loop tick | 6 |
 | `src/model.rs` | `Playlist`, `Track`, `fmt_duration` | 9 |
 
 ---
@@ -51,9 +85,10 @@
 > `COMMIT` and the next `BEGIN IMMEDIATE` are consecutive statements, so the gap is nanoseconds
 > and a polling writer never gets in (measured: 735 attempts, zero gaps).
 >
-> **The batching moved to Task 3**, where probes run off-thread and the writes are a short
-> burst that can safely hold the lock. `a_running_scan_leaves_gaps_for_other_writers` guards
-> the invariant and fails on both rejected designs.
+> **The batching has nowhere left to go.** It would only be safe with probing off the lock,
+> and parallel probing was then cancelled outright (see above), so the scan stays on
+> per-statement autocommit. `a_running_scan_leaves_gaps_for_other_writers` guards the
+> invariant and fails on both rejected designs.
 
 `scan_folder` is the production metadata pass (`scan_all_folders → scan_folder`; `rescan_folder_metadata` is test-only, see `src/media_library/tests.rs:438`). It has two defects that cost writes on every single track:
 
@@ -255,549 +290,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Split the file read out of `upsert_track`
-
-`upsert_track` does two unrelated things: it reads the file (`ProbedTrackMetadata::probe`, the ~48 ms/file cost) and it writes a row. They have to come apart before the read can be parallelized, because `rusqlite::Connection` is not `Send` and can never leave the calling thread while the probe must.
-
-This task is a **pure refactor with no behaviour change** — it exists so Task 3 is a small, reviewable diff.
-
-**Files:**
-- Modify: `src/media_library/scan.rs:1044-1150` (`upsert_track`)
-- Test: `src/media_library/tests.rs` (append)
-
-**Interfaces:**
-- Consumes: `ProbedTrackMetadata::probe(p: &Path) -> ProbedTrackMetadata` — private to `scan.rs`, unchanged.
-- Produces:
-  - `fn upsert_probed(&self, folder_id: i64, path: &str, m: &ProbedTrackMetadata) -> Result<()>` — private to `scan.rs`. Writes the row from already-probed metadata. Task 3 calls this.
-  - `pub(super) fn upsert_track(&self, folder_id: i64, path: &str) -> Result<()>` — signature unchanged, now a two-line wrapper. All existing callers keep working untouched.
-  - `ProbedTrackMetadata` must be `Send` (all its fields are owned `String`/`Option<String>`/`Option<i64>`/`Option<f64>` plus `TrackTags`, which is likewise all-owned — see `src/tags.rs:14`). Task 3 relies on this.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `src/media_library/tests.rs`:
-
-```rust
-/// Task 3 moves the probe onto a worker thread and sends the result back to
-/// the one thread that owns the SQLite connection. That is only possible if
-/// the probed metadata can cross a thread boundary at all, so assert it here
-/// — a future field that is not `Send` (an `Rc`, a raw pointer) would
-/// otherwise break the parallel scan with a confusing error far from its
-/// cause.
-#[test]
-fn probed_metadata_can_cross_a_thread_boundary() {
-    fn assert_send<T: Send>() {}
-    assert_send::<crate::media_library::scan::ProbedTrackMetadata>();
-}
-
-/// The refactor must not change what lands in the DB: probing separately and
-/// writing from that result has to produce the same row as the all-in-one
-/// call did.
-#[test]
-fn upsert_from_probed_metadata_matches_upsert_track() {
-    gstreamer::init().ok();
-    let (lib, _db) = temp_lib();
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("track.wav");
-    write_test_wav(&file, 44_100, 2, 1.0);
-    let path = file.to_str().unwrap();
-    let folder_id = lib.add_folder(dir.path().to_str().unwrap()).unwrap().id();
-
-    lib.upsert_track(folder_id, path).unwrap();
-    let via_upsert = lib.all_tracks().unwrap().into_iter().next().unwrap();
-
-    // Same file, but probed first and written from the probe.
-    let (lib2, _db2) = temp_lib();
-    let folder_id2 = lib2.add_folder(dir.path().to_str().unwrap()).unwrap().id();
-    let m = crate::media_library::scan::ProbedTrackMetadata::probe(std::path::Path::new(path));
-    lib2.upsert_probed(folder_id2, path, &m).unwrap();
-    let via_probed = lib2.all_tracks().unwrap().into_iter().next().unwrap();
-
-    assert_eq!(via_upsert.title, via_probed.title);
-    assert_eq!(via_upsert.length_secs, via_probed.length_secs);
-    assert_eq!(via_upsert.sample_rate, via_probed.sample_rate);
-    assert_eq!(via_upsert.channels, via_probed.channels);
-    assert_eq!(via_upsert.filename, via_probed.filename);
-    assert!(
-        via_probed.last_scanned.is_some(),
-        "the split write must still stamp last_scanned"
-    );
-}
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib upsert_from_probed_metadata_matches_upsert_track 2>&1 | tail -20'
-```
-
-Expected: FAIL to compile — `no method named 'upsert_probed'`, and `ProbedTrackMetadata` is private to the module.
-
-- [ ] **Step 3: Perform the split**
-
-In `src/media_library/scan.rs`:
-
-**3a.** Make the type and its probe reachable from the test module. Change line 21:
-
-```rust
-struct ProbedTrackMetadata {
-```
-
-to:
-
-```rust
-pub(super) struct ProbedTrackMetadata {
-```
-
-and line 39:
-
-```rust
-    fn probe(p: &Path) -> Self {
-```
-
-to:
-
-```rust
-    pub(super) fn probe(p: &Path) -> Self {
-```
-
-Leave the field declarations private — the tests only construct via `probe` and pass the whole value.
-
-**3b.** Change `upsert_track` (line 1049) from:
-
-```rust
-    pub(super) fn upsert_track(&self, folder_id: i64, path: &str) -> Result<()> {
-        let p = Path::new(path);
-        let m = ProbedTrackMetadata::probe(p);
-
-        // Keep existing play_count and last_played if the row already exists.
-        self.conn.execute(
-```
-
-to:
-
-```rust
-    pub(super) fn upsert_track(&self, folder_id: i64, path: &str) -> Result<()> {
-        let m = ProbedTrackMetadata::probe(Path::new(path));
-        self.upsert_probed(folder_id, path, &m)
-    }
-
-    /// Write a track row from metadata that has already been read off disk.
-    ///
-    /// Split out from [`upsert_track`] because the two halves want different
-    /// threads: reading a file is slow and parallelises, while the SQLite
-    /// `Connection` is not `Send` and can never leave the thread that owns
-    /// it. The parallel scan probes on a worker pool and calls this on the
-    /// one DB thread.
-    pub(super) fn upsert_probed(
-        &self,
-        folder_id: i64,
-        path: &str,
-        m: &ProbedTrackMetadata,
-    ) -> Result<()> {
-        // Keep existing play_count and last_played if the row already exists.
-        self.conn.execute(
-```
-
-**3c.** The `params![...]` block at lines ~1108–1142 currently moves fields out of an owned `m`. With `m: &ProbedTrackMetadata` those become borrows. rusqlite's `ToSql` is implemented for `&T where T: ToSql`, so `m.tags.artist` becomes `&m.tags.artist` throughout. Change each of the 34 metadata parameters to take a reference — leave `path` and `folder_id` as they are:
-
-```rust
-                path,
-                folder_id,
-                &m.tags.artist,
-                &m.tags.title,
-                &m.tags.album,
-                &m.tags.track_num,
-                &m.tags.genre,
-                &m.tags.year,
-                &m.tags.bpm,
-                &m.length_secs,
-                &m.bitrate,
-                &m.channels,
-                &m.filetype,
-                &m.filename,
-                &m.tags.comment,
-                &m.tags.album_artist,
-                &m.tags.disc_num,
-                &m.tags.disc_total,
-                &m.tags.composer,
-                &m.tags.original_artist,
-                &m.tags.copyright,
-                &m.tags.url,
-                &m.tags.encoded_by,
-                &m.tags.lyric,
-                &m.tags.artwork_path,
-                &m.sample_rate,
-                &m.file_size,
-                &m.file_mtime,
-                &m.now,
-                &m.bitrate_mode,
-                &m.tags.rg_track_gain,
-                &m.tags.rg_track_peak,
-                &m.tags.rg_album_gain,
-                &m.tags.rg_album_peak,
-            ],
-        )?;
-```
-
-The trailing `self.update_last_scanned(path)?; Ok(())` at the end of the body stays exactly where it is — it now belongs to `upsert_probed`.
-
-- [ ] **Step 4: Run to verify it passes**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib upsert_ 2>&1 | tail -20 && cargo test --lib probed_metadata_can_cross 2>&1 | tail -10'
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Run the full suite**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test --lib 2>&1 | tail -20'
-```
-
-Expected: zero warnings, zero failures. This task changes no behaviour, so any test that moves is a real regression.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/media_library/scan.rs src/media_library/tests.rs
-git commit -m "refactor(library): separate probing a track from writing its row
-
-upsert_track did two unrelated things — read the file (the ~48 ms/file
-cost) and write a row. They want different threads: reading parallelises,
-while rusqlite's Connection is not Send and can never leave the thread
-that owns it.
-
-Split the write half out as upsert_probed, taking metadata that has
-already been read. upsert_track keeps its signature and becomes the
-two-line wrapper, so every existing caller is untouched. No behaviour
-change; the next commit is what uses it.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
-
----
-
-## Task 3: Read the files in parallel during a scan
-
-With the halves separated, the probes can run on the existing bounded pool while the single DB thread consumes results.
-
-**Use the existing `PROBE_THREADS = 4` pool**, not a pool sized to the core count. `src/duration_probe.rs:237-241` documents the reasoning: past a handful of readers there is no throughput to win, and on rotational media or a network mount there is throughput to lose, because every extra reader is another seek competing for the same head. Expect roughly a 4× improvement, not a 16× one.
-
-**Files:**
-- Modify: `src/media_library/scan.rs` (the `scan_folder` loop from Task 1)
-- Modify: `src/duration_probe.rs` (expose the pool to the crate)
-- Test: `src/media_library/tests.rs` (append)
-
-**Interfaces:**
-- Consumes: `MediaLibrary::upsert_probed(&self, folder_id: i64, path: &str, m: &ProbedTrackMetadata) -> Result<()>` from Task 2.
-- Produces:
-  - `pub(crate) fn crate::duration_probe::shared_probe_pool() -> Option<&'static rayon::ThreadPool>` — the same `OnceLock` pool `spawn_probes` uses.
-  - `MediaLibrary::scan_folder` keeps its signature and its `(scanned, skipped, failed)` semantics. `progress(done, total)` still fires per completed track; the **order** of completion is no longer the order of `paths_to_scan`.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `src/media_library/tests.rs`:
-
-```rust
-/// Every candidate must be scanned exactly once, however the work was
-/// distributed. A parallel scan that drops results past the pool size, or
-/// double-counts a completion, would still report a plausible-looking number
-/// — so check the rows themselves, not just the count.
-#[test]
-fn parallel_scan_covers_every_file_exactly_once() {
-    gstreamer::init().ok();
-    let (lib, _db) = temp_lib();
-    let dir = tempfile::tempdir().unwrap();
-    // Comfortably more files than the 4-thread pool, so any "first N only"
-    // bug shows up.
-    let n = 25usize;
-    for i in 0..n {
-        write_test_wav(&dir.path().join(format!("track_{i}.wav")), 44_100, 2, 1.0);
-    }
-    let path = dir.path().to_str().unwrap();
-    let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path, true).unwrap();
-
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    let (scanned, _skipped, failed) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
-
-    assert_eq!(scanned, n, "every file should be reported scanned");
-    assert_eq!(failed, 0, "no file should have failed");
-
-    let tracks = lib.all_tracks().unwrap();
-    assert_eq!(tracks.len(), n, "one row per file, no duplicates");
-    assert!(
-        tracks.iter().all(|t| t.sample_rate.is_some()),
-        "every row must have real probed metadata, not just a path"
-    );
-    assert!(
-        tracks.iter().all(|t| t.last_scanned.is_some()),
-        "every row must be stamped"
-    );
-}
-
-/// Progress must stay monotonic and never exceed the total, whatever order
-/// the workers finish in — the GTK and mac progress bars divide by `total`
-/// and would render past 100% or jump backwards otherwise.
-#[test]
-fn parallel_scan_reports_monotonic_progress() {
-    gstreamer::init().ok();
-    let (lib, _db) = temp_lib();
-    let dir = tempfile::tempdir().unwrap();
-    let n = 12usize;
-    for i in 0..n {
-        write_test_wav(&dir.path().join(format!("track_{i}.wav")), 44_100, 2, 1.0);
-    }
-    let path = dir.path().to_str().unwrap();
-    let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path, true).unwrap();
-
-    let mut seen: Vec<(usize, usize)> = Vec::new();
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    lib.scan_folder(folder_id, &cancel, |done, total| seen.push((done, total)))
-        .unwrap();
-
-    assert_eq!(seen.len(), n, "one progress report per completed file");
-    assert!(
-        seen.windows(2).all(|w| w[0].0 <= w[1].0),
-        "progress must never go backwards: {seen:?}"
-    );
-    assert!(
-        seen.iter().all(|(done, total)| done <= total),
-        "progress must never exceed the total: {seen:?}"
-    );
-    assert_eq!(seen.last().unwrap().0, n, "the last report must be complete");
-}
-
-/// Cancel must still stop the scan promptly, and must not lose the rows
-/// already written — the transaction commits what was done.
-#[test]
-fn parallel_scan_honours_cancel() {
-    gstreamer::init().ok();
-    let (lib, _db) = temp_lib();
-    let dir = tempfile::tempdir().unwrap();
-    for i in 0..30 {
-        write_test_wav(&dir.path().join(format!("track_{i}.wav")), 44_100, 2, 1.0);
-    }
-    let path = dir.path().to_str().unwrap();
-    let folder_id = lib.add_folder(path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, path, true).unwrap();
-
-    let cancel = std::sync::atomic::AtomicBool::new(true); // cancelled before it starts
-    let (scanned, _skipped, _failed) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
-    assert_eq!(scanned, 0, "a scan cancelled up front does no work");
-}
-
-/// Live measurement against this machine's real library. Not an assertion —
-/// the point is to be able to check the claim rather than assert it.
-///
-/// `cargo test --lib live_scan_throughput -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn live_scan_throughput() {
-    gstreamer::init().ok();
-    let Ok(lib) = crate::media_library::MediaLibrary::open() else {
-        eprintln!("no media library on this machine — skipping");
-        return;
-    };
-    let Ok(folders) = lib.list_folders() else {
-        eprintln!("could not read folders — skipping");
-        return;
-    };
-    let Some((folder_id, folder_path)) = folders.into_iter().next() else {
-        eprintln!("no watched folders — skipping");
-        return;
-    };
-    eprintln!("forcing a full re-read of {folder_path}");
-    lib.conn
-        .execute(
-            "UPDATE tracks SET last_scanned = NULL WHERE folder_id = ?1",
-            rusqlite::params![folder_id],
-        )
-        .unwrap();
-
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    let started = std::time::Instant::now();
-    let (scanned, skipped, failed) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
-    let took = started.elapsed();
-    eprintln!("scanned {scanned}, skipped {skipped}, failed {failed} in {took:?}");
-    if scanned > 0 {
-        eprintln!("  {:?} per file", took / scanned as u32);
-    }
-}
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib parallel_scan_ 2>&1 | tail -20'
-```
-
-Expected: the three non-ignored tests PASS against the current serial code — they describe behaviour that must be *preserved*, which is the point. `live_scan_throughput` is the one that shows the change. Record the baseline now:
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib live_scan_throughput -- --ignored --nocapture 2>&1 | tail -10'
-```
-
-Write the reported "per file" number down; Step 5 compares against it.
-
-- [ ] **Step 3: Expose the shared pool**
-
-In `src/duration_probe.rs`, change the private `probe_pool` (line 252) to be crate-visible under a name that says what it is. Rename it and update its one existing call site in `spawn_probes` (line 289):
-
-```rust
-/// The bounded pool every file-reading background job shares, built once.
-///
-/// Deliberately small — see `PROBE_THREADS`. The media-library scan uses this
-/// too rather than building its own, so the two never gang up on the disk.
-pub(crate) fn shared_probe_pool() -> Option<&'static rayon::ThreadPool> {
-```
-
-and in `spawn_probes`:
-
-```rust
-        match shared_probe_pool() {
-```
-
-- [ ] **Step 4: Parallelize the scan loop**
-
-In `src/media_library/scan.rs`, replace the `scan_folder` loop written in Task 1 with:
-
-```rust
-        let to_scan_count = paths_to_scan.len();
-        let mut scanned = 0usize;
-
-        // Read the files on the shared probe pool, write the rows here.
-        //
-        // The read is the expensive half (tags, duration, technical headers)
-        // and parallelises; the write cannot leave this thread, because a
-        // rusqlite Connection is not Send. So the workers send probed
-        // metadata back over a channel and this thread does every INSERT.
-        //
-        // The channel is bounded so a fast disk cannot race ahead and hold
-        // thousands of probed rows — a lyric sheet alone can be kilobytes —
-        // in memory while SQLite works through them.
-        //
-        // One transaction around the WRITES only.
-        //
-        // This is safe here and was not in Task 1: probing has moved to the
-        // worker pool, so the lock covers a burst of ~0.2 ms inserts rather
-        // than a chain of ~48 ms file reads. Task 1 measured what the unsafe
-        // version costs — another connection blocked 5.005 s and then failed
-        // with "database is locked", on the thread that runs the GTK tick.
-        //
-        // `a_running_scan_leaves_gaps_for_other_writers` must still pass after
-        // this task. If it does not, the write burst is too long and the
-        // transaction needs splitting by count, not restored to per-statement
-        // autocommit.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(String, ProbedTrackMetadata)>(64);
-        let probe_paths: Vec<String> = paths_to_scan.into_iter().map(|(_, p)| p).collect();
-        let cancel_ref = &*cancel;
-
-        self.conn.execute("BEGIN IMMEDIATE", [])?;
-        // `scope` keeps the borrows of `cancel` and `probe_paths` valid
-        // without cloning either, and joins the producer before returning.
-        std::thread::scope(|s| {
-            s.spawn(move || {
-                let probe_one = |path: &String| {
-                    if cancel_ref.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let m = ProbedTrackMetadata::probe(Path::new(path));
-                    // A closed receiver means this thread is done; the send
-                    // failing is the signal, not an error.
-                    let _ = tx.send((path.clone(), m));
-                };
-                match crate::duration_probe::shared_probe_pool() {
-                    Some(pool) => pool.install(|| {
-                        use rayon::prelude::*;
-                        probe_paths.par_iter().for_each(probe_one);
-                    }),
-                    None => probe_paths.iter().for_each(probe_one),
-                }
-                // `tx` drops here, ending the loop below.
-            });
-
-            for (path, m) in rx {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                if self.upsert_probed(folder_id, &path, &m).is_ok() {
-                    scanned += 1;
-                }
-                progress(scanned, to_scan_count);
-            }
-        });
-        let _ = self.conn.execute("COMMIT", []);
-
-        let skipped = total - scanned;
-
-        Ok((scanned, skipped, to_scan_count - scanned))
-```
-
-Note on the cancel path: breaking out of the `for (path, m) in rx` loop drops `rx`, which makes every subsequent `tx.send` fail, which lets the workers fall through their remaining items quickly. The `cancel_ref` check inside `probe_one` stops them starting new file reads. `thread::scope` then joins the producer before the function returns, so no worker outlives the borrow of `cancel`.
-
-- [ ] **Step 5: Run the tests and re-measure**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib parallel_scan_ 2>&1 | tail -20'
-```
-
-Expected: all three PASS.
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib live_scan_throughput -- --ignored --nocapture 2>&1 | tail -10'
-```
-
-Expected: per-file time roughly a quarter of the Step 2 baseline. **If it is not, say so in the commit message rather than claiming the win** — a `PROBE_THREADS`-bound job on a slow disk may be IO-bound, in which case the honest result is "no better, and here is the number".
-
-- [ ] **Step 5b: Confirm the scan still leaves the database writable**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && for i in 1 2 3 4 5; do cargo test --lib a_running_scan_leaves_gaps 2>&1 | grep "test result"; done'
-```
-
-Expected: 5/5 PASS. This is the guard on the regression Task 1 shipped and reverted; a
-transaction that spans the probes rather than the writes will fail it.
-
-- [ ] **Step 6: Run the full suite twice**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test --lib 2>&1 | tail -20 && cargo test --bin sparkamp 2>&1 | tail -20'
-```
-
-Run it a second time. Threading changes surface as flakes, not failures — a test that passes once and fails once is a real bug, not noise. (This session already found one such "flake" that turned out to be a genuine test-isolation defect.)
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/media_library/scan.rs src/media_library/tests.rs src/duration_probe.rs
-git commit -m "perf(library): read files in parallel during a metadata scan
-
-The scan read every file on one thread — tags, duration, technical
-headers, measured at ~48 ms each. A 36k library is around half an hour of
-that, serially.
-
-Reading parallelises; writing cannot, because a rusqlite Connection is
-not Send. So the probes now run on the shared bounded pool and send
-metadata back over a bounded channel to this thread, which does every
-INSERT inside the folder's existing transaction.
-
-The pool is the same PROBE_THREADS=4 one the duration probes use, not a
-core-count pool: past a handful of readers there is no throughput to win,
-and on rotational or network storage there is throughput to lose to seek
-contention. The ceiling here is about 4x, and sharing the pool stops the
-scan and the probes ganging up on the same disk.
-
-Cancel still stops promptly and still commits what was already read.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
-
----
-
-## Task 4: Point the macOS FFI add path at `playlist_ingest`
+## Task 2: Point the macOS FFI add path at `playlist_ingest`
 
 `src/ffi/media_library.rs:1170` spawns **two** rayon tasks per added track — a full `Track::from_path` tag read and a duration probe — for rows that came out of the library on line 1162 and already carry title, artist, album and `length_secs`. A 36k add is 72,000 tasks and 72,000 file opens for answers already held. GTK and the TUI were fixed for this; the macOS frontend was not.
 
@@ -812,6 +305,7 @@ Two further defects in the same block:
 **Interfaces:**
 - Consumes:
   - `crate::playlist_ingest::resolve(lib: Option<&MediaLibrary>, paths: &[PathBuf]) -> Vec<crate::playlist_ingest::Row>`, where `Row { track: Track, needs_tags: bool }`.
+  - **Note:** `shared_probe_pool()` does not exist yet — the cancelled Task 3 was going to create it. This task must add it, by renaming the private `probe_pool()` in `src/duration_probe.rs:252` to `pub(crate) fn shared_probe_pool()` and updating its one call site in `spawn_probes` (line ~289).
   - `crate::file_status::{RowCheck, RowFacts, spawn_row_worker}` — the same worker the TUI uses. `RowFacts` carries `id: u64`, so results are keyed by entry id, not index.
 - Produces: no new public FFI symbols. The existing `sparkamp_ml_*` add entry points keep their signatures.
 
@@ -1006,7 +500,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 5: Debounce the GTK jump window
+## Task 3: Debounce the GTK jump window
 
 `frontends/gtk/window/jump.rs:314` calls `rebuild_jump()` straight off `connect_changed`. Per keystroke on a 36k playlist: `ensure_ids()` walks every entry, `search_indices()` builds a `format!` of six `to_lowercase()` allocations *per track* (~250k allocations), and 500 `Label`+`ListBoxRow` widget trees are built and thrown away.
 
@@ -1147,7 +641,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 6: Debounce the TUI media-library search
+## Task 4: Debounce the TUI media-library search
 
 `frontends/tui/media_library/mod.rs:745` re-queries SQLite synchronously on the event-loop thread on every keystroke. Measured against the real 36,329-track library:
 
@@ -1339,7 +833,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 7: Move the media-library column table into core
+## Task 5: Move the media-library column table into core
 
 GTK's `ALL_COLUMNS` (`frontends/gtk/window/ml_columns.rs:18`) defines **35** columns. The TUI reimplements label, width and value extraction for **9** (`frontends/tui/ui/media_library.rs:600-653`). Both read the same persisted config key, `config.media_library.visible_columns`.
 
@@ -1494,7 +988,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 8: Tick hygiene
+## Task 6: Tick hygiene
 
 The GTK tick runs at 33 ms. Three things in it repeat work that has not changed, and one copies a megabyte per frame.
 
@@ -1701,7 +1195,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 9: Collapse the mechanical duplicates
+## Task 7: Collapse the mechanical duplicates
 
 Three independent dedupes, no behaviour change.
 
@@ -1839,8 +1333,8 @@ Recorded so they are not silently dropped:
 
 ## Self-Review
 
-**Spec coverage.** The nine tasks map to the review's recommended order: P1 → Tasks 1–3; P2 → Task 4; P3 → Task 5; P4 → Task 6; D2 → Task 7; P5+P6 → Task 8; D1+D4 → Task 9. D3 (row-display duplicated four times) is **not** covered — collapsing it means changing what `rebuild_playlist` and `patch_pl_row` each emit, and the two already disagree about the `🔒` suffix, so reconciling them is a behaviour decision rather than a refactor. Listed under Deferred is wrong for it; it belongs in a follow-up plan once the user says which of the two spellings is correct.
+**Spec coverage.** P1 → Task 1 only, after measurement cancelled the parallel-scan half (see the cancellation note at the top). P2 → Task 2; P3 → Task 3; P4 → Task 4; D2 → Task 5; P5+P6 → Task 6; D1+D4 → Task 7. D3 (row-display duplicated four times) is **not** covered — collapsing it means changing what `rebuild_playlist` and `patch_pl_row` each emit, and the two already disagree about the `🔒` suffix, so reconciling them is a behaviour decision rather than a refactor. Listed under Deferred is wrong for it; it belongs in a follow-up plan once the user says which of the two spellings is correct.
 
 **Placeholder scan.** No "TBD", no "add error handling", no "similar to Task N". Every code step carries the actual code. Task 7 Steps 3, 5 and 6 describe a mechanical extraction of 35 entries rather than reproducing them — that is a transcription, and the source lines are named exactly.
 
-**Type consistency.** `upsert_probed(&self, folder_id: i64, path: &str, m: &ProbedTrackMetadata) -> Result<()>` is defined in Task 2 and used with that exact signature in Task 3. `shared_probe_pool()` is created in Task 3 Step 3 and used in Task 3 Step 4 and Task 4 Step 4. `ml_search_due: Option<Instant>` is declared in Task 6 Step 3 and read in Steps 1, 5. `crate::ml_columns::{ColumnDef, ALL, by_id, value}` are defined in Task 7 Step 3 and consumed in Steps 5–6.
+**Type consistency.** Re-checked after Tasks 2–3 were cancelled and the rest renumbered. `shared_probe_pool()` was to be created by the cancelled parallel-scan task; **Task 2 now creates it**, and is its only consumer. `ml_search_due: Option<Instant>` is declared in Task 4 Step 3 and read in Steps 1 and 5. `crate::ml_columns::{ColumnDef, ALL, by_id, value}` are defined in Task 5 Step 3 and consumed in Steps 5–6. No remaining task references `upsert_probed` or `ProbedTrackMetadata`, both of which belonged to the cancelled work.

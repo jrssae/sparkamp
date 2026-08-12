@@ -1512,3 +1512,120 @@ impl MediaLibrary {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod probe_cost_tests {
+    use super::*;
+
+    /// What a metadata scan actually costs per file, and whether reading
+    /// several files at once helps or hurts on this machine's storage.
+    ///
+    /// This exists because the answer decided a design, and the answer is a
+    /// property of the disk rather than of the code. Measured 2026-08-12
+    /// against a 36,329-track library on a 14.6 TB rotational volume:
+    ///
+    /// ```text
+    /// read_track_tags   24.165 ms/file   <- first touch of the file
+    /// probe_duration     0.346 ms/file
+    /// probe_technical    0.123 ms/file
+    /// mp3_bitrate_mode   0.118 ms/file
+    /// discover_duration  fired 0/150
+    /// ```
+    ///
+    /// 98% of the cost is the first touch. Every later read in `probe` hits
+    /// the page cache and is nearly free, so reading the file once instead of
+    /// four times would win nothing. The GStreamer Discoverer fallback never
+    /// fired at all.
+    ///
+    /// Probing four files at once on the shared pool measured **slower**, in
+    /// three separate runs — 0.93x, 0.82x, 0.80x — because concurrent readers
+    /// just move the head around. A sequential read-ahead thread was noise
+    /// (1.10x then 0.96x on adjacent blocks). So the scan is left serial.
+    ///
+    /// None of that holds on flash. The same probe against 104 MP3s on NVMe
+    /// costs 269 us/file, a hundred times less, where parallelism would very
+    /// likely pay. If this library moves to an SSD, re-run this and revisit.
+    ///
+    /// Read the absolute figure only from a cold run — the first after a
+    /// reboot, or after the page cache has moved on. Re-running immediately
+    /// reports the same block warm and roughly five times cheaper, which
+    /// measures RAM rather than the disk. The first-touch *share* is the
+    /// stable part and stays near 95% either way.
+    ///
+    /// `cargo test --lib live_probe_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_probe_cost() {
+        gstreamer::init().ok();
+        let Ok(lib) = MediaLibrary::open() else {
+            eprintln!("no media library on this machine — skipping");
+            return;
+        };
+        // A contiguous block in path order, which is how a folder scan reads.
+        // Sampling at random would maximise seeks and slander the disk.
+        let Ok(mut stmt) = lib
+            .conn
+            .prepare("SELECT path FROM tracks ORDER BY path LIMIT 150 OFFSET 31000")
+        else {
+            eprintln!("could not read the library — skipping");
+            return;
+        };
+        let paths: Vec<PathBuf> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map(|rows| {
+                rows.filter_map(|r| r.ok())
+                    .map(PathBuf::from)
+                    .filter(|p| p.exists())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if paths.len() < 20 {
+            eprintln!("only {} readable files in the sample — skipping", paths.len());
+            return;
+        }
+        let n = paths.len() as u32;
+
+        let mut first_touch = std::time::Duration::ZERO;
+        let mut rest = std::time::Duration::ZERO;
+        let mut discoverer_fired = 0usize;
+        for p in &paths {
+            let t = std::time::Instant::now();
+            let _ = read_track_tags(p);
+            first_touch += t.elapsed();
+
+            let t = std::time::Instant::now();
+            let sym = crate::duration_probe::probe_duration(p);
+            if sym.is_none() {
+                discoverer_fired += 1;
+                let _ = crate::duration_probe::discover_duration(p);
+            }
+            let _ = crate::technical_probe::probe_technical(p);
+            let _ = crate::technical_probe::mp3_bitrate_mode(p);
+            rest += t.elapsed();
+        }
+        let total = first_touch + rest;
+        eprintln!("{} files sampled", paths.len());
+        eprintln!(
+            "  first touch (read_track_tags) {:>8.3} ms/file",
+            first_touch.as_secs_f64() * 1e3 / n as f64
+        );
+        eprintln!(
+            "  every later read              {:>8.3} ms/file",
+            rest.as_secs_f64() * 1e3 / n as f64
+        );
+        eprintln!(
+            "  total                         {:>8.3} ms/file  ({:.0}% first touch)",
+            total.as_secs_f64() * 1e3 / n as f64,
+            first_touch.as_secs_f64() / total.as_secs_f64() * 100.0
+        );
+        eprintln!("  Discoverer fallback fired {discoverer_fired}/{}", paths.len());
+        eprintln!(
+            "  extrapolated over a 36,329-track library: {:.1} min",
+            total.as_secs_f64() / n as f64 * 36329.0 / 60.0
+        );
+        eprintln!(
+            "  (cold run only — a repeat reads this block from page cache \
+             and reports roughly 5x cheaper)"
+        );
+    }
+}
