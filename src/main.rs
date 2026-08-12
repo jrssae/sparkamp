@@ -45,6 +45,7 @@ mod replaygain;
 mod pathutil;
 mod play_stats;
 // Shared active-playlist status-line formatter (phase 7).
+mod playlist_ingest;
 mod playlist_status;
 mod queue;
 mod shuffle;
@@ -138,23 +139,40 @@ fn main() -> Result<()> {
     // can write `sparkamp "song.mp3,~/music/jazz"` and have both processed.
     // Folder paths are scanned recursively for audio files.
     let mut playlist = model::Playlist::new();
-    for raw_arg in &args.files {
-        for part in raw_arg.split(',') {
-            let part = part.trim();
-            if part.is_empty() { continue; }
-            let path = std::path::Path::new(part);
-            if path.is_dir() {
-                let (added, errors) = playlist.add_paths(&[path]);
-                if added == 0 {
+    if !args.files.is_empty() {
+        // Resolve against the library first. A folder it has already scanned
+        // then costs one batched query and no file access at all, instead of
+        // 27.974 ms per file — about seventeen minutes for a 36k folder.
+        let lib = if config.media_library.skip_db_load {
+            None
+        } else {
+            media_library::MediaLibrary::open().ok()
+        };
+        for raw_arg in &args.files {
+            for part in raw_arg.split(',') {
+                let part = part.trim();
+                if part.is_empty() { continue; }
+                let path = std::path::PathBuf::from(part);
+                let is_dir = path.is_dir();
+                let rows = playlist_ingest::resolve(lib.as_ref(), std::slice::from_ref(&path));
+                if is_dir && rows.is_empty() {
                     eprintln!("Warning: no audio files found in {:?}", path);
                 }
-                for e in errors {
-                    eprintln!("Warning: {}", e);
-                }
-            } else {
-                match model::Track::from_path(path) {
-                    Ok(track) => playlist.add(track),
-                    Err(e)    => eprintln!("Warning: skipping {:?}: {}", path, e),
+                for row in rows {
+                    if row.needs_tags {
+                        // Nothing but the file can describe it, and at startup
+                        // there is no UI to keep responsive — so read it now,
+                        // exactly as before. Only the library-known case got
+                        // faster.
+                        match model::Track::from_path(&row.track.path) {
+                            Ok(track) => playlist.add(track),
+                            Err(e) => {
+                                eprintln!("Warning: skipping {:?}: {}", row.track.path, e)
+                            }
+                        }
+                    } else {
+                        playlist.add(row.track);
+                    }
                 }
             }
         }

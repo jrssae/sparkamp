@@ -500,6 +500,16 @@ pub struct App {
     broken_rx: mpsc::Receiver<PathBuf>,
     /// Sending end — cloned into `duration_probe::spawn_probes` calls.
     broken_tx: mpsc::Sender<PathBuf>,
+    /// Answers from the background pass that finishes a newly added row: is the
+    /// file there, and — for a file the media library has never seen — its tags
+    /// and duration. Drained in `tick`.
+    ///
+    /// Adds no longer read tags inline (`crate::playlist_ingest`), so this is
+    /// what fills in a row the library could not describe. Without it an
+    /// unknown file would show its filename stem forever.
+    row_facts_rx: mpsc::Receiver<crate::file_status::RowFacts>,
+    /// Sending end of the row batches the single background worker consumes.
+    row_check_tx: mpsc::Sender<Vec<crate::file_status::RowCheck>>,
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<crate::media_library::MediaLibrary>,
@@ -572,6 +582,11 @@ impl App {
         let cursor = playlist.current_index;
         let (probe_tx, probe_rx) = mpsc::channel();
         let (broken_tx, broken_rx) = mpsc::channel::<PathBuf>();
+        // One worker for the session, reading rows one at a time. See
+        // `crate::file_status` for why it is deliberately not parallel.
+        let (row_check_tx, row_check_rx) = mpsc::channel();
+        let (row_facts_tx, row_facts_rx) = mpsc::channel();
+        crate::file_status::spawn_row_worker(row_check_rx, row_facts_tx);
 
         // Load the on-disk duration cache and immediately apply any cached
         // values to the playlist so tracks that were probed before show their
@@ -688,6 +703,8 @@ impl App {
             probe_tx,
             broken_rx,
             broken_tx,
+            row_facts_rx,
+            row_check_tx,
             media_lib,
             watch: None,
             watch_rx: None,
@@ -1172,6 +1189,49 @@ impl App {
             for track in &mut self.playlist.tracks {
                 if broken_batch.contains(&track.path) {
                     track.broken = true;
+                }
+            }
+        }
+
+        // 1b2. Row-finishing results: tags and duration for rows the media
+        // library had never seen, plus the ⚠ marker for files that are gone.
+        //
+        // Keyed by the playlist entry id and applied in ONE pass, not one pass
+        // per result: a per-result scan is O(rows × results), which on a large
+        // add is millions of comparisons a tick. The GTK side learned that the
+        // expensive way.
+        {
+            let mut facts_batch: std::collections::HashMap<u64, crate::file_status::RowFacts> =
+                std::collections::HashMap::new();
+            while let Ok(facts) = self.row_facts_rx.try_recv() {
+                facts_batch.insert(facts.id, facts);
+            }
+            if !facts_batch.is_empty() {
+                for track in &mut self.playlist.tracks {
+                    let Some(facts) = facts_batch.get(&track.id) else {
+                        continue;
+                    };
+                    track.broken = !facts.exists;
+                    track.read_only = facts.read_only;
+                    if let Some(read) = &facts.tags {
+                        // Keep whatever the user is already looking at if the
+                        // read came back empty.
+                        if !read.title.is_empty() {
+                            track.title = read.title.clone();
+                        }
+                        track.artist = read.artist.clone();
+                        track.album_artist = read.album_artist.clone();
+                        track.album = read.album.clone();
+                        if track.duration.is_none() {
+                            track.duration = read.duration;
+                        }
+                    }
+                }
+                // Remember measured durations so the next session starts with them.
+                for facts in facts_batch.values() {
+                    if let Some(d) = facts.tags.as_ref().and_then(|t| t.duration) {
+                        self.duration_cache.insert(&facts.path, d);
+                    }
                 }
             }
         }

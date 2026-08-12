@@ -914,6 +914,15 @@ impl Playlist {
     /// `(added_count, error_messages)` where:
     /// - `added_count` is the total number of tracks successfully added.
     /// - `error_messages` contains one human-readable string per failed path.
+    ///
+    /// **Reads every file.** Prefer [`crate::playlist_ingest::resolve`], which
+    /// answers from the media library where it can and reads only what it must;
+    /// the frontends and the CLI all go through that now. This remains for
+    /// `sparkamp_playlist_add`, whose documented contract is the synchronous
+    /// full read (macOS callers wanting the fast path already have
+    /// `sparkamp_playlist_add_fast`), and so is dead code in the binary while
+    /// still live in the library.
+    #[allow(dead_code)]
     pub fn add_paths(&mut self, paths: &[&Path]) -> (usize, Vec<String>) {
         let mut added = 0usize;
         let mut errors: Vec<String> = Vec::new();

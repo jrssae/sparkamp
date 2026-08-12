@@ -58,94 +58,27 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
     if paths.is_empty() {
         return Added { start: 0, count: 0 };
     }
-    let mut wanted: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    let mut known = resolve(state, &wanted);
-
-    // A dropped directory means everything under it. Only paths the library
-    // could not place are candidates — a library row is a file by definition,
-    // so a 36k Media Library drop never asks the filesystem anything, while a
-    // folder dropped from a file manager still expands the way it always has.
-    let unresolved: Vec<std::path::PathBuf> = paths
-        .iter()
-        .zip(wanted.iter())
-        .filter(|(_, key)| !known.contains_key(*key))
-        .map(|(p, _)| p.clone())
-        .collect();
-    let mut paths: Vec<std::path::PathBuf> = paths.to_vec();
-    if unresolved.iter().any(|p| p.is_dir()) {
-        let mut expanded = Vec::with_capacity(paths.len());
-        for p in paths {
-            if p.is_dir() {
-                expanded.extend(crate::model::Playlist::collect_audio_files(&p));
-            } else {
-                expanded.push(p);
-            }
-        }
-        paths = expanded;
-        wanted = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        // The files inside a dropped folder may well be indexed even though the
-        // folder itself is not a row, so resolve again now they are named.
-        known = resolve(state, &wanted);
-    }
-    let paths = &paths[..];
-
+    // Resolving is core work shared with the TUI and the CLI; the borrow is
+    // taken and dropped around it rather than held, because the library query
+    // is the slow part and nothing here needs the state while it runs.
+    let rows = {
+        let s = state.borrow();
+        crate::playlist_ingest::resolve(s.media_lib.as_ref(), paths)
+    };
     let start;
     let count;
     {
         let mut s = state.borrow_mut();
         start = s.playlist.tracks.len();
-        for (path, key) in paths.iter().zip(wanted.iter()) {
-            let (track, needs_tags) = match known.get(key) {
-                Some(lt) => (crate::model::Track::from(lt), false),
-                // Placeholder: the filename stem, so the row is recognisable
-                // straight away. Everything real about it arrives from the pass.
-                None => (placeholder(path), true),
-            };
-            s.playlist.add(track);
+        for row in rows {
+            s.playlist.add(row.track);
             // `add` stamps the entry id; note the row as unfinished against it.
             let id = s.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
-            s.pending_rows.insert(id, needs_tags);
+            s.pending_rows.insert(id, row.needs_tags);
         }
         count = s.playlist.tracks.len() - start;
     }
     Added { start, count }
-}
-
-/// One batched library lookup. An unopenable or absent library is not an
-/// error here — every path simply comes back unknown and gets read from disk
-/// by the background pass, which is the correct answer for a machine with no
-/// library at all.
-fn resolve(
-    state: &Rc<RefCell<AppState>>,
-    wanted: &[String],
-) -> std::collections::HashMap<String, crate::media_library::LibTrack> {
-    state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .and_then(|lib| lib.tracks_by_exact_paths(wanted).ok())
-        .unwrap_or_default()
-}
-
-/// A row for a file nothing has told us about yet. Built without touching the
-/// filesystem — even `Track::from_path_fast` canonicalises and tests
-/// writability, which is two syscalls we are trying not to spend here.
-fn placeholder(path: &std::path::Path) -> crate::model::Track {
-    crate::model::Track {
-        path: path.to_path_buf(),
-        title: path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string(),
-        artist: String::new(),
-        album_artist: String::new(),
-        album: String::new(),
-        duration: None,
-        broken: false,
-        read_only: false,
-        id: 0,
-    }
 }
 
 /// Add one already-built track — the single-row entry point, for sites that

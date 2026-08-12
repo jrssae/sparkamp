@@ -771,29 +771,27 @@ impl App {
     /// by the Files tab's Enter and the Albums tab's drilled-down track
     /// list, so both honor the same replace/append and autoplay behavior.
     pub(super) fn add_ml_track_path_to_playlist(&mut self, path_str: String) {
-        let p = std::path::Path::new(&path_str);
-        match crate::model::Track::from_path(p) {
-            Ok(track) => {
-                let was_empty = self.playlist.is_empty();
-                if self.config.behavior.playlist_add_behavior
-                    == crate::config::PlaylistAddBehavior::Replace
-                {
-                    self.playlist.tracks.clear();
-                    self.playlist.current_index = 0;
-                    self.shuffle_state.reset();
-                }
-                let before = self.playlist.tracks.len();
-                self.playlist.add(track);
-                self.probe_new_tracks(before);
-                if self.config.behavior.autoplay_on_add && was_empty {
-                    self.play_current();
-                }
-                self.set_status("Track added to playlist");
-            }
-            Err(e) => {
-                self.set_status(format!("Cannot add track: {e}"));
-            }
+        // The row came out of the library, so the library can describe it.
+        // Reading its tags off disk again — which is what this used to do —
+        // spends 27.974 ms for an answer already held.
+        let path = std::path::PathBuf::from(&path_str);
+        let rows = crate::playlist_ingest::resolve(self.media_lib.as_ref(), &[path]);
+        if rows.is_empty() {
+            self.set_status("Cannot add track");
+            return;
         }
+        let was_empty = self.playlist.is_empty();
+        if self.config.behavior.playlist_add_behavior == crate::config::PlaylistAddBehavior::Replace
+        {
+            self.playlist.tracks.clear();
+            self.playlist.current_index = 0;
+            self.shuffle_state.reset();
+        }
+        self.add_resolved(rows);
+        if self.config.behavior.autoplay_on_add && was_empty {
+            self.play_current();
+        }
+        self.set_status("Track added to playlist");
     }
 
     /// View/Search Lyrics (F15) for one track. Saved USLT opens the read-only
