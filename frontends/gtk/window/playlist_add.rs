@@ -11,11 +11,16 @@ use super::*;
 /// file dropped from the file manager showed a blank duration until it played.
 ///
 /// The rule here is: **adding a row never touches the filesystem.** Everything
-/// shown at insert comes from the media library's record of the file. The two
+/// shown at insert comes from the media library's record of the file. The
 /// things a database cannot answer — is it still there, is it writable, and
 /// for a file the library has never seen, what are its tags and how long is it
-/// — are handed to the background pass in `crate::file_status`, which walks
-/// them one at a time and reports each row as it goes.
+/// — are only *noted* here, in `AppState::pending_rows`.
+///
+/// Nothing reads a file until [`request_range`] is called with rows that are
+/// actually on screen. Adding 36,000 rows therefore costs 36,000 map inserts
+/// and no I/O at all; the reading is paid for one screenful at a time, by
+/// whoever scrolls. See `crate::file_status` for why that is the whole design
+/// rather than an optimisation.
 ///
 /// Callers get back an [`Added`] describing where the rows landed, and are
 /// responsible for the UI rebuild; this module deliberately knows nothing
@@ -84,9 +89,8 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
     }
     let paths = &paths[..];
 
-    let mut checks = Vec::new();
     let start;
-    let tx;
+    let count;
     {
         let mut s = state.borrow_mut();
         start = s.playlist.tracks.len();
@@ -97,18 +101,13 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
                 // straight away. Everything real about it arrives from the pass.
                 None => (placeholder(path), true),
             };
-            let path = track.path.clone();
             s.playlist.add(track);
-            checks.push(crate::file_status::RowCheck {
-                path,
-                needs_tags,
-                id: s.playlist.tracks.last().map(|t| t.id).unwrap_or(0),
-            });
+            // `add` stamps the entry id; note the row as unfinished against it.
+            let id = s.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
+            s.pending_rows.insert(id, needs_tags);
         }
-        tx = s.row_facts_tx.clone();
+        count = s.playlist.tracks.len() - start;
     }
-    let count = checks.len();
-    schedule(checks, tx);
     Added { start, count }
 }
 
@@ -152,92 +151,94 @@ fn placeholder(path: &std::path::Path) -> crate::model::Track {
 /// Add one already-built track — the single-row entry point, for sites that
 /// construct their own `Track` (a disc rip, a device file, a dedupe result).
 ///
-/// Safe to call in a loop: scheduling coalesces, so a thousand calls in one
-/// main-loop turn become one background pass rather than a thousand threads.
+/// Safe to call in a loop: noting a row is a map insert, so a thousand calls in
+/// one main-loop turn cost a thousand map inserts and no I/O.
 pub(super) fn add_track(
     state: &Rc<RefCell<AppState>>,
     track: crate::model::Track,
     needs_tags: bool,
 ) {
-    let check = crate::file_status::RowCheck {
-        path: track.path.clone(),
-        needs_tags,
-        id: 0,
-    };
-    let (tx, id) = {
-        let mut s = state.borrow_mut();
-        s.playlist.add(track);
-        // `add` stamps the entry id; take it back so the answer can be applied
-        // to this exact row without searching for it.
-        let id = s.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
-        (s.row_facts_tx.clone(), id)
-    };
-    let mut check = check;
-    check.id = id;
-    schedule(vec![check], tx);
+    let mut s = state.borrow_mut();
+    s.playlist.add(track);
+    // `add` stamps the entry id; note the row as unfinished against it, so the
+    // answer can later be applied to this exact row without searching for it.
+    let id = s.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
+    s.pending_rows.insert(id, needs_tags);
 }
 
-/// Schedule the background pass for rows the caller added itself.
+/// Note rows the caller added itself as still needing the background pass.
 ///
 /// For the sites that hold a `borrow_mut` across their whole loop and so
 /// cannot call [`add_track`] per row: add as before, drop the borrow, then
 /// hand over the index the batch started at.
 pub(super) fn schedule_from(state: &Rc<RefCell<AppState>>, start: usize, needs_tags: bool) {
-    let (checks, tx) = {
-        let s = state.borrow();
-        let checks: Vec<crate::file_status::RowCheck> = s.playlist.tracks[start.min(s.playlist.tracks.len())..]
-            .iter()
-            .map(|t| crate::file_status::RowCheck {
-                path: t.path.clone(),
-                needs_tags,
-                id: t.id,
-            })
-            .collect();
-        (checks, s.row_facts_tx.clone())
-    };
-    schedule(checks, tx);
-}
-
-thread_local! {
-    /// Rows waiting to be checked, accumulated across every add in this
-    /// main-loop turn.
-    static PENDING: RefCell<Vec<crate::file_status::RowCheck>> =
-        const { RefCell::new(Vec::new()) };
-    /// Whether a flush is already booked, so N adds book one.
-    static FLUSH_QUEUED: Cell<bool> = const { Cell::new(false) };
-    /// Where to send the answers. Re-stamped on every schedule; it is the same
-    /// sender every time within a session.
-    static SENDER: RefCell<Option<std::sync::mpsc::Sender<crate::file_status::RowFacts>>> =
-        const { RefCell::new(None) };
-}
-
-/// Queue rows for the background pass, flushing once on the next idle.
-///
-/// The coalescing is what lets [`add_track`] sit inside a `for` loop without
-/// the caller having to know it should batch. Fifteen of the call sites this
-/// module replaced were loops; spawning a thread per iteration would have
-/// swapped a main-thread freeze for a thread explosion.
-fn schedule(
-    checks: Vec<crate::file_status::RowCheck>,
-    tx: Option<std::sync::mpsc::Sender<crate::file_status::RowFacts>>,
-) {
-    // No sender means no GTK main loop to deliver to — the FFI and test paths.
-    // The rows are still correct, they just never get their markers.
-    let Some(tx) = tx else { return };
-    SENDER.with(|s| *s.borrow_mut() = Some(tx));
-    PENDING.with(|p| p.borrow_mut().extend(checks));
-    if !FLUSH_QUEUED.with(|f| f.replace(true)) {
-        glib::idle_add_local_once(flush_pending);
+    let mut s = state.borrow_mut();
+    // Collected first so the playlist read is finished before `pending_rows`
+    // is borrowed mutably.
+    let from = start.min(s.playlist.tracks.len());
+    let ids: Vec<u64> = s.playlist.tracks[from..].iter().map(|t| t.id).collect();
+    for id in ids {
+        s.pending_rows.insert(id, needs_tags);
     }
 }
 
-fn flush_pending() {
-    FLUSH_QUEUED.with(|f| f.set(false));
-    let batch: Vec<crate::file_status::RowCheck> =
-        PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
-    let tx = SENDER.with(|s| s.borrow().clone());
-    if let (Some(tx), false) = (tx, batch.is_empty()) {
-        crate::file_status::spawn_row_checks(batch, tx);
+/// Ask the background worker about the rows in `first..=last` that have not
+/// been asked about yet — the viewport pass.
+///
+/// This is the only thing in the module that causes a file to be read, and it
+/// is driven by what is on screen. Rows are taken out of `pending_rows` as they
+/// are handed over, so scrolling back and forth over the same rows costs one
+/// read each, not one per pass.
+///
+/// A batch that finds nothing pending sends nothing, which is the common case
+/// once a screenful has settled — scrolling a resolved playlist is free.
+pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: usize) {
+    let (batch, tx) = {
+        let mut s = state.borrow_mut();
+        let n = s.playlist.tracks.len();
+        // Clearing the playlist leaves the cleared rows' ids behind. Ids are
+        // never reused, so a stale one is only ever dead weight — but a
+        // clear-and-refill loop would grow the map without bound. Pruned here
+        // rather than at the fourteen sites that clear the playlist, because a
+        // rule every call site has to remember is the exact failure this module
+        // was written to end.
+        if s.pending_rows.len() > n + 4096 {
+            let live: std::collections::HashSet<u64> =
+                s.playlist.tracks.iter().map(|t| t.id).collect();
+            s.pending_rows.retain(|id, _| live.contains(id));
+        }
+        if s.pending_rows.is_empty() || n == 0 || first >= n {
+            return;
+        }
+        let end = last.min(n - 1);
+        // Ids are `Copy`, so the range can be read without cloning any paths —
+        // most scans find nothing pending and should cost almost nothing.
+        let ids: Vec<u64> = s.playlist.tracks[first..=end].iter().map(|t| t.id).collect();
+        let wanted: Vec<(usize, u64, bool)> = ids
+            .iter()
+            .enumerate()
+            .filter_map(|(k, id)| s.pending_rows.get(id).map(|nt| (first + k, *id, *nt)))
+            .collect();
+        let mut batch = Vec::with_capacity(wanted.len());
+        for (idx, id, needs_tags) in wanted {
+            s.pending_rows.remove(&id);
+            if let Some(t) = s.playlist.tracks.get(idx) {
+                batch.push(crate::file_status::RowCheck {
+                    path: t.path.clone(),
+                    needs_tags,
+                    id,
+                });
+            }
+        }
+        (batch, s.row_check_tx.clone())
+    };
+    if batch.is_empty() {
+        return;
+    }
+    // No sender means no GTK main loop to deliver answers to — the FFI and test
+    // paths. The rows are still correct, they just never get their markers.
+    if let Some(tx) = tx {
+        let _ = tx.send(batch);
     }
 }
 

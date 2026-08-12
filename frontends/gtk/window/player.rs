@@ -299,7 +299,18 @@ pub fn build(
     // sender, which is how three of them ended up without one.
     let (row_facts_tx, row_facts_rx) =
         std::sync::mpsc::channel::<crate::file_status::RowFacts>();
-    state.borrow_mut().row_facts_tx = Some(row_facts_tx);
+    // The other half: batches of rows to finish, produced by the playlist
+    // window's viewport scan. One worker for the session — the producer is a
+    // scroll handler, and a thread per batch would mean a thread per stop while
+    // dragging the scrollbar.
+    let (row_check_tx, row_check_rx) =
+        std::sync::mpsc::channel::<Vec<crate::file_status::RowCheck>>();
+    crate::file_status::spawn_row_worker(row_check_rx, row_facts_tx.clone());
+    {
+        let mut s = state.borrow_mut();
+        s.row_facts_tx = Some(row_facts_tx);
+        s.row_check_tx = Some(row_check_tx);
+    }
 
     // Populate durations from the on-disk cache for the already-loaded
     // playlist, then probe any tracks that are still unknown.

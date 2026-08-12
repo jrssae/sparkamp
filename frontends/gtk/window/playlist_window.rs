@@ -398,6 +398,78 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // Shared closures
     // ══════════════════════════════════════════════════════════════════════════
 
+    // scan_viewport — ask the background pass about the rows now on screen.
+    //
+    // This is the whole of the file-reading policy. Winamp's classic playlist
+    // editor keeps a `cached` bit per entry and a 100 ms timer that reads the
+    // first unresolved *visible* row and stops (`Src/Winamp/Pledit.cpp`); rows
+    // nobody scrolls to are never opened. Adding 36k tracks then costs one
+    // screenful of I/O rather than the ~17 minutes a full walk would spend on
+    // rows that will never be looked at.
+    //
+    // `visible_range` is asked rather than computed, so real rendered row
+    // heights drive the answer — the same reason `scroll_to_row_if_needed`
+    // below uses it.
+    let scan_viewport: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let pl_view = pl_view.clone();
+        Rc::new(move || {
+            // Detached mid-rebuild; the rebuild scans again once it reattaches.
+            #[allow(deprecated)]
+            if pl_view.model().is_none() {
+                return;
+            }
+            #[allow(deprecated)]
+            let Some((first, last)) = pl_view.visible_range() else {
+                return;
+            };
+            let (Some(first), Some(last)) = (
+                first.indices().first().copied(),
+                last.indices().first().copied(),
+            ) else {
+                return;
+            };
+            let (first, last) = (first.max(0) as usize, last.max(0) as usize);
+            // One page of margin either side, so an unhurried scroll meets rows
+            // that are already finished instead of a wave of blanks at the edge.
+            let page = last.saturating_sub(first) + 1;
+            playlist_add::request_range(&state, first.saturating_sub(page), last + page);
+        })
+    };
+
+    // Rescan whenever the set of visible rows can have changed, debounced.
+    // Dragging the scrollbar emits a torrent of value-changed, and every scan
+    // takes a `borrow_mut` of the playlist; at one scan per event a drag
+    // through a 36k list would fight the UI for the state it is trying to draw.
+    {
+        let queued = Rc::new(Cell::new(false));
+        let book_scan: Rc<dyn Fn()> = {
+            let scan_viewport = scan_viewport.clone();
+            let queued = queued.clone();
+            Rc::new(move || {
+                if queued.replace(true) {
+                    return;
+                }
+                let scan = scan_viewport.clone();
+                let queued = queued.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+                    queued.set(false);
+                    scan();
+                });
+            })
+        };
+        let adj = pl_scroll.vadjustment();
+        // Scrolling.
+        adj.connect_value_changed({
+            let book_scan = book_scan.clone();
+            move |_| book_scan()
+        });
+        // Resizing the window taller uncovers rows without moving the scroll
+        // position, so value-changed never fires for it; `changed` carries the
+        // page-size and upper updates that do.
+        adj.connect_changed(move |_| book_scan());
+    }
+
     // rebuild_playlist — repopulate the ListStore from the current playlist model.
     //
     // The TreeView is temporarily disconnected from the model while the store is
@@ -414,6 +486,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let accent_rgba = accent_rgba.clone();
         let text_rgba = text_rgba.clone();
         let refresh_pl_status = refresh_pl_status.clone();
+        let scan_viewport = scan_viewport.clone();
         Rc::new(move || {
             // Stamp any unstamped entries so queue badges have stable ids to
             // look up (idempotent; a no-op once every entry is stamped). Needs
@@ -502,6 +575,14 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 if n == 1 { "" } else { "s" },
             ));
             refresh_pl_status();
+            // On idle, not now: `visible_range` has nothing to report until GTK
+            // has laid the reattached model out. The scroll restore above emits
+            // value-changed, which books its own scan, but a rebuild that does
+            // not move the viewport would otherwise never ask for anything.
+            glib::idle_add_local_once({
+                let scan_viewport = scan_viewport.clone();
+                move || scan_viewport()
+            });
         })
     };
     *rebuild_pl_holder.borrow_mut() = Some(rebuild_playlist.clone());

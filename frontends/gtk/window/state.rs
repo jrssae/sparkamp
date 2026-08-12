@@ -60,6 +60,24 @@ pub(super) struct AppState {
     /// `None` outside the GTK window — the FFI and test paths add rows without
     /// a main loop to deliver results to, and simply skip the background work.
     pub(super) row_facts_tx: Option<std::sync::mpsc::Sender<crate::file_status::RowFacts>>,
+    /// Where batches of rows to finish are handed to the single background
+    /// worker. Paired with `row_facts_tx`, which carries the answers back.
+    ///
+    /// `None` outside the GTK window, like `row_facts_tx`.
+    pub(super) row_check_tx: Option<std::sync::mpsc::Sender<Vec<crate::file_status::RowCheck>>>,
+    /// Playlist entries the background pass has not been asked about yet,
+    /// keyed by entry id; the value is whether the row still needs a tag read.
+    ///
+    /// This is Winamp's `cached` bit on `pl_entry`, kept beside the playlist
+    /// rather than on it: `Track` is a core model type with ninety-odd literal
+    /// construction sites, and this is state only the GTK playlist view has any
+    /// use for.
+    ///
+    /// A row is entered here when it is added and taken out when it is handed
+    /// to the worker, so scrolling past the same rows twice costs one read, not
+    /// two. Ids of removed tracks are simply never looked up again; they cost
+    /// eight bytes each until the playlist is cleared.
+    pub(super) pending_rows: std::collections::HashMap<u64, bool>,
     /// The media library browser window, if one is currently open.
     pub(super) ml_window: Option<gtk4::Window>,
     /// The settings window, if one is currently open. Singleton (like
@@ -581,6 +599,19 @@ impl AppState {
             s.enabled = config.playback.shuffle_enabled;
             s
         };
+        // The restored playlist has never been through `playlist_add`, so seed
+        // its rows here or last session's tracks would be the only ones that
+        // never got their ⚠ / 🔒 markers. Ids have to be stamped first: they
+        // are session-only, so everything loaded from disk arrives unstamped.
+        let mut playlist = playlist;
+        playlist.ensure_ids();
+        let pending_rows = playlist
+            .tracks
+            .iter()
+            // A saved duration means a previous session already read this file;
+            // one without still needs its tags.
+            .map(|t| (t.id, t.duration.is_none()))
+            .collect();
         Ok(AppState {
             player,
             playlist,
@@ -595,6 +626,8 @@ impl AppState {
             watch: None,
             watch_rx: None,
             row_facts_tx: None,
+            row_check_tx: None,
+            pending_rows,
             ml_window: None,
             settings_window: None,
             id3_editor_window: None,
