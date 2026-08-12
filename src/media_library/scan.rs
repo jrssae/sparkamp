@@ -985,8 +985,8 @@ impl MediaLibrary {
                 cancelled = true;
                 break;
             }
+            // `upsert_track` stamps `last_scanned` itself; see `scan_folder`.
             if self.upsert_track(folder_id, &path).is_ok() {
-                let _ = self.update_last_scanned(&path);
                 updated += 1;
             }
             progress(updated, total);
@@ -1379,17 +1379,24 @@ impl MediaLibrary {
         let to_scan_count = paths_to_scan.len();
         let mut scanned = 0usize;
 
-        // Process files that need scanning
+        // One transaction for the whole folder. Without it SQLite syncs on
+        // every statement, which on a large folder is the dominant cost of
+        // the scan — `rescan_folder_metadata` has always done this; the
+        // production path never did. Work finished before a cancel is still
+        // committed, so stopping a long scan keeps the rows already read.
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
         for (_, path) in paths_to_scan {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            // `upsert_track` stamps `last_scanned` itself as its last act, so
+            // stamping it again here was a second write for every track.
             if self.upsert_track(folder_id, &path).is_ok() {
-                let _ = self.update_last_scanned(&path);
                 scanned += 1;
             }
             progress(scanned, to_scan_count);
         }
+        let _ = self.conn.execute("COMMIT", []);
 
         let skipped = total - scanned;
 

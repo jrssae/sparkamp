@@ -2447,3 +2447,127 @@ fn normalize_track_paths_merges_an_alias_row_and_keeps_its_plays() {
     assert_eq!(last.as_deref(), Some("2026-08-01T00:00:00Z"));
     assert!(!lib.needs_path_normalization(), "and it stays repaired");
 }
+
+// ── scan_folder: no redundant writes, and one transaction ──────────────
+
+/// Count the UPDATEs a scan runs against `tracks`, using a temp trigger.
+///
+/// rusqlite 0.31 exposes no statement counter without the `hooks` feature,
+/// and a trigger is cheaper than adding one. SQLite allows a TEMP trigger on
+/// a table in another database, so this leaves the schema untouched.
+fn count_track_updates(lib: &MediaLibrary) -> impl Fn() -> i64 + '_ {
+    lib.conn
+        .execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS update_tally (n INTEGER);
+             DELETE FROM update_tally;
+             INSERT INTO update_tally VALUES (0);
+             CREATE TEMP TRIGGER IF NOT EXISTS tally_track_updates
+                 AFTER UPDATE ON main.tracks
+             BEGIN
+                 UPDATE update_tally SET n = n + 1;
+             END;",
+        )
+        .unwrap();
+    move || {
+        lib.conn
+            .query_row("SELECT n FROM update_tally", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    }
+}
+
+/// `upsert_track` stamps `last_scanned` itself as its last act, so the scan
+/// loop stamping it a second time is a pure extra write per track.
+///
+/// Per track the scan should run two UPDATEs: the ON CONFLICT arm of the
+/// upsert (the row already exists, inserted by the fast pass), and the stamp
+/// inside `upsert_track`. A third means the caller is stamping again.
+#[test]
+fn scan_folder_writes_each_row_once() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..2 {
+        write_test_wav(&dir.path().join(format!("track_{i}.wav")), 44_100, 2, 1.0);
+    }
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    let updates = count_track_updates(&lib);
+    let before = updates();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let (scanned, _skipped, failed) = lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
+    let written = updates() - before;
+
+    assert_eq!(scanned, 2, "both tracks should have been scanned");
+    assert_eq!(failed, 0, "neither track should have failed");
+    assert_eq!(
+        written, 4,
+        "two UPDATEs per track — the upsert's ON CONFLICT arm and the stamp \
+         inside upsert_track. A third per track means the scan loop is \
+         stamping last_scanned again after upsert_track already did"
+    );
+}
+
+/// The stamp must still land. Removing the duplicate write is only correct if
+/// the surviving write inside `upsert_track` actually sets `last_scanned` —
+/// otherwise every scanned row keeps the "not yet scanned" clock icon.
+#[test]
+fn scan_folder_still_stamps_last_scanned() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    write_test_wav(&dir.path().join("track_0.wav"), 44_100, 2, 1.0);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    lib.scan_folder(folder_id, &cancel, |_, _| {}).unwrap();
+
+    let tracks = lib.all_tracks().unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert!(
+        tracks[0].last_scanned.is_some(),
+        "the surviving write must still stamp last_scanned"
+    );
+}
+
+/// Work done before a cancel must survive. The loop now runs inside one
+/// transaction, so a scan stopped part-way has to commit what it read rather
+/// than rolling the whole folder back.
+#[test]
+fn scan_folder_commits_work_done_before_a_cancel() {
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..6 {
+        write_test_wav(&dir.path().join(format!("track_{i}.wav")), 44_100, 2, 1.0);
+    }
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    // Cancel after the third file: the progress callback is the only hook
+    // that runs between tracks.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let (scanned, _skipped, _failed) = lib
+        .scan_folder(folder_id, &cancel, |done, _| {
+            if done >= 3 {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+
+    assert_eq!(scanned, 3, "the scan should stop right after the third file");
+    let stamped = lib
+        .all_tracks()
+        .unwrap()
+        .iter()
+        .filter(|t| t.last_scanned.is_some())
+        .count();
+    assert_eq!(
+        stamped, 3,
+        "the three tracks read before the cancel must be committed, not rolled back"
+    );
+}
