@@ -261,6 +261,9 @@ pub(super) fn build(
                 return;
             };
             let secs = boxed.borrow::<crate::disc::mount::DiscFile>().duration_secs;
+            // Not `model::fmt_secs`: an unread disc track shows an em dash
+            // rather than "-:--", which reads as a track of unknown length
+            // rather than one that failed to measure.
             lbl.set_text(&match secs {
                 Some(s) => format!("{}:{:02}", s / 60, s % 60),
                 None => "—".to_string(),

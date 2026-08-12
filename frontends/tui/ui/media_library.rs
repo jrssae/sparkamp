@@ -633,6 +633,8 @@ pub(super) fn ml_col_value<'a>(id: &str, t: &'a crate::media_library::LibTrack) 
         "title" => t.title.as_deref().unwrap_or(&t.filename).into(),
         "artist" => t.artist.as_deref().unwrap_or("-").into(),
         "album" => t.album.as_deref().unwrap_or("-").into(),
+        // Not `model::fmt_secs`: the right-padding keeps the column aligned in
+        // a fixed-width terminal, which the shared formatter does not do.
         "duration" => t
             .length_secs
             .map(|s| {

@@ -723,27 +723,14 @@ impl App {
     }
 
     /// Re-query the DB after a sort-column or sort-direction change.
+    ///
+    /// Identical work to [`Self::refresh_ml_search`]: both read the current
+    /// query, sort column and direction, re-run the same query and replace the
+    /// track list. Kept as a separate name because the call sites read better
+    /// for it — the two bodies were byte-for-byte the same, which is a thing
+    /// that only stays true by accident.
     pub(super) fn refresh_ml_sort(&mut self) {
-        let (query, sort_col, sort_desc) = if let Mode::MediaLibrary(s) = &self.mode {
-            (s.search_query.clone(), s.sort_col.clone(), s.sort_desc)
-        } else {
-            return;
-        };
-        let tracks = if let Some(ref lib) = self.media_lib {
-            if query.is_empty() {
-                lib.all_tracks_sorted(&sort_col, sort_desc)
-                    .unwrap_or_default()
-            } else {
-                lib.search_tracks_sorted(&query, &sort_col, sort_desc)
-                    .unwrap_or_default()
-            }
-        } else {
-            Vec::new()
-        };
-        if let Mode::MediaLibrary(s) = &mut self.mode {
-            s.tracks = tracks;
-            s.selected_track = 0;
-        }
+        self.refresh_ml_search();
     }
 
     /// Record that the search query changed; `tick` runs the query once the

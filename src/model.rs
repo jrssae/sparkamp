@@ -340,6 +340,21 @@ pub fn fmt_duration(dur: Option<Duration>) -> String {
     }
 }
 
+/// The same display, for a length already held as seconds.
+///
+/// The media library stores `length_secs` as an `f64`, so every view over
+/// library rows had open-coded the format and the `-:--` fallback rather than
+/// convert to a `Duration` first. Four copies agreed; several others nearby
+/// deliberately do not (an em dash for unknown, right-padding for column
+/// alignment, a leading minus for remaining time), so only the ones that
+/// already matched call this.
+///
+/// A negative or non-finite length is treated as unknown rather than
+/// panicking, which is what `Duration::from_secs_f64` would do.
+pub fn fmt_secs(secs: Option<f64>) -> String {
+    fmt_duration(secs.and_then(|s| Duration::try_from_secs_f64(s).ok()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Playlist {
     /// All tracks in display order.
@@ -1525,6 +1540,31 @@ mod tests {
     // -----------------------------------------------------------------------
     // is_audio_file()
     // -----------------------------------------------------------------------
+
+    /// `fmt_secs` is the seconds-taking face of `fmt_duration`; four library
+    /// views open-coded this. It must agree with its sibling exactly —
+    /// `fmt_duration_none_returns_placeholder` above already pins the absent
+    /// case, so this is about the conversion.
+    #[test]
+    fn fmt_secs_agrees_with_fmt_duration() {
+        for secs in [0.0f64, 1.0, 59.9, 60.0, 61.4, 599.99, 3600.0, 7325.5] {
+            assert_eq!(
+                fmt_secs(Some(secs)),
+                fmt_duration(Some(Duration::from_secs_f64(secs))),
+                "mismatch at {secs}s"
+            );
+        }
+        assert_eq!(fmt_secs(None), fmt_duration(None));
+    }
+
+    /// A length that cannot be a duration reads as unknown rather than
+    /// panicking — `Duration::from_secs_f64` panics on both of these, and a
+    /// corrupt tag should not take the window down.
+    #[test]
+    fn fmt_secs_treats_an_impossible_length_as_unknown() {
+        assert_eq!(fmt_secs(Some(-1.0)), "-:--");
+        assert_eq!(fmt_secs(Some(f64::NAN)), "-:--");
+    }
 
     #[test]
     fn is_audio_file_recognises_mp3() {

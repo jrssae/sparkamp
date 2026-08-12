@@ -157,6 +157,8 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
     }
 
     // ── Helper: format duration as "M:SS" ───────────────────────────────────
+    // Not `model::fmt_secs`: the dedupe list uses an em dash for an unknown
+    // length, so a missing value is visibly distinct from a real 0:00.
     fn fmt_dur(secs: Option<f64>) -> String {
         match secs {
             None => "—".to_string(),

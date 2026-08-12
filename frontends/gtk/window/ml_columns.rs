@@ -386,13 +386,7 @@ pub(super) fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str, artist_
             t.album_artist.as_deref().unwrap_or(""),
             artist_as_album_artist,
         ),
-        "duration" => t
-            .length_secs
-            .map(|s| {
-                let ss = s as u64;
-                format!("{}:{:02}", ss / 60, ss % 60)
-            })
-            .unwrap_or_else(|| "-:--".to_string()),
+        "duration" => crate::model::fmt_secs(t.length_secs),
         "filename" => t.filename.clone(),
         "path" => t.path.clone(),
         "year" => t.year.map(|y| y.to_string()).unwrap_or_default(),

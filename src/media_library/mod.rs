@@ -280,14 +280,7 @@ pub fn read_only_track_fields(
             n => format!("{}ch", n),
         })
         .unwrap_or_default();
-    let duration = track
-        .and_then(|t| t.length_secs)
-        .or(probed_len)
-        .map(|s| {
-            let ss = s as u64;
-            format!("{}:{:02}", ss / 60, ss % 60)
-        })
-        .unwrap_or_else(|| "-:--".to_string());
+    let duration = crate::model::fmt_secs(track.and_then(|t| t.length_secs).or(probed_len));
     let play_count = track.map(|t| t.play_count.to_string()).unwrap_or_default();
     let last_played = track
         .and_then(|t| t.last_played.clone())
