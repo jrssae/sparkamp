@@ -419,10 +419,17 @@ pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
 /// here is surfaced as "no data-disc browsing" rather than retried).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_mount_output(out: &str, device_node: &str) -> Option<PathBuf> {
+    // Two shapes, both real. A disc carrying a partition scheme mounts a slice
+    // (`/dev/disk12s0`); a disc written as one plain filesystem image mounts
+    // the whole device with no suffix at all (`/dev/disk12`), which is what a
+    // DVD+RW burned from an ISO does. Matching only the slice missed the
+    // second kind entirely, so its files never reached the disc view
+    // (2026-08-12). Comparing the whole node by equality rather than by prefix
+    // keeps `/dev/disk13` from matching `/dev/disk130`, same as the "s" does.
     let slice_prefix = format!("{device_node}s");
     out.lines().find_map(|line| {
         let dev = line.split_whitespace().next()?;
-        if !dev.starts_with(&slice_prefix) {
+        if dev != device_node && !dev.starts_with(&slice_prefix) {
             return None;
         }
         let rest = line.strip_prefix(dev)?.trim_start();
@@ -1495,6 +1502,55 @@ session status:           complete
             parse_mount_output(out, "/dev/disk13"),
             Some(PathBuf::from("/Volumes/MY_DATA_CD"))
         );
+    }
+
+    /// A disc written as one plain filesystem image (no partition scheme)
+    /// mounts the whole device with no slice suffix. Verbatim from a DVD+RW
+    /// burned from an ISO, which is the case that reported no files at all.
+    #[test]
+    fn mount_output_finds_whole_disk_mount() {
+        let out = "\
+/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)\n\
+/dev/disk12 on /Volumes/ISOIMAGE (cd9660, local, nodev, nosuid, read-only, noowners)\n";
+        assert_eq!(
+            parse_mount_output(out, "/dev/disk12"),
+            Some(PathBuf::from("/Volumes/ISOIMAGE"))
+        );
+    }
+
+    /// LIVE: with a data disc loaded, the detected drive must carry a mount
+    /// path and that path must list files. Both halves of the browse chain the
+    /// disc view depends on, which unit tests can only cover as text.
+    /// `cargo test --lib live_data_disc_browse -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn live_data_disc_browse() {
+        // The per-file tag read falls back to GStreamer's Discoverer, which
+        // panics without init — same reason mount.rs's live test does this.
+        gstreamer::init().ok();
+        let drives = list_drives();
+        let Some(d) = drives.iter().find(|d| d.media.present && !d.media.is_audio_cd) else {
+            println!("no data disc loaded — skipping");
+            return;
+        };
+        println!("drive {} ({}): {}", d.id, d.label, d.media_summary());
+        let mount = d.mount_path.as_ref().expect("a mounted data disc has a mount path");
+        println!("mounted at {}", mount.display());
+        let files = crate::disc::mount::list_disc_files(mount);
+        println!("{} file(s)", files.len());
+        for f in files.iter().take(10) {
+            println!("  {}  ({} bytes)", f.display, f.bytes);
+        }
+        assert!(!files.is_empty(), "a data disc with content must list files");
+    }
+
+    /// The whole-disk match must not loosen the numeric-prefix guard: a bare
+    /// `/dev/disk130` line is a different disk from `/dev/disk13`.
+    #[test]
+    fn mount_output_whole_disk_does_not_match_a_longer_number() {
+        let out = "/dev/disk130 on /Volumes/Unrelated (cd9660, local)\n";
+        assert_eq!(parse_mount_output(out, "/dev/disk13"), None);
     }
 
     #[test]
