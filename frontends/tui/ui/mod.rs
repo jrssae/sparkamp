@@ -64,7 +64,10 @@ const C_ERR: Color = Color::Red;
 // ---------------------------------------------------------------------------
 
 mod id3;
-mod media_library;
+// `pub(super)` so the media-library key/state module can reach
+// `known_columns` — the filter has to live beside the renderers it must stay
+// in step with, but is applied where the config is read.
+pub(super) mod media_library;
 mod overlays;
 mod settings_eq;
 

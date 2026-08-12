@@ -537,3 +537,26 @@ fn leaving_the_search_input_settles_the_list_first() {
          the user is about to select from"
     );
 }
+
+/// Opening the library applies the column filter, so a GTK-only column
+/// selected over there does not become a "?" column here.
+#[test]
+fn opening_the_library_drops_columns_this_frontend_cannot_draw() {
+    let mut app = make_app();
+    app.config.media_library.visible_columns = ["title", "composer", "duration", "lyric"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    app.open_media_library();
+
+    let cols = match &app.mode {
+        Mode::MediaLibrary(s) => s.visible_columns.clone(),
+        _ => panic!("the media library should be open"),
+    };
+    assert_eq!(cols, vec!["title", "duration"]);
+    assert_eq!(
+        app.config.media_library.visible_columns.len(),
+        4,
+        "the config is left alone — those columns stay selected in GTK"
+    );
+}

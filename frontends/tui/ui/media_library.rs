@@ -606,6 +606,41 @@ pub(super) fn ml_col_width(id: &str) -> usize {
     }
 }
 
+/// The column ids this frontend can actually render.
+///
+/// Kept in step with [`ml_col_label`], [`ml_col_value`] and [`ml_col_width`]
+/// below — teaching those a new id means adding it here too, or the column
+/// will be silently dropped.
+pub(super) const KNOWN_COLUMNS: &[&str] = &[
+    "num", "title", "artist", "album", "duration", "filename", "year", "genre", "bitrate",
+];
+
+/// Narrow a configured column list to the ids this frontend implements.
+///
+/// `config.media_library.visible_columns` is shared with the GTK frontend,
+/// which offers 35 columns to this one's 9. Selecting one of the other 26 in
+/// GTK used to make the TUI draw a "?" header over an empty cell, which is
+/// worse than not drawing the column at all.
+///
+/// The user's order is preserved, and the config itself is never rewritten —
+/// this filters on the way in, so a column the TUI cannot draw stays selected
+/// in GTK. A configuration naming none of the known ids falls back to the
+/// defaults rather than leaving a table with no columns and no way back.
+pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
+    let kept: Vec<String> = configured
+        .iter()
+        .filter(|id| KNOWN_COLUMNS.contains(&id.as_str()))
+        .cloned()
+        .collect();
+    if !kept.is_empty() {
+        return kept;
+    }
+    crate::config::MediaLibraryConfig::default_visible_columns()
+        .into_iter()
+        .filter(|id| KNOWN_COLUMNS.contains(&id.as_str()))
+        .collect()
+}
+
 /// Human-readable header label for a column ID.
 pub(super) fn ml_col_label(id: &str) -> &'static str {
     match id {
@@ -1097,5 +1132,75 @@ pub(super) fn ml_truncate(s: &str, max_chars: usize) -> String {
             .take(max_chars.saturating_sub(1))
             .collect::<String>()
             + "…"
+    }
+}
+
+#[cfg(test)]
+mod known_columns_tests {
+    use super::*;
+
+    /// GTK offers 35 columns and this frontend implements 9, from one shared
+    /// config key. A column it cannot draw is left out rather than rendered as
+    /// a "?" header over an empty cell.
+    #[test]
+    fn unknown_columns_are_dropped() {
+        let configured = ["title", "composer", "artist", "lyric"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(known_columns(&configured), vec!["title", "artist"]);
+    }
+
+    /// The configured order is the user's setting and must survive the filter.
+    #[test]
+    fn the_configured_order_is_preserved() {
+        let configured = ["duration", "title", "num"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(known_columns(&configured), vec!["duration", "title", "num"]);
+    }
+
+    /// A config naming only GTK-only columns must not leave a table with no
+    /// columns at all — the view would be blank with no way back except
+    /// editing the config by hand.
+    #[test]
+    fn a_config_of_only_unknown_columns_falls_back_to_the_defaults() {
+        let configured = ["composer", "copyright", "lyric"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let got = known_columns(&configured);
+        assert!(!got.is_empty(), "never leave the table with no columns");
+        assert!(got.contains(&"title".to_string()));
+    }
+
+    /// An empty config falls back the same way, rather than rendering nothing.
+    #[test]
+    fn an_empty_config_falls_back_to_the_defaults() {
+        assert!(!known_columns(&[]).is_empty());
+    }
+
+    /// Every default column must be one this frontend can draw, or the
+    /// fallback itself would come back short.
+    #[test]
+    fn every_default_column_is_renderable_here() {
+        for id in crate::config::MediaLibraryConfig::default_visible_columns() {
+            assert!(
+                KNOWN_COLUMNS.contains(&id.as_str()),
+                "default column {id:?} is not implemented by the TUI"
+            );
+        }
+    }
+
+    /// Each known id must have a real label and width — an id in the list that
+    /// the renderers do not handle would draw as "?" again, which is the bug
+    /// this is meant to end.
+    #[test]
+    fn every_known_column_has_a_label_and_width() {
+        for id in KNOWN_COLUMNS {
+            assert_ne!(ml_col_label(id), "?", "{id} has no label");
+            assert!(ml_col_width(id) > 0, "{id} has no width");
+        }
     }
 }

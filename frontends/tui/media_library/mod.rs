@@ -20,7 +20,13 @@ impl App {
     /// If the media library DB is not open (e.g. failed to initialise at
     /// startup), a status message is shown instead and the mode is unchanged.
     pub(super) fn open_media_library(&mut self) {
-        let visible_columns = self.config.media_library.visible_columns.clone();
+        // Shared with the GTK frontend, which offers more columns than this one
+        // renders. Drop the ones it cannot draw rather than showing a "?"
+        // header over an empty cell; the config itself is left alone, so those
+        // columns stay selected over there.
+        let visible_columns = crate::tui::ui::media_library::known_columns(
+            &self.config.media_library.visible_columns,
+        );
         // Default sort: artist ascending (first column alphabetically).
         let sort_col = "artist".to_string();
         let sort_desc = false;
