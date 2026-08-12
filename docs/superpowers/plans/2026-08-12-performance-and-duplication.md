@@ -1461,6 +1461,173 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+## Task 8: Let the TUI degrade gracefully on columns it does not implement
+
+**User decision (2026-08-12): take the cheap fix, not the core-table refactor.**
+
+The audit withdrew the claimed defect — GTK and the TUI agree that `"num"` is the ID3 track
+number under a `"#"` header (`frontends/gtk/window/ml_columns.rs:380`). What remains is one
+narrow symptom: GTK offers 35 columns, the TUI implements 9, and both read the same
+`config.media_library.visible_columns`. Select a GTK-only column and the TUI renders a `"?"`
+header over an empty cell.
+
+Moving all 35 definitions to core and rewiring both frontends is a large refactor for that.
+Instead, make the TUI omit what it cannot render.
+
+**Files:**
+- Modify: `frontends/tui/ui/media_library.rs` (the header/row builders that call `ml_col_label`)
+- Modify: `frontends/tui/media_library/mod.rs:23` (where `visible_columns` is read from config)
+- Test: `frontends/tui/tests/views.rs`
+
+**Interfaces:**
+- Produces: `pub(crate) fn known_columns(configured: &[String]) -> Vec<String>` in
+  `frontends/tui/ui/media_library.rs` — filters a configured list down to the ids this
+  frontend implements, falling back to the default set when none survive.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+/// GTK offers 35 columns and the TUI implements 9, from one shared config
+/// key. A column the TUI cannot render should be left out, not drawn as a
+/// "?" header over an empty cell.
+#[test]
+fn unknown_columns_are_dropped_rather_than_drawn_empty() {
+    let configured = vec![
+        "title".to_string(),
+        "composer".to_string(),   // GTK-only
+        "artist".to_string(),
+        "lyric".to_string(),      // GTK-only
+    ];
+    let got = crate::tui::ui::media_library::known_columns(&configured);
+    assert_eq!(got, vec!["title", "artist"]);
+}
+
+/// Order must survive the filter — the user's column order is their setting.
+#[test]
+fn known_columns_keeps_the_configured_order() {
+    let configured = vec!["duration".to_string(), "title".to_string()];
+    let got = crate::tui::ui::media_library::known_columns(&configured);
+    assert_eq!(got, vec!["duration", "title"]);
+}
+
+/// A config naming only GTK-only columns must not produce a table with no
+/// columns at all — the view would be blank with no way back except editing
+/// the config by hand.
+#[test]
+fn a_config_of_only_unknown_columns_falls_back_to_the_defaults() {
+    let configured = vec!["composer".to_string(), "copyright".to_string()];
+    let got = crate::tui::ui::media_library::known_columns(&configured);
+    assert!(!got.is_empty(), "never leave the table with no columns");
+    assert!(got.contains(&"title".to_string()));
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cargo test --bin sparkamp known_columns 2>&1 | tail -20'
+```
+
+Expected: FAIL to compile — `known_columns` does not exist.
+
+- [ ] **Step 3: Implement it**
+
+In `frontends/tui/ui/media_library.rs`, next to `ml_col_label`:
+
+```rust
+/// The column ids this frontend can actually render.
+///
+/// Kept in step with `ml_col_label` / `ml_col_value` below — if you teach
+/// those a new id, add it here.
+const KNOWN_COLUMNS: &[&str] = &[
+    "num", "title", "artist", "album", "duration", "filename", "year", "genre", "bitrate",
+];
+
+/// Filter a configured column list down to what this frontend implements.
+///
+/// `config.media_library.visible_columns` is shared with the GTK frontend,
+/// which offers 35 columns to this one's 9. Rendering a "?" header over an
+/// empty cell for the other 26 is worse than leaving them out, so they are
+/// dropped. A config naming none that are known falls back to the defaults
+/// rather than drawing an empty table.
+pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
+    let kept: Vec<String> = configured
+        .iter()
+        .filter(|id| KNOWN_COLUMNS.contains(&id.as_str()))
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        crate::config::MediaLibraryConfig::default_visible_columns()
+            .into_iter()
+            .filter(|id| KNOWN_COLUMNS.contains(&id.as_str()))
+            .collect()
+    } else {
+        kept
+    }
+}
+```
+
+- [ ] **Step 4: Route the config through it**
+
+In `frontends/tui/media_library/mod.rs:23`, change:
+
+```rust
+        let visible_columns = self.config.media_library.visible_columns.clone();
+```
+
+to:
+
+```rust
+        // Shared with GTK, which offers more columns than this frontend
+        // renders; drop the ones it cannot draw rather than showing "?".
+        let visible_columns =
+            crate::tui::ui::media_library::known_columns(&self.config.media_library.visible_columns);
+```
+
+- [ ] **Step 5: Run the tests**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --bin sparkamp known_columns 2>&1 | tail -20'
+```
+
+Expected: all three PASS.
+
+- [ ] **Step 6: Run the full suite**
+
+```bash
+distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
+```
+
+- [ ] **Step 7: Manual check**
+
+In GTK, add `Composer` and `Comment` to the Media Library columns. Open the TUI and confirm
+the Files tab shows only the columns it implements, with no `"?"` headers and no empty cells,
+and that the remaining columns keep the order set in GTK.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add frontends/tui/ui/media_library.rs frontends/tui/media_library/mod.rs frontends/tui/tests/views.rs
+git commit -m "fix(tui): drop library columns this frontend cannot render
+
+config.media_library.visible_columns is shared with GTK, which offers 35
+columns to the TUI's 9. Selecting any of the other 26 in GTK made the TUI
+draw a \"?\" header over an empty cell.
+
+Filter the configured list to the ids this frontend implements, keeping
+the user's order, and fall back to the defaults when a config names none
+of them so the table is never blank.
+
+This is the cheap fix for the symptom. Consolidating both column tables
+into core was considered and rejected: the defect that would have
+justified it turned out not to exist — both frontends already agree that
+\"num\" is the ID3 track number.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
 ## Order, and why
 
 Re-derived from the second-pass measurements rather than from the original review's
@@ -1475,7 +1642,7 @@ impressions:
 | 5 | macOS FFI redundant probing | ~24 ms cold per needlessly-read file |
 | 6 | missing-file marking | correctness, not speed |
 | 7 | mechanical dedupes | no behaviour change |
-| 8 | column table | duplication cleanup; the defect it claimed was not real |
+| 8 | TUI drops columns it cannot render | cheap fix, chosen over the core-table refactor |
 
 Tasks 2 and 5 touch the same FFI function, so 2 lands first.
 
@@ -1501,176 +1668,3 @@ Recorded so they are not silently dropped:
 **Placeholder scan.** No "TBD", no "add error handling", no "similar to Task N". Every code step carries the actual code. Task 7 Steps 3, 5 and 6 describe a mechanical extraction of 35 entries rather than reproducing them — that is a transcription, and the source lines are named exactly.
 
 **Type consistency.** Re-checked after Tasks 2–3 were cancelled and the rest renumbered. `shared_probe_pool()` was to be created by the cancelled parallel-scan task; **Task 2 now creates it**, and is its only consumer. `ml_search_due: Option<Instant>` is declared in Task 4 Step 3 and read in Steps 1 and 5. `crate::ml_columns::{ColumnDef, ALL, by_id, value}` are defined in Task 5 Step 3 and consumed in Steps 5–6. No remaining task references `upsert_probed` or `ProbedTrackMetadata`, both of which belonged to the cancelled work.
-## Task 8: Move the media-library column table into core
-Move the media-library column table into core
-
-> **Worth an explicit decision before starting.** This is the one task whose justification
-> did not survive the audit, and it is also the largest refactor left: 35 column definitions
-> moved to core plus two frontends rewired, in exchange for "26 columns render `?` in the TUI
-> if you select them in GTK". A cheaper fix for the actual symptom is to have the TUI fall
-> back to the core table's header and skip unknown ids gracefully, without moving anything.
-> **Confirm with the user which they want before writing code.**
->
-> **Demoted by the second-pass audit.** The original justification — that `"num"` meant the
-> row ordinal in GTK and the ID3 track number in the TUI — **was wrong**.
-> `frontends/gtk/window/ml_columns.rs:380` reads `"num" | "track_num" => t.track_num...`, and
-> both frontends label it `"#"`. They agree. The claim came from reading the header and not
-> the value extractor. This task is now duplication cleanup with one small user-visible edge,
-> not a defect fix, so it sits last.
-
-GTK's `ALL_COLUMNS` (`frontends/gtk/window/ml_columns.rs:18`) defines **35** columns. The TUI
-reimplements label, width and value extraction for **9** (`frontends/tui/ui/media_library.rs:600-653`).
-Both read the same persisted config key, `config.media_library.visible_columns`.
-
-What actually diverges:
-
-- The TUI implements 9 of the 35 ids. A user who selects any of the other 26 in GTK and then
-  opens the TUI gets `"?"` for those columns. Reachable, minor.
-- `"Duration"` in GTK is `"Len"` in the TUI. Plausibly deliberate — the TUI is width-bound —
-  so preserve it rather than "fixing" it.
-- GTK maps both `"num"` and `"track_num"` to the same value with different headers (`"#"` and
-  `"Track #"`). Odd, pre-existing, and out of scope here.
-
-**Files:**
-- Create: `src/ml_columns.rs`
-- Modify: `src/lib.rs` (or `src/main.rs`, whichever declares the module list — check both)
-- Modify: `frontends/gtk/window/ml_columns.rs:1-230` (consume the core table)
-- Modify: `frontends/tui/ui/media_library.rs:590-655` (consume the core table)
-- Test: `src/ml_columns.rs` (its own `#[cfg(test)] mod tests`)
-
-**Interfaces:**
-- Produces, in `crate::ml_columns`:
-  - `pub struct ColumnDef { pub id: &'static str, pub header: &'static str, pub tui_width: u16, pub expand: bool, pub id3_editable: bool, pub default_ml_visible: bool, pub default_id3_visible: bool }`
-  - `pub const ALL: &[ColumnDef]` — all 35, carrying GTK's existing headers verbatim.
-  - `pub fn by_id(id: &str) -> Option<&'static ColumnDef>`
-  - `pub fn value(id: &str, t: &crate::media_library::LibTrack, row_ordinal: usize) -> std::borrow::Cow<'_, str>` — the single value extractor. `row_ordinal` is 1-based and used only by `"num"`.
-- GTK keeps `MlColumnDef` as a type alias to `crate::ml_columns::ColumnDef` so its ~20 existing references compile unchanged.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `src/ml_columns.rs` with only the test module first:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Both frontends already agree that "num" is the ID3 track number under a
-    /// "#" header; pin that so consolidating the two tables cannot quietly
-    /// change it. (An earlier reading of this plan claimed they disagreed —
-    /// they do not.)
-    #[test]
-    fn num_and_track_num_keep_their_existing_headers() {
-        assert_eq!(by_id("num").unwrap().header, "#");
-        assert_eq!(by_id("track_num").unwrap().header, "Track #");
-    }
-
-    /// Every id in the table must resolve, and no id may appear twice — a
-    /// duplicate would make `by_id` silently pick one and the other dead.
-    #[test]
-    fn every_column_id_is_unique_and_resolvable() {
-        let mut seen = std::collections::HashSet::new();
-        for c in ALL {
-            assert!(seen.insert(c.id), "duplicate column id: {}", c.id);
-            assert!(by_id(c.id).is_some(), "{} does not resolve", c.id);
-            assert!(!c.header.is_empty(), "{} has no header", c.id);
-        }
-        assert_eq!(ALL.len(), 35, "the GTK table had 35 columns; keep them all");
-    }
-
-    /// An unknown id must not panic — configs are user-editable TOML and can
-    /// name a column that no longer exists.
-    #[test]
-    fn an_unknown_column_id_is_none_not_a_panic() {
-        assert!(by_id("no_such_column").is_none());
-    }
-}
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib ml_columns 2>&1 | tail -20'
-```
-
-Expected: FAIL — the module is not declared and `ALL`/`by_id` do not exist.
-
-- [ ] **Step 3: Build the core table**
-
-Extract the 35 entries from `frontends/gtk/window/ml_columns.rs:18-230` verbatim into `src/ml_columns.rs`, adding a `tui_width` to each (take the nine known widths from `frontends/tui/ui/media_library.rs:590-607`; give the other 26 a sensible default of `12`, and `6` for the numeric ones). Declare `pub mod ml_columns;` alongside the other modules.
-
-Then add:
-
-```rust
-pub fn by_id(id: &str) -> Option<&'static ColumnDef> {
-    ALL.iter().find(|c| c.id == id)
-}
-```
-
-Move the value extraction from the TUI's `ml_col_value` and GTK's sort-key match into one `value()`, resolving `"num"` to the row ordinal (GTK's meaning — it is the one the header `"#"` describes, and the one the default visible set was written against).
-
-- [ ] **Step 4: Run the core tests**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo test --lib ml_columns 2>&1 | tail -20'
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Point GTK at it**
-
-In `frontends/gtk/window/ml_columns.rs`, delete the local `MlColumnDef` struct and the `ALL_COLUMNS` array, replacing them with:
-
-```rust
-pub(super) type MlColumnDef = crate::ml_columns::ColumnDef;
-pub(super) use crate::ml_columns::ALL as ALL_COLUMNS;
-```
-
-Every existing `ALL_COLUMNS.iter().find(...)` and `MlColumnDef` reference then compiles unchanged.
-
-- [ ] **Step 6: Point the TUI at it**
-
-In `frontends/tui/ui/media_library.rs`, delete `ml_col_label`, `ml_col_value` and the width match, replacing the call sites with `crate::ml_columns::by_id(id)` and `crate::ml_columns::value(id, t, ordinal)`. The renderer knows the row's position, so pass `offset + row + 1` as the ordinal.
-
-- [ ] **Step 7: Run the full suite**
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -20'
-```
-
-- [ ] **Step 8: Manual parity check**
-
-Set a shared column set and confirm both frontends now agree:
-
-```bash
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run -- --ui'   # set columns in Settings
-distrobox enter dev-box -- bash -lc 'cd /var/home/josef/Code/Sparkamp && cargo run'           # confirm the TUI shows the same
-```
-
-Add `track_num` and `num` both to the visible set and confirm they now show different values in both, with matching headers.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add src/ml_columns.rs src/lib.rs frontends/gtk/window/ml_columns.rs frontends/tui/ui/media_library.rs
-git commit -m "fix(library): one column table for every frontend
-
-GTK defined 35 media-library columns; the TUI independently reimplemented
-label, width and value for 9 of them. Both read the same persisted key,
-config.media_library.visible_columns, so the two tables have to agree.
-
-The reachable consequence is narrow: select any of the other 26 columns in
-GTK and the TUI renders \"?\" for them.
-
-Move the table to core as crate::ml_columns and have both frontends read
-it, preserving every existing header and value — including \"Len\", which
-the TUI uses because it is width-bound.
-
-No semantic change: an earlier draft of this claimed GTK and the TUI
-disagreed about \"num\". They do not; both render the ID3 track number.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
-
----
-

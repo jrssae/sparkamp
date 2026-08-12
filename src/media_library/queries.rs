@@ -454,6 +454,84 @@ impl MediaLibrary {
         Ok(found)
     }
 
+    /// Fetch exactly the rows named by `ids`, keyed by id.
+    ///
+    /// Callers used to read the whole table and filter in Rust, with a comment
+    /// explaining that N individual queries would be worse. That much was
+    /// right; the conclusion was not. Measured against a 36,329-track library,
+    /// `all_tracks()` costs 370–390 ms where this costs 116 us — and the FFI
+    /// add path ran it synchronously on every add.
+    ///
+    /// Chunked like [`tracks_by_exact_paths`] and for the same reason: the
+    /// SQLite variable limit is 999 on builds older than 3.32. An id with no
+    /// row is simply absent from the result rather than an error.
+    pub fn tracks_by_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, LibTrack>> {
+        let mut found = std::collections::HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("{} WHERE id IN ({placeholders})", Self::TRACK_COLUMNS);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = Self::collect_tracks(&mut stmt, rusqlite::params_from_iter(chunk.iter()))?;
+            for t in rows {
+                found.insert(t.id, t);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Every track whose path sits at or under `prefix`.
+    ///
+    /// Matches on a path boundary, so `/music/rock` does not also pull in
+    /// `/music/rockabilly` — which the `starts_with` filter this replaces did.
+    /// `LIKE` reads `%` and `_` as wildcards, so a folder called `Rock_Pop`
+    /// would otherwise match `RockXPop` too; the prefix is escaped and the
+    /// escape character declared.
+    pub fn tracks_under_path_prefix(&self, prefix: &str) -> Result<Vec<LibTrack>> {
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{}{}%", escaped, std::path::MAIN_SEPARATOR);
+        let sql = format!(
+            "{} WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+            Self::TRACK_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Self::collect_tracks(&mut stmt, params![prefix, pattern])
+    }
+
+    /// A `filename -> path` index over the whole library.
+    ///
+    /// The device sync planner genuinely wants every row, but only two of the
+    /// 37 columns; going through `all_tracks()` built 36k full `LibTrack`s to
+    /// throw all but two fields away.
+    ///
+    /// Basenames are not unique — a library of 36,329 tracks here holds 35,639
+    /// distinct filenames, because "01 - Intro.mp3" recurs across albums. The
+    /// map keeps the last row for a repeated name, so the row ORDER decides
+    /// which library file a device file pairs with. It therefore sorts exactly
+    /// as `all_tracks()` did, which is what the callers used to read.
+    pub fn filename_path_index(&self) -> Result<std::collections::HashMap<String, String>> {
+        let sql = format!(
+            "SELECT filename, path FROM tracks ORDER BY {}",
+            Self::sort_order_clause("artist", false)
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                r.get::<_, String>(1)?,
+            ))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// Columns every `LibTrack` read needs, shared by the two lookups below.
     const TRACK_COLUMNS: &'static str =
         "SELECT id, path, artist, title, album, track_num, genre, year, bpm,

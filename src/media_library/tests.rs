@@ -2655,3 +2655,156 @@ fn a_running_scan_leaves_gaps_for_other_writers() {
          never free — the scan is holding one transaction for the entire folder"
     );
 }
+
+// ── targeted lookups: don't read the whole table to pick a few rows ─────
+
+/// Picking a handful of rows must not read the whole table. The macOS FFI
+/// add path did: `all_tracks()` measures 370–390 ms against this machine's
+/// 36,329-track library, where the equivalent `WHERE id IN (...)` measures
+/// 116 us — and it ran synchronously on every add.
+#[test]
+fn tracks_by_ids_returns_only_what_was_asked_for() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 5);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    let all = lib.all_tracks().unwrap();
+    assert_eq!(all.len(), 5);
+    let want: Vec<i64> = all.iter().take(2).map(|t| t.id).collect();
+
+    let got = lib.tracks_by_ids(&want).unwrap();
+    assert_eq!(got.len(), 2, "exactly the rows asked for");
+    for id in &want {
+        assert!(got.contains_key(id), "id {id} should be present");
+        assert_eq!(got[id].id, *id, "keyed by its own id");
+    }
+}
+
+/// An empty request must be empty, not "SELECT everything" — the exact
+/// failure this replaces.
+#[test]
+fn tracks_by_ids_of_nothing_is_nothing() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    assert!(lib.tracks_by_ids(&[]).unwrap().is_empty());
+}
+
+/// More ids than SQLite's variable limit must still work — the same chunking
+/// `tracks_by_exact_paths` already does for paths. Unknown ids are simply
+/// absent rather than an error.
+#[test]
+fn tracks_by_ids_handles_more_ids_than_the_sqlite_variable_limit() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 3);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    let real: Vec<i64> = lib.all_tracks().unwrap().iter().map(|t| t.id).collect();
+
+    // 1200 ids, only 3 of which exist: well past the 999-variable limit.
+    let mut ids: Vec<i64> = (100_000..101_200).collect();
+    ids.extend(&real);
+    let got = lib.tracks_by_ids(&ids).unwrap();
+    assert_eq!(got.len(), real.len(), "only the real rows come back");
+}
+
+/// The prefix lookup must match on a path boundary. The `starts_with` it
+/// replaces did not, so adding `/music/rock` to a playlist also swept in
+/// everything under `/music/rockabilly`.
+#[test]
+fn tracks_under_path_prefix_does_not_match_a_sibling_folder() {
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+    let rock = root.path().join("rock");
+    let rockabilly = root.path().join("rockabilly");
+    fs::create_dir_all(&rock).unwrap();
+    fs::create_dir_all(&rockabilly).unwrap();
+    fs::write(rock.join("a.mp3"), b"x").unwrap();
+    fs::write(rockabilly.join("b.mp3"), b"x").unwrap();
+    let root_str = root.path().to_str().unwrap();
+    let folder_id = lib.add_folder(root_str).unwrap().id();
+    lib.rescan_folder_fast(folder_id, root_str, true).unwrap();
+    assert_eq!(lib.all_tracks().unwrap().len(), 2, "both files indexed");
+
+    let got = lib
+        .tracks_under_path_prefix(rock.to_str().unwrap())
+        .unwrap();
+    assert_eq!(got.len(), 1, "only the rock/ track, not rockabilly/");
+    assert!(got[0].path.ends_with("a.mp3"));
+}
+
+/// A folder name containing `%` or `_` must not turn into a LIKE wildcard —
+/// `_` matches any single character, so an unescaped "Rock_Pop" would also
+/// match "RockXPop".
+#[test]
+fn tracks_under_path_prefix_escapes_like_wildcards() {
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+    let literal = root.path().join("Rock_Pop");
+    let decoy = root.path().join("RockXPop");
+    fs::create_dir_all(&literal).unwrap();
+    fs::create_dir_all(&decoy).unwrap();
+    fs::write(literal.join("a.mp3"), b"x").unwrap();
+    fs::write(decoy.join("b.mp3"), b"x").unwrap();
+    let root_str = root.path().to_str().unwrap();
+    let folder_id = lib.add_folder(root_str).unwrap().id();
+    lib.rescan_folder_fast(folder_id, root_str, true).unwrap();
+
+    let got = lib
+        .tracks_under_path_prefix(literal.to_str().unwrap())
+        .unwrap();
+    assert_eq!(got.len(), 1, "'_' must be a literal underscore, not a wildcard");
+    assert!(got[0].path.ends_with("a.mp3"));
+}
+
+/// The device sync planner wants every row but only two of the 37 columns.
+#[test]
+fn filename_path_index_maps_every_track() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 4);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    let idx = lib.filename_path_index().unwrap();
+    assert_eq!(idx.len(), 4);
+    for t in lib.all_tracks().unwrap() {
+        assert_eq!(idx.get(&t.filename).map(String::as_str), Some(t.path.as_str()));
+    }
+}
+
+/// Basenames repeat across albums, so the index's row order decides which
+/// library file a device file gets paired with. It must resolve a repeated
+/// name to the same path `all_tracks()` did, or a device sync would silently
+/// re-pair files after this change.
+#[test]
+fn filename_path_index_resolves_duplicates_the_same_way_all_tracks_did() {
+    let (lib, _db) = temp_lib();
+    let root = tempfile::tempdir().unwrap();
+    // Two albums, same track filename in each.
+    for album in ["Album A", "Album B"] {
+        let d = root.path().join(album);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("01 - Intro.mp3"), b"x").unwrap();
+    }
+    let root_str = root.path().to_str().unwrap();
+    let folder_id = lib.add_folder(root_str).unwrap().id();
+    lib.rescan_folder_fast(folder_id, root_str, true).unwrap();
+    assert_eq!(lib.all_tracks().unwrap().len(), 2);
+
+    let expected: std::collections::HashMap<String, String> = lib
+        .all_tracks()
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.filename, t.path))
+        .collect();
+    let got = lib.filename_path_index().unwrap();
+
+    assert_eq!(got, expected, "the index must agree with what all_tracks produced");
+    assert_eq!(got.len(), 1, "one entry survives for the repeated basename");
+}

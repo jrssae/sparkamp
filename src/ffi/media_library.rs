@@ -891,12 +891,10 @@ pub unsafe extern "C" fn sparkamp_rg_analyze_selection(
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
     let id_slice = std::slice::from_raw_parts(ids, count as usize);
-    let want: std::collections::HashSet<i64> = id_slice.iter().copied().collect();
     let tracks: Vec<crate::media_library::LibTrack> = ml
-        .all_tracks()
+        .tracks_by_ids(id_slice)
         .unwrap_or_default()
-        .into_iter()
-        .filter(|t| want.contains(&t.id))
+        .into_values()
         .collect();
     rg_spawn_analysis(ctx, tracks, progress_cb, done_cb, userdata);
 }
@@ -1117,10 +1115,11 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
     let Some(ml) = &ctx.media_library else { return };
     let id_slice = std::slice::from_raw_parts(ids, count as usize);
 
-    // Fetch all tracks then filter by id — avoids N individual queries.
-    let all = ml.all_tracks().unwrap_or_default();
-    let by_id: std::collections::HashMap<i64, &crate::media_library::LibTrack> =
-        all.iter().map(|t| (t.id, t)).collect();
+    // One query for exactly the rows asked for. This used to read the whole
+    // table and filter here, on the reasoning that N individual queries would
+    // be worse — true, but the alternative was never "fetch everything".
+    // Measured on a 36,329-track library: all_tracks() 370-390 ms, this 116 us.
+    let by_id = ml.tracks_by_ids(id_slice).unwrap_or_default();
 
     let start_idx = ctx.playlist.tracks.len();
     for &id in id_slice {
@@ -1130,7 +1129,7 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
             // probe below still runs to refine values for tracks the ML
             // hasn't scanned yet (length_secs == None) and to catch any
             // file-vs-DB drift.
-            ctx.playlist.tracks.push(Track::from(*t));
+            ctx.playlist.tracks.push(Track::from(t));
         }
     }
     // These pushed straight into `tracks`, so the new entries still hold the

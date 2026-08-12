@@ -225,12 +225,9 @@ pub(crate) fn device_sync_plan(
     // computer" case); identical files resolve to no-op.
     let paired: HashSet<String> =
         pairs.iter().map(|p| p.device_relpath.replace('\\', "/")).collect();
-    let by_filename: HashMap<String, String> = lib
-        .all_tracks()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| (t.filename, t.path))
-        .collect();
+    // Every row, but only the two columns this needs — `all_tracks()` built a
+    // full 37-column LibTrack per row to throw all but two fields away.
+    let by_filename: HashMap<String, String> = lib.filename_path_index().unwrap_or_default();
     for dev_file in crate::devices::io::for_device(dev).list_audio_files() {
         let Ok(rel) = dev_file.strip_prefix(&dev.mount_path) else {
             continue;
@@ -863,13 +860,9 @@ pub(crate) fn apply_playlist_push(
 /// mirror the device's order/membership (mapping device filenames back to
 /// library tracks by filename), then refresh the baseline. Returns ok.
 pub(crate) fn apply_playlist_pull(lib: &MediaLibrary, item: &PlaylistSyncItem) -> bool {
-    // Map device basenames → library track paths.
-    let by_name: HashMap<String, String> = lib
-        .all_tracks()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| (t.filename, t.path))
-        .collect();
+    // Map device basenames → library track paths. Only two of the 37 columns
+    // are wanted, so this does not go through `all_tracks()`.
+    let by_name: HashMap<String, String> = lib.filename_path_index().unwrap_or_default();
     let paths: Vec<String> = item
         .dev_basenames
         .iter()
