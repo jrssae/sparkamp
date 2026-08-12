@@ -462,6 +462,24 @@ pub(super) fn draw_transport_hints(frame: &mut Frame, app: &App, area: Rect) {
 /// The cursor (keyboard-navigated selection) is highlighted with a dark blue
 /// background so both current-playing and keyboard-position are visible
 /// simultaneously.
+/// The first playlist row to draw, given the cursor, the playlist length and
+/// how many rows fit in the pane.
+///
+/// This is the scroll position. It is computed rather than remembered because
+/// `draw_playlist` only has `&App`, and it must agree exactly with what Ratatui
+/// would derive from a fresh `ListState` — otherwise slicing the list would
+/// change where the cursor appears. Rows are one line each, so the rule is:
+/// stay at the top until the cursor passes the last visible row, then keep the
+/// cursor pinned to the bottom.
+fn visible_offset(cursor: usize, total: usize, rows_visible: usize) -> usize {
+    if total <= rows_visible || cursor < rows_visible {
+        return 0;
+    }
+    (cursor + 1)
+        .saturating_sub(rows_visible)
+        .min(total.saturating_sub(rows_visible))
+}
+
 pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
     // Reserve space for the duration column: " M:SS" or " -:--" (5 chars + 1 gap).
     const DUR_COL: usize = 5;
@@ -469,12 +487,31 @@ pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
     let inner_w = area.width.saturating_sub(2) as usize;
     let name_w = inner_w.saturating_sub(DUR_COL + 1);
 
-    let items: Vec<ListItem> = app
-        .playlist
-        .tracks
+    // Only the rows on screen are formatted.
+    //
+    // This used to build a ListItem for every track in the playlist. Ratatui
+    // draws just the visible slice, but the whole Vec is allocated before the
+    // widget ever sees it — and `draw` runs on every tick and every keypress,
+    // so a 36k playlist meant 36,000 string formats ten times a second,
+    // forever, whether or not anything had changed.
+    //
+    // The offset is computed rather than remembered because `draw` only has
+    // `&App`. It reproduces exactly what Ratatui derives from a fresh
+    // ListState: rows are one line each, so bringing the cursor into view from
+    // an offset of zero pins it to the bottom of the pane once it passes the
+    // last visible row, and leaves the list at the top before that.
+    let n = app.playlist.tracks.len();
+    let rows_visible = (area.height.saturating_sub(2) as usize).max(1);
+    let offset = visible_offset(app.playlist_cursor, n, rows_visible);
+    let end = (offset + rows_visible).min(n);
+
+    let items: Vec<ListItem> = app.playlist.tracks[offset..end]
         .iter()
         .enumerate()
-        .map(|(i, track)| {
+        .map(|(row, track)| {
+            // Index within the whole playlist — the visible slice is a window
+            // onto it, and the row number the user reads is the real position.
+            let i = offset + row;
             let is_current = i == app.playlist.current_index;
             let is_broken = track.broken;
             let dur_str = fmt_duration(track.duration);
@@ -530,7 +567,8 @@ pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut state = ListState::default();
     if !app.playlist.is_empty() {
-        state.select(Some(app.playlist_cursor));
+        // Re-based: the widget is only holding the visible window now.
+        state.select(Some(app.playlist_cursor.saturating_sub(offset)));
     }
 
     // Title shows track count + total duration; [p] is in the Sparkamp player
@@ -888,5 +926,62 @@ mod state_glyph_tests {
         // Armed only matters while playing.
         assert_eq!(state_glyph(PlayerState::Paused, true), "⏸");
         assert_eq!(state_glyph(PlayerState::Stopped, true), "⏹");
+    }
+}
+
+#[cfg(test)]
+mod visible_offset_tests {
+    use super::visible_offset;
+
+    /// A playlist that fits never scrolls, wherever the cursor is.
+    #[test]
+    fn a_playlist_that_fits_stays_at_the_top() {
+        assert_eq!(visible_offset(0, 5, 10), 0);
+        assert_eq!(visible_offset(4, 5, 10), 0);
+        assert_eq!(visible_offset(9, 10, 10), 0, "exactly full still fits");
+    }
+
+    /// Moving down through the first screenful must not move the list — this
+    /// is the off-by-one that would make the pane jump on the first keypress.
+    #[test]
+    fn the_list_holds_still_until_the_cursor_passes_the_last_visible_row() {
+        assert_eq!(visible_offset(0, 100, 10), 0);
+        assert_eq!(visible_offset(9, 100, 10), 0, "last visible row, no scroll yet");
+        assert_eq!(visible_offset(10, 100, 10), 1, "one past it scrolls by one");
+    }
+
+    /// Past that point the cursor is pinned to the bottom row.
+    #[test]
+    fn the_cursor_stays_on_the_bottom_row_while_scrolling_down() {
+        for cursor in 10..90 {
+            let offset = visible_offset(cursor, 100, 10);
+            assert_eq!(
+                cursor - offset,
+                9,
+                "cursor {cursor} should sit on the last visible row"
+            );
+        }
+    }
+
+    /// The window never runs off the end of the playlist.
+    #[test]
+    fn the_window_stops_at_the_end_of_the_playlist() {
+        let offset = visible_offset(99, 100, 10);
+        assert_eq!(offset, 90);
+        assert_eq!(offset + 10, 100, "last window ends exactly at the last row");
+    }
+
+    /// A one-row pane is the degenerate case the caller clamps to; it must
+    /// still put the cursor on the only row there is.
+    #[test]
+    fn a_single_row_pane_follows_the_cursor_exactly() {
+        assert_eq!(visible_offset(0, 100, 1), 0);
+        assert_eq!(visible_offset(37, 100, 1), 37);
+        assert_eq!(visible_offset(99, 100, 1), 99);
+    }
+
+    #[test]
+    fn an_empty_playlist_offsets_to_zero() {
+        assert_eq!(visible_offset(0, 0, 10), 0);
     }
 }
