@@ -17,6 +17,11 @@
 		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
 		AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
 		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
+		AA500000000000000000010E /* SettingsMediaLibraryPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010E /* SettingsMediaLibraryPane.swift */; };
+		AA500000000000000000010D /* SettingsVisualizerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010D /* SettingsVisualizerPane.swift */; };
+		AA500000000000000000010C /* SettingsBehaviorPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010C /* SettingsBehaviorPane.swift */; };
+		AA500000000000000000010B /* SettingsAppearancePane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010B /* SettingsAppearancePane.swift */; };
+		AA500000000000000000010A /* SettingsAboutPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010A /* SettingsAboutPane.swift */; };
 		AA5000000000000000000102 /* SparkampFFI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000102 /* SparkampFFI.swift */; };
 		AA5000000000000000000101 /* VisualizerRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000101 /* VisualizerRenderer.swift */; };
 		AA5000000000000000000020 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
@@ -71,6 +76,11 @@
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
+		AA400000000000000000010E /* SettingsMediaLibraryPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMediaLibraryPane.swift; sourceTree = "<group>"; };
+		AA400000000000000000010D /* SettingsVisualizerPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsVisualizerPane.swift; sourceTree = "<group>"; };
+		AA400000000000000000010C /* SettingsBehaviorPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsBehaviorPane.swift; sourceTree = "<group>"; };
+		AA400000000000000000010B /* SettingsAppearancePane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsAppearancePane.swift; sourceTree = "<group>"; };
+		AA400000000000000000010A /* SettingsAboutPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsAboutPane.swift; sourceTree = "<group>"; };
 		AA4000000000000000000102 /* SparkampFFI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampFFI.swift; sourceTree = "<group>"; };
 		AA4000000000000000000101 /* VisualizerRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerRenderer.swift; sourceTree = "<group>"; };
 		AA4000000000000000000023 /* GraniteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraniteView.swift; sourceTree = "<group>"; };
@@ -154,6 +164,11 @@
 				AA4000000000000000000022 /* Theme+Guide.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
 				AA4000000000000000000013 /* VisualizerView.swift */,
+				AA400000000000000000010E /* SettingsMediaLibraryPane.swift */,
+				AA400000000000000000010D /* SettingsVisualizerPane.swift */,
+				AA400000000000000000010C /* SettingsBehaviorPane.swift */,
+				AA400000000000000000010B /* SettingsAppearancePane.swift */,
+				AA400000000000000000010A /* SettingsAboutPane.swift */,
 				AA4000000000000000000102 /* SparkampFFI.swift */,
 				AA4000000000000000000101 /* VisualizerRenderer.swift */,
 				AA4000000000000000000023 /* GraniteView.swift */,
@@ -324,6 +339,11 @@
 				AA5000000000000000000019 /* Theme+Guide.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,
 				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
+				AA500000000000000000010E /* SettingsMediaLibraryPane.swift in Sources */,
+				AA500000000000000000010D /* SettingsVisualizerPane.swift in Sources */,
+				AA500000000000000000010C /* SettingsBehaviorPane.swift in Sources */,
+				AA500000000000000000010B /* SettingsAppearancePane.swift in Sources */,
+				AA500000000000000000010A /* SettingsAboutPane.swift in Sources */,
 				AA5000000000000000000102 /* SparkampFFI.swift in Sources */,
 				AA5000000000000000000101 /* VisualizerRenderer.swift in Sources */,
 				AA5000000000000000000020 /* GraniteView.swift in Sources */,
