@@ -219,40 +219,106 @@ impl CdTextMiss {
 /// READS THE DISC — the caller MUST hold the exclusive-read guard
 /// (drive-contention rule). See [`CdTextMiss`] for the error cases.
 ///
-/// # An empty read is not proof
+/// # An empty read is not proof — the answer is on stderr
 ///
-/// A drive sometimes returns no CD-TEXT packs for a disc that has them, and
-/// `cdrskin` reports that as success: exit status 0 and a v07t sheet with a
-/// header and nothing in it. Measured on a disc with confirmed CD-TEXT
-/// ("Bespoke Bounce", 15 tracks): 207 bytes instead of 1714, on roughly one
-/// read in ten to one in thirty, with no error anywhere. Checking the exit
-/// status does not help — it is 0 either way — and 207 bytes is also exactly
-/// what a disc with genuinely no CD-TEXT returns, so the two cases are
-/// indistinguishable from the output alone.
+/// A drive sometimes returns no CD-TEXT packs for a disc that *has* them, and
+/// `cdrskin` reports that as success: exit status 0, and stdout carrying only
+/// its own banner with no v07t sheet after it. Measured on a disc with
+/// confirmed CD-TEXT ("Bespoke Bounce", 15 tracks): 207 bytes instead of 1714,
+/// on roughly one read in ten to one in thirty. Exit status does not
+/// distinguish it — 0 either way — and neither does stdout, because 207 bytes
+/// of banner is also exactly what a disc with genuinely no CD-TEXT produces.
 ///
-/// Retrying was tried and reverted. One call takes 2.9–4.8 s on a disc without
-/// CD-TEXT, so three attempts cost ~14 s before concluding `Absent` — paid by
-/// the *majority* of discs, on a path that holds the exclusive-read guard and
-/// therefore freezes disc detection for the whole time. Trading a rare wrong
-/// answer for a guaranteed stall on the common case is the worse deal.
+/// What does distinguish them is stderr, which this used to discard:
 ///
-/// Fixing this properly needs a way to tell the two apart — the drive's own
-/// "has CD-TEXT" bit, or a re-read only when a previous read of the same
-/// discid succeeded — rather than another attempt at the same ambiguous
-/// question.
+/// ```text
+/// cdrskin: No CD-Text or CD-Text unaware drive.
+/// ```
+///
+/// cdrskin prints that when it read the disc and found nothing there. A
+/// transient miss is an empty sheet *without* it. So a genuine absence is
+/// identified positively, on the first call, and only the unexplained empty
+/// read is worth asking about again.
+///
+/// That ordering is what makes retrying affordable. One call costs 2.9–4.8 s
+/// on a disc without CD-TEXT, so retrying every empty read cost ~14 s before
+/// concluding `Absent` — paid by the majority of discs, on a path that holds
+/// the exclusive-read guard and therefore freezes disc detection throughout.
+/// Retrying only the *unexplained* empties leaves the common case at one call.
+///
+/// The message conflates "no CD-TEXT on this disc" with "drive cannot read
+/// CD-TEXT", and nothing in the output separates those two. Both mean the same
+/// thing to a caller — there is no CD-TEXT to be had here — so both map to
+/// [`CdTextMiss::Absent`].
 #[cfg(target_os = "linux")]
 pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
-    let out = std::process::Command::new(CDTEXT_TOOL)
-        .args([&format!("dev={drive_id}"), "cdtext_to_v07t=-"])
-        .output()
-        .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
-    let cd = parse_v07t_readback(&String::from_utf8_lossy(&out.stdout));
-    if cd.is_empty() {
-        Err(CdTextMiss::Absent)
-    } else {
-        Ok(cd)
+    for attempt in 0..CDTEXT_ATTEMPTS {
+        let out = std::process::Command::new(CDTEXT_TOOL)
+            .args([&format!("dev={drive_id}"), "cdtext_to_v07t=-"])
+            .output()
+            .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
+        let cd = parse_v07t_readback(&String::from_utf8_lossy(&out.stdout));
+        if !cd.is_empty() {
+            return Ok(cd);
+        }
+        if says_no_cdtext(&String::from_utf8_lossy(&out.stderr)) {
+            return Err(CdTextMiss::Absent);
+        }
+        // An empty sheet with no explanation: the drive may simply have not
+        // handed the packs over this time. Let it settle and ask again.
+        if attempt + 1 < CDTEXT_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    }
+    Err(CdTextMiss::Absent)
+}
+
+/// How many times an *unexplained* empty CD-TEXT read is retried.
+///
+/// Only reached when cdrskin did not say the disc has none — see
+/// [`read_cdtext`]. A disc with genuinely no CD-TEXT never gets here.
+#[cfg(target_os = "linux")]
+const CDTEXT_ATTEMPTS: usize = 3;
+
+/// Whether cdrskin said, on stderr, that there is no CD-TEXT to read.
+///
+/// Matched loosely on the distinctive part of
+/// `"cdrskin: No CD-Text or CD-Text unaware drive."` — the surrounding wording
+/// is more likely to change between versions than the phrase itself, and
+/// getting this wrong only costs two extra reads on a disc that has none.
+#[cfg(target_os = "linux")]
+fn says_no_cdtext(stderr: &str) -> bool {
+    stderr.to_ascii_lowercase().contains("no cd-text")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod no_cdtext_stderr_tests {
+    use super::says_no_cdtext;
+
+    /// The exact line cdrskin 1.5.8 prints for a disc with no CD-TEXT.
+    #[test]
+    fn recognises_what_cdrskin_actually_prints() {
+        assert!(says_no_cdtext(
+            "cdrskin: No CD-Text or CD-Text unaware drive.\n"
+        ));
+    }
+
+    /// A successful read says nothing, and neither does a transient miss —
+    /// which is the whole point: silence means "ask again", not "absent".
+    #[test]
+    fn silence_is_not_an_answer() {
+        assert!(!says_no_cdtext(""));
+        assert!(!says_no_cdtext("cdrskin: scanning for devices ...\n"));
+    }
+
+    #[test]
+    fn is_not_upset_by_case_or_surrounding_noise() {
+        assert!(says_no_cdtext(
+            "cdrskin: scanning ...\ncdrskin: NO CD-TEXT or whatever\n"
+        ));
     }
 }
+
 
 /// Read CD-TEXT off the loaded disc on macOS via `drutil -drive <id> cdtext`.
 /// `drive_id` is the drutil enumeration index (`OpticalDrive::id`), the same
