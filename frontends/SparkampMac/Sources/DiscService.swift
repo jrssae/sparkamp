@@ -196,29 +196,22 @@ struct DiscTagSet: Codable, Equatable {
 /// background queue and publish on the main actor, like DeviceService.
 enum DiscService {
 
-    private static func decoder() -> JSONDecoder {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return d
-    }
+    // Thin names over `SparkampFFI`, which owns the one copy of the C-string
+    // ownership contract and the snake_case coders. Kept as local aliases so
+    // the ~20 call sites below read the way they always did. `decoder()` used
+    // to build a fresh `JSONDecoder` on every call; the shared one is built
+    // once.
 
-    private static func encoder() -> JSONEncoder {
-        let e = JSONEncoder()
-        e.keyEncodingStrategy = .convertToSnakeCase
-        return e
-    }
+    private static func decoder() -> JSONDecoder { SparkampFFI.decoder }
 
-    /// Take ownership of a C string returned by the FFI and free it.
+    private static func encoder() -> JSONEncoder { SparkampFFI.encoder }
+
     private static func takeString(_ p: UnsafeMutablePointer<CChar>?) -> String? {
-        guard let p = p else { return nil }
-        defer { sparkamp_free_string(p) }
-        return String(cString: p)
+        SparkampFFI.takeString(p)
     }
 
-    /// Encode any payload to the snake_case JSON the Rust side expects —
-    /// the one place the encoder round-trip lives.
     private static func jsonString<T: Encodable>(_ value: T) -> String? {
-        (try? encoder().encode(value)).flatMap { String(data: $0, encoding: .utf8) }
+        SparkampFFI.encodeJSON(value)
     }
 
     /// Every optical drive with its loaded-media state. Subprocess-backed —

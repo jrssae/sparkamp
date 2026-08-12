@@ -17,6 +17,8 @@
 		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
 		AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
 		AA5000000000000000000010 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
+		AA5000000000000000000102 /* SparkampFFI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000102 /* SparkampFFI.swift */; };
+		AA5000000000000000000101 /* VisualizerRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000101 /* VisualizerRenderer.swift */; };
 		AA5000000000000000000020 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
 		AA5000000000000000000021 /* TableSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000024 /* TableSupport.swift */; };
 		AA5000000000000000000031 /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000034 /* DeviceService.swift */; };
@@ -69,6 +71,8 @@
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000013 /* VisualizerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerView.swift; sourceTree = "<group>"; };
+		AA4000000000000000000102 /* SparkampFFI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampFFI.swift; sourceTree = "<group>"; };
+		AA4000000000000000000101 /* VisualizerRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerRenderer.swift; sourceTree = "<group>"; };
 		AA4000000000000000000023 /* GraniteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraniteView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000024 /* TableSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableSupport.swift; sourceTree = "<group>"; };
 		AA4000000000000000000034 /* DeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceService.swift; sourceTree = "<group>"; };
@@ -150,6 +154,8 @@
 				AA4000000000000000000022 /* Theme+Guide.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
 				AA4000000000000000000013 /* VisualizerView.swift */,
+				AA4000000000000000000102 /* SparkampFFI.swift */,
+				AA4000000000000000000101 /* VisualizerRenderer.swift */,
 				AA4000000000000000000023 /* GraniteView.swift */,
 				AA4000000000000000000024 /* TableSupport.swift */,
 				AA4000000000000000000034 /* DeviceService.swift */,
@@ -318,6 +324,8 @@
 				AA5000000000000000000019 /* Theme+Guide.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,
 				AA5000000000000000000010 /* VisualizerView.swift in Sources */,
+				AA5000000000000000000102 /* SparkampFFI.swift in Sources */,
+				AA5000000000000000000101 /* VisualizerRenderer.swift in Sources */,
 				AA5000000000000000000020 /* GraniteView.swift in Sources */,
 				AA5000000000000000000021 /* TableSupport.swift in Sources */,
 				AA5000000000000000000031 /* DeviceService.swift in Sources */,

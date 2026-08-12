@@ -170,34 +170,22 @@ struct VolumeInfo: Encodable {
 /// nothing here captures the non-Sendable `ctx`.
 enum DeviceService {
 
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return d
-    }()
-    private static let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.keyEncodingStrategy = .convertToSnakeCase
-        return e
-    }()
-
     // MARK: FFI string helpers
+    //
+    // Thin names over `SparkampFFI`, which owns the one copy of the C-string
+    // ownership contract and the snake_case coders. Kept as local aliases so
+    // the ~20 call sites below read the way they always did.
 
-    /// Take ownership of a core-returned C string, freeing it after copying.
     private static func takeString(_ ptr: UnsafeMutablePointer<CChar>?) -> String? {
-        guard let ptr = ptr else { return nil }
-        defer { sparkamp_free_string(ptr) }
-        return String(cString: ptr)
+        SparkampFFI.takeString(ptr)
     }
 
     private static func encodeJSON<T: Encodable>(_ value: T) -> String? {
-        guard let data = try? encoder.encode(value) else { return nil }
-        return String(data: data, encoding: .utf8)
+        SparkampFFI.encodeJSON(value)
     }
 
     private static func decodeJSON<T: Decodable>(_ s: String?) -> T? {
-        guard let s = s, let data = s.data(using: .utf8) else { return nil }
-        return try? decoder.decode(T.self, from: data)
+        SparkampFFI.decodeJSON(s)
     }
 
     private static func deviceJSON(_ device: Device) -> String? { encodeJSON(device) }
