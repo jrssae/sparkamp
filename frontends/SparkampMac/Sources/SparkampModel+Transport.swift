@@ -201,20 +201,53 @@ extension SparkampModel {
         }
     }
 
-    func jumpTo(index: Int) {
+    /// How much state a track start refreshes. `.everything` is for the paths
+    /// that may also have changed the list itself.
+    enum TrackStartRefresh { case currentTrack, everything }
+
+    /// Start the track at `index`, doing everything a track change owes the
+    /// rest of the app — not just the jump.
+    ///
+    /// There are seven routes that start a track: `jumpTo`, the two explicit
+    /// `replace*` actions, and the four add-then-autoplay paths. Each was
+    /// written separately and each learned this list the hard way; an audit on
+    /// 2026-08-11 found four of the seven still doing only part of it, with two
+    /// reproducible bugs to show for it (see below). The obligations live here
+    /// now so a new add path cannot pick up three of the five and look right.
+    ///
+    /// - `setStopAfterCurrent(false)` — a pending stop-after-current survives a
+    ///   playlist change and halts playback after this first track. This is
+    ///   what made `addFiles` stop dead in replace+autoplay mode.
+    /// - `saveState()` — several callers `clearPlaylist()` first, and *that*
+    ///   persists the EMPTY list. Without a save afterwards the new tracks live
+    ///   only on screen and are gone on relaunch. This is what lost the disc
+    ///   tracks added by `addDiscTracks` in replace mode.
+    /// - `announceNowPlaying()` — the nonce-driven observers (the lyrics window
+    ///   in Now-playing mode, the fullscreen track toast) otherwise sit on the
+    ///   song that was playing before.
+    ///
+    /// `play` is false only for `jumpTo`, which re-jumps inside a list that is
+    /// already playing and lets the engine carry on.
+    func startTrack(at index: Int,
+                    play: Bool = true,
+                    refresh: TrackStartRefresh = .currentTrack) {
         guard let ctx = ctx else { return }
-        // Jumping to / replaying a track clears a pending stop-after-current
-        // (pause/resume via togglePlay does not).
         setStopAfterCurrent(false)
         sparkamp_playlist_jump(ctx, Int32(index))
-        refreshAll()
+        if play { sparkamp_play(ctx) }
+        switch refresh {
+        case .currentTrack: refreshCurrentTrackInfo()
+        case .everything:   refreshAll()
+        }
         saveState()
-        // A jump starts a different track, so it is a now-playing change like
-        // any other. Without this the nonce-driven observers (the lyrics
-        // window in Now-playing mode, the fullscreen track toast) sat on the
-        // previous song — `next`/`prev`/EOS all announce, and double-clicking
-        // a row is the most common way of all to change track.
         announceNowPlaying()
+    }
+
+    func jumpTo(index: Int) {
+        // Jumping to / replaying a track clears a pending stop-after-current
+        // (pause/resume via togglePlay does not). No `play` — the engine is
+        // already running and a jump inside a live list continues it.
+        startTrack(at: index, play: false, refresh: .everything)
     }
 
     // MARK: Playlist actions
@@ -273,15 +306,10 @@ extension SparkampModel {
 
             // Auto-play the first newly added track if configured to do so.
             if sparkamp_get_autoplay_on_add(ctx) {
-                sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
-                sparkamp_play(ctx)
-                refreshCurrentTrackInfo()
-                // Pre-dates the replace helpers but is the same omission: this
-                // starts a track, so the nonce observers have to hear about it.
-                announceNowPlaying()
+                startTrack(at: newIndices[0])
+            } else {
+                saveState()
             }
-
-            saveState()
         }
     }
 
@@ -304,18 +332,7 @@ extension SparkampModel {
         }
         if !newIndices.isEmpty {
             lastAddTime = Date()
-            // Same three obligations `jumpTo` has, because this starts a track
-            // the same way: clear a pending stop-after-current (otherwise it
-            // survives the replace and halts playback after the first new
-            // track), and announce, or the nonce-driven observers — the lyrics
-            // window in Now-playing mode, the fullscreen track toast — stay on
-            // the song that was playing before the playlist was replaced.
-            setStopAfterCurrent(false)
-            sparkamp_playlist_jump(ctx, Int32(newIndices[0]))
-            sparkamp_play(ctx)
-            refreshCurrentTrackInfo()
-            saveState()
-            announceNowPlaying()
+            startTrack(at: newIndices[0])
         }
     }
 

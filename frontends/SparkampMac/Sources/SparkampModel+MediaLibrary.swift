@@ -271,9 +271,7 @@ extension SparkampModel {
         clearPlaylist()
         mlAddToPlaylist(ids: ids)
         if sparkamp_get_autoplay_on_add(ctx) {
-            sparkamp_playlist_jump(ctx, 0)
-            sparkamp_play(ctx)
-            refreshCurrentTrackInfo()
+            startTrack(at: 0)
         }
     }
 
@@ -298,19 +296,16 @@ extension SparkampModel {
         if shouldReplace {
             clearPlaylist()
             mlAddToPlaylist(ids: ids)
-            if autoplay {
-                sparkamp_playlist_jump(ctx, 0)
-                sparkamp_play(ctx)
-            }
+            if autoplay { startTrack(at: 0) } else { refreshCurrentTrackInfo() }
         } else {
             mlAddToPlaylist(ids: ids)
             // Don't interrupt a track the user is already listening to.
             if autoplay && wasEmpty {
-                sparkamp_playlist_jump(ctx, Int32(indexBefore))
-                sparkamp_play(ctx)
+                startTrack(at: indexBefore)
+            } else {
+                refreshCurrentTrackInfo()
             }
         }
-        refreshCurrentTrackInfo()
     }
 
     /// Load album artwork from a file path and open the artwork zoom window.
