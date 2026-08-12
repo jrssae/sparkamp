@@ -240,18 +240,25 @@ impl App {
                     if let Mode::MediaLibrary(s) = &mut self.mode {
                         s.search_active = false;
                     }
+                    // Leaving the input is the only way to reach the list, and
+                    // Enter there acts on `s.tracks` by index. Run any pending
+                    // search now rather than letting the user select a row from
+                    // the previous query's results.
+                    if self.ml_search_due.take().is_some() {
+                        self.refresh_ml_search();
+                    }
                 }
                 KeyCode::Backspace => {
                     if let Mode::MediaLibrary(s) = &mut self.mode {
                         s.search_query.pop();
                     }
-                    self.refresh_ml_search();
+                    self.note_ml_search_changed();
                 }
                 KeyCode::Char(ch) => {
                     if let Mode::MediaLibrary(s) = &mut self.mode {
                         s.search_query.push(ch);
                     }
-                    self.refresh_ml_search();
+                    self.note_ml_search_changed();
                 }
                 _ => {}
             }
@@ -739,9 +746,24 @@ impl App {
         }
     }
 
+    /// Record that the search query changed; `tick` runs the query once the
+    /// deadline passes. Further typing pushes the deadline out rather than
+    /// queueing a second search.
+    ///
+    /// 250 ms: long enough that a fast typist pays for one query rather than
+    /// one per character, short enough that the list still feels attached to
+    /// the input. See [`Self::refresh_ml_search`] for what is being deferred.
+    pub(super) fn note_ml_search_changed(&mut self) {
+        self.ml_search_due =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+    }
+
     /// Refresh the media library track list after the search query changes.
     ///
     /// Respects the current sort column and direction.
+    ///
+    /// Called from `tick` once typing settles, not straight from the key
+    /// handler — see [`Self::note_ml_search_changed`].
     pub(super) fn refresh_ml_search(&mut self) {
         let (query, sort_col, sort_desc) = if let Mode::MediaLibrary(s) = &self.mode {
             (s.search_query.clone(), s.sort_col.clone(), s.sort_desc)

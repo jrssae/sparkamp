@@ -510,6 +510,16 @@ pub struct App {
     row_facts_rx: mpsc::Receiver<crate::file_status::RowFacts>,
     /// Sending end of the row batches the single background worker consumes.
     row_check_tx: mpsc::Sender<Vec<crate::file_status::RowCheck>>,
+    /// When the deferred media-library search should run, or `None` when
+    /// nothing is pending.
+    ///
+    /// The search is a full-table LIKE scan across eight columns plus
+    /// materializing every match — 13 ms unfiltered on a 36k library, 40 ms
+    /// for a one-character query matching 34,732 rows. Running that per
+    /// keystroke on the thread that reads input is felt as typing lag, so a
+    /// keystroke only records a deadline and `tick` runs the query once
+    /// typing stops. The TUI has no timer source; the tick is the only clock.
+    pub ml_search_due: Option<std::time::Instant>,
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<crate::media_library::MediaLibrary>,
@@ -705,6 +715,7 @@ impl App {
             broken_tx,
             row_facts_rx,
             row_check_tx,
+            ml_search_due: None,
             media_lib,
             watch: None,
             watch_rx: None,
@@ -1266,7 +1277,22 @@ impl App {
             }
         }
         if watch_applied && matches!(self.mode, Mode::MediaLibrary(_)) {
+            // A watch-folder change is not typing: refresh at once so the list
+            // reflects what just landed on disk.
+            self.ml_search_due = None;
             self.refresh_ml_search();
+        }
+
+        // 1d. Deferred media-library search: run it once typing has settled.
+        // Placed after the drains above so the query sees state they applied.
+        if let Some(due) = self.ml_search_due {
+            if std::time::Instant::now() >= due {
+                // Disarm before running: `refresh_ml_search` is a no-op outside
+                // the overlay, and leaving the deadline set would re-run it on
+                // every tick from here on.
+                self.ml_search_due = None;
+                self.refresh_ml_search();
+            }
         }
 
         // 2. Write GStreamer duration back to the current track if not yet known.

@@ -437,3 +437,103 @@ fn perf_playlist_frame() {
         eprintln!("{n:>6} tracks: {per_frame:?} per frame");
     }
 }
+
+// Media-library search debounce
+// -----------------------------------------------------------------------
+
+/// Typing must arm a deadline, not run the query.
+///
+/// The library search is a full-table LIKE scan across eight columns plus
+/// materializing every match — measured on a 36,329-track library at 13 ms
+/// unfiltered, 30 ms for a two-word query, and 40 ms for a one-character one
+/// that matches 34,732 rows. Running that per keystroke on the thread that
+/// reads input is felt as typing lag.
+#[test]
+fn typing_in_the_library_search_arms_a_deadline() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(
+        app.ml_search_due.is_none(),
+        "opening the search input alone must not arm anything"
+    );
+
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(
+        app.ml_search_due.is_some(),
+        "a keystroke must arm the deferred search rather than run it"
+    );
+}
+
+/// Further typing pushes the deadline out instead of queueing a second
+/// search — otherwise a fast typist would still pay for every character.
+#[test]
+fn further_typing_pushes_the_search_deadline_out() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    let first = app.ml_search_due.expect("armed");
+    app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    let second = app.ml_search_due.expect("still armed");
+    assert!(second >= first, "the deadline moves forward, not backward");
+}
+
+/// Backspace is typing too — deleting has to re-arm, or the list would keep
+/// showing results for a query the user has already changed.
+#[test]
+fn backspace_re_arms_the_search_deadline() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    app.ml_search_due = None;
+    app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+    assert!(app.ml_search_due.is_some(), "backspace must re-arm");
+}
+
+/// The deferred search must actually fire. A deadline that is armed and never
+/// runs is worse than no debounce: the list would simply stop updating.
+#[test]
+fn the_deferred_search_runs_once_its_deadline_passes() {
+    let mut app = make_app();
+    app.ml_search_due =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+    app.tick();
+    assert!(
+        app.ml_search_due.is_some(),
+        "a deadline in the future must survive a tick"
+    );
+
+    // Pull the deadline into the past rather than sleeping through it.
+    app.ml_search_due =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    app.tick();
+    assert!(
+        app.ml_search_due.is_none(),
+        "the tick must run the search and disarm the deadline"
+    );
+}
+
+/// Leaving the search input must settle the list first.
+///
+/// While the input is active the handler consumes only Esc, Backspace and
+/// characters, so the only route to the track list — where Enter adds
+/// `s.tracks[selected_track]` to the playlist — is through Esc. Type and press
+/// Esc inside the debounce window and the list would still hold the previous
+/// query's rows, so Enter would add a track the user never searched for.
+#[test]
+fn leaving_the_search_input_settles_the_list_first() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(app.ml_search_due.is_some(), "typing armed the deadline");
+
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(
+        app.ml_search_due.is_none(),
+        "Esc must run the pending search, not leave it queued behind a list \
+         the user is about to select from"
+    );
+}
