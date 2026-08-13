@@ -15,6 +15,7 @@ pub mod granite;
 pub mod id3_editor;
 pub mod lyrics;
 pub mod media_library;
+pub mod ml_columns;
 pub mod model;
 pub mod mpris_meta;
 pub mod now_playing;

@@ -151,36 +151,7 @@ pub(super) fn sanitize_id3_numeric(s: &str) -> String {
     numeric.chars().take(8).collect()
 }
 
-pub(super) fn format_last_played(iso_timestamp: &str) -> String {
-    if iso_timestamp.is_empty() {
-        return String::new();
-    }
-    let parts: Vec<&str> = iso_timestamp
-        .trim_end_matches('Z')
-        .split(|c| c == 'T' || c == ':' || c == '-')
-        .collect();
-    if parts.len() < 5 {
-        return iso_timestamp.to_string();
-    }
-    let year = parts[0];
-    let month = parts[1];
-    let day = parts[2];
-    let hour: u32 = parts.get(3).and_then(|h| h.parse().ok()).unwrap_or(0);
-    let minute = parts.get(4).unwrap_or(&"00");
-    let (hour_12, am_pm) = if hour == 0 {
-        (12, "AM")
-    } else if hour < 12 {
-        (hour, "AM")
-    } else if hour == 12 {
-        (12, "PM")
-    } else {
-        (hour - 12, "PM")
-    };
-    format!(
-        "{}-{}-{} {:02}:{} {}",
-        year, month, day, hour_12, minute, am_pm
-    )
-}
+pub(super) use crate::ml_columns::format_last_played;
 
 #[allow(deprecated)] // EntryCompletion/ListStore — no GTK4 replacement yet
 pub(super) fn make_genre_entry(initial_value: &str) -> gtk4::Entry {

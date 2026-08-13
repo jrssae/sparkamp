@@ -591,45 +591,38 @@ fn draw_disc_tag_editor(frame: &mut Frame, ed: &DiscTagEditState, area: Rect) {
 }
 
 /// Width (chars) for each column ID in the Files tab.
+///
+/// Declared in the core column table, since a terminal has to know a column's
+/// width before it can lay one out. A column with no width is one this
+/// frontend does not render — see [`known_columns`].
 pub(super) fn ml_col_width(id: &str) -> usize {
-    match id {
-        "num" => 4,
-        "title" => 28,
-        "artist" => 22,
-        "album" => 20,
-        "duration" => 6,
-        "filename" => 24,
-        "year" => 5,
-        "genre" => 12,
-        "bitrate" => 7,
-        _ => 12,
-    }
+    crate::ml_columns::by_id(id)
+        .and_then(|c| c.tui_width)
+        .unwrap_or(12)
 }
 
-/// The column ids this frontend can actually render.
-///
-/// Kept in step with [`ml_col_label`], [`ml_col_value`] and [`ml_col_width`]
-/// below — teaching those a new id means adding it here too, or the column
-/// will be silently dropped.
-pub(super) const KNOWN_COLUMNS: &[&str] = &[
-    "num", "title", "artist", "album", "duration", "filename", "year", "genre", "bitrate",
-];
-
-/// Narrow a configured column list to the ids this frontend implements.
+/// Narrow a configured column list to the ids this frontend can render.
 ///
 /// `config.media_library.visible_columns` is shared with the GTK frontend,
-/// which offers 35 columns to this one's 9. Selecting one of the other 26 in
-/// GTK used to make the TUI draw a "?" header over an empty cell, which is
+/// which offers all 35 columns to this one's 9. Selecting one of the other 26
+/// there used to make this draw a "?" header over an empty cell, which is
 /// worse than not drawing the column at all.
 ///
-/// The user's order is preserved, and the config itself is never rewritten —
-/// this filters on the way in, so a column the TUI cannot draw stays selected
-/// in GTK. A configuration naming none of the known ids falls back to the
-/// defaults rather than leaving a table with no columns and no way back.
+/// "Can render" is now a property of the shared table — a column carries a
+/// `tui_width` or it does not — rather than a list kept here in step with three
+/// match arms by hand. The user's order is preserved and the config is never
+/// rewritten, so a column this frontend skips stays selected in GTK. A config
+/// naming none it can draw falls back to the defaults rather than leaving a
+/// table with no columns and no way back.
 pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
+    let renderable = |id: &str| {
+        crate::ml_columns::by_id(id)
+            .map(|c| c.tui_width.is_some())
+            .unwrap_or(false)
+    };
     let kept: Vec<String> = configured
         .iter()
-        .filter(|id| KNOWN_COLUMNS.contains(&id.as_str()))
+        .filter(|id| renderable(id))
         .cloned()
         .collect();
     if !kept.is_empty() {
@@ -637,57 +630,44 @@ pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
     }
     crate::config::MediaLibraryConfig::default_visible_columns()
         .into_iter()
-        .filter(|id| KNOWN_COLUMNS.contains(&id.as_str()))
+        .filter(|id| renderable(id))
         .collect()
 }
 
-/// Human-readable header label for a column ID.
+/// Header label for a column ID — the short form, since terminal columns are
+/// narrow ("Len", not "Duration").
 pub(super) fn ml_col_label(id: &str) -> &'static str {
-    match id {
-        "num" => "#",
-        "title" => "Title",
-        "artist" => "Artist",
-        "album" => "Album",
-        "duration" => "Len",
-        "filename" => "Filename",
-        "year" => "Year",
-        "genre" => "Genre",
-        "bitrate" => "Bitrate",
-        _ => "?",
-    }
+    crate::ml_columns::by_id(id).map(|c| c.short()).unwrap_or("?")
 }
 
-/// Extract the display value for a given column from a `LibTrack`.
-pub(super) fn ml_col_value<'a>(id: &str, t: &'a crate::media_library::LibTrack) -> std::borrow::Cow<'a, str> {
-    match id {
-        "num" => t
-            .track_num
-            .map(|n| n.to_string())
-            .unwrap_or_default()
-            .into(),
-        "title" => t.title.as_deref().unwrap_or(&t.filename).into(),
-        "artist" => t.artist.as_deref().unwrap_or("-").into(),
-        "album" => t.album.as_deref().unwrap_or("-").into(),
-        // Not `model::fmt_secs`: the right-padding keeps the column aligned in
-        // a fixed-width terminal, which the shared formatter does not do.
-        "duration" => t
+/// The display value for a column, with this frontend's presentation applied.
+///
+/// The text itself comes from the shared table. What is added here is what a
+/// fixed-width terminal needs and a GTK label does not: a padded duration so
+/// the column stays aligned, and a dash where an empty cell would otherwise
+/// leave the row looking truncated.
+pub(super) fn ml_col_value<'a>(
+    id: &str,
+    t: &'a crate::media_library::LibTrack,
+) -> std::borrow::Cow<'a, str> {
+    if id == "duration" {
+        // Right-aligned minutes keep the column square; `fmt_secs` does not pad.
+        return t
             .length_secs
             .map(|s| {
                 let u = s as u64;
                 format!("{:>2}:{:02}", u / 60, u % 60)
             })
             .unwrap_or_else(|| "-:--".to_string())
-            .into(),
-        "filename" => t.filename.as_str().into(),
-        "year" => t.year.map(|y| y.to_string()).unwrap_or_default().into(),
-        "genre" => t.genre.as_deref().unwrap_or("").into(),
-        "bitrate" => t
-            .bitrate
-            .map(|b| format!("{b}k"))
-            .unwrap_or_default()
-            .into(),
-        _ => "".into(),
+            .into();
     }
+    // This frontend renders no album_artist column, so the F12.2 fallback flag
+    // cannot affect the result.
+    let text = crate::ml_columns::value(t, id, false);
+    if text.is_empty() && matches!(id, "artist" | "album") {
+        return "-".into();
+    }
+    text.into()
 }
 
 /// Render the Files tab: column headers and a scrollable track list.
@@ -1182,25 +1162,46 @@ mod known_columns_tests {
     }
 
     /// Every default column must be one this frontend can draw, or the
-    /// fallback itself would come back short.
+    /// fallback would itself come back short.
     #[test]
     fn every_default_column_is_renderable_here() {
         for id in crate::config::MediaLibraryConfig::default_visible_columns() {
+            let def = crate::ml_columns::by_id(&id)
+                .unwrap_or_else(|| panic!("default column {id:?} is not in the column table"));
             assert!(
-                KNOWN_COLUMNS.contains(&id.as_str()),
-                "default column {id:?} is not implemented by the TUI"
+                def.tui_width.is_some(),
+                "default column {id:?} has no terminal width"
             );
         }
     }
 
-    /// Each known id must have a real label and width — an id in the list that
-    /// the renderers do not handle would draw as "?" again, which is the bug
-    /// this is meant to end.
+    /// A column this frontend claims to render must actually have a label and a
+    /// usable width. A `tui_width` on a column the renderers do not handle
+    /// would draw as "?" again, which is the bug this is meant to end.
     #[test]
-    fn every_known_column_has_a_label_and_width() {
-        for id in KNOWN_COLUMNS {
+    fn every_renderable_column_has_a_label_and_width() {
+        let renderable: Vec<&str> = crate::ml_columns::ALL
+            .iter()
+            .filter(|c| c.tui_width.is_some())
+            .map(|c| c.id)
+            .collect();
+        assert!(!renderable.is_empty(), "some column must be renderable");
+        for id in renderable {
             assert_ne!(ml_col_label(id), "?", "{id} has no label");
             assert!(ml_col_width(id) > 0, "{id} has no width");
         }
+    }
+
+    /// The two frontends read one table now, so a column the TUI renders is by
+    /// construction a column GTK knows — the divergence that could not be
+    /// spotted before is no longer expressible.
+    #[test]
+    fn every_column_id_is_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for c in crate::ml_columns::ALL {
+            assert!(seen.insert(c.id), "duplicate column id: {}", c.id);
+            assert!(!c.header.is_empty(), "{} has no header", c.id);
+        }
+        assert_eq!(seen.len(), 35, "the table had 35 columns; keep them all");
     }
 }

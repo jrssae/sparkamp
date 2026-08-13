@@ -34,6 +34,7 @@ mod granite;
 mod id3_editor;
 mod lyrics;
 mod media_library;
+mod ml_columns;
 mod model;
 // Pure MPRIS metadata-map builder (Phase 3). The gio D-Bus layer that
 // consumes it lands in a later task.
