@@ -1043,3 +1043,132 @@ fn playing_a_row_asks_about_it_immediately() {
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].id, id);
 }
+
+/// A row whose file was missing when it was first checked must still get its
+/// tags read once the file comes back.
+///
+/// The whole round trip, because the bug lived in the seam between the two
+/// halves: the pass handed the row over, the read could not happen, and the
+/// row was written off anyway. Restoring the file then cleared the ⚠ while
+/// leaving the placeholder filename-stem title and blank duration for good.
+#[test]
+fn a_row_whose_file_returns_still_gets_its_tags_read() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let id = s.playlist.tracks[0].id;
+    let path = s.playlist.tracks[0].path.clone();
+    s.row_check_tx = Some(tx);
+    // A path the library could not describe: nothing but the file can answer.
+    s.pending_rows.insert(id, true);
+    s.row_checked_at.clear();
+    let state = Rc::new(RefCell::new(s));
+
+    // First look: asked for with tags, as a never-seen row should be.
+    super::playlist_add::request_range(&state, 0, 0);
+    let first = rx.try_recv().expect("a never-checked row is asked about");
+    assert!(first[0].needs_tags, "an unknown row must be asked for its tags");
+
+    // ...but the file was not there, so nothing was read.
+    super::playlist_add::apply_facts(
+        &state,
+        &[crate::file_status::RowFacts {
+            id,
+            path: path.clone(),
+            exists: false,
+            read_only: false,
+            tags: None,
+        }],
+    );
+    assert!(
+        state.borrow().pending_rows.contains_key(&id),
+        "a read that could not happen leaves the row unfinished"
+    );
+
+    // Age the answer out and look again. This is the assertion the fix is for:
+    // `needs_tags` used to be hard-coded false on the aged-out path.
+    age_out(&state, id);
+    super::playlist_add::request_range(&state, 0, 0);
+    let again = rx.try_recv().expect("a stale row is asked about again");
+    assert!(
+        again[0].needs_tags,
+        "the tags were never read, so the retry must still ask for them"
+    );
+}
+
+/// Once the tags are actually in hand the row is finished, and later re-checks
+/// are about the markers only — no more file reads.
+#[test]
+fn a_row_that_was_read_is_not_asked_for_its_tags_again() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let id = s.playlist.tracks[0].id;
+    let path = s.playlist.tracks[0].path.clone();
+    s.row_check_tx = Some(tx);
+    s.pending_rows.insert(id, true);
+    s.row_checked_at.clear();
+    let state = Rc::new(RefCell::new(s));
+
+    super::playlist_add::request_range(&state, 0, 0);
+    let _ = rx.try_recv().expect("first look");
+    super::playlist_add::apply_facts(
+        &state,
+        &[crate::file_status::RowFacts {
+            id,
+            path,
+            exists: true,
+            read_only: false,
+            tags: Some(fake_track("a")),
+        }],
+    );
+    assert!(
+        !state.borrow().pending_rows.contains_key(&id),
+        "tags in hand means the row is finished"
+    );
+
+    age_out(&state, id);
+    super::playlist_add::request_range(&state, 0, 0);
+    let again = rx.try_recv().expect("a stale row is still re-checked");
+    assert!(
+        !again[0].needs_tags,
+        "re-reading a file whose tags are already held is the waste this avoids"
+    );
+}
+
+/// A file that is there but cannot be parsed has already given its answer.
+/// Keeping it pending would re-read a corrupt file every TTL, for ever.
+#[test]
+fn an_unreadable_file_is_not_re_read_for_ever() {
+    let mut s = make_state();
+    s.playlist.add(fake_track("a"));
+    let id = s.playlist.tracks[0].id;
+    let path = s.playlist.tracks[0].path.clone();
+    s.pending_rows.insert(id, true);
+    let state = Rc::new(RefCell::new(s));
+
+    super::playlist_add::apply_facts(
+        &state,
+        &[crate::file_status::RowFacts {
+            id,
+            path,
+            exists: true,
+            read_only: false,
+            // Present, but `Track::from_path` could not make sense of it.
+            tags: None,
+        }],
+    );
+    assert!(
+        !state.borrow().pending_rows.contains_key(&id),
+        "a present-but-unreadable file has nothing left to tell us"
+    );
+}
+
+/// Push a row's last answer past [`super::playlist_add::ROW_RECHECK_TTL`], so a
+/// test can reach the aged-out path without sleeping through it.
+fn age_out(state: &Rc<RefCell<AppState>>, id: u64) {
+    let past = std::time::Instant::now()
+        .checked_sub(super::playlist_add::ROW_RECHECK_TTL * 2)
+        .expect("monotonic clock is older than twice the recheck TTL");
+    state.borrow_mut().row_checked_at.insert(id, past);
+}

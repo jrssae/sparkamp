@@ -115,16 +115,6 @@ pub(super) fn schedule_from(state: &Rc<RefCell<AppState>>, start: usize, needs_t
     }
 }
 
-/// Ask the background worker about the rows in `first..=last` that have not
-/// been asked about yet — the viewport pass.
-///
-/// This is the only thing in the module that causes a file to be read, and it
-/// is driven by what is on screen. Rows are taken out of `pending_rows` as they
-/// are handed over, so scrolling back and forth over the same rows costs one
-/// read each, not one per pass.
-///
-/// A batch that finds nothing pending sends nothing, which is the common case
-/// once a screenful has settled — scrolling a resolved playlist is free.
 /// How long a row's file status is trusted before the viewport pass asks
 /// again.
 ///
@@ -133,7 +123,9 @@ pub(super) fn schedule_from(state: &Rc<RefCell<AppState>>, start: usize, needs_t
 /// forty-odd rows on screen every ten seconds is not measurable, while leaving
 /// them decided forever means a permission change made outside Sparkamp never
 /// shows up.
-const ROW_RECHECK_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+// `pub(super)` only so the window's test module can age a row past it rather
+// than sleeping ten seconds.
+pub(super) const ROW_RECHECK_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Ask the background worker about one specific row, whatever its last answer
 /// was.
@@ -147,10 +139,14 @@ pub(super) fn request_row(state: &Rc<RefCell<AppState>>, idx: usize) {
             return;
         };
         let (id, path) = (t.id, t.path.clone());
-        // A status-only check: the library or an earlier pass already answered
-        // for the tags, and this is about the markers.
+        // Usually a status-only check: the library or an earlier pass already
+        // answered for the tags, and this is about the markers. A row that
+        // still owes tags stays pending until they arrive, as in
+        // [`request_range`].
         let needs_tags = s.pending_rows.get(&id).copied().unwrap_or(false);
-        s.pending_rows.remove(&id);
+        if !needs_tags {
+            s.pending_rows.remove(&id);
+        }
         s.row_checked_at.insert(id, std::time::Instant::now());
         (
             crate::file_status::RowCheck { path, needs_tags, id },
@@ -162,6 +158,16 @@ pub(super) fn request_row(state: &Rc<RefCell<AppState>>, idx: usize) {
     }
 }
 
+/// Ask the background worker about the rows in `first..=last` that are due a
+/// look — the viewport pass.
+///
+/// This is the only thing in the module that causes a file to be read, and it
+/// is driven by what is on screen. A row is due when it has never been checked
+/// or when its last answer is older than [`ROW_RECHECK_TTL`], so scrolling back
+/// and forth over the same rows costs one read each rather than one per pass.
+///
+/// A batch that finds nothing due sends nothing, which is the common case once
+/// a screenful has settled — scrolling a resolved playlist is free.
 pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: usize) {
     let (batch, tx) = {
         let mut s = state.borrow_mut();
@@ -187,25 +193,36 @@ pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: u
         let ids: Vec<u64> = s.playlist.tracks[first..=end].iter().map(|t| t.id).collect();
         // A row is worth asking about when it has never been looked at, or when
         // the last answer has aged out. The second case is what keeps the ⚠ and
-        // 🔒 markers honest after the file changes underneath us; it asks for no
-        // tags, so it stays two syscalls.
+        // 🔒 markers honest after the file changes underneath us.
+        //
+        // `needs_tags` is read from `pending_rows` in both cases, not forced to
+        // false on the aged-out one. A row whose file was missing when it was
+        // first checked never had its tags read, and hard-coding false meant
+        // that once the file came back the ⚠ cleared while the row kept its
+        // placeholder filename-stem title and blank duration for good.
         let wanted: Vec<(usize, u64, bool)> = ids
             .iter()
             .enumerate()
             .filter_map(|(k, id)| {
-                if let Some(nt) = s.pending_rows.get(id) {
-                    return Some((first + k, *id, *nt));
-                }
-                let stale = s
+                let fresh = s
                     .row_checked_at
                     .get(id)
-                    .is_none_or(|at| at.elapsed() >= ROW_RECHECK_TTL);
-                stale.then(|| (first + k, *id, false))
+                    .is_some_and(|at| at.elapsed() < ROW_RECHECK_TTL);
+                if fresh {
+                    return None;
+                }
+                Some((first + k, *id, s.pending_rows.get(id).copied().unwrap_or(false)))
             })
             .collect();
         let mut batch = Vec::with_capacity(wanted.len());
         for (idx, id, needs_tags) in wanted {
-            s.pending_rows.remove(&id);
+            // Only a row with nothing left to read is retired here. One still
+            // owing tags stays pending until they actually arrive — see
+            // `apply_facts` — with the timestamp above holding it off for the
+            // TTL so a missing file is retried, not hammered.
+            if !needs_tags {
+                s.pending_rows.remove(&id);
+            }
             s.row_checked_at.insert(id, std::time::Instant::now());
             if let Some(t) = s.playlist.tracks.get(idx) {
                 batch.push(crate::file_status::RowCheck {
@@ -292,8 +309,20 @@ pub(super) fn apply_facts(
             changed.push(i);
         }
     }
-    // Remember any measured durations so the next session starts with them.
     for facts in batch {
+        // The row stays pending only while there is still something to find.
+        // `request_range` leaves a tag-owing row in the map precisely so that a
+        // read which could not happen — the file was missing at the time — is
+        // tried again once it comes back, rather than written off and left
+        // showing its placeholder filename stem for good.
+        //
+        // `exists` is the condition, not `tags.is_some()`: a file that is there
+        // but could not be parsed has already given its answer, and retrying it
+        // every TTL would re-read a corrupt file forever.
+        if facts.exists {
+            s.pending_rows.remove(&facts.id);
+        }
+        // Remember any measured duration so the next session starts with it.
         if let Some(d) = facts.tags.as_ref().and_then(|t| t.duration) {
             s.duration_cache.insert(&facts.path, d);
         }
