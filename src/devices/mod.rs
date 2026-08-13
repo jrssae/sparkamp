@@ -95,7 +95,10 @@ pub struct Device {
     pub fs_visible: bool,
 }
 
-#[cfg(test)]
+// Linux-only, matching `detect` above: this drives `list_devices`, which is
+// udisks2-backed and does not exist on macOS. Written and run on the Linux
+// box, where `cfg(test)` alone compiled fine; on macOS it broke `cargo test`.
+#[cfg(all(test, target_os = "linux"))]
 mod live_device_tests {
     use std::path::PathBuf;
 

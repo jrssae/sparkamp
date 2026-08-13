@@ -2731,6 +2731,10 @@ fn tracks_under_path_prefix_does_not_match_a_sibling_folder() {
     lib.rescan_folder_fast(folder_id, root_str, true).unwrap();
     assert_eq!(lib.all_tracks().unwrap().len(), 2, "both files indexed");
 
+    // Canonicalized, because the scan stores canonical paths and the lookup
+    // matches on the string. On macOS the temp dir is reached through a
+    // symlink (`/var` -> `/private/var`), so the raw path matches nothing.
+    let rock = rock.canonicalize().unwrap();
     let got = lib
         .tracks_under_path_prefix(rock.to_str().unwrap())
         .unwrap();
@@ -2755,6 +2759,8 @@ fn tracks_under_path_prefix_escapes_like_wildcards() {
     let folder_id = lib.add_folder(root_str).unwrap().id();
     lib.rescan_folder_fast(folder_id, root_str, true).unwrap();
 
+    // Canonicalized for the same reason as the sibling-folder test above.
+    let literal = literal.canonicalize().unwrap();
     let got = lib
         .tracks_under_path_prefix(literal.to_str().unwrap())
         .unwrap();
