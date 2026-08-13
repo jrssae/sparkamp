@@ -1233,6 +1233,20 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
 /// Duration is the signal: the fast insert writes path and filename and
 /// nothing else, so an unscanned row has none. Title is not, because
 /// `Track::from` falls back to the filename and is therefore never empty.
+///
+/// # The trade this makes
+///
+/// The code replaced here probed every added row unconditionally, and its
+/// comment named "catch any file-vs-DB drift" as a second purpose alongside
+/// filling in unscanned rows. That second purpose is given up deliberately: a
+/// track whose ID3 tags were edited outside Sparkamp now shows the library's
+/// older values until a scan updates them, where before the next add would
+/// have quietly corrected the row.
+///
+/// It is the right trade — the drift correction cost ~24 ms of cold disk read
+/// per row on *every* add, to fix a case that only arises when another program
+/// writes the file — but it is a user-visible change, not a pure optimisation,
+/// and belongs in the release notes.
 fn needs_probe(t: &crate::model::Track) -> bool {
     t.duration.is_none()
 }

@@ -240,20 +240,19 @@ mod tests {
 /// 16-core machine would otherwise put sixteen readers on the disk at once.
 const PROBE_THREADS: usize = 4;
 
-/// The pool the probes run in, built once and shared.
+/// The bounded pool every file-reading background job shares, built once.
 ///
 /// Their own pool, not Rayon's global one. The global pool also serves every
 /// `rayon::spawn` in the FFI — library scans, ReplayGain, dedupe — and a
 /// `par_iter` over 36,000 paths occupies every worker in it until it finishes,
 /// so those jobs would queue behind the whole probe run.
 ///
+/// Deliberately small — see [`PROBE_THREADS`]. Reachable from outside this
+/// module so the macOS bridge's row probes use it too rather than the global
+/// pool, which would put an unbounded number of readers on the same disk.
+///
 /// `None` if the pool could not be built, which the caller answers by probing
 /// sequentially rather than by failing.
-/// The bounded pool every file-reading background job shares, built once.
-///
-/// Deliberately small — see [`PROBE_THREADS`]. Exposed so the macOS bridge's
-/// row probes use it too rather than the global rayon pool, which would put
-/// an unbounded number of readers on the same disk.
 pub(crate) fn shared_probe_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {

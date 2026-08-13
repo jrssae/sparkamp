@@ -1683,6 +1683,24 @@ mistaken for "the duplication work is complete".
 | test-helper duplication | **open**. `fake_track` / `named_track` are identical across the GTK and TUI test modules, with a third copy as `make_track` in `model.rs` |
 | `scan_all_folders` candidate filter | **open**. Duplicates `scan_folder`'s, with a comment admitting they are kept in sync by hand |
 
+## User-visible behaviour changes
+
+Not defects, and not pure optimisations either — these change what someone sees,
+so they belong in the release notes rather than being folded into "performance".
+
+- **Adding a track no longer re-reads its tags off disk** (`needs_probe` in
+  `src/ffi/media_library.rs`). The code it replaced probed every added row and
+  named "catch any file-vs-DB drift" as a purpose. A file whose ID3 tags are
+  edited by another program now shows the library's older values until a scan
+  updates them, where an add used to correct the row silently. The drift fix
+  cost ~24 ms of cold disk read per row on every add, so giving it up is right,
+  but it is a change in behaviour.
+- **A playlist row's ⚠ / 🔒 markers now appear when the row is scrolled to**,
+  not when it is added (`crate::file_status`, and the viewport pass in
+  `frontends/gtk/window/playlist_add.rs`). This is Winamp's design and it is
+  what makes a 36k add instant, but a file deleted at row 20,000 shows no ⚠
+  until someone scrolls there.
+
 ## Deferred, deliberately
 
 Recorded so they are not silently dropped:
