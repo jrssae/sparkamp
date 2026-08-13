@@ -1461,7 +1461,28 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 8: Let the TUI degrade gracefully on columns it does not implement
+## Task 8: Let the TUI degrade gracefully on columns it does not implement  ✅ done, then superseded
+
+> **Outcome.** Shipped as `a9915e1`, and it was the wrong call. Fixing the
+> symptom meant adding a fourth hand-kept list of column ids to the TUI —
+> alongside its width, label and value matches — and then a test to guard that
+> list against drift. It made the duplication worse, not better.
+>
+> The framing that led there was mine and it was wrong: the decision point
+> offered "have the TUI fall back to **the core table's header**… without
+> moving anything", which describes a shared table that did not exist. What was
+> approved sounded like it kept one; it did not.
+>
+> Superseded by `794a359`, which does the move the original task described: one
+> 35-column table in `src/ml_columns.rs`, with `tui_width` replacing
+> `KNOWN_COLUMNS` entirely — a column a terminal can render is one that
+> declares a width. The graceful degradation survives as a property of the
+> shared table rather than a list kept in step by hand.
+>
+> Verified in `b02d430` by diffing the moved table and extractor against the
+> pre-refactor source (35 entries, same order, no field changed; extractor and
+> both helpers identical after normalisation), plus 16 new tests where there
+> had been none.
 
 **User decision (2026-08-12): take the cheap fix, not the core-table refactor.**
 
@@ -1642,9 +1663,25 @@ impressions:
 | 5 | macOS FFI redundant probing | ~24 ms cold per needlessly-read file |
 | 6 | missing-file marking | correctness, not speed |
 | 7 | mechanical dedupes | no behaviour change |
-| 8 | TUI drops columns it cannot render | cheap fix, chosen over the core-table refactor |
+| 8 | TUI drops columns it cannot render | shipped, then superseded by the core-table move (D2) |
 
 Tasks 2 and 5 touch the same FFI function, so 2 lands first.
+
+## Duplication findings, final state
+
+The plan only ever carried D1, D2 and D4 as tasks; D3 and D5 came from the
+review but were never scheduled. Recorded here so "the plan is complete" is not
+mistaken for "the duplication work is complete".
+
+| finding | state |
+|---|---|
+| D1 — `refresh_ml_sort` / `refresh_ml_search` identical | done (`445dccd`) |
+| D2 — two column tables | done (`794a359`), after a wrong turn through `a9915e1` |
+| D3 — row display "duplicated 4×" | done (`d731c66`), but the finding was too broad: only the queue badge was actually shared, and it is now `Queue::badge`. The state markers differ per frontend on purpose |
+| D4 — 15 open-coded `mm:ss` | done as scoped (`445dccd`): 4 replaced, 11 documented as deliberate |
+| D5 — six near-duplicate pairs | **open**. Each is one body with a flag or accessor swapped; the standard fix is a private inner fn with two thin wrappers. `play_current` / `play_current_no_record` is duplicated in both GTK and the TUI, which is the one with real drift risk |
+| test-helper duplication | **open**. `fake_track` / `named_track` are identical across the GTK and TUI test modules, with a third copy as `make_track` in `model.rs` |
+| `scan_all_folders` candidate filter | **open**. Duplicates `scan_folder`'s, with a comment admitting they are kept in sync by hand |
 
 ## Deferred, deliberately
 
