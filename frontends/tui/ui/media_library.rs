@@ -1119,6 +1119,118 @@ pub(super) fn ml_truncate(s: &str, max_chars: usize) -> String {
 mod known_columns_tests {
     use super::*;
 
+    fn lib_row() -> crate::media_library::LibTrack {
+        crate::media_library::LibTrack {
+            id: 1,
+            path: "/music/a.mp3".into(),
+            artist: Some("Pearl Jam".into()),
+            title: Some("Black".into()),
+            album: Some("Ten".into()),
+            track_num: Some(5),
+            genre: Some("Rock".into()),
+            year: Some(1991),
+            bpm: None,
+            length_secs: Some(343.0),
+            bitrate: Some(320),
+            channels: Some(2),
+            filetype: Some("mp3".into()),
+            filename: "a.mp3".into(),
+            play_count: 0,
+            last_played: None,
+            comment: None,
+            album_artist: Some("Pearl Jam".into()),
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            last_scanned: None,
+            sample_rate: None,
+            file_size: None,
+            file_mtime: None,
+            added_at: None,
+            bitrate_mode: None,
+            rg_track_gain: None,
+            rg_track_peak: None,
+            rg_album_gain: None,
+            rg_album_peak: None,
+            sort_keys: crate::media_library::SortKeys::default(),
+        }
+    }
+
+    /// Every cell this frontend renders, pinned. The nine-arm match this
+    /// replaced was rewritten to call the shared extractor and then apply the
+    /// terminal's own presentation, so these are the assertions that say the
+    /// rewrite kept the same output.
+    #[test]
+    fn every_rendered_column_produces_its_expected_cell() {
+        let t = lib_row();
+        let cell = |id: &str| ml_col_value(id, &t).into_owned();
+        assert_eq!(cell("num"), "5");
+        assert_eq!(cell("title"), "Black");
+        assert_eq!(cell("artist"), "Pearl Jam");
+        assert_eq!(cell("album"), "Ten");
+        assert_eq!(cell("duration"), " 5:43", "minutes are right-aligned in two");
+        assert_eq!(cell("filename"), "a.mp3");
+        assert_eq!(cell("year"), "1991");
+        assert_eq!(cell("genre"), "Rock");
+        assert_eq!(cell("bitrate"), "320k");
+    }
+
+    /// The absent case for each, which is where the terminal's presentation
+    /// differs from GTK's: a dash keeps a row from looking truncated, where a
+    /// GTK label is happy to be blank.
+    #[test]
+    fn absent_fields_render_this_frontends_placeholders() {
+        let mut t = lib_row();
+        t.artist = None;
+        t.album = None;
+        t.track_num = None;
+        t.length_secs = None;
+        t.year = None;
+        t.genre = None;
+        t.bitrate = None;
+        t.title = None;
+        let cell = |id: &str| ml_col_value(id, &t).into_owned();
+        assert_eq!(cell("artist"), "-");
+        assert_eq!(cell("album"), "-");
+        assert_eq!(cell("duration"), "-:--");
+        assert_eq!(cell("title"), "a.mp3", "title falls back to the filename");
+        assert_eq!(cell("num"), "");
+        assert_eq!(cell("year"), "");
+        assert_eq!(cell("genre"), "");
+        assert_eq!(cell("bitrate"), "");
+    }
+
+    /// A deliberate behaviour change from the rewrite, recorded rather than
+    /// hidden: an artist stored as an empty string now shows the same dash as
+    /// a missing one. The old match keyed on `None` alone, so `Some("")` drew
+    /// a blank cell — indistinguishable from a column that failed to render.
+    #[test]
+    fn an_empty_string_artist_reads_as_absent() {
+        let mut t = lib_row();
+        t.artist = Some(String::new());
+        t.album = Some(String::new());
+        assert_eq!(ml_col_value("artist", &t), "-");
+        assert_eq!(ml_col_value("album", &t), "-");
+    }
+
+    /// The short header is what a narrow terminal column needs; GTK shows the
+    /// long one. Both now come from the same table instead of being two
+    /// independent spellings.
+    #[test]
+    fn duration_keeps_its_short_header_here() {
+        assert_eq!(ml_col_label("duration"), "Len");
+        assert_eq!(
+            crate::ml_columns::by_id("duration").unwrap().header,
+            "Duration"
+        );
+    }
+
     /// GTK offers 35 columns and this frontend implements 9, from one shared
     /// config key. A column it cannot draw is left out rather than rendered as
     /// a "?" header over an empty cell.

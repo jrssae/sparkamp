@@ -558,3 +558,155 @@ pub fn value(t: &LibTrack, id: &str, artist_as_album_artist: bool) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row with every field populated, so each column has something to show.
+    fn full_row() -> LibTrack {
+        LibTrack {
+            id: 1,
+            path: "/music/Ten/05 Black.mp3".into(),
+            artist: Some("Pearl Jam".into()),
+            title: Some("Black".into()),
+            album: Some("Ten".into()),
+            track_num: Some(5),
+            genre: Some("Rock".into()),
+            year: Some(1991),
+            bpm: Some("84".into()),
+            length_secs: Some(343.0),
+            bitrate: Some(320),
+            channels: Some(2),
+            filetype: Some("mp3".into()),
+            filename: "05 Black.mp3".into(),
+            play_count: 7,
+            last_played: Some("2026-08-01T14:05:00Z".into()),
+            comment: Some("a comment".into()),
+            album_artist: Some("Pearl Jam".into()),
+            disc_num: Some(1),
+            disc_total: Some(2),
+            composer: Some("Gossard".into()),
+            original_artist: Some("orig".into()),
+            copyright: Some("(c) 1991".into()),
+            url: Some("https://example.invalid".into()),
+            encoded_by: Some("LAME".into()),
+            lyric: Some("x".repeat(40)),
+            artwork_path: Some("/art/ten.jpg".into()),
+            last_scanned: Some("2026-08-02T09:00:00Z".into()),
+            sample_rate: Some(44_100),
+            file_size: Some(8_400_000),
+            file_mtime: Some("2026-07-30T11:22:00Z".into()),
+            added_at: Some("2026-06-01T08:00:00Z".into()),
+            bitrate_mode: Some("CBR".into()),
+            rg_track_gain: Some(-6.25),
+            rg_track_peak: None,
+            rg_album_gain: None,
+            rg_album_peak: None,
+            sort_keys: crate::media_library::SortKeys::default(),
+        }
+    }
+
+    /// Every column's text, pinned.
+    ///
+    /// This table and the extractor were moved here wholesale from the GTK
+    /// frontend, which had no tests over either — so a transcription slip in
+    /// any one of 35 arms would have compiled and shown up only as a wrong
+    /// cell in a column few people enable. These are the assertions that say
+    /// it did not.
+    #[test]
+    fn every_column_renders_its_expected_text() {
+        let t = full_row();
+        let c = |id: &str| value(&t, id, false);
+        assert_eq!(c("num"), "5");
+        assert_eq!(c("track_num"), "5");
+        assert_eq!(c("title"), "Black");
+        assert_eq!(c("artist"), "Pearl Jam");
+        assert_eq!(c("album"), "Ten");
+        assert_eq!(c("album_artist"), "Pearl Jam");
+        assert_eq!(c("duration"), "5:43");
+        assert_eq!(c("filename"), "05 Black.mp3");
+        assert_eq!(c("path"), "/music/Ten/05 Black.mp3");
+        assert_eq!(c("year"), "1991");
+        assert_eq!(c("genre"), "Rock");
+        assert_eq!(c("bitrate"), "320k");
+        assert_eq!(c("channels"), "stereo");
+        assert_eq!(c("sample_rate"), "44.1 kHz");
+        assert_eq!(c("file_size"), "8.4 MB");
+        assert_eq!(c("bitrate_mode"), "CBR");
+        assert_eq!(c("filetype"), "mp3");
+        assert_eq!(c("play_count"), "7");
+        assert_eq!(c("disc_num"), "1/2");
+        assert_eq!(c("disc_total"), "2");
+        assert_eq!(c("bpm"), "84");
+        assert_eq!(c("comment"), "a comment");
+        assert_eq!(c("composer"), "Gossard");
+        assert_eq!(c("original_artist"), "orig");
+        assert_eq!(c("copyright"), "(c) 1991");
+        assert_eq!(c("url"), "https://example.invalid");
+        assert_eq!(c("encoded_by"), "LAME");
+        assert_eq!(c("artwork_path"), "Yes");
+        assert_eq!(c("rg_gain"), "-6.2 dB");
+        assert_eq!(c("last_scanned"), "2026-08-02T09:00:00Z");
+        // A long lyric is elided to keep the column narrow.
+        assert_eq!(c("lyric"), format!("{}…", "x".repeat(30)));
+        // An unknown id is empty, never a panic — `visible_columns` is
+        // user-editable TOML.
+        assert_eq!(c("no_such_column"), "");
+    }
+
+    /// Channel counts have named forms rather than bare numbers.
+    #[test]
+    fn channel_counts_read_as_words() {
+        let mut t = full_row();
+        for (n, want) in [(0i64, ""), (1, "mono"), (2, "stereo"), (6, "6ch")] {
+            t.channels = Some(n);
+            assert_eq!(value(&t, "channels", false), want);
+        }
+    }
+
+    /// An absent field is blank here — the terminal frontend substitutes its
+    /// own dash, which is presentation rather than content.
+    #[test]
+    fn absent_fields_are_blank() {
+        let mut t = full_row();
+        t.artist = None;
+        t.album = None;
+        t.genre = None;
+        t.bitrate = None;
+        t.artwork_path = None;
+        t.rg_track_gain = None;
+        assert_eq!(value(&t, "artist", false), "");
+        assert_eq!(value(&t, "album", false), "");
+        assert_eq!(value(&t, "genre", false), "");
+        assert_eq!(value(&t, "bitrate", false), "");
+        assert_eq!(value(&t, "artwork_path", false), "");
+        assert_eq!(value(&t, "rg_gain", false), "");
+    }
+
+    /// The F12.2 fallback: with the toggle on, a blank album artist borrows
+    /// the track artist. Off, it stays blank.
+    #[test]
+    fn album_artist_can_fall_back_to_the_track_artist() {
+        let mut t = full_row();
+        t.album_artist = None;
+        assert_eq!(value(&t, "album_artist", true), "Pearl Jam");
+        assert_eq!(value(&t, "album_artist", false), "");
+    }
+
+    /// Structural invariants of the table itself.
+    #[test]
+    fn the_table_is_well_formed() {
+        let mut seen = std::collections::HashSet::new();
+        for c in ALL {
+            assert!(seen.insert(c.id), "duplicate id {}", c.id);
+            assert!(!c.header.is_empty(), "{} has no header", c.id);
+            assert!(by_id(c.id).is_some(), "{} does not resolve", c.id);
+            if let Some(w) = c.tui_width {
+                assert!(w > 0, "{} has a zero terminal width", c.id);
+            }
+        }
+        assert_eq!(ALL.len(), 35);
+        assert!(by_id("no_such_column").is_none());
+    }
+}
