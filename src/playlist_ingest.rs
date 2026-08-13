@@ -12,8 +12,11 @@
 //! never seen needs the file itself, and even then the row can appear
 //! immediately with a placeholder while something else reads it.
 //!
-//! So this module resolves paths to rows and touches the filesystem only to
-//! expand directories. Each row comes back with a [`Row::needs_tags`] flag
+//! So this module resolves paths to rows without ever opening a file. It does
+//! ask the filesystem one cheap question — `is_dir`, once per path the library
+//! could not place — because a dropped folder still has to be expanded; a path
+//! the library knows is not asked even that. Each row comes back with a
+//! [`Row::needs_tags`] flag
 //! saying whether anything still has to be read for it; what to do about that
 //! is the frontend's business — GTK asks only about rows on screen, the TUI
 //! hands them to `crate::file_status`.
@@ -63,15 +66,22 @@ pub fn resolve(lib: Option<&MediaLibrary>, paths: &[PathBuf]) -> Vec<Row> {
     let mut wanted: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
     let mut known = lookup(lib, &wanted);
 
-    // Only paths the library could not place are candidates for expansion.
-    let needs_expanding = paths
+    // Only paths the library could not place are candidates for expansion — a
+    // library row is a file by definition, so one it placed is never asked.
+    //
+    // Answered once and kept, rather than asked here and again in the loop
+    // below: a batch holding one dropped folder alongside 36,000 library rows
+    // used to `is_dir` all 36,001, which is the cost this module exists to
+    // avoid.
+    let is_dir: Vec<bool> = paths
         .iter()
         .zip(wanted.iter())
-        .any(|(p, key)| !known.contains_key(key) && p.is_dir());
-    let paths: Vec<PathBuf> = if needs_expanding {
+        .map(|(p, key)| !known.contains_key(key) && p.is_dir())
+        .collect();
+    let paths: Vec<PathBuf> = if is_dir.iter().any(|&d| d) {
         let mut expanded = Vec::with_capacity(paths.len());
-        for p in paths {
-            if p.is_dir() {
+        for (p, &dir) in paths.iter().zip(is_dir.iter()) {
+            if dir {
                 expanded.extend(Playlist::collect_audio_files(p));
             } else {
                 expanded.push(p.clone());
