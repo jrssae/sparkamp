@@ -438,6 +438,154 @@ fn perf_playlist_frame() {
     }
 }
 
+// Media-library Files render window
+// -----------------------------------------------------------------------
+
+/// Build a media-library Files tab holding `n` synthetic rows, with the
+/// selection parked on `selected`.
+#[cfg(test)]
+fn app_with_library_rows(n: usize, selected: usize) -> App {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = crate::tui::MediaLibraryTab::Files;
+        // One row written out, the rest cloned from it: `LibTrack` has 40
+        // fields and no `Default`, so spelling them per row would bury the
+        // three that this test is about.
+        let template = crate::media_library::LibTrack {
+            id: 0,
+            path: String::new(),
+            artist: None,
+            title: None,
+            album: Some("An Album".into()),
+            track_num: Some(1),
+            genre: Some("Rock".into()),
+            year: Some(1991),
+            bpm: None,
+            length_secs: Some(212.0),
+            bitrate: Some(320),
+            channels: Some(2),
+            filetype: Some("mp3".into()),
+            filename: String::new(),
+            play_count: 0,
+            last_played: None,
+            comment: None,
+            album_artist: None,
+            disc_num: None,
+            disc_total: None,
+            composer: None,
+            original_artist: None,
+            copyright: None,
+            url: None,
+            encoded_by: None,
+            lyric: None,
+            artwork_path: None,
+            last_scanned: None,
+            sample_rate: None,
+            file_size: None,
+            file_mtime: None,
+            added_at: None,
+            bitrate_mode: None,
+            rg_track_gain: None,
+            rg_track_peak: None,
+            rg_album_gain: None,
+            rg_album_peak: None,
+            sort_keys: crate::media_library::SortKeys::default(),
+        };
+        s.tracks = (0..n)
+            .map(|i| crate::media_library::LibTrack {
+                id: i as i64,
+                path: format!("/music/{i}.mp3"),
+                title: Some(format!("Song Number {i}")),
+                artist: Some(format!("Artist {i}")),
+                filename: format!("{i}.mp3"),
+                ..template.clone()
+            })
+            .collect();
+        s.selected_track = selected;
+    }
+    app
+}
+
+/// Render the whole UI and flatten the buffer to text.
+#[cfg(test)]
+fn rendered(app: &App, w: u16, h: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(w, h);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::draw(f, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let width = buffer.area.width as usize;
+    let mut out = String::new();
+    for (i, cell) in buffer.content.iter().enumerate() {
+        if i > 0 && i % width == 0 {
+            out.push('\n');
+        }
+        out.push_str(cell.symbol());
+    }
+    out
+}
+
+/// The Files tab formats only the rows on screen, so the selected row has to
+/// stay visible once the list is sliced.
+///
+/// This is the half of the change that can silently go wrong: the widget is
+/// handed a window rather than the whole list, so its `ListState` selection
+/// has to be re-based by the same offset. Get that wrong and the highlight
+/// lands on some other row, or scrolls off entirely.
+#[test]
+fn the_files_tab_shows_the_selected_row_wherever_it_is() {
+    for selected in [0usize, 1, 25, 500, 4_999] {
+        let app = app_with_library_rows(5_000, selected);
+        let content = rendered(&app, 120, 30);
+        assert!(
+            content.contains(&format!("Song Number {selected}")),
+            "selected row {selected} is not on screen:\n{content}"
+        );
+    }
+}
+
+/// A row far outside the visible window must NOT be rendered — otherwise the
+/// list is still being built in full and the slicing bought nothing.
+#[test]
+fn the_files_tab_does_not_render_rows_outside_the_window() {
+    let app = app_with_library_rows(5_000, 0);
+    let content = rendered(&app, 120, 30);
+    assert!(
+        !content.contains("Song Number 4999"),
+        "a row 5,000 down should not be formatted for a 30-row terminal:\n{content}"
+    );
+}
+
+/// How long a frame takes with a large media library open on the Files tab.
+///
+/// Same measurement as [`perf_playlist_frame`], for the longer of the two
+/// lists. This one used to build a `ListItem` for every row in the result set,
+/// which with no search query is the whole library — measured at 79.5 ms a
+/// frame over 36,329 rows and nine columns, release build, against a 100 ms
+/// tick. Formatting only the visible slice should make it flat in library
+/// size.
+///
+/// `cargo test --bin sparkamp perf_ml_files_frame -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn perf_ml_files_frame() {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    for n in [100usize, 1_000, 10_000, 36_329] {
+        let app = app_with_library_rows(n, n.saturating_sub(1));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).expect("test backend");
+        // One frame first so any lazy setup is not charged to the measurement.
+        term.draw(|f| crate::tui::ui::draw(f, &app)).unwrap();
+
+        let frames = 60;
+        let started = std::time::Instant::now();
+        for _ in 0..frames {
+            term.draw(|f| crate::tui::ui::draw(f, &app)).unwrap();
+        }
+        eprintln!("{n:>6} rows: {:?} per frame", started.elapsed() / frames);
+    }
+}
+
 // Media-library search debounce
 // -----------------------------------------------------------------------
 
