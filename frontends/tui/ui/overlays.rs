@@ -51,11 +51,7 @@ pub(super) fn draw_jump_overlay(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, &idx)| {
             let track = &app.playlist.tracks[idx];
-            let badge = app
-                .queue
-                .position_of(track.id)
-                .map(|p| format!("[{}] ", p + 1))
-                .unwrap_or_default();
+            let badge = app.queue.badge(track.id);
             let text = format!("{}{}. {}", badge, idx + 1, track.display_name());
             let style = if i == *selected {
                 Style::default().fg(Color::Black).bg(C_WARN)

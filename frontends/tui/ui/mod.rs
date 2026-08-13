@@ -528,11 +528,7 @@ pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             // Manual-queue position badge (prefix), mirroring the GTK frontend.
-            let badge = app
-                .queue
-                .position_of(track.id)
-                .map(|p| format!("[{}] ", p + 1))
-                .unwrap_or_default();
+            let badge = app.queue.badge(track.id);
             // Build the left portion truncated to name_w.
             let index_part = format!("{}{}{}. ", badge, prefix, i + 1);
             let avail_title = name_w.saturating_sub(index_part.chars().count());

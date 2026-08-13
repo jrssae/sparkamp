@@ -217,11 +217,7 @@ pub(super) fn build(ctx: &PlayerCtx, btn_jump_vol: &Button) -> JumpWin {
             for &idx in all_matches.iter().take(MAX_JUMP_RESULTS) {
                 let track = &s.playlist.tracks[idx];
                 // Manual-queue position badge (prefix), mirroring the playlist.
-                let badge = s
-                    .queue
-                    .position_of(track.id)
-                    .map(|p| format!("[{}] ", p + 1))
-                    .unwrap_or_default();
+                let badge = s.queue.badge(track.id);
                 let label_text = if track.artist.is_empty() {
                     format!("{}{:2}. {}", badge, idx + 1, track.title)
                 } else {

@@ -42,6 +42,25 @@ impl Queue {
         self.order.iter().position(|&x| x == id)
     }
 
+    /// The user-facing badge for a queued entry: `"[1] "`, `"[2] "`, and so on,
+    /// or empty when the entry is not queued.
+    ///
+    /// Every view that lists playlist rows draws this — the GTK playlist and
+    /// jump window, the TUI playlist and its queue overlay — and each had
+    /// composed it from [`Self::position_of`] itself. The rest of those rows
+    /// legitimately differ (one uses an em dash, one pads its state marker to
+    /// two columns, one truncates to the terminal width), but this prefix is
+    /// the same everywhere and is what makes a queued row recognisable across
+    /// frontends.
+    ///
+    /// The trailing space is part of it: the badge is a prefix, and callers
+    /// concatenate rather than join.
+    pub fn badge(&self, id: u64) -> String {
+        self.position_of(id)
+            .map(|p| format!("[{}] ", p + 1))
+            .unwrap_or_default()
+    }
+
     /// Enqueue if absent, dequeue if present — the `q`-key / context toggle.
     pub fn toggle(&mut self, id: u64) {
         if self.contains(id) {
@@ -183,5 +202,38 @@ mod tests {
         let after: HashSet<u64> = q.ids().iter().copied().collect();
         assert_eq!(before, after);
         assert_eq!(q.len(), 20);
+    }
+
+    /// The badge is what makes a queued row recognisable in every view, so its
+    /// exact shape — brackets, 1-based number, trailing space — is the
+    /// contract, not an implementation detail.
+    #[test]
+    fn badge_is_a_one_based_prefix_with_a_trailing_space() {
+        let mut q = Queue::new();
+        q.enqueue(10);
+        q.enqueue(20);
+        assert_eq!(q.badge(10), "[1] ");
+        assert_eq!(q.badge(20), "[2] ");
+    }
+
+    /// An unqueued entry contributes nothing, so callers can concatenate
+    /// unconditionally.
+    #[test]
+    fn badge_of_an_unqueued_entry_is_empty() {
+        let q = Queue::new();
+        assert_eq!(q.badge(1), "");
+    }
+
+    /// Dequeuing renumbers the rows behind it, which is what the badge exists
+    /// to show.
+    #[test]
+    fn badge_renumbers_after_a_dequeue() {
+        let mut q = Queue::new();
+        q.enqueue(1);
+        q.enqueue(2);
+        q.enqueue(3);
+        q.dequeue(1);
+        assert_eq!(q.badge(2), "[1] ");
+        assert_eq!(q.badge(3), "[2] ");
     }
 }

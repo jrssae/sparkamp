@@ -81,10 +81,7 @@ fn row_display_text(
     queue: &crate::queue::Queue,
     is_active: bool,
 ) -> String {
-    let badge = queue
-        .position_of(track.id)
-        .map(|p| format!("[{}] ", p + 1))
-        .unwrap_or_default();
+    let badge = queue.badge(track.id);
     let name = track.display_name();
     if track.broken {
         format!("{badge}⚠ {name}")
