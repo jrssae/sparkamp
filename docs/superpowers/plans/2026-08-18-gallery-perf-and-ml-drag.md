@@ -61,7 +61,7 @@ groups with artwork_path: 4,753
 
 # Track A — Album gallery performance
 
-### Task A1: Pin the current album fold with a characterization test
+### Task 1 (A1): Pin the current album fold with a characterization test
 
 The fold is about to be rewritten in SQL. Before touching it, lock in what it currently returns so the rewrite can be proven equivalent rather than assumed so.
 
@@ -70,7 +70,7 @@ The fold is about to be rewritten in SQL. Before touching it, lock in what it cu
 
 **Interfaces:**
 - Consumes: `MediaLibrary::albums(AlbumSort, bool)`, `AlbumGroup`, the existing private `insert_track` test helper.
-- Produces: `fold_fixture(&MediaLibrary)` — inserts a fixed 12-track fixture exercising blank albums, case variance, the album-artist toggle, missing years and artwork. Task A2 reuses it unchanged.
+- Produces: `fold_fixture(&MediaLibrary)` — inserts a fixed 12-track fixture exercising blank albums, case variance, the album-artist toggle, missing years and artwork. Task 2 (A2) reuses it unchanged.
 
 - [ ] **Step 1: Write the characterization test**
 
@@ -192,7 +192,7 @@ git commit -m "test(library): pin the album fold before rewriting it in SQL"
 
 ---
 
-### Task A2: Fold albums in SQL instead of reading 36k rows
+### Task 2 (A2): Fold albums in SQL instead of reading 36k rows
 
 `album_rows` currently `SELECT`s all 36,330 rows with an unindexable four-expression `ORDER BY LOWER(...)`, then folds them in a Rust `HashMap`. Group in SQLite instead and return ~5,158 rows.
 
@@ -200,10 +200,10 @@ The F12.2 toggle stays in Rust. `effective_album_artist` is the single source of
 
 **Files:**
 - Modify: `src/media_library/queries.rs:675-693` (`album_rows`) and `:703-…` (`albums`)
-- Test: `src/media_library/queries.rs` test module (Task A1's tests, unchanged)
+- Test: `src/media_library/queries.rs` test module (Task 1 (A1)'s tests, unchanged)
 
 **Interfaces:**
-- Consumes: `fold_fixture`, the three tests from Task A1.
+- Consumes: `fold_fixture`, the three tests from Task 1 (A1).
 - Produces: `album_rows` returning pre-aggregated rows; `AlbumRow` gains `track_count: i64`. `albums()` keeps its exact signature `albums(&self, sort: AlbumSort, artist_as_album: bool) -> Result<Vec<AlbumGroup>>`.
 
 - [ ] **Step 1: Widen `AlbumRow` to carry a count**
@@ -291,7 +291,7 @@ with
 - [ ] **Step 4: Run the characterization tests**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo test --lib media_library::queries::tests'`
-Expected: PASS — all three Task A1 tests, unchanged.
+Expected: PASS — all three Task 1 (A1) tests, unchanged.
 
 If `the_album_fold_groups_exactly_as_specified` fails on `artwork_path` only, that is the documented `MIN(artwork_path)` change. Confirm the new value is one of the group's real artwork paths, then update that one field in the fixture's expectation and say so in the commit message. Any other difference is a bug — fix the code, not the test.
 
@@ -328,7 +328,7 @@ git commit -m "perf(library): fold albums in SQL instead of reading every track"
 
 ---
 
-### Task A3: Stop rebuilding the gallery twice per click
+### Task 3 (A3): Stop rebuilding the gallery twice per click
 
 `albums.rs` hooks both `connect_row_selected` and `connect_row_activated` on the "albums" sidebar row. Both fire for one click on a row that was not already selected, so `show_gallery_overview()` runs twice — two full `albums()` queries and two full store repopulations. The existing comment calls this "idempotent", which it is, and also not free.
 
@@ -425,7 +425,7 @@ git commit -m "perf(gtk): rebuild the album gallery once per click, not twice"
 
 ---
 
-### Task A4: Splice the gallery store and cache the fold across re-entry
+### Task 4 (A4): Splice the gallery store and cache the fold across re-entry
 
 Two remaining costs: the store is filled with one `append` per album (5,158 `items-changed` emissions, each invalidating the `GridView`), and every return to the gallery re-runs `albums()` even when nothing changed.
 
@@ -589,7 +589,7 @@ git commit -m "perf(gtk): splice the gallery store, and keep its fold across re-
 
 # Track B — Unified ML drag-and-drop
 
-### Task B1: One core rule for append-vs-replace
+### Task 5 (B1): One core rule for append-vs-replace
 
 Five GTK sites each read `config.behavior.playlist_add_behavior` and decide independently; macOS has a sixth copy in Swift. Put the rule in core with tests, then converge the callers.
 
@@ -691,14 +691,14 @@ git commit -m "feat(core): one rule for whether an add replaces the playlist"
 
 ---
 
-### Task B2: One GTK entry point that applies the rule
+### Task 6 (B2): One GTK entry point that applies the rule
 
 **Files:**
 - Modify: `frontends/gtk/window/playlist_add.rs`
 
 **Interfaces:**
 - Consumes: `crate::playlist_add::{AddMode, should_replace}`, the existing `add_paths(state, &[PathBuf]) -> Added`.
-- Produces: `pub(super) fn add_with_mode(state: &Rc<RefCell<AppState>>, paths: &[PathBuf], mode: AddMode) -> Added`. Tasks B3 and B5 call it.
+- Produces: `pub(super) fn add_with_mode(state: &Rc<RefCell<AppState>>, paths: &[PathBuf], mode: AddMode) -> Added`. Tasks 7 (B3) and B5 call it.
 
 - [ ] **Step 1: Write the entry point**
 
@@ -738,7 +738,7 @@ pub(super) fn add_with_mode(
 - [ ] **Step 2: Build**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo build 2>&1 | head -20'`
-Expected: clean, apart from a dead-code warning for `add_with_mode` until Task B3 calls it. If the warning appears, leave it — Task B3 removes it in the same session. If you must commit before then, add `#[allow(dead_code)]` and delete it in B3.
+Expected: clean, apart from a dead-code warning for `add_with_mode` until Task 7 (B3) calls it. If the warning appears, leave it — Task 7 (B3) removes it in the same session. If you must commit before then, add `#[allow(dead_code)]` and delete it in B3.
 
 - [ ] **Step 3: Commit**
 
@@ -749,7 +749,7 @@ git commit -m "feat(gtk): one entry point for adding tracks to the active playli
 
 ---
 
-### Task B3: The drop handler honours the setting
+### Task 7 (B3): The drop handler honours the setting
 
 **Files:**
 - Modify: `frontends/gtk/window/dnd.rs:353`
@@ -816,7 +816,7 @@ git commit -m "fix(gtk): a drop onto the playlist honours the add-behavior setti
 
 ---
 
-### Task B4: A shared drag source for every ML view
+### Task 8 (B4): A shared drag source for every ML view
 
 Five ML views have no `DragSource`. Linux disc tracks are `cdda://N?device=/dev/srX` pseudo-URIs, which a `gdk::FileList` cannot carry — `gio::File::path()` returns `None` for them and the drop handler filters on `.path()`. So the payload is a Sparkamp-specific string type carrying URIs, offered alongside `FileList` for file-manager interop. macOS already does exactly this with its own UTI (`TrackDragPayload` in `PlaylistView.swift`).
 
@@ -831,7 +831,7 @@ Five ML views have no `DragSource`. Linux disc tracks are `cdda://N?device=/dev/
   - `pub(super) fn attach_uri_drag<W, F>(widget: &W, uris: F)` where `W: IsA<gtk4::Widget>`, `F: Fn() -> Vec<String> + 'static`
   - `pub(super) fn uris_from_value(value: &glib::Value) -> Vec<String>`
 
-  Task B5 consumes `uris_from_value`; Task B8 consumes `attach_uri_drag`.
+  Task 9 (B5) consumes `uris_from_value`; Task 12 (B8) consumes `attach_uri_drag`.
 
 - [ ] **Step 1: Write the helper**
 
@@ -988,7 +988,7 @@ git commit -m "feat(gtk): one drag source helper for the Media Library's views"
 
 ---
 
-### Task B5: The drop target accepts the Sparkamp payload
+### Task 9 (B5): The drop target accepts the Sparkamp payload
 
 **Files:**
 - Modify: `frontends/gtk/window/dnd.rs:246` (the `pl_view` drop target) and `:404` (the external-file drop target)
@@ -1034,7 +1034,7 @@ Delete the old `let file_list = match value.get::<gdk::FileList>() { … }` bloc
 
 - [ ] **Step 3: Do the same for the external-file target**
 
-Apply the same two changes to the `DropTarget` at `frontends/gtk/window/dnd.rs:404`, and route its add through the rule as in Task B3:
+Apply the same two changes to the `DropTarget` at `frontends/gtk/window/dnd.rs:404`, and route its add through the rule as in Task 7 (B3):
 
 ```rust
             let added = playlist_add::add_with_mode(
@@ -1068,7 +1068,7 @@ git commit -m "feat(gtk): the playlist accepts drags from any Media Library view
 
 ---
 
-### Task B6: Converge the five hand-rolled behavior checks
+### Task 10 (B6): Converge the five hand-rolled behavior checks
 
 **Files:**
 - Modify: `frontends/gtk/window/files.rs:1231` and `:1314`
@@ -1144,7 +1144,7 @@ git commit -m "refactor(gtk): one rule decides append-vs-replace everywhere"
 
 ---
 
-### Task B7: Expose the rule over FFI and drop the Swift copy
+### Task 11 (B7): Expose the rule over FFI and drop the Swift copy
 
 **Files:**
 - Modify: `src/ffi/playlist.rs`
@@ -1236,7 +1236,7 @@ git commit -m "refactor(ffi): the add-behavior rule crosses to macOS instead of 
 
 ---
 
-### Task B8: Attach drag sources to the five views that lack them
+### Task 12 (B8): Attach drag sources to the five views that lack them
 
 Containers expand to all their files (decision 3): an album drags its tracks, a saved playlist its tracks, a disc its tracks, a device its files.
 
@@ -1440,12 +1440,12 @@ git commit -m "feat(gtk): every Media Library view can be dragged to the playlis
 
 ## Self-Review
 
-**Spec coverage.** Decision 1 (replace clears first) → Task B1's `should_replace` plus B2's clear-then-add. Decision 2 (file-manager drops respect the flag) → Task B3 and B5 Step 3, and it is why no ML-vs-external marker exists anywhere in the plan. Decision 3 (containers expand) → Task B8 Steps 1, 3, 4, 5. Decision 4 (issue 3 = A + C) → A3/A4 are option A, A2 is option C. Decision 5 (issue 2 = option 1) → Track B in full: core rule (B1), GTK funnel (B2), converged callers (B6), FFI + macOS (B7), missing sources (B4, B8).
+**Spec coverage.** Decision 1 (replace clears first) → Task 5 (B1)'s `should_replace` plus B2's clear-then-add. Decision 2 (file-manager drops respect the flag) → Task 7 (B3) and B5 Step 3, and it is why no ML-vs-external marker exists anywhere in the plan. Decision 3 (containers expand) → Task 12 (B8) Steps 1, 3, 4, 5. Decision 4 (issue 3 = A + C) → A3/A4 are option A, A2 is option C. Decision 5 (issue 2 = option 1) → Track B in full: core rule (B1), GTK funnel (B2), converged callers (B6), FFI + macOS (B7), missing sources (B4, B8).
 
 **Known gaps, deliberately left.** The TUI is untouched: it already honours the setting (`media_library/mod.rs:826`, `detection.rs:126`) and has no drag-and-drop to fix. Those two sites could converge on `crate::playlist_add::should_replace` for symmetry, but that is a refactor of working code and is not requested here.
 
 **Type consistency.** `AddMode` and `should_replace` are defined in B1 and used unchanged in B2, B6 and B7. `add_with_mode` is defined in B2 and called in B3 and B5. `attach_uri_drag` and `uris_from_value` are defined in B4 and used in B5 and B8. `build_album_gallery` gains a third return element in A4 Step 4 and its single caller is updated in A4 Step 5. `AlbumRow` gains `track_count` in A2 Step 1 and is read in A2 Steps 2 and 3.
 
-**Verification that is not automated.** GTK widget layout, drag-and-drop and the gallery's load feel have no test coverage in this repo, so Tasks A3, A4, B3, B5, B6 and B8 all carry explicit by-hand steps. The riskiest is B3 Step 3 case 1 — an internal reorder under "Replace playlist" must not empty the playlist — because getting it wrong destroys the user's playlist rather than merely misbehaving.
+**Verification that is not automated.** GTK widget layout, drag-and-drop and the gallery's load feel have no test coverage in this repo, so Tasks 3 (A3), A4, B3, B5, B6 and B8 all carry explicit by-hand steps. The riskiest is B3 Step 3 case 1 — an internal reorder under "Replace playlist" must not empty the playlist — because getting it wrong destroys the user's playlist rather than merely misbehaving.
 
-**Not verifiable here.** Task B7's Swift edit cannot be compiled in this environment. Its commit message must say so.
+**Not verifiable here.** Task 11 (B7)'s Swift edit cannot be compiled in this environment. Its commit message must say so.
