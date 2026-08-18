@@ -709,14 +709,26 @@ impl MediaLibrary {
     /// instead of three keeps this cheap — three separate packed `MIN()`s
     /// (one per column) measured ~50% slower over the real library with no
     /// behavioural difference, so there is no reason to pay for it.
-    /// `char(1)` (a control byte no real tag contains) separates the
-    /// re-packed artist/album/album_artist after the fixed 11-byte
-    /// `%05d%05d|`-formatted sort-key prefix is stripped back off.
+    /// `char(1)` (a control byte no real tag is expected to contain)
+    /// separates the re-packed artist/album/album_artist after the fixed
+    /// 11-byte `%05d%05d|`-formatted sort-key prefix is stripped back off.
+    ///
+    /// "Expected to" isn't "can't": `crate::textutil::sanitize` (the only
+    /// cleanup tags get at ingestion, per `src/tags.rs`) strips NUL bytes and
+    /// a TOML escape, not arbitrary control bytes, so a corrupted or oddly
+    /// encoded tag could carry a literal 0x01. Left unguarded, that byte
+    /// would be indistinguishable from the real separator and `splitn` would
+    /// mis-split the row's artist/album/album_artist. So each field is
+    /// `REPLACE`d to strip any 0x01 *before* packing — the separator cannot
+    /// appear inside a field by construction, at the cost of silently
+    /// dropping that single byte from the rare tag that had one. No amount
+    /// of stray input can make the split ambiguous.
     fn album_rows(&self) -> Result<Vec<AlbumRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT MIN(printf('%05d%05d|', COALESCE(disc_num,0), COALESCE(track_num,0))
-                        || COALESCE(artist,'') || char(1) || COALESCE(album,'') || char(1)
-                        || COALESCE(album_artist,'')),
+                        || REPLACE(COALESCE(artist,''), char(1), '') || char(1)
+                        || REPLACE(COALESCE(album,''), char(1), '') || char(1)
+                        || REPLACE(COALESCE(album_artist,''), char(1), '')),
                     MIN(year), MIN(artwork_path), COUNT(*)
              FROM tracks
              GROUP BY LOWER(TRIM(COALESCE(album,''))),
@@ -727,6 +739,11 @@ impl MediaLibrary {
             let packed: String = r.get(0)?;
             // Byte offset 11 is always a char boundary: the sort-key prefix
             // (`%05d%05d|`) is pure ASCII.
+            //
+            // Safe to trust there are exactly 3 parts here — the REPLACE
+            // calls above guarantee no packed field can itself contain the
+            // char(1) separator, so these two splits are always the real
+            // ones, never a stray byte from tag data.
             let mut parts = packed[11..].splitn(3, '\u{1}');
             let artist = parts.next().unwrap_or_default().to_string();
             let album = parts.next().unwrap_or_default().to_string();
@@ -1435,6 +1452,68 @@ mod tests {
         assert_eq!(sampler.album_artist, "Various Artists");
         let only = on.iter().find(|g| g.album == "Only Album").unwrap();
         assert_eq!(only.album_artist, "Solo Artist");
+    }
+
+    /// `album_rows` packs artist/album/album_artist together with a
+    /// `char(1)` separator so a single `MIN()` can pick a deterministic
+    /// representative row (see its doc comment). `crate::textutil::sanitize`
+    /// — the only cleanup tags get at ingestion (`src/tags.rs`) — strips NUL
+    /// bytes and a TOML escape, not arbitrary control bytes, so a corrupted
+    /// or oddly encoded tag could carry a literal 0x01 that collides with
+    /// the separator. This pins that the fold strips 0x01 from each field
+    /// before packing, so a stray one can never mis-split the row into the
+    /// wrong artist/album/album_artist — covering all three packed
+    /// positions: leading (artist), middle (album), and trailing remainder
+    /// (album_artist).
+    #[test]
+    fn a_stray_0x01_byte_in_tag_data_does_not_mis_split_the_fold() {
+        let (lib, _db) = temp_lib();
+        // All three packed fields carry a literal 0x01 (the separator byte).
+        insert_track(
+            &lib,
+            "/m/x1.mp3",
+            "x1.mp3",
+            "Ba\u{1}nd A",
+            "Al\u{1}bum One",
+            "AA\u{1}rtist",
+            Some(1),
+            Some(1),
+            Some(2020),
+            None,
+        );
+        // A second group whose album_artist is blank, so the F12.2 toggle
+        // reads the (also dirty) artist field back out through the fallback
+        // path — the only way to observe the leading packed field, since
+        // AlbumGroup doesn't expose artist directly.
+        insert_track(
+            &lib,
+            "/m/x2.mp3",
+            "x2.mp3",
+            "So\u{1}lo Artist",
+            "Al\u{1}bum Two",
+            "",
+            Some(1),
+            Some(1),
+            Some(2021),
+            None,
+        );
+
+        let off = lib.albums(AlbumSort::Artist, false).unwrap();
+        let g1 = off
+            .iter()
+            .find(|g| g.album == "Album One")
+            .expect("album field split cleanly despite the leading dirty artist field");
+        assert_eq!(g1.album_artist, "AArtist", "trailing remainder field split cleanly");
+
+        let on = lib.albums(AlbumSort::Artist, true).unwrap();
+        let g2 = on
+            .iter()
+            .find(|g| g.album == "Album Two")
+            .expect("album field split cleanly with a blank album_artist");
+        assert_eq!(
+            g2.album_artist, "Solo Artist",
+            "leading artist field split cleanly, reached via the F12.2 fallback"
+        );
     }
 }
 
