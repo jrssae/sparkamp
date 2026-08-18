@@ -45,6 +45,11 @@ mod now_playing;
 mod replaygain;
 mod pathutil;
 mod play_stats;
+// The bin target compiles this module standalone, so until a GTK call site
+// lands in a later task (B3) its variants read as unconstructed here — the
+// lib target's `pub` surface is exempt from the same check.
+#[allow(dead_code)]
+mod playlist_add;
 // Shared active-playlist status-line formatter (phase 7).
 mod playlist_ingest;
 mod playlist_status;

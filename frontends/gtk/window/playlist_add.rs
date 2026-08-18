@@ -329,3 +329,34 @@ pub(super) fn apply_facts(
     }
     changed
 }
+
+/// Add `paths` to the active playlist, applying the append-vs-replace rule.
+///
+/// The single place in the GTK frontend that turns
+/// `config.behavior.playlist_add_behavior` into an action. Five call sites
+/// each used to read the setting, stop the player and clear the playlist
+/// themselves; the drop handler in `dnd.rs` did none of it, so a
+/// Replace-configured drag appended.
+///
+/// A replace stops the player first. Clearing the playlist out from under a
+/// playing track leaves the engine holding a file the playlist no longer
+/// lists, and the tick loop then reports a position in a track the user
+/// cannot see.
+// The first caller lands in Task 7 (B3); until then this is unreferenced.
+#[allow(dead_code)]
+pub(super) fn add_with_mode(
+    state: &Rc<RefCell<AppState>>,
+    paths: &[std::path::PathBuf],
+    mode: crate::playlist_add::AddMode,
+) -> Added {
+    let replace = {
+        let s = state.borrow();
+        crate::playlist_add::should_replace(&s.config.behavior.playlist_add_behavior, mode)
+    };
+    if replace {
+        // Fresh borrow per line — never one held across a player call.
+        let _ = state.borrow_mut().player.stop();
+        state.borrow_mut().playlist.clear();
+    }
+    add_paths(state, paths)
+}
