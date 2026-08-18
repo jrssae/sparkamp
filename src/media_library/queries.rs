@@ -1272,3 +1272,32 @@ mod tests {
         assert!(group("Liberation", "Ward Thomas").matches("  ward  "));
     }
 }
+
+#[cfg(test)]
+mod gallery_cost_probe {
+    use super::*;
+
+    /// Measure what the Albums nav click actually pays for. Ignored: needs the
+    /// real library.
+    #[test]
+    #[ignore]
+    fn live_gallery_cost() {
+        let path = dirs::data_dir()
+            .unwrap()
+            .join("sparkamp/media_library.db");
+        let lib = MediaLibrary::open_at(&path).unwrap();
+
+        let t0 = std::time::Instant::now();
+        let rows = lib.album_rows().unwrap();
+        let t_rows = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let groups = lib.albums(AlbumSort::Artist, false).unwrap();
+        let t_all = t1.elapsed();
+
+        eprintln!("album_rows(): {t_rows:?} for {} rows", rows.len());
+        eprintln!("albums():     {t_all:?} for {} groups", groups.len());
+        let with_art = groups.iter().filter(|g| g.artwork_path.is_some()).count();
+        eprintln!("groups with artwork_path: {with_art}");
+    }
+}
