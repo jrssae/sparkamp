@@ -545,6 +545,21 @@ impl MediaLibrary {
             CREATE INDEX IF NOT EXISTS idx_tracks_title  ON tracks(title);
             CREATE INDEX IF NOT EXISTS idx_tracks_album  ON tracks(album);
             CREATE INDEX IF NOT EXISTS idx_tracks_folder ON tracks(folder_id);
+            -- Covers MediaLibrary::album_rows()'s GROUP BY. A plain
+            -- (album, album_artist, artist) index does NOT get used here —
+            -- confirmed with EXPLAIN QUERY PLAN, still 'USE TEMP B-TREE FOR
+            -- GROUP BY' — because the query groups on
+            -- LOWER(TRIM(COALESCE(...))) of each column, not the raw column.
+            -- The index expressions must match that exactly for SQLite to
+            -- scan in already-grouped order instead of sorting; if
+            -- album_rows()'s GROUP BY expression ever changes, this index
+            -- must change with it.
+            CREATE INDEX IF NOT EXISTS idx_tracks_album_group
+                ON tracks(
+                    LOWER(TRIM(COALESCE(album,''))),
+                    LOWER(TRIM(COALESCE(album_artist,''))),
+                    LOWER(TRIM(COALESCE(artist,'')))
+                );
             ",
         )?;
 

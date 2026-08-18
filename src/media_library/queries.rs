@@ -71,15 +71,19 @@ impl AlbumGroup {
     }
 }
 
-/// Lean per-track projection used only to fold rows into [`AlbumGroup`]s.
-/// Deliberately narrower than [`LibTrack`] — the gallery grid needs none of
-/// the other 30-odd columns just to group and count.
+/// Lean per-*group* projection used only to fold rows into [`AlbumGroup`]s.
+///
+/// One row per distinct `(album, album_artist, artist)` triple, not per track:
+/// SQLite does the counting and the year/artwork picking, and Rust only has to
+/// merge the triples that the F12.2 toggle collapses together. Over the
+/// 36,330-track library this is ~5,200 rows instead of 36,330.
 struct AlbumRow {
     artist: String,
     album: String,
     album_artist: String,
     year: Option<i64>,
     artwork_path: Option<String>,
+    track_count: i64,
 }
 
 // Bin build on macOS gates out GTK, leaving these FFI/GTK-reachable
@@ -669,24 +673,71 @@ impl MediaLibrary {
     // Album gallery (phase 11): grouping + per-album track fetch
     // -----------------------------------------------------------------------
 
-    /// Lean projection over every track, ordered deterministically so that
-    /// [`Self::albums`] can fold rows into groups (and pick a stable
-    /// "first" row per group for representative artwork) with a single pass.
+    /// Pre-aggregate the tracks table into one row per
+    /// `(album, album_artist, artist)` triple.
+    ///
+    /// Grouping is case-insensitive on album and album_artist, matching the
+    /// Rust fold this replaced. `artist` is in the key only because the F12.2
+    /// toggle may promote it to the group's album-artist; when the toggle is
+    /// off, [`MediaLibrary::albums`] merges those rows back together.
+    ///
+    /// `MIN(year)` and the artwork pick happen here rather than in Rust.
+    /// Artwork uses `MIN(artwork_path)` — a deterministic choice among the
+    /// group's non-null paths, replacing "first in a four-expression
+    /// ORDER BY", which cost a full unindexable sort of every track row to
+    /// decide. The chosen path can differ from the old one for an album whose
+    /// tracks carry different artwork; both are valid cover art for that
+    /// album, and no ordering guarantee was ever documented.
+    ///
+    /// NULLs are folded to '' by COALESCE so the GROUP BY key matches the
+    /// Rust-side `trim()` handling of blank albums.
+    ///
+    /// `artist`/`album`/`album_artist` are grouped case-insensitively, but the
+    /// *raw*, as-tagged text is what the gallery displays — and a group can
+    /// contain rows whose raw text differs only in case (e.g. "Liberation"
+    /// vs. "LIBERATION"). A plain bare `SELECT album` here is ambiguous:
+    /// SQLite only guarantees which input row bare columns come from when the
+    /// query has exactly one `MIN()`/`MAX()` aggregate, and this query has
+    /// two more (`year`, `artwork_path`) — verified empirically to pick
+    /// whichever row happens to win the *artwork* tie, which is not what we
+    /// want. So the three text columns are packed together with a
+    /// `(disc_num, track_num)` sort key into one string and pulled through a
+    /// single `MIN()`, reproducing the old per-track
+    /// `ORDER BY ..., disc_num, track_num` tie-break: the raw text comes from
+    /// the lowest (disc_num, track_num) row in the group, matching what the
+    /// Rust fold used to pick as the "first" row. One combined `MIN()`
+    /// instead of three keeps this cheap — three separate packed `MIN()`s
+    /// (one per column) measured ~50% slower over the real library with no
+    /// behavioural difference, so there is no reason to pay for it.
+    /// `char(1)` (a control byte no real tag contains) separates the
+    /// re-packed artist/album/album_artist after the fixed 11-byte
+    /// `%05d%05d|`-formatted sort-key prefix is stripped back off.
     fn album_rows(&self) -> Result<Vec<AlbumRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(artist,''), COALESCE(album,''), COALESCE(album_artist,''),
-                    year, artwork_path
+            "SELECT MIN(printf('%05d%05d|', COALESCE(disc_num,0), COALESCE(track_num,0))
+                        || COALESCE(artist,'') || char(1) || COALESCE(album,'') || char(1)
+                        || COALESCE(album_artist,'')),
+                    MIN(year), MIN(artwork_path), COUNT(*)
              FROM tracks
-             ORDER BY LOWER(COALESCE(album_artist,'')), LOWER(COALESCE(artist,'')),
-                      LOWER(COALESCE(album,'')), COALESCE(disc_num,0), COALESCE(track_num,0)",
+             GROUP BY LOWER(TRIM(COALESCE(album,''))),
+                      LOWER(TRIM(COALESCE(album_artist,''))),
+                      LOWER(TRIM(COALESCE(artist,'')))",
         )?;
         let rows = stmt.query_map([], |r| {
+            let packed: String = r.get(0)?;
+            // Byte offset 11 is always a char boundary: the sort-key prefix
+            // (`%05d%05d|`) is pure ASCII.
+            let mut parts = packed[11..].splitn(3, '\u{1}');
+            let artist = parts.next().unwrap_or_default().to_string();
+            let album = parts.next().unwrap_or_default().to_string();
+            let album_artist = parts.next().unwrap_or_default().to_string();
             Ok(AlbumRow {
-                artist: r.get(0)?,
-                album: r.get(1)?,
-                album_artist: r.get(2)?,
-                year: r.get(3)?,
-                artwork_path: r.get(4)?,
+                artist,
+                album,
+                album_artist,
+                year: r.get(1)?,
+                artwork_path: r.get(2)?,
+                track_count: r.get(3)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -739,7 +790,10 @@ impl MediaLibrary {
                 is_no_album,
             });
 
-            acc.track_count += 1;
+            // `+=` not `+= 1`: each row now stands for a whole
+            // (album, album_artist, artist) triple, and several triples merge
+            // into one group when the F12.2 toggle promotes an artist.
+            acc.track_count += row.track_count;
             if let Some(y) = row.year {
                 acc.year = Some(acc.year.map_or(y, |existing| existing.min(y)));
             }
