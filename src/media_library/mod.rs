@@ -763,6 +763,20 @@ impl MediaLibrary {
     /// A change on this connection moves the first number; a change on any
     /// other connection moves the second. A cache keyed on just one half
     /// would miss whichever kind of write the other half exists to catch.
+    ///
+    /// Known limitation, accepted rather than fixed (fix round 2 review):
+    /// this is a whole-database token, not an albums-table-specific one. Any
+    /// write on this connection moves the first number, including
+    /// `record_play`'s `UPDATE ... play_count` (`tick.rs`, fired every few
+    /// seconds during ordinary listening on the same shared connection the
+    /// gallery reads through) — so the gallery's cached fold gets dropped by
+    /// nothing more than the user leaving a track playing. Narrowing that
+    /// would mean going back to per-call-site invalidation (i.e. some list
+    /// of "these writes matter, these don't"), which is exactly the
+    /// discipline that silently broke for track removal in fix round 1. The
+    /// cost of leaving it broad is bounded: worst case, opening the gallery
+    /// after a listening session pays one extra re-fold — the same cost a
+    /// cache-less gallery would always pay, never worse.
     pub fn change_token(&self) -> (i64, i64) {
         // SAFETY: `handle()` returns `self.conn`'s raw `sqlite3*`, valid for
         // as long as `self.conn` is alive (it is, for the duration of this
@@ -775,7 +789,24 @@ impl MediaLibrary {
         let data_version: i64 = self
             .conn
             .pragma_query_value(None, "data_version", |row| row.get(0))
-            .unwrap_or(0);
+            // Fix round 2 review nit: on an already-open, already-initialized
+            // connection this PRAGMA is effectively infallible, but a
+            // constant fallback (`.unwrap_or(0)`) would fail in the wrong
+            // direction if it ever weren't — every subsequent call would
+            // read the same `0`, so a cache comparing tokens would see "no
+            // change" forever and go silently stale for good, the exact
+            // failure mode this whole mechanism exists to prevent. A fresh
+            // value on every failed call instead makes the token compare
+            // unequal to whatever was last cached, forcing a re-fold on
+            // every `rebuild()` until the PRAGMA works again — a real cost,
+            // but only while something is already broken, and never a
+            // silent lie.
+            .unwrap_or_else(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as i64)
+                    .unwrap_or(i64::MIN)
+            });
         (total_changes, data_version)
     }
 }

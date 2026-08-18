@@ -457,7 +457,11 @@ pub(super) fn build_album_gallery(
             // O(1): `sqlite3_total_changes()` plus `PRAGMA data_version`, not
             // a `COUNT(*)`/`MAX(...)` query — see `change_token`'s doc for
             // why a real query would burn a meaningful fraction of the fold
-            // it exists to let this function skip.
+            // it exists to let this function skip. Also see that doc for a
+            // known, accepted limitation: this is a whole-database token, so
+            // an ordinary play-count update while listening drops this
+            // cache too, same as a scan would — never wrong, just an
+            // occasional extra re-fold.
             let current_token = state
                 .borrow()
                 .media_lib

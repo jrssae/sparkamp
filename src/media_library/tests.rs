@@ -2876,3 +2876,64 @@ fn change_token_is_unchanged_across_two_reads_with_no_write_between() {
 
     assert_eq!(before, after, "reads alone must not move the token");
 }
+
+/// Fix round 2 review: the three tests above all read/write through one
+/// `MediaLibrary`, so they only exercise the `total_changes` half of the
+/// token. Track removal (`files.rs`'s `btn_rm_from_ml`,
+/// `files_menu.rs`'s `ml.remove`) runs `soft_delete_tracks` +
+/// `purge_deleted_tracks` on its OWN `Connection`, opened via
+/// `MediaLibrary::open_at` on a background thread — never the long-lived
+/// connection the gallery reads through. `total_changes` alone cannot see
+/// that write; only `PRAGMA data_version` can, and nothing above exercises
+/// it. This is the test that actually covers Critical finding #1.
+///
+/// A second `MediaLibrary::open_at` on the SAME database file, on this same
+/// test thread, reproduces the "separate `Connection`, same file" shape
+/// those write paths use. A second OS thread is not needed to make this
+/// faithful: SQLite's `data_version`/`sqlite3_total_changes` accounting is
+/// keyed on the `sqlite3*` connection handle, not the thread that holds it
+/// (confirmed against the same `sqlite3.h` comments `change_token`'s doc
+/// cites — both describe "database connections", never threads) — the
+/// production code only uses a thread because `rusqlite::Connection` is not
+/// `Send`, a constraint that doesn't apply to two connections opened
+/// side by side in one test function.
+#[test]
+fn change_token_reacts_to_a_delete_made_through_a_second_connection() {
+    let (lib, db_file) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    let track_id = lib.all_tracks().unwrap()[0].id;
+
+    // Second connection to the same database file — exactly what
+    // `MediaLibrary::open_at(&db_path)` gives the background thread in
+    // files.rs.
+    let lib2 = MediaLibrary::open_at(db_file.path()).unwrap();
+
+    // A read through either connection must be inert first: the drill-down
+    // fix (Critical finding #2) depends on reads never moving the token,
+    // and that has to hold across connections too, not just on the one the
+    // other tests use.
+    let before = lib.change_token();
+    let _ = lib.all_tracks().unwrap();
+    let _ = lib2.all_tracks().unwrap();
+    assert_eq!(
+        before,
+        lib.change_token(),
+        "a read on either connection must not move the first connection's token"
+    );
+
+    // Delete through the SECOND connection — the shape the real removal
+    // paths use.
+    lib2.soft_delete_tracks(&[track_id]).unwrap();
+    lib2.purge_deleted_tracks().unwrap();
+
+    let after = lib.change_token();
+    assert_ne!(
+        before, after,
+        "a DELETE made through a different connection must move the FIRST \
+         connection's token via PRAGMA data_version — total_changes alone \
+         cannot see a write made on another connection"
+    );
+}
