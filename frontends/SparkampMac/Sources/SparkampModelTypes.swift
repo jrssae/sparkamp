@@ -221,7 +221,7 @@ struct AlbumGroup: Identifiable {
     /// nil when the core's `has_year` flag is 0 (unknown across the group).
     let year: Int64?
     let trackCount: Int64
-    /// True for the single synthetic "(no album)" bucket (blank `album`).
+    /// True for the single synthetic "(No album)" bucket (blank `album`).
     let isNoAlbum: Bool
 
     /// Stable identity for `ForEach`/gallery diffing. The U+0001 separator
@@ -233,8 +233,13 @@ struct AlbumGroup: Identifiable {
     /// Tile caption. Lives here rather than in the cell view because the
     /// gallery's search filter matches on what the user can actually read —
     /// typing "no album" has to find the bucket whose raw `album` is "".
+    ///
+    /// The bucket's label must read the same here as it does in GTK and the
+    /// TUI, which take it from `NO_ALBUM_LABEL` in `src/media_library/`
+    /// `queries.rs` — the source of truth. Swift cannot reference a Rust
+    /// `const`, so this literal mirrors it by hand; change both together.
     var displayAlbum: String {
-        isNoAlbum ? "(no album)" : (album.isEmpty ? "Unknown Album" : album)
+        isNoAlbum ? "(No album)" : (album.isEmpty ? "Unknown Album" : album)
     }
     /// Tile subtitle; empty means no album-artist could be derived (see
     /// `effective_album_artist` and the F12.2 toggle).

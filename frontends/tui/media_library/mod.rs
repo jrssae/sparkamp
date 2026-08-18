@@ -747,6 +747,23 @@ impl App {
     /// one per character, short enough that the list still feels attached to
     /// the input. See [`Self::refresh_ml_search`] for what is being deferred.
     pub(super) fn note_ml_search_changed(&mut self) {
+        // Typing on the Albums tab leaves an open album. The query filters the
+        // album list and means nothing inside a single album, so a drill-down
+        // left standing would show one album's tracks under a box that is
+        // filtering something else. GTK does the same on its Files search,
+        // clearing `album_filter` as soon as a character lands.
+        //
+        // Popped here rather than behind the deadline below, for the reason
+        // GTK gives for doing it outside its own debounce: it costs nothing
+        // and should not wait on a timer.
+        if let Mode::MediaLibrary(s) = &mut self.mode
+            && s.tab == MediaLibraryTab::Albums
+            && s.album_drill.is_some()
+        {
+            s.album_drill = None;
+            s.album_tracks.clear();
+            s.selected_album_track = 0;
+        }
         self.ml_search_due =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
     }
@@ -757,7 +774,17 @@ impl App {
     ///
     /// Called from `tick` once typing settles, not straight from the key
     /// handler — see [`Self::note_ml_search_changed`].
+    ///
+    /// The Albums tab draws a list this query cannot produce — groups folded
+    /// from the library, not rows returned by it — so it is handed off to
+    /// [`Self::refresh_ml_albums`]. The hand-off lives here because this is
+    /// the one choke point every route into a search runs through: the tick's
+    /// deadline, a sort change, and a watch-folder event all arrive by it.
     pub(super) fn refresh_ml_search(&mut self) {
+        if matches!(&self.mode, Mode::MediaLibrary(s) if s.tab == MediaLibraryTab::Albums) {
+            self.refresh_ml_albums();
+            return;
+        }
         let (query, sort_col, sort_desc) = if let Mode::MediaLibrary(s) = &self.mode {
             (s.search_query.clone(), s.sort_col.clone(), s.sort_desc)
         } else {
@@ -838,23 +865,42 @@ impl App {
         };
     }
 
-    /// Load the Albums tab's grouped list. Called only on Albums-tab entry
-    /// (the Tab-cycle handler) — a lean, single query folded in Rust
+    /// Load the Albums tab's grouped list, narrowed to the current search
+    /// query.
+    ///
+    /// Called on Albums-tab entry (the Tab-cycle handler) and once typing
+    /// settles — a lean, single query folded in Rust
     /// (`MediaLibrary::albums`), never re-run per keystroke, so a 36k-track
     /// library stays responsive. Default sort: Artist (no sort UI in the
     /// TUI — YAGNI until requested).
+    ///
+    /// The fold is what costs; filtering it afterwards is a walk over a few
+    /// hundred structs, which is why the query is applied here rather than
+    /// pushed into SQL. `AlbumGroup::matches` decides what stays, so the TUI
+    /// and the GTK gallery agree on what a query means down to the no-album
+    /// bucket.
     pub(super) fn refresh_ml_albums(&mut self) {
         let artist_as_album = self.config.media_library.artist_as_album_artist;
-        let albums = self
+        let query = match &self.mode {
+            Mode::MediaLibrary(s) => s.search_query.clone(),
+            _ => String::new(),
+        };
+        let albums: Vec<crate::media_library::AlbumGroup> = self
             .media_lib
             .as_ref()
             .and_then(|lib| {
                 lib.albums(crate::media_library::AlbumSort::Artist, artist_as_album)
                     .ok()
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a.matches(&query))
+            .collect();
         if let Mode::MediaLibrary(s) = &mut self.mode {
-            s.selected_album = s.selected_album.min(albums.len().saturating_sub(1));
+            // Back to the top, as the Files list does on a new query: after a
+            // filter the old index points at whichever album happens to have
+            // taken that slot, which is not the one the user was looking at.
+            s.selected_album = 0;
             s.albums = albums;
         }
     }

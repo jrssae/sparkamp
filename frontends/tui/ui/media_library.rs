@@ -1009,11 +1009,16 @@ pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area:
     match &state.album_drill {
         None => {
             if state.albums.is_empty() {
+                // Which emptiness this is decides what the user does next:
+                // add a folder, or clear the box. Saying only the first when
+                // it is the second sends them looking for a scanning bug.
+                let msg = if state.search_query.trim().is_empty() {
+                    "No albums in the media library."
+                } else {
+                    "No albums match your search."
+                };
                 frame.render_widget(
-                    Paragraph::new(Span::styled(
-                        "No albums in the media library.",
-                        Style::default().fg(C_DIM),
-                    )),
+                    Paragraph::new(Span::styled(msg, Style::default().fg(C_DIM))),
                     area,
                 );
                 return;
@@ -1025,7 +1030,7 @@ pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area:
                 .enumerate()
                 .map(|(i, g)| {
                     let name = if g.is_no_album {
-                        "(no album)".to_string()
+                        crate::media_library::NO_ALBUM_LABEL.to_string()
                     } else {
                         match g.year {
                             Some(y) => format!("{} — {} ({y})", g.album, g.album_artist),
@@ -1061,7 +1066,7 @@ pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area:
             };
 
             let header = if album.trim().is_empty() {
-                "(no album)".to_string()
+                crate::media_library::NO_ALBUM_LABEL.to_string()
             } else {
                 format!("{album} — {album_artist}")
             };

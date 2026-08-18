@@ -20,6 +20,20 @@ pub enum AlbumSort {
     Year,
 }
 
+/// What every frontend draws in place of an album name for the bucket that
+/// collects tracks with no album tag.
+///
+/// One constant rather than a literal per view: GTK drew "(No Album)" and the
+/// TUI "(no album)", which is invisible until you search for the bucket by the
+/// words on screen and only one of them answers. The macOS frontend cannot
+/// reference this — Swift has its own literal in `SparkampModelTypes.swift`,
+/// which names this constant as the source of truth.
+///
+/// Display only. The bucket's identity on the wire is a blank `album`, and
+/// that is what `album_tracks` is keyed on, so this text never reaches a
+/// lookup.
+pub const NO_ALBUM_LABEL: &str = "(No album)";
+
 /// One album (or the single "no album" bucket) as folded from the tracks
 /// table. Produced by [`MediaLibrary::albums`]; feeds the phase-11 album
 /// gallery view.
@@ -31,6 +45,30 @@ pub struct AlbumGroup {
     pub track_count: i64,
     pub artwork_path: Option<String>,
     pub is_no_album: bool,
+}
+
+impl AlbumGroup {
+    /// Whether this album should stay on screen for `query`.
+    ///
+    /// Matched against what the gallery draws — title, artist, and for the
+    /// synthetic bucket [`NO_ALBUM_LABEL`] — rather than the raw fields, so a
+    /// search for the words the user can read finds the tile showing them. An
+    /// empty or all-whitespace query matches everything, which is what makes
+    /// clearing the box restore the full list.
+    ///
+    /// Filtering happens here rather than in SQL because the gallery already
+    /// holds the whole folded list in memory (a few hundred rows at most) and
+    /// re-querying per keystroke would be slower, not faster.
+    pub fn matches(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        if self.is_no_album && NO_ALBUM_LABEL.to_lowercase().contains(&q) {
+            return true;
+        }
+        self.album.to_lowercase().contains(&q) || self.album_artist.to_lowercase().contains(&q)
+    }
 }
 
 /// Lean per-track projection used only to fold rows into [`AlbumGroup`]s.
@@ -1170,5 +1208,67 @@ mod tests {
         let mut names: Vec<&str> = tracks.iter().map(|t| t.filename.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["l1.mp3", "l2.mp3"]);
+    }
+
+    // ── AlbumGroup::matches ─────────────────────────────────────────────
+
+    fn group(album: &str, album_artist: &str) -> AlbumGroup {
+        AlbumGroup {
+            album: album.to_string(),
+            album_artist: album_artist.to_string(),
+            year: None,
+            track_count: 1,
+            artwork_path: None,
+            is_no_album: album.trim().is_empty(),
+        }
+    }
+
+    #[test]
+    fn an_empty_query_matches_every_album() {
+        assert!(group("Liberation", "Ward Thomas").matches(""));
+        assert!(group("", "Ward Thomas").matches("   "));
+    }
+
+    #[test]
+    fn a_query_matches_the_album_title() {
+        assert!(group("Liberation", "Ward Thomas").matches("liber"));
+        assert!(!group("Liberation", "Ward Thomas").matches("cartwheels"));
+    }
+
+    #[test]
+    fn a_query_matches_the_album_artist() {
+        assert!(group("Liberation", "Ward Thomas").matches("ward"));
+    }
+
+    #[test]
+    fn matching_ignores_case_on_both_sides() {
+        let g = group("Liberation", "Ward Thomas");
+        for q in ["WARD", "ward", "WaRd", "LIBERATION"] {
+            assert!(g.matches(q), "{q:?} should match");
+        }
+    }
+
+    /// The bucket has no album text to match, so it is found by the label the
+    /// frontends actually draw for it — a user searches for what they can read
+    /// on screen. Case-folded like any other match.
+    #[test]
+    fn the_no_album_bucket_is_found_by_its_label() {
+        let bucket = group("", "Various");
+        assert!(bucket.is_no_album);
+        for q in ["no album", "No Album", "NO ALBUM", "(no", "album)"] {
+            assert!(bucket.matches(q), "{q:?} should find the bucket");
+        }
+    }
+
+    /// The label is the bucket's alone. A real album must not answer to it.
+    #[test]
+    fn a_real_album_does_not_answer_to_the_no_album_label() {
+        assert!(!group("Liberation", "Ward Thomas").matches("no album"));
+    }
+
+    /// Surrounding whitespace is the user's typing, not part of the query.
+    #[test]
+    fn a_query_is_trimmed_before_matching() {
+        assert!(group("Liberation", "Ward Thomas").matches("  ward  "));
     }
 }

@@ -28,7 +28,7 @@ pub use playlists::PlaySnapshot;
 // consumer yet (that lands in a later phase), so allow the unused-import
 // warning until then.
 #[allow(unused_imports)]
-pub use queries::{AlbumGroup, AlbumSort};
+pub use queries::{AlbumGroup, AlbumSort, NO_ALBUM_LABEL};
 #[cfg(test)]
 mod tests;
 

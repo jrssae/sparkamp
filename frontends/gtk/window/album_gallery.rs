@@ -12,15 +12,17 @@ use super::*;
 // play/enqueue actions are a follow-up task — this file exposes a single
 // builder fn for that task to call.
 
-/// Build the album gallery page: a header row (sort dropdown + zoom
-/// controls) above a scrolled, recycled-cell `GridView` of album covers.
+/// Build the album gallery page: a search row and a header row (sort
+/// dropdown + zoom controls) above a scrolled, recycled-cell `GridView` of
+/// album covers.
 ///
 /// Returns `(page_widget, rebuild)`. `rebuild` reloads
 /// `albums(sort, artist_as_album)` from `state.borrow().media_lib` and
 /// repopulates the list store — call it whenever the gallery becomes
-/// visible again (e.g. after a scan). `on_album_activate` fires with
-/// `(album, album_artist)` when a cell is double-clicked or activated via
-/// Enter.
+/// visible again (e.g. after a scan). It reapplies the search query on the
+/// way, so a rebuild never silently widens what is on screen.
+/// `on_album_activate` fires with `(album, album_artist)` when a cell is
+/// double-clicked or activated via Enter.
 ///
 /// Guards against `media_lib == None` (F12.3 `skip_db_load`): the grid is
 /// simply empty until the DB is opened, never a panic.
@@ -239,7 +241,7 @@ pub(super) fn build_album_gallery(
             cell.set_width_request(px_now + 32);
 
             let title_display = if is_no_album {
-                "(No Album)".to_string()
+                crate::media_library::NO_ALBUM_LABEL.to_string()
             } else {
                 title_text
             };
@@ -382,10 +384,52 @@ pub(super) fn build_album_gallery(
     let sort_dd = DropDown::from_strings(&["Artist", "Album", "Year"]);
     sort_dd.set_selected(gallery_sort_idx(&state.borrow().config.window.gallery_sort));
 
-    let rebuild: Rc<dyn Fn()> = {
+    // The folded album list as the database last handed it over, before the
+    // search box has had its say.
+    //
+    // Kept in memory because `albums()` is a whole-library fold, not a lookup
+    // — the TUI's `refresh_ml_albums` documents the same cost as its reason
+    // for loading on tab entry only. Filtering therefore works from this Vec;
+    // asking SQL again on every keystroke is what this avoids.
+    let all_albums: Rc<RefCell<Vec<crate::media_library::AlbumGroup>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    // Live text of the search box below. Case folding happens inside
+    // `AlbumGroup::matches`, so this stays exactly as typed.
+    let query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
+    // Repopulate the grid from `all_albums`, honouring the current query.
+    // A few hundred structs and no I/O, which is why the search box calls it
+    // straight from `connect_changed` with no debounce — unlike the Files and
+    // Devices boxes, which re-run a query and do need one.
+    let refilter: Rc<dyn Fn()> = {
         let store = store.clone();
+        let all_albums = all_albums.clone();
+        let query = query.clone();
+        Rc::new(move || {
+            // Collected before touching the store: appending drives the
+            // GridView's bind closure, and no RefCell borrow may be live
+            // across a UI call (see the `bind` handler above).
+            let matching: Vec<crate::media_library::AlbumGroup> = {
+                let q = query.borrow();
+                all_albums
+                    .borrow()
+                    .iter()
+                    .filter(|a| a.matches(&q))
+                    .cloned()
+                    .collect()
+            };
+            store.remove_all();
+            for album in matching {
+                store.append(&glib::BoxedAnyObject::new(album));
+            }
+        })
+    };
+
+    let rebuild: Rc<dyn Fn()> = {
         let state = state.clone();
         let sort_dd = sort_dd.clone();
+        let all_albums = all_albums.clone();
+        let refilter = refilter.clone();
         Rc::new(move || {
             ensure_media_lib_open(&state);
             let sort = gallery_sort_from_idx(sort_dd.selected());
@@ -397,10 +441,8 @@ pub(super) fn build_album_gallery(
                     .and_then(|lib| lib.albums(sort, artist_as_album).ok())
                     .unwrap_or_default()
             };
-            store.remove_all();
-            for album in albums {
-                store.append(&glib::BoxedAnyObject::new(album));
-            }
+            *all_albums.borrow_mut() = albums;
+            refilter();
         })
     };
 
@@ -525,10 +567,50 @@ pub(super) fn build_album_gallery(
         });
     }
 
+    // ── Search ──────────────────────────────────────────────────────────
+    // Narrows the tiles by what they display — title, artist, and the
+    // no-album bucket's label — rather than by the raw fields, so searching
+    // for the words on screen finds the tile showing them. The macOS gallery
+    // has had this since phase 11; GTK and the TUI never got it.
+    let (search_row, search_entry) = make_view_search_row("Search albums — title, artist…");
+    // F12.1: restore this view's last search query if the feature is on.
+    // Seeded into `query` as well as the entry, so the first `rebuild()`
+    // below already filters instead of flashing the whole library first.
+    // Done before `connect_changed` is wired, so it fires no handler.
+    if state.borrow().config.media_library.remember_search {
+        let last = state.borrow().config.media_library.last_search.get("albums").cloned();
+        if let Some(last) = last {
+            search_entry.set_text(&last);
+            *query.borrow_mut() = last;
+        }
+    }
+    {
+        let query_c = query.clone();
+        let refilter_c = refilter.clone();
+        let state_c = state.clone();
+        search_entry.connect_changed(move |e| {
+            let text = e.text().to_string();
+            *query_c.borrow_mut() = text.clone();
+            refilter_c();
+            // F12.1: remember this view's query for next open. In-memory
+            // only — the config is written out on shutdown, and the Files and
+            // Devices boxes persist theirs the same way rather than putting a
+            // disk write behind every keystroke.
+            let mut s = state_c.borrow_mut();
+            if s.config.media_library.remember_search {
+                s.config
+                    .media_library
+                    .last_search
+                    .insert("albums".to_string(), text);
+            }
+        });
+    }
+
     // ── Assemble ────────────────────────────────────────────────────────
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.set_hexpand(true);
     page.set_vexpand(true);
+    page.append(&search_row);
     page.append(&header);
     page.append(&scrolled);
 

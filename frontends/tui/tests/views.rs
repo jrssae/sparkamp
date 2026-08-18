@@ -336,7 +336,7 @@ fn display_name_includes_artist_when_present() {
 /// Renders the full-screen media library with the Albums tab active and a
 /// couple of `AlbumGroup`s, asserting the expected text shows up in the
 /// terminal buffer: `Album — Album Artist (Year)  ·  N tracks`, and the
-/// `is_no_album` bucket renders as `(no album)`.
+/// `is_no_album` bucket renders as [`NO_ALBUM_LABEL`].
 #[test]
 fn albums_tab_renders_album_list() {
     let mut app = make_app();
@@ -388,10 +388,145 @@ fn albums_tab_renders_album_list() {
     );
     assert!(content.contains("1973"), "year missing:\n{content}");
     assert!(
-        content.contains("(no album)"),
+        content.contains(crate::media_library::NO_ALBUM_LABEL),
         "no-album bucket label missing:\n{content}"
     );
     assert!(content.contains("Albums"), "Albums tab label missing:\n{content}");
+}
+
+/// Render the media library on the Albums tab and return the terminal buffer
+/// as text.
+fn render_albums_tab(app: &App) -> String {
+    let backend = ratatui::backend::TestBackend::new(100, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::draw(f, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let width = buffer.area.width as usize;
+    let mut content = String::new();
+    for (i, cell) in buffer.content.iter().enumerate() {
+        if i > 0 && i % width == 0 {
+            content.push('\n');
+        }
+        content.push_str(cell.symbol());
+    }
+    content
+}
+
+fn album_group(album: &str, album_artist: &str) -> crate::media_library::AlbumGroup {
+    crate::media_library::AlbumGroup {
+        album: album.to_string(),
+        album_artist: album_artist.to_string(),
+        year: None,
+        track_count: 1,
+        artwork_path: None,
+        is_no_album: album.is_empty(),
+    }
+}
+
+/// Typing on the Albums tab leaves an open album.
+///
+/// The query filters the album list, and it has no meaning inside a single
+/// album — so the drill-down has to pop rather than sit there showing one
+/// album's tracks under a search box that is filtering something else. GTK
+/// does the same on its Files search, clearing `album_filter` synchronously
+/// as soon as a character lands (`window/files.rs`), and this mirrors it.
+#[test]
+fn typing_on_the_albums_tab_leaves_an_open_album() {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = MediaLibraryTab::Albums;
+        s.album_drill = Some(("Liberation".to_string(), "Ward Thomas".to_string()));
+        s.selected_album_track = 3;
+    }
+
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+
+    if let Mode::MediaLibrary(s) = &app.mode {
+        assert!(
+            s.album_drill.is_none(),
+            "typing must pop the drill-down back to the album list"
+        );
+        assert!(s.album_tracks.is_empty(), "the drilled tracks must be cleared");
+        assert_eq!(s.selected_album_track, 0, "the drilled selection must reset");
+        assert_eq!(s.search_query, "w", "the character must still reach the query");
+    } else {
+        panic!("expected MediaLibrary mode");
+    }
+}
+
+/// The deferred search refreshes the album list, not the track list, while
+/// the Albums tab is showing.
+///
+/// `refresh_ml_search` is the single choke point every route into a search
+/// runs through — the tick's debounce, a sort change, a watch-folder event —
+/// so the tab test lives there rather than at each call site.
+///
+/// Told apart by which selection gets reset, not by which list ends up empty:
+/// `App::new` opens the real user library, so what the two queries return
+/// here depends on whoever is running the tests. The resets do not — the
+/// albums path zeroes `selected_album` and never touches `selected_track`,
+/// and the files path does the exact reverse. Priming both to non-zero
+/// catches a wrong route in either direction.
+#[test]
+fn the_albums_tab_routes_its_search_to_the_album_list() {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = MediaLibraryTab::Albums;
+        s.albums = vec![
+            album_group("Liberation", "Ward Thomas"),
+            album_group("Restless Minds", "Ward Thomas"),
+        ];
+        s.selected_album = 5;
+        s.selected_track = 7;
+    }
+
+    app.refresh_ml_search();
+
+    if let Mode::MediaLibrary(s) = &app.mode {
+        assert_eq!(
+            s.selected_album, 0,
+            "the album list must be the one that was refreshed"
+        );
+        assert_eq!(
+            s.selected_track, 7,
+            "the Files tab's selection must be left alone"
+        );
+    } else {
+        panic!("expected MediaLibrary mode");
+    }
+}
+
+/// An empty album list means two different things, and the message has to say
+/// which: nothing in the library at all, or nothing matching what was typed.
+/// Without the distinction a filtered-to-nothing gallery reads as an empty
+/// library, and the fix — clearing the box — is not suggested by anything on
+/// screen. Mirrors the two messages the macOS gallery draws.
+#[test]
+fn the_albums_tab_says_when_a_search_matched_nothing() {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = MediaLibraryTab::Albums;
+        s.albums = Vec::new();
+    }
+
+    let empty_library = render_albums_tab(&app);
+    assert!(
+        empty_library.contains("No albums in the media library."),
+        "an empty library must say so:\n{empty_library}"
+    );
+
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.search_query = "zzzz".to_string();
+    }
+    let empty_result = render_albums_tab(&app);
+    assert!(
+        empty_result.contains("No albums match your search."),
+        "an empty result must name the search as the cause:\n{empty_result}"
+    );
 }
 
 // -----------------------------------------------------------------------
