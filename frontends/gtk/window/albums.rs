@@ -34,7 +34,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // while the stack shows Files. Acceptable — the Files content is what
     // matters, and the user can click "Files" to explicitly return to the
     // full library (which also updates the highlight).
-    let (gallery_page, rebuild_gallery): (gtk4::Widget, Rc<dyn Fn()>) = {
+    let (gallery_page, rebuild_gallery, invalidate_gallery): (
+        gtk4::Widget,
+        Rc<dyn Fn()>,
+        Rc<dyn Fn()>,
+    ) = {
         let on_album_activate: Rc<dyn Fn(String, String)> = {
             let state_activate = ctx.host.state.clone();
             let stack_activate = ctx.stack.clone();
@@ -116,6 +120,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         )
     };
     ctx.stack.add_named(&gallery_page, Some("albums"));
+
+    // A scan, a watch-folder event or a tag edit fires `rebuild_ml_callback`.
+    // The gallery caches its fold, so it has to be told the fold is stale —
+    // otherwise the grid keeps showing albums as they were before the scan.
+    {
+        let prev = ctx.host.state.borrow().rebuild_ml_callback.clone();
+        let invalidate = invalidate_gallery.clone();
+        let chained: Rc<dyn Fn()> = Rc::new(move || {
+            invalidate();
+            if let Some(prev) = prev.as_ref() {
+                prev();
+            }
+        });
+        ctx.host.state.borrow_mut().rebuild_ml_callback = Some(chained);
+    }
 
     // Return from an album's track list to the gallery overview: clear the
     // drill-down filter, hide the back button, show the gallery page and

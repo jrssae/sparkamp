@@ -16,11 +16,14 @@ use super::*;
 /// dropdown + zoom controls) above a scrolled, recycled-cell `GridView` of
 /// album covers.
 ///
-/// Returns `(page_widget, rebuild)`. `rebuild` reloads
-/// `albums(sort, artist_as_album)` from `state.borrow().media_lib` and
-/// repopulates the list store — call it whenever the gallery becomes
-/// visible again (e.g. after a scan). It reapplies the search query on the
-/// way, so a rebuild never silently widens what is on screen.
+/// Returns `(page_widget, rebuild, invalidate_albums)`. `rebuild` reapplies
+/// the search query against the cached fold, re-querying
+/// `albums(sort, artist_as_album)` from `state.borrow().media_lib` only when
+/// the cache is empty, the sort changed, or `invalidate_albums` has marked it
+/// stale — call it whenever the gallery becomes visible again (e.g. after a
+/// scan). `invalidate_albums` drops the cache without rebuilding, so a scan,
+/// watch-folder event or tag edit can tell the gallery its fold is stale
+/// without forcing an immediate re-query.
 /// `on_album_activate` fires with `(album, album_artist)` when a cell is
 /// double-clicked or activated via Enter.
 ///
@@ -33,7 +36,7 @@ pub(super) fn build_album_gallery(
     // album_artist), the same identity `on_album_activate` uses.
     on_album_play: Rc<dyn Fn(String, String)>,
     on_album_enqueue: Rc<dyn Fn(String, String)>,
-) -> (gtk4::Widget, Rc<dyn Fn()>) {
+) -> (gtk4::Widget, Rc<dyn Fn()>, Rc<dyn Fn()>) {
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
 
     // Current thumb/cell edge length in px. Shared (not just read once at
@@ -409,41 +412,66 @@ pub(super) fn build_album_gallery(
             // Collected before touching the store: appending drives the
             // GridView's bind closure, and no RefCell borrow may be live
             // across a UI call (see the `bind` handler above).
-            let matching: Vec<crate::media_library::AlbumGroup> = {
+            let matching: Vec<glib::BoxedAnyObject> = {
                 let q = query.borrow();
                 all_albums
                     .borrow()
                     .iter()
                     .filter(|a| a.matches(&q))
-                    .cloned()
+                    .map(|a| glib::BoxedAnyObject::new(a.clone()))
                     .collect()
             };
-            store.remove_all();
-            for album in matching {
-                store.append(&glib::BoxedAnyObject::new(album));
-            }
+            // One `items-changed` for the whole set. Appending album by album
+            // emitted one per tile — 5,158 of them on this library — and the
+            // GridView re-examined its model after each. `files.rs` splices
+            // its track store for the same reason.
+            store.splice(0, store.n_items(), &matching);
         })
     };
+
+    // Set when something outside the gallery changed the library, so the next
+    // `rebuild()` re-queries instead of trusting `all_albums`.
+    let albums_stale: Rc<Cell<bool>> = Rc::new(Cell::new(true));
 
     let rebuild: Rc<dyn Fn()> = {
         let state = state.clone();
         let sort_dd = sort_dd.clone();
         let all_albums = all_albums.clone();
         let refilter = refilter.clone();
+        let albums_stale = albums_stale.clone();
+        let last_sort: Rc<Cell<u32>> = Rc::new(Cell::new(u32::MAX));
         Rc::new(move || {
             ensure_media_lib_open(&state);
-            let sort = gallery_sort_from_idx(sort_dd.selected());
-            let albums: Vec<crate::media_library::AlbumGroup> = {
-                let s = state.borrow();
-                let artist_as_album = s.config.media_library.artist_as_album_artist;
-                s.media_lib
-                    .as_ref()
-                    .and_then(|lib| lib.albums(sort, artist_as_album).ok())
-                    .unwrap_or_default()
-            };
-            *all_albums.borrow_mut() = albums;
+            let sort_idx = sort_dd.selected();
+            // The fold is the expensive half — 36,330 rows into ~5,158 groups.
+            // Returning to the gallery from a drill-down changes neither the
+            // library nor the sort, so the previous answer still stands and
+            // only the filter needs reapplying.
+            let must_query = albums_stale.get() || last_sort.get() != sort_idx;
+            if must_query {
+                let sort = gallery_sort_from_idx(sort_idx);
+                let albums: Vec<crate::media_library::AlbumGroup> = {
+                    let s = state.borrow();
+                    let artist_as_album = s.config.media_library.artist_as_album_artist;
+                    s.media_lib
+                        .as_ref()
+                        .and_then(|lib| lib.albums(sort, artist_as_album).ok())
+                        .unwrap_or_default()
+                };
+                *all_albums.borrow_mut() = albums;
+                albums_stale.set(false);
+                last_sort.set(sort_idx);
+            }
             refilter();
         })
+    };
+
+    // Handed to the caller so a scan, a watch-folder event or a tag edit can
+    // drop the cache. Without it the gallery would keep showing a fold taken
+    // before the library changed.
+    let invalidate_albums: Rc<dyn Fn()> = {
+        let albums_stale = albums_stale.clone();
+        Rc::new(move || albums_stale.set(true))
     };
 
     // ── Header row: sort dropdown + zoom controls ──────────────────────
@@ -619,7 +647,7 @@ pub(super) fn build_album_gallery(
     // stack-page switch or after a scan completes).
     rebuild();
 
-    (page.upcast::<gtk4::Widget>(), rebuild)
+    (page.upcast::<gtk4::Widget>(), rebuild, invalidate_albums)
 }
 
 /// No-art placeholder for a gallery cell: the app logo at 50% opacity,
