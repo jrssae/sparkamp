@@ -339,7 +339,33 @@ git commit -m "perf(library): fold albums in SQL instead of reading every track"
 - Consumes: `show_gallery_overview: Rc<dyn Fn()>`.
 - Produces: nothing new. Behaviour is unchanged; only the duplicate call is removed.
 
-- [ ] **Step 1: Coalesce the two signals**
+- [ ] **Step 1: Split navigation from the rebuild**
+
+`show_gallery_overview` (declared just above the sidebar-routing block, ~`:122-135`) does four things: clear `album_filter`, hide `btn_album_back`, switch the stack to "albums", and call `rebuild_gallery()`. Only the fourth is expensive. Split it so the cheap three can run on every signal while the expensive one is coalesced.
+
+Keep `show_gallery_overview` exactly as it is — the back button at `:138` calls it and fires once, so it needs no coalescing — and add a navigation-only sibling next to it:
+
+```rust
+    // The cheap half of `show_gallery_overview`: everything except the
+    // rebuild. Split out because the two sidebar signals below both fire for
+    // one click and only the rebuild is worth collapsing — deferring the
+    // stack switch as well would leave the previous page on screen until the
+    // idle callback ran, turning a doubled query into a visible lag.
+    let navigate_to_gallery: Rc<dyn Fn()> = {
+        let album_filter_nav = ctx.album_filter.clone();
+        let btn_album_back_nav = ctx.btn_album_back.clone();
+        let stack_nav = ctx.stack.clone();
+        Rc::new(move || {
+            {
+                *album_filter_nav.borrow_mut() = None;
+            }
+            btn_album_back_nav.set_visible(false);
+            stack_nav.set_visible_child_name("albums");
+        })
+    };
+```
+
+- [ ] **Step 2: Coalesce the two signals**
 
 Replace the two handler blocks in `frontends/gtk/window/albums.rs` with:
 
@@ -354,21 +380,32 @@ Replace the two handler blocks in `frontends/gtk/window/albums.rs` with:
     //
     // When the user arrives from another row they BOTH fire, and
     // `show_gallery_overview` re-queries the whole library and repopulates
-    // 5,000-odd tiles. Coalescing to a single idle callback collapses the
-    // pair into one rebuild without either handler needing to know whether
-    // the other ran.
+    // 5,000-odd tiles.
+    //
+    // Only the REBUILD is coalesced, not the whole of
+    // `show_gallery_overview`. Clearing the filter, hiding the back button and
+    // switching the stack are cheap, idempotent, and what makes the click feel
+    // instant — deferring those to idle would leave the previous page on
+    // screen until the callback ran. So the navigation stays synchronous on
+    // every signal and only the expensive half collapses to one call.
     {
-        let show_ov = show_gallery_overview.clone();
+        let navigate = navigate_to_gallery.clone();
+        let rebuild_coalesced = rebuild_gallery.clone();
         let queued: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         let show_once: Rc<dyn Fn()> = Rc::new(move || {
+            // Synchronous every time — cheap, idempotent, and what makes the
+            // click feel immediate.
+            navigate();
+            // Coalesced — the second signal of the same click finds the flag
+            // already set and books no second rebuild.
             if queued.replace(true) {
                 return;
             }
-            let show_ov = show_ov.clone();
+            let rebuild = rebuild_coalesced.clone();
             let queued = queued.clone();
             glib::idle_add_local_once(move || {
                 queued.set(false);
-                show_ov();
+                rebuild();
             });
         });
 
@@ -392,12 +429,12 @@ Replace the two handler blocks in `frontends/gtk/window/albums.rs` with:
     }
 ```
 
-- [ ] **Step 2: Verify `Cell` is in scope**
+- [ ] **Step 3: Verify `Cell` is in scope**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo build 2>&1 | head -20'`
 Expected: clean. If `Cell` is unresolved, add `use std::cell::Cell;` at the top of `frontends/gtk/window/albums.rs`.
 
-- [ ] **Step 3: Instrument to prove the doubling is gone**
+- [ ] **Step 4: Instrument to prove the doubling is gone**
 
 Temporarily add as the first line of the `rebuild` closure in `frontends/gtk/window/album_gallery.rs`:
 
@@ -405,17 +442,17 @@ Temporarily add as the first line of the `rebuild` closure in `frontends/gtk/win
             eprintln!("[gallery] rebuild at {:?}", std::time::Instant::now());
 ```
 
-- [ ] **Step 4: Run the app and count rebuilds**
+- [ ] **Step 5: Run the app and count rebuilds**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo run 2>&1 | grep "\[gallery\] rebuild"'`
 
 Open the Media Library, click "Files", then click "Albums". Expected: **exactly one** `[gallery] rebuild` line per Albums click. Before this task it was two. Then drill into an album and click "Albums" again — expected one more line.
 
-- [ ] **Step 5: Remove the instrumentation**
+- [ ] **Step 6: Remove the instrumentation**
 
-Delete the `eprintln!` added in Step 3.
+Delete the `eprintln!` added in Step 4.
 
-- [ ] **Step 6: Full suite and commit**
+- [ ] **Step 7: Full suite and commit**
 
 ```bash
 distrobox enter dev-box -- sh -c 'cargo build && cargo test'
