@@ -1271,6 +1271,117 @@ mod tests {
     fn a_query_is_trimmed_before_matching() {
         assert!(group("Liberation", "Ward Thomas").matches("  ward  "));
     }
+
+    // ── Album fold characterization (pre-SQL-rewrite) ──────────────────────
+
+    /// A fixture that exercises every branch of the album fold: two real
+    /// albums, one of them spelled with different case across its tracks, a
+    /// track whose album_artist is blank (so the F12.2 toggle decides its
+    /// group), two blank-album tracks for the bucket, a track with no year,
+    /// and artwork on only the second track of an album.
+    fn fold_fixture(lib: &MediaLibrary) {
+        // (path, filename, artist, album, album_artist, track, disc, year, art)
+        let rows: &[(&str, &str, &str, &str, &str, i64, i64, Option<i64>, Option<&str>)] = &[
+            ("/m/a1.mp3", "a1.mp3", "Ward Thomas", "Liberation", "Ward Thomas", 1, 1, Some(2017), None),
+            ("/m/a2.mp3", "a2.mp3", "Ward Thomas", "liberation", "Ward Thomas", 2, 1, Some(2017), Some("/art/lib.jpg")),
+            ("/m/a3.mp3", "a3.mp3", "Ward Thomas", "LIBERATION", "Ward Thomas", 3, 1, Some(2016), None),
+            ("/m/b1.mp3", "b1.mp3", "Pink Floyd", "Animals", "Pink Floyd", 1, 1, Some(1977), Some("/art/an.jpg")),
+            ("/m/b2.mp3", "b2.mp3", "Pink Floyd", "Animals", "Pink Floyd", 2, 1, None, None),
+            ("/m/c1.mp3", "c1.mp3", "Solo Artist", "Only Album", "", 1, 1, Some(2001), None),
+            ("/m/c2.mp3", "c2.mp3", "Solo Artist", "Only Album", "", 2, 1, Some(2001), None),
+            ("/m/d1.mp3", "d1.mp3", "Nobody", "", "", 1, 1, Some(1999), None),
+            ("/m/d2.mp3", "d2.mp3", "Someone Else", "", "", 1, 1, None, None),
+            ("/m/d3.mp3", "d3.mp3", "Third", "   ", "", 1, 1, Some(2020), None),
+            ("/m/e1.mp3", "e1.mp3", "VA Artist One", "Sampler", "Various Artists", 1, 1, Some(2010), None),
+            ("/m/e2.mp3", "e2.mp3", "VA Artist Two", "Sampler", "Various Artists", 2, 1, Some(2010), None),
+        ];
+        for (p, f, ar, al, aa, tn, dn, y, art) in rows {
+            insert_track(lib, p, f, ar, al, aa, Some(*tn), Some(*dn), *y, *art);
+        }
+    }
+
+    /// Every field of every group the fold produces, pinned exactly.
+    ///
+    /// Written before the SQL rewrite so the rewrite can be proved equivalent
+    /// rather than eyeballed. Covers: case-insensitive grouping, the earliest
+    /// year winning, the first non-null artwork winning, the blank/whitespace
+    /// album bucket collapsing to one group sorted last, and the F12.2
+    /// album-artist fallback under both settings.
+    #[test]
+    fn the_album_fold_groups_exactly_as_specified() {
+        let (lib, _db) = temp_lib();
+        fold_fixture(&lib);
+
+        let got = lib.albums(AlbumSort::Artist, false).unwrap();
+        let summary: Vec<(String, String, Option<i64>, i64, Option<String>, bool)> = got
+            .iter()
+            .map(|g| {
+                (
+                    g.album.clone(),
+                    g.album_artist.clone(),
+                    g.year,
+                    g.track_count,
+                    g.artwork_path.clone(),
+                    g.is_no_album,
+                )
+            })
+            .collect();
+
+        // NOTE: corrected against today's actual `albums()` output (see task-1
+        // report) — the brief's canned assertion assumed
+        // effective_album_artist falls back to the track artist even with
+        // artist_as_album=false (it doesn't: blank album_artist + toggle off
+        // yields "", which then sorts "Only Album" ahead of "Animals" under
+        // AlbumSort::Artist), and assumed the no-album bucket's year is never
+        // populated (it is: year/artwork accumulation has no is_no_album
+        // guard, so the bucket's min year is still computed from its
+        // blank-album rows).
+        assert_eq!(
+            summary,
+            vec![
+                ("Only Album".into(), String::new(), Some(2001), 2, None, false),
+                ("Animals".into(), "Pink Floyd".into(), Some(1977), 2, Some("/art/an.jpg".into()), false),
+                ("Sampler".into(), "Various Artists".into(), Some(2010), 2, None, false),
+                ("Liberation".into(), "Ward Thomas".into(), Some(2016), 3, Some("/art/lib.jpg".into()), false),
+                (String::new(), String::new(), Some(1999), 3, None, true),
+            ],
+            "album fold changed shape"
+        );
+    }
+
+    /// The blank-album bucket is always last, whichever sort is asked for.
+    #[test]
+    fn the_no_album_bucket_sorts_last_under_every_sort() {
+        let (lib, _db) = temp_lib();
+        fold_fixture(&lib);
+        for sort in [AlbumSort::Artist, AlbumSort::Album, AlbumSort::Year] {
+            let got = lib.albums(sort, false).unwrap();
+            assert!(
+                got.last().unwrap().is_no_album,
+                "bucket not last under {sort:?}"
+            );
+            assert_eq!(
+                got.iter().filter(|g| g.is_no_album).count(),
+                1,
+                "bucket split under {sort:?}"
+            );
+        }
+    }
+
+    /// With the F12.2 toggle on, a track with no album_artist groups under its
+    /// artist instead. The Sampler's two tracks have different artists, so the
+    /// toggle must NOT split it — its album_artist is set.
+    #[test]
+    fn the_album_artist_toggle_only_moves_tracks_that_lack_one() {
+        let (lib, _db) = temp_lib();
+        fold_fixture(&lib);
+        let on = lib.albums(AlbumSort::Artist, true).unwrap();
+        let sampler = on.iter().find(|g| g.album == "Sampler").unwrap();
+        assert_eq!(sampler.track_count, 2, "Sampler must not split");
+        assert_eq!(sampler.album_artist, "Various Artists");
+        let only = on.iter().find(|g| g.album == "Only Album").unwrap();
+        assert_eq!(only.album_artist, "Solo Artist");
+    }
 }
 
 #[cfg(test)]
