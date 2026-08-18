@@ -1164,70 +1164,50 @@ fn an_unreadable_file_is_not_re_read_for_ever() {
     );
 }
 
-// ── dnd.rs reorder-vs-add guard ───────────────────────────────────────────
+// ── dnd.rs reorder-vs-add guard (playlist_add::dispatch_add) ─────────────
 //
-// The drop handler in dnd.rs (`connect_drop`) picks between two functions
-// depending on `did_move`: a reorder (rows already in the playlist) always
-// calls `add_paths`, which never touches the append-vs-replace setting; only
-// a genuine add calls `add_with_mode(.., AddMode::Behavior)`, which does. The
-// branch itself lives inside a GTK `DropTarget::connect_drop` closure and can
-// only be reached by a real drag-and-drop event, so it is not reachable from
-// a unit test without a GTK event loop. What *can* be pinned here, and is the
-// load-bearing half of the guard's safety argument, is that the two
-// functions it dispatches between actually differ the way the guard assumes:
-// `add_paths` is Replace-setting-blind, so routing a reorder through it can
-// never clear the playlist no matter what the user configured.
+// dispatch_add IS the reorder-vs-add decision the drop handler in dnd.rs
+// relies on — lifted out of the `connect_drop` closure specifically so it
+// can be exercised here without a GTK event loop. Each assertion below is
+// one an inverted condition (`if existing_src_indices.is_empty()` instead of
+// `if !existing_src_indices.is_empty()`) would break: that regression would
+// compile cleanly and is exactly the data-loss bug this task exists to
+// prevent, so the load-bearing case — a reorder under Replace — is asserted
+// first.
 
 #[test]
-fn add_with_mode_behavior_replace_clears_existing_playlist() {
+fn dispatch_add_with_a_reorder_never_clears_even_under_replace() {
+    // The load-bearing case. existing_src_indices non-empty (a reorder) plus
+    // Replace configured: a clear here would delete the very rows being
+    // dragged. No new paths in this drop.
     let mut s = state_with_tracks(&["A", "B"]);
     s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Replace;
     let state = Rc::new(RefCell::new(s));
-    let added = super::playlist_add::add_with_mode(
-        &state,
-        &[PathBuf::from("/fake/C.mp3")],
-        crate::playlist_add::AddMode::Behavior,
+    let _ = super::playlist_add::dispatch_add(&state, &[0], &[]);
+    let titles: Vec<_> = state
+        .borrow()
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["A", "B"],
+        "a reorder must never clear the playlist, even under Replace"
     );
+}
+
+#[test]
+fn dispatch_add_mixed_reorder_and_add_keeps_existing_rows_and_appends_new_ones() {
+    // Same non-empty existing_src_indices, but this drop also carries a new
+    // path (a reorder mixed with an add). Existing rows must survive and the
+    // new path must be appended — never a clear-then-replace.
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Replace;
+    let state = Rc::new(RefCell::new(s));
+    let added = super::playlist_add::dispatch_add(&state, &[0], &[PathBuf::from("/fake/C.mp3")]);
     assert!(added.any());
-    let titles: Vec<_> = state
-        .borrow()
-        .playlist
-        .tracks
-        .iter()
-        .map(|t| t.title.clone())
-        .collect();
-    assert_eq!(titles, vec!["C"], "Replace clears A and B before adding C");
-}
-
-#[test]
-fn add_with_mode_behavior_append_keeps_existing_playlist() {
-    let mut s = state_with_tracks(&["A", "B"]);
-    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Append;
-    let state = Rc::new(RefCell::new(s));
-    let _ = super::playlist_add::add_with_mode(
-        &state,
-        &[PathBuf::from("/fake/C.mp3")],
-        crate::playlist_add::AddMode::Behavior,
-    );
-    let titles: Vec<_> = state
-        .borrow()
-        .playlist
-        .tracks
-        .iter()
-        .map(|t| t.title.clone())
-        .collect();
-    assert_eq!(titles, vec!["A", "B", "C"]);
-}
-
-#[test]
-fn add_paths_never_clears_even_when_replace_is_configured() {
-    // This is the guard's safety net: dnd.rs calls plain `add_paths` — never
-    // `add_with_mode` — whenever `did_move` is true, so a reorder can never
-    // observe a Replace-configured clear regardless of the setting.
-    let mut s = state_with_tracks(&["A", "B"]);
-    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Replace;
-    let state = Rc::new(RefCell::new(s));
-    let _ = super::playlist_add::add_paths(&state, &[PathBuf::from("/fake/C.mp3")]);
     let titles: Vec<_> = state
         .borrow()
         .playlist
@@ -1238,8 +1218,45 @@ fn add_paths_never_clears_even_when_replace_is_configured() {
     assert_eq!(
         titles,
         vec!["A", "B", "C"],
-        "add_paths must be blind to the replace setting"
+        "existing rows survive and the new path is appended, never used to replace"
     );
+}
+
+#[test]
+fn dispatch_add_pure_add_under_replace_clears_first() {
+    // existing_src_indices empty: this is a genuine add, so the rule applies.
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Replace;
+    let state = Rc::new(RefCell::new(s));
+    let _ = super::playlist_add::dispatch_add(&state, &[], &[PathBuf::from("/fake/C.mp3")]);
+    let titles: Vec<_> = state
+        .borrow()
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["C"],
+        "a pure add under Replace clears A and B before adding C"
+    );
+}
+
+#[test]
+fn dispatch_add_pure_add_under_append_keeps_existing_rows() {
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Append;
+    let state = Rc::new(RefCell::new(s));
+    let _ = super::playlist_add::dispatch_add(&state, &[], &[PathBuf::from("/fake/C.mp3")]);
+    let titles: Vec<_> = state
+        .borrow()
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+    assert_eq!(titles, vec!["A", "B", "C"]);
 }
 
 /// Push a row's last answer past [`super::playlist_add::ROW_RECHECK_TTL`], so a

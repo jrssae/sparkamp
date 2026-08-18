@@ -358,3 +358,32 @@ pub(super) fn add_with_mode(
     }
     add_paths(state, paths)
 }
+
+/// The active playlist's drop handler routes every drop through here: decide
+/// whether a drop's new paths are a genuine add — subject to the
+/// append-vs-replace rule — or part of a reorder, which must never be.
+///
+/// `existing_src_indices` is the set of playlist rows the drop is also
+/// moving; `new_paths` is whatever in the drop was not already in the
+/// playlist. Lifted out of the `connect_drop` closure in `dnd.rs` so this
+/// decision — the one that stands between an ordinary drag-to-reorder and a
+/// destroyed playlist — can be unit-tested without a GTK event loop; neither
+/// argument nor return type touches a GTK type.
+///
+/// A non-empty `existing_src_indices` means at least part of this drop is a
+/// reorder, and the rule must not run: `add_with_mode`'s Replace path clears
+/// the playlist before adding, and clearing it out from under a reorder would
+/// delete the very rows being dragged — whether or not the same drop also
+/// carries new paths alongside them. Only a drop that is purely new paths,
+/// with no existing row among them, is a genuine add and gets the rule.
+pub(super) fn dispatch_add(
+    state: &Rc<RefCell<AppState>>,
+    existing_src_indices: &[usize],
+    new_paths: &[std::path::PathBuf],
+) -> Added {
+    if !existing_src_indices.is_empty() {
+        add_paths(state, new_paths)
+    } else {
+        add_with_mode(state, new_paths, crate::playlist_add::AddMode::Behavior)
+    }
+}
