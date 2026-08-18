@@ -16,14 +16,16 @@ use super::*;
 /// dropdown + zoom controls) above a scrolled, recycled-cell `GridView` of
 /// album covers.
 ///
-/// Returns `(page_widget, rebuild, invalidate_albums)`. `rebuild` reapplies
-/// the search query against the cached fold, re-querying
-/// `albums(sort, artist_as_album)` from `state.borrow().media_lib` only when
-/// the cache is empty, the sort changed, or `invalidate_albums` has marked it
-/// stale — call it whenever the gallery becomes visible again (e.g. after a
-/// scan). `invalidate_albums` drops the cache without rebuilding, so a scan,
-/// watch-folder event or tag edit can tell the gallery its fold is stale
-/// without forcing an immediate re-query.
+/// Returns `(page_widget, rebuild)`. `rebuild` reapplies the search query
+/// against the cached fold, re-querying `albums(sort, artist_as_album)` from
+/// `state.borrow().media_lib` only when the sort changed or
+/// `MediaLibrary::change_token()` no longer matches the token the cache was
+/// built under — call it whenever the gallery becomes visible again (e.g.
+/// after a scan). The token is checked on every call, so nothing outside
+/// this function needs to remember to invalidate anything: a write from any
+/// path (scan, tag edit, track removal, device sync — all of them run
+/// through their own `Connection`) moves the token and the next `rebuild()`
+/// notices on its own.
 /// `on_album_activate` fires with `(album, album_artist)` when a cell is
 /// double-clicked or activated via Enter.
 ///
@@ -36,7 +38,7 @@ pub(super) fn build_album_gallery(
     // album_artist), the same identity `on_album_activate` uses.
     on_album_play: Rc<dyn Fn(String, String)>,
     on_album_enqueue: Rc<dyn Fn(String, String)>,
-) -> (gtk4::Widget, Rc<dyn Fn()>, Rc<dyn Fn()>) {
+) -> (gtk4::Widget, Rc<dyn Fn()>) {
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
 
     // Current thumb/cell edge length in px. Shared (not just read once at
@@ -429,25 +431,43 @@ pub(super) fn build_album_gallery(
         })
     };
 
-    // Set when something outside the gallery changed the library, so the next
-    // `rebuild()` re-queries instead of trusting `all_albums`.
-    let albums_stale: Rc<Cell<bool>> = Rc::new(Cell::new(true));
+    // Fix round 1 review: the first cut of this cache invalidated on a
+    // hand-chained callback (`rebuild_ml_callback`), which turned out to be
+    // the wrong seam in both directions — it missed `purge_deleted_tracks()`
+    // (runs on its own background-thread `Connection`, never touches that
+    // callback) and it over-fired on every album drill-down (which also
+    // calls it, to refresh the Files view under the new filter — the exact
+    // path this cache exists to keep instant). A callback seam can always be
+    // missed by some future write path; a token comparison against the
+    // database itself cannot. `None` here means "no fold cached yet" and is
+    // guaranteed to differ from any real `change_token()` result, which is
+    // always `Some`.
+    let last_token: Rc<Cell<Option<(i64, i64)>>> = Rc::new(Cell::new(None));
 
     let rebuild: Rc<dyn Fn()> = {
         let state = state.clone();
         let sort_dd = sort_dd.clone();
         let all_albums = all_albums.clone();
         let refilter = refilter.clone();
-        let albums_stale = albums_stale.clone();
+        let last_token = last_token.clone();
         let last_sort: Rc<Cell<u32>> = Rc::new(Cell::new(u32::MAX));
         Rc::new(move || {
             ensure_media_lib_open(&state);
             let sort_idx = sort_dd.selected();
+            // O(1): `sqlite3_total_changes()` plus `PRAGMA data_version`, not
+            // a `COUNT(*)`/`MAX(...)` query — see `change_token`'s doc for
+            // why a real query would burn a meaningful fraction of the fold
+            // it exists to let this function skip.
+            let current_token = state
+                .borrow()
+                .media_lib
+                .as_ref()
+                .map(|lib| lib.change_token());
             // The fold is the expensive half — 36,330 rows into ~5,158 groups.
             // Returning to the gallery from a drill-down changes neither the
             // library nor the sort, so the previous answer still stands and
             // only the filter needs reapplying.
-            let must_query = albums_stale.get() || last_sort.get() != sort_idx;
+            let must_query = last_sort.get() != sort_idx || last_token.get() != current_token;
             if must_query {
                 let sort = gallery_sort_from_idx(sort_idx);
                 let albums: Vec<crate::media_library::AlbumGroup> = {
@@ -459,19 +479,11 @@ pub(super) fn build_album_gallery(
                         .unwrap_or_default()
                 };
                 *all_albums.borrow_mut() = albums;
-                albums_stale.set(false);
+                last_token.set(current_token);
                 last_sort.set(sort_idx);
             }
             refilter();
         })
-    };
-
-    // Handed to the caller so a scan, a watch-folder event or a tag edit can
-    // drop the cache. Without it the gallery would keep showing a fold taken
-    // before the library changed.
-    let invalidate_albums: Rc<dyn Fn()> = {
-        let albums_stale = albums_stale.clone();
-        Rc::new(move || albums_stale.set(true))
     };
 
     // ── Header row: sort dropdown + zoom controls ──────────────────────
@@ -647,7 +659,7 @@ pub(super) fn build_album_gallery(
     // stack-page switch or after a scan completes).
     rebuild();
 
-    (page.upcast::<gtk4::Widget>(), rebuild, invalidate_albums)
+    (page.upcast::<gtk4::Widget>(), rebuild)
 }
 
 /// No-art placeholder for a gallery cell: the app logo at 50% opacity,

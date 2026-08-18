@@ -728,5 +728,55 @@ impl MediaLibrary {
             rusqlite::params![gain_db, path],
         )?)
     }
+
+    /// An O(1) proxy for "has anything in the database changed since I last
+    /// looked," for callers that cache a query result (the album gallery's
+    /// whole-library fold) and want to know when to distrust the cache.
+    ///
+    /// Deliberately two constant-time reads, not a query: `SELECT COUNT(*),
+    /// MAX(last_scanned)` measured at 6-7ms warm against a 43.6ms album fold
+    /// on the reference library — paying 14% of the cost of the thing being
+    /// cached, on every cache check, would defeat the point of caching it.
+    ///
+    /// - `sqlite3_total_changes()` — rows changed by THIS connection since it
+    ///   was opened. rusqlite 0.31 does not expose this as a safe method:
+    ///   `Connection::changes()` wraps `sqlite3_changes()` instead, which
+    ///   reports only the most recently completed statement, not a running
+    ///   total, so it can't stand in here (two writes between checks would
+    ///   look like one, or like none, depending on timing). Reached instead
+    ///   through `Connection::handle()`, the raw-handle escape hatch
+    ///   rusqlite itself documents for exactly this kind of gap, paired with
+    ///   `ffi::sqlite3_total_changes64()` (confirmed present in the bundled
+    ///   SQLite 3.45.0 the `bundled` feature compiles — added upstream in
+    ///   3.37.0). This is the only `unsafe` in `media_library/`; precedent
+    ///   for `unsafe` elsewhere in the codebase is `src/ffi/*.rs` (the macOS
+    ///   C ABI bridge) and `src/engine.rs`, not previously this module.
+    /// - `PRAGMA data_version` — bumps when ANOTHER connection commits, and
+    ///   — this is SQLite's own documented behaviour for this pragma, see
+    ///   the comment above `sqlite3_changes()` in sqlite3.h — *omits*
+    ///   changes made by this connection, which is exactly why it can't
+    ///   stand in alone either. Every write path in this codebase (scan, tag
+    ///   edit, track removal, device sync) opens its own `Connection` via
+    ///   `open_at` on a background thread, so this half is what actually
+    ///   catches those.
+    ///
+    /// A change on this connection moves the first number; a change on any
+    /// other connection moves the second. A cache keyed on just one half
+    /// would miss whichever kind of write the other half exists to catch.
+    pub fn change_token(&self) -> (i64, i64) {
+        // SAFETY: `handle()` returns `self.conn`'s raw `sqlite3*`, valid for
+        // as long as `self.conn` is alive (it is, for the duration of this
+        // call). `sqlite3_total_changes64` only reads an in-memory counter
+        // already maintained by the connection — it performs no I/O, takes
+        // no lock beyond what SQLite already holds internally, and cannot
+        // invalidate the handle.
+        let total_changes: i64 =
+            unsafe { rusqlite::ffi::sqlite3_total_changes64(self.conn.handle()) };
+        let data_version: i64 = self
+            .conn
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .unwrap_or(0);
+        (total_changes, data_version)
+    }
 }
 

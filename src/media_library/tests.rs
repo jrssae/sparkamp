@@ -2814,3 +2814,65 @@ fn filename_path_index_resolves_duplicates_the_same_way_all_tracks_did() {
     assert_eq!(got, expected, "the index must agree with what all_tracks produced");
     assert_eq!(got.len(), 1, "one entry survives for the repeated basename");
 }
+
+// ── change_token: O(1) cache-invalidation proxy ─────────────────────────
+//
+// The album gallery (frontends/gtk/window/album_gallery.rs) caches the
+// whole-library `albums()` fold and only re-runs it when `change_token()`
+// no longer matches the token it cached the fold under. These three cases
+// are the whole contract: it must move on a write, and must NOT move
+// between two reads, or the cache would either lie (never moves) or never
+// pay off (moves on every check).
+
+#[test]
+fn change_token_changes_after_an_insert() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+
+    let before = lib.change_token();
+    // The scan's track upsert is a real INSERT.
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    let after = lib.change_token();
+
+    assert_ne!(before, after, "an INSERT must move the token");
+}
+
+#[test]
+fn change_token_changes_after_a_delete() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 1);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    let track_id = lib.all_tracks().unwrap()[0].id;
+
+    let before = lib.change_token();
+    // soft_delete_tracks alone only flips a flag; purge_deleted_tracks is
+    // the real `DELETE FROM tracks` — the review's finding #1 was that this
+    // is the statement the album fold's answer actually depends on.
+    lib.soft_delete_tracks(&[track_id]).unwrap();
+    lib.purge_deleted_tracks().unwrap();
+    let after = lib.change_token();
+
+    assert_ne!(before, after, "a DELETE (purge_deleted_tracks) must move the token");
+}
+
+#[test]
+fn change_token_is_unchanged_across_two_reads_with_no_write_between() {
+    let (lib, _db) = temp_lib();
+    let dir = temp_dir_with_files("mp3", 2);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+
+    let before = lib.change_token();
+    // Two ordinary reads — exactly what the gallery's `rebuild()` does on
+    // every call, including the ones that end up skipping the fold.
+    let _ = lib.all_tracks().unwrap();
+    let _ = lib.albums(AlbumSort::Artist, false).unwrap();
+    let after = lib.change_token();
+
+    assert_eq!(before, after, "reads alone must not move the token");
+}
