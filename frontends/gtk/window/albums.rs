@@ -7,7 +7,9 @@
 //! gives it its three callbacks, adds it to the stack, and owns the
 //! drill-down's return path.
 
+use gtk4::glib;
 use gtk4::prelude::*;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use super::sidebar::Sidebar;
@@ -140,33 +142,86 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         });
     }
 
+    // The cheap half of `show_gallery_overview`: everything except the
+    // rebuild. Split out because the two sidebar signals below both fire for
+    // one click and only the rebuild is worth collapsing — deferring the
+    // stack switch as well would leave the previous page on screen until the
+    // idle callback ran, turning a doubled query into a visible lag.
+    let navigate_to_gallery: Rc<dyn Fn()> = {
+        let album_filter_nav = ctx.album_filter.clone();
+        let btn_album_back_nav = ctx.btn_album_back.clone();
+        let stack_nav = ctx.stack.clone();
+        Rc::new(move || {
+            {
+                *album_filter_nav.borrow_mut() = None;
+            }
+            btn_album_back_nav.set_visible(false);
+            stack_nav.set_visible_child_name("albums");
+        })
+    };
+
     // ── Sidebar routing ─────────────────────────────────────────────────
     // This page's own row-selected handler, split out of the shared
     // Files/Albums/Playlists one on 2026-08-10 so the Playlists page could be
     // extracted without taking the other two pages' navigation with it. Every
     // handler on this signal keys off a disjoint `widget_name` with no
     // catch-all, so registration order carries no meaning.
+    //
+    // Both signals are needed and both can fire for one click.
+    //
+    // `row-selected` is the normal arrival from another sidebar row.
+    // `row-activated` is the only one that fires when "Albums" is clicked
+    // while already selected — which happens on the way back from a
+    // drill-down, since the highlight never left "Albums" (see
+    // `on_album_activate` above).
+    //
+    // When the user arrives from another row they BOTH fire, and
+    // `show_gallery_overview` re-queries the whole library and repopulates
+    // 5,000-odd tiles.
+    //
+    // Only the REBUILD is coalesced, not the whole of
+    // `show_gallery_overview`. Clearing the filter, hiding the back button and
+    // switching the stack are cheap, idempotent, and what makes the click feel
+    // instant — deferring those to idle would leave the previous page on
+    // screen until the callback ran. So the navigation stays synchronous on
+    // every signal and only the expensive half collapses to one call.
     {
-        let show_ov = show_gallery_overview.clone();
-        sb.list.connect_row_selected(move |_, opt_row| {
-            let Some(row) = opt_row else { return };
-            if row.widget_name() == "albums" {
-                // Always land on the gallery overview (clears any drill-down).
-                show_ov();
+        let navigate = navigate_to_gallery.clone();
+        let rebuild_coalesced = rebuild_gallery.clone();
+        let queued: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let show_once: Rc<dyn Fn()> = Rc::new(move || {
+            // Synchronous every time — cheap, idempotent, and what makes the
+            // click feel immediate.
+            navigate();
+            // Coalesced — the second signal of the same click finds the flag
+            // already set and books no second rebuild.
+            if queued.replace(true) {
+                return;
             }
+            let rebuild = rebuild_coalesced.clone();
+            let queued = queued.clone();
+            glib::idle_add_local_once(move || {
+                queued.set(false);
+                rebuild();
+            });
         });
-    }
-    // Clicking "Albums" while it is ALREADY selected (the user drilled into an
-    // album, so the row's highlight never left "Albums") does not re-emit
-    // `row-selected`, so that path can't return to the gallery. `row-activated`
-    // DOES fire on every click, so handle the return here too. Harmless when
-    // arriving from another row — both signals fire and this is idempotent.
-    {
-        let show_ov = show_gallery_overview.clone();
-        sb.list.connect_row_activated(move |_, row| {
-            if row.widget_name() == "albums" {
-                show_ov();
-            }
-        });
+
+        {
+            let show_once = show_once.clone();
+            sb.list.connect_row_selected(move |_, opt_row| {
+                let Some(row) = opt_row else { return };
+                if row.widget_name() == "albums" {
+                    show_once();
+                }
+            });
+        }
+        {
+            let show_once = show_once.clone();
+            sb.list.connect_row_activated(move |_, row| {
+                if row.widget_name() == "albums" {
+                    show_once();
+                }
+            });
+        }
     }
 }
