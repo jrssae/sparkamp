@@ -839,17 +839,23 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             }
         }
 
-        // Phase 11 A5: "Play Album" / "Enqueue Album" — only meaningful (and
-        // only enabled) while `album_filter` is active, i.e. the Files view
-        // is showing a single album drilled into from the gallery. Declared
-        // here (before `rebuild_files`) so their sensitivity can be kept in
-        // sync from inside that closure on every rebuild.
+        // Phase 11 A5: "Play Album" / "Enqueue Album" — only meaningful while
+        // `album_filter` is active, i.e. the Files view is showing a single
+        // album drilled into from the gallery. Declared here (before
+        // `rebuild_files`) so their visibility can be kept in sync from inside
+        // that closure on every rebuild.
+        //
+        // Hidden rather than merely insensitive: the plain Files view is a
+        // list of tracks, not of an album, so a greyed "Play Album" there is
+        // an action the view never offers rather than one temporarily
+        // unavailable. They appear on entering a drill-down and go again when
+        // it clears.
         let btn_play_album = Button::with_label("▶ Play Album");
         btn_play_album.add_css_class("pl-btn");
-        btn_play_album.set_sensitive(false);
+        btn_play_album.set_visible(false);
         let btn_enqueue_album = Button::with_label("+ Enqueue Album");
         btn_enqueue_album.add_css_class("pl-btn");
-        btn_enqueue_album.set_sensitive(false);
+        btn_enqueue_album.set_visible(false);
 
         // Whether the table currently *shows* a drill-down, which is not the
         // same question as whether `album_filter` is currently set: pressing
@@ -885,8 +891,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // search box until the filter is cleared (Files re-select or
                 // typing in the search box both clear it).
                 let active_filter = { album_filter_rc.borrow().clone() };
-                btn_play_album_rc.set_sensitive(active_filter.is_some());
-                btn_enqueue_album_rc.set_sensitive(active_filter.is_some());
+                btn_play_album_rc.set_visible(active_filter.is_some());
+                btn_enqueue_album_rc.set_visible(active_filter.is_some());
                 files_filtered_rc.set(active_filter.is_some());
                 let tracks: Vec<crate::media_library::LibTrack> =
                     if let Some((album, album_artist)) = active_filter {
@@ -997,8 +1003,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // longer a drill-down.
                 files_filtered_search.set(false);
                 entry.set_placeholder_text(Some("Search artist, title, album…"));
-                btn_play_album_search.set_sensitive(false);
-                btn_enqueue_album_search.set_sensitive(false);
+                btn_play_album_search.set_visible(false);
+                btn_enqueue_album_search.set_visible(false);
                 btn_album_back_search.set_visible(false);
 
                 let raw_query = entry.text().to_string();
@@ -1105,23 +1111,30 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         btn_cancel_rg.add_css_class("destructive");
         btn_cancel_rg.set_visible(false);
 
-        // Button row: send-to on the left, management buttons on the right.
+        // Button row: library management on the left, actions on what is
+        // selected on the right.
+        //
+        // This is the Disc page's layout (`disc_page.rs`, where identify /
+        // rip / edit / eject sit left of the spring and enqueue / play sit
+        // right of it), and the Device page's. Files and the album
+        // drill-down had the two groups the other way round, so the button
+        // in a given corner changed meaning as you moved between views.
+        //
+        // Play/Enqueue Album (Phase 11 A5) are hidden unless an album
+        // drill-down filter is active — see `rebuild_files` above.
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
-        // Play/Enqueue Album (Phase 11 A5) — only enabled while an album
-        // drill-down filter is active (see rebuild_files above); placed
-        // first, mirroring the device-view Play/Enqueue pair's prominence.
-        btn_row.append(&btn_play_album);
-        btn_row.append(&btn_enqueue_album);
-        btn_row.append(&btn_send_to);
-        btn_row.append(&spring);
-        btn_row.append(&btn_rm_from_ml);
         btn_row.append(&btn_customize);
         btn_row.append(&btn_add_folder);
         btn_row.append(&btn_rescan);
         btn_row.append(&btn_cancel);
         btn_row.append(&btn_analyze_rg);
         btn_row.append(&btn_cancel_rg);
+        btn_row.append(&spring);
+        btn_row.append(&btn_play_album);
+        btn_row.append(&btn_enqueue_album);
+        btn_row.append(&btn_send_to);
+        btn_row.append(&btn_rm_from_ml);
         files_vbox.append(&btn_row);
 
         // Play Album: replace the active playlist with the drilled-into
