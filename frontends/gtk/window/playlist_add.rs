@@ -342,8 +342,6 @@ pub(super) fn apply_facts(
 /// playing track leaves the engine holding a file the playlist no longer
 /// lists, and the tick loop then reports a position in a track the user
 /// cannot see.
-// The first caller lands in Task 7 (B3); until then this is unreferenced.
-#[allow(dead_code)]
 pub(super) fn add_with_mode(
     state: &Rc<RefCell<AppState>>,
     paths: &[std::path::PathBuf],

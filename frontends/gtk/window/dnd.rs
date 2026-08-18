@@ -349,7 +349,26 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // `add_path` per file, which opens and re-parses each one on the
             // main thread — 27.974 ms apiece, so a Media Library "select all"
             // dropped here froze the window for about seventeen minutes.
-            let did_add = playlist_add::add_paths(&state_dnd, &new_paths).any();
+            // Honour the append-vs-replace setting — for any file list,
+            // whatever produced it. A file manager knows nothing about
+            // Sparkamp's preferences, so the playlist window applies them on
+            // arrival (decision, 2026-08-18).
+            //
+            // Only the add half is subject to the rule. `did_move` above is an
+            // internal reorder of rows that are already in the playlist, and
+            // clearing the playlist to "replace" it with its own rows would
+            // delete the very tracks being dragged. A drop that both reorders
+            // and adds keeps the reorder and appends, for the same reason.
+            let did_add = if did_move {
+                playlist_add::add_paths(&state_dnd, &new_paths).any()
+            } else {
+                playlist_add::add_with_mode(
+                    &state_dnd,
+                    &new_paths,
+                    crate::playlist_add::AddMode::Behavior,
+                )
+                .any()
+            };
             // Clear the press-time selection snapshot so a subsequent
             // single-row drag doesn't accidentally reorder the whole set.
             drag_sel_drop.borrow_mut().clear();

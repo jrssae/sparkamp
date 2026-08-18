@@ -1,7 +1,7 @@
 //! Unit tests for the GTK window module.
 
 use super::*;
-use crate::config::{Config, VisualizerMode};
+use crate::config::{Config, PlaylistAddBehavior, VisualizerMode};
 use crate::model::{Playlist, Track};
 use std::path::PathBuf;
 
@@ -1161,6 +1161,84 @@ fn an_unreadable_file_is_not_re_read_for_ever() {
     assert!(
         !state.borrow().pending_rows.contains_key(&id),
         "a present-but-unreadable file has nothing left to tell us"
+    );
+}
+
+// ── dnd.rs reorder-vs-add guard ───────────────────────────────────────────
+//
+// The drop handler in dnd.rs (`connect_drop`) picks between two functions
+// depending on `did_move`: a reorder (rows already in the playlist) always
+// calls `add_paths`, which never touches the append-vs-replace setting; only
+// a genuine add calls `add_with_mode(.., AddMode::Behavior)`, which does. The
+// branch itself lives inside a GTK `DropTarget::connect_drop` closure and can
+// only be reached by a real drag-and-drop event, so it is not reachable from
+// a unit test without a GTK event loop. What *can* be pinned here, and is the
+// load-bearing half of the guard's safety argument, is that the two
+// functions it dispatches between actually differ the way the guard assumes:
+// `add_paths` is Replace-setting-blind, so routing a reorder through it can
+// never clear the playlist no matter what the user configured.
+
+#[test]
+fn add_with_mode_behavior_replace_clears_existing_playlist() {
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Replace;
+    let state = Rc::new(RefCell::new(s));
+    let added = super::playlist_add::add_with_mode(
+        &state,
+        &[PathBuf::from("/fake/C.mp3")],
+        crate::playlist_add::AddMode::Behavior,
+    );
+    assert!(added.any());
+    let titles: Vec<_> = state
+        .borrow()
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+    assert_eq!(titles, vec!["C"], "Replace clears A and B before adding C");
+}
+
+#[test]
+fn add_with_mode_behavior_append_keeps_existing_playlist() {
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Append;
+    let state = Rc::new(RefCell::new(s));
+    let _ = super::playlist_add::add_with_mode(
+        &state,
+        &[PathBuf::from("/fake/C.mp3")],
+        crate::playlist_add::AddMode::Behavior,
+    );
+    let titles: Vec<_> = state
+        .borrow()
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+    assert_eq!(titles, vec!["A", "B", "C"]);
+}
+
+#[test]
+fn add_paths_never_clears_even_when_replace_is_configured() {
+    // This is the guard's safety net: dnd.rs calls plain `add_paths` — never
+    // `add_with_mode` — whenever `did_move` is true, so a reorder can never
+    // observe a Replace-configured clear regardless of the setting.
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.config.behavior.playlist_add_behavior = PlaylistAddBehavior::Replace;
+    let state = Rc::new(RefCell::new(s));
+    let _ = super::playlist_add::add_paths(&state, &[PathBuf::from("/fake/C.mp3")]);
+    let titles: Vec<_> = state
+        .borrow()
+        .playlist
+        .tracks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["A", "B", "C"],
+        "add_paths must be blind to the replace setting"
     );
 }
 
