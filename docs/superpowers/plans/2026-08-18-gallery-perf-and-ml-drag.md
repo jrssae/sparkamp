@@ -452,7 +452,7 @@ In `frontends/gtk/window/album_gallery.rs`, replace the body of the `refilter` c
                     .iter()
                     .filter(|a| a.matches(&q))
                     .map(|a| glib::BoxedAnyObject::new(a.clone()))
-                    .collect();
+                    .collect()
             };
             // One `items-changed` for the whole set. Appending album by album
             // emitted one per tile — 5,158 of them on this library — and the
@@ -462,16 +462,7 @@ In `frontends/gtk/window/album_gallery.rs`, replace the body of the `refilter` c
         })
 ```
 
-- [ ] **Step 2: Fix the stray semicolon**
-
-The `.collect();` above ends a `let` binding whose value is the collected Vec — remove the semicolon after `collect()` so the block evaluates to the Vec:
-
-```rust
-                    .collect()
-            };
-```
-
-- [ ] **Step 3: Cache the fold across re-entry**
+- [ ] **Step 2: Cache the fold across re-entry**
 
 Change the `rebuild` closure so it only re-queries when the cache is empty or has been invalidated:
 
@@ -522,7 +513,7 @@ Change the `rebuild` closure so it only re-queries when the cache is empty or ha
     };
 ```
 
-- [ ] **Step 4: Return the invalidator**
+- [ ] **Step 3: Return the invalidator**
 
 Change the function's return type and final expression:
 
@@ -536,7 +527,7 @@ Change the function's return type and final expression:
 
 Update the doc comment's `Returns` line to name the third element.
 
-- [ ] **Step 5: Update the one caller**
+- [ ] **Step 4: Update the one caller**
 
 In `frontends/gtk/window/albums.rs`, change the destructuring at the `build_album_gallery` call:
 
@@ -548,7 +539,7 @@ In `frontends/gtk/window/albums.rs`, change the destructuring at the `build_albu
     ) = {
 ```
 
-- [ ] **Step 6: Wire the invalidator to the rebuild-ML seam**
+- [ ] **Step 5: Wire the invalidator to the rebuild-ML seam**
 
 The scan and watch paths already go through `state.borrow().rebuild_ml_callback`. In `frontends/gtk/window/albums.rs`, after `ctx.stack.add_named(&gallery_page, Some("albums"));`, chain the invalidator onto that callback:
 
@@ -569,12 +560,12 @@ The scan and watch paths already go through `state.borrow().rebuild_ml_callback`
     }
 ```
 
-- [ ] **Step 7: Build**
+- [ ] **Step 6: Build**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo build 2>&1 | head -20'`
 Expected: clean. If `rebuild_ml_callback` has a different type than `Option<Rc<dyn Fn()>>`, read its declaration in `frontends/gtk/window/state.rs` and match it.
 
-- [ ] **Step 8: Verify by hand**
+- [ ] **Step 7: Verify by hand**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo run'`
 
@@ -586,7 +577,7 @@ Run: `distrobox enter dev-box -- sh -c 'cargo run'`
 
 Step 5 is the one that catches a broken invalidator. If a new album does not appear, the chaining in Step 6 is wrong.
 
-- [ ] **Step 9: Full suite and commit**
+- [ ] **Step 8: Full suite and commit**
 
 ```bash
 distrobox enter dev-box -- sh -c 'cargo build && cargo test'
@@ -1014,10 +1005,12 @@ In `frontends/gtk/window/dnd.rs`, replace the `DropTarget::new` call at the `pl_
         // Accepts the Sparkamp URI payload (any Media Library view, including
         // a CD's `cdda://` tracks) and a plain FileList (file managers, and
         // the playlist's own rows). `DropTarget::new` takes one type, so the
-        // target is built empty and given both.
-        let drop_tgt = DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        drop_tgt.set_types(&[glib::Type::STRING, gdk::FileList::static_type()]);
+        // target is constructed with one and given the full set after.
+        let drop_tgt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        drop_tgt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
 ```
+
+`DropTarget::new` requires a concrete type in gtk4-rs 0.9 — `glib::Type::INVALID` is not accepted. Constructing with `FileList` and then calling `set_types` with both is the supported shape. If `set_types` does not exist on this binding version, check the generated docs (`cargo doc -p gtk4 --open`, search `DropTarget`) and use whichever of `set_types` / `set_gtypes` the version exposes; report which one you used.
 
 - [ ] **Step 2: Read the payload through the shared reader**
 
@@ -1381,35 +1374,37 @@ For the device row in the sidebar, drag every file the device scan cached — `a
 
 - [ ] **Step 5: Disc track rows and the drive row**
 
-In `frontends/gtk/window/disc_page.rs`, where each `ListBoxRow` is built for a disc track (around `:758`), and for the drive row itself. A CD track's playlist address is its `cdda://` URI — the same string `engine.rs` loads:
+**Do not build the URI by hand.** `DiscTrackEntry.path` (`src/disc/mod.rs:190-192`) already *is* the playlist address — `cdda://N?device=/dev/srX` on Linux, the mounted AIFF path on macOS — and it is produced in one place, `toc::track_entries`. Reconstructing it would fork that format, and `engine.rs:608` builds a bare `cdda://{track}` for its own purposes, so copying *that* shape would drop the device and load the wrong drive.
+
+In `frontends/gtk/window/disc_page.rs`, inside the `for e in &entries` loop that builds each track row (the `let row = ListBoxRow::new();` at ~`:758`), immediately after `row.set_child(Some(&row_lbl));`:
 
 ```rust
                     // A CD track is addressed by pseudo-URI, not by path —
-                    // this is the payload `ml_drag` exists to carry, since a
-                    // `gdk::FileList` cannot hold one.
+                    // the payload `ml_drag` exists to carry, since a
+                    // `gdk::FileList` cannot hold one. `e.path` is the same
+                    // string the disc's own add buttons put in `Track.path`
+                    // (see the `DiscAdd` closure at ~:498), so a dragged
+                    // track and an enqueued one are identical.
                     {
-                        let uri = format!("cdda://{}?device={}", entry.number, device_node);
+                        let uri = e.path.clone();
                         super::ml_drag::attach_uri_drag(&row, move || vec![uri.clone()]);
                     }
 ```
 
-and for the drive row, every track on the disc:
+For the drive row, every track on the disc. `current_disc_entries` is the `Rc<RefCell<Vec<DiscTrackEntry>>>` the file already clones at `:263`, `:545`, `:831` and `:988` — clone it once more rather than introducing new state, and attach to the drive's row widget in the disc **overview** list:
 
 ```rust
+        // Dragging the drive drags the disc: every track on it, per the
+        // container rule.
         {
-            let entries = disc_entries.clone();
-            let node = device_node.clone();
+            let entries_drag = current_disc_entries.clone();
             super::ml_drag::attach_uri_drag(&drive_row, move || {
-                entries
-                    .borrow()
-                    .iter()
-                    .map(|e| format!("cdda://{}?device={}", e.number, node))
-                    .collect()
+                entries_drag.borrow().iter().map(|e| e.path.clone()).collect()
             });
         }
 ```
 
-Bind `device_node` and `disc_entries` from whatever the surrounding scope already holds — read the file around the row construction and match its names rather than introducing new state.
+Read the overview's row construction and bind `drive_row` to whatever that row widget is actually called there; if the overview builds no per-drive row widget, attach to the row's container and say so in the report rather than inventing one.
 
 - [ ] **Step 6: Build and run the suite**
 
