@@ -558,8 +558,10 @@ pub(super) fn build(
             let Ok(track) = crate::model::Track::from_path(&path) else { return };
             let was_empty = state.borrow().playlist.is_empty();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
-            let should_replace = state.borrow().config.behavior.playlist_add_behavior
-                == crate::config::PlaylistAddBehavior::Replace;
+            let should_replace = crate::playlist_add::should_replace(
+                &state.borrow().config.behavior.playlist_add_behavior,
+                crate::playlist_add::AddMode::Behavior,
+            );
             if should_replace {
                 let _ = state.borrow_mut().player.stop();
                 state.borrow_mut().playlist.clear();

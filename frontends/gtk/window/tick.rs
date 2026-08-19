@@ -232,11 +232,13 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 if paths.is_empty() {
                     continue;
                 }
-                use crate::config::PlaylistAddBehavior;
-                let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+                let should_replace = crate::playlist_add::should_replace(
+                    &state.borrow().config.behavior.playlist_add_behavior,
+                    crate::playlist_add::AddMode::Behavior,
+                );
                 let autoplay = state.borrow().config.behavior.autoplay_on_add;
 
-                if behavior == PlaylistAddBehavior::Replace {
+                if should_replace {
                     let _ = state.borrow_mut().player.stop();
                     {
                         let mut s = state.borrow_mut();
@@ -260,7 +262,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 rebuild_playlist_tick();
 
                 if autoplay
-                    && (behavior == PlaylistAddBehavior::Replace || insert_start == 0)
+                    && (should_replace || insert_start == 0)
                 {
                     state.borrow_mut().playlist.jump_to(insert_start);
                     play_update_tick();

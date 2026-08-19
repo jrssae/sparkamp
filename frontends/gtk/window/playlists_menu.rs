@@ -400,8 +400,10 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                 let Some(lt) = lt else { return };
                 let was_empty = state_rc.borrow().playlist.is_empty();
                 let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
-                let should_replace = state_rc.borrow().config.behavior.playlist_add_behavior
-                    == crate::config::PlaylistAddBehavior::Replace;
+                let should_replace = crate::playlist_add::should_replace(
+                    &state_rc.borrow().config.behavior.playlist_add_behavior,
+                    crate::playlist_add::AddMode::Behavior,
+                );
                 if should_replace {
                     let _ = state_rc.borrow_mut().player.stop();
                     state_rc.borrow_mut().playlist.clear();

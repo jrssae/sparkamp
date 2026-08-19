@@ -457,14 +457,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             if entries.is_empty() {
                 return;
             }
-            use crate::config::PlaylistAddBehavior;
             let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
-            let replace = match mode {
-                DiscAdd::Behavior => behavior == PlaylistAddBehavior::Replace,
-                DiscAdd::PlayNow => true,
-                DiscAdd::Enqueue => false,
-            };
+            let replace = crate::playlist_add::should_replace(
+                &behavior,
+                match mode {
+                    DiscAdd::Behavior => crate::playlist_add::AddMode::Behavior,
+                    DiscAdd::PlayNow => crate::playlist_add::AddMode::Replace,
+                    DiscAdd::Enqueue => crate::playlist_add::AddMode::Enqueue,
+                },
+            );
             // Disc-level artist/album for the currently shown drive (empty until
             // identified/edited); used for the non-sampler title case. Falls
             // back to CD-TEXT on a gnudb miss (whole-entry precedence), so a
