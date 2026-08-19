@@ -58,6 +58,58 @@ use super::{
 /// spinner — are built by `sidebar.rs` and handed straight through. They are
 /// touched by this page alone, so by the plan's §3.2 test they do not belong
 /// on [`MlCtx`].
+/// How disc tracks land in the active playlist:
+///   Behavior — the double-click path: honor the replace/append setting
+///   and autoplay-on-add (same as the ML files double-click).
+///   PlayNow — the "▶ Play" button: replace the playlist with the picked
+///   tracks and play (same as the device/files views' Play).
+///   Enqueue — append only; start playing only when the playlist was
+///   empty and autoplay-on-add is set (same as the views' Enqueue).
+///
+/// Declared at module scope rather than inside [`build`] so the two decisions
+/// it drives can be unit-tested. Both are pure, and both are silent when
+/// wrong: swap two arms of [`disc_add_mode`] and the Enqueue button clears
+/// the playlist while Play appends to it, with nothing failing to compile and
+/// no test failing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum DiscAdd {
+    Behavior,
+    PlayNow,
+    Enqueue,
+}
+
+/// Which add rule a disc action asks for.
+///
+/// `Behavior` defers to the user's `playlist_add_behavior`; the two explicit
+/// buttons override it in opposite directions.
+pub(super) fn disc_add_mode(mode: DiscAdd) -> crate::playlist_add::AddMode {
+    match mode {
+        DiscAdd::Behavior => crate::playlist_add::AddMode::Behavior,
+        DiscAdd::PlayNow => crate::playlist_add::AddMode::Replace,
+        DiscAdd::Enqueue => crate::playlist_add::AddMode::Enqueue,
+    }
+}
+
+/// Whether adding these tracks should also start playback.
+///
+/// `insert_start` is the playlist index the new tracks began at, so
+/// `insert_start == 0` means "the playlist was empty before this add".
+/// `replace` is the already-resolved answer from [`disc_add_mode`] — a
+/// replace empties the playlist first, so the new tracks are the whole of it
+/// and autoplay applies.
+pub(super) fn disc_add_starts_playback(
+    mode: DiscAdd,
+    autoplay: bool,
+    replace: bool,
+    insert_start: usize,
+) -> bool {
+    match mode {
+        DiscAdd::PlayNow => true,
+        DiscAdd::Behavior => autoplay && (replace || insert_start == 0),
+        DiscAdd::Enqueue => autoplay && insert_start == 0,
+    }
+}
+
 pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page takes from its context, so the body below
     // reads exactly as it did inside `open_media_library_window`. Same device
@@ -433,19 +485,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // add-behavior + autoplay rules as the ML double-click path. Phase 1 has no
     // gnudb tags yet, so titles are "Track N" and artist/album stay empty (the
     // " / " sampler split still applies to future matched discs).
-    // How disc tracks land in the active playlist:
-    //   Behavior — the double-click path: honor the replace/append setting
-    //   and autoplay-on-add (same as the ML files double-click).
-    //   PlayNow — the "▶ Play" button: replace the playlist with the picked
-    //   tracks and play (same as the device/files views' Play).
-    //   Enqueue — append only; start playing only when the playlist was
-    //   empty and autoplay-on-add is set (same as the views' Enqueue).
-    #[derive(Clone, Copy, PartialEq)]
-    enum DiscAdd {
-        Behavior,
-        PlayNow,
-        Enqueue,
-    }
     let add_disc_entries: Rc<dyn Fn(&[crate::disc::DiscTrackEntry], DiscAdd)> = {
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
@@ -459,14 +498,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             }
             let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
-            let replace = crate::playlist_add::should_replace(
-                &behavior,
-                match mode {
-                    DiscAdd::Behavior => crate::playlist_add::AddMode::Behavior,
-                    DiscAdd::PlayNow => crate::playlist_add::AddMode::Replace,
-                    DiscAdd::Enqueue => crate::playlist_add::AddMode::Enqueue,
-                },
-            );
+            let replace = crate::playlist_add::should_replace(&behavior, disc_add_mode(mode));
             // Disc-level artist/album for the currently shown drive (empty until
             // identified/edited); used for the non-sampler title case. Falls
             // back to CD-TEXT on a gnudb miss (whole-entry precedence), so a
@@ -509,11 +541,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 });
             }
             rebuild();
-            let start = match mode {
-                DiscAdd::PlayNow => true,
-                DiscAdd::Behavior => autoplay && (replace || insert_start == 0),
-                DiscAdd::Enqueue => autoplay && insert_start == 0,
-            };
+            let start = disc_add_starts_playback(mode, autoplay, replace, insert_start);
             if start {
                 state.borrow_mut().playlist.jump_to(insert_start);
                 state.borrow_mut().play_current();

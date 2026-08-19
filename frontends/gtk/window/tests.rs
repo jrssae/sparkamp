@@ -1267,3 +1267,63 @@ fn age_out(state: &Rc<RefCell<AppState>>, id: u64) {
         .expect("monotonic clock is older than twice the recheck TTL");
     state.borrow_mut().row_checked_at.insert(id, past);
 }
+
+// ── Disc add mode ───────────────────────────────────────────────────────
+//
+// Two pure mappings behind the disc view's Play / Enqueue buttons and its
+// track double-click. Both are silent when wrong: swap two arms and Enqueue
+// clears the playlist while Play appends to it, with nothing failing to
+// compile. Each assertion below is one an inverted arm breaks — asserting
+// only that Enqueue appends under an Append setting would pass either way
+// and prove nothing.
+
+/// An explicit Enqueue appends even when the setting says Replace, and an
+/// explicit Play replaces even when the setting says Append. These two cross
+/// cases are the whole contract; the same-direction cases cannot detect a swap.
+#[test]
+fn disc_add_mode_overrides_the_setting_in_both_directions() {
+    use super::disc_page::{disc_add_mode, DiscAdd};
+    use crate::playlist_add::should_replace;
+
+    assert!(
+        !should_replace(&PlaylistAddBehavior::Replace, disc_add_mode(DiscAdd::Enqueue)),
+        "disc Enqueue must not clear the playlist, even configured to Replace"
+    );
+    assert!(
+        should_replace(&PlaylistAddBehavior::Append, disc_add_mode(DiscAdd::PlayNow)),
+        "disc Play must clear the playlist, even configured to Append"
+    );
+}
+
+/// The double-click path is the only one that follows the setting, and it
+/// follows it both ways.
+#[test]
+fn disc_add_mode_behavior_follows_the_configured_setting() {
+    use super::disc_page::{disc_add_mode, DiscAdd};
+    use crate::playlist_add::should_replace;
+
+    assert!(should_replace(&PlaylistAddBehavior::Replace, disc_add_mode(DiscAdd::Behavior)));
+    assert!(!should_replace(&PlaylistAddBehavior::Append, disc_add_mode(DiscAdd::Behavior)));
+}
+
+/// Play always starts playback; Enqueue only into a playlist that was empty;
+/// the double-click path also starts when the add replaced what was there,
+/// because a replace makes the new tracks the whole playlist.
+#[test]
+fn disc_add_decides_playback_per_action() {
+    use super::disc_page::{disc_add_starts_playback, DiscAdd};
+
+    // PlayNow ignores autoplay and ignores what was already in the playlist.
+    assert!(disc_add_starts_playback(DiscAdd::PlayNow, false, false, 7));
+
+    // Enqueue never starts into a non-empty playlist, autoplay or not.
+    assert!(!disc_add_starts_playback(DiscAdd::Enqueue, true, false, 7));
+    assert!(disc_add_starts_playback(DiscAdd::Enqueue, true, false, 0));
+    assert!(!disc_add_starts_playback(DiscAdd::Enqueue, false, false, 0));
+
+    // Behavior starts on a replace even though rows existed before it.
+    assert!(disc_add_starts_playback(DiscAdd::Behavior, true, true, 7));
+    assert!(!disc_add_starts_playback(DiscAdd::Behavior, true, false, 7));
+    // ...and without autoplay, never.
+    assert!(!disc_add_starts_playback(DiscAdd::Behavior, false, true, 7));
+}

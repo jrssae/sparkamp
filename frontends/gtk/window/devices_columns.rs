@@ -135,7 +135,16 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 return;
             }
             let lbl = Label::builder()
-                .halign(Align::Start)
+                // Fills the cell for the same reason the track columns do: a
+                // controller only sees pointer events inside its widget's
+                // allocation, and `halign(Start)` without `hexpand` allocates
+                // the label its natural width — which `ellipsize` drives down
+                // to about one character. The right-click gesture below hangs
+                // off this label, so a shrunken one leaves most of the cell
+                // dead to the row menu while still LOOKING correct, because
+                // GTK draws the text either way.
+                .hexpand(true)
+                .halign(Align::Fill)
                 .xalign(0.0)
                 .margin_start(6)
                 .margin_end(6)
