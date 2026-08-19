@@ -16,18 +16,6 @@
 
 use super::*;
 
-/// Content type for a Sparkamp drag: URIs, one per line.
-///
-/// Newline-separated because `gdk::ContentProvider::for_value` takes a single
-/// `Value` and a `Vec<String>` has no `ToValue`. URIs cannot contain a raw
-/// newline, so the join is unambiguous.
-///
-/// Unused for now: `attach_uri_drag` negotiates the content type from the
-/// `Value`'s GType rather than this string, so nothing reads it until a drop
-/// target (the next task) registers it explicitly. Remove the allow there.
-#[allow(dead_code)]
-pub(super) const SPARKAMP_URIS_MIME: &str = "application/x-sparkamp-uris";
-
 /// Make `widget` draggable, publishing whatever `uris` returns at drag time.
 ///
 /// `uris` is called on every drag, not once at setup, so it reads the
@@ -79,10 +67,7 @@ where
 /// Returns an empty Vec for a value that is neither, which callers treat as
 /// "not for us" and decline.
 ///
-/// Exercised by this module's tests but not yet called from production code;
-/// the first caller (the active playlist's drop target) lands in the next
-/// task. Remove this allow there.
-#[allow(dead_code)]
+/// Exercised by this module's tests and by the active playlist's drop target.
 pub(super) fn uris_from_value(value: &glib::Value) -> Vec<String> {
     if let Ok(joined) = value.get::<String>() {
         return joined
@@ -101,6 +86,20 @@ pub(super) fn uris_from_value(value: &glib::Value) -> Vec<String> {
             .collect();
     }
     Vec::new()
+}
+
+/// Whether `uri` looks like something the playlist can actually hold.
+///
+/// An absolute filesystem path, or a pseudo-URI whose scheme the engine
+/// understands (`cdda://` for a CD track — see `parse_cdda_uri`). Everything
+/// a Sparkamp drag produces passes; dropped prose does not.
+///
+/// Needed because the drop target accepts a bare `glib::Type::STRING` and
+/// GTK negotiates by GType, not by mime — `text/plain` from any application
+/// deserializes to a string as well, so the type alone cannot tell a track
+/// list from a paragraph.
+pub(super) fn is_playable_uri(uri: &str) -> bool {
+    uri.starts_with('/') || uri.starts_with("cdda://")
 }
 
 #[cfg(test)]
@@ -133,5 +132,30 @@ mod tests {
     fn a_value_of_neither_type_yields_nothing() {
         let v = 42i32.to_value();
         assert!(uris_from_value(&v).is_empty());
+    }
+
+    #[test]
+    fn an_absolute_path_is_playable() {
+        assert!(is_playable_uri("/m/a.mp3"));
+    }
+
+    #[test]
+    fn a_cdda_uri_is_playable() {
+        assert!(is_playable_uri("cdda://5?device=/dev/sr0"));
+    }
+
+    #[test]
+    fn a_bare_word_is_not_playable() {
+        assert!(!is_playable_uri("hello"));
+    }
+
+    #[test]
+    fn a_relative_path_is_not_playable() {
+        assert!(!is_playable_uri("music/a.mp3"));
+    }
+
+    #[test]
+    fn an_https_url_is_not_playable() {
+        assert!(!is_playable_uri("https://example.com/a.mp3"));
     }
 }

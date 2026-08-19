@@ -243,23 +243,32 @@ pub(super) fn install(ctx: &PlayerCtx) {
     // current playlist; any path not found is treated as a new track and
     // appended (so cross-window drops from ML/editor also work here).
     {
+        // Accepts the Sparkamp URI payload (any Media Library view, including
+        // a CD's `cdda://` tracks) and a plain FileList (file managers, and
+        // the playlist's own rows). `DropTarget::new` takes one type, so the
+        // target is constructed with one and given the full set after.
         let drop_tgt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        drop_tgt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
         let state_dnd = state.clone();
         let rebuild_dnd = rebuild_playlist.clone();
         let pl_view_dnd = pl_view.clone();
         let drag_sel_drop = pl_drag_selection.clone();
 
         drop_tgt.connect_drop(move |_, value, x, y| {
-            let file_list = match value.get::<gdk::FileList>() {
-                Ok(fl) => fl,
-                Err(_) => {
-                    return false;
-                }
-            };
-            let dropped: Vec<std::path::PathBuf> = file_list.files().iter()
-                .filter_map(|f| f.path())
-                .collect();
-            if dropped.is_empty() { return false }
+            let uris = ml_drag::uris_from_value(value);
+            // Every entry must look like something the playlist can hold: an
+            // absolute path, or a pseudo-URI scheme the engine understands.
+            // A drag Sparkamp produced always satisfies this; dropped prose
+            // never does.
+            if uris.is_empty() || !uris.iter().all(|u| ml_drag::is_playable_uri(u)) {
+                return false;
+            }
+            // Everything the playlist can hold is addressed by a string:
+            // local files by path, CD tracks by `cdda://` pseudo-URI. The
+            // reorder lookup below compares against `Track::path`, which
+            // stores exactly these strings.
+            let dropped: Vec<std::path::PathBuf> =
+                uris.iter().map(std::path::PathBuf::from).collect();
 
             let n = state_dnd.borrow().playlist.len();
             // Use dest_row_at_pos so the drop position honors the
@@ -412,21 +421,37 @@ pub(super) fn install(ctx: &PlayerCtx) {
     // directories are scanned recursively.  Attached to the ScrolledWindow so
     // the full visible playlist area is a valid drop zone.
     {
+        // Accepts the Sparkamp URI payload (any Media Library view, including
+        // a CD's `cdda://` tracks) and a plain FileList (file managers, and
+        // the playlist's own rows). `DropTarget::new` takes one type, so the
+        // target is constructed with one and given the full set after.
         let file_drop = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        file_drop.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
         let state_fd = state.clone();
         let rebuild_fd = rebuild_playlist.clone();
         let status_fd = pl_status_label.clone();
         file_drop.connect_drop(move |_, value, _, _| {
-            let file_list = match value.get::<gdk::FileList>() {
-                Ok(fl) => fl,
-                Err(_) => return false,
-            };
+            let uris = ml_drag::uris_from_value(value);
+            // Every entry must look like something the playlist can hold: an
+            // absolute path, or a pseudo-URI scheme the engine understands.
+            // A drag Sparkamp produced always satisfies this; dropped prose
+            // never does.
+            if uris.is_empty() || !uris.iter().all(|u| ml_drag::is_playable_uri(u)) {
+                return false;
+            }
             let dropped: Vec<std::path::PathBuf> =
-                file_list.files().iter().filter_map(|f| f.path()).collect();
+                uris.iter().map(std::path::PathBuf::from).collect();
             // Same shared path as every other add: library rows are a data
             // copy, anything unknown is read on the background pass, and a
-            // dropped folder still expands to the files under it.
-            let added = playlist_add::add_paths(&state_fd, &dropped).count;
+            // dropped folder still expands to the files under it. Routed
+            // through the append-vs-replace rule so a Replace-configured
+            // drag doesn't append behind the user's back (Task 7 / B3).
+            let added = playlist_add::add_with_mode(
+                &state_fd,
+                &dropped,
+                crate::playlist_add::AddMode::Behavior,
+            )
+            .count;
             if added > 0 {
                 status_fd.set_text(&format!(
                     "Dropped {} file{}",
