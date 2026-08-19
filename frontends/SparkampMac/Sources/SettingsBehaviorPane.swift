@@ -64,7 +64,7 @@ struct BehaviorPane: View {
                         sparkamp_save_config(ctx)
                     }
 
-                Picker("Media library → playlist", selection: $addBehavior) {
+                Picker("Default add file action", selection: $addBehavior) {
                     Text("Append to playlist").tag(0)
                     Text("Replace playlist").tag(1)
                 }

@@ -243,7 +243,19 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                     setup_cells.setup().upcast::<gtk4::Widget>()
                 } else {
                     Label::builder()
-                        .halign(Align::Start)
+                        // Fills the cell, and that is load-bearing rather than
+                        // cosmetic: a label with `halign(Start)` and no
+                        // `hexpand` is allocated only its natural width, which
+                        // `ellipsize(End)` collapses to almost nothing. The
+                        // per-cell DragSource below hangs off this widget, so
+                        // a sliver-sized label received no pointer events at
+                        // all and dragging a device row did nothing — the
+                        // prepare closure was never reached despite being
+                        // attached to every cell. The Files table sizes its
+                        // label exactly this way and its drag has always
+                        // worked.
+                        .hexpand(true)
+                        .halign(Align::Fill)
                         .xalign(0.0)
                         .margin_start(6)
                         .margin_end(6)
@@ -252,8 +264,6 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                         .build()
                         .upcast::<gtk4::Widget>()
                 };
-                li.set_child(Some(&child));
-
                 // Per-cell DragSource — collects every currently-selected
                 // device row (or just the row under the pointer, with
                 // nothing selected) so it can be dropped on the active
@@ -285,6 +295,16 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                         paths
                     });
                 }
+
+                // Parented only now, AFTER its controllers are installed.
+                //
+                // The Files table (files.rs) has always done it in this order
+                // and its per-cell drag works; this view set the child first
+                // and its drag never started — the prepare closure was never
+                // reached at all, though the source was demonstrably attached
+                // to every cell. Setting the child first is the one structural
+                // difference between the two, so the order is load-bearing.
+                li.set_child(Some(&child));
 
                 // Right-click has to be handled per cell: ColumnView has no
                 // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which

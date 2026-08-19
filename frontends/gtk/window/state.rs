@@ -36,6 +36,18 @@ pub(super) struct AppState {
     pub(super) duration_cache: DurationCache,
     /// Media library — open on startup, or `None` when the DB cannot be opened.
     pub(super) media_lib: Option<crate::media_library::MediaLibrary>,
+    /// Fully-tagged `Track`s for the tracks of the currently shown disc, keyed
+    /// by the `cdda://` pseudo-URI that addresses each one.
+    ///
+    /// A CD track has no file for `playlist_ingest::resolve` to read, so a
+    /// dragged one would otherwise land in the playlist titled after the URI's
+    /// last path component — "sr0" — with no artist, album or duration. The
+    /// disc page already builds the real `Track` for its own Add button; it
+    /// publishes the same thing here so a drag produces an identical row.
+    ///
+    /// Replaced wholesale whenever the disc view renders, so it describes the
+    /// disc on screen and nothing else.
+    pub(super) disc_drag_tracks: std::collections::HashMap<std::path::PathBuf, crate::model::Track>,
     /// Live filesystem watcher over the watched folders (Phase 8 Task 10).
     /// `None` whenever watching is off (`config.media_library.watch_folders`
     /// false), `media_lib` is unavailable, or the underlying OS watcher
@@ -631,6 +643,7 @@ impl AppState {
             mute_pending: None,
             duration_cache: DurationCache::load(),
             media_lib,
+            disc_drag_tracks: std::collections::HashMap::new(),
             watch: None,
             watch_rx: None,
             row_facts_tx: None,

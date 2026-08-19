@@ -298,37 +298,31 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 _ => n,
             };
 
-            // Prefer the press-time drag selection snapshot — it's the
-            // authoritative source-row list and avoids the path-comparison
-            // mismatch that round-trips through gio::File.  Empty snapshot
-            // means the drop came from another window, so fall back to
-            // path matching to decide reorder-vs-add.
+            // The press-time drag selection snapshot is the ONLY thing that
+            // makes a drop a reorder.
+            //
+            // It is set by this window's own `DragSource` and by nothing else,
+            // so a non-empty snapshot means "these playlist rows are being
+            // moved". An empty snapshot means the drag came from somewhere
+            // else — a Media Library view, a file manager — and every path in
+            // it is an ADD, even when the playlist already contains that file.
+            //
+            // This used to fall back to matching dropped paths against the
+            // playlist and treating any hit as a row being moved. That made a
+            // second drop of the same album silently reorder instead of
+            // adding, so an album could only ever be added once, and under
+            // "Replace current" it looked like drag-and-drop had stopped
+            // working entirely — the reorder branch deliberately bypasses the
+            // replace rule, so nothing happened at all. A playlist is allowed
+            // to hold the same track more than once; deciding otherwise was
+            // never asked for.
             let snapshot: Vec<usize> = drag_sel_drop.borrow().clone();
-            let mut existing_src_indices: Vec<usize>;
-            let mut new_paths: Vec<std::path::PathBuf>;
-            if !snapshot.is_empty() {
-                existing_src_indices = snapshot;
-                new_paths = Vec::new();
+            let existing_src_indices: Vec<usize> = snapshot;
+            let new_paths: Vec<std::path::PathBuf> = if existing_src_indices.is_empty() {
+                dropped.clone()
             } else {
-                existing_src_indices = Vec::new();
-                new_paths = Vec::new();
-                let s = state_dnd.borrow();
-                // Index the playlist once. This used to scan it per dropped
-                // path, which is fine for the handful of files a file manager
-                // sends and quadratic for the 36,000 a "select all" in the
-                // Media Library sends.
-                let mut by_path: std::collections::HashMap<&std::path::Path, usize> =
-                    std::collections::HashMap::with_capacity(s.playlist.tracks.len());
-                for (i, t) in s.playlist.tracks.iter().enumerate() {
-                    by_path.entry(t.path.as_path()).or_insert(i);
-                }
-                for dp in &dropped {
-                    match by_path.get(dp.as_path()) {
-                        Some(i) => existing_src_indices.push(*i),
-                        None    => new_paths.push(dp.clone()),
-                    }
-                }
-            }
+                Vec::new()
+            };
 
             let did_move = !existing_src_indices.is_empty();
             // Capture the post-move range so the idle rebuild below can

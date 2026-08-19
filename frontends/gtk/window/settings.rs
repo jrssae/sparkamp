@@ -386,9 +386,20 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&chk, 1, 0, 1, 1);
 
-        // Row 1: Default playlist behavior for media library add.
-        let lbl_add = Label::new(Some("Media library → playlist"));
+        // Row 1: what adding files to the active playlist does by default.
+        //
+        // Named for the action, not for one caller. The old label
+        // ("Media library → playlist") described where it was first used, but
+        // the setting has never been Media-Library-specific: it governs every
+        // add that has not been told otherwise — drag-and-drop from any view
+        // or from a file manager, files passed on the command line, and files
+        // opened through the desktop when Sparkamp is the default player.
+        let lbl_add = Label::new(Some("Default add file action"));
         lbl_add.set_halign(Align::Start);
+        lbl_add.set_tooltip_text(Some(
+            "Applies to every way files reach the playlist: drag-and-drop, the \
+             Media Library, the command line, and files opened from the desktop.",
+        ));
         grid.attach(&lbl_add, 0, 1, 1, 1);
 
         let dd_add = DropDown::from_strings(&["Append to current", "Replace current"]);

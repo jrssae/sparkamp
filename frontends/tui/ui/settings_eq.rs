@@ -163,7 +163,7 @@ pub(super) fn settings_rows_for_tab<'a>(
                 },
             ),
             (
-                "Media library → playlist",
+                "Default add file action",
                 match app.config.behavior.playlist_add_behavior {
                     PlaylistAddBehavior::Append => "[ Append / Replace ]  ●  Append".to_string(),
                     PlaylistAddBehavior::Replace => "[ Append / Replace ]  ●  Replace".to_string(),

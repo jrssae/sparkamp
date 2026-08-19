@@ -740,6 +740,59 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     burn_ui.refresh(drive);
                 }
                 burn_ui.root.set_visible(burnable);
+                // Publish a fully-tagged `Track` per disc track, keyed by the
+                // `cdda://` URI that addresses it, so a DRAGGED track lands in
+                // the playlist identical to an enqueued one.
+                //
+                // Without this the drop path falls to
+                // `playlist_ingest::resolve`, which can only stat a file — and
+                // a CD track has none, so the row arrived titled after the
+                // URI's last component ("sr0") with no artist, album or
+                // duration. Same derivation as the Add closure above: gnudb
+                // tags first, CD-TEXT as the whole-entry fallback.
+                {
+                    let (d_artist, d_album) = discid
+                        .as_ref()
+                        .and_then(|id| {
+                            disc_tags
+                                .borrow()
+                                .get(id)
+                                .cloned()
+                                .or_else(|| disc_cdtext.borrow().get(id).cloned())
+                        })
+                        .map(|t| (t.artist.clone(), t.album.clone()))
+                        .unwrap_or_default();
+                    let mut map = std::collections::HashMap::with_capacity(entries.len());
+                    for e in &entries {
+                        let meta = crate::disc::track_meta(&e.title, &d_artist);
+                        map.insert(
+                            std::path::PathBuf::from(&e.path),
+                            crate::model::Track {
+                                path: std::path::PathBuf::from(&e.path),
+                                title: meta.title,
+                                artist: meta.artist,
+                                album_artist: String::new(),
+                                album: d_album.clone(),
+                                duration: Some(std::time::Duration::from_secs(
+                                    e.duration_secs as u64,
+                                )),
+                                broken: false,
+                                read_only: true,
+                                id: 0,
+                            },
+                        );
+                    }
+                    state_disc.borrow_mut().disc_drag_tracks = map;
+                }
+                // Row index -> URI, so a drag can turn `selected_rows()` into
+                // the URIs those rows stand for. Rebuilt with the list.
+                let row_uris: Rc<RefCell<std::collections::HashMap<i32, String>>> =
+                    Rc::new(RefCell::new(std::collections::HashMap::new()));
+                for (row_idx, e) in entries.iter().enumerate() {
+                    row_uris
+                        .borrow_mut()
+                        .insert(row_idx as i32, e.path.clone());
+                }
                 for e in &entries {
                     let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
                     // Show the real title once known; otherwise the placeholder.
@@ -765,9 +818,30 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     // string the disc's own add buttons put in `Track.path`
                     // (see the `DiscAdd` closure at ~:498), so a dragged
                     // track and an enqueued one are identical.
+                    //
+                    // Carries every SELECTED row, falling back to this row
+                    // alone when the drag starts on an unselected one — the
+                    // list is `SelectionMode::Multiple`, and shipping only the
+                    // row under the pointer meant a multi-track selection
+                    // dropped exactly one track. Mirrors the Files table's
+                    // per-cell source.
                     {
                         let uri = e.path.clone();
-                        super::ml_drag::attach_uri_drag(&row, move || vec![uri.clone()]);
+                        let list_drag = track_list.clone();
+                        let uris_by_row = row_uris.clone();
+                        super::ml_drag::attach_uri_drag(&row, move || {
+                            let by_row = uris_by_row.borrow();
+                            let picked: Vec<String> = list_drag
+                                .selected_rows()
+                                .iter()
+                                .filter_map(|r| by_row.get(&r.index()).cloned())
+                                .collect();
+                            if picked.is_empty() {
+                                vec![uri.clone()]
+                            } else {
+                                picked
+                            }
+                        });
                     }
                     track_list.append(&row);
                 }

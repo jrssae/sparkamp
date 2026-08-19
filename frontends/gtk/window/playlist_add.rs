@@ -71,7 +71,15 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
         let mut s = state.borrow_mut();
         start = s.playlist.tracks.len();
         for row in rows {
-            s.playlist.add(row.track);
+            // A disc track is addressed by a `cdda://` pseudo-URI, which the
+            // filesystem cannot describe: `resolve` can only hand back a
+            // placeholder whose title is the URI's last path component, so a
+            // dragged CD track arrived in the playlist called "sr0" with no
+            // artist, album or duration. The disc page publishes the real
+            // `Track` it already builds for its own Add button, keyed by that
+            // URI, and it wins here when present.
+            let prebuilt = s.disc_drag_tracks.get(&row.track.path).cloned();
+            s.playlist.add(prebuilt.unwrap_or(row.track));
             // `add` stamps the entry id; note the row as unfinished against it.
             let id = s.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
             s.pending_rows.insert(id, row.needs_tags);

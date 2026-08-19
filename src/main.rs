@@ -189,11 +189,32 @@ fn main() -> Result<()> {
         }
     }
 
-    // If no files were given, restore the last saved playlist so the user
-    // does not have to re-add their tracks on every launch.
-    if playlist.is_empty() {
+    // Restore the last saved playlist so the user does not have to re-add
+    // their tracks on every launch.
+    //
+    // When files were also given on the command line, `playlist_add_behavior`
+    // decides what happens to the restored one — the same setting that governs
+    // a drag-and-drop, a Media Library add, or a file opened from the desktop.
+    // Cold start used to be the one path that ignored it: giving any file
+    // argument skipped the restore entirely, so the command line was always a
+    // replace whatever the user had configured.
+    let cli_files_given = !playlist.is_empty();
+    if !cli_files_given {
         if let Ok(saved) = model::Playlist::load_last() {
             playlist = saved;
+        }
+    } else if !playlist_add::should_replace(
+        &config.behavior.playlist_add_behavior,
+        playlist_add::AddMode::Behavior,
+    ) {
+        // Append: the restored playlist comes first, the command line's files
+        // after it, matching where a drop would have put them.
+        if let Ok(saved) = model::Playlist::load_last() {
+            let cli_tracks: Vec<model::Track> = playlist.tracks.clone();
+            playlist = saved;
+            for t in cli_tracks {
+                playlist.add(t);
+            }
         }
     }
 
