@@ -176,8 +176,11 @@ pub(super) fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
     entry
 }
 
-/// Make a sidebar/manage playlist row draggable, carrying `pl:<id>` so a drop
-/// onto a device row can send the whole playlist.
+/// Make a sidebar/manage playlist row draggable, carrying `pl:<id>` — the one
+/// drag source a playlist row has. A drop onto a device row reads this to
+/// sync the whole playlist; a drop onto the active playlist reads it too and
+/// expands it into that playlist's tracks (`ml_drag::expand_playlist_drop`,
+/// called from `dnd.rs`).
 pub(super) fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
     let src = gtk4::DragSource::new();
     src.set_actions(gdk::DragAction::COPY);
@@ -186,36 +189,6 @@ pub(super) fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
         Some(gdk::ContentProvider::for_value(&payload.to_value()))
     });
     row.add_controller(src);
-}
-
-/// Make an overview/manage-list playlist row also draggable onto the active
-/// playlist: publishes every track path the playlist holds, in play order,
-/// alongside the `pl:<id>` payload `attach_pl_row_drag` already carries for
-/// device drops. A playlist row is a container, so the drag carries its
-/// contents rather than the row itself (decision, 2026-08-18).
-///
-/// `id` is read fresh from `all_playlists()` on every drag rather than
-/// captured as a `LibPlaylist`, so a rename that happens after this row was
-/// built is still reflected.
-pub(super) fn attach_pl_row_uri_drag(row: &gtk4::ListBoxRow, state: &Rc<RefCell<AppState>>, id: i64) {
-    let state_drag = state.clone();
-    super::ml_drag::attach_uri_drag(row, move || {
-        let s = state_drag.borrow();
-        let Some(lib) = s.media_lib.as_ref() else {
-            return Vec::new();
-        };
-        let Ok(all) = lib.all_playlists() else {
-            return Vec::new();
-        };
-        let Some(pl) = all.into_iter().find(|p| p.id == id) else {
-            return Vec::new();
-        };
-        lib.load_playlist_tracks(&pl)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| t.path)
-            .collect()
-    });
 }
 
 /// Index of the ML sidebar's Devices header (= the end of the Playlists

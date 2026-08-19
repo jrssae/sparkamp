@@ -710,8 +710,12 @@ impl MediaLibrary {
     /// (one per column) measured ~50% slower over the real library with no
     /// behavioural difference, so there is no reason to pay for it.
     /// `char(1)` (a control byte no real tag is expected to contain)
-    /// separates the re-packed artist/album/album_artist after the fixed
-    /// 11-byte `%05d%05d|`-formatted sort-key prefix is stripped back off.
+    /// separates the re-packed artist/album/album_artist after the
+    /// `%05d%05d|`-formatted sort-key prefix is stripped back off by
+    /// splitting on that literal `|`. The prefix is *not* a fixed 11 bytes —
+    /// `track_num` can exceed 5 digits (the live library has one as large as
+    /// 3664080895, which `%05d` widens to 10 digits rather than truncating),
+    /// so the split must find the delimiter rather than assume its offset.
     ///
     /// "Expected to" isn't "can't": `crate::textutil::sanitize` (the only
     /// cleanup tags get at ingestion, per `src/tags.rs`) strips NUL bytes and
@@ -737,14 +741,21 @@ impl MediaLibrary {
         )?;
         let rows = stmt.query_map([], |r| {
             let packed: String = r.get(0)?;
-            // Byte offset 11 is always a char boundary: the sort-key prefix
-            // (`%05d%05d|`) is pure ASCII.
-            //
+            // Split off the sort-key prefix at its `|` delimiter rather than
+            // a fixed byte offset: `%05d` only zero-pads, it doesn't
+            // truncate, so an oversized `track_num` (the live library has
+            // one at 3664080895 — 10 digits, not 5) widens the prefix well
+            // past the 11 bytes a `%05d%05d|` assumption would expect. The
+            // prefix is pure ASCII digits followed by one literal `|`, and
+            // REPLACE above already stripped any char(1) from the fields
+            // that follow, so the first `|` in `packed` is always this
+            // delimiter, never a stray byte from tag data.
+            let rest = packed.split_once('|').map_or("", |(_, rest)| rest);
             // Safe to trust there are exactly 3 parts here — the REPLACE
             // calls above guarantee no packed field can itself contain the
             // char(1) separator, so these two splits are always the real
             // ones, never a stray byte from tag data.
-            let mut parts = packed[11..].splitn(3, '\u{1}');
+            let mut parts = rest.splitn(3, '\u{1}');
             let artist = parts.next().unwrap_or_default().to_string();
             let album = parts.next().unwrap_or_default().to_string();
             let album_artist = parts.next().unwrap_or_default().to_string();

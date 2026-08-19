@@ -45,10 +45,15 @@ mod now_playing;
 mod replaygain;
 mod pathutil;
 mod play_stats;
-// The bin target compiles this module standalone, so until a GTK call site
-// lands in a later task (B3) its variants read as unconstructed here — the
-// lib target's `pub` surface is exempt from the same check.
-#[allow(dead_code)]
+// B3 landed: the Linux GTK frontend (`gtk_ui`, below) now calls into this
+// module (`dnd.rs`'s `playlist_add::AddMode`/`add_with_mode`), so the bin
+// target no longer needs blanket dead-code suppression there. The allow
+// stays for the GTK-less macOS bin build specifically: on `target_os =
+// "macos"` `gtk_ui` is the stub at the bottom of this file, which never
+// touches `playlist_add`, and the FFI call sites that do (`src/ffi/playlist.rs`)
+// live only in the `lib` target, not this bin — so this module's variants
+// are genuinely unconstructed in that one configuration.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod playlist_add;
 // Shared active-playlist status-line formatter (phase 7).
 mod playlist_ingest;

@@ -484,9 +484,17 @@ pub(super) fn build_album_gallery(
         let refilter = refilter.clone();
         let last_token = last_token.clone();
         let last_sort: Rc<Cell<u32>> = Rc::new(Cell::new(u32::MAX));
+        // The fold's third input, alongside sort and the DB change token:
+        // `config.media_library.artist_as_album_artist`. It's config, not
+        // DB state, so `change_token()` can't see it change — it must be
+        // compared explicitly here too. Sentinel `None` means "not queried
+        // yet", matching `last_token`'s convention. Any future input to the
+        // fold (`lib.albums(...)`'s arguments) needs the same treatment.
+        let last_artist_as_album: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
         Rc::new(move || {
             ensure_media_lib_open(&state);
             let sort_idx = sort_dd.selected();
+            let artist_as_album = state.borrow().config.media_library.artist_as_album_artist;
             // O(1): `sqlite3_total_changes()` plus `PRAGMA data_version`, not
             // a `COUNT(*)`/`MAX(...)` query — see `change_token`'s doc for
             // why a real query would burn a meaningful fraction of the fold
@@ -504,12 +512,13 @@ pub(super) fn build_album_gallery(
             // Returning to the gallery from a drill-down changes neither the
             // library nor the sort, so the previous answer still stands and
             // only the filter needs reapplying.
-            let must_query = last_sort.get() != sort_idx || last_token.get() != current_token;
+            let must_query = last_sort.get() != sort_idx
+                || last_token.get() != current_token
+                || last_artist_as_album.get() != Some(artist_as_album);
             if must_query {
                 let sort = gallery_sort_from_idx(sort_idx);
                 let albums: Vec<crate::media_library::AlbumGroup> = {
                     let s = state.borrow();
-                    let artist_as_album = s.config.media_library.artist_as_album_artist;
                     s.media_lib
                         .as_ref()
                         .and_then(|lib| lib.albums(sort, artist_as_album).ok())
@@ -518,6 +527,7 @@ pub(super) fn build_album_gallery(
                 *all_albums.borrow_mut() = albums;
                 last_token.set(current_token);
                 last_sort.set(sort_idx);
+                last_artist_as_album.set(Some(artist_as_album));
             }
             refilter();
         })

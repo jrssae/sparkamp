@@ -117,17 +117,19 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     };
     ctx.stack.add_named(&gallery_page, Some("albums"));
 
-    // Fix round 1 review: `rebuild_ml_callback` is the wrong seam for
-    // invalidating the gallery's cache. It misses `purge_deleted_tracks()`
-    // (files.rs/files_menu.rs remove-from-library, which runs on its own
-    // background-thread `Connection` and never touches this callback), and
-    // it *over*-fires on every album drill-down (`on_album_activate` above
-    // calls it to refresh the Files view), which would mark the cache stale
-    // on the exact path the cache exists to make instant. `invalidate_gallery`
-    // is unused as a manual seam now — `album_gallery.rs`'s `rebuild` instead
-    // validates its cache against `MediaLibrary::change_token()` on every
-    // call, an O(1) check that can't miss a write the way a hand-chained
-    // callback can.
+    // The gallery's cache is deliberately not invalidated through this
+    // file's callbacks. `rebuild_ml_callback` (used above, for the
+    // drill-down's Files refresh) is the wrong seam for that: it misses
+    // `purge_deleted_tracks()` (files.rs/files_menu.rs remove-from-library,
+    // which runs on its own background-thread `Connection` and never
+    // touches this callback), and it *over*-fires on every album drill-down
+    // (`on_album_activate` above calls it to refresh the Files view), which
+    // would mark the cache stale on the exact path the cache exists to make
+    // instant. Instead, `album_gallery.rs`'s `rebuild` validates its cache
+    // on every call against `MediaLibrary::change_token()` plus the sort
+    // selection and the `artist_as_album_artist` config flag (the fold's
+    // three inputs) — an O(1) check that can't miss a write, or a config
+    // toggle, the way a hand-chained callback can.
 
     // Return from an album's track list to the gallery overview: clear the
     // drill-down filter, hide the back button, show the gallery page and

@@ -83,10 +83,67 @@ pub(super) fn uris_from_value(value: &glib::Value) -> Vec<String> {
             .files()
             .iter()
             .filter_map(|f| f.path())
+            // Known limitation, not an oversight: `to_string_lossy` mangles a
+            // non-UTF-8 file name into `\u{FFFD}` replacement characters, so
+            // that one dropped path no longer equals its `Track::path` and a
+            // cross-window reorder drop falls back to treating it as a new
+            // file instead of recognising the move. A byte-faithful fix would
+            // need this function (and `is_playable_uri`, and every
+            // `PathBuf::from(uri)` call site downstream) to carry `OsString`
+            // instead of `String` — but `String` is also what the sibling
+            // text-payload branch above requires, since a CD track's
+            // `cdda://` pseudo-URI has to share this same `Vec<_>` and travel
+            // over one `glib::Value` of `G_TYPE_STRING` (see this module's
+            // top doc comment). Widening the type is a real restructure of
+            // that shared design, not a one-line fix, so it's left
+            // documented rather than done here. Non-UTF-8 filenames are rare
+            // in practice.
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
     }
     Vec::new()
+}
+
+/// Expand a dropped `pl:<id>` payload into the track paths of that playlist.
+///
+/// A playlist row's own drag source (`util::attach_pl_row_drag`) publishes a
+/// single `pl:<id>` string, not track URIs — that payload is also what a
+/// device drop target reads to sync the whole playlist. When the *playlist*
+/// is the drop target instead, `pl:<id>` needs to mean "add everything this
+/// playlist holds", so it is resolved here and expanded before the normal
+/// `is_playable_uri` / `dispatch_add` path runs, exactly as if the caller had
+/// dragged out every one of its tracks individually.
+///
+/// Anything that isn't exactly one `pl:<id>` entry — a normal file/URI drop,
+/// or (defensively) a multi-entry payload — passes through untouched. A
+/// `pl:<id>` whose playlist no longer exists also passes through unchanged;
+/// it fails `is_playable_uri` downstream and the drop is declined, same as
+/// before this function existed.
+pub(super) fn expand_playlist_drop(
+    lib: Option<&crate::media_library::MediaLibrary>,
+    uris: Vec<String>,
+) -> Vec<String> {
+    let [only] = uris.as_slice() else {
+        return uris;
+    };
+    let Some(id) = only
+        .strip_prefix("pl:")
+        .and_then(|n| n.trim().parse::<i64>().ok())
+    else {
+        return uris;
+    };
+    let Some(lib) = lib else { return uris };
+    let Ok(all) = lib.all_playlists() else {
+        return uris;
+    };
+    let Some(pl) = all.into_iter().find(|p| p.id == id) else {
+        return uris;
+    };
+    lib.load_playlist_tracks(&pl)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.path)
+        .collect()
 }
 
 /// Whether `uri` looks like something the playlist can actually hold.
@@ -158,5 +215,42 @@ mod tests {
     #[test]
     fn an_https_url_is_not_playable() {
         assert!(!is_playable_uri("https://example.com/a.mp3"));
+    }
+
+    #[test]
+    fn a_playlist_payload_expands_to_its_track_paths() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let lib = crate::media_library::MediaLibrary::open_at(db_file.path()).unwrap();
+        let list_dir = tempfile::tempdir().unwrap();
+        let list_path = list_dir.path().join("road_trip.m3u8");
+        let id = lib
+            .save_playlist_tracks_to_path(
+                &list_path,
+                &["/music/a.mp3".to_string(), "/music/b.mp3".to_string()],
+            )
+            .unwrap();
+
+        let expanded = expand_playlist_drop(Some(&lib), vec![format!("pl:{id}")]);
+        assert_eq!(
+            expanded,
+            vec!["/music/a.mp3".to_string(), "/music/b.mp3".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_payload_that_is_not_pl_id_passes_through_untouched() {
+        let uris = vec!["/music/a.mp3".to_string()];
+        assert_eq!(expand_playlist_drop(None, uris.clone()), uris);
+
+        let cdda = vec!["cdda://5?device=/dev/sr0".to_string()];
+        assert_eq!(expand_playlist_drop(None, cdda.clone()), cdda);
+    }
+
+    #[test]
+    fn a_multi_entry_payload_is_never_mistaken_for_a_playlist_id() {
+        // Defensive: no current drag source publishes `pl:<id>` alongside
+        // other entries, but if one ever did, it must not be expanded.
+        let uris = vec!["pl:1".to_string(), "/music/a.mp3".to_string()];
+        assert_eq!(expand_playlist_drop(None, uris.clone()), uris);
     }
 }

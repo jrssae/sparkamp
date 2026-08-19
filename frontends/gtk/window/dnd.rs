@@ -256,6 +256,13 @@ pub(super) fn install(ctx: &PlayerCtx) {
 
         drop_tgt.connect_drop(move |_, value, x, y| {
             let uris = ml_drag::uris_from_value(value);
+            // A whole-playlist drag (from the overview/manage list) carries
+            // `pl:<id>`, not track paths — expand it to that playlist's
+            // tracks before anything downstream looks at `uris`.
+            let uris = {
+                let s = state_dnd.borrow();
+                ml_drag::expand_playlist_drop(s.media_lib.as_ref(), uris)
+            };
             // Every entry must look like something the playlist can hold: an
             // absolute path, or a pseudo-URI scheme the engine understands.
             // A drag Sparkamp produced always satisfies this; dropped prose
@@ -432,6 +439,13 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let status_fd = pl_status_label.clone();
         file_drop.connect_drop(move |_, value, _, _| {
             let uris = ml_drag::uris_from_value(value);
+            // A whole-playlist drag (from the overview/manage list) carries
+            // `pl:<id>`, not track paths — expand it to that playlist's
+            // tracks before anything downstream looks at `uris`.
+            let uris = {
+                let s = state_fd.borrow();
+                ml_drag::expand_playlist_drop(s.media_lib.as_ref(), uris)
+            };
             // Every entry must look like something the playlist can hold: an
             // absolute path, or a pseudo-URI scheme the engine understands.
             // A drag Sparkamp produced always satisfies this; dropped prose

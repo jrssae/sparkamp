@@ -95,8 +95,9 @@ mod dnd;
 // A shared DragSource helper for every Media Library view (album gallery,
 // disc views, device views): collect the current selection as URIs, publish
 // them (plus a FileList where the URIs are real files), and let the active
-// playlist's drop target read them back via `ml_drag::uris_from_value`. Not
-// yet attached to any view — that lands in a later task.
+// playlist's drop target read them back via `ml_drag::uris_from_value`.
+// Attached at every view that previously had no drag source of its own:
+// the album gallery grid, both disc views, and both device views.
 mod ml_drag;
 
 // The one way rows enter the active playlist: resolve against the media

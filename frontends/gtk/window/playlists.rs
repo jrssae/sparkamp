@@ -45,7 +45,7 @@ use super::{playlists_columns, playlists_manage, playlists_menu};
 // playlist-save dialogs, and the cross-window refresh hooks the editor
 // publishes itself through.
 use super::{
-    attach_pl_row_drag, attach_pl_row_uri_drag, build_send_to_menu, editor_cell_positions,
+    attach_pl_row_drag, build_send_to_menu, editor_cell_positions,
     gtk_safe, lib_track_matches_query, make_view_search_row, ml_status_bar_for,
     queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
     sidebar_pl_end_index, view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
@@ -1140,9 +1140,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     manage_row.set_widget_name(&new_id.to_string());
                     manage_row.set_child(Some(&lbl));
                     attach_pl_row_drag(&manage_row, new_id);
-                    // Playlists overview: dropping this row on the active
-                    // playlist means "add its tracks" (container rule).
-                    attach_pl_row_uri_drag(&manage_row, &state2, new_id);
                     pl_ml2.append(&manage_row);
 
                     let s_lbl = Label::builder()
