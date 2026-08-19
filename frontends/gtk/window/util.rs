@@ -188,6 +188,36 @@ pub(super) fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
     row.add_controller(src);
 }
 
+/// Make an overview/manage-list playlist row also draggable onto the active
+/// playlist: publishes every track path the playlist holds, in play order,
+/// alongside the `pl:<id>` payload `attach_pl_row_drag` already carries for
+/// device drops. A playlist row is a container, so the drag carries its
+/// contents rather than the row itself (decision, 2026-08-18).
+///
+/// `id` is read fresh from `all_playlists()` on every drag rather than
+/// captured as a `LibPlaylist`, so a rename that happens after this row was
+/// built is still reflected.
+pub(super) fn attach_pl_row_uri_drag(row: &gtk4::ListBoxRow, state: &Rc<RefCell<AppState>>, id: i64) {
+    let state_drag = state.clone();
+    super::ml_drag::attach_uri_drag(row, move || {
+        let s = state_drag.borrow();
+        let Some(lib) = s.media_lib.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(all) = lib.all_playlists() else {
+            return Vec::new();
+        };
+        let Some(pl) = all.into_iter().find(|p| p.id == id) else {
+            return Vec::new();
+        };
+        lib.load_playlist_tracks(&pl)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| t.path)
+            .collect()
+    });
+}
+
 /// Index of the ML sidebar's Devices header (= the end of the Playlists
 /// section). New playlist rows insert here so they land inside the Playlists
 /// section rather than below Devices.

@@ -194,6 +194,14 @@ pub struct DiscTrackEntry {
     pub duration_secs: u32,
 }
 
+/// The URIs a whole-disc drag carries: every track's playlist address
+/// (`DiscTrackEntry::path`), in TOC order — the container rule (dragging the
+/// drive drags every track on it) applied to whatever the drive's overview
+/// card currently has cached.
+pub fn disc_drag_uris(entries: &[DiscTrackEntry]) -> Vec<String> {
+    entries.iter().map(|e| e.path.clone()).collect()
+}
+
 /// Split a `cdda://N?device=/dev/srX` pseudo-URI (built by
 /// [`toc::track_entries`]) into its track part and device node. `None` when
 /// the string isn't a cdda URI; the device is `None` when the URI carries no
@@ -262,5 +270,36 @@ mod shared_tests {
         assert_eq!(split.artist, "Guest");
         assert_eq!(split.title, "Tune");
         assert_eq!(split.album_artist, "Various");
+    }
+
+    fn entry(number: u8, path: &str) -> DiscTrackEntry {
+        DiscTrackEntry {
+            number,
+            path: path.to_string(),
+            title: format!("Track {number}"),
+            duration_secs: 180,
+        }
+    }
+
+    #[test]
+    fn disc_drag_uris_carries_every_track_in_toc_order() {
+        let entries = vec![
+            entry(1, "cdda://1?device=/dev/sr0"),
+            entry(2, "cdda://2?device=/dev/sr0"),
+            entry(3, "cdda://3?device=/dev/sr0"),
+        ];
+        assert_eq!(
+            disc_drag_uris(&entries),
+            vec![
+                "cdda://1?device=/dev/sr0".to_string(),
+                "cdda://2?device=/dev/sr0".to_string(),
+                "cdda://3?device=/dev/sr0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn disc_drag_uris_of_an_empty_disc_is_empty() {
+        assert!(disc_drag_uris(&[]).is_empty());
     }
 }

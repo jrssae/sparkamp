@@ -45,6 +45,10 @@ pub(super) struct PollUi<'a> {
     /// Live copy progress per device, and each card's progress bar.
     pub device_transfers: &'a Rc<RefCell<std::collections::HashMap<String, (usize, usize)>>>,
     pub device_card_progress: &'a Rc<RefCell<std::collections::HashMap<String, gtk4::ProgressBar>>>,
+    /// The currently-browsed device's cached file list (`devices_page.rs`'s
+    /// `dev_all_tracks`), so an overview card can be dragged onto the active
+    /// playlist too — every file on the device, per the container rule.
+    pub dev_all_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
 }
 
 /// What the rest of the page needs back from the poll.
@@ -74,6 +78,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
     let counts_in_flight = ui.counts_in_flight.clone();
     let device_transfers = ui.device_transfers.clone();
     let device_card_progress = ui.device_card_progress.clone();
+    let dev_all_tracks = ui.dev_all_tracks.clone();
 
     // ── Device detection: poll udisks2 and keep the sidebar live ──────────
     // A 2 s poll (rather than D-Bus signal wiring) keeps this simple while
@@ -100,6 +105,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
         let transfers = device_transfers.clone();
         let card_bars = device_card_progress.clone();
         let sidebar_ov = sidebar.clone();
+        let all_tracks_ov = dev_all_tracks.clone();
         Rc::new(move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
@@ -297,6 +303,20 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                 }
                 btn_row.append(&eject_btn);
                 card.append(&btn_row);
+
+                // Dragging the device drags everything on it, per the
+                // container rule. `dev_all_tracks` is a single cache for
+                // whichever device's detail view was last populated (see
+                // `reload_device_store` in devices_page.rs), not one per
+                // card, so this card's drag is only correct when its own
+                // device is the one currently open — same accepted
+                // limitation as the disc overview's drive-row drag below.
+                {
+                    let entries_drag = all_tracks_ov.clone();
+                    super::ml_drag::attach_uri_drag(&card, move || {
+                        entries_drag.borrow().iter().map(|t| t.path.clone()).collect()
+                    });
+                }
 
                 list.append(&card);
             }

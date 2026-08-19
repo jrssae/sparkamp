@@ -759,6 +759,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         .build();
                     let row = ListBoxRow::new();
                     row.set_child(Some(&row_lbl));
+                    // A CD track is addressed by pseudo-URI, not by path —
+                    // the payload `ml_drag` exists to carry, since a
+                    // `gdk::FileList` cannot hold one. `e.path` is the same
+                    // string the disc's own add buttons put in `Track.path`
+                    // (see the `DiscAdd` closure at ~:498), so a dragged
+                    // track and an enqueued one are identical.
+                    {
+                        let uri = e.path.clone();
+                        super::ml_drag::attach_uri_drag(&row, move || vec![uri.clone()]);
+                    }
                     track_list.append(&row);
                 }
             } else {
@@ -892,6 +902,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let list = disc_overview_list.clone();
         let sidebar_ov = sidebar.clone();
         let detecting = disc_detecting.clone();
+        let entries_ov = current_disc_entries.clone();
         Rc::new(move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
@@ -964,6 +975,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     }
                 });
                 card.add_controller(gesture);
+
+                // Dragging the drive drags the disc: every track on it,
+                // per the container rule. `current_disc_entries` is a
+                // single cache for whichever drive's detail was last
+                // populated (see `populate_disc_detail` above), not one
+                // per card, so this card's drag is only correct when its
+                // own drive is the one currently open on a multi-drive
+                // machine.
+                {
+                    let entries_drag = entries_ov.clone();
+                    super::ml_drag::attach_uri_drag(&card, move || {
+                        crate::disc::disc_drag_uris(&entries_drag.borrow())
+                    });
+                }
+
                 list.append(&card);
             }
         })

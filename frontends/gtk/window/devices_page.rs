@@ -1349,6 +1349,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             counts_in_flight: &counts_in_flight,
             device_transfers: &device_transfers,
             device_card_progress: &device_card_progress,
+            dev_all_tracks: &dev_all_tracks,
         },
     );
 

@@ -60,6 +60,7 @@ pub(super) fn build_album_gallery(
     let factory = SignalListItemFactory::new();
     {
         let px_setup = px.clone();
+        let state_setup = state.clone();
         factory.connect_setup(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             if li.child().is_some() {
@@ -110,6 +111,38 @@ pub(super) fn build_album_gallery(
                 .max_width_chars(18)
                 .build();
             cell.append(&artist);
+
+            // Dragging a tile drags the album: every track in it, in the order
+            // `album_tracks` returns them (disc then track number). A gallery
+            // tile is a container, so the drag carries its contents rather
+            // than the tile itself (decision, 2026-08-18).
+            {
+                let li_drag = li.clone();
+                let state_drag = state_setup.clone();
+                super::ml_drag::attach_uri_drag(&cell, move || {
+                    let Some(obj) = li_drag
+                        .item()
+                        .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                    else {
+                        return Vec::new();
+                    };
+                    let (album, album_artist) = {
+                        let a = obj.borrow::<crate::media_library::AlbumGroup>();
+                        (a.album.clone(), a.album_artist.clone())
+                    };
+                    let s = state_drag.borrow();
+                    let artist_as_album = s.config.media_library.artist_as_album_artist;
+                    s.media_lib
+                        .as_ref()
+                        .and_then(|lib| {
+                            lib.album_tracks(&album, &album_artist, artist_as_album).ok()
+                        })
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|t| t.path)
+                        .collect()
+                });
+            }
 
             // Right-click a tile → Play Album / Enqueue Album. `li.item()`
             // returns the cell's CURRENTLY bound album at click time, so no

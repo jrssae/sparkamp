@@ -230,6 +230,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             let sel_ctx = dev_selection.clone();
             let anchor_ctx = dev_col_view.clone();
             let holder_ctx = dev_row_menu_holder.clone();
+            let drag_sel_ctx = dev_selection.clone();
             let factory = SignalListItemFactory::new();
             factory.connect_setup(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -252,6 +253,39 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                         .upcast::<gtk4::Widget>()
                 };
                 li.set_child(Some(&child));
+
+                // Per-cell DragSource — collects every currently-selected
+                // device row (or just the row under the pointer, with
+                // nothing selected) so it can be dropped on the active
+                // playlist too. Mirrors the Files table's per-cell source
+                // (files.rs:484).
+                {
+                    let ds_sel = drag_sel_ctx.clone();
+                    let ds_li = li.clone();
+                    super::ml_drag::attach_uri_drag(&child, move || {
+                        let mut paths: Vec<String> = Vec::new();
+                        for i in 0..ds_sel.n_items() {
+                            if ds_sel.is_selected(i)
+                                && let Some(obj) = ds_sel
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                            {
+                                let t = obj.borrow::<crate::media_library::LibTrack>();
+                                paths.push(t.path.clone());
+                            }
+                        }
+                        if paths.is_empty()
+                            && let Some(obj) = ds_li
+                                .item()
+                                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+                        {
+                            let t = obj.borrow::<crate::media_library::LibTrack>();
+                            paths.push(t.path.clone());
+                        }
+                        paths
+                    });
+                }
+
                 // Right-click has to be handled per cell: ColumnView has no
                 // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
                 // row it hit and the menu did nothing until a left-click had

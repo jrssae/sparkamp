@@ -30,8 +30,8 @@ use std::rc::Rc;
 
 use super::sidebar::{self, Sidebar};
 use super::{
-    attach_pl_row_drag, gtk_safe, make_view_search_row, run_playlist_save_dialog,
-    show_playlist_save_error,
+    attach_pl_row_drag, attach_pl_row_uri_drag, gtk_safe, make_view_search_row,
+    run_playlist_save_dialog, show_playlist_save_error,
     sidebar_pl_end_index, MlCtx, EDITOR_CURRENT_REFRESH_HOOK, EDITOR_REFRESH_HOOK,
     PLAYLIST_NAV_REFRESH_HOOK,
 };
@@ -327,6 +327,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 m_row.set_widget_name(&pl.id.to_string());
                 m_row.set_child(Some(&m_lbl));
                 attach_pl_row_drag(&m_row, pl.id);
+                // Playlists overview: dropping this row on the active
+                // playlist means "add its tracks" (container rule).
+                attach_pl_row_uri_drag(&m_row, &state_rc, pl.id);
                 manage_ref.append(&m_row);
             }
         });
@@ -415,6 +418,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             row.set_widget_name(&pl.id.to_string());
             row.set_child(Some(&lbl));
             attach_pl_row_drag(&row, pl.id);
+            // Playlists overview: dropping this row on the active
+            // playlist means "add its tracks" (container rule).
+            attach_pl_row_uri_drag(&row, &state, pl.id);
             pl_manage_list.append(&row);
         }
 
@@ -535,6 +541,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     manage_row.set_widget_name(&new_id.to_string());
                     manage_row.set_child(Some(&row_lbl));
                     attach_pl_row_drag(&manage_row, new_id);
+                    // Playlists overview: dropping this row on the active
+                    // playlist means "add its tracks" (container rule).
+                    attach_pl_row_uri_drag(&manage_row, &state2, new_id);
                     pl_ref2.append(&manage_row);
                     pl_ref2.select_row(Some(&manage_row));
 

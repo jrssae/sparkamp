@@ -9,10 +9,15 @@
 //! ## Why URIs and not `gdk::FileList`
 //!
 //! A CD track on Linux is `cdda://5?device=/dev/sr0`, not a file. `FileList`
-//! holds `gio::File`s and `dnd.rs` filters them through `.path()`, which is
-//! `None` for a `cdda://` URI, so a disc drag carried in a `FileList` would
-//! arrive empty. Strings carry both. The provider still offers `FileList` too,
-//! so dragging library tracks out to a file manager keeps working.
+//! holds `gio::File`s, and handing that string to `gio::File::for_path` does
+//! not fail — GLib treats the scheme-looking text as a *relative* path,
+//! prepends the current working directory, and collapses the `//` down to
+//! `/`, silently mangling it into a bogus path like
+//! `<cwd>/cdda:/5?device=/dev/sr0` instead of rejecting it. `.path()` then
+//! returns `Some` of that garbage rather than `None`, so a disc drag carried
+//! in a `FileList` would arrive looking valid and fail later. Strings carry
+//! both correctly. The provider still offers `FileList` too, so dragging
+//! library tracks out to a file manager keeps working.
 
 use super::*;
 
@@ -20,10 +25,6 @@ use super::*;
 ///
 /// `uris` is called on every drag, not once at setup, so it reads the
 /// selection as it is when the drag starts.
-///
-/// The first caller lands in a later task (attaching this to the album
-/// gallery, disc views and device views); nothing calls it yet.
-#[allow(dead_code)]
 pub(super) fn attach_uri_drag<W, F>(widget: &W, uris: F)
 where
     W: IsA<gtk4::Widget>,
