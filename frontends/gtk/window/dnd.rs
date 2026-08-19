@@ -229,11 +229,34 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 .map(|t| t.path.clone())
                 .collect();
             if paths.is_empty() { return None }
-            let files: Vec<gio::File> = paths.iter()
-                .map(|p| gio::File::for_path(p))
+            // Ship the paths as text as well as a FileList, and keep pseudo-
+            // URIs out of the FileList entirely.
+            //
+            // `gio::File::for_path` does not reject a `cdda://5?device=/dev/sr0`
+            // — it reads the scheme as a relative path and silently returns
+            // `<cwd>/cdda:/5?device=/dev/sr0`. A CD track dragged out of the
+            // playlist therefore arrived somewhere else as a garbage path that
+            // no drive will ever play. The text half carries such a row intact,
+            // and `ml_drag::uris_from_value` prefers it on the way back in.
+            let joined = paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let text_provider = gdk::ContentProvider::for_value(&joined.to_value());
+            let files: Vec<gio::File> = paths
+                .iter()
+                .filter(|p| !p.to_string_lossy().contains("://"))
+                .map(gio::File::for_path)
                 .collect();
+            if files.is_empty() {
+                return Some(text_provider);
+            }
             let fl = gdk::FileList::from_array(&files);
-            Some(gdk::ContentProvider::for_value(&fl.to_value()))
+            Some(gdk::ContentProvider::new_union(&[
+                text_provider,
+                gdk::ContentProvider::for_value(&fl.to_value()),
+            ]))
         });
         pl_view.add_controller(drag_src);
     }
@@ -253,6 +276,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let rebuild_dnd = rebuild_playlist.clone();
         let pl_view_dnd = pl_view.clone();
         let drag_sel_drop = pl_drag_selection.clone();
+        let drag_active_drop = pl_drag_active.clone();
 
         drop_tgt.connect_drop(move |_, value, x, y| {
             let uris = ml_drag::uris_from_value(value);
@@ -316,7 +340,22 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // replace rule, so nothing happened at all. A playlist is allowed
             // to hold the same track more than once; deciding otherwise was
             // never asked for.
-            let snapshot: Vec<usize> = drag_sel_drop.borrow().clone();
+            // The snapshot only means "these playlist rows are being moved"
+            // while a drag that STARTED HERE is actually in flight.
+            //
+            // It is also written by the selection-changed observer, so it is
+            // non-empty any time the user has two or more playlist rows
+            // selected — and it is not cleared when a drag leaves for another
+            // window or is cancelled. Trusting it unconditionally meant an
+            // EXTERNAL drop landing while rows happened to be selected was
+            // read as a reorder, and the dropped files were silently thrown
+            // away. `pl_drag_active` is set on drag-begin and cleared on
+            // drag-end and on cancel, so it is the honest test.
+            let snapshot: Vec<usize> = if drag_active_drop.get() {
+                drag_sel_drop.borrow().clone()
+            } else {
+                Vec::new()
+            };
             let existing_src_indices: Vec<usize> = snapshot;
             let new_paths: Vec<std::path::PathBuf> = if existing_src_indices.is_empty() {
                 dropped.clone()
