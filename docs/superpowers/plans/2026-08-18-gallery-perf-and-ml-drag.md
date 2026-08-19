@@ -1034,6 +1034,28 @@ git commit -m "feat(gtk): one drag source helper for the Media Library's views"
 - Consumes: `ml_drag::{SPARKAMP_URIS_MIME, uris_from_value}`.
 - Produces: nothing new.
 
+- [ ] **Step 0: Add the shape check to `ml_drag.rs`, and delete the dead constant**
+
+```rust
+/// Whether `uri` looks like something the playlist can actually hold.
+///
+/// An absolute filesystem path, or a pseudo-URI whose scheme the engine
+/// understands (`cdda://` for a CD track — see `parse_cdda_uri`). Everything
+/// a Sparkamp drag produces passes; dropped prose does not.
+///
+/// Needed because the drop target accepts a bare `glib::Type::STRING` and
+/// GTK negotiates by GType, not by mime — `text/plain` from any application
+/// deserializes to a string as well, so the type alone cannot tell a track
+/// list from a paragraph.
+pub(super) fn is_playable_uri(uri: &str) -> bool {
+    uri.starts_with('/') || uri.starts_with("cdda://")
+}
+```
+
+Delete `SPARKAMP_URIS_MIME` and its `#[allow(dead_code)]`. Nothing publishes under it, and a custom mime could not have made the target exclusive anyway.
+
+Tests, alongside the existing three in that module: an absolute path passes; a `cdda://5?device=/dev/sr0` URI passes; a bare word, a relative path, and an `https://` URL each fail.
+
 - [ ] **Step 1: Widen the drop target's accepted types**
 
 In `frontends/gtk/window/dnd.rs`, replace the `DropTarget::new` call at the `pl_view` target:
@@ -1049,14 +1071,24 @@ In `frontends/gtk/window/dnd.rs`, replace the `DropTarget::new` call at the `pl_
 
 `DropTarget::new` requires a concrete type in gtk4-rs 0.9 — `glib::Type::INVALID` is not accepted. Constructing with `FileList` and then calling `set_types` with both is the supported shape. If `set_types` does not exist on this binding version, check the generated docs (`cargo doc -p gtk4 --open`, search `DropTarget`) and use whichever of `set_types` / `set_gtypes` the version exposes; report which one you used.
 
-- [ ] **Step 2: Read the payload through the shared reader**
+- [ ] **Step 2: Read the payload through the shared reader, and validate it**
+
+The drop target accepts a bare `glib::Type::STRING`, which is not exclusive to Sparkamp: `GtkDropTarget` negotiates by GType, and `text/plain` from any application deserializes to a string too. Without a shape check, dragging a browser selection or an editor snippet onto the playlist would be split on newlines and each line turned into a placeholder row by `playlist_ingest::resolve` — visible junk the user has to remove by hand.
+
+A custom MIME does **not** fix this on its own; only a private non-`String` GType with registered serializers would, and that is its own task. A cheap shape check closes the actual failure mode regardless of transport, so do that instead. `SPARKAMP_URIS_MIME` is deleted as dead, misleading scaffolding — it was never published under, and could not have been made exclusive as written.
+
+Every line of a genuine payload comes from `attach_uri_drag`, so a real drop is uniformly valid and arbitrary text is uniformly invalid; reject the whole drop rather than filtering, which gives GTK an honest rejection instead of a partial, confusing accept.
 
 Replace the opening of the same handler's `connect_drop`:
 
 ```rust
         drop_tgt.connect_drop(move |_, value, x, y| {
             let uris = ml_drag::uris_from_value(value);
-            if uris.is_empty() {
+            // Every entry must look like something the playlist can hold: an
+            // absolute path, or a pseudo-URI scheme the engine understands.
+            // A drag Sparkamp produced always satisfies this; dropped prose
+            // never does.
+            if uris.is_empty() || !uris.iter().all(|u| ml_drag::is_playable_uri(u)) {
                 return false;
             }
             // Everything the playlist can hold is addressed by a string:
