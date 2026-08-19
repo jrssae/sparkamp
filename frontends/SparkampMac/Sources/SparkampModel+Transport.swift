@@ -255,8 +255,10 @@ extension SparkampModel {
     func addFiles(_ urls: [URL]) {
         guard let ctx = ctx else { return }
 
-        // If "Replace playlist" is the configured behavior, clear before adding.
-        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        // Core decides. `sparkamp_should_replace_on_add` is the same rule GTK
+        // and the TUI use, so the three frontends cannot drift on what
+        // "Replace playlist" means. 0 = honour the configured setting.
+        let shouldReplace = sparkamp_should_replace_on_add(ctx, 0) == 1
         if shouldReplace {
             sparkamp_playlist_clear(ctx)
         }

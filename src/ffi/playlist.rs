@@ -531,6 +531,35 @@ pub unsafe extern "C" fn sparkamp_playlist_get_path(
     CString::new(path_str).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+// ---------------------------------------------------------------------------
+// Playlist add behavior
+// ---------------------------------------------------------------------------
+
+/// Whether an add in `mode` should clear the playlist first.
+///
+/// `mode`: 0 = honour the user's setting, 1 = always append, 2 = always
+/// replace. An unknown value is treated as 0.
+///
+/// Exists so the macOS frontend stops deciding for itself. `addFiles` used to
+/// compare `sparkamp_get_playlist_add_behavior` against 1 inline, which was
+/// correct but was a second copy of a rule that GTK also held five copies of.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_should_replace_on_add(
+    ctx: *const SparkampCtx,
+    mode: c_int,
+) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let mode = match mode {
+        1 => crate::playlist_add::AddMode::Enqueue,
+        2 => crate::playlist_add::AddMode::Replace,
+        _ => crate::playlist_add::AddMode::Behavior,
+    };
+    crate::playlist_add::should_replace(&ctx.config.behavior.playlist_add_behavior, mode) as c_int
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -631,6 +660,49 @@ mod tests {
             !ctx.player.stop_after_current(),
             "choosing a track to play must clear the arming"
         );
+    }
+
+    /// `sparkamp_should_replace_on_add` maps its `mode` argument onto
+    /// `playlist_add::AddMode` (0=Behavior, 1=Enqueue, 2=Replace, unknown→
+    /// Behavior) and defers the actual decision to `playlist_add::should_replace`,
+    /// which is unit-tested on its own. This locks in the mapping so the FFI
+    /// seam can't silently drift from the C doc comment ("0 = honour setting,
+    /// 1 = always append, 2 = always replace").
+    #[test]
+    fn should_replace_on_add_maps_mode_onto_add_mode() {
+        let mut ctx = fake_ctx(1);
+
+        ctx.config.behavior.playlist_add_behavior = crate::config::PlaylistAddBehavior::Replace;
+        unsafe {
+            // 0 = Behavior: follows the configured setting (Replace).
+            assert_eq!(sparkamp_should_replace_on_add(&ctx, 0), 1);
+            // 1 = Enqueue: always appends, even though the setting says Replace.
+            assert_eq!(sparkamp_should_replace_on_add(&ctx, 1), 0);
+            // 2 = Replace: always replaces.
+            assert_eq!(sparkamp_should_replace_on_add(&ctx, 2), 1);
+            // Unknown mode falls back to Behavior.
+            assert_eq!(sparkamp_should_replace_on_add(&ctx, 99), 1);
+        }
+
+        ctx.config.behavior.playlist_add_behavior = crate::config::PlaylistAddBehavior::Append;
+        unsafe {
+            // 0 = Behavior now follows Append.
+            assert_eq!(sparkamp_should_replace_on_add(&ctx, 0), 0);
+            // 2 = Replace still always replaces, regardless of the setting.
+            assert_eq!(sparkamp_should_replace_on_add(&ctx, 2), 1);
+        }
+    }
+
+    /// A null `ctx` must not be dereferenced — returns 0 (append), matching
+    /// every other read-only accessor's null-safety convention in this file.
+    #[test]
+    fn should_replace_on_add_null_ctx_returns_zero() {
+        unsafe {
+            assert_eq!(
+                sparkamp_should_replace_on_add(std::ptr::null(), 2),
+                0
+            );
+        }
     }
 
     /// A ctx holding `n` fake playlist entries. The paths do not exist, so any
