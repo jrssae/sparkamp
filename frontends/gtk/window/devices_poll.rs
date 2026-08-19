@@ -49,6 +49,10 @@ pub(super) struct PollUi<'a> {
     /// `dev_all_tracks`), so an overview card can be dragged onto the active
     /// playlist too — every file on the device, per the container rule.
     pub dev_all_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
+    /// Which device `dev_all_tracks` currently holds, by `backend_id`. A card
+    /// drag checks this before shipping anything, since the cache is single
+    /// and describes only the device whose detail view was populated last.
+    pub dev_all_tracks_owner: &'a Rc<RefCell<Option<String>>>,
 }
 
 /// What the rest of the page needs back from the poll.
@@ -79,6 +83,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
     let device_transfers = ui.device_transfers.clone();
     let device_card_progress = ui.device_card_progress.clone();
     let dev_all_tracks = ui.dev_all_tracks.clone();
+    let dev_all_tracks_owner = ui.dev_all_tracks_owner.clone();
 
     // ── Device detection: poll udisks2 and keep the sidebar live ──────────
     // A 2 s poll (rather than D-Bus signal wiring) keeps this simple while
@@ -106,6 +111,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
         let card_bars = device_card_progress.clone();
         let sidebar_ov = sidebar.clone();
         let all_tracks_ov = dev_all_tracks.clone();
+        let all_tracks_owner_ov = dev_all_tracks_owner.clone();
         Rc::new(move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
@@ -305,15 +311,28 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                 card.append(&btn_row);
 
                 // Dragging the device drags everything on it, per the
-                // container rule. `dev_all_tracks` is a single cache for
-                // whichever device's detail view was last populated (see
-                // `reload_device_store` in devices_page.rs), not one per
-                // card, so this card's drag is only correct when its own
-                // device is the one currently open — same accepted
-                // limitation as the disc overview's drive-row drag below.
+                // container rule.
+                //
+                // `dev_all_tracks` is a single cache holding whichever
+                // device's detail view was populated last (see
+                // `reload_device_store` in devices_page.rs), not one per card,
+                // so a card must confirm the cache is describing ITS device
+                // before shipping any of it. Without that check, a card for a
+                // device you had not opened dragged the open device's files
+                // instead — wrong contents, no error.
+                //
+                // Mismatched or unpopulated, the closure returns nothing and
+                // `attach_uri_drag` refuses the drag outright, which is the
+                // honest answer: this card cannot say what is on its device
+                // until that device has been opened.
                 {
                     let entries_drag = all_tracks_ov.clone();
+                    let owner_drag = all_tracks_owner_ov.clone();
+                    let this_device = d.backend_id.clone();
                     super::ml_drag::attach_uri_drag(&card, move || {
+                        if owner_drag.borrow().as_deref() != Some(this_device.as_str()) {
+                            return Vec::new();
+                        }
                         entries_drag.borrow().iter().map(|t| t.path.clone()).collect()
                     });
                 }

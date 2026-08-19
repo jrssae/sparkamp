@@ -387,6 +387,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let dev_store = gio::ListStore::new::<glib::BoxedAnyObject>();
     let dev_all_tracks: Rc<RefCell<Vec<crate::media_library::LibTrack>>> =
         Rc::new(RefCell::new(Vec::new()));
+    // Which device `dev_all_tracks` actually holds, by `backend_id`.
+    //
+    // The cache is single — it describes whichever device's detail view was
+    // populated last — so anything reading it for a SPECIFIC device has to
+    // check it is looking at that device's files and not another's. The
+    // Devices overview draws one draggable card per device, and without this
+    // a card for a device you had not opened dragged the open one's files
+    // instead, silently.
+    //
+    // Deliberately not `selected_dev_backend`: that is a view-state field set
+    // to `None` whenever the overview is showing, which is exactly when these
+    // cards exist, so testing against it would refuse every card drag —
+    // including the single-device case that works. This tracks the cache's
+    // contents, not the visible page.
+    let dev_all_tracks_owner: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     // Device file path → the library file it was copied from (its sync pair), for
     // the device view's "Synced from" column so the user can see exactly which
     // computer file each device file is kept in step with. Rebuilt per device by
@@ -494,6 +509,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let reload_device_store: Rc<dyn Fn(crate::devices::Device)> = {
         let store = dev_store.clone();
         let all_tracks = dev_all_tracks.clone();
+        let all_tracks_owner = dev_all_tracks_owner.clone();
         let hint = dev_hint.clone();
         let counts_lbl = dev_counts.clone();
         let state = state.clone();
@@ -524,6 +540,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             invalidate_mtp_meta(&dev.backend_id);
             let store2 = store.clone();
             let all_tracks2 = all_tracks.clone();
+            let all_tracks_owner2 = all_tracks_owner.clone();
+            let owner_id = dev.backend_id.clone();
             let counts_lbl2 = counts_lbl.clone();
             let state2 = state.clone();
             let pair_map2 = pair_map.clone();
@@ -611,6 +629,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // files. A playlist chip selection re-derives its rows from this
                 // cache without re-scanning.
                 *all_tracks2.borrow_mut() = tracks.clone();
+                // Stamped with the cache, never apart from it, so the two can
+                // never disagree about whose files these are.
+                *all_tracks_owner2.borrow_mut() = Some(owner_id.clone());
                 store2.remove_all();
                 for t in &tracks {
                     store2.append(&glib::BoxedAnyObject::new(t.clone()));
@@ -1350,6 +1371,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             device_transfers: &device_transfers,
             device_card_progress: &device_card_progress,
             dev_all_tracks: &dev_all_tracks,
+            dev_all_tracks_owner: &dev_all_tracks_owner,
         },
     );
 
