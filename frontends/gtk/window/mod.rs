@@ -92,6 +92,13 @@ mod tick;
 // writes nothing back, so it moved whole. player.rs calls `dnd::install(&ctx)`.
 mod dnd;
 
+// A shared DragSource helper for every Media Library view (album gallery,
+// disc views, device views): collect the current selection as URIs, publish
+// them (plus a FileList where the URIs are real files), and let the active
+// playlist's drop target read them back via `ml_drag::uris_from_value`. Not
+// yet attached to any view — that lands in a later task.
+mod ml_drag;
+
 // The one way rows enter the active playlist: resolve against the media
 // library, insert without touching the filesystem, and hand the rest to the
 // background pass in `crate::file_status`. Replaces 27 hand-rolled add sites.
