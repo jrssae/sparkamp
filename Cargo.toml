@@ -55,7 +55,14 @@ minreq = "2"
 # format probe rejects MP3 and M4A files, leaving sample_rate/channels NULL
 # for most of a typical library (found in the phase-1 user pass). WMA has no
 # symphonia reader at all; those files keep NULL technical columns.
-symphonia = { version = "0.5", features = ["mp3", "isomp4", "aac"] }
+# `aiff` is here for macOS optical discs: an audio CD auto-mounts as one AIFF
+# per track, and without a registered AIFF reader symphonia falls through to
+# the MP3 demuxer, whose `sync_frame` scans to EOF hunting a sync word that a
+# PCM file will never contain. On a ~40 MB track sitting on a spinning optical
+# drive that is a full-file read every time anything probes it. Linux never
+# noticed: there a CD track is a `cdda://` pseudo-URI that `File::open` simply
+# rejects. See docs/superpowers/plans/2026-08-20-macos-disc-io-parity.md.
+symphonia = { version = "0.5", features = ["mp3", "isomp4", "aac", "aiff"] }
 
 # Parallel probing thread pool
 rayon = "1"

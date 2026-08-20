@@ -1591,6 +1591,32 @@ fn read_only_fields_probe_fallback_for_non_library_files() {
     assert!(!ro.bitrate.is_empty(), "bitrate must be computed from size/duration");
 }
 
+/// The no-probe variant must leave the file alone, even though the probing
+/// one directly above proves the same fixture has everything to offer.
+///
+/// This is the now-playing contract. That panel rebuilds on every track
+/// change, on the UI thread; a macOS audio CD track is a real ~40 MB AIFF on
+/// the drive, so probing there read the whole file twice per track change and
+/// starved the playback it was reading against. Asserting the fields are
+/// *empty* is the only way to see the absence of I/O from a test.
+#[test]
+fn read_only_fields_no_probe_never_reads_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("outside.wav");
+    write_test_wav(&p, 48000, 2, 2.0);
+
+    let ro = read_only_track_fields_no_probe(&p, None);
+    // Free facts — these come from the path, not its contents.
+    assert_eq!(ro.filetype, "wav", "the extension costs nothing to read");
+    assert_eq!(ro.filename, "outside.wav");
+    // Everything that would need the file opened.
+    assert_eq!(ro.sample_rate, "", "sample rate needs the codec probe");
+    assert_eq!(ro.channels, "", "channels needs the codec probe");
+    assert_eq!(ro.duration, "-:--", "duration needs the file");
+    assert_eq!(ro.bitrate, "", "bitrate needs size and duration");
+    assert_eq!(ro.artwork_path, "", "artwork needs the tag reader");
+}
+
 // ── load_playlist_tracks path resolution ──────────────────────────────
 
 #[test]

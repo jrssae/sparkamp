@@ -221,22 +221,56 @@ pub fn read_only_track_fields(
     path: &std::path::Path,
     track: Option<&LibTrack>,
 ) -> ReadOnlyTrackFields {
+    read_only_fields_inner(path, track, true)
+}
+
+/// [`read_only_track_fields`] with the filesystem left alone.
+///
+/// Same fields, but a file the library has no row for simply comes back with
+/// the library-derived ones empty instead of being read off disk. For a
+/// display surface that is the right trade, and for one that refreshes on
+/// every track change it is the only safe option.
+///
+/// This exists because the probing version reached the now-playing panel.
+/// There it ran on the UI thread on every track change, and for a macOS audio
+/// CD — where a track is a real ~40 MB AIFF on the drive rather than Linux's
+/// unopenable `cdda://` URI — it read the whole file twice, starving playback
+/// of the very disc it was reading and wedging the app. The ID3 editor keeps
+/// the probing version: it is user-initiated, happens once per dialog, and the
+/// user is already waiting on it.
+#[allow(dead_code)]
+pub fn read_only_track_fields_no_probe(
+    path: &std::path::Path,
+    track: Option<&LibTrack>,
+) -> ReadOnlyTrackFields {
+    read_only_fields_inner(path, track, false)
+}
+
+/// `probe` decides whether a file with no library row may be read off disk.
+/// Every filesystem access in here is gated on it — there is no such thing as
+/// a partially-quiet call.
+fn read_only_fields_inner(
+    path: &std::path::Path,
+    track: Option<&LibTrack>,
+    probe: bool,
+) -> ReadOnlyTrackFields {
     // Files outside the library (played from the active playlist, Testing
     // dirs, …) have no LibTrack row, but the tech line should still work:
     // probe the file directly. One probe per editor-open — cheap enough.
-    let probed = if track.is_none() {
+    let may_probe = probe && track.is_none();
+    let probed = if may_probe {
         crate::technical_probe::probe_technical(path)
     } else {
         crate::technical_probe::TechProbe::default()
     };
-    let probed_len = if track.is_none() {
+    let probed_len = if may_probe {
         crate::duration_probe::probe_duration(path)
             .or_else(|| crate::duration_probe::discover_duration(path))
             .map(|d| d.as_secs_f64())
     } else {
         None
     };
-    let probed_size = if track.is_none() {
+    let probed_size = if may_probe {
         std::fs::metadata(path).ok().map(|m| m.len())
     } else {
         None
@@ -300,7 +334,7 @@ pub fn read_only_track_fields(
             // — an unrequested mutation. The now-playing display gets its
             // own folder/embedded fallback in `now_playing::build_now_playing_info`
             // instead, which is display-only and never feeds a save path.
-            if track.is_none() {
+            if may_probe {
                 crate::tags::read_track_tags(path).artwork_path
             } else {
                 None
@@ -545,6 +579,18 @@ impl MediaLibrary {
             CREATE INDEX IF NOT EXISTS idx_tracks_title  ON tracks(title);
             CREATE INDEX IF NOT EXISTS idx_tracks_album  ON tracks(album);
             CREATE INDEX IF NOT EXISTS idx_tracks_folder ON tracks(folder_id);
+            -- `track_by_same_file`'s fallback narrows by filename before
+            -- comparing (device, inode). Without this it is a full scan of
+            -- every row, and it runs on the miss path — which is every track
+            -- the library does not hold. Measured on a 36,329-track library:
+            -- the now-playing rebuild took 312-2677 ms per track change,
+            -- entirely here, and on macOS that starved the audio pipeline of
+            -- the CD it was playing.
+            --
+            -- Linux never showed it. There a disc track is a `cdda://`
+            -- pseudo-URI, so `file_identity` cannot stat it and the fallback
+            -- returns before reaching this query at all.
+            CREATE INDEX IF NOT EXISTS idx_tracks_filename ON tracks(filename);
             -- Covers MediaLibrary::album_rows()'s GROUP BY. A plain
             -- (album, album_artist, artist) index does NOT get used here —
             -- confirmed with EXPLAIN QUERY PLAN, still 'USE TEMP B-TREE FOR

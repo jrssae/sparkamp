@@ -44,7 +44,24 @@ pub fn build_now_playing_info(
 ) -> NowPlayingInfo {
     // Tags come straight off disk, curated + non-empty only — same source
     // the ID3 editor uses, so the panel and editor never disagree.
-    let fields = crate::id3_editor::read_tag_fields(path);
+    //
+    // Except on optical media, where the read is both ruinous and pointless.
+    // This function runs on every track change, on the UI thread of both
+    // frontends. A macOS audio CD auto-mounts one AIFF per track, so this
+    // parsed a ~40 MB file off the drive each time — measured at 2677 ms cold
+    // and 312-768 ms warm, which starved the pipeline playing that same disc
+    // and was audible as a skip. And it finds nothing: a CD track's AIFF
+    // carries no tags whatsoever, so the result is the empty set and the
+    // filename-stem fallback below fires regardless. Skipping it changes what
+    // the panel shows by nothing at all.
+    //
+    // Linux never paid this. There a disc track is a `cdda://` pseudo-URI and
+    // `File::open` rejects it outright.
+    let fields = if crate::disc::detect::path_is_on_optical_media(path) {
+        crate::id3_editor::TagFields::default()
+    } else {
+        crate::id3_editor::read_tag_fields(path)
+    };
     let mut tags: Vec<(&'static str, String)> = fields
         .field_pairs()
         .into_iter()
@@ -75,7 +92,11 @@ pub fn build_now_playing_info(
 
     // Tech line + artwork share one fusion call (library row → embedded
     // APIC → folder image) so both match the ID3 editor's window byte-for-byte.
-    let rof = crate::media_library::read_only_track_fields(path, lib_row);
+    // Never the probing variant. This runs on every track change, on the UI
+    // thread of both frontends, and a file the library has no row for would
+    // otherwise be read off disk right here — see
+    // `read_only_track_fields_no_probe` for what that cost on a macOS audio CD.
+    let rof = crate::media_library::read_only_track_fields_no_probe(path, lib_row);
     let tech_line = crate::media_library::tech_summary(&rof);
     // Discrete technical rows (label/value) — same fields as `tech_line` minus
     // the length. Uppercased filetype matches `tech_summary`'s formatting.
@@ -128,8 +149,24 @@ pub fn build_now_playing_info(
     // edit. The now-playing display has no save path, so the fallback lives
     // here instead: when the library's cached art column is empty, probe
     // embedded APIC / folder image directly. Display-only — never mutates.
+    //
+    // Never for a track on optical media. `read_track_tags` opens and parses
+    // the file, and this runs on every track change — so adding a second disc
+    // track to the playlist re-read the *currently playing* one off the drive,
+    // and the head seeking away from the stream was audible as a skip. It can
+    // never even succeed there: a CD track auto-mounts as a bare AIFF with no
+    // tags at all, so the read is guaranteed to spend a seek and find nothing.
+    //
+    // A narrow guard at the call site rather than inside `read_track_tags`,
+    // because a data disc's files legitimately get their tags read when they
+    // are imported into the library. Task 2 of
+    // `docs/superpowers/plans/2026-08-20-macos-disc-io-parity.md` replaces
+    // this with a default-refuse at the probe boundary plus an explicit
+    // opt-in, at which point this special case goes away.
     let artwork_path = if !rof.artwork_path.is_empty() {
         Some(PathBuf::from(&rof.artwork_path))
+    } else if crate::disc::detect::path_is_on_optical_media(path) {
+        None
     } else {
         crate::tags::read_track_tags(path).artwork_path.map(PathBuf::from)
     };
