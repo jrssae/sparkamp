@@ -164,6 +164,14 @@ pub struct Player {
     /// cdda URI has no device syntax: `load()` strips the `?device=` suffix
     /// off the pseudo-URI and stashes it here.
     cdda_device: Arc<Mutex<Option<String>>>,
+    /// Set while this player holds the exclusive-read guard for a track that
+    /// is a *file on a mounted disc* rather than a `cdda://` stream.
+    ///
+    /// Kept separate from `cdda_device` because that slot is also the device
+    /// handed to a CD-audio source in `source-setup`; a mount path is not a
+    /// device node and must never reach it. Both are records of the same one
+    /// guard count, and only one can be set at a time.
+    holds_disc_guard: std::sync::atomic::AtomicBool,
     /// ReplayGain in-chain elements (present only while active).
     rg_volume: Option<gst::Element>,
     rg_limiter: Option<gst::Element>,
@@ -233,6 +241,37 @@ impl Player {
             .context(
                 "Failed to create audio sink. Ensure GStreamer audio output plugins are installed.",
             )?;
+
+        // Widen the sink's ring buffer from its 200 ms default.
+        //
+        // Nothing between the source and the sink buffers anything: read,
+        // parse, convert, spectrum, EQ and volume all run on one streaming
+        // thread that pushes straight into the sink, so the ring buffer is the
+        // only slack in the pipeline. 200 ms of it is not much. Measured on
+        // macOS with a CD playing (`GST_DEBUG=audiobasesink:6`), the sink is
+        // normally called every 42 ms with 40 ms of audio; adding a track to
+        // the playlist stalled the streaming thread long enough that four
+        // buffers arrived over 640 ms — 160 ms of audio where 640 ms was
+        // needed. Every buffer was contiguous and complete, so nothing failed:
+        // the samples simply arrived after the speaker had run out, which is
+        // audible as a skip.
+        //
+        // Half a second absorbs that with room to spare, and covers the other
+        // sources of jitter on this path — an optical drive seeking, or any
+        // main-loop hitch. The cost is latency on seek and on EQ changes, both
+        // of which flush the pipeline, so it is bounded by this figure.
+        //
+        // `autoaudiosink` is a bin that picks the real sink at state change,
+        // so the property has to be set on the child when it appears rather
+        // than here; `buffer-time` is microseconds, and the guard keeps this a
+        // no-op for any sink that does not have it.
+        if let Some(bin) = audiosink.downcast_ref::<gst::Bin>() {
+            bin.connect_element_added(|_, element| {
+                if element.find_property("buffer-time").is_some() {
+                    element.set_property("buffer-time", 500_000i64);
+                }
+            });
+        }
 
         // Try to create equalizer element
         #[cfg(not(test))]
@@ -432,6 +471,7 @@ impl Player {
             has_spectrum,
             granite: None,
             cdda_device,
+            holds_disc_guard: std::sync::atomic::AtomicBool::new(false),
             // ReplayGain starts inactive — the chain is exactly as built above.
             // The first real shape is applied via `set_replaygain` (config load)
             // before the first play.
@@ -607,7 +647,28 @@ impl Player {
             }
             format!("cdda://{track}")
         } else {
+            // Release whatever the previous track held before deciding about
+            // this one, so the count is balanced either way.
             self.release_cdda_guard();
+            // A track that lives on a mounted optical volume is every bit as
+            // much a streaming read off the drive as a `cdda://` URI — it is
+            // just reached through the filesystem. macOS plays audio CDs this
+            // way (the mounted `.aiff` per track), so without this the guard
+            // stayed DOWN for the whole of CD playback there, and the disc
+            // poll went on issuing `drutil status` into the middle of the
+            // read every ten seconds. Same hazard the cdda branch above
+            // documents; the platform reaching it differently is not a reason
+            // for it not to apply.
+            // Through glib rather than trimming the scheme by hand: a mount
+            // path like `/Volumes/Audio CD 1` arrives percent-encoded, and a
+            // literal prefix test against the raw URI would never match it.
+            if let Ok((path, _)) = gst::glib::filename_from_uri(uri) {
+                if crate::disc::detect::path_is_on_optical_media(&path) {
+                    crate::disc::detect::begin_exclusive_read();
+                    self.holds_disc_guard
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             uri.to_string()
         };
 
@@ -702,6 +763,15 @@ impl Player {
     /// session — `stop`, loading a non-disc track, and dropping the player —
     /// and the third one was missing this entirely.
     fn release_cdda_guard(&self) {
+        // A file-on-a-disc session records itself here instead of in
+        // `cdda_device`; either way it is one count of the same guard, and
+        // both must be answered or an eject leaves polling wedged off.
+        if self
+            .holds_disc_guard
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            crate::disc::detect::end_exclusive_read();
+        }
         let was_active = self
             .cdda_device
             .lock()
@@ -1421,6 +1491,53 @@ mod live_cdda_tests {
         // 3. Drop, with no stop() first.
         drop(p);
         assert_eq!(exclusive_read_depth(), 0, "drop released it");
+    }
+
+    /// Playing a file that lives on a mounted disc must raise the same guard a
+    /// `cdda://` stream does, and drop it again on the way out.
+    ///
+    /// macOS reaches an audio CD this way — one mounted `.aiff` per track — so
+    /// without this the guard stayed down for the whole of CD playback there
+    /// and the ten-second drive poll kept issuing `drutil status` into the
+    /// middle of the read. GTK never showed it because the Linux poll checks
+    /// the guard and answers from a cheap status ioctl instead.
+    ///
+    /// No hardware: `load` only parses the URI and sets a property, and the
+    /// mount list is seeded directly.
+    #[test]
+    fn playing_a_file_on_a_disc_raises_and_releases_the_guard() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        gst::init().unwrap();
+        use crate::disc::detect::{exclusive_read_depth, set_optical_mounts_for_test};
+        assert_eq!(exclusive_read_depth(), 0, "must start clear");
+
+        set_optical_mounts_for_test(vec![std::path::PathBuf::from("/Volumes/Audio CD 1")]);
+        let mut p = Player::new().unwrap();
+
+        // A file somewhere else is not a disc read and must not take it.
+        p.load("file:///Users/me/Music/a.mp3").unwrap();
+        assert_eq!(exclusive_read_depth(), 0, "an ordinary file takes nothing");
+
+        // The space in the volume name arrives percent-encoded; the prefix
+        // test only works because the URI is decoded back to a path first.
+        p.load("file:///Volumes/Audio%20CD%201/1%20Track%201.aiff").unwrap();
+        assert_eq!(exclusive_read_depth(), 1, "a file on the disc takes the guard");
+
+        // Another track on the same disc is one session, not two.
+        p.load("file:///Volumes/Audio%20CD%201/2%20Track%202.aiff").unwrap();
+        assert_eq!(exclusive_read_depth(), 1, "still one session");
+
+        // Leaving the disc releases it.
+        p.load("file:///Users/me/Music/a.mp3").unwrap();
+        assert_eq!(exclusive_read_depth(), 0, "leaving the disc released it");
+
+        // And so does dropping mid-track, the leak `release_cdda_guard` exists for.
+        p.load("file:///Volumes/Audio%20CD%201/3%20Track%203.aiff").unwrap();
+        assert_eq!(exclusive_read_depth(), 1);
+        drop(p);
+        assert_eq!(exclusive_read_depth(), 0, "drop released it");
+
+        set_optical_mounts_for_test(Vec::new());
     }
 
     /// The whole fadeout contract in one pass: it attenuates while running,
