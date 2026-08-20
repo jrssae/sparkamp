@@ -338,6 +338,39 @@ extension SparkampModel {
         }
     }
 
+    /// Append `paths` to the active playlist, never replacing it.
+    ///
+    /// The counterpart to [`replacePlaylistWithPaths`], and the same pair GTK
+    /// offers as its Enqueue and Play buttons. Enqueue is an explicit
+    /// instruction, so it ignores the add-behavior setting entirely rather
+    /// than passing a mode to `sparkamp_should_replace_on_add` — there is no
+    /// mode in which it would clear.
+    ///
+    /// Autoplay follows GTK's Enqueue rule: start playing only when the
+    /// playlist was empty beforehand, so queueing more music never interrupts
+    /// what is already playing.
+    func enqueuePaths(_ paths: [String]) {
+        guard let ctx = ctx, !paths.isEmpty else { return }
+        let wasEmpty = sparkamp_playlist_len(ctx) == 0
+        var newIndices: [Int] = []
+        for p in paths {
+            let idx = p.withCString { sparkamp_playlist_add_fast(ctx, $0) }
+            if idx >= 0 { newIndices.append(Int(idx)) }
+        }
+        refreshPlaylist()
+        for i in newIndices {
+            sparkamp_scan_metadata(ctx, Int32(i))
+            sparkamp_probe_duration(ctx, Int32(i))
+        }
+        guard let first = newIndices.first else { return }
+        lastAddTime = Date()
+        if sparkamp_get_autoplay_on_add(ctx) && wasEmpty {
+            startTrack(at: first)
+        } else {
+            saveState()
+        }
+    }
+
     func removeTrack(at index: Int) {
         guard let ctx = ctx else { return }
         sparkamp_playlist_remove(ctx, Int32(index))

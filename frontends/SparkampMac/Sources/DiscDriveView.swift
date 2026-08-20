@@ -858,7 +858,11 @@ struct DiscDriveView: View {
         // Track(s). Matches GTK's audio-CD row menu. Rip opens the sheet with
         // only the selected tracks checked.
         .contextMenu(forSelectionType: Int.self) { ids in
-            Button("Enqueue to Playlist") { addSelected(ids) }
+            // Mode 1 — always append. An explicit Enqueue must not clear the
+            // playlist even when the add-behavior setting says Replace; that
+            // is the destructive direction, and it is what GTK's
+            // `DiscAdd::Enqueue` arm guards.
+            Button("Enqueue to Playlist") { addSelected(ids, addMode: 1) }
                 .disabled(ids.isEmpty)
             Button("Replace Current Playlist") {
                 let picked = model.discTracks.filter { ids.contains($0.number) }
@@ -881,10 +885,20 @@ struct DiscDriveView: View {
                 .font(vars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
             Spacer()
-            Button("Add Selected") { addSelected(selection) }
-                .disabled(selection.isEmpty)
-            Button("Add All") { model.addDiscTracks(drive, entries: model.discTracks) }
-                .disabled(model.discTracks.isEmpty)
+            // Enqueue and Play, the same pair and the same order GTK's disc
+            // page puts here. They differ by add rule, not by scope: both act
+            // on the selection and fall back to the whole disc when there is
+            // none, which is what GTK's `picked()` does. The Add Selected /
+            // Add All pair this replaces split on scope instead, and left no
+            // way to say "append" when the add-behavior setting was Replace.
+            Button("Enqueue") {
+                model.addDiscTracks(drive, entries: pickedEntries, addMode: 1)
+            }
+            .disabled(model.discTracks.isEmpty)
+            Button("Play") {
+                model.replaceWithDiscTracks(drive, entries: pickedEntries)
+            }
+            .disabled(model.discTracks.isEmpty)
         }
         .buttonStyle(.bordered)
         .padding(.horizontal, 16)
@@ -892,9 +906,19 @@ struct DiscDriveView: View {
         .background(theme.background)
     }
 
-    private func addSelected(_ ids: Set<Int>) {
+    /// The tracks an action applies to: the selection, or the whole disc when
+    /// nothing is selected. GTK's `picked()`, which its Enqueue and Play
+    /// buttons both go through.
+    private var pickedEntries: [DiscTrackEntry] {
+        let picked = model.discTracks.filter { selection.contains($0.number) }
+        return picked.isEmpty ? model.discTracks : picked
+    }
+
+    /// `addMode` defaults to 0 — honour the user's setting — which is what
+    /// the double-click route wants. The Enqueue menu item passes 1.
+    private func addSelected(_ ids: Set<Int>, addMode: Int32 = 0) {
         let entries = model.discTracks.filter { ids.contains($0.number) }
-        model.addDiscTracks(drive, entries: entries)
+        model.addDiscTracks(drive, entries: entries, addMode: addMode)
     }
 
     // MARK: Data-disc file browsing (Task 11 — mirrors GTK's Task 9)
@@ -1229,7 +1253,7 @@ struct DiscDriveView: View {
             "Erase this disc and burn?",
             isPresented: $showEraseConfirm, titleVisibility: .visible
         ) {
-            Button("Erase & Burn", role: .destructive) {
+            Button("Erase and Burn", role: .destructive) {
                 if pendingBurnAudio {
                     model.burnAudio(drive, eraseFirst: true)
                 } else {

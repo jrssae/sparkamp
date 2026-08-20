@@ -303,7 +303,7 @@ struct DeviceDetailView: View {
         HStack(spacing: 8) {
             if model.deviceBusy { ProgressView().controlSize(.small) }
             Button { showingImporter = true } label: {
-                Label("Add Music…", systemImage: "plus")
+                Label("Add Files…", systemImage: "plus")
             }
             .disabled(actionsBusy || device.readOnly || fsUnsupported || !device.fsVisible)
 
@@ -316,6 +316,16 @@ struct DeviceDetailView: View {
                 Label("Scan", systemImage: "arrow.clockwise")
             }
             .disabled(actionsBusy || !device.fsVisible)
+
+            // Play and Enqueue over the selected device files, matching the
+            // pair GTK puts on this view. Play clears and starts; Enqueue
+            // appends and only starts when the playlist was empty. Both act on
+            // the selection and are disabled without one, as GTK's no-op-on-
+            // empty handlers effectively are.
+            Button("Play") { model.replacePlaylistWithPaths(paths(for: selection)) }
+                .disabled(selection.isEmpty)
+            Button("Enqueue") { model.enqueuePaths(paths(for: selection)) }
+                .disabled(selection.isEmpty)
 
             if isEjecting {
                 HStack(spacing: 6) {

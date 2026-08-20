@@ -692,14 +692,43 @@ struct MediaLibraryView: View {
             // "analyze exactly this selection" variant stays in the row
             // context menu ("Calculate ReplayGain"), same split as GTK.
             if nav == .files {
-                Button { model.rgAnalyzeMissing() } label: {
-                    Label("Analyze ReplayGain", systemImage: "waveform")
+                // While a run is in flight this button IS the cancel, as in
+                // GTK, where `btn_cancel_rg` is shown and `btn_analyze_rg`
+                // hidden for the duration. The progress row below also offers
+                // Cancel; both drive `rgCancelAnalyze`.
+                if model.rgRunning {
+                    Button { model.rgCancelAnalyze() } label: {
+                        Label("Cancel Analysis", systemImage: "xmark")
+                            .font(vars.bodyFont)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.red)
+                    .help("Stop the running ReplayGain analysis")
+                } else {
+                    Button { model.rgAnalyzeMissing() } label: {
+                        Label("Analyze ReplayGain", systemImage: "waveform")
+                            .font(vars.bodyFont)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.mlScanRunning)
+                    .help("Compute ReplayGain for tracks that have no value yet")
+                }
+
+                // Remove the selected tracks from the library — GTK's
+                // destructive "✕ Remove" in the same button row. Removes the
+                // library rows only; the files stay on disk, which is why this
+                // is not gated behind the Deletion Rule's confirmation.
+                Button { model.mlRemoveTracks(ids: Array(selection)) } label: {
+                    Label("Remove", systemImage: "xmark")
                         .font(vars.bodyFont)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(model.rgRunning || model.mlScanRunning)
-                .help("Compute ReplayGain for tracks that have no value yet")
+                .tint(.red)
+                .disabled(selection.isEmpty || model.mlScanRunning)
+                .help("Remove the selected tracks from the library (the files stay on disk)")
             }
 
             if nav == .files {
