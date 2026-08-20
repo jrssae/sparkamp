@@ -435,6 +435,15 @@ pub unsafe extern "C" fn sparkamp_playlist_is_read_only(
         return 0;
     }
     let path = std::path::Path::new(&ctx.playlist.tracks[i].path);
+    // Optical media is never writable in place, which is a fact rather than a
+    // question — `sparkamp_playlist_add_entry` already records it on the track
+    // for exactly this reason. Answering it here without the `access(2)` keeps
+    // a playlist rebuild off the drive: this is called once PER ROW, on the UI
+    // thread, and paired with `sparkamp_playlist_file_missing` it put two
+    // syscalls per row on the optical mount every time the list was rebuilt.
+    if crate::disc::detect::path_is_on_optical_media(path) {
+        return 1;
+    }
     if crate::media_library::is_read_only(path) { 1 } else { 0 }
 }
 
@@ -486,11 +495,22 @@ pub unsafe extern "C" fn sparkamp_scan_metadata(ctx: *mut SparkampCtx, index: c_
     }
     let path = ctx.playlist.tracks[i].path.clone();
     let tx = ctx.meta_tx.clone();
-    rayon::spawn(move || {
+    let read = move || {
         if let Ok(track) = crate::model::Track::from_path(&path) {
             let _ = tx.send((i, track.title, track.artist, track.album_artist));
         }
-    });
+    };
+    // The bounded pool, not the global one. Callers invoke this once per path,
+    // so replacing a playlist with a 40-file selection asked the global pool
+    // for 40 concurrent file reads — one per rayon worker, every one of them
+    // seeking on the same device. On an optical drive that is audible: the
+    // head thrashes, the reads take minutes, and because the global pool also
+    // serves every other `rayon::spawn` in the FFI, the rest of the app waits
+    // behind them. See `duration_probe::PROBE_THREADS`.
+    match crate::duration_probe::shared_probe_pool() {
+        Some(pool) => pool.spawn(read),
+        None => read(),
+    }
 }
 
 /// Return the number of playlist updates applied by `sparkamp_tick` since the
@@ -701,6 +721,101 @@ mod tests {
             assert_eq!(
                 sparkamp_should_replace_on_add(std::ptr::null(), 2),
                 0
+            );
+        }
+    }
+
+    /// A row on a disc must be answered from what is already known, never by
+    /// asking the filesystem.
+    ///
+    /// Both getters are called once PER ROW on every playlist rebuild, on the
+    /// UI thread, so together they put two syscalls per row on the optical
+    /// mount every time the list was rebuilt.
+    ///
+    /// The optical case is driven through the mount-list fallback with a path
+    /// that does not exist: `path_is_on_optical_media` asks `statfs` first and
+    /// that is authoritative, so a real temp directory correctly answers
+    /// "apfs" no matter what the test seeds. Only a path `statfs` cannot
+    /// resolve reaches the seeded list. Proving the guard on a *real* optical
+    /// file needs a disc in the drive — see `live_optical_row_is_read_only`.
+    #[test]
+    fn optical_rows_are_answered_without_touching_the_drive() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let present = dir.path().join("1 Audio Track.aiff");
+        std::fs::write(&present, b"x").expect("temp track");
+        let absent = dir.path().join("gone.aiff");
+
+        let mut ctx = fake_ctx(2);
+        ctx.playlist.tracks[0].path = absent.clone();
+        ctx.playlist.tracks[1].path = present.clone();
+
+        // Ordinary storage: the honest answers, each costing a syscall.
+        crate::disc::detect::set_optical_mounts_for_test(Vec::new());
+        unsafe {
+            assert_eq!(
+                crate::ffi::media_library::sparkamp_playlist_file_missing(&ctx, 0),
+                1,
+                "a file that is not there reads as missing"
+            );
+            assert_eq!(
+                sparkamp_playlist_is_read_only(&ctx, 1),
+                0,
+                "a writable file is not read-only"
+            );
+        }
+
+        // The same absent row, now claimed by a mounted disc.
+        crate::disc::detect::set_optical_mounts_for_test(vec![dir.path().to_path_buf()]);
+        unsafe {
+            assert_eq!(
+                crate::ffi::media_library::sparkamp_playlist_file_missing(&ctx, 0),
+                0,
+                "the mount is what makes a disc row visible; losing it loses the volume"
+            );
+        }
+
+        // A real file on real storage is never claimed, whatever is seeded —
+        // `statfs` overrules the list, which is what stops the guard from
+        // swallowing genuine answers.
+        unsafe {
+            assert_eq!(
+                sparkamp_playlist_is_read_only(&ctx, 1),
+                0,
+                "statfs says apfs, so this row is not on a disc"
+            );
+        }
+        crate::disc::detect::set_optical_mounts_for_test(Vec::new());
+    }
+
+    /// The read-only half against a real disc, which is the only place a
+    /// writable-looking file can genuinely sit on optical media.
+    ///
+    /// `cargo test --lib live_optical_row_is_read_only -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_optical_row_is_read_only() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        let drives = crate::disc::detect::list_drives_shared();
+        let Some(d) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            eprintln!("no audio CD in any drive — skipping");
+            return;
+        };
+        let entries = crate::disc::toc::track_entries(d);
+        let Some(e) = entries.first() else { return };
+
+        let mut ctx = fake_ctx(1);
+        ctx.playlist.tracks[0].path = std::path::PathBuf::from(&e.path);
+        unsafe {
+            assert_eq!(
+                sparkamp_playlist_is_read_only(&ctx, 0),
+                1,
+                "disc media is never writable in place"
+            );
+            assert_eq!(
+                crate::ffi::media_library::sparkamp_playlist_file_missing(&ctx, 0),
+                0,
+                "a mounted disc track is present"
             );
         }
     }

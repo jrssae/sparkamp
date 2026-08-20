@@ -372,7 +372,7 @@ pub unsafe extern "C" fn sparkamp_probe_duration(ctx: *mut SparkampCtx, index: c
     }
     let path = ctx.playlist.tracks[i].path.clone();
     let tx = ctx.duration_tx.clone();
-    rayon::spawn(move || {
+    let probe = move || {
         // Fast path: Symphonia reads the container header with no GStreamer involvement.
         // Slow path: GStreamer Discoverer handles CBR MP3 and formats Symphonia misses.
         //   Serialised via DISCOVER_LOCK — concurrent GLib main loops from Rayon
@@ -384,6 +384,17 @@ pub unsafe extern "C" fn sparkamp_probe_duration(ctx: *mut SparkampCtx, index: c
         if let Some(dur) = dur {
             let _ = tx.send((i, dur));
         }
-    });
+    };
+    // The bounded pool, not the global one — the same reason as
+    // `sparkamp_scan_metadata`, and worse here because of DISCOVER_LOCK: a
+    // caller that probes a whole selection at once put one task per file on
+    // the global pool, and every task whose format Symphonia could not read
+    // queued behind that single mutex while still holding a rayon worker. On
+    // an optical disc the reads are slow enough that the drive went on
+    // seeking for minutes after the user had stopped asking for anything.
+    match crate::duration_probe::shared_probe_pool() {
+        Some(pool) => pool.spawn(probe),
+        None => probe(),
+    }
 }
 

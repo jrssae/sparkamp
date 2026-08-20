@@ -1551,6 +1551,18 @@ pub unsafe extern "C" fn sparkamp_playlist_file_missing(
     let i = index as usize;
     if i >= ctx.playlist.tracks.len() { return 0; }
     let path = std::path::Path::new(&ctx.playlist.tracks[i].path);
+    // A track on a mounted disc is there by definition — the mount is what
+    // makes it visible, and losing the disc loses the whole volume, which the
+    // drive list reports on its own. Answering from that instead of `stat`
+    // matters because the macOS frontend calls this once PER ROW on every
+    // playlist rebuild, on the UI thread: adding one track to a playlist of
+    // disc tracks fired a syscall at the optical drive for each of them, and
+    // the head leaving the stream to service them was audible as a skip in the
+    // track already playing. GTK never had this — its equivalent marker comes
+    // from the background `file_status` worker, and only for rows on screen.
+    if crate::disc::detect::path_is_on_optical_media(path) {
+        return 0;
+    }
     if path.exists() { 0 } else { 1 }
 }
 
