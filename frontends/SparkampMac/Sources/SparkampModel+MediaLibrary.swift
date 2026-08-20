@@ -51,6 +51,8 @@ extension SparkampModel {
         mlEnsureOpen()
         mlRefreshFolders()
         mlRefreshSavedPlaylists()
+        // Opening the window is a user asking what is in the drive right now.
+        pollDiscDrives(force: true)
         mediaLibraryVisible = true
     }
 
@@ -282,7 +284,11 @@ extension SparkampModel {
     /// playing track when the user is queueing more music.
     func mlDoubleClickTracks(ids: [Int64]) {
         guard let ctx = ctx else { return }
-        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        // Core decides. Mode 0 — honour the configured setting, which is what
+        // a double-click means; the explicit Enqueue/Replace actions elsewhere
+        // pass 1 and 2. Same rule GTK and the TUI use, so the three frontends
+        // cannot drift on what "Replace playlist" means.
+        let shouldReplace = sparkamp_should_replace_on_add(ctx, 0) == 1
         let autoplay     = sparkamp_get_autoplay_on_add(ctx)
         let indexBefore  = Int(sparkamp_playlist_len(ctx))
         let wasEmpty     = indexBefore == 0

@@ -15,7 +15,7 @@
 //!   `cd-info` (libcdio) reads the TOC. cd-info reports post-pregap LSNs, so
 //!   **+150** is added here to make them CDDB-absolute.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{DiscToc, MediaInfo, MediaKind, OpticalDrive, TocTrack};
 
@@ -32,8 +32,17 @@ pub fn list_drives() -> Vec<OpticalDrive> {
 /// an unchanged loaded disc is NOT re-probed. On Linux the full probe
 /// physically touches the drive, so a periodic poll must go through here —
 /// the cheap kernel status ioctl answers "same disc still loaded?" without
-/// any medium access. On macOS this is [`list_drives`] (drutil's status
-/// query doesn't spin the disc).
+/// any medium access.
+///
+/// macOS answers the same question from devfs. This used to be documented as
+/// safe on the grounds that "drutil's status query doesn't spin the disc",
+/// which is not true: `drutil status` reports track count and used blocks, and
+/// getting those means reading the medium. Because `prev` was then discarded,
+/// a poll every ten seconds re-read the disc for the life of the process — the
+/// drive could never finish spinning down before the next one arrived, so an
+/// idle app kept a disc turning indefinitely. Firing it into the middle of CD
+/// playback is worse still, and is the hazard [`begin_exclusive_read`] exists
+/// to prevent.
 pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
     #[cfg(target_os = "linux")]
     {
@@ -41,8 +50,222 @@ pub fn list_drives_cached(prev: &[OpticalDrive]) -> Vec<OpticalDrive> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = prev;
+        // Both short-circuits below answer with `prev`, so neither may run
+        // when there is no `prev` to answer with. An empty cache means nothing
+        // has successfully probed yet, and handing that back as though it were
+        // an answer is how "no drives" became sticky: the Media Library showed
+        // an empty drive list until something happened to invalidate it.
+        let have_answer = !prev.is_empty();
+        // A streaming read owns the drive: answer from the previous state
+        // without touching the device.
+        if have_answer && exclusive_read() {
+            return prev.to_vec();
+        }
+        let fp = devfs_signature();
+        // Nothing the kernel can see has changed, so neither has the disc.
+        if have_answer {
+            let unchanged = LAST_FINGERPRINT
+                .lock()
+                .map(|last| fp.is_some() && *last == fp)
+                .unwrap_or(false);
+            if unchanged {
+                return prev.to_vec();
+            }
+        }
+        // Recorded BEFORE the probe on purpose: media that changes while the
+        // probe is running leaves this value stale, so the next poll sees a
+        // mismatch and probes again rather than trusting a result that raced.
+        if let Ok(mut last) = LAST_FINGERPRINT.lock() {
+            *last = fp;
+        }
         platform::list_drives()
+    }
+}
+
+/// A cheap signature of what optical media the kernel currently sees, or
+/// `None` on a platform with no cheap answer (which then always probes).
+///
+/// macOS has no equivalent of Linux's `CDROM_DRIVE_STATUS` ioctl — the only
+/// way to ask `drutil` anything is to read the medium. devfs answers instead,
+/// and for free: inserting a disc publishes a device node for the media (an
+/// audio CD also gets one slice per track, `/dev/disk12s1`…`s15` for fifteen
+/// tracks), and ejecting takes them away. Listing a directory in devfs costs
+/// no device access at all.
+///
+/// Unrelated disk activity — mounting a disk image, plugging in a USB stick —
+/// also changes this and costs one needless probe. That is the right way to be
+/// wrong: an occasional extra read beats one every ten seconds forever.
+///
+/// It cannot see a change that leaves the node list alone, which is exactly
+/// what burning or erasing does. [`invalidate_shared_cache`] covers that case,
+/// and must keep doing so.
+#[cfg(target_os = "macos")]
+fn devfs_signature() -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut names: Vec<std::ffi::OsString> = std::fs::read_dir("/dev")
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().starts_with("disk"))
+        .collect();
+    // read_dir order is not defined, so sort before hashing or the signature
+    // would change without the media changing.
+    names.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    names.hash(&mut h);
+    Some(h.finish())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn devfs_signature() -> Option<u64> {
+    None
+}
+
+/// The [`devfs_signature`] the last probe was taken at.
+#[cfg(not(target_os = "linux"))]
+static LAST_FINGERPRINT: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+
+/// Where each optical volume is mounted, as of the last poll.
+///
+/// Held apart from [`SHARED`] on purpose: this answers "is the file I am about
+/// to play sitting on a disc?", and that question is asked on the path that
+/// starts playback. `SHARED` is held for the length of a probe — seconds of
+/// `drutil` subprocesses — so borrowing it here would stall the first note of
+/// every track behind a poll that happened to be running.
+static OPTICAL_MOUNTS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether `path` lives on a mounted optical volume.
+///
+/// Answered from the last poll's mount list, with no device access of its own.
+/// A disc inserted since that poll reads as `false` until the next one, which
+/// is the safe direction: the worst case is the guard going up one poll late,
+/// not playback being blocked on a subprocess.
+pub fn path_is_on_optical_media(path: &Path) -> bool {
+    // Ask the filesystem first. `statfs` names the filesystem mounted at a
+    // path, and an optical one is unmistakable — `cddafs` for an audio CD,
+    // `cd9660`/`udf` for a data disc. One syscall, measured in microseconds,
+    // and no dependence on anything having polled yet.
+    //
+    // That last part is the point. The mount list below is refreshed by the
+    // drive poll, which runs on a background queue, so playback starting
+    // before the first poll completes saw an empty list and read the disc
+    // anyway: the first track after launch stalled 2.7 s where later ones
+    // cost nothing.
+    #[cfg(target_os = "macos")]
+    if let Some(kind) = filesystem_type(path) {
+        return matches!(kind.as_str(), "cddafs" | "cd9660" | "udf");
+    }
+    // Fallback: what the last poll saw. Still useful for a path that cannot be
+    // stat'd, and the only answer on platforms without the syscall wired up.
+    OPTICAL_MOUNTS
+        .lock()
+        .map(|mounts| mounts.iter().any(|m| path.starts_with(m)))
+        .unwrap_or(false)
+}
+
+/// The name of the filesystem mounted at `path` (`cddafs`, `apfs`, …), or
+/// `None` when it cannot be determined.
+#[cfg(target_os = "macos")]
+fn filesystem_type(path: &Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `statfs` fills the struct on success and touches nothing else;
+    // the buffer is owned here and the path is a valid NUL-terminated C string.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
+        return None;
+    }
+    let raw = unsafe { std::ffi::CStr::from_ptr(buf.f_fstypename.as_ptr()) };
+    Some(raw.to_string_lossy().into_owned())
+}
+
+/// Seed the mount list without a drive. Tests only — the real list is
+/// refreshed by [`list_drives_shared`], which needs hardware.
+#[cfg(test)]
+pub(crate) fn set_optical_mounts_for_test(mounts: Vec<PathBuf>) {
+    *OPTICAL_MOUNTS.lock().unwrap() = mounts;
+}
+
+#[cfg(test)]
+mod devfs_signature_tests {
+    use super::*;
+
+    /// The signature must be stable when nothing changes, or every poll would
+    /// look like an insertion and probe anyway — which is the bug it exists to
+    /// fix. `read_dir` returns entries in no defined order, so this is really
+    /// asserting that the sort is doing its job.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_signature_is_stable_across_calls() {
+        let a = devfs_signature().expect("macOS always has devfs");
+        let b = devfs_signature().expect("macOS always has devfs");
+        assert_eq!(a, b, "an unchanged /dev must hash the same twice");
+    }
+
+    /// A second poll with the disc untouched must answer from cache and run no
+    /// subprocess at all. The whole point: an idle app used to re-read the disc
+    /// every ten seconds for the life of the process, so the drive never spun
+    /// down.
+    ///
+    /// Timing is the assertion because "did it shell out to drutil" has no
+    /// direct handle — a real probe runs `drutil list` plus a `drutil status`
+    /// per drive, which cannot happen in single-digit milliseconds.
+    ///
+    /// `cargo test --lib live_second_poll_is_cached -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_second_poll_is_cached() {
+        let _lock = exclusive_read_test_guard();
+        invalidate_shared_cache();
+
+        let t = std::time::Instant::now();
+        let first = list_drives_shared();
+        let cold = t.elapsed();
+
+        let t = std::time::Instant::now();
+        let second = list_drives_shared();
+        let warm = t.elapsed();
+
+        eprintln!("{} drive(s)", first.len());
+        eprintln!("  first poll (probes):  {cold:?}");
+        eprintln!("  second poll (cached): {warm:?}");
+        assert_eq!(first, second, "a cached answer must match what it caches");
+        assert!(
+            warm < cold / 10,
+            "the second poll should be far cheaper than the first \
+             (cold {cold:?}, warm {warm:?}) — if they are alike, the cache is \
+             not being consulted and the disc is still being read"
+        );
+    }
+}
+
+#[cfg(test)]
+mod optical_mount_tests {
+    use super::*;
+
+    /// Path matching is on a path boundary, so a volume named as a prefix of
+    /// another does not claim its files.
+    #[test]
+    fn only_paths_under_a_mount_count_as_optical() {
+        let _lock = exclusive_read_test_guard();
+        set_optical_mounts_for_test(vec![PathBuf::from("/Volumes/Audio CD 1")]);
+
+        assert!(path_is_on_optical_media(Path::new(
+            "/Volumes/Audio CD 1/1 Track 1.aiff"
+        )));
+        assert!(path_is_on_optical_media(Path::new("/Volumes/Audio CD 1")));
+        assert!(!path_is_on_optical_media(Path::new("/Users/me/Music/a.mp3")));
+        assert!(
+            !path_is_on_optical_media(Path::new("/Volumes/Audio CD 10/x.aiff")),
+            "`starts_with` on a Path compares components, not bytes"
+        );
+
+        // An eject empties the list, which is what stops the guard being
+        // raised for a disc that is no longer there.
+        set_optical_mounts_for_test(Vec::new());
+        assert!(!path_is_on_optical_media(Path::new(
+            "/Volumes/Audio CD 1/1 Track 1.aiff"
+        )));
     }
 }
 
@@ -57,6 +280,12 @@ pub fn list_drives_shared() -> Vec<OpticalDrive> {
     let mut cache = SHARED.lock().unwrap();
     let drives = list_drives_cached(&cache);
     *cache = drives.clone();
+    // Refresh the mount list every poll, so `path_is_on_optical_media` can
+    // answer without touching a drive. Ejecting clears the entry, which is
+    // what stops the guard being raised for a path that is no longer there.
+    if let Ok(mut mounts) = OPTICAL_MOUNTS.lock() {
+        *mounts = drives.iter().filter_map(|d| d.mount_path.clone()).collect();
+    }
     drives
 }
 
@@ -66,6 +295,14 @@ pub fn list_drives_shared() -> Vec<OpticalDrive> {
 /// pre-burn state.
 pub fn invalidate_shared_cache() {
     SHARED.lock().unwrap().clear();
+    // The fingerprint too, and this is the case it cannot see for itself:
+    // burning or erasing rewrites the medium while every device node stays
+    // exactly where it was, so devfs looks untouched and the next poll would
+    // hand back the pre-burn state forever.
+    #[cfg(not(target_os = "linux"))]
+    if let Ok(mut last) = LAST_FINGERPRINT.lock() {
+        *last = None;
+    }
 }
 
 /// While a streaming read owns the drive (cdda playback, a rip, a burn, or a

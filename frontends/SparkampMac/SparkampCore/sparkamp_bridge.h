@@ -301,6 +301,9 @@ void    sparkamp_set_playlist_add_behavior(SparkampCtx *ctx, int value);
 /* 0 = honour setting, 1 = always append, 2 = always replace.
    Returns 1 when the playlist should be cleared before adding. */
 int     sparkamp_should_replace_on_add(SparkampCtx *ctx, int mode);
+/* Force the next sparkamp_disc_list_drives to probe instead of answering from
+   cache. Call before a user-initiated look at the drives. */
+void    sparkamp_disc_invalidate_cache(void);
 // Preferred new-playlist format: 0 = m3u8 (default), 1 = m3u.
 int     sparkamp_get_playlist_format(SparkampCtx *ctx);
 void    sparkamp_set_playlist_format(SparkampCtx *ctx, int value);

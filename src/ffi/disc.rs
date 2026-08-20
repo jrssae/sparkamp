@@ -47,13 +47,32 @@ struct DriveOut {
     media_summary: String,
 }
 
+/// Force the next drive enumeration to probe rather than answer from cache.
+///
+/// The cached path is right for a timer, and wrong for a person: opening the
+/// Media Library is someone asking "what is in the drive now", and the answer
+/// has to be current even though the kernel's device list has not changed
+/// since the last poll. Without this the window could show a drive list taken
+/// before the disc finished mounting and keep showing it until the next
+/// devfs change.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_invalidate_cache() {
+    detect::invalidate_shared_cache();
+}
+
 /// Enumerate every optical drive with its loaded-media state and (for an
 /// audio CD) the TOC. Returns a JSON array of `OpticalDrive` (+ a
 /// `media_summary` field per drive). Runs subprocesses — call on a
 /// background queue and throttle polling.
+///
+/// Goes through `list_drives_shared` rather than probing fresh. This is the
+/// call the macOS app polls every ten seconds, and the unshared version
+/// neither respects the exclusive-read guard nor records where the discs are
+/// mounted — so it probed the drive during playback, and nothing could tell
+/// that a playing file was on a disc.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_list_drives(_ctx: *mut SparkampCtx) -> *mut c_char {
-    let drives: Vec<DriveOut> = detect::list_drives()
+    let drives: Vec<DriveOut> = detect::list_drives_shared()
         .into_iter()
         .map(|drive| DriveOut {
             media_summary: drive.media_summary(),

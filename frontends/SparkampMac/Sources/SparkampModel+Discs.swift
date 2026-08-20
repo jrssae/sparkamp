@@ -13,8 +13,15 @@ extension SparkampModel {
     /// Re-enumerate optical drives (background) and publish changes. When a
     /// drive transitions to "audio CD loaded" and the auto-open setting is on,
     /// bring the Media Library to that drive (default-CD-handler flow).
-    func pollDiscDrives() {
+    /// `force` discards the core's cached enumeration first. The cache is
+    /// right for the ten-second timer and wrong for a person: opening the
+    /// Media Library is someone asking what is in the drive *now*, and the
+    /// kernel's device list has not necessarily changed since the last poll —
+    /// so without this the window can show a list taken before the disc
+    /// finished mounting, and keep showing it until devfs next changes.
+    func pollDiscDrives(force: Bool = false) {
         DispatchQueue.global(qos: .utility).async {
+            if force { sparkamp_disc_invalidate_cache() }
             let drives = DiscService.listDrives()
             DispatchQueue.main.async {
                 // A drive counts as freshly inserted when it holds an audio CD
@@ -398,13 +405,24 @@ extension SparkampModel {
     /// add-behavior setting, and autoplay-on-add starts the first new track
     /// when the playlist was replaced or was empty (never interrupts a track
     /// already playing).
-    func addDiscTracks(_ drive: OpticalDrive, entries: [DiscTrackEntry]) {
+    ///
+    /// `addMode` is the core rule's mode — 0 = honour the setting, 1 = always
+    /// append, 2 = always replace — and defaults to honouring it, which is
+    /// what a double-click and the plain "Add All" button want. An explicit
+    /// "Enqueue to Playlist" must pass 1: it is already the user saying what
+    /// they want, so the configured Replace preference must not turn it into a
+    /// playlist wipe. GTK draws the same distinction in `disc_add_mode`.
+    func addDiscTracks(_ drive: OpticalDrive,
+                       entries: [DiscTrackEntry],
+                       addMode: Int32 = 0) {
         guard let ctx = ctx, !entries.isEmpty else { return }
         // Whole-entry precedence: a gnudb/user tag set wins; on a total gnudb
         // miss fall back to CD-TEXT so a CD-TEXT-only disc's added tracks carry
         // its artist/album (matches the disc view, rip, and the TUI add path).
         let tags = discIdFor(drive).flatMap { discOverlayTags($0) }
-        let shouldReplace = Int(sparkamp_get_playlist_add_behavior(ctx)) == 1
+        // Core decides, so the three frontends cannot drift on what "Replace
+        // playlist" means.
+        let shouldReplace = sparkamp_should_replace_on_add(ctx, addMode) == 1
         let autoplay = sparkamp_get_autoplay_on_add(ctx)
         if shouldReplace { clearPlaylist() }
         let indexBefore = Int(sparkamp_playlist_len(ctx))
