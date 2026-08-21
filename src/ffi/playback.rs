@@ -385,6 +385,8 @@ pub(crate) fn queue_probe_duration(ctx: &SparkampCtx, i: usize) -> bool {
     if crate::disc::detect::path_is_on_optical_media(&path) {
         return false;
     }
+    // The entry id, not the row — see `SparkampCtx::meta_tx`.
+    let id = ctx.playlist.tracks[i].id;
     let tx = ctx.duration_tx.clone();
     let probe = move || {
         // Fast path: Symphonia reads the container header with no GStreamer involvement.
@@ -396,7 +398,7 @@ pub(crate) fn queue_probe_duration(ctx: &SparkampCtx, i: usize) -> bool {
             duration_probe::discover_duration(&path)
         });
         if let Some(dur) = dur {
-            let _ = tx.send((i, dur));
+            let _ = tx.send((id, dur));
         }
     };
     // The bounded pool, not the global one — the same reason as

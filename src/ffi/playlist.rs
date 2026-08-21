@@ -547,10 +547,13 @@ fn queue_scan_metadata(ctx: &SparkampCtx, i: usize) -> bool {
     if crate::disc::detect::path_is_on_optical_media(&path) {
         return false;
     }
+    // The entry id, not the row: the read finishes long after `i` may have
+    // stopped meaning this track. See `SparkampCtx::meta_tx`.
+    let id = ctx.playlist.tracks[i].id;
     let tx = ctx.meta_tx.clone();
     let read = move || {
         if let Ok(track) = crate::model::Track::from_path(&path) {
-            let _ = tx.send((i, track.title, track.artist, track.album_artist));
+            let _ = tx.send((id, track.title, track.artist, track.album_artist));
         }
     };
     // The bounded pool, not the global one. Callers invoke this once per path,
@@ -885,6 +888,43 @@ mod tests {
             crate::ffi::playback::queue_probe_duration(&ctx, 0),
             "ordinary tracks still probe"
         );
+    }
+
+    /// A background read must land on the track it was started for, even if
+    /// the user has moved that track since.
+    ///
+    /// The reads outlive the row numbers. Dropping files at a position in the
+    /// playlist appends them and then slides the block into place, so a
+    /// reorder between dispatch and delivery is no longer an unlucky race —
+    /// it is what every positioned drop does. Keying results by index put the
+    /// dropped files' tags on whatever tracks had inherited their old rows.
+    #[test]
+    fn a_background_read_lands_on_its_track_after_a_reorder() {
+        let mut ctx = fake_ctx(3);
+        let moved = ctx.playlist.tracks[2].id;
+
+        // Read dispatched for row 2, then that row is dragged to the top —
+        // which renumbers all three.
+        ctx.playlist.move_tracks(&[2], 0);
+        ctx.meta_tx
+            .send((moved, "Real".into(), "Artist".into(), String::new()))
+            .unwrap();
+        ctx.duration_tx
+            .send((moved, std::time::Duration::from_secs(210)))
+            .unwrap();
+
+        unsafe { crate::ffi::sparkamp_tick(&mut ctx) };
+
+        assert_eq!(ctx.playlist.tracks[0].title, "Real", "follows the track");
+        assert_eq!(
+            ctx.playlist.tracks[0].duration,
+            Some(std::time::Duration::from_secs(210))
+        );
+        assert_eq!(
+            ctx.playlist.tracks[2].title, "T1",
+            "the track that inherited row 2 must be left alone"
+        );
+        assert_eq!(ctx.playlist.tracks[2].duration, None);
     }
 
     /// The read-only half against a real disc, which is the only place a

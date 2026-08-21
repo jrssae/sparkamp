@@ -494,7 +494,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
             let tracklist = NSPasteboard.PasteboardType(kSparkampTracklistUTI)
             let isSparkampDrag = info.draggingPasteboard.availableType(from: [tracklist]) != nil
             if isSparkampDrag, info.draggingSource != nil, let payload = SparkampDrag.take() {
-                apply(payload)
+                apply(payload, at: row)
                 return true
             }
 
@@ -515,22 +515,22 @@ struct ActivePlaylistTable: NSViewRepresentable {
                     .map(\.path)
             }
             guard !paths.isEmpty else { return false }
-            parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+            addPaths(paths, at: row)
             return true
         }
 
         /// Add a dropped Sparkamp payload, each case through the same model
-        /// call its source view's own buttons use.
-        private func apply(_ payload: SparkampDrag.Payload) {
+        /// call its source view's own buttons use, then put the block where
+        /// the user aimed it.
+        private func apply(_ payload: SparkampDrag.Payload, at row: Int) {
             switch payload {
             case .paths(let paths):
-                guard !paths.isEmpty else { return }
-                parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+                addPaths(paths, at: row)
 
             case .discTracks(let drive, let entries):
                 // `addDiscTracks` with the default mode — the disc view's
                 // double-click, exactly.
-                parent.model.addDiscTracks(drive, entries: entries)
+                place(parent.model.addDiscTracks(drive, entries: entries), at: row)
 
             case .deferredPaths(let resolve):
                 // Walking a device volume can take real time on slow media,
@@ -538,11 +538,40 @@ struct ActivePlaylistTable: NSViewRepresentable {
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                     let paths = resolve()
                     DispatchQueue.main.async {
-                        guard let self = self, !paths.isEmpty else { return }
-                        self.parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+                        self?.addPaths(paths, at: row)
                     }
                 }
             }
+        }
+
+        private func addPaths(_ paths: [String], at row: Int) {
+            guard !paths.isEmpty else { return }
+            place(parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) }), at: row)
+        }
+
+        /// Slide a freshly added block from the end of the playlist to the
+        /// row it was dropped on.
+        ///
+        /// Adding appends — every add route does, and routing a drop through
+        /// the same call as the button beside its rows is the point. So the
+        /// position is applied afterwards, as a move of exactly the rows that
+        /// were just added, through the same core reorder an intra-list drag
+        /// uses.
+        ///
+        /// This is why background tag and duration results are keyed by entry
+        /// id rather than row: they are dispatched by the add, and this move
+        /// renumbers the rows out from under them.
+        ///
+        /// `row` is a slot in the pre-add playlist, so it is already correct
+        /// as a destination — everything below it is untouched by an append.
+        /// A block starting at or before `row` needs no move: either it was
+        /// dropped past the end, or the add replaced the playlist outright
+        /// (the configured Replace behaviour), in which case the list is now
+        /// exactly what was dropped and a position within the old one means
+        /// nothing.
+        private func place(_ added: [Int], at row: Int) {
+            guard let first = added.first, row < first else { return }
+            parent.model.moveTracks(from: IndexSet(added), to: row)
         }
 
         // ── Double-click → play ─────────────────────────────────────────

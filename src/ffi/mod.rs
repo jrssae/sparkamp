@@ -74,12 +74,20 @@ pub struct SparkampCtx {
     queue: crate::queue::Queue,
     /// Sender half kept in the ctx so `sparkamp_scan_metadata` can clone it for
     /// each Rayon task.  Receiver half is polled in `sparkamp_tick`.
-    meta_tx: mpsc::Sender<(usize, String, String, String)>,
-    meta_rx: mpsc::Receiver<(usize, String, String, String)>,
+    ///
+    /// Keyed by `Track::id`, not by row. A row index is only true for as long
+    /// as nothing above it moves, and a background read outlives that: drop
+    /// forty files, reorder or delete a row while they are still being read,
+    /// and every result still in flight lands on whatever track now occupies
+    /// the index it remembered. Entry ids are assigned once by `Playlist::add`
+    /// and travel with the track through any reorder.
+    meta_tx: mpsc::Sender<(u64, String, String, String)>,
+    meta_rx: mpsc::Receiver<(u64, String, String, String)>,
     /// Sender half kept in the ctx so `sparkamp_probe_duration` can clone it for
     /// each Rayon task.  Receiver half is polled in `sparkamp_tick`.
-    duration_tx: mpsc::Sender<(usize, Duration)>,
-    duration_rx: mpsc::Receiver<(usize, Duration)>,
+    /// Keyed by `Track::id` — same reason as `meta_tx`.
+    duration_tx: mpsc::Sender<(u64, Duration)>,
+    duration_rx: mpsc::Receiver<(u64, Duration)>,
     /// Incremented each time `sparkamp_tick` applies any pending result (duration or
     /// metadata). Swift calls `sparkamp_take_playlist_dirty_count` to read and reset
     /// this counter so it knows when to refresh playlist rows.
@@ -267,23 +275,44 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
     }
     let ctx = &mut *ctx;
 
-    // Apply background metadata-scan results (title, artist, album_artist).
+    // Apply background metadata-scan and duration-probe results.
     // Non-blocking: mirrors GTK's glib::timeout_add_local + try_recv pattern.
-    while let Ok((index, title, artist, album_artist)) = ctx.meta_rx.try_recv() {
-        if let Some(track) = ctx.playlist.tracks.get_mut(index) {
-            track.title = title;
-            track.artist = artist;
-            track.album_artist = album_artist;
-            ctx.dirty_count += 1;
-        }
+    //
+    // Results name a track by entry id, so finding its row is a lookup. One
+    // map per tick that has any results, rather than a scan of the playlist
+    // per result — with a 36k-row list the latter is a million comparisons
+    // for a single dropped folder.
+    let mut rows: Option<std::collections::HashMap<u64, usize>> = None;
+    let mut row_of = |playlist: &Playlist, id: u64| -> Option<usize> {
+        rows.get_or_insert_with(|| {
+            playlist
+                .tracks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.id, i))
+                .collect()
+        })
+        .get(&id)
+        .copied()
+    };
+
+    while let Ok((id, title, artist, album_artist)) = ctx.meta_rx.try_recv() {
+        let Some(i) = row_of(&ctx.playlist, id) else {
+            continue;
+        };
+        let track = &mut ctx.playlist.tracks[i];
+        track.title = title;
+        track.artist = artist;
+        track.album_artist = album_artist;
+        ctx.dirty_count += 1;
     }
 
-    // Apply background duration-probe results.
-    while let Ok((index, dur)) = ctx.duration_rx.try_recv() {
-        if index < ctx.playlist.tracks.len() {
-            ctx.playlist.tracks[index].duration = Some(dur);
-            ctx.dirty_count += 1;
-        }
+    while let Ok((id, dur)) = ctx.duration_rx.try_recv() {
+        let Some(i) = row_of(&ctx.playlist, id) else {
+            continue;
+        };
+        ctx.playlist.tracks[i].duration = Some(dur);
+        ctx.dirty_count += 1;
     }
 
     // Advance a stop-with-fadeout ramp. Ahead of the bus drain so that a fade

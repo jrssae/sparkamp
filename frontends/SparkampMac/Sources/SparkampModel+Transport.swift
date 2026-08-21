@@ -252,8 +252,12 @@ extension SparkampModel {
 
     // MARK: Playlist actions
 
-    func addFiles(_ urls: [URL]) {
-        guard let ctx = ctx else { return }
+    /// Returns the rows the new tracks landed on, so a caller that dropped
+    /// them at a position can slide the block there afterwards. Empty when
+    /// nothing was added.
+    @discardableResult
+    func addFiles(_ urls: [URL]) -> [Int] {
+        guard let ctx = ctx else { return [] }
 
         // Core decides. `sparkamp_should_replace_on_add` is the same rule GTK
         // and the TUI use, so the three frontends cannot drift on what
@@ -313,6 +317,7 @@ extension SparkampModel {
                 saveState()
             }
         }
+        return newIndices
     }
 
     /// Replace the active playlist with `paths` (files only) and start playing,

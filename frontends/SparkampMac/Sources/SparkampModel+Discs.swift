@@ -412,10 +412,14 @@ extension SparkampModel {
     /// "Enqueue to Playlist" must pass 1: it is already the user saying what
     /// they want, so the configured Replace preference must not turn it into a
     /// playlist wipe. GTK draws the same distinction in `disc_add_mode`.
+    ///
+    /// Returns the rows the tracks landed on — see `addFiles`, which a
+    /// positioned drop uses the same way.
+    @discardableResult
     func addDiscTracks(_ drive: OpticalDrive,
                        entries: [DiscTrackEntry],
-                       addMode: Int32 = 0) {
-        guard let ctx = ctx, !entries.isEmpty else { return }
+                       addMode: Int32 = 0) -> [Int] {
+        guard let ctx = ctx, !entries.isEmpty else { return [] }
         // Whole-entry precedence: a gnudb/user tag set wins; on a total gnudb
         // miss fall back to CD-TEXT so a CD-TEXT-only disc's added tracks carry
         // its artist/album (matches the disc view, rip, and the TUI add path).
@@ -452,6 +456,7 @@ extension SparkampModel {
             saveState()
         }
         discStatus = "Added \(entries.count) disc track\(entries.count == 1 ? "" : "s")"
+        return Array(indexBefore..<Int(sparkamp_playlist_len(ctx)))
     }
 
     /// Replace the active playlist with `entries` and start playing, regardless

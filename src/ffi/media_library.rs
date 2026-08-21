@@ -1137,9 +1137,9 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
     super::queue::sync_queue_to_playlist(ctx);
     // Finish only the rows the library could not describe.
     let n = ctx.playlist.tracks.len();
-    let unfinished: Vec<(usize, std::path::PathBuf)> = (start_idx..n)
+    let unfinished: Vec<(u64, std::path::PathBuf)> = (start_idx..n)
         .filter(|&idx| needs_probe(&ctx.playlist.tracks[idx]))
-        .map(|idx| (idx, ctx.playlist.tracks[idx].path.clone()))
+        .map(|idx| (ctx.playlist.tracks[idx].id, ctx.playlist.tracks[idx].path.clone()))
         .collect();
     spawn_row_probes(ctx, unfinished);
 }
@@ -1211,13 +1211,12 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
     super::queue::sync_queue_to_playlist(ctx);
     // Finish only the rows the library could not describe. The playlist was
     // cleared above, so a track's index is its position in `tracks`.
-    let unfinished: Vec<(usize, std::path::PathBuf)> = ctx
+    let unfinished: Vec<(u64, std::path::PathBuf)> = ctx
         .playlist
         .tracks
         .iter()
-        .enumerate()
-        .filter(|(_, t)| needs_probe(t))
-        .map(|(i, t)| (i, t.path.clone()))
+        .filter(|t| needs_probe(t))
+        .map(|t| (t.id, t.path.clone()))
         .collect();
     spawn_row_probes(ctx, unfinished);
 }
@@ -1253,33 +1252,31 @@ fn needs_probe(t: &crate::model::Track) -> bool {
 
 /// Read the given rows off disk and report tags and duration back.
 ///
-/// KNOWN GAP: results are keyed by playlist index. A reorder or a remove while
-/// probes are in flight lands tags on the wrong row. GTK and the TUI key on the
-/// stable entry id (`Track::id`) for exactly this reason; fixing it here means
-/// changing the `meta_tx`/`duration_tx` message shape, which the Swift side
-/// drains — a coordinated change rather than a drive-by. Narrower than it was,
-/// since only unscanned rows are probed at all now.
+/// Rows are named by stable entry id (`Track::id`), the same key GTK and the
+/// TUI use. Keying by playlist index — which this did until drag-and-drop
+/// started inserting at a drop position — landed tags on the wrong row
+/// whenever a reorder or a remove happened while probes were in flight.
 ///
 /// Both probes for one file run on a single task rather than two: they open
 /// the same file, so doing them back to back keeps the second read on a warm
 /// page cache and halves the opens. Runs on the shared bounded pool rather
 /// than the global one, so a large add cannot gang up on the disk with the
 /// duration probes already running there.
-fn spawn_row_probes(ctx: &SparkampCtx, rows: Vec<(usize, std::path::PathBuf)>) {
-    for (idx, path) in rows {
+fn spawn_row_probes(ctx: &SparkampCtx, rows: Vec<(u64, std::path::PathBuf)>) {
+    for (id, path) in rows {
         let meta_tx = ctx.meta_tx.clone();
         let duration_tx = ctx.duration_tx.clone();
         let probe = move || {
             if let Ok(track) = crate::model::Track::from_path(&path) {
                 let _ = meta_tx.send((
-                    idx,
+                    id,
                     track.title.clone(),
                     track.artist.clone(),
                     track.album_artist.clone(),
                 ));
             }
             if let Some(dur) = crate::duration_probe::probe_duration(&path) {
-                let _ = duration_tx.send((idx, dur));
+                let _ = duration_tx.send((id, dur));
             }
         };
         match crate::duration_probe::shared_probe_pool() {
