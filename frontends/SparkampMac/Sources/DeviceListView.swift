@@ -148,9 +148,9 @@ struct DeviceOverview: View {
         // the drag starts would stall the gesture on slow media. The payload
         // resolves on a background queue when the drop asks for it.
         .onDrag {
-            SparkampDrag.begin(.deferredPaths {
-                guard dev.fsVisible else { return [] }
-                return DeviceService.browse(device: dev).map(\.path)
+            SparkampDrag.begin(.deferred {
+                guard dev.fsVisible else { return .paths([]) }
+                return .paths(DeviceService.browse(device: dev).map(\.path))
             })
         }
     }

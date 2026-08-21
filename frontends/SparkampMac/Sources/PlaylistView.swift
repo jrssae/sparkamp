@@ -112,15 +112,21 @@ enum TrackDragPayload {
 // process, and the pasteboard still has to carry the tracklist type, so a
 // Finder drop can never pick up a leftover payload.
 enum SparkampDrag {
-    enum Payload {
-        /// Ordinary files: library rows, device files, disc data files.
+    indirect enum Payload {
+        /// Ordinary files: device files, disc data files, anything from
+        /// outside Sparkamp.
         case paths([String])
+        /// Library track ids — an album tile, a saved playlist. The drop adds
+        /// them from the library's own records, so nothing is read off disk
+        /// to learn what the library already knows.
+        case libraryIds([Int64])
         /// An audio CD's tracks and the drive they came from, so the drop can
         /// call `addDiscTracks` — tags from the TOC, and no disc access.
         case discTracks(drive: OpticalDrive, entries: [DiscTrackEntry])
-        /// Paths that are expensive to find. Resolved on a background queue
+        /// A payload that is expensive to work out: walking a device volume,
+        /// or reading a saved playlist's rows. Resolved on a background queue
         /// at drop time, never when the gesture starts.
-        case deferredPaths(() -> [String])
+        case deferred(() -> Payload)
     }
 
     /// Set on the main thread when a drag starts, read on the main thread
@@ -134,9 +140,25 @@ enum SparkampDrag {
     /// the gesture needs. `pasteboardPaths` is what a drop *outside* Sparkamp
     /// gets — pass the paths when they are known and cheap, and an empty
     /// array when they are not.
-    static func begin(_ payload: Payload, pasteboardPaths: [String] = []) -> NSItemProvider {
+    ///
+    /// `plainText` rides along for the drop targets that read a drag as a
+    /// string rather than as tracks: a saved playlist dropped on a device row
+    /// means "sync this whole playlist", which is a different act from
+    /// copying its files.
+    static func begin(_ payload: Payload,
+                      pasteboardPaths: [String] = [],
+                      plainText: String? = nil) -> NSItemProvider {
         pending = payload
-        return TrackDragPayload.provider(forPaths: pasteboardPaths)
+        let p = TrackDragPayload.provider(forPaths: pasteboardPaths)
+        if let plainText = plainText {
+            let data = Data(plainText.utf8)
+            p.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier,
+                                         visibility: .all) { completion in
+                completion(data, nil)
+                return nil
+            }
+        }
+        return p
     }
 
     /// The payload of a drag that started in this process, consumed.
@@ -527,18 +549,25 @@ struct ActivePlaylistTable: NSViewRepresentable {
             case .paths(let paths):
                 addPaths(paths, at: row)
 
+            case .libraryIds(let ids):
+                // `mlDoubleClickTracks` — double-clicking those same tracks
+                // in the Files view, exactly.
+                guard !ids.isEmpty else { return }
+                place(parent.model.mlDoubleClickTracks(ids: ids), at: row)
+
             case .discTracks(let drive, let entries):
                 // `addDiscTracks` with the default mode — the disc view's
                 // double-click, exactly.
                 place(parent.model.addDiscTracks(drive, entries: entries), at: row)
 
-            case .deferredPaths(let resolve):
-                // Walking a device volume can take real time on slow media,
-                // and this is the main thread with audio playing on it.
+            case .deferred(let resolve):
+                // Walking a device volume or reading a playlist's rows can
+                // take real time, and this is the main thread with audio
+                // playing on it.
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    let paths = resolve()
+                    let resolved = resolve()
                     DispatchQueue.main.async {
-                        self?.addPaths(paths, at: row)
+                        self?.apply(resolved, at: row)
                     }
                 }
             }

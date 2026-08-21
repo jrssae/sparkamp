@@ -447,9 +447,17 @@ struct MediaLibraryView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
         // Drag source: carries the playlist id so it can be dropped onto a
-        // device row to send the whole playlist (tracks + .m3u).
+        // device row to send the whole playlist (tracks + .m3u), and its
+        // tracks so it can be dropped onto the active playlist. Same pairing
+        // as the Playlists tab's rows — see `MLPlaylistManagement`.
         .onDrag {
-            NSItemProvider(object: "sparkamp.playlist:\(pl.id)" as NSString)
+            SparkampDrag.begin(
+                // Stub rows (id 0) dropped — see `MLPlaylistManagement`.
+                .deferred {
+                    .libraryIds(model.mlGetPlaylistTracks(id: pl.id)
+                        .map(\.id).filter { $0 != 0 })
+                },
+                plainText: "sparkamp.playlist:\(pl.id)")
         }
         // Drop target: file URLs dragged from the active playlist, the ML
         // files table, or another saved-playlist's editor land here and

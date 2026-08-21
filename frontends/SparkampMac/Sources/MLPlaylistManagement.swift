@@ -96,9 +96,22 @@ struct MLPlaylistManagement: View {
                     // row publishes. A drop target reads it either as "sync
                     // this whole playlist" (a device) or expands it to its
                     // tracks (the active playlist) — the same `pl:<id>`
-                    // contract GTK's `attach_pl_row_drag` uses.
+                    // contract GTK's `attach_pl_row_drag` uses, and GTK's
+                    // `expand_playlist_drop` is where that expansion happens
+                    // there.
+                    //
+                    // Deferred because expanding means a database read, and
+                    // this runs the instant the gesture starts.
                     .onDrag {
-                        NSItemProvider(object: "sparkamp.playlist:\(pl.id)" as NSString)
+                        SparkampDrag.begin(
+                            // id 0 is a stub row — a path in the .m3u that
+                            // the library has no record of. The editor's own
+                            // Enqueue drops those too.
+                            .deferred {
+                                .libraryIds(model.mlGetPlaylistTracks(id: pl.id)
+                                    .map(\.id).filter { $0 != 0 })
+                            },
+                            plainText: "sparkamp.playlist:\(pl.id)")
                     }
                 }
                 .listStyle(.plain)

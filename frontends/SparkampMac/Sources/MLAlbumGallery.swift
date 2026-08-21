@@ -93,7 +93,8 @@ struct MLAlbumGallery: View {
                                 theme: theme,
                                 onActivate: { activate(album) },
                                 onPlay: { play(album) },
-                                onEnqueue: { enqueue(album) }
+                                onEnqueue: { enqueue(album) },
+                                onDrag: { dragPayload(album) }
                             )
                         }
                     }
@@ -221,6 +222,20 @@ struct MLAlbumGallery: View {
         guard !ids.isEmpty else { return }
         model.mlAddToPlaylist(ids: ids)
     }
+
+    /// Dragging a tile drags the album — GTK's container rule, the same one
+    /// that makes a drive card stand for its disc and a device card for its
+    /// files.
+    ///
+    /// Carries library ids, so the drop adds the tracks from the library's
+    /// own records rather than re-reading tags off every file. The file paths
+    /// ride along for a drop outside Sparkamp, which has no idea what a
+    /// library id is.
+    private func dragPayload(_ album: AlbumGroup) -> NSItemProvider {
+        let tracks = model.albumTracks(album: album.album, albumArtist: album.albumArtist)
+        return SparkampDrag.begin(.libraryIds(tracks.map(\.id)),
+                                  pasteboardPaths: tracks.map(\.path))
+    }
 }
 
 // MARK: - Album cell
@@ -232,6 +247,8 @@ private struct AlbumCell: View {
     let onActivate: () -> Void
     let onPlay: () -> Void
     let onEnqueue: () -> Void
+    /// Built by the gallery, which is the view that can reach the library.
+    let onDrag: () -> NSItemProvider
 
     @State private var image: NSImage? = nil
     @State private var loaded = false
@@ -269,6 +286,7 @@ private struct AlbumCell: View {
             Button("Play Album") { onPlay() }
             Button("Enqueue Album") { onEnqueue() }
         }
+        .onDrag(onDrag)
         .help("\(displayArtist) — \(displayAlbum)")
         .onAppear(perform: loadArt)
     }

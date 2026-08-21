@@ -251,14 +251,19 @@ extension SparkampModel {
         sparkamp_rg_analyze_cancel(ctx)
     }
 
-    func mlAddToPlaylist(ids: [Int64]) {
-        guard let ctx = ctx else { return }
+    /// Returns the rows the tracks landed on, so a caller that dropped them
+    /// at a position can slide the block there — see `addFiles`.
+    @discardableResult
+    func mlAddToPlaylist(ids: [Int64]) -> [Int] {
+        guard let ctx = ctx else { return [] }
+        let indexBefore = Int(sparkamp_playlist_len(ctx))
         var idArray = ids
         idArray.withUnsafeMutableBufferPointer { buf in
             sparkamp_ml_add_tracks_to_playlist(ctx, buf.baseAddress, Int32(ids.count))
         }
         refreshPlaylist()
         saveState()
+        return Array(indexBefore..<Int(sparkamp_playlist_len(ctx)))
     }
 
     func mlReplacePlaylistWith(ids: [Int64]) {
@@ -282,8 +287,13 @@ extension SparkampModel {
     /// Autoplay-on, append-mode: only auto-plays when the playlist was
     /// empty before the add.  This avoids interrupting the currently
     /// playing track when the user is queueing more music.
-    func mlDoubleClickTracks(ids: [Int64]) {
-        guard let ctx = ctx else { return }
+    ///
+    /// Returns the rows the tracks landed on — see `addFiles`. Also the drop
+    /// route for an album tile or a saved playlist dragged onto the active
+    /// playlist, which is why it reports where the block went.
+    @discardableResult
+    func mlDoubleClickTracks(ids: [Int64]) -> [Int] {
+        guard let ctx = ctx else { return [] }
         // Core decides. Mode 0 — honour the configured setting, which is what
         // a double-click means; the explicit Enqueue/Replace actions elsewhere
         // pass 1 and 2. Same rule GTK and the TUI use, so the three frontends
@@ -294,16 +304,18 @@ extension SparkampModel {
         let wasEmpty     = indexBefore == 0
         if shouldReplace {
             clearPlaylist()
-            mlAddToPlaylist(ids: ids)
+            let added = mlAddToPlaylist(ids: ids)
             if autoplay { startTrack(at: 0) } else { refreshCurrentTrackInfo() }
+            return added
         } else {
-            mlAddToPlaylist(ids: ids)
+            let added = mlAddToPlaylist(ids: ids)
             // Don't interrupt a track the user is already listening to.
             if autoplay && wasEmpty {
                 startTrack(at: indexBefore)
             } else {
                 refreshCurrentTrackInfo()
             }
+            return added
         }
     }
 
