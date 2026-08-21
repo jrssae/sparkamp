@@ -92,6 +92,14 @@ struct MLPlaylistManagement: View {
                     .contentShape(Rectangle())
                     .listRowBackground(theme.playlistBg)
                     .onTapGesture { nav = .playlist(id: pl.id) }
+                    // Drag source: the playlist id, exactly what the sidebar
+                    // row publishes. A drop target reads it either as "sync
+                    // this whole playlist" (a device) or expands it to its
+                    // tracks (the active playlist) — the same `pl:<id>`
+                    // contract GTK's `attach_pl_row_drag` uses.
+                    .onDrag {
+                        NSItemProvider(object: "sparkamp.playlist:\(pl.id)" as NSString)
+                    }
                 }
                 .listStyle(.plain)
                 .background(theme.playlistBg)

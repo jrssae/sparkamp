@@ -365,12 +365,26 @@ pub unsafe extern "C" fn sparkamp_probe_duration(ctx: *mut SparkampCtx, index: c
     if ctx.is_null() {
         return;
     }
-    let ctx = &*ctx;
-    let i = index as usize;
+    queue_probe_duration(&*ctx, index as usize);
+}
+
+/// The body of [`sparkamp_probe_duration`], safe and callable from tests.
+/// Returns whether a probe was queued — false means the track was declined,
+/// which is the only observable difference the optical guard makes.
+pub(crate) fn queue_probe_duration(ctx: &SparkampCtx, i: usize) -> bool {
     if i >= ctx.playlist.tracks.len() {
-        return;
+        return false;
     }
     let path = ctx.playlist.tracks[i].path.clone();
+    // Never probe a file on a mounted optical disc — same rule, and the same
+    // reason, as `queue_scan_metadata`. The duration is worse than pointless
+    // here: the TOC already gives every audio track's length exactly, while
+    // the probe seeks the drive out from under playback. A Symphonia miss
+    // then falls through to the GStreamer discoverer, which opens the file a
+    // second time.
+    if crate::disc::detect::path_is_on_optical_media(&path) {
+        return false;
+    }
     let tx = ctx.duration_tx.clone();
     let probe = move || {
         // Fast path: Symphonia reads the container header with no GStreamer involvement.
@@ -396,5 +410,6 @@ pub unsafe extern "C" fn sparkamp_probe_duration(ctx: *mut SparkampCtx, index: c
         Some(pool) => pool.spawn(probe),
         None => probe(),
     }
+    true
 }
 

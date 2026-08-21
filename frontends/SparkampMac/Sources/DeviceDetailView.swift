@@ -497,10 +497,25 @@ struct DeviceDetailView: View {
     /// from are visible by default; the rest start hidden.
     @ViewBuilder
     private var filesTable: some View {
-        Table(sortedTracks, selection: $selection, sortOrder: $sortOrder,
+        Table(of: DeviceTrack.self, selection: $selection, sortOrder: $sortOrder,
               columnCustomization: $columnCustomization) {
             primaryColumns
             extraColumns
+        } rows: {
+            // Drag source: every row's provider parks the whole selection so
+            // a multi-row drag arrives intact (see `SparkampDrag`), and the
+            // pasteboard still gets one path per provider for drops outside
+            // Sparkamp. Paths come from the already-loaded `deviceTracks`, so
+            // the gesture never walks the device.
+            ForEach(sortedTracks) { t in
+                TableRow(t)
+                    .itemProvider {
+                        let picked = SparkampDrag.rows(t, in: sortedTracks,
+                                                       selection: selection)
+                        return SparkampDrag.begin(.paths(picked.map(\.path)),
+                                                  pasteboardPaths: [t.path])
+                    }
+            }
         }
         // Order: Send to · Replace · ─ · ID3 · Album Art · Lyrics · ─ · Delete.
         // Matches GTK's device row menu.
@@ -531,6 +546,12 @@ struct DeviceDetailView: View {
                 requestDelete(paths(for: ids))
             }
             .disabled(device.readOnly)
+        } primaryAction: { ids in
+            // Double-click adds + plays, honouring the replace/append setting
+            // — the same `addFiles` route the disc data-file table and the
+            // Media Library's files table take. The table had no primary
+            // action at all, so double-clicking a device file did nothing.
+            model.addFiles(paths(for: ids).map { URL(fileURLWithPath: $0) })
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard device.fsVisible, !device.readOnly, !fsUnsupported else { return false }

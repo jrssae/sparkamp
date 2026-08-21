@@ -163,6 +163,18 @@ struct DiscOverview: View {
             )
         }
         .buttonStyle(.plain)
+        // Dragging a drive card drags the whole disc — GTK's container rule,
+        // where the drive stands for every track on it. Derived from the TOC
+        // the card is already showing, so the gesture costs no device access.
+        //
+        // Carries the entries, not just their paths, so the drop lands
+        // through `addDiscTracks` like every other route into the playlist
+        // from a disc: all the tracks, TOC titles and durations, no reads.
+        .onDrag {
+            let entries = DiscService.trackEntries(drive: drive)
+            return SparkampDrag.begin(.discTracks(drive: drive, entries: entries),
+                                      pasteboardPaths: entries.map(\.path))
+        }
     }
 }
 
@@ -831,7 +843,7 @@ struct DiscDriveView: View {
     }
 
     private var trackTable: some View {
-        Table(filteredTracks, selection: $selection) {
+        Table(of: DiscTrackEntry.self, selection: $selection) {
             TableColumn("#") { e in
                 Text("\(e.number)")
                     .font(vars.bodyFont)
@@ -851,6 +863,22 @@ struct DiscDriveView: View {
                     .foregroundStyle(theme.playlistDurationText)
             }
             .width(min: 56, ideal: 70, max: 90)
+        } rows: {
+            // Drag source. Every row's provider parks the whole selection, so
+            // the drop reaches `addDiscTracks` with the same entries the
+            // Enqueue button would send — see `SparkampDrag`. The pasteboard
+            // still gets one path per provider, which is what a drop outside
+            // Sparkamp reassembles.
+            ForEach(filteredTracks) { e in
+                TableRow(e)
+                    .itemProvider {
+                        let picked = SparkampDrag.rows(e, in: filteredTracks,
+                                                       selection: selection)
+                        return SparkampDrag.begin(
+                            .discTracks(drive: drive, entries: picked),
+                            pasteboardPaths: [e.path])
+                    }
+            }
         }
         .scrollContentBackground(.hidden)
         .background(theme.lcdBackground)
@@ -973,7 +1001,7 @@ struct DiscDriveView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
             } else {
-                Table(model.discFiles, selection: $discFilesSelection) {
+                Table(of: DiscFile.self, selection: $discFilesSelection) {
                     TableColumn("Title") { f in
                         Text(f.display)
                             .font(vars.bodyFont)
@@ -991,6 +1019,21 @@ struct DiscDriveView: View {
                             .foregroundStyle(theme.playlistDurationText)
                     }
                     .width(min: 60, ideal: 80, max: 100)
+                } rows: {
+                    // Drag source — see `trackTable` for why every row parks
+                    // the whole selection. Data-disc files are ordinary files
+                    // (the drop adds them like any other), so `.paths`.
+                    ForEach(model.discFiles) { f in
+                        TableRow(f)
+                            .itemProvider {
+                                let picked = SparkampDrag.rows(
+                                    f, in: model.discFiles,
+                                    selection: discFilesSelection)
+                                return SparkampDrag.begin(
+                                    .paths(picked.map(\.path)),
+                                    pasteboardPaths: [f.path])
+                            }
+                    }
                 }
                 .scrollContentBackground(.hidden)
                 .background(theme.lcdBackground)

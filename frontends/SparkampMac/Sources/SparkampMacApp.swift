@@ -285,6 +285,9 @@ struct SparkampMacApp: App {
 struct SparkampCommands: Commands {
     let model: SparkampModel
     let themeManager: ThemeManager
+    /// Recreates the player scene. Needed because every other route to it
+    /// depends on the window already existing — see "Show Player" below.
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -344,11 +347,20 @@ struct SparkampCommands: Commands {
         // when the windows are closed.
         CommandGroup(replacing: .windowList) {
             Button("Show Player") {
-                // Bring the player window forward; if it was closed the dock
-                // reopen path will recreate it on next activation.
-                NSApp.windows.first { $0.title == "Sparkamp" }?.makeKeyAndOrderFront(nil)
-                NotificationCenter.default.post(
-                    name: AppDelegate.reopenPlayerNotification, object: nil)
+                // `openWindow` both raises an existing player window and
+                // recreates a closed one; nothing else here could do the
+                // second part.
+                //
+                // The old version looked the window up by title and posted a
+                // notification. Neither could work once the window was gone:
+                // the scene uses `.hiddenTitleBar`, so the title match is
+                // unreliable to begin with, and the only listener for that
+                // notification lives *inside* the player scene's own content —
+                // so closing the window destroyed the one thing that could
+                // reopen it. The menu item was then a no-op for the rest of
+                // the session.
+                openWindow(id: "player")
+                NSApp.activate(ignoringOtherApps: true)
             }
             .keyboardShortcut("0", modifiers: .command)
 

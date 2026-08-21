@@ -28,7 +28,11 @@ enum TrackDragPayload {
     /// (avoids the system aborting the gesture) but nothing transfers.
     static func provider(forPaths paths: [String]) -> NSItemProvider {
         let p = NSItemProvider()
-        guard !paths.isEmpty else { return p }
+        // The tracklist type is registered even for an empty path list. It is
+        // what makes the drag droppable at all — a destination only admits
+        // types it registered for — and a deferred payload (a device card)
+        // has no paths to offer at gesture time. The drop reads the real
+        // payload from `SparkampDrag`.
         let payload = paths.joined(separator: "\n").data(using: .utf8) ?? Data()
         p.registerDataRepresentation(forTypeIdentifier: kSparkampTracklistUTI,
                                      visibility: .all) { completion in
@@ -77,6 +81,80 @@ enum TrackDragPayload {
             }
         }
         group.notify(queue: .main) { completion(paths) }
+    }
+}
+
+// MARK: - In-process drag payload
+//
+// The pasteboard payload above is a lossy projection of a drag: paths, and
+// nothing else. That is everything Finder or another app can use, and it is
+// all a drop from outside will ever have. Inside Sparkamp it is not enough.
+//
+// Two problems it caused, both reported from testing:
+//
+//   - Dragging audio-CD tracks onto the playlist made the music skip, while
+//     double-clicking the very same rows did not. The buttons call
+//     `addDiscTracks`, which supplies each track's title and duration from
+//     the TOC. A path-only drop went through the ordinary file add, which
+//     asks for a tag scan and a duration probe — reads that seek the drive
+//     out from under playback. (The core now refuses those reads for optical
+//     paths too; this is the other half, and the half that also gets the
+//     tags right.)
+//   - A device overview card stands for every audio file on the volume, and
+//     finding them means walking it. Deferring that into a lazily-resolved
+//     pasteboard representation meant the drop asked for data the promise
+//     answered asynchronously, and the drop had already given up: the card
+//     dragged, and landed as nothing at all.
+//
+// So a Sparkamp drag also parks what it really means here, and the drop uses
+// that instead — reaching the same model call the buttons next to those rows
+// use. `draggingSource` is non-nil only for a drag that began in this
+// process, and the pasteboard still has to carry the tracklist type, so a
+// Finder drop can never pick up a leftover payload.
+enum SparkampDrag {
+    enum Payload {
+        /// Ordinary files: library rows, device files, disc data files.
+        case paths([String])
+        /// An audio CD's tracks and the drive they came from, so the drop can
+        /// call `addDiscTracks` — tags from the TOC, and no disc access.
+        case discTracks(drive: OpticalDrive, entries: [DiscTrackEntry])
+        /// Paths that are expensive to find. Resolved on a background queue
+        /// at drop time, never when the gesture starts.
+        case deferredPaths(() -> [String])
+    }
+
+    /// Set on the main thread when a drag starts, read on the main thread
+    /// when it lands. Only one drag runs at a time, so a single slot is
+    /// enough; a cancelled drag's leftovers are simply overwritten by the
+    /// next one, and cannot be consumed in between because every drop first
+    /// checks that the drag came from this process.
+    private static var pending: Payload?
+
+    /// Park `payload` for the drag about to begin, and return the provider
+    /// the gesture needs. `pasteboardPaths` is what a drop *outside* Sparkamp
+    /// gets — pass the paths when they are known and cheap, and an empty
+    /// array when they are not.
+    static func begin(_ payload: Payload, pasteboardPaths: [String] = []) -> NSItemProvider {
+        pending = payload
+        return TrackDragPayload.provider(forPaths: pasteboardPaths)
+    }
+
+    /// The payload of a drag that started in this process, consumed.
+    static func take() -> Payload? {
+        defer { pending = nil }
+        return pending
+    }
+
+    /// The rows a drag of `row` should carry: the whole selection when the
+    /// dragged row is part of it, otherwise just that row.
+    ///
+    /// Every table hands `.itemProvider` one row at a time, so a multi-row
+    /// drag calls `begin` once per row. Each call has to park the same full
+    /// set or the last one would win and the drag would shrink to one track.
+    static func rows<T: Identifiable>(_ row: T, in items: [T],
+                                      selection: Set<T.ID>) -> [T] {
+        guard selection.contains(row.id) else { return [row] }
+        return items.filter { selection.contains($0.id) }
     }
 }
 
@@ -177,7 +255,15 @@ struct ActivePlaylistTable: NSViewRepresentable {
 
         // Drag/drop registration: accept any file URL (Sparkamp inter-list
         // drags as well as external Finder drops use this UTI).
-        table.registerForDraggedTypes([.fileURL])
+        // Both payloads: a plain file URL from Finder or another app, and the
+        // Sparkamp tracklist a Media Library / disc / device drag carries. A
+        // device overview card publishes ONLY the tracklist — its paths are
+        // not known until the drop asks — so without this it would be
+        // silently undroppable.
+        table.registerForDraggedTypes([
+            .fileURL,
+            NSPasteboard.PasteboardType(kSparkampTracklistUTI),
+        ])
         table.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         table.setDraggingSourceOperationMask([.copy],        forLocal: false)
 
@@ -398,13 +484,65 @@ struct ActivePlaylistTable: NSViewRepresentable {
                 }
                 return true
             }
-            // Cross-list / external: read file URLs from pasteboard items and
-            // hand them to the model (which already inherits ML metadata).
-            let urls = info.draggingPasteboard
-                .readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-            guard !urls.isEmpty else { return false }
-            parent.model.addFiles(urls)
+            // A drag that started inside Sparkamp: use what it parked rather
+            // than the paths on the pasteboard, so the drop behaves exactly
+            // like the button beside the rows it came from. Both conditions
+            // matter — `draggingSource` rules out another app, and the
+            // tracklist type rules out an internal drag that never called
+            // `begin` (a saved-playlist row publishes a plain string) picking
+            // up a cancelled drag's leftovers. See `SparkampDrag`.
+            let tracklist = NSPasteboard.PasteboardType(kSparkampTracklistUTI)
+            let isSparkampDrag = info.draggingPasteboard.availableType(from: [tracklist]) != nil
+            if isSparkampDrag, info.draggingSource != nil, let payload = SparkampDrag.take() {
+                apply(payload)
+                return true
+            }
+
+            // From outside Sparkamp. The tracklist wins over the `file-url`
+            // companion when both are present: it carries every path, the
+            // companion only the first.
+            var paths: [String] = []
+            for item in info.draggingPasteboard.pasteboardItems ?? [] {
+                guard let data = item.data(forType: tracklist),
+                      let joined = String(data: data, encoding: .utf8)
+                else { continue }
+                paths.append(contentsOf:
+                    joined.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+            }
+            if paths.isEmpty {
+                paths = (info.draggingPasteboard
+                    .readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? [])
+                    .map(\.path)
+            }
+            guard !paths.isEmpty else { return false }
+            parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) })
             return true
+        }
+
+        /// Add a dropped Sparkamp payload, each case through the same model
+        /// call its source view's own buttons use.
+        private func apply(_ payload: SparkampDrag.Payload) {
+            switch payload {
+            case .paths(let paths):
+                guard !paths.isEmpty else { return }
+                parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+
+            case .discTracks(let drive, let entries):
+                // `addDiscTracks` with the default mode — the disc view's
+                // double-click, exactly.
+                parent.model.addDiscTracks(drive, entries: entries)
+
+            case .deferredPaths(let resolve):
+                // Walking a device volume can take real time on slow media,
+                // and this is the main thread with audio playing on it.
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let paths = resolve()
+                    DispatchQueue.main.async {
+                        guard let self = self, !paths.isEmpty else { return }
+                        self.parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+                    }
+                }
+            }
         }
 
         // ── Double-click → play ─────────────────────────────────────────

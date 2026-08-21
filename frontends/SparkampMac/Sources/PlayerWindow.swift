@@ -831,24 +831,39 @@ private struct NowPlayingPanel: View {
         HStack(alignment: .top, spacing: 10) {
             artView
             VStack(spacing: 4) {
-                VStack(alignment: .leading, spacing: 4) {
-                    pageContent
-                        .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
-                    // A1 lyrics affordance (F15, point 1): shown only on the LAST
-                    // ID3 page, opening the window in Current (follow-playback) mode.
-                    if pageIndex == lastTagPageIndex {
-                        Button("Lyrics") {
-                            model.viewOrSearchLyricsForPlaylist(index: trackKey, mode: .current)
+                // The page area is bounded and scrolls; the dots are never
+                // drawn over.
+                //
+                // It used to be `maxHeight: .infinity` inside a container the
+                // window would not grow past, so a page taller than the
+                // artwork spilled over the dots instead of being clipped —
+                // the dots ended up underneath the text. Giving the pages
+                // exactly the artwork's height keeps the dots on the baseline
+                // the comment above describes, and anything that does not fit
+                // is reachable by scrolling rather than lost.
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        pageContent
+                            .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                        // A1 lyrics affordance (F15, point 1): shown only on the LAST
+                        // ID3 page, opening the window in Current (follow-playback) mode.
+                        if pageIndex == lastTagPageIndex {
+                            Button("Lyrics") {
+                                model.viewOrSearchLyricsForPlaylist(index: trackKey, mode: .current)
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
+                            // Indent past the label column so the button lines up with
+                            // the values in the tag rows above it rather than with
+                            // their labels.
+                            .padding(.leading, Self.tagLabelWidth + Self.tagLabelSpacing)
                         }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
-                        // Indent past the label column so the button lines up with
-                        // the values in the tag rows above it rather than with
-                        // their labels.
-                        .padding(.leading, Self.tagLabelWidth + Self.tagLabelSpacing)
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(height: Self.artSize)
+                // No rubber-banding on a page that already fits — most of them do.
+                .scrollBounceBehavior(.basedOnSize)
 
                 if pages.count > 1 { dots }
             }

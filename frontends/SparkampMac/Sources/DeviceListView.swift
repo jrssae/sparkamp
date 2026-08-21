@@ -140,6 +140,19 @@ struct DeviceOverview: View {
             )
         }
         .buttonStyle(.plain)
+        // Dragging a device card drags that device's own audio files — GTK's
+        // container rule, and only its own (see `an overview card only drags
+        // its own device's files`).
+        //
+        // Lazily: finding them means walking the volume, and doing that when
+        // the drag starts would stall the gesture on slow media. The payload
+        // resolves on a background queue when the drop asks for it.
+        .onDrag {
+            SparkampDrag.begin(.deferredPaths {
+                guard dev.fsVisible else { return [] }
+                return DeviceService.browse(device: dev).map(\.path)
+            })
+        }
     }
 
     private func countsLine(_ dev: Device) -> String {

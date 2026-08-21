@@ -523,12 +523,30 @@ pub unsafe extern "C" fn sparkamp_scan_metadata(ctx: *mut SparkampCtx, index: c_
     if ctx.is_null() {
         return;
     }
-    let ctx = &*ctx;
-    let i = index as usize;
+    queue_scan_metadata(&*ctx, index as usize);
+}
+
+/// The body of [`sparkamp_scan_metadata`], safe and callable from tests.
+/// Returns whether a read was queued — false means the track was declined,
+/// which is the only observable difference the optical guard makes.
+fn queue_scan_metadata(ctx: &SparkampCtx, i: usize) -> bool {
     if i >= ctx.playlist.tracks.len() {
-        return;
+        return false;
     }
     let path = ctx.playlist.tracks[i].path.clone();
+    // Never read a file that lives on a mounted optical disc. Its tags came
+    // from the TOC (or there are none — an audio CD's AIFFs carry no tags at
+    // all), so the read cannot learn anything, and the cost is not a wasted
+    // syscall but a head seek on the drive that is currently feeding the
+    // audio sink. That is audible as a skip in whatever is playing.
+    //
+    // GTK never reaches this: its disc paths are `cdda://` pseudo-URIs that
+    // no tag reader can open, so the whole class is inert there. macOS uses
+    // the auto-mounted AIFF files, which open perfectly well — the guard has
+    // to be explicit. See `src/disc/toc.rs` and the disc-I/O parity plan.
+    if crate::disc::detect::path_is_on_optical_media(&path) {
+        return false;
+    }
     let tx = ctx.meta_tx.clone();
     let read = move || {
         if let Ok(track) = crate::model::Track::from_path(&path) {
@@ -546,6 +564,7 @@ pub unsafe extern "C" fn sparkamp_scan_metadata(ctx: *mut SparkampCtx, index: c_
         Some(pool) => pool.spawn(read),
         None => read(),
     }
+    true
 }
 
 /// Return the number of playlist updates applied by `sparkamp_tick` since the
@@ -821,6 +840,51 @@ mod tests {
             );
         }
         crate::disc::detect::set_optical_mounts_for_test(Vec::new());
+    }
+
+    /// Adding a disc track to the playlist must not send the drive off to
+    /// read it. Both background jobs an add kicks off — the tag scan and the
+    /// duration probe — have to decline an optical path outright.
+    ///
+    /// This is the bug behind "audio skips when I add a track from the disc".
+    /// The disc view's own buttons never hit it, because `addDiscTracks`
+    /// supplies title and duration from the TOC and asks for neither job; a
+    /// drag-and-drop went through the ordinary file add instead, which asks
+    /// for both. Fixing only the drag route would leave the trap armed for
+    /// the next caller, so the guard lives here, at the two jobs themselves.
+    ///
+    /// Same seeding trick as `optical_rows_are_answered_without_touching_the_drive`:
+    /// `statfs` is authoritative and would call a real temp file "apfs", so
+    /// the optical case is driven with a path it cannot resolve. Return value
+    /// rather than channel-watching, so the assertion is about the decision
+    /// and not about how fast a thread happens to run.
+    #[test]
+    fn adding_an_optical_track_queues_no_background_reads() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut ctx = fake_ctx(1);
+        ctx.playlist.tracks[0].path = dir.path().join("1 Audio Track.aiff");
+
+        crate::disc::detect::set_optical_mounts_for_test(vec![dir.path().to_path_buf()]);
+        assert!(
+            !queue_scan_metadata(&ctx, 0),
+            "a track on a mounted disc must not be tag-scanned"
+        );
+        assert!(
+            !crate::ffi::playback::queue_probe_duration(&ctx, 0),
+            "a track on a mounted disc must not be duration-probed"
+        );
+
+        // Without the mount the very same path is ordinary storage, and both
+        // jobs run as before — the guard declines disc tracks, not every
+        // track that happens to be missing.
+        crate::disc::detect::set_optical_mounts_for_test(Vec::new());
+        assert!(queue_scan_metadata(&ctx, 0), "ordinary tracks still scan");
+        assert!(
+            crate::ffi::playback::queue_probe_duration(&ctx, 0),
+            "ordinary tracks still probe"
+        );
     }
 
     /// The read-only half against a real disc, which is the only place a
