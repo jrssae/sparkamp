@@ -900,6 +900,14 @@ struct MediaLibraryView: View {
         if model.mlSelectedAlbum != nil {
             Button {
                 model.mlSelectedAlbum = nil
+                // Reload even though we are leaving for the gallery. The
+                // invariant is that `mlTracks` matches `mlSelectedAlbum`, and
+                // clearing the filter without refetching left the Files list
+                // still holding one album's tracks. Selecting Files afterwards
+                // then found no filter to clear, skipped its own reload on
+                // that basis, and showed the stale drill-down — the full
+                // library was unreachable without a search or a restart.
+                reload()
                 nav = .albums
             } label: {
                 HStack(spacing: 4) {
