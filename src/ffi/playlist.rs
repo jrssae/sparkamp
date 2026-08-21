@@ -112,6 +112,41 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
     idx
 }
 
+/// Move several rows to `dest` as one block, keeping their relative order.
+///
+/// `indices` is a pointer to `count` 0-based row indices in any order;
+/// out-of-range and duplicate entries are ignored. `dest` is the insertion
+/// slot in pre-move coordinates — the index the block should land before.
+///
+/// Returns the index the block landed at, or -1 when nothing moved. The
+/// caller wants that to re-select what it just moved.
+///
+/// Exists because a multi-row drag is not a loop over
+/// `sparkamp_playlist_move`: each single move shifts every later index, so
+/// replaying one per row walks them into the wrong places. macOS's `moveTrack`
+/// took a whole selection and moved only its first row.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_move_many(
+    ctx: *mut SparkampCtx,
+    indices: *const c_int,
+    count: c_int,
+    dest: c_int,
+) -> c_int {
+    if ctx.is_null() || indices.is_null() || count <= 0 || dest < 0 {
+        return -1;
+    }
+    let ctx = &mut *ctx;
+    let rows: Vec<usize> = std::slice::from_raw_parts(indices, count as usize)
+        .iter()
+        .filter(|&&i| i >= 0)
+        .map(|&i| i as usize)
+        .collect();
+    match ctx.playlist.move_tracks(&rows, dest as usize) {
+        Some((start, _)) => start as c_int,
+        None => -1,
+    }
+}
+
 /// Synchronously re-read tags for every playlist row holding `path` and
 /// update those rows in place. Paths are compared canonically (both sides
 /// canonicalized), so callers holding a differently-spelled path to the same

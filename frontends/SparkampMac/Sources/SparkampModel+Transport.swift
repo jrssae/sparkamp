@@ -378,12 +378,27 @@ extension SparkampModel {
         saveState()
     }
 
-    func moveTrack(from: IndexSet, to: Int) {
-        guard let ctx = ctx, let source = from.first else { return }
-        let dest = source < to ? to - 1 : to
-        sparkamp_playlist_move(ctx, Int32(source), Int32(dest))
+    /// Move every row in `from` to `to` as one block, keeping their relative
+    /// order. Returns where the block landed so the caller can re-select it.
+    ///
+    /// This used to take the same `IndexSet` and move only `from.first`. A
+    /// multi-row drag therefore left every other selected row behind while the
+    /// rows between them shifted around the one that did move — which looked
+    /// like rows moving at random. Core does the whole block in one pass now
+    /// (`Playlist::move_tracks`, ported from GTK's reorder), because replaying
+    /// a single move per row walks them into the wrong places: each one shifts
+    /// every index after it.
+    @discardableResult
+    func moveTracks(from: IndexSet, to: Int) -> Int? {
+        guard let ctx = ctx, !from.isEmpty else { return nil }
+        let rows = from.map { Int32($0) }
+        let landed = rows.withUnsafeBufferPointer { buf in
+            sparkamp_playlist_move_many(ctx, buf.baseAddress, Int32(buf.count), Int32(to))
+        }
+        guard landed >= 0 else { return nil }
         refreshPlaylist()
         saveState()
+        return Int(landed)
     }
 
     func clearPlaylist() {

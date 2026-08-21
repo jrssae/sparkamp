@@ -275,6 +275,8 @@ struct ActivePlaylistTable: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var parent: ActivePlaylistTable
         var items: [PlaylistItem] = []
+        /// Rows the in-flight drag picked up, captured when it begins.
+        var draggedRows: IndexSet = []
         weak var table: SparkampTableView?
         var applyingExternalSelection = false
         /// Last `model.currentIndex` value we auto-scrolled to (D8). Prevents
@@ -330,6 +332,26 @@ struct ActivePlaylistTable: NSViewRepresentable {
         }
 
         // ── Drag source ─────────────────────────────────────────────────
+        /// The rows this drag actually carries.
+        ///
+        /// `acceptDrop` used to reorder `selectedRowIndexes` instead. AppKit
+        /// lets a drag start on a row that is not selected — and the selection
+        /// can change between the drag starting and the drop landing — so the
+        /// rows that moved were not always the rows the user picked up.
+        func tableView(_ tableView: NSTableView,
+                       draggingSession session: NSDraggingSession,
+                       willBeginAt screenPoint: NSPoint,
+                       forRowIndexes rowIndexes: IndexSet) {
+            draggedRows = rowIndexes
+        }
+
+        func tableView(_ tableView: NSTableView,
+                       draggingSession session: NSDraggingSession,
+                       endedAt screenPoint: NSPoint,
+                       operation: NSDragOperation) {
+            draggedRows = []
+        }
+
         func tableView(_ tableView: NSTableView,
                        pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
             guard row < items.count,
@@ -362,11 +384,18 @@ struct ActivePlaylistTable: NSViewRepresentable {
                        acceptDrop info: NSDraggingInfo,
                        row: Int,
                        dropOperation: NSTableView.DropOperation) -> Bool {
-            // Intra-list reorder: move every selected row to the drop slot.
+            // Intra-list reorder: move the dragged rows to the drop slot as
+            // one block. `draggedRows`, not the current selection — see
+            // `willBeginAt`.
             if let src = info.draggingSource as? NSTableView, src === tableView {
-                let from = tableView.selectedRowIndexes
+                let from = draggedRows.isEmpty ? tableView.selectedRowIndexes : draggedRows
                 guard !from.isEmpty else { return false }
-                parent.model.moveTrack(from: from, to: row)
+                // Re-select what moved, so the drop is visible as a result
+                // rather than clearing the selection out from under the user.
+                if let landed = parent.model.moveTracks(from: from, to: row) {
+                    let moved = IndexSet(integersIn: landed..<(landed + from.count))
+                    DispatchQueue.main.async { tableView.selectRowIndexes(moved, byExtendingSelection: false) }
+                }
                 return true
             }
             // Cross-list / external: read file URLs from pasteboard items and

@@ -541,6 +541,70 @@ impl Playlist {
         true
     }
 
+    /// Move several rows to `to` as one block, keeping their relative order.
+    ///
+    /// Returns `(start, count)` — where the block landed — so a frontend can
+    /// re-select exactly what it moved, or `None` when nothing moved.
+    ///
+    /// Not a loop over [`move_track`]: each single move shifts every index
+    /// after it, so feeding it a multi-row selection walks rows into the wrong
+    /// places. The sources are removed highest-first (so an earlier removal
+    /// cannot invalidate a later index), the destination shrinks by one for
+    /// each row removed from in front of it, and the block is reinserted in
+    /// its original order.
+    ///
+    /// The playing track is re-pointed by id rather than by index arithmetic,
+    /// which is what keeps it playing when it is inside — or displaced by —
+    /// the moved block.
+    ///
+    /// This is GTK's `dnd.rs` reorder, lifted into core so the frontends share
+    /// one implementation. macOS had none: its `moveTrack` took a set of rows
+    /// and moved only the first, leaving the rest behind while everything
+    /// between them shifted — which read as rows moving at random.
+    // Reached only through `sparkamp_playlist_move_many`, which is lib-only,
+    // so the binary sees it as dead. GTK still runs its own inline copy of
+    // this algorithm in `dnd.rs`; collapsing that onto this would remove both
+    // the duplication and this attribute, but it also has to decide what GTK
+    // does about `current_index` — the inline version never touched it, and
+    // this one re-points the playing track by id.
+    #[allow(dead_code)]
+    pub fn move_tracks(&mut self, from: &[usize], to: usize) -> Option<(usize, usize)> {
+        let mut sorted: Vec<usize> = from
+            .iter()
+            .copied()
+            .filter(|&i| i < self.tracks.len())
+            .collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.is_empty() {
+            return None;
+        }
+        let playing = self.stamped_current_id();
+
+        let mut adjusted_dst = to;
+        let mut removed: Vec<Track> = Vec::with_capacity(sorted.len());
+        // Highest-first: removing a low index would shift every higher one.
+        for &src in sorted.iter().rev() {
+            let t = self.tracks.remove(src);
+            if src < adjusted_dst {
+                adjusted_dst -= 1;
+            }
+            removed.push(t);
+        }
+        // `removed` is highest-first; put it back the way the user sees it.
+        removed.reverse();
+
+        let insert_at = adjusted_dst.min(self.tracks.len());
+        let count = removed.len();
+        for (i, t) in removed.into_iter().enumerate() {
+            self.tracks.insert(insert_at + i, t);
+        }
+        if let Some(id) = playing {
+            self.repoint_current_to(id);
+        }
+        Some((insert_at, count))
+    }
+
     /// Id of the current track, if any — used to keep the playing track
     /// selected across a reorder.
     // Consumed by the frontend Sort menus (phase-7, later tasks).
@@ -1703,6 +1767,88 @@ mod tests {
     // -----------------------------------------------------------------------
     // move_track()
     // -----------------------------------------------------------------------
+
+    /// Titles in order — the existing move tests spell this out inline; the
+    /// block-move cases below compare whole orderings often enough to name it.
+    fn titles(p: &Playlist) -> Vec<&str> {
+        p.tracks.iter().map(|t| t.title.as_str()).collect()
+    }
+
+    // move_tracks() — multi-row block reorder
+    // -----------------------------------------------------------------------
+
+    /// One row behaves exactly like `move_track`, so the block path can be
+    /// used for every drag without special-casing a single selection.
+    #[test]
+    fn move_tracks_of_one_matches_move_track() {
+        let mut a = playlist_of(&["A", "B", "C", "D"]);
+        let mut b = playlist_of(&["A", "B", "C", "D"]);
+        a.move_tracks(&[0], 2);
+        b.move_track(0, 1);
+        assert_eq!(titles(&a), titles(&b));
+    }
+
+    /// A contiguous block keeps its internal order when moved down.
+    #[test]
+    fn move_tracks_moves_a_block_down_keeping_its_order() {
+        let mut pl = playlist_of(&["A", "B", "C", "D", "E"]);
+        // Take A,B and drop them before E.
+        let moved = pl.move_tracks(&[0, 1], 4);
+        assert_eq!(titles(&pl), ["C", "D", "A", "B", "E"]);
+        assert_eq!(moved, Some((2, 2)), "the block's landing spot is reported");
+    }
+
+    /// And when moved up.
+    #[test]
+    fn move_tracks_moves_a_block_up_keeping_its_order() {
+        let mut pl = playlist_of(&["A", "B", "C", "D", "E"]);
+        // Take D,E and drop them at the top.
+        let moved = pl.move_tracks(&[3, 4], 0);
+        assert_eq!(titles(&pl), ["D", "E", "A", "B", "C"]);
+        assert_eq!(moved, Some((0, 2)));
+    }
+
+    /// A non-contiguous selection collapses into one block at the drop point,
+    /// in the order the rows appear — not the order they were clicked.
+    #[test]
+    fn move_tracks_collapses_a_scattered_selection_into_one_block() {
+        let mut pl = playlist_of(&["A", "B", "C", "D", "E"]);
+        let moved = pl.move_tracks(&[4, 0, 2], 2);
+        assert_eq!(titles(&pl), ["B", "A", "C", "E", "D"]);
+        assert_eq!(moved, Some((1, 3)));
+    }
+
+    /// The playing track keeps playing when it is one of the moved rows.
+    #[test]
+    fn move_tracks_keeps_the_playing_track_current_when_it_moves() {
+        let mut pl = playlist_of(&["A", "B", "C", "D"]);
+        pl.ensure_ids();
+        pl.current_index = 0; // A
+        pl.move_tracks(&[0, 1], 4);
+        assert_eq!(titles(&pl), ["C", "D", "A", "B"]);
+        assert_eq!(pl.tracks[pl.current_index].title, "A");
+    }
+
+    /// And when it is merely displaced by them.
+    #[test]
+    fn move_tracks_keeps_the_playing_track_current_when_displaced() {
+        let mut pl = playlist_of(&["A", "B", "C", "D"]);
+        pl.ensure_ids();
+        pl.current_index = 3; // D
+        pl.move_tracks(&[0, 1], 4);
+        assert_eq!(pl.tracks[pl.current_index].title, "D");
+    }
+
+    /// Out-of-range rows are dropped rather than panicking, and duplicates in
+    /// the selection move the row once.
+    #[test]
+    fn move_tracks_ignores_bad_indices_and_duplicates() {
+        let mut pl = playlist_of(&["A", "B", "C"]);
+        assert_eq!(pl.move_tracks(&[1, 1, 99], 0), Some((0, 1)));
+        assert_eq!(titles(&pl), ["B", "A", "C"]);
+        assert_eq!(pl.move_tracks(&[], 0), None, "nothing to move");
+        assert_eq!(pl.move_tracks(&[42], 0), None, "no valid row");
+    }
 
     #[test]
     fn move_track_forward() {
