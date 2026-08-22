@@ -835,6 +835,13 @@ mod tests {
         // A real file on real storage is never claimed, whatever is seeded —
         // `statfs` overrules the list, which is what stops the guard from
         // swallowing genuine answers.
+        //
+        // macOS only, because the overruling is: `path_is_on_optical_media`
+        // consults `statfs` under `cfg(target_os = "macos")` and nowhere else
+        // (`disc/detect.rs`). On every other platform the seeded list IS the
+        // answer, so this row — seeded above — correctly reads as being on a
+        // disc, and asserting otherwise fails on Linux.
+        #[cfg(target_os = "macos")]
         unsafe {
             assert_eq!(
                 sparkamp_playlist_is_read_only(&ctx, 1),
