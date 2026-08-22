@@ -214,6 +214,21 @@ If an agentic approach fails twice, stop trying that approach and move on. Do no
 ### Before every release
 Before tagging a release: update `README.md` to reflect any new features or changed behaviour, then produce a working Flatpak build (see `packaging/README.md`).
 
+Print the draft release notes to the console and wait for explicit approval before using them anywhere. Do not commit them, do not write them into `README.md` or the AppStream `<release>` entry, and do not put them in a tag message or a GitHub release until that approval is given — the draft is for review and tweaking first.
+
+### Release note format
+All release notes — the GitHub release description, the README "What's New" section, and the AppStream `<release>` entry — use one format.
+
+**Shape.** One-line thesis, blank line, then a flat bullet list. No headings, no nesting, no sub-bullets, no code blocks.
+
+**The bullet pattern.** Each is `- **Bold lead** — detail.` The bold lead is a claim in plain user language, and the em-dash detail is the evidence for it. Leads read as things a person notices:
+
+> "Drag anything to the playlist" · "Adding files does what the setting says" · "The album gallery opens about twice as fast"
+
+Not feature names, not module names. No `dnd.rs`, no `AddMode`, no commit references.
+
+v1.3.1 is the reference example.
+
 ### Removing features from the filesystem
 When a user removes a skin or music file from Sparkamp's UI, **do not delete the file**. Remove it from the known skins list, the active playlist, or the media library, respective to the action that was taken. The file stays on disk and can be re-added later.
 
