@@ -30,27 +30,34 @@
   <releases>
     <release version="1.3.1" date="2026-08-21">
       <description>
-        <p>A stability release, and a drag-and-drop one. Version 1.3.0 was
-        prepared but never published, so everything it contained ships here as
-        well: upgrading from 1.2.0 brings the whole of it in one step.</p>
+        <p>A bug-fix release, focused on performance and drag-and-drop.</p>
         <p>Every Media Library view can now be dragged onto the playlist. Five
         had no drag source at all: the album gallery, both disc views and both
         device views. Dragging a container adds everything in it, so an album
         brings its tracks, a saved playlist brings its tracks, a disc brings
-        its tracks and a device brings its files. The setting that decides
-        whether adding files appends to the playlist or replaces it was
-        previously ignored by drag-and-drop and applied inconsistently
-        elsewhere; one rule now governs every route in, including the command
-        line and files opened from the desktop. It is named "Default add file
-        action" now, rather than for the one view it was first written
-        for.</p>
+        its tracks and a device brings its files.</p>
+        <p>The setting that decides whether adding files appends to the
+        playlist or replaces it was previously ignored by drag-and-drop
+        entirely, and applied inconsistently elsewhere. One rule now governs
+        every route in, including the command line and files opened from the
+        desktop. It is named "Default add file action" now, rather than for the
+        one view it was first written for.</p>
         <p>The album gallery opens about twice as quickly: clicking Albums used
         to rebuild the entire grid twice, the query that reads the library has
         moved into the database, the grid fills in a single operation rather
         than one per album, and returning to the gallery reuses what it already
         had. The album view is also searchable in the GTK and terminal
         frontends now, matching macOS.</p>
-        <p>No new headline feature otherwise: the rest of the work went into the
+        <p>Several drag-and-drop defects found on real hardware are fixed:
+        dragging a CD track added a single entry named after the device node
+        with no tags, a device row could not be dragged at all, an album could
+        only be added once, and an external drop was discarded whenever
+        playlist rows happened to be selected.</p>
+      </description>
+    </release>
+    <release version="1.3.0" date="2026-08-12">
+      <description>
+        <p>A stability release. No new headline feature: the work went into the
         two largest files in the tree and into the defects that came out from
         under them. A bulk folder ingest could pin the interface until the app
         had to be force-quit; the folder-watch drain is now bounded so it cannot
