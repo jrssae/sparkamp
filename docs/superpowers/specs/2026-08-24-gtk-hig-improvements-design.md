@@ -146,22 +146,34 @@ is **byte-identical**: `parse_px` still reads `--sp-font-size: 12px`, and a
 custom skin's declared numbers render exactly as they do now.
 
 **Re-baselined defaults.** With sizes finally scaling, the built-in
-defaults are worth revisiting — 9pt reads small on a modern display.
-Proposed, preserving the existing ratios (marquee 1.167x base, large
-2.667x base):
+defaults are worth revisiting — the existing 12px base renders at 9.75pt,
+which reads small on a modern display and sits well under GNOME's native
+Cantarell 11.
 
-| Variable | Now | Proposed | As pt |
+Decided 2026-08-24: land on native 11pt. Integer px values are used so the
+templates stay pleasant to hand-edit; 11.25pt is within 2% of native 11pt,
+which is imperceptible, and the large size falls exactly on 30pt.
+
+| Variable | Now | New | As pt |
 |---|---|---|---|
-| `--sp-font-size` | 12px | 13px | 9.75pt |
-| `--sp-font-size-marquee` | 14px | 15px | 11.25pt |
-| `--sp-font-size-large` | 32px | 34px | 25.5pt |
+| `--sp-font-size` | 12px | 15px | 11.25pt |
+| `--sp-font-size-marquee` | 14px | 18px | 13.5pt |
+| `--sp-font-size-large` | 32px | 40px | 30pt |
 
-An ~8% increase: better legibility, still compact enough for a 384px
-player. Only `SkinVars::dark_defaults` and `light_defaults` change, so the
-two built-in skins shift deliberately and every custom skin keeps its own
-declared sizes.
+A ~22% increase. The two built-in skins shift deliberately; every custom
+skin keeps its own declared sizes, because `load_skin` (`skin.rs:404`)
+gives a user file priority over the built-in.
 
-**These three numbers are the one thing to confirm at spec review.**
+**Four places carry these numbers and must stay in sync:**
+`SkinVars::dark_defaults` (`skin.rs:172-175`) and `light_defaults`
+(`skin.rs:194-197`), which are what the built-in skins actually render, and
+`skin_templates/dark.css:27-29` and `light.css:24-26`, which are what
+**Download skin…** exports. A test pins all four together.
+
+Because the player window is `resizable(false)` and carries no hard
+max-width, GTK sizes it to its natural content width, so larger text grows
+the window rather than clipping. This is worth confirming during the
+interactive pass at both default and large-text settings.
 
 `src/skin_templates/skin-guide.md` gains a short section explaining that
 font sizes are declared in px but rendered relative to the desktop's text
@@ -345,7 +357,9 @@ distrobox `dev-box` — never on the host.
 New coverage:
 
 - `skin.rs`: emitted CSS carries `pt`, conversion is exactly `x 0.75`, and
-  no `px` font size survives; a test pinning the re-baselined defaults.
+  no `px` font size survives; a test pinning the re-baselined defaults
+  across all four sync points — both `defaults()` functions and both
+  `.css` templates — so an edit to one that misses the others fails.
 - `shortcut_sections()` drift guard extended to the four new aliases, and
   asserting Ctrl+. is gone.
 - `Config` round-trip for `notify_track_change`, including absent-field
@@ -388,8 +402,11 @@ plus `scripts/pre-release-check.sh` follow at release time, not here.
    branch introduces. See item 12.
 3. **Active-playlist accessibility is capped** by `GtkTreeView`. Documented
    limitation, not a defect to fix here.
-4. **Built-in skins change appearance** by design, via the re-baseline.
-   Custom skins do not.
+4. **Built-in skins get ~22% larger text** by design, via the re-baseline
+   to native 11pt. Custom skins do not move, since a user file wins over
+   the built-in. The most user-visible change in the branch: it belongs in
+   the release notes, and the player window must be checked for reflow at
+   both default and large-text settings.
 5. **Ctrl+. is removed.** A behavior change for existing users; release
    notes must say so.
 6. **Vendor regeneration** is the step most likely to consume unplanned
@@ -413,7 +430,8 @@ Items 4, 5, 11, and 14 are Linux-only or not applicable.
 
 ## Open for review
 
-1. **The three re-baselined font defaults** (13px / 15px / 34px) — the one
-   number set worth a second look before implementation.
-2. Screenshot filenames and captions, once `docs/screenshots/README.md`
+1. Screenshot filenames and captions, once `docs/screenshots/README.md`
    names them.
+
+The font re-baseline, previously open here, was settled on 2026-08-24 —
+see item 7.
