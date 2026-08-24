@@ -666,12 +666,12 @@ F1 has no modifier, so it belongs in `keys.rs` with the other plain keys. In the
                 }
 ```
 
-- [ ] **Step 10: Run the tests to verify they pass**
+- [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo test --bin sparkamp shortcut 2>&1 | tail -20'`
 Expected: PASS, including the pre-existing `shortcut_dialog_lists_every_phase6_key` drift guard.
 
-- [ ] **Step 10: Run the full suite**
+- [ ] **Step 9: Run the full suite**
 
 Run: `distrobox enter dev-box -- sh -c 'cargo build && cargo test 2>&1 | tail -20'`
 Expected: all pass, zero warnings.
