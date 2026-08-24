@@ -4,11 +4,11 @@
   <metadata_license>FSFAP</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
   <name>Sparkamp</name>
-  <summary>Winamp-style audio player for Linux</summary>
+  <summary>Classic-style audio player</summary>
   <description>
     <p>
       Sparkamp is an open-source, keyboard-centric audio player for Linux and
-      GNOME inspired by the classic Winamp interface.  It supports MP3, OGG,
+      GNOME with a classic, keyboard-driven interface.  It supports MP3, OGG,
       FLAC and other common audio formats, and includes a full-featured 10-band
       equalizer, a media library, visualizer plugins, and custom CSS skinning.
     </p>
@@ -18,12 +18,52 @@
     </p>
   </description>
   <launchable type="desktop-id">dev.sparkamp.Sparkamp.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/player.png</image>
+      <caption>The main player window</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/playlist.png</image>
+      <caption>The playlist window</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/media-library.png</image>
+      <caption>Browsing the media library</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/album-gallery.png</image>
+      <caption>The album gallery</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/settings.png</image>
+      <caption>Choosing a skin in Settings</caption>
+    </screenshot>
+  </screenshots>
   <url type="homepage">https://github.com/sparkamp/sparkamp</url>
   <url type="bugtracker">https://github.com/sparkamp/sparkamp/issues</url>
   <categories>
     <category>AudioVideo</category>
     <category>Audio</category>
   </categories>
+  <developer id="dev.sparkamp">
+    <name>Sparkamp</name>
+  </developer>
+  <!-- Sampled from the app icon so the store page's accent matches it. -->
+  <branding>
+    <color type="primary" scheme_preference="light">#7bc8e8</color>
+    <color type="primary" scheme_preference="dark">#00ccff</color>
+  </branding>
+  <!-- The player window is a fixed 384px wide and is pointer- and
+       keyboard-driven; claiming touch or a small form factor would be
+       dishonest on a store listing. -->
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">384</display_length>
+  </requires>
   <provides>
     <binary>sparkamp</binary>
   </provides>
