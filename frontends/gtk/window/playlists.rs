@@ -387,6 +387,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // into the pl-edit page below.
     let (pl_search_row, pl_search_entry) =
         make_view_search_row("Search this playlist — artist, title, album…");
+    // Marks the entry Ctrl+F should focus when the editor sub-page is the
+    // visible one — see the widget-name walk in media_library.rs.
+    pl_search_entry.set_widget_name("ml-search-entry");
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("playlists").cloned();

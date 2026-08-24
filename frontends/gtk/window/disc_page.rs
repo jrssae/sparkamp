@@ -303,6 +303,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let disc_search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let (disc_search_row, disc_search_entry) =
         make_view_search_row("Search this disc — track title…");
+    // Marks the entry Ctrl+F should focus when this page is the visible
+    // one — see the widget-name walk in media_library.rs.
+    disc_search_entry.set_widget_name("ml-search-entry");
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("discs").cloned();

@@ -223,7 +223,8 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         Rc::new(RefCell::new(None));
 
     // Shared "open settings window" action — used by the logo click and the
-    // Ctrl+. keyboard shortcut (phase 6) so both go through one path.
+    // Ctrl+, keyboard shortcut (phase 6; GNOME-standard Settings binding, was
+    // Ctrl+. before Task 4) so both go through one path.
     let open_settings: Rc<dyn Fn()> = {
         let state_rc = state.clone();
         let win_wk = window.downgrade();

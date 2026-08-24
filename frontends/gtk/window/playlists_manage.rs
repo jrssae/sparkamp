@@ -373,6 +373,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         // added later too — so a playlist created while a query is active
         // obeys it without any extra wiring.
         let (pl_search_row, pl_manage_search) = make_view_search_row("Search playlists…");
+        // Marks the entry Ctrl+F should focus when the manage sub-page is the
+        // visible one — see the widget-name walk in media_library.rs.
+        pl_manage_search.set_widget_name("ml-search-entry");
         manage_vbox.append(&pl_search_row);
         let manage_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
         {

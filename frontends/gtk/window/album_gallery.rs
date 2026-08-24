@@ -660,6 +660,9 @@ pub(super) fn build_album_gallery(
     // for the words on screen finds the tile showing them. The macOS gallery
     // has had this since phase 11; GTK and the TUI never got it.
     let (search_row, search_entry) = make_view_search_row("Search albums — title, artist…");
+    // Marks the entry Ctrl+F should focus when this page is the visible
+    // one — see the widget-name walk in media_library.rs.
+    search_entry.set_widget_name("ml-search-entry");
     // F12.1: restore this view's last search query if the feature is on.
     // Seeded into `query` as well as the entry, so the first `rebuild()`
     // below already filters instead of flashing the whole library first.

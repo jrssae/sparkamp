@@ -30,6 +30,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("Shift+N",    "Add folder"),
             ("m",          "Toggle Media Library window"),
             ("j",          "Jump / search"),
+            ("Ctrl+F",     "Jump / search"),
             ("q",          "Play queue (Jump/Queue window, Queue mode)"),
             ("Ctrl+Q",     "Enqueue / dequeue selection (playlist or jump)"),
             ("↑ ↓",        "Browse up / down (playlist window)"),
@@ -49,7 +50,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("u",           "Toggle equalizer window"),
             ("w",           "Toggle now-playing panel (art, tags, links)"),
             ("k",           "Open album-art window"),
-            ("Ctrl+.",      "Open settings"),
+            ("Ctrl+,",      "Open settings"),
             ("Click logo",  "Open settings"),
         ]),
         ("Mouse", &[
@@ -59,6 +60,8 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
         ]),
         ("Other", &[
             ("i",          "Toggle this help"),
+            ("F1",         "Toggle this help"),
+            ("Ctrl+?",     "Toggle this help"),
             ("Esc",        "Quit (main window) / close child window"),
         ]),
     ]
@@ -1412,17 +1415,31 @@ pub fn build(
         let wrap_step_volume = step_volume.clone();
         let wrap_open_settings = open_settings.clone();
         let wrap_save_active = btn_save_active.clone();
+        let wrap_btn_info = btn_info.clone();
+        let wrap_open_jump = open_jump_mode.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
             if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
                 match key {
                     gdk::Key::q | gdk::Key::Q => return glib::Propagation::Stop,
-                    // Ctrl+. → settings; Ctrl+S → save active playlist.
-                    gdk::Key::period => {
+                    // Ctrl+, → settings. Replaces Ctrl+. (the GNOME standard
+                    // is comma, and it is what the macOS frontend binds).
+                    gdk::Key::comma => {
                         wrap_open_settings();
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::s | gdk::Key::S => {
                         wrap_save_active.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+? → keyboard shortcuts. Arrives as Ctrl+Shift+slash
+                    // on most layouts, so both keyvals are accepted.
+                    gdk::Key::question | gdk::Key::slash => {
+                        wrap_btn_info.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+F → jump / search, the reflex shortcut in any list UI.
+                    gdk::Key::f | gdk::Key::F => {
+                        wrap_open_jump(false);
                         return glib::Propagation::Stop;
                     }
                     _ => {}
@@ -1462,6 +1479,9 @@ pub fn build(
         let handler = handle_key.clone();
         let wrap_invert_selection = invert_selection.clone();
         let wrap_save_active = btn_save_active.clone();
+        let wrap_open_settings = open_settings.clone();
+        let wrap_btn_info = btn_info.clone();
+        let wrap_open_jump = open_jump_mode.clone();
         let lyr_state = state.clone();
         let lyr_sel_idx = pl_selected_idx.clone();
         let lyr_rebuild = rebuild_playlist.clone();
@@ -1487,6 +1507,23 @@ pub fn build(
                     // conspicuous gap.
                     gdk::Key::a | gdk::Key::A => {
                         lyr_pl_view.selection().select_all();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+, → settings. Replaces Ctrl+. (the GNOME standard
+                    // is comma, and it is what the macOS frontend binds).
+                    gdk::Key::comma => {
+                        wrap_open_settings();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+? → keyboard shortcuts. Arrives as Ctrl+Shift+slash
+                    // on most layouts, so both keyvals are accepted.
+                    gdk::Key::question | gdk::Key::slash => {
+                        wrap_btn_info.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+F → jump / search, the reflex shortcut in any list UI.
+                    gdk::Key::f | gdk::Key::F => {
+                        wrap_open_jump(false);
                         return glib::Propagation::Stop;
                     }
                     _ => {}
@@ -2103,9 +2140,41 @@ mod shortcut_dialog_tests {
             .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
             .collect();
         for k in [
-            "m", "t", "Shift+N", "Ctrl+S", "Ctrl+.", "Ctrl+I", "n", "Enter", "↑ ↓",
+            "m", "t", "Shift+N", "Ctrl+S", "Ctrl+,", "Ctrl+I", "n", "Enter", "↑ ↓",
         ] {
             assert!(keys.contains(&k), "shortcuts dialog is missing `{k}`");
         }
+    }
+
+    /// The shortcuts window is the only place a user discovers these, so a
+    /// binding that exists in code but not in the dialog is invisible.
+    #[test]
+    fn shortcut_dialog_lists_the_standard_aliases() {
+        let keys: Vec<&str> = shortcut_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
+            .collect();
+        let joined = keys.join(" | ");
+        for expected in ["Ctrl+F", "F1", "Ctrl+?", "Ctrl+,"] {
+            assert!(
+                joined.contains(expected),
+                "{expected} missing from the shortcuts dialog: {joined}"
+            );
+        }
+    }
+
+    /// Ctrl+. was replaced by Ctrl+, — the GNOME standard, and what the
+    /// macOS frontend already uses. Leaving it listed would document a
+    /// binding that no longer fires.
+    #[test]
+    fn shortcut_dialog_no_longer_lists_ctrl_period() {
+        let keys: Vec<&str> = shortcut_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
+            .collect();
+        assert!(
+            !keys.iter().any(|k| *k == "Ctrl+."),
+            "Ctrl+. is no longer bound and must not be listed"
+        );
     }
 }

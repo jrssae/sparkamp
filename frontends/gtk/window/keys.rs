@@ -381,6 +381,13 @@ pub(super) fn build(
                     glib::Propagation::Stop
                 }
 
+                // F1 — the HIG binding for Help. Sparkamp has no help manual,
+                // so the shortcuts window is the honest target.
+                gdk::Key::F1 => {
+                    kbd_btn_info.emit_clicked();
+                    glib::Propagation::Stop
+                }
+
                 // ── Equalizer toggle (u) — same path as the EQ button so
                 // the singleton/active-CSS logic stays in one place ────────
                 gdk::Key::u | gdk::Key::U => {

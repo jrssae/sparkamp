@@ -221,6 +221,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let search_entry = Entry::new();
         search_entry.set_placeholder_text(Some("Search artist, title, album…"));
         search_entry.set_hexpand(true);
+        // Marks the entry Ctrl+F should focus when this page is the visible
+        // one — see the widget-name walk in media_library.rs.
+        search_entry.set_widget_name("ml-search-entry");
         // F12.1: restore this view's last search query if the feature is on.
         // rebuild_files() (below) reads search_entry.text() for its initial
         // fill, so this must happen before that call.

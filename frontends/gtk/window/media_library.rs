@@ -147,6 +147,44 @@ pub(super) struct MlCtx {
     pub(super) all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>>,
 }
 
+/// Widget name Ctrl+F looks for. Set on every stack page's search `Entry`
+/// (Files, Albums, Discs, Devices, and the Playlists page's own Manage/Edit
+/// sub-views) so [`find_visible_search_entry`] finds whichever one is
+/// visible without needing to know each page's internals.
+const ML_SEARCH_ENTRY_NAME: &str = "ml-search-entry";
+
+/// Walks down from `root`, following a [`Stack`] into its visible child only,
+/// until it finds a descendant `Entry` marked [`ML_SEARCH_ENTRY_NAME`].
+///
+/// The window has one search entry per top-level stack page, and the
+/// Playlists page nests a second `Stack` (Manage / Edit) with one search
+/// entry each — this recurses through both without the caller (Ctrl+F, in
+/// `open_media_library_window`) needing to know Playlists has that extra
+/// layer. Skips invisible subtrees so the Discs/Devices overview — a plain
+/// `Box` toggle, not a `Stack`, hiding their detail view's search box — never
+/// matches a box the user cannot currently see.
+fn find_visible_search_entry(root: &gtk4::Widget) -> Option<Entry> {
+    if !root.is_visible() {
+        return None;
+    }
+    if let Some(entry) = root.downcast_ref::<Entry>()
+        && entry.widget_name() == ML_SEARCH_ENTRY_NAME
+    {
+        return Some(entry.clone());
+    }
+    if let Some(stack) = root.downcast_ref::<Stack>() {
+        return stack.visible_child().and_then(|c| find_visible_search_entry(&c));
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_visible_search_entry(&c) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
 pub(super) fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     host: MlHost,
@@ -278,6 +316,33 @@ pub(super) fn open_media_library_window(
     // send-a-playlist holder — see the module's `build` doc.
     devices_page::build(&ctx, &sb);
 
+    // Ctrl+F → focus the search entry for whichever page is visible. The
+    // window has no single search box — every stack page (and, inside
+    // Playlists, its own Manage/Edit sub-stack) owns its own — so this walks
+    // the widget tree from the stack's current child rather than assuming
+    // the Files page. Capture phase so it fires even when a child widget
+    // (e.g. a ColumnView row) holds keyboard focus.
+    {
+        let key_ctrl = EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let stack_kf = stack.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK)
+                && matches!(key, gdk::Key::f | gdk::Key::F)
+            {
+                // The ML search box otherwise has to be clicked — Ctrl+F is
+                // the reflex, and every view here has a search entry.
+                if let Some(entry) =
+                    stack_kf.visible_child().and_then(|c| find_visible_search_entry(&c))
+                {
+                    entry.grab_focus();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        win.add_controller(key_ctrl);
+    }
 
     sidebar.select_row(sidebar.row_at_index(0).as_ref());
 
