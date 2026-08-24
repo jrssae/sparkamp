@@ -36,6 +36,13 @@ pub fn run(playlist: Playlist, config: Config) -> Result<()> {
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
+    // libadwaita must be initialised after GTK and before any Adw widget is
+    // constructed. `connect_startup` is the first signal GApplication emits
+    // after GTK init, which makes it the only correct place for this.
+    app.connect_startup(|_| {
+        adw::init().expect("libadwaita failed to initialise");
+    });
+
     // `open` fires on the primary instance whenever another process passes
     // files to it (file manager "Open with", or `sparkamp file.mp3` while
     // already running).  We forward the paths through the channel; the window's
