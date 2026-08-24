@@ -24,7 +24,7 @@
 
     /* Fonts */
     --sp-font-family:        "Inter, system-ui, sans-serif";
-    --sp-font-size:          12px;
-    --sp-font-size-large:    32px;
-    --sp-font-size-marquee:  14px;
+    --sp-font-size:          15px;
+    --sp-font-size-large:    40px;
+    --sp-font-size-marquee:  18px;
 }
