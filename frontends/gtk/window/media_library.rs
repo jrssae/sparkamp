@@ -151,7 +151,7 @@ pub(super) struct MlCtx {
 /// (Files, Albums, Discs, Devices, and the Playlists page's own Manage/Edit
 /// sub-views) so [`find_visible_search_entry`] finds whichever one is
 /// visible without needing to know each page's internals.
-const ML_SEARCH_ENTRY_NAME: &str = "ml-search-entry";
+pub(super) const ML_SEARCH_ENTRY_NAME: &str = "ml-search-entry";
 
 /// Walks down from `root`, following a [`Stack`] into its visible child only,
 /// until it finds a descendant `Entry` marked [`ML_SEARCH_ENTRY_NAME`].
@@ -530,3 +530,79 @@ pub(super) fn analyze_job(
     true
 }
 
+#[cfg(test)]
+mod find_visible_search_entry_tests {
+    use super::*;
+
+    /// Builds a fresh `gtk4::Box` with an `Entry` child in each branch of a
+    /// `Stack`, so a test can drive `find_visible_search_entry` without the
+    /// full window.
+    ///
+    /// `#[gtk4::test]` (not plain `#[test]`) is required: GTK is not
+    /// thread-safe, and `cargo test` runs each `#[test]` on its own OS
+    /// thread. `#[gtk4::test]` (from `gtk4-macros`, re-exported by `gtk4`)
+    /// routes every GTK test through one dedicated worker thread it owns
+    /// instead (`gtk4::test_synced`), which is what makes constructing real
+    /// widgets here safe alongside the rest of the (non-GTK) suite. A plain
+    /// `#[test]` calling `gtk4::init()` was tried first and passed in
+    /// isolation, but broke the moment it ran in the same binary as a
+    /// `#[gtk4::test]` — the two raced for the one process-wide GTK main
+    /// context, and whichever lost panicked with "Failed to acquire default
+    /// main context" or "GTK may only be used from the main thread." See the
+    /// fix report for the full transcript.
+    fn tagged_entry() -> Entry {
+        let e = Entry::new();
+        e.set_widget_name(ML_SEARCH_ENTRY_NAME);
+        e
+    }
+
+    #[gtk4::test]
+    fn resolves_through_a_nested_stack_and_skips_hidden_subtrees() {
+        // Outer page: an invisible decoy Entry ahead of the real content, to
+        // prove the walk does not just grab the first Entry it sees.
+        let root = GtkBox::new(Orientation::Vertical, 0);
+        let decoy_holder = GtkBox::new(Orientation::Vertical, 0);
+        let decoy = tagged_entry();
+        decoy_holder.append(&decoy);
+        decoy_holder.set_visible(false); // Discs/Devices-style hidden detail pane
+        root.append(&decoy_holder);
+
+        // A nested Stack (mirrors Playlists' Manage/Edit) with two tagged
+        // entries — only the visible child's entry should be found.
+        let inner_stack = Stack::new();
+        let manage_page = GtkBox::new(Orientation::Vertical, 0);
+        let manage_entry = tagged_entry();
+        manage_entry.set_text("manage");
+        manage_page.append(&manage_entry);
+        inner_stack.add_named(&manage_page, Some("pl-manage"));
+
+        let edit_page = GtkBox::new(Orientation::Vertical, 0);
+        let edit_entry = tagged_entry();
+        edit_entry.set_text("edit");
+        edit_page.append(&edit_entry);
+        inner_stack.add_named(&edit_page, Some("pl-edit"));
+
+        inner_stack.set_visible_child_name("pl-edit");
+        root.append(&inner_stack);
+
+        let found = find_visible_search_entry(root.upcast_ref::<gtk4::Widget>())
+            .expect("expected the edit-page entry to be found");
+        assert_eq!(found.text(), "edit");
+
+        // Switching the nested stack's visible child changes which entry the
+        // walk resolves to, without touching anything else.
+        inner_stack.set_visible_child_name("pl-manage");
+        let found = find_visible_search_entry(root.upcast_ref::<gtk4::Widget>())
+            .expect("expected the manage-page entry to be found");
+        assert_eq!(found.text(), "manage");
+    }
+
+    #[gtk4::test]
+    fn returns_none_when_nothing_visible_is_tagged() {
+        let root = GtkBox::new(Orientation::Vertical, 0);
+        let untagged = Entry::new(); // no widget name set
+        root.append(&untagged);
+
+        assert!(find_visible_search_entry(root.upcast_ref::<gtk4::Widget>()).is_none());
+    }
+}

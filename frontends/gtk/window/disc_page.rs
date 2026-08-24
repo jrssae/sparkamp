@@ -47,7 +47,7 @@ use super::disc::{disc_overview_detail_line, selected_disc_discid};
 // Drive queue, and the player state the transport checks read.
 use super::{
     context_popover, find_row_by_name, gtk_safe, make_view_search_row, queue_paths_to_drive,
-    MlCtx, PlayerState,
+    MlCtx, PlayerState, ML_SEARCH_ENTRY_NAME,
 };
 
 /// Build the Disc Drives page and attach it to `ctx.stack` under the name
@@ -305,7 +305,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         make_view_search_row("Search this disc — track title…");
     // Marks the entry Ctrl+F should focus when this page is the visible
     // one — see the widget-name walk in media_library.rs.
-    disc_search_entry.set_widget_name("ml-search-entry");
+    disc_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("discs").cloned();

@@ -33,7 +33,7 @@ use super::{
     attach_pl_row_drag, gtk_safe, make_view_search_row,
     run_playlist_save_dialog, show_playlist_save_error,
     sidebar_pl_end_index, MlCtx, EDITOR_CURRENT_REFRESH_HOOK, EDITOR_REFRESH_HOOK,
-    PLAYLIST_NAV_REFRESH_HOOK,
+    PLAYLIST_NAV_REFRESH_HOOK, ML_SEARCH_ENTRY_NAME,
 };
 
 /// What the manager needs from the page around it.
@@ -375,7 +375,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         let (pl_search_row, pl_manage_search) = make_view_search_row("Search playlists…");
         // Marks the entry Ctrl+F should focus when the manage sub-page is the
         // visible one — see the widget-name walk in media_library.rs.
-        pl_manage_search.set_widget_name("ml-search-entry");
+        pl_manage_search.set_widget_name(ML_SEARCH_ENTRY_NAME);
         manage_vbox.append(&pl_search_row);
         let manage_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
         {

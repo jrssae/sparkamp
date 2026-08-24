@@ -1417,6 +1417,8 @@ pub fn build(
         let wrap_save_active = btn_save_active.clone();
         let wrap_btn_info = btn_info.clone();
         let wrap_open_jump = open_jump_mode.clone();
+        let wrap_jump_entry = jump_entry.clone();
+        let wrap_rebuild_jump = rebuild_jump.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
             if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
                 match key {
@@ -1438,7 +1440,13 @@ pub fn build(
                         return glib::Propagation::Stop;
                     }
                     // Ctrl+F → jump / search, the reflex shortcut in any list UI.
+                    // Mirrors the `j` arm in keys.rs exactly (clear the stale
+                    // query, rebuild the result list, then open) — the jump
+                    // window hides rather than closes, so without this a reopen
+                    // via Ctrl+F would show a leftover query and stale results.
                     gdk::Key::f | gdk::Key::F => {
+                        wrap_jump_entry.set_text("");
+                        wrap_rebuild_jump();
                         wrap_open_jump(false);
                         return glib::Propagation::Stop;
                     }
@@ -1482,6 +1490,8 @@ pub fn build(
         let wrap_open_settings = open_settings.clone();
         let wrap_btn_info = btn_info.clone();
         let wrap_open_jump = open_jump_mode.clone();
+        let wrap_jump_entry = jump_entry.clone();
+        let wrap_rebuild_jump = rebuild_jump.clone();
         let lyr_state = state.clone();
         let lyr_sel_idx = pl_selected_idx.clone();
         let lyr_rebuild = rebuild_playlist.clone();
@@ -1522,7 +1532,13 @@ pub fn build(
                         return glib::Propagation::Stop;
                     }
                     // Ctrl+F → jump / search, the reflex shortcut in any list UI.
+                    // Mirrors the `j` arm in keys.rs exactly (clear the stale
+                    // query, rebuild the result list, then open) — the jump
+                    // window hides rather than closes, so without this a reopen
+                    // via Ctrl+F would show a leftover query and stale results.
                     gdk::Key::f | gdk::Key::F => {
+                        wrap_jump_entry.set_text("");
+                        wrap_rebuild_jump();
                         wrap_open_jump(false);
                         return glib::Propagation::Stop;
                     }

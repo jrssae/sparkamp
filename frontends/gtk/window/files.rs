@@ -37,7 +37,7 @@ use super::{
     open_customize_columns_dialog, start_ml_scan, sync_rg_ui, truncate_display,
     update_ml_scan_progress, view_or_search_lyrics, ArtworkCells, ColumnCustomizerMode, LyricsMode,
     MlCtx,
-    ScanType, SendToActions, ALL_COLUMNS,
+    ScanType, SendToActions, ALL_COLUMNS, ML_SEARCH_ENTRY_NAME,
 };
 
 /// What the Files view's leading status column shows for one row.
@@ -223,7 +223,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         search_entry.set_hexpand(true);
         // Marks the entry Ctrl+F should focus when this page is the visible
         // one — see the widget-name walk in media_library.rs.
-        search_entry.set_widget_name("ml-search-entry");
+        search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
         // F12.1: restore this view's last search query if the feature is on.
         // rebuild_files() (below) reads search_entry.text() for its initial
         // fill, so this must happen before that call.

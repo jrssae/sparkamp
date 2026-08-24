@@ -49,6 +49,7 @@ use super::{
     gtk_safe, lib_track_matches_query, make_view_search_row, ml_status_bar_for,
     queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
     sidebar_pl_end_index, view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
+    ML_SEARCH_ENTRY_NAME,
 };
 
 /// Wrapper put into the editor's `ListStore`. Carrying `canonical_idx`
@@ -389,7 +390,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         make_view_search_row("Search this playlist — artist, title, album…");
     // Marks the entry Ctrl+F should focus when the editor sub-page is the
     // visible one — see the widget-name walk in media_library.rs.
-    pl_search_entry.set_widget_name("ml-search-entry");
+    pl_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("playlists").cloned();

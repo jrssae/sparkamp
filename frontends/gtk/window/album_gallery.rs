@@ -662,7 +662,7 @@ pub(super) fn build_album_gallery(
     let (search_row, search_entry) = make_view_search_row("Search albums — title, artist…");
     // Marks the entry Ctrl+F should focus when this page is the visible
     // one — see the widget-name walk in media_library.rs.
-    search_entry.set_widget_name("ml-search-entry");
+    search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     // Seeded into `query` as well as the entry, so the first `rebuild()`
     // below already filters instead of flashing the whole library first.

@@ -56,7 +56,7 @@ use super::{
     device_m3u_remove_basenames, device_plan_fs, device_plan_one, device_record_pair,
     device_recorded_relpath, device_sync_id, find_row_by_name, gtk_safe, invalidate_mtp_meta,
     lib_track_matches_query, make_view_search_row, ml_status_bar,     set_levelbar_fullness, show_alert_parented, unsupported_device_banner,
-    MlCtx,
+    MlCtx, ML_SEARCH_ENTRY_NAME,
     UNSUPPORTED_FS_TOOLTIP,
 };
 
@@ -430,7 +430,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         make_view_search_row("Search this device — artist, title, album…");
     // Marks the entry Ctrl+F should focus when this page is the visible
     // one — see the widget-name walk in media_library.rs.
-    dev_search_entry.set_widget_name("ml-search-entry");
+    dev_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("devices").cloned();
