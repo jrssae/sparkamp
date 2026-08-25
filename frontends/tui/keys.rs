@@ -222,6 +222,24 @@ impl App {
             self.queue_toggle_highlighted();
             return;
         }
+        // Ctrl+F — search, matching the Media Library's existing binding.
+        // Skipped while the Media Library is open: it already owns Ctrl+F
+        // for its own search field (media_library/mod.rs), and handling it
+        // globally here would intercept the key before that handler ever
+        // saw it, silently replacing ML search with playlist jump.
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('f') | KeyCode::Char('F'))
+            && !matches!(self.mode, Mode::MediaLibrary(..))
+        {
+            let results = (0..self.playlist.len()).collect();
+            self.mode = Mode::Jump {
+                query: String::new(),
+                results,
+                selected: 0,
+                from_media_library: false,
+            };
+            return;
+        }
         match self.mode {
             Mode::Normal => self.handle_normal(code),
             Mode::Jump { .. } => self.handle_jump(code),
@@ -495,18 +513,29 @@ impl App {
                 }
             }
 
-            // / — clear all tracks from the playlist.
+            // / — open jump / search. Every terminal app binds '/' to
+            // search, and the Media Library already does. This used to clear
+            // the entire playlist, which was a data-loss trap on the key
+            // users press to search; Remove All now lives in the `o` popup.
             KeyCode::Char('/') => {
-                let _ = self.player.stop();
-                self.playlist.tracks.clear();
-                self.playlist.current_index = 0;
-                self.playlist_cursor = 0;
-                self.shuffle_state.reset(); // fresh playlist → fresh shuffle draw
-                self.set_status("Playlist cleared");
+                let results = (0..self.playlist.len()).collect();
+                self.mode = Mode::Jump {
+                    query: String::new(),
+                    results,
+                    selected: 0,
+                    from_media_library: false,
+                };
             }
 
             // i / I — show keyboard shortcut reference overlay.
             KeyCode::Char('i') | KeyCode::Char('I') => {
+                self.mode = Mode::Help { scroll: 0 };
+            }
+
+            // F1 — help, alongside `i`. No F-keys were bound before this, so
+            // there is no conflict; `i` still works if a terminal multiplexer
+            // swallows F1.
+            KeyCode::F(1) => {
                 self.mode = Mode::Help { scroll: 0 };
             }
 
@@ -832,7 +861,7 @@ impl App {
     /// The active-playlist ops popup's menu entries, in display order.
     /// Kept as a single source of truth for both the key handler (which
     /// dispatches by index) and the overlay (which renders the labels).
-    pub(super) const PLAYLIST_OPS_LABELS: [&'static str; 7] = [
+    pub(super) const PLAYLIST_OPS_LABELS: [&'static str; 8] = [
         "Sort: Title",
         "Sort: Artist",
         "Sort: Album",
@@ -840,6 +869,7 @@ impl App {
         "Sort: Path",
         "Randomize",
         "Reverse",
+        "Remove All",
     ];
 
     /// Set the PlaylistOps overlay's highlighted position (no-op outside
@@ -879,6 +909,17 @@ impl App {
                     4 => self.playlist_sort(crate::model::SortKey::Path),
                     5 => self.playlist_randomize(),
                     6 => self.playlist_reverse(),
+                    7 => {
+                        // Clearing the whole playlist belongs with the other
+                        // whole-playlist operations, not on a bare keystroke.
+                        // Mirrors GTK's List ▾ ▸ Remove All.
+                        let _ = self.player.stop();
+                        self.playlist.tracks.clear();
+                        self.playlist.current_index = 0;
+                        self.playlist_cursor = 0;
+                        self.shuffle_state.reset();
+                        self.set_status("Playlist cleared");
+                    }
                     _ => {}
                 }
                 self.mode = Mode::Normal;

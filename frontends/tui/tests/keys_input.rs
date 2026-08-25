@@ -482,3 +482,54 @@ fn albums_esc_closes_add_path_before_popping_drill() {
     }
 }
 
+// -----------------------------------------------------------------------
+// '/' opens search instead of clearing the playlist (item 14)
+// -----------------------------------------------------------------------
+
+/// `/` used to clear the entire playlist while meaning "search" in the
+/// Media Library. It is the key every terminal user presses to search,
+/// so the destructive binding was a data-loss trap.
+#[test]
+fn slash_opens_search_and_does_not_clear_the_playlist() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.playlist.len(), 3, "/ must not clear the playlist");
+    assert!(matches!(app.mode, Mode::Jump { .. }), "/ must open search");
+}
+
+/// Ctrl+F is the same action, matching what the Media Library already
+/// accepts.
+#[test]
+fn ctrl_f_opens_search() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(matches!(app.mode, Mode::Jump { .. }));
+}
+
+/// Clearing the playlist is still reachable, but from the ops popup where
+/// the other whole-playlist operations live — the same place GTK puts it,
+/// as List ▾ ▸ Remove All.
+#[test]
+fn remove_all_is_reachable_from_the_ops_popup() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
+    let idx = App::PLAYLIST_OPS_LABELS
+        .iter()
+        .position(|l| *l == "Remove All")
+        .expect("ops popup must offer Remove All");
+    for _ in 0..idx {
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.playlist.len(), 0);
+}
+
+/// F1 joins `i` for help. No F-keys were bound before, so there is no
+/// conflict; `i` still works if a multiplexer intercepts F1.
+#[test]
+fn f1_opens_help() {
+    let mut app = app_with_tracks(&["A"]);
+    app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Help { .. }));
+}
+

@@ -3,7 +3,7 @@
 use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-// New key binding tests (rebindings: ',' = move, '.' = remove, '/' = clear)
+// New key binding tests (rebindings: ',' = move, '.' = remove, '/' = search)
 // -----------------------------------------------------------------------
 
 /// ',' now enters MoveTrack mode (was 'm').
@@ -22,23 +22,17 @@ fn dot_key_enters_remove_track_mode_new_binding() {
     assert!(matches!(app.mode, Mode::RemoveTrack { .. }));
 }
 
-/// '/' clears all tracks and stops playback.
+/// '/' opens jump/search and leaves the playlist untouched. It used to
+/// clear the whole playlist here, which was a data-loss trap on the key
+/// every terminal user reflexively presses to search; clearing now lives
+/// in the 'o' ops popup as "Remove All".
 #[test]
-fn slash_key_clears_all_tracks() {
+fn slash_key_opens_search_without_clearing() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
     assert_eq!(app.playlist.len(), 3);
     app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert!(app.playlist.is_empty(), "playlist should be empty after /");
-    assert_eq!(app.playlist.current_index, 0);
-    assert_eq!(app.playlist_cursor, 0);
-    assert!(
-        app.status_message
-            .as_deref()
-            .unwrap_or("")
-            .contains("cleared"),
-        "expected cleared message, got: {:?}",
-        app.status_message
-    );
+    assert_eq!(app.playlist.len(), 3, "/ must not clear the playlist");
+    assert!(matches!(app.mode, Mode::Jump { .. }), "/ must open search");
 }
 
 /// 'i' enters Help mode with scroll at zero.
