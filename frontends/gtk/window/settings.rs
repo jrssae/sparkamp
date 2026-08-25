@@ -14,6 +14,18 @@ pub(super) fn settings_scroll_page(
         .build()
 }
 
+/// Settings notebook tab labels with mnemonics, in order: Appearance, Behavior,
+/// Visualizer, Media Library, About. Access keys are deconflicted within the
+/// notebook: A, B, V, M, O (About uses O, not A, to avoid collision with
+/// Appearance; B is used by Behavior, so About cannot use it).
+pub(super) const SETTINGS_TAB_LABELS: [&str; 5] = [
+    "_Appearance",
+    "_Behavior",
+    "_Visualizer",
+    "_Media Library",
+    "Ab_out",
+];
+
 pub(super) fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -356,7 +368,7 @@ pub(super) fn open_settings_window(
             });
         }
 
-        let tab_lbl = Label::with_mnemonic("_Appearance");
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[0]);
         notebook.append_page(&settings_scroll_page(&root), Some(&tab_lbl));
     }
 
@@ -837,7 +849,7 @@ pub(super) fn open_settings_window(
             grid.attach(&hint, 0, 24, 2, 1);
         }
 
-        let tab_lbl = Label::with_mnemonic("_Behavior");
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[1]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -1396,7 +1408,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&gr_settings_box, 0, 3, 2, 1);
 
-        let tab_lbl = Label::with_mnemonic("_Visualizer");
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[2]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -2355,7 +2367,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&chk_skip_db_load, 1, 19, 1, 1);
 
-        let tab_lbl = Label::with_mnemonic("_Media Library");
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[3]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -2451,7 +2463,7 @@ pub(super) fn open_settings_window(
             .child(&outer)
             .build();
 
-        let tab_lbl = Label::with_mnemonic("A_bout");
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[4]);
         notebook.append_page(&scroll, Some(&tab_lbl));
         // Move About to leftmost position.
         notebook.reorder_child(&scroll, Some(0));
@@ -2504,26 +2516,55 @@ pub(super) fn open_settings_window(
 mod settings_tab_mnemonic_tests {
     use super::*;
 
-    /// Verify that the Settings notebook tab labels use with_mnemonic
-    /// and carry the correct text for keyboard access keys.
-    /// Note: Label::with_mnemonic() stores text without underscores,
-    /// so text() returns the displayed text without underscore markers.
-    #[gtk4::test]
-    fn settings_tabs_have_mnemonics() {
-        // Create the five tab labels with their expected mnemonic text.
-        let appearance_lbl = Label::with_mnemonic("_Appearance");
-        let behavior_lbl = Label::with_mnemonic("_Behavior");
-        let visualizer_lbl = Label::with_mnemonic("_Visualizer");
-        let media_lib_lbl = Label::with_mnemonic("_Media Library");
-        let about_lbl = Label::with_mnemonic("A_bout");
+    /// Verify that SETTINGS_TAB_LABELS defines all five mnemonics correctly.
+    /// All labels must contain exactly one underscore, and the mnemonic
+    /// characters (the ones following the underscores) must be distinct when
+    /// lowercased to avoid collisions in the notebook.
+    #[test]
+    fn settings_tab_labels_are_deconflicted() {
+        assert_eq!(
+            SETTINGS_TAB_LABELS.len(),
+            5,
+            "SETTINGS_TAB_LABELS must have exactly 5 entries"
+        );
 
-        // Verify the labels contain the correct text.
-        // with_mnemonic() processes underscores but stores the text without them.
-        assert_eq!(appearance_lbl.text(), "Appearance", "Appearance tab has incorrect label");
-        assert_eq!(behavior_lbl.text(), "Behavior", "Behavior tab has incorrect label");
-        assert_eq!(visualizer_lbl.text(), "Visualizer", "Visualizer tab has incorrect label");
-        assert_eq!(media_lib_lbl.text(), "Media Library", "Media Library tab has incorrect label");
-        assert_eq!(about_lbl.text(), "About", "About tab has incorrect label");
+        let mut mnemonic_chars = Vec::new();
+
+        for (idx, label) in SETTINGS_TAB_LABELS.iter().enumerate() {
+            let underscores: Vec<usize> = label
+                .chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '_')
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(
+                underscores.len(),
+                1,
+                "SETTINGS_TAB_LABELS[{}] = {:?} must have exactly one underscore",
+                idx,
+                label
+            );
+
+            // The character immediately after the underscore is the mnemonic key.
+            let underscore_idx = underscores[0];
+            let mnemonic_char = label
+                .chars()
+                .nth(underscore_idx + 1)
+                .expect("underscore must not be the last character");
+            let mnemonic_lowercase = mnemonic_char.to_lowercase().to_string();
+
+            // Check for duplicates.
+            assert!(
+                !mnemonic_chars.contains(&mnemonic_lowercase),
+                "SETTINGS_TAB_LABELS[{}] = {:?} has mnemonic '{}' which \
+                 collides with an earlier tab (GTK lowercases all mnemonics)",
+                idx,
+                label,
+                mnemonic_lowercase
+            );
+            mnemonic_chars.push(mnemonic_lowercase);
+        }
     }
 }
 
