@@ -1128,6 +1128,63 @@ pub fn build(
         }
     }
 
+    // Desktop notification on track change. MPRIS already publishes metadata,
+    // so the Shell's media widget is covered; this is the transient banner.
+    // Fires only when no Sparkamp window is focused — a banner over the
+    // player you are already looking at is why people disable these. "No
+    // Sparkamp window" is checked against every persistent top-level window
+    // the app can have open (main player, playlist, Media Library, Settings,
+    // ID3 editor, Lyrics, Album Art) — being focused on any of them means
+    // you're already looking at Sparkamp, so the same reasoning applies.
+    // Short-lived helper popups (Jump, Shortcuts, disc/device dialogs) are
+    // not tracked as persistent state and are left out of this check.
+    {
+        let state_rc = state.clone();
+        let app_rc = app.clone();
+        let win_wk = window.downgrade();
+        let pl_wk = playlist_win.downgrade();
+        let cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)> = Rc::new(move |_info| {
+            let s = state_rc.borrow();
+            if !s.config.playback.notify_track_change {
+                return;
+            }
+            let singleton_active =
+                |w: &Option<gtk4::Window>| w.as_ref().map(|w| w.is_active()).unwrap_or(false);
+            let focused = win_wk.upgrade().map(|w| w.is_active()).unwrap_or(false)
+                || pl_wk.upgrade().map(|w| w.is_active()).unwrap_or(false)
+                || singleton_active(&s.ml_window)
+                || singleton_active(&s.settings_window)
+                || singleton_active(&s.id3_editor_window)
+                || singleton_active(&s.lyrics_window)
+                || singleton_active(&s.art_window);
+            if focused {
+                return;
+            }
+            // NowPlayingInfo carries curated (label, value) tag pairs re-read
+            // straight off disk for the panel/editor — it has no structured
+            // title/artist fields or TPE1→TPE2 fallback of its own. The
+            // playlist's Track already has both, via notification_lines(),
+            // so reading it from there keeps one source of truth instead of
+            // re-deriving artist precedence from the tag list.
+            let (heading, body) = match s.playlist.current() {
+                Some(t) => t.notification_lines(),
+                None => return,
+            };
+            let n = gio::Notification::new(&gtk_safe(&heading));
+            if let Some(b) = body {
+                n.set_body(Some(&gtk_safe(&b)));
+            }
+            // The app icon rather than the cover: a notification icon is
+            // rendered at ~48px, where album art is unreadable anyway, and
+            // this keeps the banner identifiably Sparkamp's.
+            n.set_icon(&gio::ThemedIcon::new("dev.sparkamp.Sparkamp"));
+            // A stable id replaces the previous banner instead of stacking
+            // one per track.
+            app_rc.send_notification(Some("sparkamp-track"), &n);
+        });
+        state.borrow_mut().subscribe_now_playing(cb);
+    }
+
     // Bundled here: everything below this point that was carved into its own
     // module reads the same widgets and callbacks the rest of `build` does.
     let ctx = PlayerCtx {

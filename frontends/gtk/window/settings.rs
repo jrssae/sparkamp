@@ -849,6 +849,26 @@ pub(super) fn open_settings_window(
             grid.attach(&hint, 0, 24, 2, 1);
         }
 
+        // Desktop notification on track change (see player.rs's now-playing
+        // subscriber). Only fires while no Sparkamp window is focused.
+        let lbl_notify = Label::builder()
+            .label("Track notifications")
+            .halign(Align::Start)
+            .build();
+        grid.attach(&lbl_notify, 0, 25, 1, 1);
+        let chk_notify = CheckButton::with_label("Show a notification when the track changes");
+        chk_notify.set_tooltip_text(Some("Only while no Sparkamp window is focused"));
+        chk_notify.set_active(state.borrow().config.playback.notify_track_change);
+        {
+            let state_rc = state.clone();
+            chk_notify.connect_toggled(move |c| {
+                let mut s = state_rc.borrow_mut();
+                s.config.playback.notify_track_change = c.is_active();
+                let _ = s.config.save();
+            });
+        }
+        grid.attach(&chk_notify, 1, 25, 1, 1);
+
         let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[1]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
