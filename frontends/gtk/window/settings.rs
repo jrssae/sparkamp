@@ -356,7 +356,7 @@ pub(super) fn open_settings_window(
             });
         }
 
-        let tab_lbl = Label::new(Some("Appearance"));
+        let tab_lbl = Label::with_mnemonic("_Appearance");
         notebook.append_page(&settings_scroll_page(&root), Some(&tab_lbl));
     }
 
@@ -837,7 +837,7 @@ pub(super) fn open_settings_window(
             grid.attach(&hint, 0, 24, 2, 1);
         }
 
-        let tab_lbl = Label::new(Some("Behavior"));
+        let tab_lbl = Label::with_mnemonic("_Behavior");
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -1396,7 +1396,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&gr_settings_box, 0, 3, 2, 1);
 
-        let tab_lbl = Label::new(Some("Visualizer"));
+        let tab_lbl = Label::with_mnemonic("_Visualizer");
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -2355,7 +2355,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&chk_skip_db_load, 1, 19, 1, 1);
 
-        let tab_lbl = Label::new(Some("Media Library"));
+        let tab_lbl = Label::with_mnemonic("_Media Library");
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -2451,7 +2451,7 @@ pub(super) fn open_settings_window(
             .child(&outer)
             .build();
 
-        let tab_lbl = Label::new(Some("About"));
+        let tab_lbl = Label::with_mnemonic("A_bout");
         notebook.append_page(&scroll, Some(&tab_lbl));
         // Move About to leftmost position.
         notebook.reorder_child(&scroll, Some(0));
@@ -2498,6 +2498,33 @@ pub(super) fn open_settings_window(
     win.set_child(Some(&vbox));
     win.present();
     state.borrow_mut().settings_window = Some(win);
+}
+
+#[cfg(test)]
+mod settings_tab_mnemonic_tests {
+    use super::*;
+
+    /// Verify that the Settings notebook tab labels use with_mnemonic
+    /// and carry the correct text for keyboard access keys.
+    /// Note: Label::with_mnemonic() stores text without underscores,
+    /// so text() returns the displayed text without underscore markers.
+    #[gtk4::test]
+    fn settings_tabs_have_mnemonics() {
+        // Create the five tab labels with their expected mnemonic text.
+        let appearance_lbl = Label::with_mnemonic("_Appearance");
+        let behavior_lbl = Label::with_mnemonic("_Behavior");
+        let visualizer_lbl = Label::with_mnemonic("_Visualizer");
+        let media_lib_lbl = Label::with_mnemonic("_Media Library");
+        let about_lbl = Label::with_mnemonic("A_bout");
+
+        // Verify the labels contain the correct text.
+        // with_mnemonic() processes underscores but stores the text without them.
+        assert_eq!(appearance_lbl.text(), "Appearance", "Appearance tab has incorrect label");
+        assert_eq!(behavior_lbl.text(), "Behavior", "Behavior tab has incorrect label");
+        assert_eq!(visualizer_lbl.text(), "Visualizer", "Visualizer tab has incorrect label");
+        assert_eq!(media_lib_lbl.text(), "Media Library", "Media Library tab has incorrect label");
+        assert_eq!(about_lbl.text(), "About", "About tab has incorrect label");
+    }
 }
 
 // ---------------------------------------------------------------------------

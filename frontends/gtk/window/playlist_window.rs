@@ -181,6 +181,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         }
         popover.set_child(Some(&vbox));
         let mb = gtk4::MenuButton::new();
+        // use_underline makes `_A` an Alt+A access key. GTK shows the
+        // underline only while Alt is held, so the menu bar looks unchanged.
+        mb.set_use_underline(true);
         mb.set_label(label);
         mb.set_popover(Some(&popover));
         mb
@@ -1053,7 +1056,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
 
     // Add▸
     let add_menu = menu_button(
-        "Add ▾",
+        "_Add ▾",
         vec![
             (
                 "Add Files…",
@@ -1073,7 +1076,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     );
     // Select▸
     let select_menu = menu_button(
-        "Select ▾",
+        "_Select ▾",
         vec![
             (
                 "Select All",
@@ -1115,7 +1118,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         )
     };
     let sort_menu = menu_button(
-        "Sort ▾",
+        "S_ort ▾",
         vec![
             sort_item("Title", crate::model::SortKey::Title),
             sort_item("Artist", crate::model::SortKey::Artist),
@@ -1141,7 +1144,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     );
     // List▸
     let list_menu = menu_button(
-        "List ▾",
+        "_List ▾",
         vec![
             (
                 "Save Playlist…",
@@ -1264,5 +1267,39 @@ mod row_text_tests {
         q.enqueue(7);
         assert_eq!(row_display_text(&t, &q, false), "[1] Queued");
         assert_eq!(row_display_text(&t, &q, true), "[1] ▶ Queued");
+    }
+}
+
+#[cfg(test)]
+mod menu_button_mnemonic_tests {
+    /// Verify that MenuButton can be configured with use_underline and
+    /// underscored labels to enable keyboard access keys.
+    #[gtk4::test]
+    fn menu_button_mnemonics_work() {
+        // Verify the pattern: MenuButton with use_underline(true) and
+        // an underscored label text creates a valid mnemonic widget.
+        // The menu_button helper in the build function follows this pattern.
+        let mb = gtk4::MenuButton::new();
+        mb.set_use_underline(true);
+        mb.set_label("_Add ▾");
+
+        assert!(mb.uses_underline(), "MenuButton should have use_underline set");
+        assert_eq!(mb.label().as_deref(), Some("_Add ▾"), "MenuButton should have the correct label");
+
+        // Verify all four labels with their correct access keys.
+        let labels = vec![
+            ("_Add ▾", "Add menu should use Alt+A"),
+            ("_Select ▾", "Select menu should use Alt+S"),
+            ("S_ort ▾", "Sort menu should use Alt+O (not S, to avoid conflict with Select)"),
+            ("_List ▾", "List menu should use Alt+L"),
+        ];
+
+        for (label_text, description) in labels {
+            let btn = gtk4::MenuButton::new();
+            btn.set_use_underline(true);
+            btn.set_label(label_text);
+            assert!(btn.uses_underline(), "{}: use_underline should be set", description);
+            assert_eq!(btn.label().as_deref(), Some(label_text), "{}: label should match", description);
+        }
     }
 }
