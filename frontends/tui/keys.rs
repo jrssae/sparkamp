@@ -223,16 +223,31 @@ impl App {
             return;
         }
         // Ctrl+F — search, matching the Media Library's existing binding.
-        // Routed through open_search(), which — like queue_toggle_highlighted
-        // does for Ctrl+Q — checks self.mode itself and only acts in Normal.
-        // That keeps it a safe no-op everywhere else: the Media Library's own
-        // Ctrl+F search field, Jump's own in-progress query, and every
-        // text-entry / editor overlay (AddFile, MoveTrack, RemoveTrack,
-        // Id3Editor, Settings) all keep whatever the user was doing instead
-        // of having it silently discarded — the exact bug this task exists
-        // to remove, so the fix must not reintroduce a smaller copy of it.
+        //
+        // Two guards are needed here and neither subsumes the other:
+        //
+        // - The outer `!matches!(.., Mode::MediaLibrary(..))` below makes
+        //   this block a no-op while the Media Library is open, so the
+        //   `return` does NOT fire and control falls through to
+        //   `match self.mode` further down, which dispatches to
+        //   `handle_media_library` — the ONLY place that can set
+        //   `search_active = true` on the ML's own search field
+        //   (media_library/mod.rs:329-334, documented at :85). Without this
+        //   guard the `return` a few lines down fires unconditionally and
+        //   `handle_media_library` never sees the keystroke at all, even
+        //   though `open_search()` correctly no-ops in that mode — a no-op
+        //   action still consumed the key via `return`, so ML's Ctrl+F goes
+        //   dead. (This regressed once already: round 2 removed this guard
+        //   on the mistaken premise that open_search()'s inner check made it
+        //   redundant.)
+        // - `open_search()`'s own inner `Mode::Normal`-only check handles
+        //   every OTHER mode this top-level match can't distinguish between
+        //   from here — AddFile, MoveTrack, RemoveTrack, Id3Editor, Settings,
+        //   and Jump's own in-progress query — so Ctrl+F can't silently
+        //   discard whatever the user was typing there either.
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('f') | KeyCode::Char('F'))
+            && !matches!(self.mode, Mode::MediaLibrary(..))
         {
             self.open_search();
             return;

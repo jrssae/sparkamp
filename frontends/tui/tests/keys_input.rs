@@ -506,6 +506,37 @@ fn ctrl_f_opens_search() {
     assert!(matches!(app.mode, Mode::Jump { .. }));
 }
 
+/// Ctrl+F inside the Media Library must activate ITS OWN search field
+/// (media_library/mod.rs:329-334, documented at :85) rather than being
+/// swallowed by the playlist-jump binding above. A prior round of this
+/// fix regressed this: the top-level Ctrl+F handler `return`ed
+/// unconditionally, so `handle_media_library` never saw the keystroke,
+/// even though the mode itself never changed.
+#[test]
+fn ctrl_f_in_media_library_activates_its_own_search() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    let Mode::MediaLibrary(ref s) = app.mode else {
+        panic!("Ctrl+F must not leave the Media Library");
+    };
+    assert!(s.search_active, "Ctrl+F must activate the ML's own search field");
+}
+
+/// Same coverage for '/', which reaches the ML through the ordinary mode
+/// dispatch rather than a top-level global check — included here because
+/// nothing in this file previously asserted on `search_active` at all.
+#[test]
+fn slash_in_media_library_activates_its_own_search() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    let Mode::MediaLibrary(ref s) = app.mode else {
+        panic!("/ must not leave the Media Library");
+    };
+    assert!(s.search_active, "/ must activate the ML's own search field");
+}
+
 /// Clearing the playlist is still reachable, but from the ops popup where
 /// the other whole-playlist operations live — the same place GTK puts it,
 /// as List ▾ ▸ Remove All.
