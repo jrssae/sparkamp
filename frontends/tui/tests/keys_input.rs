@@ -533,3 +533,36 @@ fn f1_opens_help() {
     assert!(matches!(app.mode, Mode::Help { .. }));
 }
 
+/// F1 must toggle exactly like `i` does — "alongside `i`" means behaving
+/// like it, including closing the overlay it opened, not just opening it.
+#[test]
+fn f1_closes_help_like_i_does() {
+    let mut app = make_app();
+    app.mode = Mode::Help { scroll: 0 };
+    app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Normal), "a second F1 must close help");
+}
+
+/// Ctrl+F is bound globally (it has to work no matter what's on screen),
+/// but it must not silently discard whatever the user was typing in a
+/// text-entry mode — the exact failure mode this task removed from `/`.
+/// AddFile stands in for MoveTrack / RemoveTrack / Id3Editor / Settings,
+/// which all hold typed state the same way.
+#[test]
+fn ctrl_f_in_add_file_mode_does_not_discard_the_typed_input() {
+    let mut app = make_app();
+    app.mode = Mode::AddFile {
+        input: "/tmp/track.mp3".into(),
+        scan_cancel: None,
+        scan_added: 0,
+    };
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    let Mode::AddFile { ref input, .. } = app.mode else {
+        panic!("Ctrl+F must not leave AddFile mode while the user is typing a path");
+    };
+    assert_eq!(
+        input, "/tmp/track.mp3",
+        "Ctrl+F must not discard in-progress input"
+    );
+}
+

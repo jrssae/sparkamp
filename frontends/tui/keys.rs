@@ -223,21 +223,18 @@ impl App {
             return;
         }
         // Ctrl+F — search, matching the Media Library's existing binding.
-        // Skipped while the Media Library is open: it already owns Ctrl+F
-        // for its own search field (media_library/mod.rs), and handling it
-        // globally here would intercept the key before that handler ever
-        // saw it, silently replacing ML search with playlist jump.
+        // Routed through open_search(), which — like queue_toggle_highlighted
+        // does for Ctrl+Q — checks self.mode itself and only acts in Normal.
+        // That keeps it a safe no-op everywhere else: the Media Library's own
+        // Ctrl+F search field, Jump's own in-progress query, and every
+        // text-entry / editor overlay (AddFile, MoveTrack, RemoveTrack,
+        // Id3Editor, Settings) all keep whatever the user was doing instead
+        // of having it silently discarded — the exact bug this task exists
+        // to remove, so the fix must not reintroduce a smaller copy of it.
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('f') | KeyCode::Char('F'))
-            && !matches!(self.mode, Mode::MediaLibrary(..))
         {
-            let results = (0..self.playlist.len()).collect();
-            self.mode = Mode::Jump {
-                query: String::new(),
-                results,
-                selected: 0,
-                from_media_library: false,
-            };
+            self.open_search();
             return;
         }
         match self.mode {
@@ -282,8 +279,9 @@ impl App {
                         };
                     }
 
-                    // Close the overlay.
-                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
+                    // Close the overlay. F1 joins i/I here so it toggles
+                    // like i does, rather than only ever opening help.
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::F(1) => {
                         self.mode = Mode::Normal;
                     }
 
@@ -374,7 +372,7 @@ impl App {
                 self.mode = Mode::Queue { selected: 0 };
             }
 
-            // o — playlist ops popup (sort / randomize / reverse).
+            // o — playlist ops popup (sort / randomize / reverse / remove all).
             KeyCode::Char('o') => {
                 self.mode = Mode::PlaylistOps { selected: 0 };
             }
@@ -532,7 +530,9 @@ impl App {
                 self.mode = Mode::Help { scroll: 0 };
             }
 
-            // F1 — help, alongside `i`. No F-keys were bound before this, so
+            // F1 — help, alongside `i`. Toggles like `i` does: this arm
+            // opens it from Normal, and the Mode::Help match above closes
+            // it again on a second F1. No F-keys were bound before this, so
             // there is no conflict; `i` still works if a terminal multiplexer
             // swallows F1.
             KeyCode::F(1) => {
@@ -777,6 +777,27 @@ impl App {
             }
 
             _ => {}
+        }
+    }
+
+    /// Ctrl+F: open jump/search — the same transition `/` performs in
+    /// Normal mode. Checked against `self.mode` for the same reason
+    /// `queue_toggle_highlighted` checks it for Ctrl+Q: Ctrl+F is bound
+    /// globally so it works no matter what's on screen, but "globally"
+    /// must not mean "even while the user is mid-keystroke somewhere that
+    /// isn't Normal" — that would throw away an in-progress AddFile path,
+    /// MoveTrack/RemoveTrack number, Id3Editor field, Settings edit, or
+    /// even Jump's own partially-typed query, exactly the class of bug
+    /// this task removed from `/`.
+    pub(super) fn open_search(&mut self) {
+        if let Mode::Normal = self.mode {
+            let results = (0..self.playlist.len()).collect();
+            self.mode = Mode::Jump {
+                query: String::new(),
+                results,
+                selected: 0,
+                from_media_library: false,
+            };
         }
     }
 

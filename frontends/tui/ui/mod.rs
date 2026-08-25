@@ -613,7 +613,7 @@ pub(super) fn draw_playlist_hints(frame: &mut Frame, _app: &App, area: Rect) {
         sep(),
         hint(".", "remove"),
         sep(),
-        hint("/", "clear all"),
+        hint("/", "search"),
         sep(),
         hint("a", "viz"),
         sep(),
