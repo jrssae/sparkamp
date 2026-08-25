@@ -1044,7 +1044,11 @@ pub fn build(
         .build();
     root.append(&np_probe);
 
-    window.set_child(Some(&root));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&root));
+    window.set_child(Some(&toaster));
 
 
     // ══════════════════════════════════════════════════════════════════════════

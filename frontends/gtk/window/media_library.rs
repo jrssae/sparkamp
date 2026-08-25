@@ -350,7 +350,11 @@ pub(super) fn open_media_library_window(
     paned.set_start_child(Some(&sidebar_scroll));
     paned.set_end_child(Some(&stack));
     paned.set_position(init_sidebar_width);
-    win.set_child(Some(&paned));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&paned));
+    win.set_child(Some(&toaster));
 
     win.connect_close_request({
         let state = state.clone();

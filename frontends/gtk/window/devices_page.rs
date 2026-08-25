@@ -55,7 +55,7 @@ use super::{
     device_fs_unsupported, device_glyph_prefix, device_io_shutting_down,
     device_m3u_remove_basenames, device_plan_fs, device_plan_one, device_record_pair,
     device_recorded_relpath, device_sync_id, find_row_by_name, gtk_safe, invalidate_mtp_meta,
-    lib_track_matches_query, make_view_search_row, ml_status_bar,     set_levelbar_fullness, show_alert_parented, unsupported_device_banner,
+    lib_track_matches_query, make_view_search_row, ml_status_bar,     set_levelbar_fullness, show_toast, unsupported_device_banner,
     MlCtx, ML_SEARCH_ENTRY_NAME,
     UNSUPPORTED_FS_TOOLTIP,
 };
@@ -804,22 +804,24 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let eject = dev_eject.clone();
         let win_wk = win.downgrade();
         Rc::new(move |dev: crate::devices::Device, srcs: Vec<std::path::PathBuf>| {
+            // Precondition blocks, not destructive gates — nothing to undo.
             if dev.read_only {
                 let n = if dev.label.is_empty() { "This device" } else { &dev.label };
-                show_alert_parented(
-                    win_wk.upgrade().as_ref(),
-                    &format!("{n} is read-only — can't copy files to it."),
-                );
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(&w, &format!("{n} is read-only — can't copy files to it."));
+                }
                 return;
             }
             if device_fs_unsupported(&dev.fs_type) {
-                show_alert_parented(
-                    win_wk.upgrade().as_ref(),
-                    &format!(
-                        "{} is an unsupported filesystem — can't write to this device yet.",
-                        dev.fs_type
-                    ),
-                );
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(
+                        &w,
+                        &format!(
+                            "{} is an unsupported filesystem — can't write to this device yet.",
+                            dev.fs_type
+                        ),
+                    );
+                }
                 return;
             }
             let device_id = device_sync_id(&dev);
@@ -839,14 +841,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     }
                 }
                 if need > dev.free_bytes {
-                    show_alert_parented(
-                        win_wk.upgrade().as_ref(),
-                        &format!(
-                            "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
-                            need as f64 / 1e9,
-                            dev.free_bytes as f64 / 1e9
-                        ),
-                    );
+                    if let Some(w) = win_wk.upgrade() {
+                        show_toast(
+                            &w,
+                            &format!(
+                                "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                                need as f64 / 1e9,
+                                dev.free_bytes as f64 / 1e9
+                            ),
+                        );
+                    }
                     return;
                 }
             }
@@ -945,10 +949,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     eject2.set_sensitive(dev_ejectable);
                 }
                 reload2(dev_for_reload.clone());
-                show_alert_parented(
-                    win2.upgrade().as_ref(),
-                    &format!("Copied {copied}, skipped {skipped}, failed {failed} to {dname}."),
-                );
+                // Completion summary, not a gate — the copy already ran.
+                if let Some(w) = win2.upgrade() {
+                    show_toast(
+                        &w,
+                        &format!("Copied {copied}, skipped {skipped}, failed {failed} to {dname}."),
+                    );
+                }
             });
         })
     };
@@ -1237,11 +1244,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         if let Some(cb) = rebuild_pl {
                             cb();
                         }
+                        // Non-fatal: the delete already happened (confirmed above), this
+                        // just reports a partial failure. Nothing left to gate.
                         if failed > 0 {
-                            show_alert_parented(
-                                win_wk2.upgrade().as_ref(),
-                                &format!("{failed} file(s) couldn't be deleted."),
-                            );
+                            if let Some(w) = win_wk2.upgrade() {
+                                show_toast(&w, &format!("{failed} file(s) couldn't be deleted."));
+                            }
                         }
                     }
                 }

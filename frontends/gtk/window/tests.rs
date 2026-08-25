@@ -1327,3 +1327,26 @@ fn disc_add_decides_playback_per_action() {
     // ...and without autoplay, never.
     assert!(!disc_add_starts_playback(DiscAdd::Behavior, false, true, 7));
 }
+
+// ── Toast overlay lookup ─────────────────────────────────────────────────
+
+/// A window whose root is wrapped resolves its overlay; one that is not
+/// wrapped resolves None, which is what makes show_toast's fallback to a
+/// modal alert reachable rather than dead code.
+///
+/// `#[gtk4::test]` (not plain `#[test]` + `gtk4::init()`) is required here:
+/// this binary also runs `#[gtk4::test]`s elsewhere (media_library.rs), and
+/// a plain `#[test]` calling `gtk4::init()` races those for the one
+/// process-wide GTK main context.
+#[gtk4::test]
+fn toast_overlay_is_found_only_when_the_root_is_wrapped() {
+    let bare = gtk4::Window::new();
+    bare.set_child(Some(&gtk4::Box::new(gtk4::Orientation::Vertical, 0)));
+    assert!(super::util::toast_overlay_for(&bare).is_none());
+
+    let wrapped = gtk4::Window::new();
+    let overlay = adw::ToastOverlay::new();
+    overlay.set_child(Some(&gtk4::Box::new(gtk4::Orientation::Vertical, 0)));
+    wrapped.set_child(Some(&overlay));
+    assert!(super::util::toast_overlay_for(&wrapped).is_some());
+}

@@ -418,7 +418,11 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     pl_root.append(&Separator::new(Orientation::Horizontal));
     pl_root.append(&pl_btn_row);
 
-    playlist_win.set_child(Some(&pl_root));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&pl_root));
+    playlist_win.set_child(Some(&toaster));
 
     // Closing the playlist window hides it (not destroys) so the next toggle
     // brings it back without rebuilding.  Save its size to both the in-memory

@@ -1076,22 +1076,24 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     return;
                 }
                 let win_for_alert = || win_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
+                // Precondition blocks, not destructive gates — nothing to undo.
                 if dev.read_only {
                     let n = if dev.label.is_empty() { "This device" } else { &dev.label };
-                    show_alert_parented(
-                        win_for_alert().as_ref(),
-                        &format!("{n} is read-only — can't copy files to it."),
-                    );
+                    if let Some(w) = win_for_alert() {
+                        show_toast(&w, &format!("{n} is read-only — can't copy files to it."));
+                    }
                     return;
                 }
                 if device_fs_unsupported(&dev.fs_type) {
-                    show_alert_parented(
-                        win_for_alert().as_ref(),
-                        &format!(
-                            "{} is an unsupported filesystem — can't write to this device yet.",
-                            dev.fs_type
-                        ),
-                    );
+                    if let Some(w) = win_for_alert() {
+                        show_toast(
+                            &w,
+                            &format!(
+                                "{} is an unsupported filesystem — can't write to this device yet.",
+                                dev.fs_type
+                            ),
+                        );
+                    }
                     return;
                 }
                 let device_id = device_sync_id(&dev);
@@ -1107,14 +1109,16 @@ pub(super) fn install(ctx: &PlayerCtx) {
                         }
                     }
                     if need > dev.free_bytes {
-                        show_alert_parented(
-                            win_for_alert().as_ref(),
-                            &format!(
-                                "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
-                                need as f64 / 1e9,
-                                dev.free_bytes as f64 / 1e9
-                            ),
-                        );
+                        if let Some(w) = win_for_alert() {
+                            show_toast(
+                                &w,
+                                &format!(
+                                    "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                                    need as f64 / 1e9,
+                                    dev.free_bytes as f64 / 1e9
+                                ),
+                            );
+                        }
                         return;
                     }
                 }
@@ -1166,15 +1170,14 @@ pub(super) fn install(ctx: &PlayerCtx) {
                             _ => failed += 1,
                         }
                     }
-                    status2.set_text(&gtk_safe(&format!(
+                    let summary = format!(
                         "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
-                    )));
-                    show_alert_parented(
-                        win2.upgrade().map(|w| w.upcast::<gtk4::Window>()).as_ref(),
-                        &gtk_safe(&format!(
-                            "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
-                        )),
                     );
+                    status2.set_text(&gtk_safe(&summary));
+                    // Completion summary, not a gate — the copy already ran.
+                    if let Some(w) = win2.upgrade().map(|w| w.upcast::<gtk4::Window>()) {
+                        show_toast(&w, &summary);
+                    }
                 });
             });
             pl_action_group.add_action(&action);

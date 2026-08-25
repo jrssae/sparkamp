@@ -28,7 +28,7 @@ use super::{
     build_tag_conflicts,
     device_io_shutting_down, device_playlist_sync_plan, device_sync_plan, find_row_by_name,
     invalidate_mtp_meta, prompt_playlist_conflicts, prompt_tag_conflicts, set_button_busy,
-    show_alert_parented, MlCtx, PlaylistSyncItem,
+    show_toast, MlCtx, PlaylistSyncItem,
 };
 
 /// What the three buttons need from the page that built them.
@@ -131,13 +131,16 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                             }
                         }
                         Err(e) => {
-                            show_alert_parented(
-                                win2.upgrade().as_ref(),
-                                &format!(
-                                    "Couldn't disconnect the device ({e}). Close anything \
-                                     using it and try again."
-                                ),
-                            );
+                            // Non-fatal: nothing changed, the user can retry.
+                            if let Some(w) = win2.upgrade() {
+                                show_toast(
+                                    &w,
+                                    &format!(
+                                        "Couldn't disconnect the device ({e}). Close anything \
+                                         using it and try again."
+                                    ),
+                                );
+                            }
                         }
                     },
                 );
@@ -170,10 +173,9 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                         dialog.show(win_wk.upgrade().as_ref());
                     }
                     Err(_) => {
-                        show_alert_parented(
-                            win_wk.upgrade().as_ref(),
-                            "Eject failed unexpectedly.",
-                        );
+                        if let Some(w) = win_wk.upgrade() {
+                            show_toast(&w, "Eject failed unexpectedly.");
+                        }
                     }
                 }
             });
@@ -260,10 +262,10 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                 && pl_conflict == 0
             {
                 set_button_busy(&sync_btn, false, "Sync");
-                show_alert_parented(
-                    win_wk.upgrade().as_ref(),
-                    "Already in sync — no tag or playlist changes to apply.",
-                );
+                // Informational, not an error — G3 says no success modals either.
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(&w, "Already in sync — no tag or playlist changes to apply.");
+                }
                 return;
             }
             let dname = if dev.label.is_empty() {
@@ -432,7 +434,10 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                             let win_done = win_wk2.clone();
                             Rc::new(move || {
                                 reload_done(dev_done.clone());
-                                show_alert_parented(win_done.upgrade().as_ref(), &summary);
+                                // Completion summary, not a gate — the sync already ran.
+                                if let Some(w) = win_done.upgrade() {
+                                    show_toast(&w, &summary);
+                                }
                             })
                         };
                         // After tag conflicts, resolve playlist conflicts, then finish.

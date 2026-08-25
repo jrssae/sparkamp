@@ -230,6 +230,29 @@ pub(super) fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
     alert.show(parent);
 }
 
+/// Find the `AdwToastOverlay` wrapping a window's content, if it has one.
+///
+/// Every top-level window that can raise a toast wraps its root in one at
+/// construction, so this is a single downcast rather than a tree walk.
+pub(super) fn toast_overlay_for(win: &gtk4::Window) -> Option<adw::ToastOverlay> {
+    win.child().and_downcast::<adw::ToastOverlay>()
+}
+
+/// Show a transient message at the bottom of `win`.
+///
+/// This is the non-fatal path: a recoverable failure the user can act on
+/// later, or not at all. Modal alerts stay for destructive confirmations and
+/// for errors that must be acknowledged before anything else can proceed.
+///
+/// Falls back to a modal alert when the window has no overlay, so a caller
+/// can never silently drop a message it believed it had shown.
+pub(super) fn show_toast(win: &gtk4::Window, msg: &str) {
+    match toast_overlay_for(win) {
+        Some(overlay) => overlay.add_toast(adw::Toast::new(&gtk_safe(msg))),
+        None => show_alert_parented(Some(win), msg),
+    }
+}
+
 /// Modal listing files that could not be read (and were not queued).
 pub(super) fn show_unreadable_dialog(win: &gtk4::Window, body: &str) {
     let dlg = gtk4::AlertDialog::builder()
@@ -728,19 +751,15 @@ pub(super) fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32
     out
 }
 
-/// Show a modal AlertDialog reporting a playlist-save failure.
 /// Caller-side error reporting for [`run_playlist_save_dialog`] callbacks.
 pub(super) fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err: &anyhow::Error) {
-    let dialog = gtk4::AlertDialog::builder()
-        .message("Couldn't save playlist")
-        .detail(format!(
-            "Failed to write {}\n\n{}",
-            target.display(),
-            err
-        ))
-        .modal(true)
-        .build();
-    dialog.show(Some(parent));
+    // Non-fatal: the playlist is intact in memory and the user can retry or
+    // pick another location. A modal here interrupted a save they can simply
+    // do again.
+    show_toast(
+        parent,
+        &format!("Couldn't save {}: {err}", target.display()),
+    );
 }
 
 /// What the "Send to" menu shows, as data — pure so the 0/1/N visibility

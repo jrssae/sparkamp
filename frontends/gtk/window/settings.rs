@@ -264,10 +264,8 @@ pub(super) fn open_settings_window(
                             }
                         }
                         Err(e) => {
-                            show_alert_parented(
-                                Some(&win_alert),
-                                &format!("Could not add skin: {e}"),
-                            );
+                            // Non-fatal: the file chooser can be reopened to retry.
+                            show_toast(&win_alert, &format!("Could not add skin: {e}"));
                         }
                     }
                 });
@@ -527,8 +525,9 @@ pub(super) fn open_settings_window(
                     .spawn()
                     .is_ok();
                 if !launched {
-                    show_alert_parented(
-                        Some(&win_alert),
+                    // Non-fatal: the user can open GNOME Settings by hand instead.
+                    show_toast(
+                        &win_alert,
                         "Couldn't open GNOME Settings. Open Settings → Removable \
                          Media yourself and pick Sparkamp under \"CD audio\".",
                     );
