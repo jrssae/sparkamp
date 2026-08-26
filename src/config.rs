@@ -580,13 +580,11 @@ impl Default for BehaviorConfig {
 /// Standard 10-band EQ center frequencies in Hz (display only; the
 /// GStreamer element's actual centre frequencies are fixed and match these).
 ///
-/// Nothing renders these today. The GTK UI stopped surfacing them, and the
-/// `sparkamp_eq_band_label` FFI getter this comment used to point at was
-/// removed on 2026-08-12 because the Swift frontend never called it — each
-/// frontend spells its own band labels. Kept because it is the canonical list
-/// and the next frontend that wants labels should read it rather than invent
-/// a fourth copy.
-#[allow(dead_code)]
+/// The GTK UI stopped surfacing these visually, and the `sparkamp_eq_band_label`
+/// FFI getter this comment used to point at was removed on 2026-08-12 because
+/// the Swift frontend never called it — each frontend spells its own band
+/// labels. GTK now reads this list again (Task 10, accessibility) to build
+/// each band slider's spoken name, rather than inventing a second copy.
 pub const EQ_BAND_FREQS: [&str; 10] = [
     "29", "59", "119", "237", "474", "947", "1.9k", "3.8k", "7.5k", "15k",
 ];

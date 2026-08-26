@@ -244,6 +244,9 @@ pub(super) fn open_id3_field_customizer(
                     // ▲ button
                     let up_btn = Button::with_label("▲");
                     up_btn.add_css_class("pl-btn");
+                    // The label text is a bare glyph — a screen reader needs
+                    // a real word.
+                    up_btn.update_property(&[gtk4::accessible::Property::Label("Move up")]);
                     up_btn.set_sensitive(col_pos > 0);
                     if col_pos > 0 {
                         let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
@@ -258,6 +261,9 @@ pub(super) fn open_id3_field_customizer(
                     // ▼ button
                     let dn_btn = Button::with_label("▼");
                     dn_btn.add_css_class("pl-btn");
+                    // The label text is a bare glyph — a screen reader needs
+                    // a real word.
+                    dn_btn.update_property(&[gtk4::accessible::Property::Label("Move down")]);
                     dn_btn.set_sensitive(col_pos + 1 < n);
                     if col_pos + 1 < n {
                         let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
@@ -538,6 +544,9 @@ pub(super) fn open_customize_columns_dialog(
                     // ▲ button — enabled when a visible column precedes this one
                     let up_btn = Button::with_label("▲");
                     up_btn.add_css_class("pl-btn");
+                    // The label text is a bare glyph — a screen reader needs
+                    // a real word.
+                    up_btn.update_property(&[gtk4::accessible::Property::Label("Move up")]);
                     let prev_idx = es[..i].iter().rposition(|e| e.visible);
                     up_btn.set_sensitive(prev_idx.is_some());
                     if let Some(prev) = prev_idx {
@@ -555,6 +564,9 @@ pub(super) fn open_customize_columns_dialog(
                     // ▼ button — enabled when a visible column follows this one
                     let dn_btn = Button::with_label("▼");
                     dn_btn.add_css_class("pl-btn");
+                    // The label text is a bare glyph — a screen reader needs
+                    // a real word.
+                    dn_btn.update_property(&[gtk4::accessible::Property::Label("Move down")]);
                     let next_rel = es[i + 1..].iter().position(|e| e.visible);
                     dn_btn.set_sensitive(next_rel.is_some());
                     if let Some(rel) = next_rel {

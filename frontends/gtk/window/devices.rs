@@ -37,6 +37,8 @@ pub(super) fn make_view_search_row(placeholder: &str) -> (GtkBox, Entry) {
     entry.set_hexpand(true);
     let clear = Button::with_label("✕");
     clear.add_css_class("pl-btn");
+    // The label text is a bare glyph — a screen reader needs a real word.
+    clear.update_property(&[gtk4::accessible::Property::Label("Clear search")]);
     {
         let e = entry.clone();
         clear.connect_clicked(move |_| e.set_text(""));

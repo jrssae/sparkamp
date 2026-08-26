@@ -1,5 +1,17 @@
 use super::*;
 
+/// Turn one `EQ_BAND_FREQS` entry into words a screen reader can speak.
+///
+/// The raw list is terse display strings ("1.9k") meant for a narrow column
+/// header, not speech — this expands the "k" shorthand to "kHz" and appends
+/// the unit everywhere else, so "band 6" is heard as "1.9 kHz", not "1.9k".
+pub(super) fn band_freq_label(freq: &str) -> String {
+    match freq.strip_suffix('k') {
+        Some(khz) => format!("{khz} kHz"),
+        None => format!("{freq} Hz"),
+    }
+}
+
 /// Open the 10-band parametric equalizer window.
 ///
 /// The window shows a row of 10 vertical `Scale` sliders (one per band),
@@ -9,7 +21,7 @@ use super::*;
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
 pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
-    use crate::config::EQ_PRESETS;
+    use crate::config::{EQ_BAND_FREQS, EQ_PRESETS};
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 
     let win = gtk4::Window::new();
@@ -74,6 +86,7 @@ pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
     preamp_scale.add_mark(0.5, gtk4::PositionType::Bottom, Some("50%"));
     preamp_scale.add_mark(1.0, gtk4::PositionType::Bottom, Some("100%"));
     preamp_scale.add_mark(1.5, gtk4::PositionType::Bottom, Some("150%"));
+    preamp_scale.update_property(&[gtk4::accessible::Property::Label("Pre-amp")]);
 
     let preamp_pct_label = Label::new(Some(&format!("{:.0}%", init_preamp * 100.0)));
     preamp_pct_label.set_width_request(40);
@@ -130,6 +143,10 @@ pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
         scale.add_mark(0.0, gtk4::PositionType::Right, Some("0"));
         scale.add_mark(12.0, gtk4::PositionType::Right, Some("+12"));
         scale.add_mark(-12.0, gtk4::PositionType::Right, Some("-12"));
+        // Read the canonical frequency list rather than a second hard-coded
+        // one, so a bare "-3" doesn't announce with no idea which band it is.
+        let band_label = format!("{} band", band_freq_label(EQ_BAND_FREQS[i]));
+        scale.update_property(&[gtk4::accessible::Property::Label(&band_label)]);
         col.append(&scale);
 
         // Gain value label (updated live as the slider moves).

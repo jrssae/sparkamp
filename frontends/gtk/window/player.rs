@@ -537,6 +537,16 @@ pub fn build(
     viz.set_vexpand(init_player_expanded);
     viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
+    // A custom-drawn surface has no implicit accessible name at all — unlike
+    // a Button or Scale, there is nothing here for a screen reader to fall
+    // back to. Both the Cairo and Granite renderers are the same feature
+    // (only one is visible at a time via viz_stack below), so both carry it.
+    viz.update_property(&[
+        gtk4::accessible::Property::Label("Visualizer"),
+        gtk4::accessible::Property::Description(
+            "A decorative animation of the audio being played",
+        ),
+    ]);
 
     let granite_pic = Picture::new();
     granite_pic.set_height_request(VIZ_HEIGHT_COLLAPSED);
@@ -549,6 +559,12 @@ pub fn build(
     // player tall; let it shrink to whatever height the row gives it.
     granite_pic.set_can_shrink(true);
     granite_pic.add_css_class("mini-viz");
+    granite_pic.update_property(&[
+        gtk4::accessible::Property::Label("Visualizer"),
+        gtk4::accessible::Property::Description(
+            "A decorative animation of the audio being played",
+        ),
+    ]);
 
     let viz_stack = Stack::new();
     viz_stack.set_hexpand(true);
@@ -841,6 +857,18 @@ pub fn build(
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
 
+    // Labels name the control, not its shortcut — a screen reader reading
+    // "Playlist (p)" off the tooltip text would read the parenthesised key
+    // aloud, which is not what a sighted user is shown.
+    btn_pl.update_property(&[gtk4::accessible::Property::Label("Playlist")]);
+    btn_eq.update_property(&[gtk4::accessible::Property::Label("Equalizer")]);
+    btn_ml.update_property(&[gtk4::accessible::Property::Label("Media library")]);
+    btn_info.update_property(&[gtk4::accessible::Property::Label("Keyboard shortcuts")]);
+    btn_jump_vol.update_property(&[gtk4::accessible::Property::Label("Jump to track")]);
+    btn_repeat.update_property(&[gtk4::accessible::Property::Label("Repeat mode")]);
+    btn_shuffle.update_property(&[gtk4::accessible::Property::Label("Shuffle")]);
+    np_toggle.update_property(&[gtk4::accessible::Property::Label("Now playing panel")]);
+
     // Single source of truth for the now-playing panel toggle, shared by the
     // `w` key and the inline marquee arrow so both triggers run the identical
     // Stack-swap / viz-resize / arrow-flip / persist logic.
@@ -924,6 +952,10 @@ pub fn build(
     vol_bar.set_hexpand(false);
     vol_bar.set_width_request(90);
     vol_bar.add_css_class("vol-scale");
+    // A bare Scale announces its raw 0-1 fraction. Naming it is enough here —
+    // unlike the seek bar, volume has no separately-tracked "current value"
+    // text elsewhere in the tick loop worth mirroring.
+    vol_bar.update_property(&[gtk4::accessible::Property::Label("Volume")]);
 
     // Expanding spacer pushes PL to the right edge of np_info.
     let vol_spring = GtkBox::new(Orientation::Horizontal, 0);
@@ -953,6 +985,10 @@ pub fn build(
     seek_bar.set_draw_value(false);
     seek_bar.set_hexpand(true);
     seek_bar.add_css_class("seek-scale");
+    // ValueText is set live by the tick loop (tick.rs), next to the visible
+    // time-display update, so it always names the control at minimum even
+    // before the first tick lands.
+    seek_bar.update_property(&[gtk4::accessible::Property::Label("Seek")]);
 
     prog_row.append(&seek_bar);
     root.append(&prog_row);
@@ -971,6 +1007,14 @@ pub fn build(
     let btn_pause = Button::from_icon_name("media-playback-pause-symbolic");
     let btn_stop = Button::from_icon_name("media-playback-stop-symbolic");
     let btn_next = Button::from_icon_name("media-skip-forward-symbolic");
+
+    // Icon-only buttons announce as "button" without this. The label is what
+    // a screen reader reads, so it is the control's name, not its shortcut.
+    btn_prev.update_property(&[gtk4::accessible::Property::Label("Previous track")]);
+    btn_play.update_property(&[gtk4::accessible::Property::Label("Play")]);
+    btn_pause.update_property(&[gtk4::accessible::Property::Label("Pause")]);
+    btn_stop.update_property(&[gtk4::accessible::Property::Label("Stop")]);
+    btn_next.update_property(&[gtk4::accessible::Property::Label("Next track")]);
 
     for btn in [&btn_prev, &btn_play, &btn_pause, &btn_stop, &btn_next] {
         btn.add_css_class("transport");

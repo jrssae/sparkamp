@@ -570,6 +570,10 @@ pub(super) fn build_album_gallery(
     // smaller", not exact px).
     let zoom_label = Label::new(Some("Zoom"));
     let zoom_in = Button::with_label("＋");
+    // The label text on both is a bare glyph — a screen reader needs a real
+    // word.
+    zoom_out.update_property(&[gtk4::accessible::Property::Label("Zoom out")]);
+    zoom_in.update_property(&[gtk4::accessible::Property::Label("Zoom in")]);
     header.append(&zoom_spinner);
     header.append(&zoom_out);
     header.append(&zoom_label);

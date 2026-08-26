@@ -37,6 +37,17 @@ pub(super) fn open_track_art(state: &Rc<RefCell<AppState>>, path: &std::path::Pa
         .and_then(|ml| ml.track_by_path(&path_str).ok())
         .and_then(|t| t.artwork_path.clone())
         .or_else(|| crate::tags::read_track_tags(path).artwork_path);
+    // Same lookup shape as artwork_path above, independently — only used for
+    // the accessible description, so it is fine for this to occasionally
+    // re-read tags the artwork_path lookup already read.
+    let album = state
+        .borrow()
+        .media_lib
+        .as_ref()
+        .and_then(|ml| ml.track_by_path(&path_str).ok())
+        .and_then(|t| t.album)
+        .or_else(|| crate::tags::read_track_tags(path).album)
+        .filter(|a| !a.is_empty());
 
     let name = path
         .file_name()
@@ -57,6 +68,12 @@ pub(super) fn open_track_art(state: &Rc<RefCell<AppState>>, path: &std::path::Pa
             pic.set_vexpand(true);
             pic.set_filename(Some(&p));
             pic.add_css_class("np-art");
+            let album_safe = album.as_deref().map(gtk_safe);
+            let mut props = vec![gtk4::accessible::Property::Label("Album art")];
+            if let Some(ref a) = album_safe {
+                props.push(gtk4::accessible::Property::Description(a));
+            }
+            pic.update_property(&props);
             pic.upcast()
         }
         None => {
@@ -203,6 +220,9 @@ fn art_or_placeholder(info: &NowPlayingInfo) -> gtk4::Widget {
             pic.set_vexpand(true);
             pic.set_filename(Some(path));
             pic.add_css_class("np-art");
+            // Shared with the A1 panel rather than a second copy of the same
+            // "Album art" + album-name labelling.
+            super::now_playing::label_art_picture(&pic, info);
             pic.upcast()
         }
         None => placeholder_widget(),

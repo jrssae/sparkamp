@@ -237,6 +237,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         let search_clear_btn = Button::with_label("✕");
         search_clear_btn.add_css_class("pl-btn");
+        // The label text is a bare glyph — a screen reader needs a real word.
+        search_clear_btn.update_property(&[gtk4::accessible::Property::Label("Clear search")]);
         {
             let e = search_entry.clone();
             search_clear_btn.connect_clicked(move |_| {

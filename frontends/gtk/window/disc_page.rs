@@ -232,6 +232,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     disc_disconnect_lbl.add_css_class("broken");
     let disc_disconnect_dismiss = Button::with_label("✕");
     disc_disconnect_dismiss.add_css_class("pl-btn");
+    // The label text is a bare glyph — a screen reader needs a real word.
+    disc_disconnect_dismiss.update_property(&[gtk4::accessible::Property::Label("Dismiss")]);
     {
         let row = disc_disconnect_row.clone();
         disc_disconnect_dismiss.connect_clicked(move |_| row.set_visible(false));

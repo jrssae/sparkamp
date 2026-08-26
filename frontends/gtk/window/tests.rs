@@ -1411,3 +1411,121 @@ fn list_box_filter_does_not_toggle_row_visibility() {
     assert!(list.row_at_index(1).unwrap().is_visible());
     assert!(list.row_at_index(2).unwrap().is_visible());
 }
+
+// ── Accessible names on controls (Task 10) ──────────────────────────────
+//
+// gtk4-rs 0.9 exposes `Accessible::update_property` (a setter) but no
+// matching getter — confirmed against vendor/gtk4-0.9.7/src/auto/accessible.rs,
+// which declares `update_property` and `reset_property` and nothing named
+// `accessible_property`. The task brief's Step 1 test assumed that getter
+// existed; it does not, so there is no way to read a widget's accessible
+// name back and assert on it. `icon_only_button_accepts_an_accessible_label`
+// below is kept only as a compile-time guard that `update_property` accepts
+// `Property::Label` on a `Button` — it would pass whether or not production
+// code ever calls it, so it proves nothing about the actual labelling.  The
+// tests that actually guard this task's decisions are the pure-logic ones
+// beneath it: the string each control's label/description is built from.
+
+/// A screen reader announces an icon-only button by its accessible name.
+/// Without one it says "button", which is the state the whole frontend was
+/// in before this task. This cannot assert the label was recorded (see the
+/// section note above) — it only proves the call compiles and does not
+/// panic against a real `Button`.
+#[gtk4::test]
+fn icon_only_button_accepts_an_accessible_label() {
+    let b = gtk4::Button::from_icon_name("media-playback-start-symbolic");
+    b.update_property(&[gtk4::accessible::Property::Label("Play")]);
+}
+
+/// The seek bar's spoken value must track the visible time label exactly —
+/// this is the string both are built from. Elapsed mode zero-pads seconds
+/// below 10, matching the pre-existing `fmt_duration` convention above.
+#[test]
+fn format_playback_time_elapsed_pads_seconds_below_ten() {
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(65), Some(Duration::from_secs(240)), false),
+        "1:05"
+    );
+}
+
+#[test]
+fn format_playback_time_remaining_when_duration_known() {
+    // 4:00 total, 3:00 elapsed -> 1:00 remaining.
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(180), Some(Duration::from_secs(240)), true),
+        "-1:00"
+    );
+}
+
+#[test]
+fn format_playback_time_remaining_without_duration_is_placeholder() {
+    // No duration probed yet — matches what the visible label already showed
+    // in this case before this task (tick.rs's "--:--" branch).
+    assert_eq!(super::tick::format_playback_time(Duration::from_secs(10), None, true), "--:--");
+}
+
+#[test]
+fn format_playback_time_position_past_duration_saturates_instead_of_underflowing() {
+    // A stale/short duration reading with position already past it must not
+    // wrap a u64 subtraction around to a huge "remaining" time.
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(300), Some(Duration::from_secs(240)), true),
+        "-0:00"
+    );
+}
+
+/// EQ band sliders speak their centre frequency, not a bare "-3". The raw
+/// `EQ_BAND_FREQS` entries are terse display strings ("1.9k") never meant to
+/// be read aloud — this is the expansion those strings go through.
+#[test]
+fn band_freq_label_expands_kilohertz_shorthand() {
+    assert_eq!(super::eq::band_freq_label("1.9k"), "1.9 kHz");
+}
+
+#[test]
+fn band_freq_label_appends_hz_to_plain_numbers() {
+    assert_eq!(super::eq::band_freq_label("119"), "119 Hz");
+}
+
+/// Confirms every canonical band frequency actually round-trips through the
+/// label function without panicking, covering all ten entries at once
+/// (rather than re-listing them as a second hard-coded expectation).
+#[test]
+fn band_freq_label_handles_every_canonical_band() {
+    for freq in crate::config::EQ_BAND_FREQS {
+        assert!(!super::eq::band_freq_label(freq).is_empty());
+    }
+}
+
+fn info_with_tags(tags: Vec<(&'static str, String)>) -> crate::now_playing::NowPlayingInfo {
+    crate::now_playing::NowPlayingInfo {
+        tags,
+        tech_line: String::new(),
+        technical: Vec::new(),
+        artwork_path: None,
+        play_count: None,
+        last_played: None,
+        last_scanned: None,
+        added_at: None,
+        artist_wiki_url: None,
+        album_wiki_url: None,
+    }
+}
+
+/// The album-art `Picture`'s accessible description comes from this lookup —
+/// it must find the "Album" tag when present, so a screen reader hears which
+/// album is showing instead of nothing.
+#[test]
+fn album_description_finds_the_album_tag() {
+    let info = info_with_tags(vec![("Title", "Song".to_string()), ("Album", "Greatest Hits".to_string())]);
+    assert_eq!(super::now_playing::album_description(&info), Some("Greatest Hits"));
+}
+
+/// `tags` only ever carries non-empty values (see its doc comment), so an
+/// absent "Album" entry — not an empty one — is the only way this is `None`;
+/// the art widget then gets just the "Album art" label, no description.
+#[test]
+fn album_description_is_none_when_album_unknown() {
+    let info = info_with_tags(vec![("Title", "Song".to_string())]);
+    assert_eq!(super::now_playing::album_description(&info), None);
+}
