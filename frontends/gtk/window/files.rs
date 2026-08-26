@@ -982,7 +982,44 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             .child(&col_view)
             .build();
         *vadj_holder.borrow_mut() = Some(track_scroll.vadjustment());
-        files_vbox.append(&track_scroll);
+
+        // Two empty states share this view: nothing indexed at all, and a
+        // search that matched nothing. The second is only reachable once the
+        // first is not, so one stack with a swapped-out page covers both.
+        let files_empty = super::util::empty_state(
+            "folder-music-symbolic",
+            "No music folders",
+            Some("Add a folder to start building your library"),
+        );
+        let files_stack = super::util::stack_with_empty_state(&track_scroll, &files_empty);
+        files_vbox.append(&files_stack);
+        {
+            let stack = files_stack.clone();
+            let empty = files_empty.clone();
+            let entry = search_entry.clone();
+            track_store.connect_items_changed(move |store, _, _, _| {
+                if store.n_items() > 0 {
+                    stack.set_visible_child_name("content");
+                    return;
+                }
+                let q = entry.text();
+                if q.is_empty() {
+                    empty.set_icon_name(Some("folder-music-symbolic"));
+                    empty.set_title("No music folders");
+                    empty.set_description(Some("Add a folder to start building your library"));
+                } else {
+                    empty.set_icon_name(Some("system-search-symbolic"));
+                    empty.set_title("No results");
+                    empty.set_description(Some(&gtk_safe(&format!("Nothing matches \u{201c}{q}\u{201d}"))));
+                }
+                stack.set_visible_child_name("empty");
+            });
+            // `rebuild_files()` above already populated the store once, before
+            // this handler existed to see it — sync the initial state by hand.
+            if track_store.n_items() > 0 {
+                files_stack.set_visible_child_name("content");
+            }
+        }
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
         {
@@ -1220,7 +1257,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         files_vbox.append(&files_status_bar);
         // Sit directly below the file list (above the button row), matching the
         // active playlist window.
-        files_vbox.reorder_child_after(&files_status_bar, Some(&track_scroll));
+        files_vbox.reorder_child_after(&files_status_bar, Some(&files_stack));
 
         // Add selected tracks to playlist.
         let add_selected: Rc<dyn Fn()> = {

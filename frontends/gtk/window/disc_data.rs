@@ -19,7 +19,7 @@ use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, Align, Box as GtkBox, ColumnView, ColumnViewColumn, CustomSorter,
     EventControllerKey, Label, MultiSelection, PolicyType, ScrolledWindow,
-    SignalListItemFactory, SortListModel,
+    SignalListItemFactory, SortListModel, Stack,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -37,9 +37,10 @@ pub(super) struct DataBrowser {
     /// The row model. `populate_disc_detail` clears it when a drive with no
     /// data disc is selected.
     pub store: gio::ListStore,
-    /// The scroller holding the `ColumnView`, already appended to the detail
-    /// box. Shown for a data disc, hidden for an audio CD or an empty tray.
-    pub scroll: ScrolledWindow,
+    /// The stack holding the `ColumnView` (over an empty-state page for a
+    /// data disc with no files), already appended to the detail box. Shown
+    /// for a data disc, hidden for an audio CD or an empty tray.
+    pub scroll: Stack,
     /// The file-count/duration label under the list, also already appended.
     /// It hides and shows in lockstep with [`Self::scroll`] — the audio-CD
     /// branch of the same detail box has no file list for it to describe.
@@ -355,8 +356,32 @@ pub(super) fn build(
         .vexpand(true)
         .child(&disc_files_col_view)
         .build();
-    disc_files_scroll.set_visible(false);
-    disc_detail.append(&disc_files_scroll);
+
+    // The brief's copy for this file was "No disc inserted" — wrong for what
+    // this view actually shows empty: per the module doc above, this browser
+    // only appears once loaded media is confirmed present and is a data
+    // disc, so "no disc" can never be the reason it's showing nothing. The
+    // real empty condition is a mounted data disc with zero readable files.
+    let disc_files_empty = super::util::empty_state(
+        "media-optical-symbolic",
+        "No files on this disc",
+        Some("This disc doesn't contain any files"),
+    );
+    let disc_files_stack =
+        super::util::stack_with_empty_state(&disc_files_scroll, &disc_files_empty);
+    // Hidden by default, same as the bare ScrolledWindow was before: shown
+    // only once `populate_disc_detail` (disc_page.rs) decides the loaded
+    // media is a data disc. That toggle now targets this stack instead —
+    // it's the whole pane's visibility, a different question from which of
+    // the stack's two children is on top.
+    disc_files_stack.set_visible(false);
+    disc_detail.append(&disc_files_stack);
+    {
+        let stack = disc_files_stack.clone();
+        disc_files_store.connect_items_changed(move |store, _, _, _| {
+            stack.set_visible_child_name(if store.n_items() > 0 { "content" } else { "empty" });
+        });
+    }
 
     // ── Disc data-file browser status bar ───────────────────────────────────
     // Rows are `BoxedAnyObject<DiscFile>` (not LibTrack), so this goes through
@@ -961,7 +986,7 @@ pub(super) fn build(
 
     DataBrowser {
         store: disc_files_store,
-        scroll: disc_files_scroll,
+        scroll: disc_files_stack,
         status_bar: disc_status_bar,
         load: load_disc_files,
         add_to_library: add_disc_files_to_library,

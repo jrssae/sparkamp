@@ -253,6 +253,36 @@ pub(super) fn show_toast(win: &gtk4::Window, msg: &str) {
     }
 }
 
+/// Build a placeholder page for an empty view.
+///
+/// `icon` is a symbolic icon name; the HIG asks for a subtle monochrome
+/// icon in secondary spaces rather than an illustration.
+pub(super) fn empty_state(icon: &str, heading: &str, body: Option<&str>) -> adw::StatusPage {
+    let page = adw::StatusPage::new();
+    page.set_icon_name(Some(icon));
+    page.set_title(&gtk_safe(heading));
+    if let Some(b) = body {
+        page.set_description(Some(&gtk_safe(b)));
+    }
+    page
+}
+
+/// Put `content` and `empty` in a stack so a view can swap between them.
+///
+/// The caller drives the swap from whatever signals its model emits —
+/// usually `items_changed` on the backing `ListStore`, the same seam the
+/// Media Library status bars already use.
+pub(super) fn stack_with_empty_state(
+    content: &impl IsA<gtk4::Widget>,
+    empty: &adw::StatusPage,
+) -> gtk4::Stack {
+    let stack = gtk4::Stack::new();
+    stack.add_named(content, Some("content"));
+    stack.add_named(empty, Some("empty"));
+    stack.set_visible_child_name("empty");
+    stack
+}
+
 /// Modal listing files that could not be read (and were not queued).
 pub(super) fn show_unreadable_dialog(win: &gtk4::Window, body: &str) {
     let dlg = gtk4::AlertDialog::builder()

@@ -120,13 +120,16 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
             card_bars.borrow_mut().clear();
             let devs = current.borrow();
             if devs.is_empty() {
-                let l = Label::builder()
-                    .label("No devices connected.")
-                    .halign(Align::Start)
-                    .xalign(0.0)
-                    .build();
-                l.add_css_class("status-label");
-                list.append(&l);
+                // This is the one sub-view of the Devices page that has no
+                // search entry of its own — the search box down in the
+                // per-device track browser filters a different pane, once a
+                // device is selected — so there is no "no results" variant
+                // to distinguish here, only this single condition.
+                list.append(&super::util::empty_state(
+                    "drive-removable-media-symbolic",
+                    "No devices connected",
+                    Some("Connect a music player or USB drive"),
+                ));
                 return;
             }
             for d in devs.iter() {

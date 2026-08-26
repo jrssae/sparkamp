@@ -366,7 +366,16 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         .min_content_height(350)
         .child(&pl_view)
         .build();
-    pl_root.append(&pl_scroll);
+
+    // This is the first thing a new user sees, so the empty page doubles as
+    // onboarding rather than just saying what's missing.
+    let pl_empty = super::util::empty_state(
+        "view-list-symbolic",
+        "No tracks in the playlist",
+        Some("Press n to add files, or drag music here"),
+    );
+    let pl_stack = super::util::stack_with_empty_state(&pl_scroll, &pl_empty);
+    pl_root.append(&pl_stack);
 
     // ── Playlist window status bar ────────────────────────────────────────────
     let pl_status_label = Label::builder()
@@ -539,6 +548,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let text_rgba = text_rgba.clone();
         let refresh_pl_status = refresh_pl_status.clone();
         let scan_viewport = scan_viewport.clone();
+        let pl_stack = pl_stack.clone();
         Rc::new(move || {
             // Stamp any unstamped entries so queue badges have stable ids to
             // look up (idempotent; a no-op once every entry is stamped). Needs
@@ -612,6 +622,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 n,
                 if n == 1 { "" } else { "s" },
             ));
+            pl_stack.set_visible_child_name(if n == 0 { "empty" } else { "content" });
             refresh_pl_status();
             // On idle, not now: `visible_range` has nothing to report until GTK
             // has laid the reattached model out. The scroll restore above emits

@@ -68,6 +68,11 @@ pub(super) struct Manage {
     pub edit_path_label: Label,
     /// Shown beside the name when the playlist file can't be written.
     pub edit_ro_badge: Label,
+    /// Re-check the manage list's empty state. `playlists.rs` calls this
+    /// after its own row add/remove (Save As, the editor's Delete button) —
+    /// mutations this module doesn't see, since `pl_manage_list` is shared
+    /// rather than owned by either side.
+    pub refresh_pl_manage_empty: Rc<dyn Fn()>,
 }
 
 /// Build the `pl-manage` page and the load seam.
@@ -88,6 +93,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
     let apply_editor_columns = ui.apply_editor_columns.clone();
     let edit_error_label = ui.edit_error_label.clone();
     let pl_search_entry = ui.pl_search_entry.clone();
+
+    // Late-bound: the empty-state refresh closure is built inside the
+    // "pl-manage" page block further down, but the Nav-refresh hook below
+    // is registered first and needs to call it too (a playlist created from
+    // another window goes through this hook, not the page's own buttons).
+    // Same holder pattern as `RefreshHolder` in media_library.rs; a None
+    // call is a no-op, which is correct on the first build before the page
+    // block has run.
+    let refresh_pl_manage_empty_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(RefCell::new(None));
 
     // ── Helper: load a playlist by DB id into editing state ───────────────
     // ── Editor header widgets ────────────────────────────────────────────
@@ -258,6 +273,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         let sub_rows_ref = pl_sub_rows.clone();
         let expanded_ref = playlists_expanded.clone();
         let manage_ref   = pl_manage_list.clone();
+        let refresh_holder = refresh_pl_manage_empty_holder.clone();
         let hook: Rc<dyn Fn()> = Rc::new(move || {
             let playlists = state_rc
                 .borrow()
@@ -329,6 +345,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 attach_pl_row_drag(&m_row, pl.id);
                 manage_ref.append(&m_row);
             }
+            if let Some(r) = refresh_holder.borrow().as_ref() {
+                r();
+            }
         });
         PLAYLIST_NAV_REFRESH_HOOK.with(|h| *h.borrow_mut() = Some(hook));
     }
@@ -394,9 +413,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         {
             let q = manage_query.clone();
             let list = pl_manage_list.clone();
+            let refresh = refresh_pl_manage_empty_holder.clone();
             pl_manage_search.connect_changed(move |e| {
                 *q.borrow_mut() = e.text().to_lowercase();
                 list.invalidate_filter();
+                // Not yet built on the very first call (this handler is wired
+                // before the empty-state stack exists), so go through the
+                // same holder the Nav-refresh hook uses.
+                if let Some(r) = refresh.borrow().as_ref() {
+                    r();
+                }
             });
         }
 
@@ -427,7 +453,71 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             .vexpand(true)
             .child(&*pl_manage_list)
             .build();
-        manage_vbox.append(&manage_scroll);
+
+        // Two empty states share this list: no saved playlists at all, and a
+        // search that matched none of them. `ListBox` doesn't implement
+        // `GListModel` (unlike the ColumnView-backed views), so there is no
+        // `items_changed` seam to hook once — this is driven by an explicit
+        // call after every row add/remove and after each filter change,
+        // wired at every call site below and in playlists.rs (Save As,
+        // editor Delete).
+        let pl_manage_empty = super::util::empty_state(
+            "view-list-symbolic",
+            "No saved playlists",
+            Some("Save the current playlist to see it here"),
+        );
+        let pl_manage_stack = super::util::stack_with_empty_state(&manage_scroll, &pl_manage_empty);
+        let refresh_pl_manage_empty: Rc<dyn Fn()> = {
+            let stack = pl_manage_stack.clone();
+            let empty = pl_manage_empty.clone();
+            let list = pl_manage_list.clone();
+            let entry = pl_manage_search.clone();
+            Rc::new(move || {
+                // `row.is_visible()` does NOT reflect `set_filter_func` —
+                // `GtkListBox` hides filtered rows through its own layout,
+                // not the public `:visible` property (verified in
+                // `tests.rs`'s `list_box_filter_does_not_toggle_row_visibility`;
+                // trusting it here would have meant "no results" never
+                // triggered). So this re-runs the exact same predicate the
+                // filter function uses, over every row `row_at_index` finds
+                // — which, unlike visibility, does count filtered-out rows.
+                let query = entry.text().to_lowercase();
+                let mut total = 0usize;
+                let mut any_match = false;
+                let mut i = 0i32;
+                while let Some(row) = list.row_at_index(i) {
+                    total += 1;
+                    let matches = query.is_empty()
+                        || row.child()
+                            .and_then(|c| c.downcast::<Label>().ok())
+                            .map(|l| l.label().to_lowercase().contains(&query))
+                            .unwrap_or(true);
+                    if matches {
+                        any_match = true;
+                    }
+                    i += 1;
+                }
+                if total == 0 {
+                    empty.set_icon_name(Some("view-list-symbolic"));
+                    empty.set_title("No saved playlists");
+                    empty.set_description(Some("Save the current playlist to see it here"));
+                    stack.set_visible_child_name("empty");
+                } else if any_match {
+                    stack.set_visible_child_name("content");
+                } else {
+                    let q = entry.text();
+                    empty.set_icon_name(Some("system-search-symbolic"));
+                    empty.set_title("No results");
+                    empty.set_description(Some(&gtk_safe(&format!(
+                        "Nothing matches \u{201c}{q}\u{201d}"
+                    ))));
+                    stack.set_visible_child_name("empty");
+                }
+            })
+        };
+        *refresh_pl_manage_empty_holder.borrow_mut() = Some(refresh_pl_manage_empty.clone());
+        refresh_pl_manage_empty();
+        manage_vbox.append(&pl_manage_stack);
 
         // Clicking a manage-list row → select its sidebar sub-row
         {
@@ -497,6 +587,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             let pl_sub_ref    = pl_sub_stack.clone();
             let load          = load_pl_by_id.clone();
             let win_wk        = win.downgrade();
+            let refresh_empty = refresh_pl_manage_empty.clone();
             btn_new_pl.connect_clicked(move |_| {
                 let Some(win) = win_wk.upgrade() else { return };
                 let state2  = state_rc.clone();
@@ -506,6 +597,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let exp2    = expanded_ref.clone();
                 let pls2    = pl_sub_ref.clone();
                 let load2   = load.clone();
+                let refresh_empty = refresh_empty.clone();
                 // Save dialog replaces the previous name-only popup —
                 // user picks BOTH the filename and the target folder so
                 // the new playlist no longer lands silently in Sparkamp's
@@ -540,6 +632,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     attach_pl_row_drag(&manage_row, new_id);
                     pl_ref2.append(&manage_row);
                     pl_ref2.select_row(Some(&manage_row));
+                    refresh_empty();
 
                     // Add sidebar sub-row and select it
                     let s_lbl = Label::builder().label(&name)
@@ -649,6 +742,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             let saved       = saved_track_ids.clone();
             let rebuild     = rebuild_track_list.clone();
             let win_wk      = win.downgrade();
+            let refresh_empty = refresh_pl_manage_empty.clone();
             btn_delete_pl.connect_clicked(move |_| {
                 let sel_row = match pl_list_ref.selected_row() { Some(r) => r, None => return };
                 let id = match sel_row.widget_name().to_string().parse::<i64>() {
@@ -673,6 +767,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let et2       = et.clone();
                 let saved2    = saved.clone();
                 let rebuild2  = rebuild.clone();
+                let refresh_empty2 = refresh_empty.clone();
                 dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |result| {
                     if result != Ok(1) { return; }
                     if let Some(ref lib) = state2.borrow().media_lib {
@@ -680,6 +775,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     }
                     // Remove from manage list
                     pl_ref2.remove(&sel2);
+                    refresh_empty2();
                     // Remove sidebar sub-row
                     let target = format!("pl:{}", id);
                     let mut sub = sub2.borrow_mut();
@@ -705,5 +801,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         edit_header,
         edit_path_label,
         edit_ro_badge,
+        // Forwards through the same holder the Nav-refresh hook uses, since
+        // the real closure is local to the "pl-manage" page block above and
+        // out of scope by here.
+        refresh_pl_manage_empty: Rc::new(move || {
+            if let Some(r) = refresh_pl_manage_empty_holder.borrow().as_ref() {
+                r();
+            }
+        }),
     }
 }

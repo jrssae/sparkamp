@@ -1350,3 +1350,64 @@ fn toast_overlay_is_found_only_when_the_root_is_wrapped() {
     wrapped.set_child(Some(&overlay));
     assert!(super::util::toast_overlay_for(&wrapped).is_some());
 }
+
+// ── Empty-state stack ────────────────────────────────────────────────────
+
+/// The stack starts on the empty page: a view is empty until its model
+/// says otherwise, and starting on "content" would flash a blank table
+/// on every open.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above; both
+/// build real widgets and this binary runs both kinds of test.
+#[gtk4::test]
+fn empty_state_stack_starts_empty_and_can_swap() {
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    let page = super::util::empty_state("folder-music-symbolic", "No music folders", None);
+    let stack = super::util::stack_with_empty_state(&content, &page);
+    assert_eq!(stack.visible_child_name().as_deref(), Some("empty"));
+    stack.set_visible_child_name("content");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("content"));
+}
+
+/// `GtkListBox` filtering does NOT toggle a filtered-out row's `:visible`
+/// property — confirmed here after an early draft of
+/// `playlists_manage.rs`'s `refresh_pl_manage_empty` assumed the opposite
+/// and used `row.is_visible()` to detect "search matched nothing" for the
+/// saved-playlists manage list. That check would have compiled, run, and
+/// always found every row "visible" regardless of the filter, so the
+/// "No results" branch would never have fired — a bug this test would have
+/// caught had it existed at the time (rows filtered out here still report
+/// `is_visible() == true`, which is exactly the wrong assumption made and
+/// then corrected: the shipped code re-runs the filter's own predicate over
+/// `row_at_index` instead of trusting visibility).
+#[gtk4::test]
+fn list_box_filter_does_not_toggle_row_visibility() {
+    let list = gtk4::ListBox::new();
+    for name in ["Rock", "Jazz", "Blues"] {
+        let row = gtk4::ListBoxRow::new();
+        row.set_child(Some(&gtk4::Label::new(Some(name))));
+        list.append(&row);
+    }
+
+    // Filter down to rows whose label contains 'z' — "Jazz" only.
+    list.set_filter_func(|row| {
+        row.child()
+            .and_then(|c| c.downcast::<gtk4::Label>().ok())
+            .map(|l| l.label().contains('z'))
+            .unwrap_or(false)
+    });
+    list.invalidate_filter();
+
+    // `row_at_index` still finds all three rows — filtering doesn't shrink
+    // the index, which is what lets `total` above count every saved
+    // playlist regardless of the active search.
+    assert!(list.row_at_index(0).is_some());
+    assert!(list.row_at_index(1).is_some());
+    assert!(list.row_at_index(2).is_some());
+    // But every row still reports visible, "Rock" and "Blues" included —
+    // the filter's exclusion never reaches this property.
+    assert!(list.row_at_index(0).unwrap().is_visible());
+    assert!(list.row_at_index(1).unwrap().is_visible());
+    assert!(list.row_at_index(2).unwrap().is_visible());
+}

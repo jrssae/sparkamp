@@ -696,13 +696,50 @@ pub(super) fn build_album_gallery(
         });
     }
 
+    // Two empty states share this view: no tagged music at all, and a
+    // search that matched nothing — same split as the Files view, and the
+    // same `items_changed` seam (`refilter`'s `store.splice` above fires it
+    // for both a fresh fold and a query change).
+    let gallery_empty = super::util::empty_state(
+        "media-optical-symbolic",
+        "No albums",
+        Some("Albums appear here once your library has tagged music"),
+    );
+    let gallery_stack = super::util::stack_with_empty_state(&scrolled, &gallery_empty);
+    {
+        let stack = gallery_stack.clone();
+        let empty = gallery_empty.clone();
+        let entry = search_entry.clone();
+        store.connect_items_changed(move |store, _, _, _| {
+            if store.n_items() > 0 {
+                stack.set_visible_child_name("content");
+                return;
+            }
+            let q = entry.text();
+            if q.is_empty() {
+                empty.set_icon_name(Some("media-optical-symbolic"));
+                empty.set_title("No albums");
+                empty.set_description(Some(
+                    "Albums appear here once your library has tagged music",
+                ));
+            } else {
+                empty.set_icon_name(Some("system-search-symbolic"));
+                empty.set_title("No results");
+                empty.set_description(Some(&gtk_safe(&format!(
+                    "Nothing matches \u{201c}{q}\u{201d}"
+                ))));
+            }
+            stack.set_visible_child_name("empty");
+        });
+    }
+
     // ── Assemble ────────────────────────────────────────────────────────
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.set_hexpand(true);
     page.set_vexpand(true);
     page.append(&search_row);
     page.append(&header);
-    page.append(&scrolled);
+    page.append(&gallery_stack);
 
     // Populate once up front so the grid isn't empty the first time it's
     // shown; the caller can also call `rebuild()` again later (e.g. on

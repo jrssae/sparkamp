@@ -559,6 +559,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         edit_header,
         edit_path_label,
         edit_ro_badge,
+        refresh_pl_manage_empty,
     } = playlists_manage::build(
         ctx,
         sb,
@@ -1094,6 +1095,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let sidebar_ref  = sidebar.clone();
             let pl_ml_ref    = pl_manage_list.clone();
             let win_wk       = win.downgrade();
+            let refresh_empty = refresh_pl_manage_empty.clone();
             btn_save_as_pl.connect_clicked(move |_| {
                 let Some(win) = win_wk.upgrade() else { return };
                 // Pre-fill the Save dialog with the current playlist's name
@@ -1112,6 +1114,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let load2    = load.clone();
                 let sidebar2 = sidebar_ref.clone();
                 let pl_ml2   = pl_ml_ref.clone();
+                let refresh_empty2 = refresh_empty.clone();
                 // Native Save dialog replaces the previous name-only popup —
                 // user chooses both filename and folder so the new .m3u8
                 // doesn't silently land in the managed-playlists dir (which
@@ -1145,6 +1148,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     manage_row.set_child(Some(&lbl));
                     attach_pl_row_drag(&manage_row, new_id);
                     pl_ml2.append(&manage_row);
+                    refresh_empty2();
 
                     let s_lbl = Label::builder()
                         .label(&new_name)
@@ -1264,6 +1268,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let saved         = saved_track_ids.clone();
             let rebuild       = rebuild_track_list.clone();
             let win_wk        = win.downgrade();
+            let refresh_empty = refresh_pl_manage_empty.clone();
             btn_delete_pl.connect_clicked(move |_| {
                 let id = ep_id.get();
                 if id < 0 { return; }
@@ -1287,6 +1292,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let et2      = et.clone();
                 let saved2   = saved.clone();
                 let rebuild2 = rebuild.clone();
+                let refresh_empty2 = refresh_empty.clone();
                 dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |result| {
                     if result != Ok(1) { return; }
                     if let Some(ref lib) = state2.borrow().media_lib {
@@ -1299,6 +1305,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         match pl_ref2.row_at_index(i) {
                             Some(r) if r.widget_name() == target => {
                                 pl_ref2.remove(&r);
+                                refresh_empty2();
                                 break;
                             }
                             Some(_) => i += 1,
