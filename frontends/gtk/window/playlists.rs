@@ -445,6 +445,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     *edit_multi_sel_holder.borrow_mut() = Some(edit_multi_sel.clone());
     let track_list: Rc<gtk4::ColumnView> = Rc::new({
         let cv = gtk4::ColumnView::new(Some(edit_multi_sel.clone()));
+        // Names the table itself, so a screen reader announces which view
+        // focus entered rather than staying silent on the widget as a whole.
+        cv.update_property(&[gtk4::accessible::Property::Label("Playlist tracks")]);
         cv.add_css_class("playlist");
         cv.set_vexpand(true);
         cv.set_show_row_separators(false);

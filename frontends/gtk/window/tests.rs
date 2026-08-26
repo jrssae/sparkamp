@@ -1539,3 +1539,58 @@ fn album_description_strips_embedded_nul_bytes() {
     let info = info_with_tags(vec![("Album", "Bad\0Album".to_string())]);
     assert_eq!(super::now_playing::album_description(&info), Some("BadAlbum".to_string()));
 }
+
+// ── Row-level accessible summaries on ColumnView tables (Task 11) ────────
+//
+// A ColumnView row built from a SignalListItemFactory announces the
+// concatenation of every cell's rendered text, empty cells included, so an
+// untagged file read as "song, , ". `spoken_row_summary` is the fix: one
+// sentence, built from the fields the row actually has, called from each
+// column's bind closure instead of letting AT-SPI's default concatenation
+// run. It lives in `files.rs` rather than being duplicated per view because
+// Files, the Playlist editor and Device files all bind the same `LibTrack`
+// title/artist/album triple.
+
+/// A fully-tagged track reads as one comma-joined sentence.
+#[test]
+fn row_summary_omits_empty_fields() {
+    assert_eq!(super::files::spoken_row_summary("Song", "", ""), "Song");
+    assert_eq!(super::files::spoken_row_summary("Song", "Artist", ""), "Song, Artist");
+    assert_eq!(
+        super::files::spoken_row_summary("Song", "Artist", "Album"),
+        "Song, Artist, Album"
+    );
+}
+
+/// An album tag with no artist is the shape `ml_cell_text` can actually
+/// produce (album survives a scan that found no artist tag), so it must not
+/// silently get promoted into the two-field sentence meant for artist-only.
+#[test]
+fn row_summary_album_without_artist_is_dropped_too() {
+    assert_eq!(super::files::spoken_row_summary("Song", "", "Album"), "Song");
+}
+
+/// `spoken_row_summary` sanitises internally (mirrors `album_description`,
+/// Task 10) so a NUL byte surviving in ID3 metadata can't reach
+/// `update_property` even if a future call site forgets `gtk_safe()` itself.
+#[test]
+fn row_summary_strips_embedded_nul_bytes() {
+    assert_eq!(super::files::spoken_row_summary("Bad\0Song", "Art\0ist", ""), "BadSong, Artist");
+}
+
+/// The data-disc browser has no artist/album — its row type is `DiscFile`,
+/// not `LibTrack` — so it gets its own summary function rather than reusing
+/// `files::spoken_row_summary`'s three-field shape.
+#[test]
+fn disc_row_summary_omits_unmeasured_length() {
+    assert_eq!(super::disc_data::spoken_row_summary("track01.wav", None), "track01.wav");
+    assert_eq!(super::disc_data::spoken_row_summary("track01.wav", Some(65)), "track01.wav, 1:05");
+}
+
+/// Same NUL-safety guarantee as the audio-track summary: a filename read
+/// straight off a data disc's directory listing is untrusted the same way
+/// ID3 tags are.
+#[test]
+fn disc_row_summary_strips_embedded_nul_bytes() {
+    assert_eq!(super::disc_data::spoken_row_summary("bad\0.wav", None), "bad.wav");
+}

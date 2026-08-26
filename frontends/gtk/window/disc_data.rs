@@ -55,6 +55,24 @@ pub(super) struct DataBrowser {
     pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
 }
 
+/// One-sentence spoken summary of a data-disc file row: name, then length
+/// when the disc read could measure it (skipped, not read as "—", when it
+/// couldn't — see the Length column's own bind). Size isn't part of the
+/// sentence: it is secondary metadata a listener can arrow over to the Size
+/// cell for, not part of identifying the row. Kept separate from the bind
+/// closures so the formatting is unit-testable without constructing a widget.
+///
+/// Sanitises with `gtk_safe` internally, the same call
+/// `super::files::spoken_row_summary` makes, so a NUL byte in a filename
+/// pulled straight off disc can't reach `update_property`.
+pub(super) fn spoken_row_summary(display: &str, duration_secs: Option<u32>) -> String {
+    let spoken = match duration_secs {
+        Some(s) => format!("{display}, {}:{:02}", s / 60, s % 60),
+        None => display.to_string(),
+    };
+    gtk_safe(&spoken)
+}
+
 /// Build the browser into `detail` and return its handles.
 ///
 /// `status_lbl` is the detail view's shared status label — the browser writes
@@ -94,6 +112,9 @@ pub(super) fn build(
         SortListModel::new(Some(disc_files_store.clone()), None::<gtk4::Sorter>);
     let disc_files_selection = MultiSelection::new(Some(disc_files_sort_model.clone()));
     let disc_files_col_view = ColumnView::new(Some(disc_files_selection.clone()));
+    // Names the table itself, so a screen reader announces which view focus
+    // entered rather than staying silent on the widget as a whole.
+    disc_files_col_view.update_property(&[gtk4::accessible::Property::Label("Disc tracks")]);
     // The row context menu, filled in further down once its action group and
     // menu model exist. The cells below are built before any of that but each
     // one needs to reach it, which is the holder pattern this file already
@@ -148,6 +169,11 @@ pub(super) fn build(
             if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
                 lbl.set_text(&(li.position() + 1).to_string());
             }
+            // Position is a bare index, not row content — like the editor's
+            // and device view's own position columns, it keeps its own
+            // narrow announcement rather than carrying the full row summary
+            // (set on Title/Length/Size below, the columns that hold actual
+            // file data).
         });
         let col = ColumnViewColumn::new(Some("#"), Some(factory));
         col.set_fixed_width(48);
@@ -198,7 +224,15 @@ pub(super) fn build(
             else {
                 return;
             };
-            lbl.set_text(&gtk_safe(&boxed.borrow::<crate::disc::mount::DiscFile>().display));
+            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            lbl.set_text(&gtk_safe(&f.display));
+            let spoken = spoken_row_summary(&f.display, f.duration_secs);
+            // `ListItem` itself carries no Accessible implementation (it
+            // isn't a widget) — the accessible tree is built from the
+            // actual cell widget `connect_setup` put in `li.child()`.
+            if let Some(cell) = li.child() {
+                cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+            }
         });
         let title_sorter = CustomSorter::new(|a, b| {
             let ka = a
@@ -261,14 +295,21 @@ pub(super) fn build(
             else {
                 return;
             };
-            let secs = boxed.borrow::<crate::disc::mount::DiscFile>().duration_secs;
+            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
             // Not `model::fmt_secs`: an unread disc track shows an em dash
             // rather than "-:--", which reads as a track of unknown length
             // rather than one that failed to measure.
-            lbl.set_text(&match secs {
+            lbl.set_text(&match f.duration_secs {
                 Some(s) => format!("{}:{:02}", s / 60, s % 60),
                 None => "—".to_string(),
             });
+            let spoken = spoken_row_summary(&f.display, f.duration_secs);
+            // `ListItem` itself carries no Accessible implementation (it
+            // isn't a widget) — the accessible tree is built from the
+            // actual cell widget `connect_setup` put in `li.child()`.
+            if let Some(cell) = li.child() {
+                cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+            }
         });
         let len_sorter = CustomSorter::new(|a, b| {
             let ka = a
@@ -330,8 +371,15 @@ pub(super) fn build(
             else {
                 return;
             };
-            let bytes = boxed.borrow::<crate::disc::mount::DiscFile>().bytes;
-            lbl.set_text(&format!("{:.1} MB", bytes as f64 / 1e6));
+            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            lbl.set_text(&format!("{:.1} MB", f.bytes as f64 / 1e6));
+            let spoken = spoken_row_summary(&f.display, f.duration_secs);
+            // `ListItem` itself carries no Accessible implementation (it
+            // isn't a widget) — the accessible tree is built from the
+            // actual cell widget `connect_setup` put in `li.child()`.
+            if let Some(cell) = li.child() {
+                cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+            }
         });
         let size_sorter = CustomSorter::new(|a, b| {
             let ka = a

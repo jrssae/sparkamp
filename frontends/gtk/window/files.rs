@@ -197,6 +197,25 @@ const GLYPH_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 type GlyphCache = Rc<RefCell<std::collections::HashMap<String, (FileStatus, std::time::Instant)>>>;
 type GlyphInflight = Rc<RefCell<std::collections::HashSet<String>>>;
 
+/// One-sentence spoken summary of a track row, skipping fields the file
+/// does not have. Kept separate from the bind closure so the formatting is
+/// unit-testable without constructing a widget. Shared by the Files,
+/// Playlist-editor and Device views — all three bind the same `LibTrack`
+/// fields, so there is no reason for three copies of the same `match`.
+///
+/// Sanitises with `gtk_safe` internally, the same call as
+/// `now_playing::album_description` makes, so a NUL byte surviving in tag
+/// data can't reach `update_property` no matter what a future caller forgets
+/// to do at its own call site.
+pub(super) fn spoken_row_summary(title: &str, artist: &str, album: &str) -> String {
+    let spoken = match (artist.is_empty(), album.is_empty()) {
+        (false, false) => format!("{title}, {artist}, {album}"),
+        (false, true) => format!("{title}, {artist}"),
+        _ => title.to_string(),
+    };
+    gtk_safe(&spoken)
+}
+
 /// Build the Files page and attach it to `ctx.stack` under the name `"files"`.
 pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page uses from its context, so the body below
@@ -260,6 +279,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let sort_model = SortListModel::new(Some(track_store.clone()), None::<gtk4::Sorter>);
         let multi_sel = MultiSelection::new(Some(sort_model.clone()));
         let col_view = ColumnView::new(Some(multi_sel.clone()));
+        // Names the table itself, so a screen reader announces which view
+        // focus entered rather than staying silent on the widget as a whole.
+        col_view.update_property(&[gtk4::accessible::Property::Label("Tracks")]);
         col_view.add_css_class("ml-col-view");
         col_view.set_show_row_separators(false);
         col_view.set_show_column_separators(false);
@@ -690,6 +712,25 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     // see rebuild_ml_callback in player.rs).
                     let artist_as_album_artist =
                         bind_state.borrow().config.media_library.artist_as_album_artist;
+
+                    // Without this a screen reader reads every cell in the
+                    // row in sequence, empty ones included, so an untagged
+                    // file announced as "song, , ". One sentence per row is
+                    // what the HIG's list guidance asks for. Set on every
+                    // column's cell — not just one — because which column is
+                    // leftmost depends on the user's own column picker.
+                    let spoken = spoken_row_summary(
+                        t.title.as_deref().unwrap_or(&t.filename),
+                        t.artist.as_deref().unwrap_or(""),
+                        t.album.as_deref().unwrap_or(""),
+                    );
+                    // `ListItem` itself carries no Accessible implementation
+                    // (it isn't a widget) — the accessible tree is built from
+                    // the actual cell widget `connect_setup` put in
+                    // `li.child()`.
+                    if let Some(cell) = li.child() {
+                        cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+                    }
 
                     if is_artwork {
                         bind_cells.bind(li, t.artwork_path.as_deref(), |li| {

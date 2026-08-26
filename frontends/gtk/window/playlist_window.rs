@@ -290,6 +290,12 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         .vexpand(true)
         .build();
     pl_view.add_css_class("playlist");
+    // GtkTreeView (deprecated since 4.10) has no cell-level accessible
+    // plumbing, so this widget-level name is the ceiling here. Full row
+    // semantics need the ColumnView migration tracked as audit item 11 —
+    // held back deliberately because the playlist's multi-select
+    // drag-reorder is hard-won and deserves its own branch and its own tests.
+    pl_view.update_property(&[gtk4::accessible::Property::Label("Playlist")]);
     #[allow(deprecated)]
     pl_view.selection().set_mode(gtk4::SelectionMode::Multiple);
 

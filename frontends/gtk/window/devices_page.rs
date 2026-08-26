@@ -477,6 +477,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let dev_sort_model = SortListModel::new(Some(dev_filter_model), None::<gtk4::Sorter>);
     let dev_selection = MultiSelection::new(Some(dev_sort_model.clone()));
     let dev_col_view = ColumnView::new(Some(dev_selection.clone()));
+    // Names the table itself, so a screen reader announces which view focus
+    // entered rather than staying silent on the widget as a whole.
+    dev_col_view.update_property(&[gtk4::accessible::Property::Label("Device files")]);
     // The device row context menu, filled in further down once its action
     // group and menu model exist. Cells are built before that but each needs
     // to reach it — the holder pattern (docs/gtk-breakup-plan.md §3.1).
