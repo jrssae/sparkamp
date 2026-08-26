@@ -1518,7 +1518,7 @@ fn info_with_tags(tags: Vec<(&'static str, String)>) -> crate::now_playing::NowP
 #[test]
 fn album_description_finds_the_album_tag() {
     let info = info_with_tags(vec![("Title", "Song".to_string()), ("Album", "Greatest Hits".to_string())]);
-    assert_eq!(super::now_playing::album_description(&info), Some("Greatest Hits"));
+    assert_eq!(super::now_playing::album_description(&info), Some("Greatest Hits".to_string()));
 }
 
 /// `tags` only ever carries non-empty values (see its doc comment), so an
@@ -1528,4 +1528,14 @@ fn album_description_finds_the_album_tag() {
 fn album_description_is_none_when_album_unknown() {
     let info = info_with_tags(vec![("Title", "Song".to_string())]);
     assert_eq!(super::now_playing::album_description(&info), None);
+}
+
+/// The sanitisation lives inside `album_description` itself now, not in its
+/// caller — this proves that holds even if a future caller forgets to
+/// `gtk_safe()` the result themselves. A raw embedded NUL would otherwise
+/// panic GTK's C-string marshalling when handed to `update_property`.
+#[test]
+fn album_description_strips_embedded_nul_bytes() {
+    let info = info_with_tags(vec![("Album", "Bad\0Album".to_string())]);
+    assert_eq!(super::now_playing::album_description(&info), Some("BadAlbum".to_string()));
 }

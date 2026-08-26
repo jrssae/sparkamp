@@ -655,13 +655,23 @@ pub(super) fn open_settings_window(
         scale_rg_fallback.set_hexpand(true);
         scale_rg_fallback.set_digits(1);
         scale_rg_fallback.set_draw_value(true);
+        // A bare "-3" spoken alone doesn't say what unit it's in, unlike the
+        // other three sliders below — this is the only one with a physical
+        // unit, so it gets ValueText the same way the seek bar does.
+        scale_rg_fallback.update_property(&[
+            gtk4::accessible::Property::Label("ReplayGain fallback gain"),
+            gtk4::accessible::Property::ValueText(&format!("{:.1} dB", rg_fallback_adj.value())),
+        ]);
         {
             let state_rc = state.clone();
+            let scale_rg_fallback = scale_rg_fallback.clone();
             rg_fallback_adj.connect_value_changed(move |a| {
                 let db = a.value().clamp(-12.0, 0.0);
                 let mut s = state_rc.borrow_mut();
                 s.set_rg_fallback_db(db);
                 let _ = s.config.save();
+                scale_rg_fallback
+                    .update_property(&[gtk4::accessible::Property::ValueText(&format!("{db:.1} dB"))]);
             });
         }
         grid.attach(&scale_rg_fallback, 1, 12, 1, 1);
@@ -1233,6 +1243,9 @@ pub(super) fn open_settings_window(
         scale_gr_speed.set_hexpand(true);
         scale_gr_speed.set_digits(2);
         scale_gr_speed.set_draw_value(true);
+        // A unitless multiplier — the raw number spoken alone already matches
+        // what draw_value shows sighted users, so no ValueText is needed.
+        scale_gr_speed.update_property(&[gtk4::accessible::Property::Label("Visualizer speed")]);
         {
             let state_rc = state.clone();
             speed_adj.connect_value_changed(move |a| {
@@ -1298,6 +1311,8 @@ pub(super) fn open_settings_window(
         scale_gr_fb.set_hexpand(true);
         scale_gr_fb.set_digits(2);
         scale_gr_fb.set_draw_value(true);
+        // A unitless trail-strength factor — same reasoning as Speed above.
+        scale_gr_fb.update_property(&[gtk4::accessible::Property::Label("Visualizer feedback")]);
         {
             let state_rc = state.clone();
             fb_adj.connect_value_changed(move |a| {
@@ -1388,6 +1403,8 @@ pub(super) fn open_settings_window(
         scale_gr_sens.set_hexpand(true);
         scale_gr_sens.set_digits(2);
         scale_gr_sens.set_draw_value(true);
+        // A unitless multiplier — same reasoning as Speed above.
+        scale_gr_sens.update_property(&[gtk4::accessible::Property::Label("Visualizer beat sensitivity")]);
         {
             let state_rc = state.clone();
             sens_adj.connect_value_changed(move |a| {

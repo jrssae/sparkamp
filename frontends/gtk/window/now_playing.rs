@@ -319,19 +319,24 @@ fn set_active_dot(dots: &GtkBox, active: usize) {
 /// art widget's accessible description so a screen reader hears which album
 /// is showing rather than just "image". `tags` only carries non-empty
 /// values, so `Some` here always means a real album name.
-pub(super) fn album_description(info: &NowPlayingInfo) -> Option<&str> {
+///
+/// Returns an already-`gtk_safe`'d `String` rather than a borrow straight
+/// into `info.tags`: tag metadata can carry embedded NULs, which panic
+/// GTK's C-string marshalling, and this project's rule is `gtk_safe()` on
+/// any string reaching a widget. Sanitising here means that holds no matter
+/// who calls this — not "as long as every caller remembers to."
+pub(super) fn album_description(info: &NowPlayingInfo) -> Option<String> {
     info.tags
         .iter()
         .find(|(key, _)| *key == "Album")
-        .map(|(_, value)| value.as_str())
+        .map(|(_, value)| super::gtk_safe(value))
 }
 
 /// Give an album-art `Picture` its accessible name, plus the album name as
-/// the description when one is known. `gtk_safe` because tag metadata can
-/// carry embedded NULs, which panic GTK's C-string marshalling. Shared with
-/// the A6 art window, which reuses this instead of a second copy.
+/// the description when one is known. Shared with the A6 art window, which
+/// reuses this instead of a second copy.
 pub(super) fn label_art_picture(pic: &Picture, info: &NowPlayingInfo) {
-    let album_safe = album_description(info).map(super::gtk_safe);
+    let album_safe = album_description(info);
     let mut props = vec![gtk4::accessible::Property::Label("Album art")];
     if let Some(ref album) = album_safe {
         props.push(gtk4::accessible::Property::Description(album));
