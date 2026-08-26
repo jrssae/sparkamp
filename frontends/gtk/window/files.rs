@@ -993,33 +993,47 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         );
         let files_stack = super::util::stack_with_empty_state(&track_scroll, &files_empty);
         files_vbox.append(&files_stack);
-        {
+        // Both branches below go through the same `empty_state_for` decision
+        // (util.rs) rather than each re-deriving "is the query non-empty" —
+        // an initial-sync block here once checked only `n_items() > 0` and
+        // never looked at the query, so a remembered search that matched
+        // nothing showed "No music folders" on cold load instead of "No
+        // results" (2026-08-24 review). Routing every call site through one
+        // function makes that class of bug structurally impossible: there is
+        // only one place left to get the decision wrong.
+        let apply_files_empty_state: Rc<dyn Fn()> = {
             let stack = files_stack.clone();
             let empty = files_empty.clone();
+            let store = track_store.clone();
             let entry = search_entry.clone();
-            track_store.connect_items_changed(move |store, _, _, _| {
-                if store.n_items() > 0 {
-                    stack.set_visible_child_name("content");
-                    return;
+            Rc::new(move || {
+                match super::util::empty_state_for(
+                    store.n_items() > 0,
+                    &entry.text(),
+                    (
+                        "folder-music-symbolic",
+                        "No music folders",
+                        "Add a folder to start building your library",
+                    ),
+                ) {
+                    super::util::EmptyState::Content => stack.set_visible_child_name("content"),
+                    super::util::EmptyState::Show { icon, title, description } => {
+                        empty.set_icon_name(Some(icon));
+                        empty.set_title(title);
+                        empty.set_description(Some(&gtk_safe(&description)));
+                        stack.set_visible_child_name("empty");
+                    }
                 }
-                let q = entry.text();
-                if q.is_empty() {
-                    empty.set_icon_name(Some("folder-music-symbolic"));
-                    empty.set_title("No music folders");
-                    empty.set_description(Some("Add a folder to start building your library"));
-                } else {
-                    empty.set_icon_name(Some("system-search-symbolic"));
-                    empty.set_title("No results");
-                    empty.set_description(Some(&gtk_safe(&format!("Nothing matches \u{201c}{q}\u{201d}"))));
-                }
-                stack.set_visible_child_name("empty");
-            });
-            // `rebuild_files()` above already populated the store once, before
-            // this handler existed to see it — sync the initial state by hand.
-            if track_store.n_items() > 0 {
-                files_stack.set_visible_child_name("content");
-            }
+            })
+        };
+        {
+            let apply = apply_files_empty_state.clone();
+            track_store.connect_items_changed(move |_, _, _, _| apply());
         }
+        // `rebuild_files()` above already populated the store once, before
+        // this handler existed to see it — sync the initial state by hand,
+        // through the same function the handler uses.
+        apply_files_empty_state();
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
         {

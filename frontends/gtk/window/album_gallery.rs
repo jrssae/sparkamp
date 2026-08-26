@@ -710,26 +710,28 @@ pub(super) fn build_album_gallery(
         let stack = gallery_stack.clone();
         let empty = gallery_empty.clone();
         let entry = search_entry.clone();
+        // Goes through `empty_state_for` (util.rs) rather than re-deriving
+        // "nothing indexed vs no results" here — the Files view shipped two
+        // copies of this exact decision that quietly disagreed (2026-08-24
+        // review); one shared function is what makes that impossible.
         store.connect_items_changed(move |store, _, _, _| {
-            if store.n_items() > 0 {
-                stack.set_visible_child_name("content");
-                return;
-            }
-            let q = entry.text();
-            if q.is_empty() {
-                empty.set_icon_name(Some("media-optical-symbolic"));
-                empty.set_title("No albums");
-                empty.set_description(Some(
+            match super::util::empty_state_for(
+                store.n_items() > 0,
+                &entry.text(),
+                (
+                    "media-optical-symbolic",
+                    "No albums",
                     "Albums appear here once your library has tagged music",
-                ));
-            } else {
-                empty.set_icon_name(Some("system-search-symbolic"));
-                empty.set_title("No results");
-                empty.set_description(Some(&gtk_safe(&format!(
-                    "Nothing matches \u{201c}{q}\u{201d}"
-                ))));
+                ),
+            ) {
+                super::util::EmptyState::Content => stack.set_visible_child_name("content"),
+                super::util::EmptyState::Show { icon, title, description } => {
+                    empty.set_icon_name(Some(icon));
+                    empty.set_title(title);
+                    empty.set_description(Some(&gtk_safe(&description)));
+                    stack.set_visible_child_name("empty");
+                }
             }
-            stack.set_visible_child_name("empty");
         });
     }
 

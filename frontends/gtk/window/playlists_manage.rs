@@ -481,12 +481,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 // triggered). So this re-runs the exact same predicate the
                 // filter function uses, over every row `row_at_index` finds
                 // — which, unlike visibility, does count filtered-out rows.
+                // (Whether the list is empty outright falls out of the same
+                // walk: with zero rows the loop never runs and `any_match`
+                // stays `false`, same as "rows exist but none match".)
                 let query = entry.text().to_lowercase();
-                let mut total = 0usize;
                 let mut any_match = false;
                 let mut i = 0i32;
                 while let Some(row) = list.row_at_index(i) {
-                    total += 1;
                     let matches = query.is_empty()
                         || row.child()
                             .and_then(|c| c.downcast::<Label>().ok())
@@ -497,21 +498,27 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     }
                     i += 1;
                 }
-                if total == 0 {
-                    empty.set_icon_name(Some("view-list-symbolic"));
-                    empty.set_title("No saved playlists");
-                    empty.set_description(Some("Save the current playlist to see it here"));
-                    stack.set_visible_child_name("empty");
-                } else if any_match {
-                    stack.set_visible_child_name("content");
-                } else {
-                    let q = entry.text();
-                    empty.set_icon_name(Some("system-search-symbolic"));
-                    empty.set_title("No results");
-                    empty.set_description(Some(&gtk_safe(&format!(
-                        "Nothing matches \u{201c}{q}\u{201d}"
-                    ))));
-                    stack.set_visible_child_name("empty");
+                // Goes through the same `empty_state_for` (util.rs) the other
+                // search-bearing views use, rather than re-deriving "nothing
+                // saved vs no results" here — see its doc comment for why
+                // (2026-08-24 review: two independently-written copies of
+                // this decision quietly disagreed).
+                match super::util::empty_state_for(
+                    any_match,
+                    &entry.text(),
+                    (
+                        "view-list-symbolic",
+                        "No saved playlists",
+                        "Save the current playlist to see it here",
+                    ),
+                ) {
+                    super::util::EmptyState::Content => stack.set_visible_child_name("content"),
+                    super::util::EmptyState::Show { icon, title, description } => {
+                        empty.set_icon_name(Some(icon));
+                        empty.set_title(title);
+                        empty.set_description(Some(&gtk_safe(&description)));
+                        stack.set_visible_child_name("empty");
+                    }
                 }
             })
         };
