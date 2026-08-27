@@ -1351,6 +1351,39 @@ fn toast_overlay_is_found_only_when_the_root_is_wrapped() {
     assert!(super::util::toast_overlay_for(&wrapped).is_some());
 }
 
+// ── Notification focus gate ──────────────────────────────────────────────
+
+/// The track-change notification's focus gate walks
+/// `gtk4::Window::list_toplevels()` rather than a hand-enumerated list of
+/// AppState's tracked singletons: the enumeration went stale the moment a
+/// window existed outside that list (the Equalizer, kept in a local
+/// `Rc<RefCell<..>>` never stored on AppState; Jump, `hide_on_close` so it
+/// stays alive and focusable). Neither registers with a `gtk4::Application`
+/// via `.application(...)` — only the main and playlist windows do — so
+/// this guards the actual mechanism the fix depends on: a plain,
+/// unregistered `gtk4::Window` must still be discoverable.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn list_toplevels_finds_a_window_never_registered_with_an_application() {
+    let before = gtk4::Window::list_toplevels().len();
+    let w = gtk4::Window::new();
+
+    let toplevels = gtk4::Window::list_toplevels();
+    assert!(
+        toplevels.len() > before,
+        "a fresh, unregistered window must extend the toplevel list"
+    );
+    assert!(
+        toplevels
+            .iter()
+            .filter_map(|t| t.downcast_ref::<gtk4::Window>())
+            .any(|t| t == &w),
+        "the window itself must be findable by downcasting each toplevel"
+    );
+}
+
 // ── Empty-state stack ────────────────────────────────────────────────────
 
 /// The stack starts on the empty page: a view is empty until its model

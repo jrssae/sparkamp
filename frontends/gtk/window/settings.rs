@@ -528,8 +528,8 @@ pub(super) fn open_settings_window(
                     // Non-fatal: the user can open GNOME Settings by hand instead.
                     show_toast(
                         &win_alert,
-                        "Couldn't open GNOME Settings. Open Settings → Removable \
-                         Media yourself and pick Sparkamp under \"CD audio\".",
+                        "Couldn't open GNOME Settings — open Removable Media \
+                         settings yourself and pick Sparkamp under \"CD audio\".",
                     );
                 }
             });
@@ -2543,7 +2543,11 @@ pub(super) fn open_settings_window(
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&notebook);
     vbox.append(&close_btn);
-    win.set_child(Some(&vbox));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&vbox));
+    win.set_child(Some(&toaster));
     win.present();
     state.borrow_mut().settings_window = Some(win);
 }

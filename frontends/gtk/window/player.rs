@@ -1179,32 +1179,42 @@ pub fn build(
     // Desktop notification on track change. MPRIS already publishes metadata,
     // so the Shell's media widget is covered; this is the transient banner.
     // Fires only when no Sparkamp window is focused — a banner over the
-    // player you are already looking at is why people disable these. "No
-    // Sparkamp window" is checked against every persistent top-level window
-    // the app can have open (main player, playlist, Media Library, Settings,
-    // ID3 editor, Lyrics, Album Art) — being focused on any of them means
-    // you're already looking at Sparkamp, so the same reasoning applies.
-    // Short-lived helper popups (Jump, Shortcuts, disc/device dialogs) are
-    // not tracked as persistent state and are left out of this check.
+    // player you are already looking at is why people disable these.
+    //
+    // "No Sparkamp window focused" is checked via
+    // gtk4::Window::list_toplevels(), not an enumeration of known windows.
+    // An earlier version listed AppState's tracked singletons plus the main
+    // and playlist windows by name, and went stale the moment a window was
+    // added outside that list: the Equalizer (kept in a local
+    // `Rc<RefCell<Option<Window>>>`, never stored on AppState) and Jump
+    // (`hide_on_close(true)`, so closing it just hides it — it stays alive
+    // and focusable) were both missed, banner-spamming anyone searching in
+    // Jump with the player unfocused. list_toplevels() returns every live
+    // GtkWindow in the process; since Sparkamp is the only GTK toolkit user
+    // in its own process, that set already is "windows belonging to this
+    // application" — no per-window bookkeeping to keep in sync as windows
+    // are added.
     {
         let state_rc = state.clone();
         let app_rc = app.clone();
-        let win_wk = window.downgrade();
-        let pl_wk = playlist_win.downgrade();
+        // Last path an actual banner was sent for. Explicit play-start
+        // callers (play/next/prev/z/b) re-fire the now-playing subscribers
+        // even when they replay the same path — Repeat-Song loop,
+        // Prev-restart ≥5s (see the comment on `last_np_key` in
+        // playlist_window.rs) — so without this, a looping track re-posts
+        // the banner every loop while unfocused. This only dedupes what
+        // this closure shows; it does not touch the shared subscriber seam,
+        // which other subscribers still need re-fired on every replay.
+        let last_notified: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
         let cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)> = Rc::new(move |_info| {
             let s = state_rc.borrow();
             if !s.config.playback.notify_track_change {
                 return;
             }
-            let singleton_active =
-                |w: &Option<gtk4::Window>| w.as_ref().map(|w| w.is_active()).unwrap_or(false);
-            let focused = win_wk.upgrade().map(|w| w.is_active()).unwrap_or(false)
-                || pl_wk.upgrade().map(|w| w.is_active()).unwrap_or(false)
-                || singleton_active(&s.ml_window)
-                || singleton_active(&s.settings_window)
-                || singleton_active(&s.id3_editor_window)
-                || singleton_active(&s.lyrics_window)
-                || singleton_active(&s.art_window);
+            let focused = gtk4::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk4::Window>().ok())
+                .any(|w| w.is_active());
             if focused {
                 return;
             }
@@ -1214,10 +1224,14 @@ pub fn build(
             // playlist's Track already has both, via notification_lines(),
             // so reading it from there keeps one source of truth instead of
             // re-deriving artist precedence from the tag list.
-            let (heading, body) = match s.playlist.current() {
-                Some(t) => t.notification_lines(),
+            let current = match s.playlist.current() {
+                Some(t) => t,
                 None => return,
             };
+            if last_notified.borrow().as_deref() == Some(current.path.as_path()) {
+                return;
+            }
+            let (heading, body) = current.notification_lines();
             let n = gio::Notification::new(&gtk_safe(&heading));
             if let Some(b) = body {
                 n.set_body(Some(&gtk_safe(&b)));
@@ -1229,6 +1243,7 @@ pub fn build(
             // A stable id replaces the previous banner instead of stacking
             // one per track.
             app_rc.send_notification(Some("sparkamp-track"), &n);
+            *last_notified.borrow_mut() = Some(current.path.clone());
         });
         state.borrow_mut().subscribe_now_playing(cb);
     }

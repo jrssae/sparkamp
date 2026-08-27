@@ -224,7 +224,7 @@ pub(super) fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gt
 pub(super) fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
     let alert = gtk4::AlertDialog::builder()
         .message("Sparkamp")
-        .detail(msg)
+        .detail(gtk_safe(msg))
         .modal(true)
         .build();
     alert.show(parent);

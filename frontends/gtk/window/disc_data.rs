@@ -182,8 +182,8 @@ pub(super) fn build(
             // Position is a bare index, not row content — like the editor's
             // and device view's own position columns, it keeps its own
             // narrow announcement rather than carrying the full row summary
-            // (set on Title/Length/Size below, the columns that hold actual
-            // file data).
+            // (set on Title below; Length and Size keep their own narrow
+            // announcements too — see disc_row_summary's doc comment).
         });
         let col = ColumnViewColumn::new(Some("#"), Some(factory));
         col.set_fixed_width(48);
