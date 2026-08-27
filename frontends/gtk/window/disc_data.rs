@@ -62,10 +62,20 @@ pub(super) struct DataBrowser {
 /// cell for, not part of identifying the row. Kept separate from the bind
 /// closures so the formatting is unit-testable without constructing a widget.
 ///
+/// Named distinctly from `super::files::spoken_row_summary` — same idea, but
+/// `DiscFile` has no artist/album, so it is a different arity, and two
+/// same-named functions with different signatures in sibling modules is a
+/// find-references trap.
+///
 /// Sanitises with `gtk_safe` internally, the same call
 /// `super::files::spoken_row_summary` makes, so a NUL byte in a filename
 /// pulled straight off disc can't reach `update_property`.
-pub(super) fn spoken_row_summary(display: &str, duration_secs: Option<u32>) -> String {
+///
+/// Bound only to the Title cell (below) — not Length or Size — because
+/// `Property::Label` replaces a cell's own accessible name rather than
+/// adding to it; putting the same sentence on all three left the Size cell
+/// unable to say it was a size at all.
+pub(super) fn disc_row_summary(display: &str, duration_secs: Option<u32>) -> String {
     let spoken = match duration_secs {
         Some(s) => format!("{display}, {}:{:02}", s / 60, s % 60),
         None => display.to_string(),
@@ -226,10 +236,12 @@ pub(super) fn build(
             };
             let f = boxed.borrow::<crate::disc::mount::DiscFile>();
             lbl.set_text(&gtk_safe(&f.display));
-            let spoken = spoken_row_summary(&f.display, f.duration_secs);
+            // The row's one designated summary cell — see `disc_row_summary`
+            // for why only Title carries this and not Length/Size too.
             // `ListItem` itself carries no Accessible implementation (it
             // isn't a widget) — the accessible tree is built from the
             // actual cell widget `connect_setup` put in `li.child()`.
+            let spoken = disc_row_summary(&f.display, f.duration_secs);
             if let Some(cell) = li.child() {
                 cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
             }
@@ -303,13 +315,9 @@ pub(super) fn build(
                 Some(s) => format!("{}:{:02}", s / 60, s % 60),
                 None => "—".to_string(),
             });
-            let spoken = spoken_row_summary(&f.display, f.duration_secs);
-            // `ListItem` itself carries no Accessible implementation (it
-            // isn't a widget) — the accessible tree is built from the
-            // actual cell widget `connect_setup` put in `li.child()`.
-            if let Some(cell) = li.child() {
-                cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
-            }
+            // No accessible-label override here — see `disc_row_summary`'s
+            // doc comment. This cell keeps its own name ("1:05") so arrowing
+            // to Length still announces the length.
         });
         let len_sorter = CustomSorter::new(|a, b| {
             let ka = a
@@ -373,13 +381,9 @@ pub(super) fn build(
             };
             let f = boxed.borrow::<crate::disc::mount::DiscFile>();
             lbl.set_text(&format!("{:.1} MB", f.bytes as f64 / 1e6));
-            let spoken = spoken_row_summary(&f.display, f.duration_secs);
-            // `ListItem` itself carries no Accessible implementation (it
-            // isn't a widget) — the accessible tree is built from the
-            // actual cell widget `connect_setup` put in `li.child()`.
-            if let Some(cell) = li.child() {
-                cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
-            }
+            // No accessible-label override here — see `disc_row_summary`'s
+            // doc comment. This cell keeps its own name ("25.3 MB") so
+            // arrowing to Size still announces the size.
         });
         let size_sorter = CustomSorter::new(|a, b| {
             let ka = a

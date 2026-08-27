@@ -716,20 +716,35 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     // Without this a screen reader reads every cell in the
                     // row in sequence, empty ones included, so an untagged
                     // file announced as "song, , ". One sentence per row is
-                    // what the HIG's list guidance asks for. Set on every
-                    // column's cell — not just one — because which column is
-                    // leftmost depends on the user's own column picker.
-                    let spoken = spoken_row_summary(
-                        t.title.as_deref().unwrap_or(&t.filename),
-                        t.artist.as_deref().unwrap_or(""),
-                        t.album.as_deref().unwrap_or(""),
-                    );
-                    // `ListItem` itself carries no Accessible implementation
-                    // (it isn't a widget) — the accessible tree is built from
-                    // the actual cell widget `connect_setup` put in
-                    // `li.child()`.
-                    if let Some(cell) = li.child() {
-                        cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+                    // what the HIG's list guidance asks for — but
+                    // `Property::Label` *replaces* a cell's own accessible
+                    // name rather than adding to it, and this closure runs
+                    // once per visible column. Setting it on every column
+                    // (the first cut of this fix) made every cell in the row
+                    // repeat the same sentence and, worse, cost the Length
+                    // and Size-style cells their own content — a duration
+                    // cell's name became the whole row instead of the
+                    // duration. So exactly one column carries it: "title",
+                    // the row's identifying field. ColumnView's factory
+                    // architecture exposes no row-level object to hang a
+                    // single name on instead, and Title is in
+                    // `default_ml_visible`/`default_id3_visible`, so this
+                    // only goes quiet if a user deliberately hides it via
+                    // the column picker — accepted tradeoff over guessing at
+                    // "whichever column ends up leftmost".
+                    if id_str == "title" {
+                        let spoken = spoken_row_summary(
+                            t.title.as_deref().unwrap_or(&t.filename),
+                            t.artist.as_deref().unwrap_or(""),
+                            t.album.as_deref().unwrap_or(""),
+                        );
+                        // `ListItem` itself carries no Accessible
+                        // implementation (it isn't a widget) — the
+                        // accessible tree is built from the actual cell
+                        // widget `connect_setup` put in `li.child()`.
+                        if let Some(cell) = li.child() {
+                            cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+                        }
                     }
 
                     if is_artwork {

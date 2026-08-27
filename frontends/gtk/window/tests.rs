@@ -1544,12 +1544,20 @@ fn album_description_strips_embedded_nul_bytes() {
 //
 // A ColumnView row built from a SignalListItemFactory announces the
 // concatenation of every cell's rendered text, empty cells included, so an
-// untagged file read as "song, , ". `spoken_row_summary` is the fix: one
-// sentence, built from the fields the row actually has, called from each
-// column's bind closure instead of letting AT-SPI's default concatenation
-// run. It lives in `files.rs` rather than being duplicated per view because
-// Files, the Playlist editor and Device files all bind the same `LibTrack`
-// title/artist/album triple.
+// untagged file read as "song, , ". `spoken_row_summary` (Files, Playlist
+// editor, Device files — all three bind the same `LibTrack` title/artist/
+// album triple) and `disc_data::disc_row_summary` (DiscFile: no artist or
+// album) are the fix: one sentence, built from the fields the row actually
+// has.
+//
+// It is bound to exactly one column's cell per row — "title" for the three
+// `LibTrack` views, "Title" for the disc browser — not every column.
+// `Property::Label` *replaces* a cell's own accessible name rather than
+// adding to it, so setting it on every column both repeated the same
+// sentence across the row and cost non-title cells (Length, Size) their own
+// content; review caught this on the first pass.
+// `title_column_id_is_a_real_ml_column` below is the cheap guard against the
+// anchor string itself silently going stale.
 
 /// A fully-tagged track reads as one comma-joined sentence.
 #[test]
@@ -1579,12 +1587,13 @@ fn row_summary_strips_embedded_nul_bytes() {
 }
 
 /// The data-disc browser has no artist/album — its row type is `DiscFile`,
-/// not `LibTrack` — so it gets its own summary function rather than reusing
-/// `files::spoken_row_summary`'s three-field shape.
+/// not `LibTrack` — so it gets its own summary function, `disc_row_summary`,
+/// named apart from `files::spoken_row_summary` precisely so the two
+/// different-arity functions never get confused for one another.
 #[test]
 fn disc_row_summary_omits_unmeasured_length() {
-    assert_eq!(super::disc_data::spoken_row_summary("track01.wav", None), "track01.wav");
-    assert_eq!(super::disc_data::spoken_row_summary("track01.wav", Some(65)), "track01.wav, 1:05");
+    assert_eq!(super::disc_data::disc_row_summary("track01.wav", None), "track01.wav");
+    assert_eq!(super::disc_data::disc_row_summary("track01.wav", Some(65)), "track01.wav, 1:05");
 }
 
 /// Same NUL-safety guarantee as the audio-track summary: a filename read
@@ -1592,5 +1601,18 @@ fn disc_row_summary_omits_unmeasured_length() {
 /// ID3 tags are.
 #[test]
 fn disc_row_summary_strips_embedded_nul_bytes() {
-    assert_eq!(super::disc_data::spoken_row_summary("bad\0.wav", None), "bad.wav");
+    assert_eq!(super::disc_data::disc_row_summary("bad\0.wav", None), "bad.wav");
+}
+
+/// Guards the anchor choice itself: the three `LibTrack` bind closures gate
+/// the accessible-label call on a bare string comparison (`id_str ==
+/// "title"`), which the compiler cannot check against `ml_columns::ALL` for
+/// them. If "title" were ever renamed or dropped there, that comparison
+/// would just stop matching — silently turning the row summary off in
+/// Files, the Playlist editor and Device files with no build failure to
+/// flag it. This is the cheap net for that: unlike the bind closures, an
+/// assertion here does fail loudly.
+#[test]
+fn title_column_id_is_a_real_ml_column() {
+    assert!(crate::ml_columns::by_id("title").is_some());
 }
