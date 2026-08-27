@@ -2477,3 +2477,45 @@ Still open from the list above: the **Enqueue nuance** on the audio-CD menu. Mac
 "Enqueue to Playlist" routes through `addDiscTracks`, which replaces rather than
 appends when the user's playlist-add setting is "replace", while GTK's Enqueue
 always appends. Left as-is pending a call on which behaviour is wanted.
+
+## 2026-08-27 — GTK HIG improvements (branch `gtk-hig-improvements`)
+
+This branch was scoped GTK/Linux only. Each item below is the macOS work
+that would bring the frontends back level. None of it was attempted blind.
+
+- [ ] **Accessible names** — no `accessibilityLabel` sweep was done on the
+  SwiftUI frontend. The GTK scope grew past what was originally planned:
+  every icon-only control across every window now carries a label; every
+  slider does too — transport seek and volume, the EQ pre-amp and its ten
+  band sliders, and four Settings-window sliders (ReplayGain fallback gain
+  plus three visualizer knobs); the visualizer and album-art
+  drawing/picture surfaces carry both a label and a description; and each
+  of the four `ColumnView`-backed track tables (Media Library Files, saved
+  playlists, device sync, and the disc browser) gives its rows a
+  one-sentence spoken summary that skips absent fields. The active
+  playlist gets only a widget-level name — `GtkTreeView` has no cell-level
+  accessible API, so per-row summaries there wait on its ColumnView
+  migration.
+- [ ] **Font scaling** — GTK renders skin font sizes as `pt` so they follow
+  the desktop text size, and the built-in defaults re-baselined to native
+  11pt (15/18/40 px for base/marquee/large, confirmed in `src/skin.rs`).
+  macOS reads the same skin variables; whether it honours Dynamic Type is
+  unverified, and its built-ins will now differ from GTK's unless the same
+  re-baseline is applied.
+- [ ] **Shortcuts** — Cmd+, already matches GTK's new Ctrl+,. F1 and Cmd+F
+  aliases are absent on macOS.
+- [ ] **Track-change notification** — GTK posts one when unfocused, with a
+  Settings toggle (`playback.notify_track_change`). macOS has no
+  equivalent; `UNUserNotificationCenter` is the natural fit.
+- [ ] **Toasts** — GTK demotes recoverable failures to `AdwToastOverlay`
+  (all 29 `show_alert_parented` call sites were audited and converted;
+  destructive confirmations and the unreadable-files report stayed modal).
+  macOS still reports all of these as alerts.
+- [ ] **Empty states** — GTK has placeholder pages on six views.
+  `ContentUnavailableView` is the macOS equivalent.
+
+Not applicable to macOS: the packaging metadata work (Flatpak/metainfo has
+no macOS equivalent); the TUI `/` fix (shared, platform-agnostic Rust
+code — any macOS build of the `sparkamp --tui` binary already has it, so
+there is nothing GUI-specific to port); and mnemonics (macOS menus carry
+their own key-equivalent mechanism, not GTK's underscore convention).
