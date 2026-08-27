@@ -7,9 +7,9 @@
   <summary>Classic-style audio player</summary>
   <description>
     <p>
-      Sparkamp is an open-source, keyboard-centric audio player for Linux and
-      GNOME with a classic, keyboard-driven interface.  It supports MP3, OGG,
-      FLAC and other common audio formats, and includes a full-featured 10-band
+      Sparkamp is an open-source, keyboard-driven audio player with a classic
+      interface, built for Linux and GNOME.  It supports MP3, OGG, FLAC and
+      other common audio formats, and includes a full-featured 10-band
       equalizer, a media library, visualizer plugins, and custom CSS skinning.
     </p>
     <p>
@@ -29,7 +29,7 @@
     </screenshot>
     <screenshot>
       <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/media-library.png</image>
-      <caption>Browsing the media library</caption>
+      <caption>The media library window</caption>
     </screenshot>
     <screenshot>
       <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/album-gallery.png</image>
@@ -37,7 +37,7 @@
     </screenshot>
     <screenshot>
       <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/settings.png</image>
-      <caption>Choosing a skin in Settings</caption>
+      <caption>The skin picker in Settings</caption>
     </screenshot>
   </screenshots>
   <url type="homepage">https://github.com/sparkamp/sparkamp</url>

@@ -768,10 +768,13 @@ In `settings.rs`, the five tab labels are built with `Label::new(Some("..."))`. 
 ```
 
 ```rust
-        let tab_lbl = Label::with_mnemonic("A_bout");
+        let tab_lbl = Label::with_mnemonic("Ab_out");
 ```
 
-About takes `b` because `A` is claimed by Appearance in the same notebook.
+About takes `o` because `A` is claimed by Appearance and `b` by Behavior in
+the same notebook. (Note: this step originally shipped as `A_bout`
+(Alt+B), which collides with `_Behavior` above — both bind Alt+B. Review
+caught the collision and it was corrected to `Ab_out` (Alt+O).)
 
 - [ ] **Step 4: Build and run the suite**
 
@@ -1010,6 +1013,11 @@ The GTK frontend sends no desktop notifications. MPRIS already publishes metadat
 
 In `mod tests` in `src/model.rs`:
 
+(Note, added at Task 12 review: the three `Track` literals below originally
+omitted `read_only` and `id`, copied from AGENTS.md's stale example — the
+brief would not have compiled against the real 9-field struct. Corrected
+here to match `src/model.rs`.)
+
 ```rust
     #[test]
     fn notification_lines_uses_title_and_artist() {
@@ -1021,6 +1029,8 @@ In `mod tests` in `src/model.rs`:
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
+            id: 0,
         };
         assert_eq!(
             t.notification_lines(),
@@ -1040,6 +1050,8 @@ In `mod tests` in `src/model.rs`:
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
+            id: 0,
         };
         assert_eq!(t.notification_lines().1, Some("Various Artists".to_string()));
     }
@@ -1056,6 +1068,8 @@ In `mod tests` in `src/model.rs`:
             album: String::new(),
             duration: None,
             broken: false,
+            read_only: false,
+            id: 0,
         };
         assert_eq!(t.notification_lines(), ("song".to_string(), None));
     }
