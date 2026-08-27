@@ -443,7 +443,7 @@ In `packaging/dev.sparkamp.Sparkamp.metainfo.xml`, after the `<categories>` bloc
        keyboard-driven; claiming touch or a small form factor would be
        dishonest on a store listing. -->
   <recommends>
-    <control>pointer</control>
+    <control>pointing</control>
     <control>keyboard</control>
   </recommends>
   <requires>
@@ -458,23 +458,23 @@ In the same file, immediately after `<launchable>`:
 ```xml
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/sparkamp/sparkamp/main/docs/screenshots/player.png</image>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/player.png</image>
       <caption>The main player window</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sparkamp/sparkamp/main/docs/screenshots/playlist.png</image>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/playlist.png</image>
       <caption>The playlist window</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sparkamp/sparkamp/main/docs/screenshots/media-library.png</image>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/media-library.png</image>
       <caption>Browsing the media library</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sparkamp/sparkamp/main/docs/screenshots/album-gallery.png</image>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/album-gallery.png</image>
       <caption>The album gallery</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sparkamp/sparkamp/main/docs/screenshots/settings.png</image>
+      <image>https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/settings.png</image>
       <caption>Choosing a skin in Settings</caption>
     </screenshot>
   </screenshots>

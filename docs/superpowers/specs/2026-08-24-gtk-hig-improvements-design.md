@@ -95,7 +95,7 @@ Added:
 
 - `<screenshots>` — five entries with captions (main player, playlist,
   media library, album gallery, settings), pointing at
-  `https://raw.githubusercontent.com/sparkamp/sparkamp/main/docs/screenshots/*.png`.
+  `https://raw.githubusercontent.com/jrssae/sparkamp/main/docs/screenshots/*.png`.
 - `<developer id="dev.sparkamp">` with `<name>`.
 - `<branding>` colors, sampled from the app icon.
 - `<requires><display_length>` and `<recommends><control>` so the store
