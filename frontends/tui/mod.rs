@@ -94,7 +94,7 @@ pub enum Mode {
     Queue {
         selected: usize,
     },
-    /// o key: active-playlist ops popup (sort / randomize / reverse).
+    /// o key: active-playlist ops popup (sort / randomize / reverse / remove all).
     /// `selected` is the highlighted menu entry.
     PlaylistOps {
         selected: usize,

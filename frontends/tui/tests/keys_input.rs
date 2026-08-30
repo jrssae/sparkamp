@@ -482,3 +482,118 @@ fn albums_esc_closes_add_path_before_popping_drill() {
     }
 }
 
+// -----------------------------------------------------------------------
+// '/' opens search instead of clearing the playlist (item 14)
+// -----------------------------------------------------------------------
+
+/// `/` used to clear the entire playlist while meaning "search" in the
+/// Media Library. It is the key every terminal user presses to search,
+/// so the destructive binding was a data-loss trap.
+#[test]
+fn slash_opens_search_and_does_not_clear_the_playlist() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.playlist.len(), 3, "/ must not clear the playlist");
+    assert!(matches!(app.mode, Mode::Jump { .. }), "/ must open search");
+}
+
+/// Ctrl+F is the same action, matching what the Media Library already
+/// accepts.
+#[test]
+fn ctrl_f_opens_search() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(matches!(app.mode, Mode::Jump { .. }));
+}
+
+/// Ctrl+F inside the Media Library must activate ITS OWN search field
+/// (media_library/mod.rs:329-334, documented at :85) rather than being
+/// swallowed by the playlist-jump binding above. A prior round of this
+/// fix regressed this: the top-level Ctrl+F handler `return`ed
+/// unconditionally, so `handle_media_library` never saw the keystroke,
+/// even though the mode itself never changed.
+#[test]
+fn ctrl_f_in_media_library_activates_its_own_search() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    let Mode::MediaLibrary(ref s) = app.mode else {
+        panic!("Ctrl+F must not leave the Media Library");
+    };
+    assert!(s.search_active, "Ctrl+F must activate the ML's own search field");
+}
+
+/// Same coverage for '/', which reaches the ML through the ordinary mode
+/// dispatch rather than a top-level global check — included here because
+/// nothing in this file previously asserted on `search_active` at all.
+#[test]
+fn slash_in_media_library_activates_its_own_search() {
+    let mut app = make_app();
+    app.open_media_library();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    let Mode::MediaLibrary(ref s) = app.mode else {
+        panic!("/ must not leave the Media Library");
+    };
+    assert!(s.search_active, "/ must activate the ML's own search field");
+}
+
+/// Clearing the playlist is still reachable, but from the ops popup where
+/// the other whole-playlist operations live — the same place GTK puts it,
+/// as List ▾ ▸ Remove All.
+#[test]
+fn remove_all_is_reachable_from_the_ops_popup() {
+    let mut app = app_with_tracks(&["A", "B", "C"]);
+    app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
+    let idx = App::PLAYLIST_OPS_LABELS
+        .iter()
+        .position(|l| *l == "Remove All")
+        .expect("ops popup must offer Remove All");
+    for _ in 0..idx {
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.playlist.len(), 0);
+}
+
+/// F1 joins `i` for help. No F-keys were bound before, so there is no
+/// conflict; `i` still works if a multiplexer intercepts F1.
+#[test]
+fn f1_opens_help() {
+    let mut app = app_with_tracks(&["A"]);
+    app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Help { .. }));
+}
+
+/// F1 must toggle exactly like `i` does — "alongside `i`" means behaving
+/// like it, including closing the overlay it opened, not just opening it.
+#[test]
+fn f1_closes_help_like_i_does() {
+    let mut app = make_app();
+    app.mode = Mode::Help { scroll: 0 };
+    app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Normal), "a second F1 must close help");
+}
+
+/// Ctrl+F is bound globally (it has to work no matter what's on screen),
+/// but it must not silently discard whatever the user was typing in a
+/// text-entry mode — the exact failure mode this task removed from `/`.
+/// AddFile stands in for MoveTrack / RemoveTrack / Id3Editor / Settings,
+/// which all hold typed state the same way.
+#[test]
+fn ctrl_f_in_add_file_mode_does_not_discard_the_typed_input() {
+    let mut app = make_app();
+    app.mode = Mode::AddFile {
+        input: "/tmp/track.mp3".into(),
+        scan_cancel: None,
+        scan_added: 0,
+    };
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    let Mode::AddFile { ref input, .. } = app.mode else {
+        panic!("Ctrl+F must not leave AddFile mode while the user is typing a path");
+    };
+    assert_eq!(
+        input, "/tmp/track.mp3",
+        "Ctrl+F must not discard in-progress input"
+    );
+}
+

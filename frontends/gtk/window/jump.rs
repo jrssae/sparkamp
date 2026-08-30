@@ -41,6 +41,8 @@ pub(super) fn build(ctx: &PlayerCtx, btn_jump_vol: &Button) -> JumpWin {
 
     let jump_clear_btn = Button::with_label("✕");
     jump_clear_btn.add_css_class("pl-btn");
+    // The label text is a bare glyph — a screen reader needs a real word.
+    jump_clear_btn.update_property(&[gtk4::accessible::Property::Label("Clear search")]);
     jump_clear_btn.set_margin_top(8);
     jump_clear_btn.set_margin_bottom(4);
     jump_clear_btn.set_margin_end(8);

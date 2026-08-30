@@ -5,6 +5,11 @@ use super::*;
 /// it and a test asserts every bound key appears here, so the dialog can never
 /// silently drift from what the handlers actually do. Keep entries in sync with
 /// the mac `KeyboardShortcutsView.swift` sections.
+///
+/// Alternates for one action are separated by " / " — `"i / F1 / Ctrl+? /
+/// Ctrl+/"`. [`format_shortcut_keys`] breaks those onto separate lines. Keys
+/// that are not alternates but a pair of opposites ("← →" seeks backward and
+/// forward) are space-separated and stay on one line.
 #[allow(clippy::type_complexity)]
 pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
     &[
@@ -29,7 +34,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("n",          "Add file(s)"),
             ("Shift+N",    "Add folder"),
             ("m",          "Toggle Media Library window"),
-            ("j",          "Jump / search"),
+            ("j / Ctrl+F", "Jump / search"),
             ("q",          "Play queue (Jump/Queue window, Queue mode)"),
             ("Ctrl+Q",     "Enqueue / dequeue selection (playlist or jump)"),
             ("↑ ↓",        "Browse up / down (playlist window)"),
@@ -49,7 +54,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("u",           "Toggle equalizer window"),
             ("w",           "Toggle now-playing panel (art, tags, links)"),
             ("k",           "Open album-art window"),
-            ("Ctrl+.",      "Open settings"),
+            ("Ctrl+,",      "Open settings"),
             ("Click logo",  "Open settings"),
         ]),
         ("Mouse", &[
@@ -57,11 +62,40 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("Click viz",    "Cycle visualizer mode"),
             ("Dbl-click viz", "Fullscreen visualizer (Waveform or Granite mode)"),
         ]),
+        // Alt access keys for the two menu bars this branch added. Both sets
+        // start at Alt+A (deconflicted only within their own menu bar — see
+        // PLAYLIST_MENU_LABELS / SETTINGS_TAB_LABELS), so each description
+        // names its window to disambiguate. A test below derives these
+        // letters from those two constants so a relabelled mnemonic fails
+        // the build instead of silently drifting from this list.
+        ("Menus", &[
+            ("Alt+A",      "Playlist window: Add menu"),
+            ("Alt+S",      "Playlist window: Select menu"),
+            ("Alt+O",      "Playlist window: Sort menu"),
+            ("Alt+L",      "Playlist window: List menu"),
+            ("Alt+A",      "Settings window: Appearance tab"),
+            ("Alt+B",      "Settings window: Behavior tab"),
+            ("Alt+V",      "Settings window: Visualizer tab"),
+            ("Alt+M",      "Settings window: Media Library tab"),
+            ("Alt+O",      "Settings window: About tab"),
+        ]),
         ("Other", &[
-            ("i",          "Toggle this help"),
+            // Ctrl+/ is listed alongside Ctrl+? because both keyvals are
+            // bound (see the CONTROL_MASK match arms in `build`): many
+            // layouts report the unshifted keyval for Ctrl+Shift+/.
+            ("i / F1 / Ctrl+? / Ctrl+/", "Toggle this help"),
             ("Esc",        "Quit (main window) / close child window"),
         ]),
     ]
+}
+
+/// Render one row's key column for the help window.
+///
+/// Four alternates run together on a single line ("i F1 Ctrl+? Ctrl+/") read as
+/// one long key, so each alternate gets its own line. The slash stays at the
+/// end of the line it follows, where it reads as the "or" it already is.
+pub(super) fn format_shortcut_keys(keys: &str) -> String {
+    keys.replace(" / ", " /\n")
 }
 
 /// Everything the main window and the playlist window both hang off, bundled
@@ -222,10 +256,7 @@ pub fn build(
     );
     // Use the dark Adwaita variant for built-in widgets whenever the
     // skin's window background is dark.
-    let initial_dark = initial_vars.background.luminance() < 0.5;
-    if let Some(gtk_settings) = gtk4::Settings::default() {
-        gtk_settings.set_gtk_application_prefer_dark_theme(initial_dark);
-    }
+    util::apply_color_scheme(initial_vars.background.luminance() < 0.5);
 
     // Cloned Rc references used by the Appearance tab handlers.
     let provider_for_settings = provider.clone();
@@ -534,6 +565,16 @@ pub fn build(
     viz.set_vexpand(init_player_expanded);
     viz.set_hexpand(true);
     viz.add_css_class("mini-viz");
+    // A custom-drawn surface has no implicit accessible name at all — unlike
+    // a Button or Scale, there is nothing here for a screen reader to fall
+    // back to. Both the Cairo and Granite renderers are the same feature
+    // (only one is visible at a time via viz_stack below), so both carry it.
+    viz.update_property(&[
+        gtk4::accessible::Property::Label("Visualizer"),
+        gtk4::accessible::Property::Description(
+            "A decorative animation of the audio being played",
+        ),
+    ]);
 
     let granite_pic = Picture::new();
     granite_pic.set_height_request(VIZ_HEIGHT_COLLAPSED);
@@ -546,6 +587,12 @@ pub fn build(
     // player tall; let it shrink to whatever height the row gives it.
     granite_pic.set_can_shrink(true);
     granite_pic.add_css_class("mini-viz");
+    granite_pic.update_property(&[
+        gtk4::accessible::Property::Label("Visualizer"),
+        gtk4::accessible::Property::Description(
+            "A decorative animation of the audio being played",
+        ),
+    ]);
 
     let viz_stack = Stack::new();
     viz_stack.set_hexpand(true);
@@ -641,9 +688,19 @@ pub fn build(
     marquee_frame.set_margin_start(8);
     marquee_frame.set_margin_end(8);
 
-    // Marquee label — no ellipsize; we manually slide the text window each tick.
-    // single_line_mode ensures overflow is hidden at the label boundary rather
-    // than wrapping to a second line.
+    // Marquee label. The tick loop slides a character window across the full
+    // "Title — Artist" text; this label only ever shows the slice.
+    //
+    // `ellipsize` + `max_width_chars` are what keep the marquee a marquee. A
+    // GtkLabel with neither reports its *minimum* width as the full width of
+    // its text, and a minimum propagates all the way up to the window — so a
+    // long title stretched the player window wider until the whole title fit,
+    // at which point it stopped scrolling. Ellipsizing drops the minimum to
+    // the width of an ellipsis and caps the natural width, so the row's width
+    // now drives the label instead of the other way round. `hexpand` still
+    // gives the label every spare pixel in the row, so nothing looks narrower.
+    // The ellipsis itself should never actually appear: the tick loop measures
+    // the slice against this label's own font before setting it.
     let title_label = Label::builder()
         .label("No track loaded")
         .halign(Align::Fill)
@@ -651,6 +708,8 @@ pub fn build(
         .hexpand(true)
         .margin_start(8) // aligns with the VOL label start in the row below
         .single_line_mode(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .max_width_chars(20)
         .css_classes(["np-title"])
         .build();
 
@@ -838,6 +897,18 @@ pub fn build(
     btn_ml.add_css_class("mode-btn");
     btn_ml.set_tooltip_text(Some("Media library"));
 
+    // Labels name the control, not its shortcut — a screen reader reading
+    // "Playlist (p)" off the tooltip text would read the parenthesised key
+    // aloud, which is not what a sighted user is shown.
+    btn_pl.update_property(&[gtk4::accessible::Property::Label("Playlist")]);
+    btn_eq.update_property(&[gtk4::accessible::Property::Label("Equalizer")]);
+    btn_ml.update_property(&[gtk4::accessible::Property::Label("Media library")]);
+    btn_info.update_property(&[gtk4::accessible::Property::Label("Keyboard shortcuts")]);
+    btn_jump_vol.update_property(&[gtk4::accessible::Property::Label("Jump to track")]);
+    btn_repeat.update_property(&[gtk4::accessible::Property::Label("Repeat mode")]);
+    btn_shuffle.update_property(&[gtk4::accessible::Property::Label("Shuffle")]);
+    np_toggle.update_property(&[gtk4::accessible::Property::Label("Now playing panel")]);
+
     // Single source of truth for the now-playing panel toggle, shared by the
     // `w` key and the inline marquee arrow so both triggers run the identical
     // Stack-swap / viz-resize / arrow-flip / persist logic.
@@ -921,6 +992,10 @@ pub fn build(
     vol_bar.set_hexpand(false);
     vol_bar.set_width_request(90);
     vol_bar.add_css_class("vol-scale");
+    // A bare Scale announces its raw 0-1 fraction. Naming it is enough here —
+    // unlike the seek bar, volume has no separately-tracked "current value"
+    // text elsewhere in the tick loop worth mirroring.
+    vol_bar.update_property(&[gtk4::accessible::Property::Label("Volume")]);
 
     // Expanding spacer pushes PL to the right edge of np_info.
     let vol_spring = GtkBox::new(Orientation::Horizontal, 0);
@@ -950,6 +1025,10 @@ pub fn build(
     seek_bar.set_draw_value(false);
     seek_bar.set_hexpand(true);
     seek_bar.add_css_class("seek-scale");
+    // ValueText is set live by the tick loop (tick.rs), next to the visible
+    // time-display update, so it always names the control at minimum even
+    // before the first tick lands.
+    seek_bar.update_property(&[gtk4::accessible::Property::Label("Seek")]);
 
     prog_row.append(&seek_bar);
     root.append(&prog_row);
@@ -968,6 +1047,14 @@ pub fn build(
     let btn_pause = Button::from_icon_name("media-playback-pause-symbolic");
     let btn_stop = Button::from_icon_name("media-playback-stop-symbolic");
     let btn_next = Button::from_icon_name("media-skip-forward-symbolic");
+
+    // Icon-only buttons announce as "button" without this. The label is what
+    // a screen reader reads, so it is the control's name, not its shortcut.
+    btn_prev.update_property(&[gtk4::accessible::Property::Label("Previous track")]);
+    btn_play.update_property(&[gtk4::accessible::Property::Label("Play")]);
+    btn_pause.update_property(&[gtk4::accessible::Property::Label("Pause")]);
+    btn_stop.update_property(&[gtk4::accessible::Property::Label("Stop")]);
+    btn_next.update_property(&[gtk4::accessible::Property::Label("Next track")]);
 
     for btn in [&btn_prev, &btn_play, &btn_pause, &btn_stop, &btn_next] {
         btn.add_css_class("transport");
@@ -1041,7 +1128,11 @@ pub fn build(
         .build();
     root.append(&np_probe);
 
-    window.set_child(Some(&root));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&root));
+    window.set_child(Some(&toaster));
 
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1412,17 +1503,39 @@ pub fn build(
         let wrap_step_volume = step_volume.clone();
         let wrap_open_settings = open_settings.clone();
         let wrap_save_active = btn_save_active.clone();
+        let wrap_btn_info = btn_info.clone();
+        let wrap_open_jump = open_jump_mode.clone();
+        let wrap_jump_entry = jump_entry.clone();
+        let wrap_rebuild_jump = rebuild_jump.clone();
         key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
             if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
                 match key {
                     gdk::Key::q | gdk::Key::Q => return glib::Propagation::Stop,
-                    // Ctrl+. → settings; Ctrl+S → save active playlist.
-                    gdk::Key::period => {
+                    // Ctrl+, → settings. Replaces Ctrl+. (the GNOME standard
+                    // is comma, and it is what the macOS frontend binds).
+                    gdk::Key::comma => {
                         wrap_open_settings();
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::s | gdk::Key::S => {
                         wrap_save_active.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+? → keyboard shortcuts. Arrives as Ctrl+Shift+slash
+                    // on most layouts, so both keyvals are accepted.
+                    gdk::Key::question | gdk::Key::slash => {
+                        wrap_btn_info.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+F → jump / search, the reflex shortcut in any list UI.
+                    // Mirrors the `j` arm in keys.rs exactly (clear the stale
+                    // query, rebuild the result list, then open) — the jump
+                    // window hides rather than closes, so without this a reopen
+                    // via Ctrl+F would show a leftover query and stale results.
+                    gdk::Key::f | gdk::Key::F => {
+                        wrap_jump_entry.set_text("");
+                        wrap_rebuild_jump();
+                        wrap_open_jump(false);
                         return glib::Propagation::Stop;
                     }
                     _ => {}
@@ -1462,6 +1575,11 @@ pub fn build(
         let handler = handle_key.clone();
         let wrap_invert_selection = invert_selection.clone();
         let wrap_save_active = btn_save_active.clone();
+        let wrap_open_settings = open_settings.clone();
+        let wrap_btn_info = btn_info.clone();
+        let wrap_open_jump = open_jump_mode.clone();
+        let wrap_jump_entry = jump_entry.clone();
+        let wrap_rebuild_jump = rebuild_jump.clone();
         let lyr_state = state.clone();
         let lyr_sel_idx = pl_selected_idx.clone();
         let lyr_rebuild = rebuild_playlist.clone();
@@ -1487,6 +1605,29 @@ pub fn build(
                     // conspicuous gap.
                     gdk::Key::a | gdk::Key::A => {
                         lyr_pl_view.selection().select_all();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+, → settings. Replaces Ctrl+. (the GNOME standard
+                    // is comma, and it is what the macOS frontend binds).
+                    gdk::Key::comma => {
+                        wrap_open_settings();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+? → keyboard shortcuts. Arrives as Ctrl+Shift+slash
+                    // on most layouts, so both keyvals are accepted.
+                    gdk::Key::question | gdk::Key::slash => {
+                        wrap_btn_info.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    // Ctrl+F → jump / search, the reflex shortcut in any list UI.
+                    // Mirrors the `j` arm in keys.rs exactly (clear the stale
+                    // query, rebuild the result list, then open) — the jump
+                    // window hides rather than closes, so without this a reopen
+                    // via Ctrl+F would show a leftover query and stale results.
+                    gdk::Key::f | gdk::Key::F => {
+                        wrap_jump_entry.set_text("");
+                        wrap_rebuild_jump();
+                        wrap_open_jump(false);
                         return glib::Propagation::Stop;
                     }
                     _ => {}
@@ -1581,13 +1722,17 @@ pub fn build(
 
             for (key, desc) in entries.iter() {
                 let key_lbl = gtk4::Label::builder()
-                    .label(*key)
+                    .label(format_shortcut_keys(key))
                     .halign(gtk4::Align::Start)
+                    .valign(gtk4::Align::Start)
+                    .xalign(0.0) // keep stacked alternates flush left
                     .css_classes(["info-key"])
                     .build();
                 let desc_lbl = gtk4::Label::builder()
                     .label(*desc)
                     .halign(gtk4::Align::Start)
+                    // Sits level with the first key line when the key wraps.
+                    .valign(gtk4::Align::Start)
                     .css_classes(["info-desc"])
                     .build();
                 grid.attach(&key_lbl,  0, row, 1, 1);
@@ -2091,7 +2236,27 @@ pub fn build(
 
 #[cfg(test)]
 mod shortcut_dialog_tests {
-    use super::shortcut_sections;
+    use super::{format_shortcut_keys, shortcut_sections};
+
+    /// Alternates go one per line so four of them can be read at a glance;
+    /// the slash stays at the end of the line it follows.
+    #[test]
+    fn alternates_are_split_one_per_line() {
+        assert_eq!(
+            format_shortcut_keys("i / F1 / Ctrl+? / Ctrl+/"),
+            "i /\nF1 /\nCtrl+? /\nCtrl+/"
+        );
+    }
+
+    /// "← →" is one row for two opposite actions, not two names for one — it
+    /// carries no separator and must stay on a single line. The trailing
+    /// "Ctrl+/" is the case a naive `replace("/", ...)` would break.
+    #[test]
+    fn non_alternates_and_slash_keys_are_left_alone() {
+        assert_eq!(format_shortcut_keys("← →"), "← →");
+        assert_eq!(format_shortcut_keys("Ctrl+/"), "Ctrl+/");
+        assert_eq!(format_shortcut_keys("Ctrl+,"), "Ctrl+,");
+    }
 
     /// The help window is the single source of truth for GTK bindings — every
     /// key the phase-6 handlers bind must appear in it, so the dialog can never
@@ -2103,9 +2268,94 @@ mod shortcut_dialog_tests {
             .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
             .collect();
         for k in [
-            "m", "t", "Shift+N", "Ctrl+S", "Ctrl+.", "Ctrl+I", "n", "Enter", "↑ ↓",
+            "m", "t", "Shift+N", "Ctrl+S", "Ctrl+,", "Ctrl+I", "n", "Enter", "↑ ↓",
         ] {
             assert!(keys.contains(&k), "shortcuts dialog is missing `{k}`");
         }
+    }
+
+    /// The shortcuts window is the only place a user discovers these, so a
+    /// binding that exists in code but not in the dialog is invisible.
+    ///
+    /// Alternates share one row, separated by " / " (e.g. "i / F1 / Ctrl+? /
+    /// Ctrl+/"), so this splits each row's key column on whitespace and checks
+    /// exact token membership rather than a substring of the joined string — a
+    /// substring check here previously let e.g. "Ctrl+F12" satisfy a
+    /// `contains("F1")` probe (review Minor #10).
+    #[test]
+    fn shortcut_dialog_lists_the_standard_aliases() {
+        let tokens: Vec<&str> = shortcut_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().flat_map(|(k, _)| k.split_whitespace()))
+            .collect();
+        for expected in ["Ctrl+F", "F1", "Ctrl+?", "Ctrl+/", "Ctrl+,"] {
+            assert!(
+                tokens.contains(&expected),
+                "{expected} missing from the shortcuts dialog: {tokens:?}"
+            );
+        }
+    }
+
+    /// PLAYLIST_MENU_LABELS and SETTINGS_TAB_LABELS are the source of truth
+    /// for the Alt-key menu mnemonics this branch added; derive the letter
+    /// from each label (the same extraction the two `_labels_are_deconflicted`
+    /// tests use) instead of hardcoding it here, so a relabelled or newly
+    /// added mnemonic fails this test rather than just being undocumented —
+    /// which is exactly how the mnemonics went missing from this dialog the
+    /// first time.
+    #[test]
+    fn shortcut_dialog_lists_every_menu_mnemonic() {
+        use super::super::playlist_window::PLAYLIST_MENU_LABELS;
+        use super::super::settings::SETTINGS_TAB_LABELS;
+
+        fn mnemonic_of(label: &str) -> char {
+            let us = label
+                .find('_')
+                .expect("label must contain a mnemonic underscore");
+            label[us + 1..]
+                .chars()
+                .next()
+                .expect("underscore must not be the label's last character")
+                .to_ascii_uppercase()
+        }
+
+        let entries: Vec<(&str, &str)> = shortcut_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(k, d)| (*k, *d)))
+            .collect();
+
+        for label in PLAYLIST_MENU_LABELS {
+            let alt = format!("Alt+{}", mnemonic_of(label));
+            assert!(
+                entries
+                    .iter()
+                    .any(|(k, d)| *k == alt.as_str() && d.contains("Playlist window")),
+                "playlist menu mnemonic {alt} (from {label:?}) is missing from the shortcuts dialog"
+            );
+        }
+        for label in SETTINGS_TAB_LABELS {
+            let alt = format!("Alt+{}", mnemonic_of(label));
+            assert!(
+                entries
+                    .iter()
+                    .any(|(k, d)| *k == alt.as_str() && d.contains("Settings window")),
+                "settings tab mnemonic {alt} (from {label:?}) is missing from the shortcuts dialog"
+            );
+        }
+    }
+
+    /// Ctrl+. was replaced by Ctrl+, — the GNOME standard, and what the
+    /// macOS frontend already uses. Leaving it listed would document a
+    /// binding that no longer fires.
+    #[test]
+    fn shortcut_dialog_no_longer_lists_ctrl_period() {
+        let keys: Vec<&str> = shortcut_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
+            .collect();
+        assert!(
+            !keys.iter().any(|k| *k == "Ctrl+."),
+            "Ctrl+. is no longer bound and must not be listed"
+        );
     }
 }

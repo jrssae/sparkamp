@@ -26,7 +26,7 @@ use std::rc::Rc;
 use super::sidebar::Sidebar;
 use super::{
     device_fs_unsupported, device_glyph_prefix, device_plan_fs, device_record_pair, device_recorded_relpath, find_row_by_name, gtk_safe,
-    linked_library_playlist, prepare_playlist_send, safe_playlist_filename, show_alert_parented,
+    linked_library_playlist, prepare_playlist_send, safe_playlist_filename, show_toast,
     MlCtx,
 };
 
@@ -99,7 +99,10 @@ pub(super) fn connect(
             let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
                 Ok(p) => p,
                 Err(e) => {
-                    show_alert_parented(win_wk.upgrade().as_ref(), &e);
+                    // Non-fatal: nothing was sent yet, the user can retry.
+                    if let Some(w) = win_wk.upgrade() {
+                        show_toast(&w, &e);
+                    }
                     return;
                 }
             };
@@ -251,13 +254,16 @@ pub(super) fn connect(
                 if sel2.borrow().as_deref() == Some(backend.as_str()) {
                     reload_pls2(dev_for_reload.clone());
                 }
-                show_alert_parented(
-                    win2.upgrade().as_ref(),
-                    &format!(
-                        "Sent to {dname}: {copied} copied, {skipped} skipped, {failed} failed, \
-                         plus the playlist."
-                    ),
-                );
+                // Completion summary, not a gate — the send already ran.
+                if let Some(w) = win2.upgrade() {
+                    show_toast(
+                        &w,
+                        &format!(
+                            "Sent to {dname}: {copied} copied, {skipped} skipped, {failed} \
+                             failed, plus the playlist."
+                        ),
+                    );
+                }
             });
         })
     };
@@ -291,7 +297,10 @@ pub(super) fn connect(
             let Some(dev) = get_dev() else { return };
             let Some(pl_path) = sel_pl.borrow().clone() else { return };
             if dev.read_only {
-                show_alert_parented(win_wk.upgrade().as_ref(), "Device is read-only.");
+                // Precondition block, not a destructive gate — nothing to undo.
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(&w, "Device is read-only.");
+                }
                 return;
             }
             let current_stem = pl_path
@@ -356,10 +365,10 @@ pub(super) fn connect(
                     .unwrap_or_else(|| pl_path2.clone());
                 if new_path != pl_path2 {
                     if let Err(err) = std::fs::rename(&pl_path2, &new_path) {
-                        show_alert_parented(
-                            win_wk2.upgrade().as_ref(),
-                            &format!("Couldn't rename the playlist file: {err}"),
-                        );
+                        // Non-fatal: the rename dialog stays open for a retry.
+                        if let Some(w) = win_wk2.upgrade() {
+                            show_toast(&w, &format!("Couldn't rename the playlist file: {err}"));
+                        }
                         return;
                     }
                 }
@@ -392,7 +401,10 @@ pub(super) fn connect(
             let Some(dev) = get_dev() else { return };
             let Some(pl_path) = sel_pl.borrow().clone() else { return };
             if dev.read_only {
-                show_alert_parented(win_wk.upgrade().as_ref(), "Device is read-only.");
+                // Precondition block, not a destructive gate — nothing to undo.
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(&w, "Device is read-only.");
+                }
                 return;
             }
             let stem = pl_path
@@ -453,18 +465,17 @@ pub(super) fn connect(
                 if dest == pl_path2 {
                     return;
                 }
+                // Both are non-fatal: the Duplicate dialog stays open for a retry.
                 if dest.exists() {
-                    show_alert_parented(
-                        win_wk2.upgrade().as_ref(),
-                        "A playlist with that name already exists on the device.",
-                    );
+                    if let Some(w) = win_wk2.upgrade() {
+                        show_toast(&w, "A playlist with that name already exists on the device.");
+                    }
                     return;
                 }
                 if let Err(err) = std::fs::copy(&pl_path2, &dest) {
-                    show_alert_parented(
-                        win_wk2.upgrade().as_ref(),
-                        &format!("Couldn't duplicate the playlist: {err}"),
-                    );
+                    if let Some(w) = win_wk2.upgrade() {
+                        show_toast(&w, &format!("Couldn't duplicate the playlist: {err}"));
+                    }
                     return;
                 }
                 reload_pls2(dev2.clone());
@@ -488,14 +499,16 @@ pub(super) fn connect(
         dev_pl_new.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
             if dev.read_only {
-                show_alert_parented(win_wk.upgrade().as_ref(), "Device is read-only.");
+                // Precondition block, not a destructive gate — nothing to undo.
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(&w, "Device is read-only.");
+                }
                 return;
             }
             if device_fs_unsupported(&dev.fs_type) {
-                show_alert_parented(
-                    win_wk.upgrade().as_ref(),
-                    "This filesystem is unsupported — can't create a playlist on it yet.",
-                );
+                if let Some(w) = win_wk.upgrade() {
+                    show_toast(&w, "This filesystem is unsupported — can't create a playlist on it yet.");
+                }
                 return;
             }
             let dialog = gtk4::Window::builder()
@@ -542,18 +555,17 @@ pub(super) fn connect(
                 }
                 let safe = safe_playlist_filename(&raw);
                 let dest = dev2.mount_path.join(format!("{safe}.m3u8"));
+                // Both are non-fatal: the New Playlist dialog stays open for a retry.
                 if dest.exists() {
-                    show_alert_parented(
-                        win_wk2.upgrade().as_ref(),
-                        "A playlist with that name already exists on the device.",
-                    );
+                    if let Some(w) = win_wk2.upgrade() {
+                        show_toast(&w, "A playlist with that name already exists on the device.");
+                    }
                     return;
                 }
                 if let Err(err) = std::fs::write(&dest, "#EXTM3U\n") {
-                    show_alert_parented(
-                        win_wk2.upgrade().as_ref(),
-                        &format!("Couldn't create the playlist: {err}"),
-                    );
+                    if let Some(w) = win_wk2.upgrade() {
+                        show_toast(&w, &format!("Couldn't create the playlist: {err}"));
+                    }
                     return;
                 }
                 reload_pls2(dev2.clone());
@@ -601,10 +613,11 @@ pub(super) fn connect(
                     return;
                 }
                 if let Err(err) = crate::devices::io::for_device(&dev2).delete(&pl_path2) {
-                    show_alert_parented(
-                        win_wk2.upgrade().as_ref(),
-                        &format!("Couldn't remove the playlist file: {err}"),
-                    );
+                    // Non-fatal: the removal was already confirmed above, this
+                    // just reports why the (already-approved) delete failed.
+                    if let Some(w) = win_wk2.upgrade() {
+                        show_toast(&w, &format!("Couldn't remove the playlist file: {err}"));
+                    }
                     return;
                 }
                 reload_pls2(dev2.clone());

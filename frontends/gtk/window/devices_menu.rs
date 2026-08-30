@@ -31,7 +31,7 @@ use super::art_window;
 use super::{
     build_send_to_menu, context_popover, gtk_safe, notify_playlist_changed,
     notify_playlist_nav_refresh, open_id3_editor_window, queue_paths_to_drive,
-    run_playlist_save_dialog, show_alert_parented, show_playlist_save_error,
+    run_playlist_save_dialog, show_playlist_save_error, show_toast,
     view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
 };
 
@@ -416,11 +416,12 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                         return;
                     }
                     let deleted = crate::devices::plan::device_delete_files(&dev2, &paths);
+                    // Non-fatal: the delete already happened (confirmed above), this
+                    // just reports a partial failure. Nothing left to gate.
                     if deleted != paths.len() {
-                        show_alert_parented(
-                            win_wk2.upgrade().as_ref(),
-                            "Some files could not be deleted from the device.",
-                        );
+                        if let Some(w) = win_wk2.upgrade() {
+                            show_toast(&w, "Some files could not be deleted from the device.");
+                        }
                     }
                     reload2(dev2.clone());
                 });

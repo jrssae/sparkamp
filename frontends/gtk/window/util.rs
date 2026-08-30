@@ -1,5 +1,70 @@
 use super::*;
 
+/// One half of a view's button row: a left-packed row of buttons that wraps
+/// onto more lines instead of running off the edge of a narrow window.
+///
+/// A plain `GtkBox` reports the sum of its children as its *minimum* width, and
+/// a minimum propagates to the window — eleven buttons in the playlist editor
+/// came to 1111 px, below which the row was clipped and the last button was
+/// simply unreachable. A `FlowBox` reports one button instead.
+///
+/// Pair two of these with a spring between them in a horizontal box to keep a
+/// right-hand group flush right while it still fits on one line, and call
+/// [`flow_append`] rather than `append` so hidden buttons leave no gap. Set
+/// `max_children_per_line` to the group's own child count once it is filled:
+/// left higher, the FlowBox's natural width overshoots one line and the
+/// right-hand group stops reaching the edge.
+pub(super) fn wrapping_btn_group() -> gtk4::FlowBox {
+    let f = gtk4::FlowBox::new();
+    f.set_selection_mode(gtk4::SelectionMode::None);
+    // Buttons keep their own widths; a homogeneous FlowBox would size every
+    // one of them to the widest label in the group.
+    f.set_homogeneous(false);
+    f.set_row_spacing(4);
+    f.set_column_spacing(4);
+    f.set_min_children_per_line(1);
+    f.set_valign(Align::Center);
+    f
+}
+
+/// Append `child` to a [`wrapping_btn_group`], keeping the wrapper cell in step
+/// with the child's own visibility.
+///
+/// A `GtkBox` drops a hidden child from its layout. A `GtkFlowBox` does not: it
+/// puts every child in a `GtkFlowBoxChild` of its own, and hiding the button
+/// inside leaves that wrapper behind as an empty cell with its spacing intact.
+/// Several of these buttons appear only while a scan is running or an album
+/// drill-down is open, so without this the row keeps holes where they were.
+pub(super) fn flow_append(flow: &gtk4::FlowBox, child: &impl IsA<gtk4::Widget>) {
+    flow.append(child);
+    let child = child.as_ref();
+    if let Some(cell) = child.parent() {
+        child
+            .bind_property("visible", &cell, "visible")
+            .sync_create()
+            .build();
+    }
+}
+
+/// Follow the skin into GTK's own widgets: a dark skin gets the dark Adwaita
+/// variant, a light skin the light one.
+///
+/// `GtkSettings:gtk-application-prefer-dark-theme` used to do this. libadwaita
+/// took theme selection over when it was linked in for toasts and empty states,
+/// and warns on every launch that the GtkSettings property is unsupported;
+/// `AdwStyleManager:color-scheme` is its replacement.
+///
+/// `Force*` rather than `Prefer*`: the skin is the user's explicit choice, so
+/// it overrides the desktop's own light/dark preference rather than deferring
+/// to it — which is what the old property did.
+pub(super) fn apply_color_scheme(dark: bool) {
+    adw::StyleManager::default().set_color_scheme(if dark {
+        adw::ColorScheme::ForceDark
+    } else {
+        adw::ColorScheme::ForceLight
+    });
+}
+
 /// Read the user's GNOME accent-colour choice from gsettings and return
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.
@@ -224,10 +289,184 @@ pub(super) fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gt
 pub(super) fn show_alert_parented(parent: Option<&gtk4::Window>, msg: &str) {
     let alert = gtk4::AlertDialog::builder()
         .message("Sparkamp")
-        .detail(msg)
+        .detail(gtk_safe(msg))
         .modal(true)
         .build();
     alert.show(parent);
+}
+
+/// Find the `AdwToastOverlay` wrapping a window's content, if it has one.
+///
+/// Every top-level window that can raise a toast wraps its root in one at
+/// construction, so this is a single downcast rather than a tree walk.
+pub(super) fn toast_overlay_for(win: &gtk4::Window) -> Option<adw::ToastOverlay> {
+    win.child().and_downcast::<adw::ToastOverlay>()
+}
+
+/// Show a transient message at the bottom of `win`.
+///
+/// This is the non-fatal path: a recoverable failure the user can act on
+/// later, or not at all. Modal alerts stay for destructive confirmations and
+/// for errors that must be acknowledged before anything else can proceed.
+///
+/// Falls back to a modal alert when the window has no overlay, so a caller
+/// can never silently drop a message it believed it had shown.
+pub(super) fn show_toast(win: &gtk4::Window, msg: &str) {
+    match toast_overlay_for(win) {
+        Some(overlay) => overlay.add_toast(adw::Toast::new(&gtk_safe(msg))),
+        None => show_alert_parented(Some(win), msg),
+    }
+}
+
+/// Build a placeholder page for an empty view.
+///
+/// `icon` is a symbolic icon name; the HIG asks for a subtle monochrome
+/// icon in secondary spaces rather than an illustration.
+pub(super) fn empty_state(icon: &str, heading: &str, body: Option<&str>) -> adw::StatusPage {
+    let page = adw::StatusPage::new();
+    page.set_icon_name(Some(icon));
+    page.set_title(&gtk_safe(heading));
+    if let Some(b) = body {
+        page.set_description(Some(&gtk_safe(b)));
+    }
+    page
+}
+
+/// Put `content` and `empty` in a stack so a view can swap between them.
+///
+/// The caller drives the swap from whatever signals its model emits —
+/// usually `items_changed` on the backing `ListStore`, the same seam the
+/// Media Library status bars already use.
+pub(super) fn stack_with_empty_state(
+    content: &impl IsA<gtk4::Widget>,
+    empty: &adw::StatusPage,
+) -> gtk4::Stack {
+    let stack = gtk4::Stack::new();
+    stack.add_named(content, Some("content"));
+    stack.add_named(empty, Some("empty"));
+    stack.set_visible_child_name("empty");
+    stack
+}
+
+/// What a search-bearing empty-state stack should show: the real content,
+/// or a placeholder page and its copy.
+///
+/// A separate case from `adw::StatusPage` itself: this only decides *which*
+/// page and *what it says*, so the decision is plain data and testable with
+/// no GTK at all — see `empty_state_for` below and its tests.
+#[derive(Debug, PartialEq)]
+pub(super) enum EmptyState {
+    /// The store has rows to show.
+    Content,
+    /// The store is empty; show a placeholder with this copy.
+    Show {
+        icon: &'static str,
+        title: &'static str,
+        description: String,
+    },
+}
+
+/// Decide which of a search-bearing view's two empty states applies, and
+/// build its copy.
+///
+/// Pulled out as pure logic (2026-08-24 review) after the Files view shipped
+/// with this exact decision inlined at two call sites that quietly
+/// disagreed: the `items_changed` handler correctly checked the query, but
+/// the one-time initial sync — needed because `rebuild_files()` populates
+/// the store before that handler is wired — only checked `n_items() > 0`
+/// and never looked at the query at all. A user whose remembered search
+/// matched nothing was told "No music folders" on cold load, the opposite
+/// of what a matched-nothing search should say. A widget test would only
+/// have caught this by re-deriving the same decision a second time, which
+/// is exactly what went out of sync in the first place; a single shared
+/// function that every call site (including the initial sync) must go
+/// through cannot drift from itself.
+///
+/// `has_content` is whatever the caller's model reports having rows right
+/// now (a `ListStore`'s `n_items() > 0`, or — for `playlists_manage.rs`'s
+/// `GtkListBox`, which has no live item count — whether any row currently
+/// matches the query). `nothing_indexed` is the view-specific icon/title/body
+/// for an empty store with no active search; the "no results" copy is the
+/// same shape everywhere, so it's built in here rather than passed in.
+pub(super) fn empty_state_for(
+    has_content: bool,
+    query: &str,
+    nothing_indexed: (&'static str, &'static str, &'static str),
+) -> EmptyState {
+    if has_content {
+        return EmptyState::Content;
+    }
+    if query.is_empty() {
+        let (icon, title, body) = nothing_indexed;
+        EmptyState::Show {
+            icon,
+            title,
+            description: body.to_string(),
+        }
+    } else {
+        EmptyState::Show {
+            icon: "system-search-symbolic",
+            title: "No results",
+            description: format!("Nothing matches \u{201c}{query}\u{201d}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod empty_state_for_tests {
+    use super::*;
+
+    const NOTHING_INDEXED: (&str, &str, &str) = (
+        "folder-music-symbolic",
+        "No music folders",
+        "Add a folder to start building your library",
+    );
+
+    #[test]
+    fn content_wins_regardless_of_query() {
+        assert_eq!(empty_state_for(true, "", NOTHING_INDEXED), EmptyState::Content);
+        assert_eq!(empty_state_for(true, "abba", NOTHING_INDEXED), EmptyState::Content);
+    }
+
+    #[test]
+    fn empty_with_no_query_shows_the_view_specific_copy() {
+        let EmptyState::Show { icon, title, description } =
+            empty_state_for(false, "", NOTHING_INDEXED)
+        else {
+            panic!("expected Show");
+        };
+        assert_eq!(icon, "folder-music-symbolic");
+        assert_eq!(title, "No music folders");
+        assert_eq!(description, "Add a folder to start building your library");
+    }
+
+    #[test]
+    fn empty_with_an_active_query_shows_no_results_with_the_query_quoted() {
+        let EmptyState::Show { icon, title, description } =
+            empty_state_for(false, "abba", NOTHING_INDEXED)
+        else {
+            panic!("expected Show");
+        };
+        assert_eq!(icon, "system-search-symbolic");
+        assert_eq!(title, "No results");
+        // Real curly quotes (U+201C/U+201D), not straight ones — HIG typography.
+        assert_eq!(description, "Nothing matches \u{201c}abba\u{201d}");
+    }
+
+    /// The exact bug from the 2026-08-24 review: a remembered search that no
+    /// longer matches anything must read as "No results", not the view's
+    /// "nothing indexed" copy, even though both cases have zero rows. Named
+    /// after the Files view's cold-load path specifically, since that is
+    /// where it shipped, but the assertion is general — it is what every
+    /// call site of this function is buying by going through it instead of
+    /// re-deriving the same decision inline.
+    #[test]
+    fn a_stale_remembered_query_that_matches_nothing_is_no_results_not_nothing_indexed() {
+        match empty_state_for(false, "flaming lips", NOTHING_INDEXED) {
+            EmptyState::Show { title, .. } => assert_eq!(title, "No results"),
+            EmptyState::Content => panic!("expected Show, got Content"),
+        }
+    }
 }
 
 /// Modal listing files that could not be read (and were not queued).
@@ -728,19 +967,15 @@ pub(super) fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32
     out
 }
 
-/// Show a modal AlertDialog reporting a playlist-save failure.
 /// Caller-side error reporting for [`run_playlist_save_dialog`] callbacks.
 pub(super) fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err: &anyhow::Error) {
-    let dialog = gtk4::AlertDialog::builder()
-        .message("Couldn't save playlist")
-        .detail(format!(
-            "Failed to write {}\n\n{}",
-            target.display(),
-            err
-        ))
-        .modal(true)
-        .build();
-    dialog.show(Some(parent));
+    // Non-fatal: the playlist is intact in memory and the user can retry or
+    // pick another location. A modal here interrupted a save they can simply
+    // do again.
+    show_toast(
+        parent,
+        &format!("Couldn't save {}: {err}", target.display()),
+    );
 }
 
 /// What the "Send to" menu shows, as data — pure so the 0/1/N visibility

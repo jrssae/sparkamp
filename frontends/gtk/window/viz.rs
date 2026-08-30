@@ -213,11 +213,26 @@ pub(super) fn open_waveform_fullscreen(
     let canvas = DrawingArea::new();
     canvas.set_hexpand(true);
     canvas.set_vexpand(true);
+    // A custom-drawn surface has no implicit accessible name at all. Both
+    // renderers are the same feature (canvas_stack below shows only one at a
+    // time), so both carry it.
+    canvas.update_property(&[
+        gtk4::accessible::Property::Label("Visualizer"),
+        gtk4::accessible::Property::Description(
+            "A decorative animation of the audio being played",
+        ),
+    ]);
 
     let granite_canvas = Picture::new();
     granite_canvas.set_hexpand(true);
     granite_canvas.set_vexpand(true);
     granite_canvas.set_content_fit(ContentFit::Fill);
+    granite_canvas.update_property(&[
+        gtk4::accessible::Property::Label("Visualizer"),
+        gtk4::accessible::Property::Description(
+            "A decorative animation of the audio being played",
+        ),
+    ]);
 
     let canvas_stack = Stack::new();
     canvas_stack.set_hexpand(true);

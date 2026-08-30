@@ -19,7 +19,7 @@ use gtk4::prelude::*;
 use gtk4::{
     gdk, gio, glib, Align, Box as GtkBox, ColumnView, ColumnViewColumn, CustomSorter,
     EventControllerKey, Label, MultiSelection, PolicyType, ScrolledWindow,
-    SignalListItemFactory, SortListModel,
+    SignalListItemFactory, SortListModel, Stack,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -37,9 +37,10 @@ pub(super) struct DataBrowser {
     /// The row model. `populate_disc_detail` clears it when a drive with no
     /// data disc is selected.
     pub store: gio::ListStore,
-    /// The scroller holding the `ColumnView`, already appended to the detail
-    /// box. Shown for a data disc, hidden for an audio CD or an empty tray.
-    pub scroll: ScrolledWindow,
+    /// The stack holding the `ColumnView` (over an empty-state page for a
+    /// data disc with no files), already appended to the detail box. Shown
+    /// for a data disc, hidden for an audio CD or an empty tray.
+    pub scroll: Stack,
     /// The file-count/duration label under the list, also already appended.
     /// It hides and shows in lockstep with [`Self::scroll`] — the audio-CD
     /// branch of the same detail box has no file list for it to describe.
@@ -52,6 +53,34 @@ pub(super) struct DataBrowser {
     /// Copy the given disc files into the library. Shared with the audio
     /// side's "Copy all to library" button.
     pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
+}
+
+/// One-sentence spoken summary of a data-disc file row: name, then length
+/// when the disc read could measure it (skipped, not read as "—", when it
+/// couldn't — see the Length column's own bind). Size isn't part of the
+/// sentence: it is secondary metadata a listener can arrow over to the Size
+/// cell for, not part of identifying the row. Kept separate from the bind
+/// closures so the formatting is unit-testable without constructing a widget.
+///
+/// Named distinctly from `super::files::spoken_row_summary` — same idea, but
+/// `DiscFile` has no artist/album, so it is a different arity, and two
+/// same-named functions with different signatures in sibling modules is a
+/// find-references trap.
+///
+/// Sanitises with `gtk_safe` internally, the same call
+/// `super::files::spoken_row_summary` makes, so a NUL byte in a filename
+/// pulled straight off disc can't reach `update_property`.
+///
+/// Bound only to the Title cell (below) — not Length or Size — because
+/// `Property::Label` replaces a cell's own accessible name rather than
+/// adding to it; putting the same sentence on all three left the Size cell
+/// unable to say it was a size at all.
+pub(super) fn disc_row_summary(display: &str, duration_secs: Option<u32>) -> String {
+    let spoken = match duration_secs {
+        Some(s) => format!("{display}, {}:{:02}", s / 60, s % 60),
+        None => display.to_string(),
+    };
+    gtk_safe(&spoken)
 }
 
 /// Build the browser into `detail` and return its handles.
@@ -93,6 +122,9 @@ pub(super) fn build(
         SortListModel::new(Some(disc_files_store.clone()), None::<gtk4::Sorter>);
     let disc_files_selection = MultiSelection::new(Some(disc_files_sort_model.clone()));
     let disc_files_col_view = ColumnView::new(Some(disc_files_selection.clone()));
+    // Names the table itself, so a screen reader announces which view focus
+    // entered rather than staying silent on the widget as a whole.
+    disc_files_col_view.update_property(&[gtk4::accessible::Property::Label("Disc tracks")]);
     // The row context menu, filled in further down once its action group and
     // menu model exist. The cells below are built before any of that but each
     // one needs to reach it, which is the holder pattern this file already
@@ -147,6 +179,11 @@ pub(super) fn build(
             if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
                 lbl.set_text(&(li.position() + 1).to_string());
             }
+            // Position is a bare index, not row content — like the editor's
+            // and device view's own position columns, it keeps its own
+            // narrow announcement rather than carrying the full row summary
+            // (set on Title below; Length and Size keep their own narrow
+            // announcements too — see disc_row_summary's doc comment).
         });
         let col = ColumnViewColumn::new(Some("#"), Some(factory));
         col.set_fixed_width(48);
@@ -197,7 +234,17 @@ pub(super) fn build(
             else {
                 return;
             };
-            lbl.set_text(&gtk_safe(&boxed.borrow::<crate::disc::mount::DiscFile>().display));
+            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            lbl.set_text(&gtk_safe(&f.display));
+            // The row's one designated summary cell — see `disc_row_summary`
+            // for why only Title carries this and not Length/Size too.
+            // `ListItem` itself carries no Accessible implementation (it
+            // isn't a widget) — the accessible tree is built from the
+            // actual cell widget `connect_setup` put in `li.child()`.
+            let spoken = disc_row_summary(&f.display, f.duration_secs);
+            if let Some(cell) = li.child() {
+                cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+            }
         });
         let title_sorter = CustomSorter::new(|a, b| {
             let ka = a
@@ -260,14 +307,17 @@ pub(super) fn build(
             else {
                 return;
             };
-            let secs = boxed.borrow::<crate::disc::mount::DiscFile>().duration_secs;
+            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
             // Not `model::fmt_secs`: an unread disc track shows an em dash
             // rather than "-:--", which reads as a track of unknown length
             // rather than one that failed to measure.
-            lbl.set_text(&match secs {
+            lbl.set_text(&match f.duration_secs {
                 Some(s) => format!("{}:{:02}", s / 60, s % 60),
                 None => "—".to_string(),
             });
+            // No accessible-label override here — see `disc_row_summary`'s
+            // doc comment. This cell keeps its own name ("1:05") so arrowing
+            // to Length still announces the length.
         });
         let len_sorter = CustomSorter::new(|a, b| {
             let ka = a
@@ -329,8 +379,11 @@ pub(super) fn build(
             else {
                 return;
             };
-            let bytes = boxed.borrow::<crate::disc::mount::DiscFile>().bytes;
-            lbl.set_text(&format!("{:.1} MB", bytes as f64 / 1e6));
+            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            lbl.set_text(&format!("{:.1} MB", f.bytes as f64 / 1e6));
+            // No accessible-label override here — see `disc_row_summary`'s
+            // doc comment. This cell keeps its own name ("25.3 MB") so
+            // arrowing to Size still announces the size.
         });
         let size_sorter = CustomSorter::new(|a, b| {
             let ka = a
@@ -355,8 +408,32 @@ pub(super) fn build(
         .vexpand(true)
         .child(&disc_files_col_view)
         .build();
-    disc_files_scroll.set_visible(false);
-    disc_detail.append(&disc_files_scroll);
+
+    // The brief's copy for this file was "No disc inserted" — wrong for what
+    // this view actually shows empty: per the module doc above, this browser
+    // only appears once loaded media is confirmed present and is a data
+    // disc, so "no disc" can never be the reason it's showing nothing. The
+    // real empty condition is a mounted data disc with zero readable files.
+    let disc_files_empty = super::util::empty_state(
+        "media-optical-symbolic",
+        "No files on this disc",
+        Some("This disc doesn't contain any files"),
+    );
+    let disc_files_stack =
+        super::util::stack_with_empty_state(&disc_files_scroll, &disc_files_empty);
+    // Hidden by default, same as the bare ScrolledWindow was before: shown
+    // only once `populate_disc_detail` (disc_page.rs) decides the loaded
+    // media is a data disc. That toggle now targets this stack instead —
+    // it's the whole pane's visibility, a different question from which of
+    // the stack's two children is on top.
+    disc_files_stack.set_visible(false);
+    disc_detail.append(&disc_files_stack);
+    {
+        let stack = disc_files_stack.clone();
+        disc_files_store.connect_items_changed(move |store, _, _, _| {
+            stack.set_visible_child_name(if store.n_items() > 0 { "content" } else { "empty" });
+        });
+    }
 
     // ── Disc data-file browser status bar ───────────────────────────────────
     // Rows are `BoxedAnyObject<DiscFile>` (not LibTrack), so this goes through
@@ -961,7 +1038,7 @@ pub(super) fn build(
 
     DataBrowser {
         store: disc_files_store,
-        scroll: disc_files_scroll,
+        scroll: disc_files_stack,
         status_bar: disc_status_bar,
         load: load_disc_files,
         add_to_library: add_disc_files_to_library,

@@ -1327,3 +1327,633 @@ fn disc_add_decides_playback_per_action() {
     // ...and without autoplay, never.
     assert!(!disc_add_starts_playback(DiscAdd::Behavior, false, true, 7));
 }
+
+// ── Toast overlay lookup ─────────────────────────────────────────────────
+
+/// A window whose root is wrapped resolves its overlay; one that is not
+/// wrapped resolves None, which is what makes show_toast's fallback to a
+/// modal alert reachable rather than dead code.
+///
+/// `#[gtk4::test]` (not plain `#[test]` + `gtk4::init()`) is required here:
+/// this binary also runs `#[gtk4::test]`s elsewhere (media_library.rs), and
+/// a plain `#[test]` calling `gtk4::init()` races those for the one
+/// process-wide GTK main context.
+#[gtk4::test]
+fn toast_overlay_is_found_only_when_the_root_is_wrapped() {
+    let bare = gtk4::Window::new();
+    bare.set_child(Some(&gtk4::Box::new(gtk4::Orientation::Vertical, 0)));
+    assert!(super::util::toast_overlay_for(&bare).is_none());
+
+    let wrapped = gtk4::Window::new();
+    let overlay = adw::ToastOverlay::new();
+    overlay.set_child(Some(&gtk4::Box::new(gtk4::Orientation::Vertical, 0)));
+    wrapped.set_child(Some(&overlay));
+    assert!(super::util::toast_overlay_for(&wrapped).is_some());
+}
+
+// ── Empty-state stack ────────────────────────────────────────────────────
+
+/// The stack starts on the empty page: a view is empty until its model
+/// says otherwise, and starting on "content" would flash a blank table
+/// on every open.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above; both
+/// build real widgets and this binary runs both kinds of test.
+#[gtk4::test]
+fn empty_state_stack_starts_empty_and_can_swap() {
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    let page = super::util::empty_state("folder-music-symbolic", "No music folders", None);
+    let stack = super::util::stack_with_empty_state(&content, &page);
+    assert_eq!(stack.visible_child_name().as_deref(), Some("empty"));
+    stack.set_visible_child_name("content");
+    assert_eq!(stack.visible_child_name().as_deref(), Some("content"));
+}
+
+/// `GtkListBox` filtering does NOT toggle a filtered-out row's `:visible`
+/// property — confirmed here after an early draft of
+/// `playlists_manage.rs`'s `refresh_pl_manage_empty` assumed the opposite
+/// and used `row.is_visible()` to detect "search matched nothing" for the
+/// saved-playlists manage list. That check would have compiled, run, and
+/// always found every row "visible" regardless of the filter, so the
+/// "No results" branch would never have fired — a bug this test would have
+/// caught had it existed at the time (rows filtered out here still report
+/// `is_visible() == true`, which is exactly the wrong assumption made and
+/// then corrected: the shipped code re-runs the filter's own predicate over
+/// `row_at_index` instead of trusting visibility).
+#[gtk4::test]
+fn list_box_filter_does_not_toggle_row_visibility() {
+    let list = gtk4::ListBox::new();
+    for name in ["Rock", "Jazz", "Blues"] {
+        let row = gtk4::ListBoxRow::new();
+        row.set_child(Some(&gtk4::Label::new(Some(name))));
+        list.append(&row);
+    }
+
+    // Filter down to rows whose label contains 'z' — "Jazz" only.
+    list.set_filter_func(|row| {
+        row.child()
+            .and_then(|c| c.downcast::<gtk4::Label>().ok())
+            .map(|l| l.label().contains('z'))
+            .unwrap_or(false)
+    });
+    list.invalidate_filter();
+
+    // `row_at_index` still finds all three rows — filtering doesn't shrink
+    // the index, which is what lets `total` above count every saved
+    // playlist regardless of the active search.
+    assert!(list.row_at_index(0).is_some());
+    assert!(list.row_at_index(1).is_some());
+    assert!(list.row_at_index(2).is_some());
+    // But every row still reports visible, "Rock" and "Blues" included —
+    // the filter's exclusion never reaches this property.
+    assert!(list.row_at_index(0).unwrap().is_visible());
+    assert!(list.row_at_index(1).unwrap().is_visible());
+    assert!(list.row_at_index(2).unwrap().is_visible());
+}
+
+// ── Accessible names on controls (Task 10) ──────────────────────────────
+//
+// gtk4-rs 0.9 exposes `Accessible::update_property` (a setter) but no
+// matching getter — confirmed against vendor/gtk4-0.9.7/src/auto/accessible.rs,
+// which declares `update_property` and `reset_property` and nothing named
+// `accessible_property`. The task brief's Step 1 test assumed that getter
+// existed; it does not, so there is no way to read a widget's accessible
+// name back and assert on it. `icon_only_button_accepts_an_accessible_label`
+// below is kept only as a compile-time guard that `update_property` accepts
+// `Property::Label` on a `Button` — it would pass whether or not production
+// code ever calls it, so it proves nothing about the actual labelling.  The
+// tests that actually guard this task's decisions are the pure-logic ones
+// beneath it: the string each control's label/description is built from.
+
+/// A screen reader announces an icon-only button by its accessible name.
+/// Without one it says "button", which is the state the whole frontend was
+/// in before this task. This cannot assert the label was recorded (see the
+/// section note above) — it only proves the call compiles and does not
+/// panic against a real `Button`.
+#[gtk4::test]
+fn icon_only_button_accepts_an_accessible_label() {
+    let b = gtk4::Button::from_icon_name("media-playback-start-symbolic");
+    b.update_property(&[gtk4::accessible::Property::Label("Play")]);
+}
+
+/// The seek bar's spoken value must track the visible time label exactly —
+/// this is the string both are built from. Elapsed mode zero-pads seconds
+/// below 10, matching the pre-existing `fmt_duration` convention above.
+#[test]
+fn format_playback_time_elapsed_pads_seconds_below_ten() {
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(65), Some(Duration::from_secs(240)), false),
+        "1:05"
+    );
+}
+
+#[test]
+fn format_playback_time_remaining_when_duration_known() {
+    // 4:00 total, 3:00 elapsed -> 1:00 remaining.
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(180), Some(Duration::from_secs(240)), true),
+        "-1:00"
+    );
+}
+
+#[test]
+fn format_playback_time_remaining_without_duration_is_placeholder() {
+    // No duration probed yet — matches what the visible label already showed
+    // in this case before this task (tick.rs's "--:--" branch).
+    assert_eq!(super::tick::format_playback_time(Duration::from_secs(10), None, true), "--:--");
+}
+
+#[test]
+fn format_playback_time_position_past_duration_saturates_instead_of_underflowing() {
+    // A stale/short duration reading with position already past it must not
+    // wrap a u64 subtraction around to a huge "remaining" time.
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(300), Some(Duration::from_secs(240)), true),
+        "-0:00"
+    );
+}
+
+/// EQ band sliders speak their centre frequency, not a bare "-3". The raw
+/// `EQ_BAND_FREQS` entries are terse display strings ("1.9k") never meant to
+/// be read aloud — this is the expansion those strings go through.
+#[test]
+fn band_freq_label_expands_kilohertz_shorthand() {
+    assert_eq!(super::eq::band_freq_label("1.9k"), "1.9 kHz");
+}
+
+#[test]
+fn band_freq_label_appends_hz_to_plain_numbers() {
+    assert_eq!(super::eq::band_freq_label("119"), "119 Hz");
+}
+
+/// Confirms every canonical band frequency actually round-trips through the
+/// label function without panicking, covering all ten entries at once
+/// (rather than re-listing them as a second hard-coded expectation).
+#[test]
+fn band_freq_label_handles_every_canonical_band() {
+    for freq in crate::config::EQ_BAND_FREQS {
+        assert!(!super::eq::band_freq_label(freq).is_empty());
+    }
+}
+
+fn info_with_tags(tags: Vec<(&'static str, String)>) -> crate::now_playing::NowPlayingInfo {
+    crate::now_playing::NowPlayingInfo {
+        tags,
+        tech_line: String::new(),
+        technical: Vec::new(),
+        artwork_path: None,
+        play_count: None,
+        last_played: None,
+        last_scanned: None,
+        added_at: None,
+        artist_wiki_url: None,
+        album_wiki_url: None,
+    }
+}
+
+/// The album-art `Picture`'s accessible description comes from this lookup —
+/// it must find the "Album" tag when present, so a screen reader hears which
+/// album is showing instead of nothing.
+#[test]
+fn album_description_finds_the_album_tag() {
+    let info = info_with_tags(vec![("Title", "Song".to_string()), ("Album", "Greatest Hits".to_string())]);
+    assert_eq!(super::now_playing::album_description(&info), Some("Greatest Hits".to_string()));
+}
+
+/// `tags` only ever carries non-empty values (see its doc comment), so an
+/// absent "Album" entry — not an empty one — is the only way this is `None`;
+/// the art widget then gets just the "Album art" label, no description.
+#[test]
+fn album_description_is_none_when_album_unknown() {
+    let info = info_with_tags(vec![("Title", "Song".to_string())]);
+    assert_eq!(super::now_playing::album_description(&info), None);
+}
+
+/// The sanitisation lives inside `album_description` itself now, not in its
+/// caller — this proves that holds even if a future caller forgets to
+/// `gtk_safe()` the result themselves. A raw embedded NUL would otherwise
+/// panic GTK's C-string marshalling when handed to `update_property`.
+#[test]
+fn album_description_strips_embedded_nul_bytes() {
+    let info = info_with_tags(vec![("Album", "Bad\0Album".to_string())]);
+    assert_eq!(super::now_playing::album_description(&info), Some("BadAlbum".to_string()));
+}
+
+// ── Row-level accessible summaries on ColumnView tables (Task 11) ────────
+//
+// A ColumnView row built from a SignalListItemFactory announces the
+// concatenation of every cell's rendered text, empty cells included, so an
+// untagged file read as "song, , ". `spoken_row_summary` (Files, Playlist
+// editor, Device files — all three bind the same `LibTrack` title/artist/
+// album triple) and `disc_data::disc_row_summary` (DiscFile: no artist or
+// album) are the fix: one sentence, built from the fields the row actually
+// has.
+//
+// It is bound to exactly one column's cell per row — "title" for the three
+// `LibTrack` views, "Title" for the disc browser — not every column.
+// `Property::Label` *replaces* a cell's own accessible name rather than
+// adding to it, so setting it on every column both repeated the same
+// sentence across the row and cost non-title cells (Length, Size) their own
+// content; review caught this on the first pass.
+// `title_column_id_is_a_real_ml_column` below is the cheap guard against the
+// anchor string itself silently going stale.
+
+/// A fully-tagged track reads as one comma-joined sentence.
+#[test]
+fn row_summary_omits_empty_fields() {
+    assert_eq!(super::files::spoken_row_summary("Song", "", ""), "Song");
+    assert_eq!(super::files::spoken_row_summary("Song", "Artist", ""), "Song, Artist");
+    assert_eq!(
+        super::files::spoken_row_summary("Song", "Artist", "Album"),
+        "Song, Artist, Album"
+    );
+}
+
+/// An album tag with no artist is the shape `ml_cell_text` can actually
+/// produce (album survives a scan that found no artist tag), so it must not
+/// silently get promoted into the two-field sentence meant for artist-only.
+#[test]
+fn row_summary_album_without_artist_is_dropped_too() {
+    assert_eq!(super::files::spoken_row_summary("Song", "", "Album"), "Song");
+}
+
+/// `spoken_row_summary` sanitises internally (mirrors `album_description`,
+/// Task 10) so a NUL byte surviving in ID3 metadata can't reach
+/// `update_property` even if a future call site forgets `gtk_safe()` itself.
+#[test]
+fn row_summary_strips_embedded_nul_bytes() {
+    assert_eq!(super::files::spoken_row_summary("Bad\0Song", "Art\0ist", ""), "BadSong, Artist");
+}
+
+/// The data-disc browser has no artist/album — its row type is `DiscFile`,
+/// not `LibTrack` — so it gets its own summary function, `disc_row_summary`,
+/// named apart from `files::spoken_row_summary` precisely so the two
+/// different-arity functions never get confused for one another.
+#[test]
+fn disc_row_summary_omits_unmeasured_length() {
+    assert_eq!(super::disc_data::disc_row_summary("track01.wav", None), "track01.wav");
+    assert_eq!(super::disc_data::disc_row_summary("track01.wav", Some(65)), "track01.wav, 1:05");
+}
+
+/// Same NUL-safety guarantee as the audio-track summary: a filename read
+/// straight off a data disc's directory listing is untrusted the same way
+/// ID3 tags are.
+#[test]
+fn disc_row_summary_strips_embedded_nul_bytes() {
+    assert_eq!(super::disc_data::disc_row_summary("bad\0.wav", None), "bad.wav");
+}
+
+/// Guards the anchor choice itself: the three `LibTrack` bind closures gate
+/// the accessible-label call on a bare string comparison (`id_str ==
+/// "title"`), which the compiler cannot check against `ml_columns::ALL` for
+/// them. If "title" were ever renamed or dropped there, that comparison
+/// would just stop matching — silently turning the row summary off in
+/// Files, the Playlist editor and Device files with no build failure to
+/// flag it. This is the cheap net for that: unlike the bind closures, an
+/// assertion here does fail loudly.
+#[test]
+fn title_column_id_is_a_real_ml_column() {
+    assert!(crate::ml_columns::by_id("title").is_some());
+}
+
+// ── Marquee sizing ───────────────────────────────────────────────────────
+
+/// The marquee slice must be measured, never estimated. A slice one character
+/// too wide makes the label ask for more room than the row has, and because a
+/// GtkLabel's request propagates to the window, the player window used to grow
+/// wider on every tick instead of the text scrolling.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — `create_pango_layout` needs a real
+/// widget with a resolved font, so this has to run on the GTK main context.
+#[gtk4::test]
+fn marquee_slice_never_overruns_the_label_width() {
+    let label = gtk4::Label::new(None);
+    let text: Vec<char> = "Some Artist — A Fairly Long Track Title Indeed".chars().collect();
+    // Narrow enough that only part of the text can fit.
+    let width = super::tick::text_width(&label, &text.iter().collect::<String>()) / 3;
+
+    let n = super::tick::chars_that_fit(&label, &text, width);
+    assert!(n > 0, "at least one character must fit a third of the full width");
+    assert!(n < text.len(), "a third of the width must not fit the whole string");
+    assert!(
+        super::tick::text_width(&label, &text[..n].iter().collect::<String>()) <= width,
+        "the returned prefix must fit"
+    );
+    assert!(
+        super::tick::text_width(&label, &text[..n + 1].iter().collect::<String>()) > width,
+        "one more character must not fit — otherwise the slice is shorter than it need be"
+    );
+}
+
+/// The whole string fits when the width is generous, so a short title shows in
+/// full rather than being clipped to a fixed column count.
+#[gtk4::test]
+fn marquee_slice_takes_everything_when_it_fits() {
+    let label = gtk4::Label::new(None);
+    let text: Vec<char> = "Short".chars().collect();
+    let full = super::tick::text_width(&label, &text.iter().collect::<String>());
+    assert_eq!(super::tick::chars_that_fit(&label, &text, full), text.len());
+}
+
+/// The bug this pair of label properties exists for: a `GtkLabel` with neither
+/// `ellipsize` nor `max_width_chars` reports its *minimum* width as the full
+/// width of its text, and a minimum propagates up through the row to the
+/// window. A long "Artist — Title" therefore stretched the player window wider
+/// and wider until the whole string fit, at which point the marquee had nothing
+/// left to scroll.
+///
+/// Asserting on `measure()` rather than on a real window keeps this a unit
+/// test: the size request is the thing that propagates, so it is the thing
+/// worth pinning.
+#[gtk4::test]
+fn a_long_title_cannot_widen_the_marquee_label() {
+    let label = gtk4::Label::builder()
+        .label("No track loaded")
+        .halign(gtk4::Align::Fill)
+        .xalign(0.0)
+        .hexpand(true)
+        .single_line_mode(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .max_width_chars(20)
+        .build();
+    let (short_min, _, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+
+    let long = "Some Extremely Long Artist Name — And An Equally Long Track Title".repeat(4);
+    let unconstrained = super::tick::text_width(&label, &long);
+    label.set_text(&long);
+    let (long_min, long_nat, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+
+    assert_eq!(
+        long_min, short_min,
+        "the minimum width must not depend on how long the title is"
+    );
+    assert!(
+        long_nat < unconstrained,
+        "max_width_chars must cap the natural width too ({long_nat} vs {unconstrained})"
+    );
+}
+
+// ── Media Library page sizing ────────────────────────────────────────────
+
+/// Open the Media Library at `width` with the user's own library left out of
+/// it, so the sizing tests below depend on no local data and stay fast.
+#[cfg(test)]
+fn open_test_ml_window(width: i32) -> gtk4::Window {
+    gstreamer::init().ok();
+    let mut config = crate::config::Config::default();
+    config.media_library.skip_db_load = true;
+    let state = std::rc::Rc::new(std::cell::RefCell::new(
+        super::AppState::new(crate::model::Playlist::new(), config).unwrap(),
+    ));
+    let host = super::media_library::MlHost {
+        state,
+        rebuild_playlist: std::rc::Rc::new(|| {}),
+        set_track: std::rc::Rc::new(|_: &str| {}),
+        current_drives: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        current_devices: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        burn_queues: std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
+        copy_files_holder: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        burn_refresh_holder: std::rc::Rc::new(std::cell::RefCell::new(None)),
+    };
+    super::media_library::open_media_library_window(None, host, width, 800)
+}
+
+/// The first descendant of `w` (or `w` itself) of type `T`.
+#[cfg(test)]
+fn descendant<T: gtk4::prelude::IsA<gtk4::Widget>>(w: &gtk4::Widget) -> Option<T> {
+    use gtk4::prelude::*;
+    if let Some(found) = w.downcast_ref::<T>() {
+        return Some(found.clone());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(found) = descendant::<T>(&c) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Run the main loop until the window has been mapped and laid out.
+#[cfg(test)]
+fn settle() {
+    for _ in 0..400 {
+        gtk4::glib::MainContext::default().iteration(false);
+    }
+}
+
+/// Every button-like control under `w`, paired with the label it shows.
+#[cfg(test)]
+fn labelled_buttons(w: &gtk4::Widget, out: &mut Vec<(String, gtk4::Widget)>) {
+    use gtk4::prelude::*;
+    let label = w
+        .downcast_ref::<gtk4::Button>()
+        .and_then(|b| b.label())
+        .or_else(|| w.downcast_ref::<gtk4::MenuButton>().and_then(|b| b.label()));
+    if let Some(l) = label {
+        out.push((l.to_string(), w.clone()));
+        return;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        labelled_buttons(&c, out);
+        child = c.next_sibling();
+    }
+}
+
+/// Assert that each of `wanted` is present on `page` and sits inside it.
+#[cfg(test)]
+fn assert_buttons_fit(page: &gtk4::Widget, wanted: &[&str]) {
+    use gtk4::prelude::*;
+    let page_right = page.allocated_width();
+    let mut found = Vec::new();
+    labelled_buttons(page, &mut found);
+    for label in wanted {
+        let (_, w) = found.iter().find(|(l, _)| l == label).unwrap_or_else(|| {
+            panic!(
+                "{label:?} is missing from the page; labels were {:?}",
+                found.iter().map(|(l, _)| l).collect::<Vec<_>>()
+            )
+        });
+        // `compute_bounds`, not the deprecated `translate_coordinates` — the
+        // latter returned coordinates off by the widget's own inset here and
+        // reported buttons outside a page they were plainly inside.
+        let bounds = w
+            .compute_bounds(page)
+            .unwrap_or_else(|| panic!("{label:?} has no bounds relative to the page"));
+        assert!(
+            bounds.width() > 0.0,
+            "{label:?} was allocated no width in a narrow window"
+        );
+        let right = (bounds.x() + bounds.width()) as i32;
+        assert!(
+            right <= page_right,
+            "{label:?} runs to {right} px, past the {page_right} px page — the row is clipping \
+             instead of wrapping"
+        );
+    }
+}
+
+/// A `GtkStack` is homogeneous by default: every page is measured *and
+/// allocated* at the size of the widest page, whichever one is showing. The
+/// Playlists page asks for a little over 1100 px, so the album gallery was
+/// handed that width no matter how narrow the window got — its `GridView` saw
+/// a wide viewport, kept five columns of covers, and clipped them instead of
+/// reflowing to fewer.
+///
+/// The window is built for real rather than a bare `Stack` being asserted on,
+/// because the property alone proves nothing: what matters is that the visible
+/// page actually tracks the window.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn the_album_page_narrows_with_the_media_library_window() {
+    use gtk4::prelude::*;
+
+    fn album_page_width(width: i32) -> (i32, bool) {
+        let win = open_test_ml_window(width);
+        let stack = descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref())
+            .expect("the window's content stack");
+        stack.set_visible_child_name("albums");
+        win.present();
+        settle();
+        let page_w = stack.visible_child().expect("albums page").allocated_width();
+        let homogeneous = stack.is_hhomogeneous();
+        win.destroy();
+        (page_w, homogeneous)
+    }
+
+    let (wide, homogeneous) = album_page_width(1400);
+    let (narrow, _) = album_page_width(500);
+
+    assert!(
+        !homogeneous,
+        "a homogeneous stack sizes every page to the widest one, which is the bug"
+    );
+    assert!(
+        narrow < wide,
+        "the album page must shrink with the window ({narrow} px at 500, {wide} px at 1400)"
+    );
+    assert!(
+        narrow < 600,
+        "at a 500 px window the album page must come down near its own minimum, not \
+         stay at the widest page's width (got {narrow} px)"
+    );
+}
+
+/// Eleven buttons in a plain horizontal box gave the playlist editor a 1111 px
+/// minimum width, which the Media Library window inherited: narrower than that
+/// and the row was clipped, so "Play" — the primary action — simply fell off
+/// the right-hand edge with no scrollbar and no way to reach it. The Files
+/// view's ten-button row had the same shape and an 811 px minimum.
+///
+/// Both are wrapping groups now. This checks the property that actually
+/// matters, at a width where neither old row could have held: every control is
+/// inside the page it lives on.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn every_media_library_button_fits_a_narrow_window() {
+    use gtk4::prelude::*;
+
+    // 700 px: comfortably under the 1111 px the un-wrapped editor row demanded.
+    // A page is only laid out once the window holding it is presented, so each
+    // page gets its own window with that page already selected — switching the
+    // visible child of a window already on screen leaves the new page
+    // unallocated for as long as this test is willing to pump the loop.
+    let win = open_test_ml_window(700);
+    let stack =
+        descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
+    stack.set_visible_child_name("playlists");
+    let playlists = stack.visible_child().expect("playlists page");
+    descendant::<gtk4::Stack>(&playlists)
+        .expect("the page's own edit/manage stack")
+        .set_visible_child_name("pl-edit");
+    win.present();
+    settle();
+    assert_buttons_fit(
+        &playlists,
+        &[
+            "+ Files",
+            "+ Folder",
+            "\u{2212} Remove",
+            "\u{1F5D1} Delete Playlist",
+            "\u{21BA} Revert",
+            "Save As\u{2026}",
+            "Save",
+            "Enqueue",
+            "Send to \u{25BE}",
+            "\u{25B6} Play",
+        ],
+    );
+    assert!(
+        playlists.measure(gtk4::Orientation::Horizontal, -1).0 < 600,
+        "the editor must not re-acquire a wide minimum; it was 1127 px when its button row \
+         could not wrap"
+    );
+
+    win.destroy();
+
+    let win = open_test_ml_window(700);
+    let stack =
+        descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
+    stack.set_visible_child_name("files");
+    let files = stack.visible_child().expect("files page");
+    win.present();
+    settle();
+    // Play/Enqueue Album are hidden unless an album drill-down is open, and
+    // the two Cancel buttons only while their job runs — so this is the set
+    // that is always on screen.
+    assert_buttons_fit(
+        &files,
+        &[
+            "\u{2699} Columns",
+            "+ Add Folder",
+            "\u{27F3} Rescan",
+            "Analyze ReplayGain",
+            "Send to \u{25BE}",
+            "\u{2715} Remove",
+        ],
+    );
+    assert!(
+        files.measure(gtk4::Orientation::Horizontal, -1).0 < 600,
+        "the Files view must not re-acquire a wide minimum; it was 811 px when its button row \
+         could not wrap"
+    );
+    win.destroy();
+}
+
+/// `flow_append` exists because a `GtkFlowBox` does not drop a hidden child the
+/// way a `GtkBox` does — it wraps every child in a cell of its own, and hiding
+/// the button inside leaves the cell behind as a gap. Four buttons in the Files
+/// row appear only while a scan or a drill-down is live, so the binding this
+/// asserts is what keeps the row from growing holes.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn a_hidden_button_takes_its_flow_box_cell_with_it() {
+    use gtk4::prelude::*;
+
+    let group = super::util::wrapping_btn_group();
+    let shown = gtk4::Button::with_label("Always");
+    let sometimes = gtk4::Button::with_label("Sometimes");
+    super::util::flow_append(&group, &shown);
+    super::util::flow_append(&group, &sometimes);
+
+    let cell = sometimes.parent().expect("the FlowBox wraps each child in a cell");
+    assert!(cell.is_visible(), "the cell starts visible with its button");
+
+    sometimes.set_visible(false);
+    assert!(
+        !cell.is_visible(),
+        "hiding the button must hide its cell too, or the row keeps an empty gap"
+    );
+
+    sometimes.set_visible(true);
+    assert!(cell.is_visible(), "showing the button must bring its cell back");
+}

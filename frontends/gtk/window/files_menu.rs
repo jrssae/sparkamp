@@ -24,7 +24,7 @@ use super::art_window;
 use super::{
     analyze_job, complete_ml_scan, gtk_safe, notify_playlist_changed,
     notify_playlist_nav_refresh, open_id3_editor_window, queue_paths_to_drive,
-    run_playlist_save_dialog, show_alert_parented, show_playlist_save_error, start_ml_scan,
+    run_playlist_save_dialog, show_playlist_save_error, show_toast, start_ml_scan,
     update_ml_scan_progress, view_or_search_lyrics, LyricsMode, MlCtx, ScanType,
 };
 
@@ -607,10 +607,10 @@ pub(super) fn install(
             if ok {
                 notify_playlist_changed(pid);
             } else if let Some(msg) = err_msg {
-                show_alert_parented(
-                    ml_action_add_win.upgrade().as_ref(),
-                    &gtk_safe(&msg),
-                );
+                // Non-fatal: the selection is untouched, the user can retry.
+                if let Some(w) = ml_action_add_win.upgrade() {
+                    show_toast(&w, &msg);
+                }
             }
         });
         ml_action_group.add_action(&action_add_to_saved);

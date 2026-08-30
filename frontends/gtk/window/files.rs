@@ -37,7 +37,7 @@ use super::{
     open_customize_columns_dialog, start_ml_scan, sync_rg_ui, truncate_display,
     update_ml_scan_progress, view_or_search_lyrics, ArtworkCells, ColumnCustomizerMode, LyricsMode,
     MlCtx,
-    ScanType, SendToActions, ALL_COLUMNS,
+    ScanType, SendToActions, ALL_COLUMNS, ML_SEARCH_ENTRY_NAME,
 };
 
 /// What the Files view's leading status column shows for one row.
@@ -197,6 +197,25 @@ const GLYPH_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 type GlyphCache = Rc<RefCell<std::collections::HashMap<String, (FileStatus, std::time::Instant)>>>;
 type GlyphInflight = Rc<RefCell<std::collections::HashSet<String>>>;
 
+/// One-sentence spoken summary of a track row, skipping fields the file
+/// does not have. Kept separate from the bind closure so the formatting is
+/// unit-testable without constructing a widget. Shared by the Files,
+/// Playlist-editor and Device views — all three bind the same `LibTrack`
+/// fields, so there is no reason for three copies of the same `match`.
+///
+/// Sanitises with `gtk_safe` internally, the same call as
+/// `now_playing::album_description` makes, so a NUL byte surviving in tag
+/// data can't reach `update_property` no matter what a future caller forgets
+/// to do at its own call site.
+pub(super) fn spoken_row_summary(title: &str, artist: &str, album: &str) -> String {
+    let spoken = match (artist.is_empty(), album.is_empty()) {
+        (false, false) => format!("{title}, {artist}, {album}"),
+        (false, true) => format!("{title}, {artist}"),
+        _ => title.to_string(),
+    };
+    gtk_safe(&spoken)
+}
+
 /// Build the Files page and attach it to `ctx.stack` under the name `"files"`.
 pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page uses from its context, so the body below
@@ -221,6 +240,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let search_entry = Entry::new();
         search_entry.set_placeholder_text(Some("Search artist, title, album…"));
         search_entry.set_hexpand(true);
+        // Marks the entry Ctrl+F should focus when this page is the visible
+        // one — see the widget-name walk in media_library.rs.
+        search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
         // F12.1: restore this view's last search query if the feature is on.
         // rebuild_files() (below) reads search_entry.text() for its initial
         // fill, so this must happen before that call.
@@ -234,6 +256,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         let search_clear_btn = Button::with_label("✕");
         search_clear_btn.add_css_class("pl-btn");
+        // The label text is a bare glyph — a screen reader needs a real word.
+        search_clear_btn.update_property(&[gtk4::accessible::Property::Label("Clear search")]);
         {
             let e = search_entry.clone();
             search_clear_btn.connect_clicked(move |_| {
@@ -255,6 +279,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let sort_model = SortListModel::new(Some(track_store.clone()), None::<gtk4::Sorter>);
         let multi_sel = MultiSelection::new(Some(sort_model.clone()));
         let col_view = ColumnView::new(Some(multi_sel.clone()));
+        // Names the table itself, so a screen reader announces which view
+        // focus entered rather than staying silent on the widget as a whole.
+        col_view.update_property(&[gtk4::accessible::Property::Label("Tracks")]);
         col_view.add_css_class("ml-col-view");
         col_view.set_show_row_separators(false);
         col_view.set_show_column_separators(false);
@@ -686,6 +713,40 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let artist_as_album_artist =
                         bind_state.borrow().config.media_library.artist_as_album_artist;
 
+                    // Without this a screen reader reads every cell in the
+                    // row in sequence, empty ones included, so an untagged
+                    // file announced as "song, , ". One sentence per row is
+                    // what the HIG's list guidance asks for — but
+                    // `Property::Label` *replaces* a cell's own accessible
+                    // name rather than adding to it, and this closure runs
+                    // once per visible column. Setting it on every column
+                    // (the first cut of this fix) made every cell in the row
+                    // repeat the same sentence and, worse, cost the Length
+                    // and Size-style cells their own content — a duration
+                    // cell's name became the whole row instead of the
+                    // duration. So exactly one column carries it: "title",
+                    // the row's identifying field. ColumnView's factory
+                    // architecture exposes no row-level object to hang a
+                    // single name on instead, and Title is in
+                    // `default_ml_visible`/`default_id3_visible`, so this
+                    // only goes quiet if a user deliberately hides it via
+                    // the column picker — accepted tradeoff over guessing at
+                    // "whichever column ends up leftmost".
+                    if id_str == "title" {
+                        let spoken = spoken_row_summary(
+                            t.title.as_deref().unwrap_or(&t.filename),
+                            t.artist.as_deref().unwrap_or(""),
+                            t.album.as_deref().unwrap_or(""),
+                        );
+                        // `ListItem` itself carries no Accessible
+                        // implementation (it isn't a widget) — the
+                        // accessible tree is built from the actual cell
+                        // widget `connect_setup` put in `li.child()`.
+                        if let Some(cell) = li.child() {
+                            cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+                        }
+                    }
+
                     if is_artwork {
                         bind_cells.bind(li, t.artwork_path.as_deref(), |li| {
                             li.item()
@@ -979,7 +1040,58 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             .child(&col_view)
             .build();
         *vadj_holder.borrow_mut() = Some(track_scroll.vadjustment());
-        files_vbox.append(&track_scroll);
+
+        // Two empty states share this view: nothing indexed at all, and a
+        // search that matched nothing. The second is only reachable once the
+        // first is not, so one stack with a swapped-out page covers both.
+        let files_empty = super::util::empty_state(
+            "folder-music-symbolic",
+            "No music folders",
+            Some("Add a folder to start building your library"),
+        );
+        let files_stack = super::util::stack_with_empty_state(&track_scroll, &files_empty);
+        files_vbox.append(&files_stack);
+        // Both branches below go through the same `empty_state_for` decision
+        // (util.rs) rather than each re-deriving "is the query non-empty" —
+        // an initial-sync block here once checked only `n_items() > 0` and
+        // never looked at the query, so a remembered search that matched
+        // nothing showed "No music folders" on cold load instead of "No
+        // results" (2026-08-24 review). Routing every call site through one
+        // function makes that class of bug structurally impossible: there is
+        // only one place left to get the decision wrong.
+        let apply_files_empty_state: Rc<dyn Fn()> = {
+            let stack = files_stack.clone();
+            let empty = files_empty.clone();
+            let store = track_store.clone();
+            let entry = search_entry.clone();
+            Rc::new(move || {
+                match super::util::empty_state_for(
+                    store.n_items() > 0,
+                    &entry.text(),
+                    (
+                        "folder-music-symbolic",
+                        "No music folders",
+                        "Add a folder to start building your library",
+                    ),
+                ) {
+                    super::util::EmptyState::Content => stack.set_visible_child_name("content"),
+                    super::util::EmptyState::Show { icon, title, description } => {
+                        empty.set_icon_name(Some(icon));
+                        empty.set_title(title);
+                        empty.set_description(Some(&gtk_safe(&description)));
+                        stack.set_visible_child_name("empty");
+                    }
+                }
+            })
+        };
+        {
+            let apply = apply_files_empty_state.clone();
+            track_store.connect_items_changed(move |_, _, _, _| apply());
+        }
+        // `rebuild_files()` above already populated the store once, before
+        // this handler existed to see it — sync the initial state by hand,
+        // through the same function the handler uses.
+        apply_files_empty_state();
 
         // Live search with 300ms debounce to avoid rebuilding on every keystroke.
         {
@@ -1120,21 +1232,37 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // drill-down had the two groups the other way round, so the button
         // in a given corner changed meaning as you moved between views.
         //
+        // Each half is a wrapping group (`util::wrapping_btn_group`) rather
+        // than a plain box: ten buttons in a row gave this page an 811 px
+        // minimum width that the Media Library window inherited, and below it
+        // "✕ Remove" was clipped off the end. The spring between the two halves
+        // still keeps the selection actions flush right while they fit on one
+        // line. `flow_append`, not `append` — four of these buttons are shown
+        // only while a scan or a drill-down is live, and a FlowBox would
+        // otherwise hold their cells open as gaps.
+        //
         // Play/Enqueue Album (Phase 11 A5) are hidden unless an album
         // drill-down filter is active — see `rebuild_files` above.
+        use super::util::flow_append;
+        let btn_manage = super::util::wrapping_btn_group();
+        let btn_actions = super::util::wrapping_btn_group();
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
-        btn_row.append(&btn_customize);
-        btn_row.append(&btn_add_folder);
-        btn_row.append(&btn_rescan);
-        btn_row.append(&btn_cancel);
-        btn_row.append(&btn_analyze_rg);
-        btn_row.append(&btn_cancel_rg);
+        flow_append(&btn_manage, &btn_customize);
+        flow_append(&btn_manage, &btn_add_folder);
+        flow_append(&btn_manage, &btn_rescan);
+        flow_append(&btn_manage, &btn_cancel);
+        flow_append(&btn_manage, &btn_analyze_rg);
+        flow_append(&btn_manage, &btn_cancel_rg);
+        btn_manage.set_max_children_per_line(6);
+        flow_append(&btn_actions, &btn_play_album);
+        flow_append(&btn_actions, &btn_enqueue_album);
+        flow_append(&btn_actions, &btn_send_to);
+        flow_append(&btn_actions, &btn_rm_from_ml);
+        btn_actions.set_max_children_per_line(4);
+        btn_row.append(&btn_manage);
         btn_row.append(&spring);
-        btn_row.append(&btn_play_album);
-        btn_row.append(&btn_enqueue_album);
-        btn_row.append(&btn_send_to);
-        btn_row.append(&btn_rm_from_ml);
+        btn_row.append(&btn_actions);
         files_vbox.append(&btn_row);
 
         // Play Album: replace the active playlist with the drilled-into
@@ -1217,7 +1345,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         files_vbox.append(&files_status_bar);
         // Sit directly below the file list (above the button row), matching the
         // active playlist window.
-        files_vbox.reorder_child_after(&files_status_bar, Some(&track_scroll));
+        files_vbox.reorder_child_after(&files_status_bar, Some(&files_stack));
 
         // Add selected tracks to playlist.
         let add_selected: Rc<dyn Fn()> = {

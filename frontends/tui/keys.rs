@@ -222,6 +222,36 @@ impl App {
             self.queue_toggle_highlighted();
             return;
         }
+        // Ctrl+F — search, matching the Media Library's existing binding.
+        //
+        // Two guards are needed here and neither subsumes the other:
+        //
+        // - The outer `!matches!(.., Mode::MediaLibrary(..))` below makes
+        //   this block a no-op while the Media Library is open, so the
+        //   `return` does NOT fire and control falls through to
+        //   `match self.mode` further down, which dispatches to
+        //   `handle_media_library` — the ONLY place that can set
+        //   `search_active = true` on the ML's own search field
+        //   (media_library/mod.rs:329-334, documented at :85). Without this
+        //   guard the `return` a few lines down fires unconditionally and
+        //   `handle_media_library` never sees the keystroke at all, even
+        //   though `open_search()` correctly no-ops in that mode — a no-op
+        //   action still consumed the key via `return`, so ML's Ctrl+F goes
+        //   dead. (This regressed once already: round 2 removed this guard
+        //   on the mistaken premise that open_search()'s inner check made it
+        //   redundant.)
+        // - `open_search()`'s own inner `Mode::Normal`-only check handles
+        //   every OTHER mode this top-level match can't distinguish between
+        //   from here — AddFile, MoveTrack, RemoveTrack, Id3Editor, Settings,
+        //   and Jump's own in-progress query — so Ctrl+F can't silently
+        //   discard whatever the user was typing there either.
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('f') | KeyCode::Char('F'))
+            && !matches!(self.mode, Mode::MediaLibrary(..))
+        {
+            self.open_search();
+            return;
+        }
         match self.mode {
             Mode::Normal => self.handle_normal(code),
             Mode::Jump { .. } => self.handle_jump(code),
@@ -264,8 +294,9 @@ impl App {
                         };
                     }
 
-                    // Close the overlay.
-                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
+                    // Close the overlay. F1 joins i/I here so it toggles
+                    // like i does, rather than only ever opening help.
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::F(1) => {
                         self.mode = Mode::Normal;
                     }
 
@@ -356,7 +387,7 @@ impl App {
                 self.mode = Mode::Queue { selected: 0 };
             }
 
-            // o — playlist ops popup (sort / randomize / reverse).
+            // o — playlist ops popup (sort / randomize / reverse / remove all).
             KeyCode::Char('o') => {
                 self.mode = Mode::PlaylistOps { selected: 0 };
             }
@@ -495,18 +526,31 @@ impl App {
                 }
             }
 
-            // / — clear all tracks from the playlist.
+            // / — open jump / search. Every terminal app binds '/' to
+            // search, and the Media Library already does. This used to clear
+            // the entire playlist, which was a data-loss trap on the key
+            // users press to search; Remove All now lives in the `o` popup.
             KeyCode::Char('/') => {
-                let _ = self.player.stop();
-                self.playlist.tracks.clear();
-                self.playlist.current_index = 0;
-                self.playlist_cursor = 0;
-                self.shuffle_state.reset(); // fresh playlist → fresh shuffle draw
-                self.set_status("Playlist cleared");
+                let results = (0..self.playlist.len()).collect();
+                self.mode = Mode::Jump {
+                    query: String::new(),
+                    results,
+                    selected: 0,
+                    from_media_library: false,
+                };
             }
 
             // i / I — show keyboard shortcut reference overlay.
             KeyCode::Char('i') | KeyCode::Char('I') => {
+                self.mode = Mode::Help { scroll: 0 };
+            }
+
+            // F1 — help, alongside `i`. Toggles like `i` does: this arm
+            // opens it from Normal, and the Mode::Help match above closes
+            // it again on a second F1. No F-keys were bound before this, so
+            // there is no conflict; `i` still works if a terminal multiplexer
+            // swallows F1.
+            KeyCode::F(1) => {
                 self.mode = Mode::Help { scroll: 0 };
             }
 
@@ -751,6 +795,27 @@ impl App {
         }
     }
 
+    /// Ctrl+F: open jump/search — the same transition `/` performs in
+    /// Normal mode. Checked against `self.mode` for the same reason
+    /// `queue_toggle_highlighted` checks it for Ctrl+Q: Ctrl+F is bound
+    /// globally so it works no matter what's on screen, but "globally"
+    /// must not mean "even while the user is mid-keystroke somewhere that
+    /// isn't Normal" — that would throw away an in-progress AddFile path,
+    /// MoveTrack/RemoveTrack number, Id3Editor field, Settings edit, or
+    /// even Jump's own partially-typed query, exactly the class of bug
+    /// this task removed from `/`.
+    pub(super) fn open_search(&mut self) {
+        if let Mode::Normal = self.mode {
+            let results = (0..self.playlist.len()).collect();
+            self.mode = Mode::Jump {
+                query: String::new(),
+                results,
+                selected: 0,
+                from_media_library: false,
+            };
+        }
+    }
+
     /// Ctrl+Q: toggle the queue membership of the highlighted track — the
     /// playlist cursor in Normal mode, or the selected result in Jump mode.
     pub(super) fn queue_toggle_highlighted(&mut self) {
@@ -832,7 +897,7 @@ impl App {
     /// The active-playlist ops popup's menu entries, in display order.
     /// Kept as a single source of truth for both the key handler (which
     /// dispatches by index) and the overlay (which renders the labels).
-    pub(super) const PLAYLIST_OPS_LABELS: [&'static str; 7] = [
+    pub(super) const PLAYLIST_OPS_LABELS: [&'static str; 8] = [
         "Sort: Title",
         "Sort: Artist",
         "Sort: Album",
@@ -840,6 +905,7 @@ impl App {
         "Sort: Path",
         "Randomize",
         "Reverse",
+        "Remove All",
     ];
 
     /// Set the PlaylistOps overlay's highlighted position (no-op outside
@@ -879,6 +945,17 @@ impl App {
                     4 => self.playlist_sort(crate::model::SortKey::Path),
                     5 => self.playlist_randomize(),
                     6 => self.playlist_reverse(),
+                    7 => {
+                        // Clearing the whole playlist belongs with the other
+                        // whole-playlist operations, not on a bare keystroke.
+                        // Mirrors GTK's List ▾ ▸ Remove All.
+                        let _ = self.player.stop();
+                        self.playlist.tracks.clear();
+                        self.playlist.current_index = 0;
+                        self.playlist_cursor = 0;
+                        self.shuffle_state.reset();
+                        self.set_status("Playlist cleared");
+                    }
                     _ => {}
                 }
                 self.mode = Mode::Normal;

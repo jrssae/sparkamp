@@ -78,6 +78,8 @@ Track {
     album: String::new(),
     duration: None,
     broken: false,
+    read_only: false,
+    id: 0,
 }
 ```
 

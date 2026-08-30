@@ -386,6 +386,9 @@ pub(super) fn build_burn_panel(
     let btn_remove = Button::with_label("− Remove");
     let btn_up = Button::with_label("↑");
     let btn_down = Button::with_label("↓");
+    // The label text is a bare glyph — a screen reader needs a real word.
+    btn_up.update_property(&[gtk4::accessible::Property::Label("Move up")]);
+    btn_down.update_property(&[gtk4::accessible::Property::Label("Move down")]);
     let btn_clear = Button::with_label("Clear");
     let spring = GtkBox::new(Orientation::Horizontal, 0);
     spring.set_hexpand(true);

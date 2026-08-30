@@ -170,9 +170,9 @@ impl SkinVars {
             button_text_color: Rgb { r: 0xaa, g: 0xaa, b: 0xaa },
 
             font_family:       "Inter, system-ui, sans-serif".to_string(),
-            font_size:         12.0,
-            font_size_large:   32.0,
-            font_size_marquee: 14.0,
+            font_size:         15.0,
+            font_size_large:   40.0,
+            font_size_marquee: 18.0,
         }
     }
 
@@ -192,9 +192,9 @@ impl SkinVars {
             button_text_color: Rgb { r: 0x33, g: 0x33, b: 0x33 },
 
             font_family:       "Inter, system-ui, sans-serif".to_string(),
-            font_size:         12.0,
-            font_size_large:   32.0,
-            font_size_marquee: 14.0,
+            font_size:         15.0,
+            font_size_large:   40.0,
+            font_size_marquee: 18.0,
         }
     }
 }
@@ -343,6 +343,25 @@ fn parse_px(raw: &str) -> Option<f32> {
     let t = raw.trim();
     let num_part = t.strip_suffix("px").unwrap_or(t).trim();
     num_part.parse::<f32>().ok()
+}
+
+/// Render a px font size as CSS `pt`.
+///
+/// GTK does not scale `px`, so a px font size ignores the desktop's text
+/// scaling factor entirely — large-text accessibility mode has no effect on
+/// it. `pt` is converted through `gtk-xft-dpi`, which is exactly what that
+/// factor multiplies, so the same number both renders at the intended size
+/// and grows when the user asks for larger text.
+///
+/// The factor is the CSS reference resolution of 96dpi: 1pt is 1/72in and
+/// 1px is 1/96in, so 1px is 0.75pt.
+fn px_to_pt(px: f32) -> String {
+    let pt = px * 0.75;
+    if pt.fract().abs() < f32::EPSILON {
+        format!("{}pt", pt as i32)
+    } else {
+        format!("{pt}pt")
+    }
 }
 
 fn strip_css_comments(css: &str) -> String {
@@ -557,9 +576,15 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     let bprs   = v.button_pressed.to_hex();
     let btext  = v.button_text_color.to_hex();
     let ff     = &v.font_family;
-    let fs     = v.font_size;
-    let fsl    = v.font_size_large;
-    let fsm    = v.font_size_marquee;
+    // Font sizes are pre-rendered as `pt` strings: GTK scales pt with the
+    // desktop text-scaling factor but leaves px alone. `fs_px` stays numeric
+    // for the two badge variants that derive a smaller size from it.
+    let fs_px  = v.font_size;
+    let fs     = px_to_pt(fs_px);
+    let fsl    = px_to_pt(v.font_size_large);
+    let fsm    = px_to_pt(v.font_size_marquee);
+    let fs_sm  = px_to_pt(fs_px - 2.0);
+    let fs_badge = px_to_pt(16.0);
     let hl_sel = v.highlight.with_opacity(0.18);
     let hl_pla = v.highlight.with_opacity(0.10);
     let hl_hov = v.highlight.with_opacity(0.08);
@@ -570,7 +595,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Window + default typography
     writeln!(css, "window {{ \
         background-color: {bg}; color: {text}; \
-        font-family: {ff}; font-size: {fs}px; \
+        font-family: {ff}; font-size: {fs}; \
     }}").unwrap();
 
     // Secondary / dialog window chrome
@@ -584,10 +609,10 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         border-radius: 4px; padding: 4px; \
     }}").unwrap();
     writeln!(css, ".np-title {{ \
-        color: {hl}; font-size: {fsm}px; font-weight: bold; padding: 2px 0px; \
+        color: {hl}; font-size: {fsm}; font-weight: bold; padding: 2px 0px; \
     }}").unwrap();
     writeln!(css, ".np-artist {{ \
-        color: {text_dim}; font-size: {fs}px; padding: 0px 0px 2px 0px; \
+        color: {text_dim}; font-size: {fs}; padding: 0px 0px 2px 0px; \
     }}").unwrap();
 
     // Expandable now-playing panel (A1) + standalone art window (A6).
@@ -605,7 +630,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         opacity: 0.5; color: {text_dim}; \
     }}").unwrap();
     writeln!(css, ".np-tag-row {{ \
-        color: {text}; font-size: {fs}px; padding: 1px 0px; \
+        color: {text}; font-size: {fs}; padding: 1px 0px; \
     }}").unwrap();
     writeln!(css, ".np-link {{ \
         color: {hl}; text-decoration: underline; \
@@ -628,7 +653,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // Time display (hardcoded monospace)
     writeln!(css, ".time-disp {{ \
         color: {text}; background-color: {tbg}; \
-        font-family: monospace; font-size: {fsl}px; \
+        font-family: monospace; font-size: {fsl}; \
         padding: 2px 6px; border-radius: 3px; \
     }}").unwrap();
 
@@ -655,7 +680,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // of the play/pause/stop state indicator while armed (phase 6, `t`). Same
     // colour as the state glyph (`.time-disp` uses `{text}`).
     writeln!(css, "label.stop-after-badge {{ \
-        color: {text}; font-size: 16px; margin: 0; padding: 0; \
+        color: {text}; font-size: {fs_badge}; margin: 0; padding: 0; \
     }}").unwrap();
 
 
@@ -701,7 +726,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
     writeln!(css, ".vol-label {{ \
-        color: {text_dim}; font-size: {fs}px; font-family: monospace; min-width: 28px; \
+        color: {text_dim}; font-size: {fs}; font-family: monospace; min-width: 28px; \
     }}").unwrap();
 
     // Mini visualizer — no inner border so the time-display row above it and
@@ -727,7 +752,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
     }}").unwrap();
     writeln!(css, "scale.eq-scale label {{ \
-        color: {text_dim}; font-size: {fs}px; \
+        color: {text_dim}; font-size: {fs}; \
     }}").unwrap();
 
     // Generic settings-surface widgets (B8). Every Scale/DropDown/SpinButton
@@ -758,7 +783,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // the system default (often dark) background.
     writeln!(css, ".playlist, .ml-sidebar, .rich-list, \
                    columnview, listview, list {{ \
-        background-color: {tbg}; color: {text}; font-size: {fs}px; \
+        background-color: {tbg}; color: {text}; font-size: {fs}; \
     }}").unwrap();
     writeln!(css, ".ml-sidebar row, .rich-list row {{ \
         color: {text}; padding: 2px 4px; \
@@ -820,7 +845,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         color: {broken}; \
     }}").unwrap();
     writeln!(css, ".pl-dur-label {{ color: {text_dim}; font-family: monospace; }}").unwrap();
-    writeln!(css, ".pl-count-label {{ color: {text}; font-size: {fs}px; }}").unwrap();
+    writeln!(css, ".pl-count-label {{ color: {text}; font-size: {fs}; }}").unwrap();
     // Artwork "View" button inside ColumnView cells: strip the default button
     // min-height/padding so an art row is exactly as tall as a text row, and
     // every row in the files / device track view has a uniform height.
@@ -850,7 +875,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     writeln!(css, "button:active {{ background-color: {bprs}; background-image: none; }}").unwrap();
 
     // Status bar + info text
-    writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}px; }}").unwrap();
+    writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}; }}").unwrap();
     // Device overview cards (the Devices page list).
     writeln!(css, ".device-card {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
@@ -863,29 +888,29 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         padding: 16px 18px; \
     }}").unwrap();
     writeln!(css, ".device-card-name {{ \
-        color: {text}; font-size: {fs}px; font-weight: bold; \
+        color: {text}; font-size: {fs}; font-weight: bold; \
     }}").unwrap();
     writeln!(css, ".device-badge {{ \
         color: {text_dim}; border: 1px solid {border}; border-radius: 999px; \
-        padding: 1px 8px; font-size: {fs}px; \
+        padding: 1px 8px; font-size: {fs}; \
     }}").unwrap();
     writeln!(css, ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}").unwrap();
     // Smaller badge variant (2pt smaller font + tighter padding).
-    writeln!(css, ".device-badge-sm {{ font-size: {}px; padding: 0px 6px; }}", fs - 2.0).unwrap();
+    writeln!(css, ".device-badge-sm {{ font-size: {fs_sm}; padding: 0px 6px; }}").unwrap();
     // Disc metadata source pill (gnudb / edited / CD-TEXT) next to the disc
     // header's "Artist — Album" line — same rounded-badge idiom as
     // .device-badge, one size down.
     writeln!(css, ".disc-source-pill {{ \
         color: {text_dim}; background-color: {tbg}; border: 1px solid {border}; \
-        border-radius: 999px; padding: 1px 8px; font-size: {}px; \
-    }}", fs - 2.0).unwrap();
+        border-radius: 999px; padding: 1px 8px; font-size: {fs_sm}; \
+    }}").unwrap();
     // Device detail page: header band, storage section, bottom status bar.
     writeln!(css, ".device-detail-header {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
         padding: 10px 12px; \
     }}").unwrap();
     writeln!(css, ".device-detail-name {{ \
-        color: {text}; font-size: {fs}px; font-weight: bold; \
+        color: {text}; font-size: {fs}; font-weight: bold; \
     }}").unwrap();
     writeln!(css, ".device-section {{ padding: 4px 2px; }}").unwrap();
     writeln!(css, ".device-statusbar {{ \
@@ -927,33 +952,33 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {bact}; color: {btext}; border-color: {hl}; \
     }}").unwrap();
     writeln!(css, ".info-text {{ \
-        color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}px; \
+        color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}; \
         padding: 6px; border-radius: 3px; \
     }}").unwrap();
     writeln!(css, ".info-title {{ \
-        color: {text}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        color: {text}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
         margin-bottom: 4px; \
     }}").unwrap();
     writeln!(css, ".info-section {{ \
-        color: {hl}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        color: {hl}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
         margin-top: 6px; \
     }}").unwrap();
     writeln!(css, ".info-key {{ \
-        color: {text}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        color: {text}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
         padding-left: 8px; \
     }}").unwrap();
     writeln!(css, ".info-desc {{ \
-        color: {text}; font-family: {ff}; font-size: {fs}px; \
+        color: {text}; font-family: {ff}; font-size: {fs}; \
     }}").unwrap();
     // About pane
     writeln!(css, ".about-title {{ \
-        color: {text}; font-family: {ff}; font-size: {fsl}px; font-weight: bold; \
-    }}", fsl = v.font_size_large).unwrap();
+        color: {text}; font-family: {ff}; font-size: {fsl}; font-weight: bold; \
+    }}").unwrap();
     writeln!(css, ".about-section {{ \
-        color: {hl}; font-family: {ff}; font-size: {fs}px; font-weight: bold; \
+        color: {hl}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
     }}").unwrap();
     writeln!(css, ".about-subtle {{ \
-        color: {text_dim}; font-family: {ff}; font-size: {fs}px; \
+        color: {text_dim}; font-family: {ff}; font-size: {fs}; \
     }}").unwrap();
 
     // Form inputs sitting on text-background
@@ -1054,17 +1079,17 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {hl_hov}; \
     }}").unwrap();
     writeln!(css, ".album-cell-title {{ \
-        color: {text}; font-size: {fs}px; font-weight: bold; \
+        color: {text}; font-size: {fs}; font-weight: bold; \
     }}").unwrap();
     writeln!(css, ".album-cell-artist {{ \
-        color: {text_dim}; font-size: {fs}px; \
+        color: {text_dim}; font-size: {fs}; \
     }}").unwrap();
     // Track-count pill overlaid on the bottom-right of the cover. Fixed
     // black/white rather than skin colours on purpose: it sits on top of
     // arbitrary cover art, so it needs a contrast floor no skin can undercut.
     writeln!(css, ".album-cell-count {{ \
         color: #ffffff; background-color: rgba(0,0,0,0.65); \
-        font-size: {fs}px; font-weight: bold; \
+        font-size: {fs}; font-weight: bold; \
         padding: 1px 5px; border-radius: 8px; margin: 5px; \
     }}").unwrap();
 
@@ -1072,7 +1097,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // lyrics read like the rest of the app. `text` selects the TextView's
     // internal text node.
     writeln!(css, ".lyrics-view, .lyrics-view text {{ \
-        font-family: {ff}; font-size: {fs}px; color: {text}; \
+        font-family: {ff}; font-size: {fs}; color: {text}; \
         background-color: {tbg}; padding: 8px; \
     }}").unwrap();
 
@@ -1186,9 +1211,9 @@ mod tests {
         assert_eq!(v.button_pressed.to_hex(), "#3a3a3a");
         assert_eq!(v.button_text_color.to_hex(), "#aaaaaa");
         assert_eq!(v.font_family, "Inter, system-ui, sans-serif");
-        assert_eq!(v.font_size, 12.0);
-        assert_eq!(v.font_size_large, 32.0);
-        assert_eq!(v.font_size_marquee, 14.0);
+        assert_eq!(v.font_size, 15.0);
+        assert_eq!(v.font_size_large, 40.0);
+        assert_eq!(v.font_size_marquee, 18.0);
     }
 
     #[test]
@@ -1257,7 +1282,7 @@ mod tests {
         assert_eq!(v.background.to_hex(), "#111111");
         // Others come from Dark defaults
         assert_eq!(v.text_color.to_hex(), "#cccccc");
-        assert_eq!(v.font_size, 12.0);
+        assert_eq!(v.font_size, 15.0);
     }
 
     #[test]
@@ -1287,7 +1312,7 @@ mod tests {
     fn parse_skin_vars_malformed_size_falls_back() {
         let css = r#":root { --sp-font-size: abc; }"#;
         let v = parse_skin_vars(css);
-        assert_eq!(v.font_size, 12.0);
+        assert_eq!(v.font_size, 15.0);
     }
 
     #[test]
@@ -1525,7 +1550,7 @@ mod tests {
         assert!(css.contains(".np-frame"));
         assert!(css.contains(".np-title"));
         assert!(css.contains(".np-artist"));
-        assert!(css.contains("font-size: 14px")); // marquee size
+        assert!(css.contains("font-size: 13.5pt")); // marquee size
     }
 
     #[test]
@@ -1563,7 +1588,7 @@ mod tests {
         let v = SkinVars::dark_defaults();
         let css = render_gtk_css(&v);
         assert!(css.contains(".time-disp"));
-        assert!(css.contains("font-size: 32px")); // large size
+        assert!(css.contains("font-size: 30pt")); // large size
         assert!(css.contains("font-family: monospace")); // hardcoded
     }
 
@@ -1649,5 +1674,75 @@ mod tests {
     fn render_gtk_css_covers_lyrics_view() {
         let css = render_gtk_css(&SkinVars::dark_defaults());
         assert!(css.contains(".lyrics-view"), "lyrics viewer must be skin-styled");
+    }
+
+    // -----------------------------------------------------------------------
+    // Font sizes render in pt, not px (item 7)
+    // -----------------------------------------------------------------------
+
+    /// px_to_pt applies the CSS 96dpi reference (1pt = 1/72in, 1px = 1/96in)
+    /// and trims a trailing ".0" so the common case reads `9pt`, not `9.0pt`.
+    #[test]
+    fn px_to_pt_converts_at_the_css_reference() {
+        assert_eq!(px_to_pt(12.0), "9pt");
+        assert_eq!(px_to_pt(40.0), "30pt");
+        assert_eq!(px_to_pt(15.0), "11.25pt");
+        assert_eq!(px_to_pt(18.0), "13.5pt");
+    }
+
+    /// No font size may survive as `px`: GTK does not scale px, so any that
+    /// slipped through would silently ignore the desktop's text scaling.
+    #[test]
+    fn rendered_css_has_no_px_font_sizes() {
+        let css = render_gtk_css(&SkinVars::dark_defaults());
+        for line in css.lines() {
+            if let Some(idx) = line.find("font-size:") {
+                let rest = &line[idx..];
+                assert!(
+                    !rest.starts_with("font-size:") || !rest[..rest.find(';').unwrap_or(rest.len())].contains("px"),
+                    "px font size survived: {line}"
+                );
+            }
+        }
+    }
+
+    /// The built-in skins land on GNOME's native 11pt. These four values are
+    /// mirrored in dark.css and light.css, which is what Download skin…
+    /// exports; a change to one that misses the others must fail here.
+    #[test]
+    fn builtin_defaults_are_baselined_to_native_11pt() {
+        for vars in [SkinVars::dark_defaults(), SkinVars::light_defaults()] {
+            assert_eq!(vars.font_size, 15.0);
+            assert_eq!(vars.font_size_marquee, 18.0);
+            assert_eq!(vars.font_size_large, 40.0);
+        }
+        // Match on the variable name and its value, not the exact run of
+        // spaces between them — column alignment is cosmetic.
+        let has_var = |css: &str, name: &str, value: &str| {
+            css.lines().any(|line| {
+                let t = line.trim();
+                t.starts_with(name) && t.contains(value)
+            })
+        };
+        for css in [DARK_TEMPLATE_CSS, LIGHT_TEMPLATE_CSS] {
+            assert!(has_var(css, "--sp-font-size:", "15px"));
+            assert!(has_var(css, "--sp-font-size-large:", "40px"));
+            assert!(has_var(css, "--sp-font-size-marquee:", "18px"));
+        }
+    }
+
+    /// A custom skin's declared sizes are honoured exactly — the re-baseline
+    /// moves the built-ins only. A user file wins over the built-in in
+    /// load_skin, so custom skins never shift underneath their author.
+    #[test]
+    fn custom_skin_sizes_are_not_rebaselined() {
+        let css_in = ":root { --sp-font-size: 12px; --sp-font-size-large: 32px; \
+                      --sp-font-size-marquee: 14px; }";
+        let vars = parse_skin_vars(css_in);
+        assert_eq!(vars.font_size, 12.0);
+        let out = render_gtk_css(&vars);
+        assert!(out.contains("font-size: 9pt"));
+        assert!(out.contains("font-size: 24pt"));
+        assert!(out.contains("font-size: 10.5pt"));
     }
 }

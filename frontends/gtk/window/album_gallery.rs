@@ -1,5 +1,15 @@
 use super::*;
 
+/// The zoom buttons' glyphs: U+2212 MINUS SIGN and a plain ASCII plus.
+///
+/// The plus was U+FF0B FULLWIDTH PLUS SIGN, from the Halfwidth and Fullwidth
+/// Forms block — a CJK range the GNOME UI fonts do not cover, so the button
+/// drew a tofu box instead of a "+". The window's other glyph buttons (✕, ▶,
+/// ⚙) sit in Dingbats and Geometric Shapes, which those fonts do cover; the
+/// fullwidth block is the one that does not.
+const ZOOM_OUT_GLYPH: &str = "\u{2212}";
+const ZOOM_IN_GLYPH: &str = "+";
+
 // Phase 11 A4: album gallery — a recycled-cell `GridView` of album cover
 // thumbnails, with a zoom control and a sort dropdown.
 //
@@ -565,11 +575,15 @@ pub(super) fn build_album_gallery(
     // at the new size; hidden once the in-flight generations drain.
     let zoom_spinner = gtk4::Spinner::new();
     zoom_spinner.set_visible(false);
-    let zoom_out = Button::with_label("−");
+    let zoom_out = Button::with_label(ZOOM_OUT_GLYPH);
     // The label is a fixed word, not the pixel size (users think in "bigger /
     // smaller", not exact px).
     let zoom_label = Label::new(Some("Zoom"));
-    let zoom_in = Button::with_label("＋");
+    let zoom_in = Button::with_label(ZOOM_IN_GLYPH);
+    // The label text on both is a bare glyph — a screen reader needs a real
+    // word.
+    zoom_out.update_property(&[gtk4::accessible::Property::Label("Zoom out")]);
+    zoom_in.update_property(&[gtk4::accessible::Property::Label("Zoom in")]);
     header.append(&zoom_spinner);
     header.append(&zoom_out);
     header.append(&zoom_label);
@@ -660,6 +674,9 @@ pub(super) fn build_album_gallery(
     // for the words on screen finds the tile showing them. The macOS gallery
     // has had this since phase 11; GTK and the TUI never got it.
     let (search_row, search_entry) = make_view_search_row("Search albums — title, artist…");
+    // Marks the entry Ctrl+F should focus when this page is the visible
+    // one — see the widget-name walk in media_library.rs.
+    search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     // Seeded into `query` as well as the entry, so the first `rebuild()`
     // below already filters instead of flashing the whole library first.
@@ -693,13 +710,52 @@ pub(super) fn build_album_gallery(
         });
     }
 
+    // Two empty states share this view: no tagged music at all, and a
+    // search that matched nothing — same split as the Files view, and the
+    // same `items_changed` seam (`refilter`'s `store.splice` above fires it
+    // for both a fresh fold and a query change).
+    let gallery_empty = super::util::empty_state(
+        "media-optical-symbolic",
+        "No albums",
+        Some("Albums appear here once your library has tagged music"),
+    );
+    let gallery_stack = super::util::stack_with_empty_state(&scrolled, &gallery_empty);
+    {
+        let stack = gallery_stack.clone();
+        let empty = gallery_empty.clone();
+        let entry = search_entry.clone();
+        // Goes through `empty_state_for` (util.rs) rather than re-deriving
+        // "nothing indexed vs no results" here — the Files view shipped two
+        // copies of this exact decision that quietly disagreed (2026-08-24
+        // review); one shared function is what makes that impossible.
+        store.connect_items_changed(move |store, _, _, _| {
+            match super::util::empty_state_for(
+                store.n_items() > 0,
+                &entry.text(),
+                (
+                    "media-optical-symbolic",
+                    "No albums",
+                    "Albums appear here once your library has tagged music",
+                ),
+            ) {
+                super::util::EmptyState::Content => stack.set_visible_child_name("content"),
+                super::util::EmptyState::Show { icon, title, description } => {
+                    empty.set_icon_name(Some(icon));
+                    empty.set_title(title);
+                    empty.set_description(Some(&gtk_safe(&description)));
+                    stack.set_visible_child_name("empty");
+                }
+            }
+        });
+    }
+
     // ── Assemble ────────────────────────────────────────────────────────
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.set_hexpand(true);
     page.set_vexpand(true);
     page.append(&search_row);
     page.append(&header);
-    page.append(&scrolled);
+    page.append(&gallery_stack);
 
     // Populate once up front so the grid isn't empty the first time it's
     // shown; the caller can also call `rebuild()` again later (e.g. on
@@ -748,5 +804,27 @@ pub(super) fn gallery_sort_key(sort: crate::media_library::AlbumSort) -> &'stati
         crate::media_library::AlbumSort::Artist => "artist",
         crate::media_library::AlbumSort::Album => "album",
         crate::media_library::AlbumSort::Year => "year",
+    }
+}
+
+#[cfg(test)]
+mod zoom_glyph_tests {
+    use super::{ZOOM_IN_GLYPH, ZOOM_OUT_GLYPH};
+
+    /// A button label is only as good as the font's coverage of it. The
+    /// zoom-in button shipped U+FF0B and drew an empty box, so this rules out
+    /// the whole Halfwidth and Fullwidth Forms block for both glyphs — that is
+    /// the range the GNOME UI fonts do not cover, and the one a "+" or "−"
+    /// typed on a CJK input method lands in.
+    #[test]
+    fn zoom_glyphs_avoid_the_fullwidth_forms_block() {
+        for g in [ZOOM_OUT_GLYPH, ZOOM_IN_GLYPH] {
+            assert_eq!(g.chars().count(), 1, "{g:?} must be a single character");
+            let c = g.chars().next().unwrap() as u32;
+            assert!(
+                !(0xFF00..=0xFFEF).contains(&c),
+                "U+{c:04X} is a fullwidth form; the UI fonts have no glyph for it"
+            );
+        }
     }
 }

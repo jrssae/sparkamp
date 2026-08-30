@@ -92,6 +92,52 @@ fn row_display_text(
     }
 }
 
+/// Playlist menu bar button labels with mnemonics, in order: Add, Select, Sort,
+/// List. Access keys are deconflicted within the menu bar: A, S, O, L. Sort uses
+/// O instead of S to avoid collision with Select.
+pub(super) const PLAYLIST_MENU_LABELS: [&str; 4] = [
+    "_Add ▾",
+    "_Select ▾",
+    "S_ort ▾",
+    "_List ▾",
+];
+
+/// Build a Winamp-style menu button: a labelled MenuButton whose popover is
+/// a vertical list of action buttons. `items` are (label, Some(callback))
+/// for an action row or (label, None) for a separator. Each action button
+/// closes the popover after running its callback, so it behaves like a
+/// real menu instead of a panel that stays open.
+pub(super) fn menu_button(label: &str, items: Vec<(&str, Option<Rc<dyn Fn()>>)>) -> gtk4::MenuButton {
+    let vbox = GtkBox::new(Orientation::Vertical, 2);
+    let popover = gtk4::Popover::new();
+    for (text, cb) in items {
+        match cb {
+            None => {
+                vbox.append(&Separator::new(Orientation::Horizontal));
+            }
+            Some(cb) => {
+                let b = Button::with_label(text);
+                b.add_css_class("flat");
+                b.set_halign(Align::Fill);
+                let pop = popover.clone();
+                b.connect_clicked(move |_| {
+                    cb();
+                    pop.popdown();
+                });
+                vbox.append(&b);
+            }
+        }
+    }
+    popover.set_child(Some(&vbox));
+    let mb = gtk4::MenuButton::new();
+    // use_underline makes `_A` an Alt+A access key. GTK shows the
+    // underline only while Alt is held, so the menu bar looks unchanged.
+    mb.set_use_underline(true);
+    mb.set_label(label);
+    mb.set_popover(Some(&popover));
+    mb
+}
+
 pub(super) fn build(d: Deps) -> PlaylistWin {
     // Aliased under their original names so the moved body is unchanged.
     let state = d.state.clone();
@@ -153,39 +199,6 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // instead. `btn_cancel` is the exception: it's appended on its own once
     // the menus are in place, since it toggles visibility during scans.
 
-    // Build a Winamp-style menu button: a labelled MenuButton whose popover is
-    // a vertical list of action buttons. `items` are (label, Some(callback))
-    // for an action row or (label, None) for a separator. Each action button
-    // closes the popover after running its callback, so it behaves like a
-    // real menu instead of a panel that stays open.
-    fn menu_button(label: &str, items: Vec<(&str, Option<Rc<dyn Fn()>>)>) -> gtk4::MenuButton {
-        let vbox = GtkBox::new(Orientation::Vertical, 2);
-        let popover = gtk4::Popover::new();
-        for (text, cb) in items {
-            match cb {
-                None => {
-                    vbox.append(&Separator::new(Orientation::Horizontal));
-                }
-                Some(cb) => {
-                    let b = Button::with_label(text);
-                    b.add_css_class("flat");
-                    b.set_halign(Align::Fill);
-                    let pop = popover.clone();
-                    b.connect_clicked(move |_| {
-                        cb();
-                        pop.popdown();
-                    });
-                    vbox.append(&b);
-                }
-            }
-        }
-        popover.set_child(Some(&vbox));
-        let mb = gtk4::MenuButton::new();
-        mb.set_label(label);
-        mb.set_popover(Some(&popover));
-        mb
-    }
-
     // ── Playlist TreeView + ListStore ─────────────────────────────────────────
     // GtkTreeView uses virtual scrolling — only visible rows create cell renderers,
     // so 30k+ tracks render instantly without memory pressure.
@@ -223,7 +236,8 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         Rc::new(RefCell::new(None));
 
     // Shared "open settings window" action — used by the logo click and the
-    // Ctrl+. keyboard shortcut (phase 6) so both go through one path.
+    // Ctrl+, keyboard shortcut (phase 6; GNOME-standard Settings binding, was
+    // Ctrl+. before Task 4) so both go through one path.
     let open_settings: Rc<dyn Fn()> = {
         let state_rc = state.clone();
         let win_wk = window.downgrade();
@@ -276,6 +290,12 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         .vexpand(true)
         .build();
     pl_view.add_css_class("playlist");
+    // GtkTreeView (deprecated since 4.10) has no cell-level accessible
+    // plumbing, so this widget-level name is the ceiling here. Full row
+    // semantics need the ColumnView migration tracked as audit item 11 —
+    // held back deliberately because the playlist's multi-select
+    // drag-reorder is hard-won and deserves its own branch and its own tests.
+    pl_view.update_property(&[gtk4::accessible::Property::Label("Playlist")]);
     #[allow(deprecated)]
     pl_view.selection().set_mode(gtk4::SelectionMode::Multiple);
 
@@ -352,7 +372,16 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         .min_content_height(350)
         .child(&pl_view)
         .build();
-    pl_root.append(&pl_scroll);
+
+    // This is the first thing a new user sees, so the empty page doubles as
+    // onboarding rather than just saying what's missing.
+    let pl_empty = super::util::empty_state(
+        "view-list-symbolic",
+        "No tracks in the playlist",
+        Some("Press n to add files, or drag music here"),
+    );
+    let pl_stack = super::util::stack_with_empty_state(&pl_scroll, &pl_empty);
+    pl_root.append(&pl_stack);
 
     // ── Playlist window status bar ────────────────────────────────────────────
     let pl_status_label = Label::builder()
@@ -404,7 +433,11 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     pl_root.append(&Separator::new(Orientation::Horizontal));
     pl_root.append(&pl_btn_row);
 
-    playlist_win.set_child(Some(&pl_root));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&pl_root));
+    playlist_win.set_child(Some(&toaster));
 
     // Closing the playlist window hides it (not destroys) so the next toggle
     // brings it back without rebuilding.  Save its size to both the in-memory
@@ -521,6 +554,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let text_rgba = text_rgba.clone();
         let refresh_pl_status = refresh_pl_status.clone();
         let scan_viewport = scan_viewport.clone();
+        let pl_stack = pl_stack.clone();
         Rc::new(move || {
             // Stamp any unstamped entries so queue badges have stable ids to
             // look up (idempotent; a no-op once every entry is stamped). Needs
@@ -594,6 +628,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 n,
                 if n == 1 { "" } else { "s" },
             ));
+            pl_stack.set_visible_child_name(if n == 0 { "empty" } else { "content" });
             refresh_pl_status();
             // On idle, not now: `visible_range` has nothing to report until GTK
             // has laid the reattached model out. The scroll restore above emits
@@ -1052,7 +1087,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
 
     // Add▸
     let add_menu = menu_button(
-        "Add ▾",
+        PLAYLIST_MENU_LABELS[0],
         vec![
             (
                 "Add Files…",
@@ -1072,7 +1107,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     );
     // Select▸
     let select_menu = menu_button(
-        "Select ▾",
+        PLAYLIST_MENU_LABELS[1],
         vec![
             (
                 "Select All",
@@ -1114,7 +1149,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         )
     };
     let sort_menu = menu_button(
-        "Sort ▾",
+        PLAYLIST_MENU_LABELS[2],
         vec![
             sort_item("Title", crate::model::SortKey::Title),
             sort_item("Artist", crate::model::SortKey::Artist),
@@ -1140,7 +1175,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     );
     // List▸
     let list_menu = menu_button(
-        "List ▾",
+        PLAYLIST_MENU_LABELS[3],
         vec![
             (
                 "Save Playlist…",
@@ -1263,5 +1298,88 @@ mod row_text_tests {
         q.enqueue(7);
         assert_eq!(row_display_text(&t, &q, false), "[1] Queued");
         assert_eq!(row_display_text(&t, &q, true), "[1] ▶ Queued");
+    }
+}
+
+#[cfg(test)]
+mod menu_button_mnemonic_tests {
+    use super::*;
+
+    /// Verify that the four playlist menu buttons are properly configured
+    /// with use_underline and the correct labels. This test calls the actual
+    /// menu_button() function and verifies the returned MenuButton widget.
+    #[gtk4::test]
+    fn menu_buttons_have_mnemonics_configured() {
+        // Create all four menu buttons with their real labels from the const.
+        let buttons: Vec<_> = PLAYLIST_MENU_LABELS
+            .iter()
+            .map(|label| menu_button(label, vec![]))
+            .collect();
+
+        // Verify each button has use_underline set and the correct label.
+        for (idx, button) in buttons.iter().enumerate() {
+            assert!(
+                button.uses_underline(),
+                "Menu button {} should have use_underline set",
+                idx
+            );
+            assert_eq!(
+                button.label().as_deref(),
+                Some(PLAYLIST_MENU_LABELS[idx]),
+                "Menu button {} should have the correct label",
+                idx
+            );
+        }
+    }
+
+    /// Verify that PLAYLIST_MENU_LABELS defines all four mnemonics correctly.
+    /// All labels must contain exactly one underscore, and the mnemonic
+    /// characters (the ones following the underscores) must be distinct when
+    /// lowercased to avoid collisions in the menu bar.
+    #[test]
+    fn playlist_menu_labels_are_deconflicted() {
+        assert_eq!(
+            PLAYLIST_MENU_LABELS.len(),
+            4,
+            "PLAYLIST_MENU_LABELS must have exactly 4 entries"
+        );
+
+        let mut mnemonic_chars = Vec::new();
+
+        for (idx, label) in PLAYLIST_MENU_LABELS.iter().enumerate() {
+            let underscores: Vec<usize> = label
+                .chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '_')
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(
+                underscores.len(),
+                1,
+                "PLAYLIST_MENU_LABELS[{}] = {:?} must have exactly one underscore",
+                idx,
+                label
+            );
+
+            // The character immediately after the underscore is the mnemonic key.
+            let underscore_idx = underscores[0];
+            let mnemonic_char = label
+                .chars()
+                .nth(underscore_idx + 1)
+                .expect("underscore must not be the last character");
+            let mnemonic_lowercase = mnemonic_char.to_lowercase().to_string();
+
+            // Check for duplicates.
+            assert!(
+                !mnemonic_chars.contains(&mnemonic_lowercase),
+                "PLAYLIST_MENU_LABELS[{}] = {:?} has mnemonic '{}' which \
+                 collides with an earlier menu (GTK lowercases all mnemonics)",
+                idx,
+                label,
+                mnemonic_lowercase
+            );
+            mnemonic_chars.push(mnemonic_lowercase);
+        }
     }
 }

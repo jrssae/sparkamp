@@ -91,6 +91,12 @@ libc = "0.2"
 gtk4 = { version = "0.9", features = ["v4_12"] }
 # udisks2 client for external-device detection + eject over the system D-Bus.
 zbus = "5"
+# libadwaita — used for exactly two widgets: AdwToastOverlay (transient
+# error feedback) and AdwStatusPage (empty states). Adw's stylesheet loses
+# to the skin CSS, which loads at STYLE_PROVIDER_PRIORITY_APPLICATION, so
+# skinned surfaces are unaffected. Deliberately NOT used for preferences,
+# about, or header bars — those would fight the skin system.
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 
 [dev-dependencies]
 # Temporary files for ID3 editor tests

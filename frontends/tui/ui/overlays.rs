@@ -166,12 +166,19 @@ pub(super) fn draw_playlist_ops_overlay(frame: &mut Frame, app: &App, area: Rect
     };
 
     let labels = App::PLAYLIST_OPS_LABELS;
-    let h = (labels.len() as u16 + 2).min(area.height.saturating_sub(4)).max(5);
+    // +3 rows over the list-only size for the hint bar below (Queue overlay's
+    // pattern: Length(3) bordered Paragraph under a Min(1) list).
+    let h = (labels.len() as u16 + 5).min(area.height.saturating_sub(4)).max(8);
     let popup = Rect {
         height: h,
         ..centered_popup(area, 40, h)
     };
     frame.render_widget(Clear, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(popup);
 
     let items: Vec<ListItem> = labels
         .iter()
@@ -196,7 +203,16 @@ pub(super) fn draw_playlist_ops_overlay(frame: &mut Frame, app: &App, area: Rect
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::default().fg(Color::Black).bg(C_WARN));
-    frame.render_stateful_widget(list, popup, &mut list_state);
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let hint = Paragraph::new("↑↓/kj cursor · Enter run · Esc/o close")
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(C_DIM)),
+        )
+        .style(Style::default().fg(C_DIM));
+    frame.render_widget(hint, chunks[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,19 +377,14 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("      Move track (enter from → to positions)"),
         ]),
         Line::from(vec![key("  ."), Span::raw("      Remove track by number")]),
-        Line::from(vec![
-            Span::styled(
-                "  /",
-                Style::default().fg(C_ERR).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("      Clear all tracks"),
-        ]),
         Line::from(vec![key("  j"), Span::raw("      Jump / search")]),
+        Line::from(vec![key("  /"), Span::raw("      Jump / search")]),
+        Line::from(vec![key("  Ctrl+F"), Span::raw(" Jump / search")]),
         Line::from(vec![key("  q"), Span::raw("      Play queue manager")]),
         Line::from(vec![key("  Ctrl+Q"), Span::raw(" Enqueue / dequeue highlighted track")]),
         Line::from(vec![
             key("  o"),
-            Span::raw("      Playlist ops (sort / randomize / reverse)"),
+            Span::raw("      Playlist ops (sort / randomize / reverse / remove all)"),
         ]),
         Line::from(vec![key("  ↑  k"), Span::raw("    Browse up")]),
         Line::from(vec![key("  ↓  l"), Span::raw("    Browse down")]),
@@ -441,7 +452,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             key("  l"),
             Span::raw("      View/Search lyrics for highlighted track"),
         ]),
-        Line::from(vec![key("  i"), Span::raw("      Show this help")]),
+        Line::from(vec![key("  i  F1"), Span::raw("  Toggle this help")]),
         Line::from(vec![key("  Esc"), Span::raw("     Quit")]),
         Line::from(""),
         sep("── Hidden shortcuts ──────────────────────────────────"),

@@ -352,6 +352,36 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 // rebuild_ml_callback in player.rs).
                 let artist_as_album_artist =
                     bind_state.borrow().config.media_library.artist_as_album_artist;
+                // Without this a screen reader reads every cell in the row
+                // in sequence, empty ones included, so an untagged file
+                // announced as "song, , ". One sentence per row is what the
+                // HIG's list guidance asks for — but `Property::Label`
+                // *replaces* a cell's own accessible name rather than adding
+                // to it, and this closure runs once per visible column.
+                // Setting it on every column made every cell repeat the same
+                // sentence and cost non-title cells (Length, Size-style
+                // columns) their own content, so exactly one column carries
+                // it: "title", the row's identifying field — in
+                // `default_ml_visible`/`default_id3_visible`, so this only
+                // goes quiet if a user deliberately hides it.
+                // `spoken_row_summary` lives in `files.rs`: the Files,
+                // Playlist-editor and Device views all bind the same
+                // `LibTrack` fields, so one function serves all three rather
+                // than three copies of the same `match`.
+                if bind_id == "title" {
+                    let spoken = super::files::spoken_row_summary(
+                        t.title.as_deref().unwrap_or(&t.filename),
+                        t.artist.as_deref().unwrap_or(""),
+                        t.album.as_deref().unwrap_or(""),
+                    );
+                    // `ListItem` itself carries no Accessible implementation
+                    // (it isn't a widget) — the accessible tree is built
+                    // from the actual cell widget `connect_setup` put in
+                    // `li.child()`.
+                    if let Some(cell) = li.child() {
+                        cell.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
+                    }
+                }
                 if is_art {
                     bind_cells.bind(li, t.artwork_path.as_deref(), |li| {
                         li.item()

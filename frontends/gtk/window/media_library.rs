@@ -147,6 +147,44 @@ pub(super) struct MlCtx {
     pub(super) all_cols_holder: Rc<RefCell<Vec<(String, ColumnViewColumn)>>>,
 }
 
+/// Widget name Ctrl+F looks for. Set on every stack page's search `Entry`
+/// (Files, Albums, Discs, Devices, and the Playlists page's own Manage/Edit
+/// sub-views) so [`find_visible_search_entry`] finds whichever one is
+/// visible without needing to know each page's internals.
+pub(super) const ML_SEARCH_ENTRY_NAME: &str = "ml-search-entry";
+
+/// Walks down from `root`, following a [`Stack`] into its visible child only,
+/// until it finds a descendant `Entry` marked [`ML_SEARCH_ENTRY_NAME`].
+///
+/// The window has one search entry per top-level stack page, and the
+/// Playlists page nests a second `Stack` (Manage / Edit) with one search
+/// entry each — this recurses through both without the caller (Ctrl+F, in
+/// `open_media_library_window`) needing to know Playlists has that extra
+/// layer. Skips invisible subtrees so the Discs/Devices overview — a plain
+/// `Box` toggle, not a `Stack`, hiding their detail view's search box — never
+/// matches a box the user cannot currently see.
+fn find_visible_search_entry(root: &gtk4::Widget) -> Option<Entry> {
+    if !root.is_visible() {
+        return None;
+    }
+    if let Some(entry) = root.downcast_ref::<Entry>()
+        && entry.widget_name() == ML_SEARCH_ENTRY_NAME
+    {
+        return Some(entry.clone());
+    }
+    if let Some(stack) = root.downcast_ref::<Stack>() {
+        return stack.visible_child().and_then(|c| find_visible_search_entry(&c));
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_visible_search_entry(&c) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
 pub(super) fn open_media_library_window(
     parent: Option<&gtk4::Window>,
     host: MlHost,
@@ -199,6 +237,15 @@ pub(super) fn open_media_library_window(
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     stack.set_transition_type(StackTransitionType::None);
+    // A GtkStack is homogeneous by default: every page is measured and
+    // allocated at the size of the *widest* page, whichever one is showing.
+    // The Playlists page asks for 1127 px, so the album gallery was handed
+    // 1127 px no matter how narrow the window got — its GridView saw a wide
+    // viewport, kept five columns, and the covers were clipped instead of
+    // reflowing. Sizing to the visible page instead lets each page shrink to
+    // what it actually needs, and the gallery wraps again.
+    stack.set_hhomogeneous(false);
+    stack.set_vhomogeneous(false);
 
     // Holders so close_request can save Files-tab state (col_view and all_cols are
     // defined inside the Files block scope below).
@@ -278,6 +325,33 @@ pub(super) fn open_media_library_window(
     // send-a-playlist holder — see the module's `build` doc.
     devices_page::build(&ctx, &sb);
 
+    // Ctrl+F → focus the search entry for whichever page is visible. The
+    // window has no single search box — every stack page (and, inside
+    // Playlists, its own Manage/Edit sub-stack) owns its own — so this walks
+    // the widget tree from the stack's current child rather than assuming
+    // the Files page. Capture phase so it fires even when a child widget
+    // (e.g. a ColumnView row) holds keyboard focus.
+    {
+        let key_ctrl = EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let stack_kf = stack.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK)
+                && matches!(key, gdk::Key::f | gdk::Key::F)
+            {
+                // The ML search box otherwise has to be clicked — Ctrl+F is
+                // the reflex, and every view here has a search entry.
+                if let Some(entry) =
+                    stack_kf.visible_child().and_then(|c| find_visible_search_entry(&c))
+                {
+                    entry.grab_focus();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        win.add_controller(key_ctrl);
+    }
 
     sidebar.select_row(sidebar.row_at_index(0).as_ref());
 
@@ -285,7 +359,11 @@ pub(super) fn open_media_library_window(
     paned.set_start_child(Some(&sidebar_scroll));
     paned.set_end_child(Some(&stack));
     paned.set_position(init_sidebar_width);
-    win.set_child(Some(&paned));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&paned));
+    win.set_child(Some(&toaster));
 
     win.connect_close_request({
         let state = state.clone();
@@ -465,3 +543,79 @@ pub(super) fn analyze_job(
     true
 }
 
+#[cfg(test)]
+mod find_visible_search_entry_tests {
+    use super::*;
+
+    /// Builds a fresh `gtk4::Box` with an `Entry` child in each branch of a
+    /// `Stack`, so a test can drive `find_visible_search_entry` without the
+    /// full window.
+    ///
+    /// `#[gtk4::test]` (not plain `#[test]`) is required: GTK is not
+    /// thread-safe, and `cargo test` runs each `#[test]` on its own OS
+    /// thread. `#[gtk4::test]` (from `gtk4-macros`, re-exported by `gtk4`)
+    /// routes every GTK test through one dedicated worker thread it owns
+    /// instead (`gtk4::test_synced`), which is what makes constructing real
+    /// widgets here safe alongside the rest of the (non-GTK) suite. A plain
+    /// `#[test]` calling `gtk4::init()` was tried first and passed in
+    /// isolation, but broke the moment it ran in the same binary as a
+    /// `#[gtk4::test]` — the two raced for the one process-wide GTK main
+    /// context, and whichever lost panicked with "Failed to acquire default
+    /// main context" or "GTK may only be used from the main thread." See the
+    /// fix report for the full transcript.
+    fn tagged_entry() -> Entry {
+        let e = Entry::new();
+        e.set_widget_name(ML_SEARCH_ENTRY_NAME);
+        e
+    }
+
+    #[gtk4::test]
+    fn resolves_through_a_nested_stack_and_skips_hidden_subtrees() {
+        // Outer page: an invisible decoy Entry ahead of the real content, to
+        // prove the walk does not just grab the first Entry it sees.
+        let root = GtkBox::new(Orientation::Vertical, 0);
+        let decoy_holder = GtkBox::new(Orientation::Vertical, 0);
+        let decoy = tagged_entry();
+        decoy_holder.append(&decoy);
+        decoy_holder.set_visible(false); // Discs/Devices-style hidden detail pane
+        root.append(&decoy_holder);
+
+        // A nested Stack (mirrors Playlists' Manage/Edit) with two tagged
+        // entries — only the visible child's entry should be found.
+        let inner_stack = Stack::new();
+        let manage_page = GtkBox::new(Orientation::Vertical, 0);
+        let manage_entry = tagged_entry();
+        manage_entry.set_text("manage");
+        manage_page.append(&manage_entry);
+        inner_stack.add_named(&manage_page, Some("pl-manage"));
+
+        let edit_page = GtkBox::new(Orientation::Vertical, 0);
+        let edit_entry = tagged_entry();
+        edit_entry.set_text("edit");
+        edit_page.append(&edit_entry);
+        inner_stack.add_named(&edit_page, Some("pl-edit"));
+
+        inner_stack.set_visible_child_name("pl-edit");
+        root.append(&inner_stack);
+
+        let found = find_visible_search_entry(root.upcast_ref::<gtk4::Widget>())
+            .expect("expected the edit-page entry to be found");
+        assert_eq!(found.text(), "edit");
+
+        // Switching the nested stack's visible child changes which entry the
+        // walk resolves to, without touching anything else.
+        inner_stack.set_visible_child_name("pl-manage");
+        let found = find_visible_search_entry(root.upcast_ref::<gtk4::Widget>())
+            .expect("expected the manage-page entry to be found");
+        assert_eq!(found.text(), "manage");
+    }
+
+    #[gtk4::test]
+    fn returns_none_when_nothing_visible_is_tagged() {
+        let root = GtkBox::new(Orientation::Vertical, 0);
+        let untagged = Entry::new(); // no widget name set
+        root.append(&untagged);
+
+        assert!(find_visible_search_entry(root.upcast_ref::<gtk4::Widget>()).is_none());
+    }
+}

@@ -315,6 +315,35 @@ fn set_active_dot(dots: &GtkBox, active: usize) {
     }
 }
 
+/// The album name from `info.tags` ("Album" key), when known — used as the
+/// art widget's accessible description so a screen reader hears which album
+/// is showing rather than just "image". `tags` only carries non-empty
+/// values, so `Some` here always means a real album name.
+///
+/// Returns an already-`gtk_safe`'d `String` rather than a borrow straight
+/// into `info.tags`: tag metadata can carry embedded NULs, which panic
+/// GTK's C-string marshalling, and this project's rule is `gtk_safe()` on
+/// any string reaching a widget. Sanitising here means that holds no matter
+/// who calls this — not "as long as every caller remembers to."
+pub(super) fn album_description(info: &NowPlayingInfo) -> Option<String> {
+    info.tags
+        .iter()
+        .find(|(key, _)| *key == "Album")
+        .map(|(_, value)| super::gtk_safe(value))
+}
+
+/// Give an album-art `Picture` its accessible name, plus the album name as
+/// the description when one is known. Shared with the A6 art window, which
+/// reuses this instead of a second copy.
+pub(super) fn label_art_picture(pic: &Picture, info: &NowPlayingInfo) {
+    let album_safe = album_description(info);
+    let mut props = vec![gtk4::accessible::Property::Label("Album art")];
+    if let Some(ref album) = album_safe {
+        props.push(gtk4::accessible::Property::Description(album));
+    }
+    pic.update_property(&props);
+}
+
 /// The art widget for `info`: a `Picture` loaded from `artwork_path` when
 /// present, otherwise the app logo at 50% opacity + "No artwork available".
 /// Exposed for T7 (A6 art window) to reuse the identical placeholder.
@@ -336,6 +365,7 @@ pub(super) fn art_or_placeholder(info: &NowPlayingInfo) -> gtk4::Widget {
                 pic.set_valign(Align::Start);
                 pic.set_halign(Align::Start);
                 pic.add_css_class("np-art");
+                label_art_picture(&pic, info);
                 pic.upcast()
             }
             Err(_) => placeholder_widget(),

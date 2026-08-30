@@ -49,6 +49,7 @@ use super::{
     gtk_safe, lib_track_matches_query, make_view_search_row, ml_status_bar_for,
     queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
     sidebar_pl_end_index, view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
+    ML_SEARCH_ENTRY_NAME,
 };
 
 /// Wrapper put into the editor's `ListStore`. Carrying `canonical_idx`
@@ -97,6 +98,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         s.set_hexpand(true);
         s.set_vexpand(true);
         s.set_transition_type(StackTransitionType::None);
+        // Same reason as the window's own page stack (`media_library.rs`): a
+        // homogeneous GtkStack sizes every page to the widest one, so the
+        // Manage list would set the editor's minimum width and vice versa
+        // whichever was showing.
+        s.set_hhomogeneous(false);
+        s.set_vhomogeneous(false);
         s
     });
 
@@ -387,6 +394,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // into the pl-edit page below.
     let (pl_search_row, pl_search_entry) =
         make_view_search_row("Search this playlist — artist, title, album…");
+    // Marks the entry Ctrl+F should focus when the editor sub-page is the
+    // visible one — see the widget-name walk in media_library.rs.
+    pl_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("playlists").cloned();
@@ -441,6 +451,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     *edit_multi_sel_holder.borrow_mut() = Some(edit_multi_sel.clone());
     let track_list: Rc<gtk4::ColumnView> = Rc::new({
         let cv = gtk4::ColumnView::new(Some(edit_multi_sel.clone()));
+        // Names the table itself, so a screen reader announces which view
+        // focus entered rather than staying silent on the widget as a whole.
+        cv.update_property(&[gtk4::accessible::Property::Label("Playlist tracks")]);
         cv.add_css_class("playlist");
         cv.set_vexpand(true);
         cv.set_show_row_separators(false);
@@ -555,6 +568,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         edit_header,
         edit_path_label,
         edit_ro_badge,
+        refresh_pl_manage_empty,
     } = playlists_manage::build(
         ctx,
         sb,
@@ -851,10 +865,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             track_scroll.add_controller(dt);
         }
 
-        // Track editor controls
+        // Track editor controls.
+        //
+        // Eleven buttons in a plain horizontal box added up to a 1111 px
+        // minimum width, which the Media Library window then inherited: below
+        // that the row was clipped and "Play" fell off the end. Each half is a
+        // wrapping group instead (see `util::wrapping_btn_group`), so every
+        // button stays reachable down to a ~320 px page. The outer box and its
+        // spring stay — they are what keeps the commit half flush right while
+        // it all still fits on one line.
         let edit_btn_row = GtkBox::new(Orientation::Horizontal, 4);
         edit_btn_row.set_margin_start(4); edit_btn_row.set_margin_end(4);
         edit_btn_row.set_margin_top(4);  edit_btn_row.set_margin_bottom(4);
+
+        let edit_btn_add = super::util::wrapping_btn_group();
+        let edit_btn_commit = super::util::wrapping_btn_group();
 
         let btn_add_files_pl  = Button::with_label("+ Files");    btn_add_files_pl.add_css_class("pl-btn");
         let btn_add_folder_pl = Button::with_label("+ Folder");   btn_add_folder_pl.add_css_class("pl-btn");
@@ -876,17 +901,22 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         btn_send_to_ed.insert_action_group("ed", Some(&ed_action_group));
         let btn_play_pl       = Button::with_label("▶ Play");  btn_play_pl.add_css_class("pl-btn");
 
-        edit_btn_row.append(&btn_add_files_pl);
-        edit_btn_row.append(&btn_add_folder_pl);
-        edit_btn_row.append(&btn_remove_tracks);
-        edit_btn_row.append(&btn_delete_pl);
+        use super::util::flow_append;
+        flow_append(&edit_btn_add, &btn_add_files_pl);
+        flow_append(&edit_btn_add, &btn_add_folder_pl);
+        flow_append(&edit_btn_add, &btn_remove_tracks);
+        flow_append(&edit_btn_add, &btn_delete_pl);
+        edit_btn_add.set_max_children_per_line(4);
+        flow_append(&edit_btn_commit, &btn_revert_pl);
+        flow_append(&edit_btn_commit, &btn_save_as_pl);
+        flow_append(&edit_btn_commit, &btn_save_pl);
+        flow_append(&edit_btn_commit, &btn_enqueue_pl);
+        flow_append(&edit_btn_commit, &btn_send_to_ed);
+        flow_append(&edit_btn_commit, &btn_play_pl);
+        edit_btn_commit.set_max_children_per_line(6);
+        edit_btn_row.append(&edit_btn_add);
         edit_btn_row.append(&spring_pl);
-        edit_btn_row.append(&btn_revert_pl);
-        edit_btn_row.append(&btn_save_as_pl);
-        edit_btn_row.append(&btn_save_pl);
-        edit_btn_row.append(&btn_enqueue_pl);
-        edit_btn_row.append(&btn_send_to_ed);
-        edit_btn_row.append(&btn_play_pl);
+        edit_btn_row.append(&edit_btn_commit);
         edit_vbox.append(&ed_status);
         edit_vbox.append(&edit_btn_row);
 
@@ -1090,6 +1120,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let sidebar_ref  = sidebar.clone();
             let pl_ml_ref    = pl_manage_list.clone();
             let win_wk       = win.downgrade();
+            let refresh_empty = refresh_pl_manage_empty.clone();
             btn_save_as_pl.connect_clicked(move |_| {
                 let Some(win) = win_wk.upgrade() else { return };
                 // Pre-fill the Save dialog with the current playlist's name
@@ -1108,6 +1139,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let load2    = load.clone();
                 let sidebar2 = sidebar_ref.clone();
                 let pl_ml2   = pl_ml_ref.clone();
+                let refresh_empty2 = refresh_empty.clone();
                 // Native Save dialog replaces the previous name-only popup —
                 // user chooses both filename and folder so the new .m3u8
                 // doesn't silently land in the managed-playlists dir (which
@@ -1141,6 +1173,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     manage_row.set_child(Some(&lbl));
                     attach_pl_row_drag(&manage_row, new_id);
                     pl_ml2.append(&manage_row);
+                    refresh_empty2();
 
                     let s_lbl = Label::builder()
                         .label(&new_name)
@@ -1260,6 +1293,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let saved         = saved_track_ids.clone();
             let rebuild       = rebuild_track_list.clone();
             let win_wk        = win.downgrade();
+            let refresh_empty = refresh_pl_manage_empty.clone();
             btn_delete_pl.connect_clicked(move |_| {
                 let id = ep_id.get();
                 if id < 0 { return; }
@@ -1283,6 +1317,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let et2      = et.clone();
                 let saved2   = saved.clone();
                 let rebuild2 = rebuild.clone();
+                let refresh_empty2 = refresh_empty.clone();
                 dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |result| {
                     if result != Ok(1) { return; }
                     if let Some(ref lib) = state2.borrow().media_lib {
@@ -1295,6 +1330,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         match pl_ref2.row_at_index(i) {
                             Some(r) if r.widget_name() == target => {
                                 pl_ref2.remove(&r);
+                                refresh_empty2();
                                 break;
                             }
                             Some(_) => i += 1,

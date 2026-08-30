@@ -1,11 +1,11 @@
 [Desktop Entry]
 Name=Sparkamp
-Comment=Winamp-style audio player for Linux
+Comment=Classic-style audio player
 Exec=sparkamp %F
 Icon=dev.sparkamp.Sparkamp
 Terminal=false
 Type=Application
 Categories=AudioVideo;Audio;Player;
 MimeType=audio/mpeg;audio/ogg;audio/flac;audio/x-flac;audio/wav;audio/x-wav;audio/aac;audio/mp4;audio/x-m4a;application/ogg;x-content/audio-cdda;
-Keywords=music;audio;player;winamp;mp3;
+Keywords=music;audio;player;mp3;
 StartupNotify=true

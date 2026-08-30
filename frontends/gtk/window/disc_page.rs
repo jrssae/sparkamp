@@ -47,7 +47,7 @@ use super::disc::{disc_overview_detail_line, selected_disc_discid};
 // Drive queue, and the player state the transport checks read.
 use super::{
     context_popover, find_row_by_name, gtk_safe, make_view_search_row, queue_paths_to_drive,
-    MlCtx, PlayerState,
+    MlCtx, PlayerState, ML_SEARCH_ENTRY_NAME,
 };
 
 /// Build the Disc Drives page and attach it to `ctx.stack` under the name
@@ -232,6 +232,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     disc_disconnect_lbl.add_css_class("broken");
     let disc_disconnect_dismiss = Button::with_label("✕");
     disc_disconnect_dismiss.add_css_class("pl-btn");
+    // The label text is a bare glyph — a screen reader needs a real word.
+    disc_disconnect_dismiss.update_property(&[gtk4::accessible::Property::Label("Dismiss")]);
     {
         let row = disc_disconnect_row.clone();
         disc_disconnect_dismiss.connect_clicked(move |_| row.set_visible(false));
@@ -303,6 +305,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let disc_search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let (disc_search_row, disc_search_entry) =
         make_view_search_row("Search this disc — track title…");
+    // Marks the entry Ctrl+F should focus when this page is the visible
+    // one — see the widget-name walk in media_library.rs.
+    disc_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
         let last = state.borrow().config.media_library.last_search.get("discs").cloned();
@@ -1013,7 +1018,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             if ds.is_empty() {
                 if detecting.get() {
                     // Still running the first poll: show a working indicator.
+                    // Centred like the placeholder it is about to be replaced
+                    // by, so the view does not jump from a top-left line of
+                    // text to a centred page when detection finishes.
                     let row = GtkBox::new(Orientation::Horizontal, 8);
+                    row.set_halign(Align::Center);
+                    row.set_valign(Align::Center);
+                    row.set_vexpand(true);
                     let spinner = gtk4::Spinner::new();
                     spinner.start();
                     let lbl = Label::builder()
@@ -1026,13 +1037,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     row.append(&lbl);
                     list.append(&row);
                 } else {
-                    let empty = Label::builder()
-                        .label("No disc drives connected")
-                        .halign(Align::Start)
-                        .xalign(0.0)
-                        .build();
-                    empty.add_css_class("dim-label");
-                    list.append(&empty);
+                    // The same placeholder page the Devices overview uses when
+                    // nothing is plugged in — the two views sit next to each
+                    // other in the sidebar, so a bare dim label on one and a
+                    // full empty state on the other read as an oversight.
+                    list.append(&super::util::empty_state(
+                        "media-optical-symbolic",
+                        "No disc drives connected",
+                        Some("Connect an optical drive to play, rip or burn CDs"),
+                    ));
                 }
                 return;
             }

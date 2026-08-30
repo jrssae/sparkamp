@@ -14,6 +14,18 @@ pub(super) fn settings_scroll_page(
         .build()
 }
 
+/// Settings notebook tab labels with mnemonics, in order: Appearance, Behavior,
+/// Visualizer, Media Library, About. Access keys are deconflicted within the
+/// notebook: A, B, V, M, O (About uses O, not A, to avoid collision with
+/// Appearance; B is used by Behavior, so About cannot use it).
+pub(super) const SETTINGS_TAB_LABELS: [&str; 5] = [
+    "_Appearance",
+    "_Behavior",
+    "_Visualizer",
+    "_Media Library",
+    "Ab_out",
+];
+
 pub(super) fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,
@@ -178,10 +190,7 @@ pub(super) fn open_settings_window(
                 let Some(skin) = crate::skin::load_skin(&name) else { return };
                 let css = crate::skin::render_gtk_css(&skin.vars);
                 provider.load_from_data(&css);
-                if let Some(gtk_settings) = gtk4::Settings::default() {
-                    gtk_settings.set_gtk_application_prefer_dark_theme(
-                        skin.vars.background.luminance() < 0.5);
-                }
+                super::util::apply_color_scheme(skin.vars.background.luminance() < 0.5);
                 *text_rgba.borrow_mut() = gdk::RGBA::new(
                     skin.vars.text_color.r as f32 / 255.0,
                     skin.vars.text_color.g as f32 / 255.0,
@@ -252,10 +261,8 @@ pub(super) fn open_settings_window(
                             }
                         }
                         Err(e) => {
-                            show_alert_parented(
-                                Some(&win_alert),
-                                &format!("Could not add skin: {e}"),
-                            );
+                            // Non-fatal: the file chooser can be reopened to retry.
+                            show_toast(&win_alert, &format!("Could not add skin: {e}"));
                         }
                     }
                 });
@@ -356,7 +363,7 @@ pub(super) fn open_settings_window(
             });
         }
 
-        let tab_lbl = Label::new(Some("Appearance"));
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[0]);
         notebook.append_page(&settings_scroll_page(&root), Some(&tab_lbl));
     }
 
@@ -515,10 +522,11 @@ pub(super) fn open_settings_window(
                     .spawn()
                     .is_ok();
                 if !launched {
-                    show_alert_parented(
-                        Some(&win_alert),
-                        "Couldn't open GNOME Settings. Open Settings → Removable \
-                         Media yourself and pick Sparkamp under \"CD audio\".",
+                    // Non-fatal: the user can open GNOME Settings by hand instead.
+                    show_toast(
+                        &win_alert,
+                        "Couldn't open GNOME Settings — open Removable Media \
+                         settings yourself and pick Sparkamp under \"CD audio\".",
                     );
                 }
             });
@@ -644,13 +652,23 @@ pub(super) fn open_settings_window(
         scale_rg_fallback.set_hexpand(true);
         scale_rg_fallback.set_digits(1);
         scale_rg_fallback.set_draw_value(true);
+        // A bare "-3" spoken alone doesn't say what unit it's in, unlike the
+        // other three sliders below — this is the only one with a physical
+        // unit, so it gets ValueText the same way the seek bar does.
+        scale_rg_fallback.update_property(&[
+            gtk4::accessible::Property::Label("ReplayGain fallback gain"),
+            gtk4::accessible::Property::ValueText(&format!("{:.1} dB", rg_fallback_adj.value())),
+        ]);
         {
             let state_rc = state.clone();
+            let scale_rg_fallback = scale_rg_fallback.clone();
             rg_fallback_adj.connect_value_changed(move |a| {
                 let db = a.value().clamp(-12.0, 0.0);
                 let mut s = state_rc.borrow_mut();
                 s.set_rg_fallback_db(db);
                 let _ = s.config.save();
+                scale_rg_fallback
+                    .update_property(&[gtk4::accessible::Property::ValueText(&format!("{db:.1} dB"))]);
             });
         }
         grid.attach(&scale_rg_fallback, 1, 12, 1, 1);
@@ -837,7 +855,7 @@ pub(super) fn open_settings_window(
             grid.attach(&hint, 0, 24, 2, 1);
         }
 
-        let tab_lbl = Label::new(Some("Behavior"));
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[1]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -1202,6 +1220,9 @@ pub(super) fn open_settings_window(
         scale_gr_speed.set_hexpand(true);
         scale_gr_speed.set_digits(2);
         scale_gr_speed.set_draw_value(true);
+        // A unitless multiplier — the raw number spoken alone already matches
+        // what draw_value shows sighted users, so no ValueText is needed.
+        scale_gr_speed.update_property(&[gtk4::accessible::Property::Label("Visualizer speed")]);
         {
             let state_rc = state.clone();
             speed_adj.connect_value_changed(move |a| {
@@ -1267,6 +1288,8 @@ pub(super) fn open_settings_window(
         scale_gr_fb.set_hexpand(true);
         scale_gr_fb.set_digits(2);
         scale_gr_fb.set_draw_value(true);
+        // A unitless trail-strength factor — same reasoning as Speed above.
+        scale_gr_fb.update_property(&[gtk4::accessible::Property::Label("Visualizer feedback")]);
         {
             let state_rc = state.clone();
             fb_adj.connect_value_changed(move |a| {
@@ -1357,6 +1380,8 @@ pub(super) fn open_settings_window(
         scale_gr_sens.set_hexpand(true);
         scale_gr_sens.set_digits(2);
         scale_gr_sens.set_draw_value(true);
+        // A unitless multiplier — same reasoning as Speed above.
+        scale_gr_sens.update_property(&[gtk4::accessible::Property::Label("Visualizer beat sensitivity")]);
         {
             let state_rc = state.clone();
             sens_adj.connect_value_changed(move |a| {
@@ -1396,7 +1421,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&gr_settings_box, 0, 3, 2, 1);
 
-        let tab_lbl = Label::new(Some("Visualizer"));
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[2]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -2355,7 +2380,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&chk_skip_db_load, 1, 19, 1, 1);
 
-        let tab_lbl = Label::new(Some("Media Library"));
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[3]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
     }
 
@@ -2451,7 +2476,7 @@ pub(super) fn open_settings_window(
             .child(&outer)
             .build();
 
-        let tab_lbl = Label::new(Some("About"));
+        let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[4]);
         notebook.append_page(&scroll, Some(&tab_lbl));
         // Move About to leftmost position.
         notebook.reorder_child(&scroll, Some(0));
@@ -2495,9 +2520,69 @@ pub(super) fn open_settings_window(
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&notebook);
     vbox.append(&close_btn);
-    win.set_child(Some(&vbox));
+    // Every toast in this window lands here. Wrapping the root once means
+    // call sites only need the window, not a threaded-through overlay.
+    let toaster = adw::ToastOverlay::new();
+    toaster.set_child(Some(&vbox));
+    win.set_child(Some(&toaster));
     win.present();
     state.borrow_mut().settings_window = Some(win);
+}
+
+#[cfg(test)]
+mod settings_tab_mnemonic_tests {
+    use super::*;
+
+    /// Verify that SETTINGS_TAB_LABELS defines all five mnemonics correctly.
+    /// All labels must contain exactly one underscore, and the mnemonic
+    /// characters (the ones following the underscores) must be distinct when
+    /// lowercased to avoid collisions in the notebook.
+    #[test]
+    fn settings_tab_labels_are_deconflicted() {
+        assert_eq!(
+            SETTINGS_TAB_LABELS.len(),
+            5,
+            "SETTINGS_TAB_LABELS must have exactly 5 entries"
+        );
+
+        let mut mnemonic_chars = Vec::new();
+
+        for (idx, label) in SETTINGS_TAB_LABELS.iter().enumerate() {
+            let underscores: Vec<usize> = label
+                .chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '_')
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(
+                underscores.len(),
+                1,
+                "SETTINGS_TAB_LABELS[{}] = {:?} must have exactly one underscore",
+                idx,
+                label
+            );
+
+            // The character immediately after the underscore is the mnemonic key.
+            let underscore_idx = underscores[0];
+            let mnemonic_char = label
+                .chars()
+                .nth(underscore_idx + 1)
+                .expect("underscore must not be the last character");
+            let mnemonic_lowercase = mnemonic_char.to_lowercase().to_string();
+
+            // Check for duplicates.
+            assert!(
+                !mnemonic_chars.contains(&mnemonic_lowercase),
+                "SETTINGS_TAB_LABELS[{}] = {:?} has mnemonic '{}' which \
+                 collides with an earlier tab (GTK lowercases all mnemonics)",
+                idx,
+                label,
+                mnemonic_lowercase
+            );
+            mnemonic_chars.push(mnemonic_lowercase);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
