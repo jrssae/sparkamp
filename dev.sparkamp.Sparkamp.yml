@@ -27,6 +27,28 @@ finish-args:
   - --socket=pulseaudio
   # Read access to the user's home directory (music files)
   - --filesystem=home:ro
+  # Removable media. udisks2 tells us a stick is mounted over D-Bus, but that
+  # says nothing about being able to read it: the mount lives outside every
+  # other grant here, and `--filesystem=host` does not help because it excludes
+  # /run. Without these the device shows up in the sidebar and then lists
+  # nothing, which is what it did on CachyOS.
+  #
+  # `/run/media` is where udisks2 mounts on Fedora, Arch and their derivatives;
+  # `/media` is the Debian/Ubuntu spelling and some udisks configurations still
+  # use it. Both are needed to cover the distros Sparkamp actually runs on.
+  #
+  # Read-write, not read-only: syncing to a device and deleting from it are
+  # features (`DeviceIo::copy_to_device` / `delete`), and the Media Library's
+  # external-device view is one of the two places CLAUDE.md permits a real
+  # file deletion. Read-only would leave those silently failing.
+  #
+  # Scope worth knowing: this grants the whole tree, so on a multi-user machine
+  # it reaches other users' mount points too. Flatpak has no $USER expansion in
+  # a manifest, so there is no narrower way to say "only mine". Manual mounts
+  # under /mnt are deliberately not included — they vary too much to guess, and
+  # a user with one can add it with `flatpak override --user`.
+  - --filesystem=/run/media:rw
+  - --filesystem=/media:rw
   # Write access to config and data dirs (config, playlists, media library)
   - --filesystem=xdg-config/sparkamp:create
   - --filesystem=xdg-data/sparkamp:create
