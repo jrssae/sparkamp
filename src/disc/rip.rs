@@ -755,27 +755,44 @@ mod tests {
     fn live_rip_first_track() {
         gstreamer::init().expect("gst init");
         let drives = crate::disc::detect::list_drives();
-        let Some(entry) = drives
-            .iter()
-            .find(|d| d.media.is_audio_cd)
-            .map(crate::disc::toc::track_entries)
-            .and_then(|entries| entries.into_iter().next())
-        else {
-            println!("no audio CD mounted — skipping");
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD in any drive — skipping");
             return;
         };
-        let aiff = PathBuf::from(&entry.path);
+        let Some(entry) = crate::disc::toc::track_entries(drive).into_iter().next() else {
+            println!("audio CD has no track entries — skipping");
+            return;
+        };
+
+        // `DiscTrackEntry::path` is platform-shaped: on macOS the disc mounts
+        // and it is a real AIFF file, on Linux it is a `cdda://N?device=…`
+        // pseudo-URI that no file source can open. This test used to wrap it
+        // in `RipSource::File` unconditionally, which is why it failed on
+        // Linux with `filesrc … No such file "cdda://1?device=/dev/sr0"` —
+        // the production `pipeline_desc` had the branch right all along.
+        let source = if crate::model::is_disc_uri(std::path::Path::new(&entry.path)) {
+            RipSource::Cdda {
+                device: drive.id.clone(),
+                track: entry.number,
+            }
+        } else {
+            RipSource::File {
+                path: PathBuf::from(&entry.path),
+            }
+        };
         let dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
         let tags = tag_fields_for_track("Live Artist", "Live Album", "2026", "Rock", 1, 8, "Live Test");
         let out = dest_path(&dir, "Live Artist", "Live Album", 1, "Live Test");
         let started = std::time::Instant::now();
-        rip_track(
-            &RipSource::File { path: aiff },
-            &out,
-            Mp3Quality::VbrV2,
-            &tags,
-        )
-        .expect("rip");
+        // Hold the drive for the duration, exactly as the live burn tests do.
+        // Without it the detector's polling can open the device mid-read and
+        // libcdio fails with "cdio_read_audio_sector … No such device" partway
+        // through the track — the pipeline itself is fine, it just loses the
+        // drive underneath it.
+        crate::disc::detect::begin_exclusive_read();
+        let ripped = rip_track(&source, &out, Mp3Quality::VbrV2, &tags);
+        crate::disc::detect::end_exclusive_read();
+        ripped.expect("rip");
         let size = std::fs::metadata(&out).expect("output").len();
         println!(
             "ripped to {} — {} bytes in {:.1?}",
