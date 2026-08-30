@@ -110,6 +110,24 @@ pub(super) fn disc_add_starts_playback(
     }
 }
 
+/// Translate a drive into the burn panel's visibility decision.
+///
+/// Keeps the two call sites below identical, and keeps the rule itself in
+/// [`crate::disc::burn_gate`] where it is unit-tested without a display.
+fn burn_panel_state_for(
+    drive: &crate::disc::OpticalDrive,
+    mount_readable: bool,
+) -> crate::disc::burn_gate::BurnPanel {
+    crate::disc::burn_gate::burn_panel_state(crate::disc::burn_gate::BurnContext {
+        supports_writing: drive.supports_writing,
+        mount_readable,
+        media_present: drive.media.present,
+        media_writable: crate::disc::burn::erase_decision(drive)
+            != crate::disc::burn::EraseDecision::Refuse,
+        typing_unknown: drive.media.typing_unknown,
+    })
+}
+
 pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page takes from its context, so the body below
     // reads exactly as it did inside `open_media_library_window`. Same device
@@ -161,6 +179,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // trigger (a poll tick landing mid-fetch) is skipped rather than piling
     // on a second disc read.
     let disc_files_busy: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    // Whether the selected disc's mount could be read. Set by the access
+    // report below and consulted by the burn gate: a disc we cannot read is
+    // one we cannot burn to. Starts true so a drive with no data disc — which
+    // never runs the walk — is not treated as unreadable.
+    let disc_mount_readable: Rc<Cell<bool>> = Rc::new(Cell::new(true));
     // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
     // user's current set (drives titles/artist/album, and rip/submit later);
     // `disc_official` keeps the untouched gnudb match as the submission
@@ -475,6 +498,39 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     );
     disc_detail.append(&burn_ui.root);
     let burn_ui = Rc::new(burn_ui);
+
+    // What to do when a disc's mount turns out to be unreadable: raise the
+    // banner that already sits directly under the header, and take down the
+    // views that have nothing left to describe. The message text comes from
+    // `devices::mount_access`, so a disc and a USB stick explain the same
+    // failure the same way.
+    {
+        let banner = disc_banner.clone();
+        let search_row = disc_search_row.clone();
+        let tracks_scroll = disc_tracks_scroll.clone();
+        let files_stack = data_browser.scroll.clone();
+        let files_status = data_browser.status_bar.clone();
+        let burn_root = burn_ui.root.clone();
+        let readable_flag = disc_mount_readable.clone();
+        *data_browser.access_report.borrow_mut() =
+            Some(Rc::new(move |failure: Option<String>| match &failure {
+                Some(msg) => {
+                    readable_flag.set(false);
+                    banner.set_text(&gtk_safe(&format!("⚠ {msg}")));
+                    banner.set_visible(true);
+                    search_row.set_visible(false);
+                    tracks_scroll.set_visible(false);
+                    files_stack.set_visible(false);
+                    files_status.set_visible(false);
+                    // A disc we cannot read is one we cannot burn to either.
+                    burn_root.set_visible(false);
+                }
+                None => {
+                    readable_flag.set(true);
+                    banner.set_visible(false);
+                }
+            }));
+    }
     // Wrap the detail content in an Overlay so the burn card can float over
     // whatever's showing (audio tracks or the burn panel itself) and survive
     // navigating to another drive and back — `populate_disc_detail` decides
@@ -767,12 +823,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // wiping the audio content. A write-once audio CD-R stays
                 // play-only (erase_decision == Refuse), matching the old
                 // behaviour (2026-07-17).
-                let burnable = crate::disc::burn::erase_decision(drive)
-                    != crate::disc::burn::EraseDecision::Refuse;
-                if burnable {
+                let panel = burn_panel_state_for(drive, disc_mount_readable.get());
+                if panel != crate::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
-                burn_ui.root.set_visible(burnable);
+                burn_ui.root.set_visible(
+                    panel != crate::disc::burn_gate::BurnPanel::Hidden,
+                );
                 // Publish a fully-tagged `Track` per disc track, keyed by the
                 // `cdda://` URI that addresses it, so a DRAGGED track lands in
                 // the playlist identical to an enqueued one.
@@ -915,11 +972,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     files_store.remove_all();
                 }
                 // Burn panel for writable/loaded non-audio media (blank,
-                // RW-with-content, data disc); hidden on an empty tray.
-                if drive.media.present {
+                // RW-with-content, data disc); hidden on an empty tray, on a
+                // drive that cannot write at all, on a disc we cannot read,
+                // and on media known not to be writable.
+                let panel = burn_panel_state_for(drive, disc_mount_readable.get());
+                if panel != crate::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
-                burn_ui.root.set_visible(drive.media.present);
+                burn_ui.root.set_visible(
+                    panel != crate::disc::burn_gate::BurnPanel::Hidden,
+                );
             }
             *entries_store.borrow_mut() = entries;
             // Fresh rows + fresh entries: re-run the search filter over them.

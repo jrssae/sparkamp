@@ -112,6 +112,11 @@ fn prop_bool(props: &Props, key: &str) -> Option<bool> {
 fn prop_u64(props: &Props, key: &str) -> Option<u64> {
     props.get(key).and_then(|v| u64::try_from(v.clone()).ok())
 }
+fn prop_str_array(props: &Props, key: &str) -> Option<Vec<String>> {
+    props
+        .get(key)
+        .and_then(|v| Vec::<String>::try_from(v.clone()).ok())
+}
 
 /// Decode a udisks2 `ay` byte-path property (NUL-terminated) — `Block.Device`
 /// here. Byte-exact, like the device code's `MountPoints` decoder.
@@ -167,10 +172,119 @@ pub fn optical_media(node: &str) -> Option<MediaInfo> {
     .filter(|m| m.present)
 }
 
+/// Ask udisks2 whether the drive at device `node` can write.
+///
+/// `None` when udisks is unreachable or the drive object has no
+/// `MediaCompatibility`, so the caller can decide what to assume rather than
+/// inheriting a silent `false` — which would hide the burn panel on a working
+/// burner every time the daemon hiccups.
+pub fn drive_supports_writing(node: &str) -> Option<bool> {
+    let objects = zbus::blocking::fdo::ObjectManagerProxy::builder(
+        &zbus::blocking::Connection::system().ok()?,
+    )
+    .destination(UDISKS)
+    .ok()?
+    .path(MANAGER_PATH)
+    .ok()?
+    .build()
+    .ok()?
+    .get_managed_objects()
+    .ok()?;
+
+    let drive_path = objects.values().find_map(|ifaces| {
+        let block = ifaces.get(BLOCK_IFACE)?;
+        let dev = prop_device_path(block, "Device")?;
+        (dev == node).then(|| block.get("Drive").cloned())?
+    })?;
+    let drive_path = zbus::zvariant::OwnedObjectPath::try_from(drive_path).ok()?;
+    let drive = objects.get(&drive_path)?.get(DRIVE_IFACE)?;
+
+    prop_str_array(drive, "MediaCompatibility").map(|c| drive_writes(&c))
+}
+
+/// Whether a drive can write, judged from udisks2's `Drive.MediaCompatibility`.
+///
+/// The property lists the media the *hardware* accepts, e.g.
+/// `["optical_cd", "optical_cd_r", "optical_dvd", "optical_dvd_rw"]`. A
+/// recordable entry means the drive has a writer; a list of read-only kinds
+/// means it does not.
+///
+/// This is deliberately about the drive and not the disc in it. Whether the
+/// loaded medium can be written is [`crate::disc::burn::erase_decision`]'s
+/// question, and it has a different answer for the same drive minute to
+/// minute.
+pub fn drive_writes(media_compatibility: &[String]) -> bool {
+    media_compatibility.iter().any(|entry| {
+        // udisks spells the recordable kinds as trailing segments: cd_r,
+        // cd_rw, dvd_plus_r, dvd_plus_r_dl, dvd_ram, bd_r, bd_re. A dual-layer
+        // suffix pushes the meaningful segment one place left, so check the
+        // last two rather than only the last.
+        let mut segments = entry.rsplit('_');
+        let last = segments.next().unwrap_or_default();
+        let penultimate = segments.next().unwrap_or_default();
+        let recordable = |seg: &str| matches!(seg, "r" | "rw" | "ram" | "re");
+        recordable(last) || (last == "dl" && recordable(penultimate))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn a_reader_only_drive_does_not_write() {
+        // A DVD-ROM: accepts pressed media, records nothing.
+        let compat = ["optical_cd".to_string(), "optical_dvd".to_string()];
+        assert!(!drive_writes(&compat));
+    }
+
+    #[test]
+    fn a_cd_burner_writes() {
+        let compat = [
+            "optical_cd".to_string(),
+            "optical_cd_r".to_string(),
+            "optical_cd_rw".to_string(),
+        ];
+        assert!(drive_writes(&compat));
+    }
+
+    #[test]
+    fn the_plus_and_dual_layer_dvd_spellings_count_as_writable() {
+        for entry in [
+            "optical_dvd_r",
+            "optical_dvd_rw",
+            "optical_dvd_ram",
+            "optical_dvd_plus_r",
+            "optical_dvd_plus_rw",
+            "optical_dvd_plus_r_dl",
+        ] {
+            assert!(
+                drive_writes(&[entry.to_string()]),
+                "{entry} should read as writable"
+            );
+        }
+    }
+
+    #[test]
+    fn blu_ray_recordable_and_rewritable_count_as_writable() {
+        assert!(drive_writes(&["optical_bd_r".to_string()]));
+        assert!(drive_writes(&["optical_bd_re".to_string()]));
+        assert!(!drive_writes(&["optical_bd".to_string()]));
+    }
+
+    #[test]
+    fn an_absent_or_empty_property_does_not_claim_a_writer() {
+        // udisks not answering is not evidence of a burner; claiming one puts
+        // a burn panel on a drive that can never use it.
+        assert!(!drive_writes(&[]));
+    }
+
+    #[test]
+    fn an_unrecognised_entry_is_not_mistaken_for_a_writer() {
+        assert!(!drive_writes(&["optical_mrw".to_string()]));
+        assert!(!drive_writes(&["floppy".to_string()]));
+    }
     #[test]
     fn media_strings_map_to_erasability() {
         // The case this module exists for: a burned CD-RW, mounted, that
@@ -181,6 +295,7 @@ mod tests {
         assert_eq!(m.kind, MediaKind::CdRw);
         assert_eq!(
             crate::disc::burn::erase_decision(&crate::disc::OpticalDrive {
+                supports_writing: true,
                 id: "/dev/sr0".into(),
                 label: "T".into(),
                 media: m.clone(),

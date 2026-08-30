@@ -53,6 +53,7 @@ fn fake_lib_track(path: &str, title: &str) -> crate::media_library::LibTrack {
 /// refusal), which is what the isolation test needs.
 fn fake_drive(id: &str, label: &str) -> crate::disc::OpticalDrive {
     crate::disc::OpticalDrive {
+        supports_writing: true,
         id: id.to_string(),
         label: label.to_string(),
         media: crate::disc::MediaInfo {

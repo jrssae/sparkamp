@@ -1787,6 +1787,7 @@ mod tests {
 
     fn drive(present: bool, kind: MediaKind, capacity: u64) -> OpticalDrive {
         OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(),
             label: "TEST".into(),
             media: MediaInfo {

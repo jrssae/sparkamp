@@ -153,6 +153,7 @@ mod tests {
     #[test]
     fn linux_entries_use_cdda_uris() {
         let drive = OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(),
             label: "TEST".into(),
             media: crate::disc::MediaInfo {

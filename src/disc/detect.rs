@@ -1171,6 +1171,10 @@ mod platform {
                     drives.push(d);
                 }
                 super::ProbeAction::Empty => drives.push(OpticalDrive {
+                    // An empty tray still has hardware behind it, and whether
+                    // that hardware writes is exactly what decides if a queue
+                    // can be staged before a blank goes in.
+                    supports_writing: drive_supports_writing(&node),
                     id: node,
                     label,
                     media: MediaInfo::none(),
@@ -1229,12 +1233,22 @@ mod platform {
                 .unwrap_or_else(MediaInfo::none),
         };
         OpticalDrive {
+            supports_writing: drive_supports_writing(&node),
             id: node,
             label,
             media,
             toc,
             mount_path: None,
         }
+    }
+
+    /// Whether the drive at `node` can write.
+    ///
+    /// udisks2 not answering is treated as "yes": a drive that burns must not
+    /// lose its burn panel because the daemon was briefly unreachable, and the
+    /// panel's own buttons still refuse a disc that cannot take a burn.
+    fn drive_supports_writing(node: &str) -> bool {
+        crate::disc::udisks::drive_supports_writing(node).unwrap_or(true)
     }
 
     /// Read the loaded disc's TOC through the kernel (`CDROMREADTOCHDR` +
@@ -1500,6 +1514,7 @@ number of sessions:       1
         assert_eq!(m.free_bytes, m.capacity_bytes);
         // ≈ 79:57 of audio from the same figure.
         let d = OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(),
             label: "T".into(),
             media: m,
@@ -1665,6 +1680,7 @@ session status:           complete
     fn exclusive_read_freezes_polling() {
         let _guard = exclusive_read_test_guard();
         let fake = vec![OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr-test".into(),
             label: "FAKE".into(),
             media: MediaInfo::none(),
@@ -1720,6 +1736,7 @@ session status:           complete
     #[test]
     fn media_fingerprint_tracks_meaningful_changes() {
         let mut d = OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(), label: "T".into(),
             media: MediaInfo::none(), toc: None, mount_path: None,
         };

@@ -74,6 +74,15 @@ pub(super) struct DataBrowser {
     /// poll tick landing mid-walk is skipped rather than piling on a second
     /// disc read.
     pub load: Rc<dyn Fn(crate::disc::OpticalDrive)>,
+    /// Filled in by the Disc Drives page with what to do when the disc's
+    /// mount turns out to be unreadable: `Some(message)` raises the banner at
+    /// the top of the page and hides the views that have nothing to show;
+    /// `None` clears it.
+    ///
+    /// A holder rather than a widget handle, because the banner and the burn
+    /// panel belong to `disc_page` — the same shape as `burn_refresh_holder`
+    /// and the playlist rebuild holder.
+    pub access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>)>>>>,
     /// Copy the given disc files into the library. Shared with the audio
     /// side's "Copy all to library" button.
     pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
@@ -133,6 +142,9 @@ pub(super) fn build(
     let disc_detail = detail.clone();
     let disc_status_lbl = status_lbl.clone();
     let disc_files_busy = busy.clone();
+    // See `DataBrowser::access_report`.
+    let access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>)>>>> =
+        Rc::new(RefCell::new(None));
     let selected_disc_id = selected_disc_id.clone();
 
     // ── Data-disc file browser (Task 9) ─────────────────────────────────────
@@ -500,6 +512,7 @@ pub(super) fn build(
     // navigated to a different drive before this finished) are discarded by
     // checking `selected_disc_id` still names this drive when the result lands.
     let load_disc_files: Rc<dyn Fn(crate::disc::OpticalDrive)> = {
+        let access_report_load = access_report.clone();
         let state = state.clone();
         let store = disc_files_store.clone();
         let status = disc_status_lbl.clone();
@@ -523,6 +536,7 @@ pub(super) fn build(
             let status2 = status.clone();
             let busy2 = busy.clone();
             let selected_disc_id2 = selected_disc_id.clone();
+            let access_report2 = access_report_load.clone();
             let drive_id = drive.id.clone();
             glib::spawn_future_local(async move {
                 let joined = gio::spawn_blocking(
@@ -561,11 +575,23 @@ pub(super) fn build(
                 store2.remove_all();
                 match result {
                     Ok(files) => {
+                        if let Some(report) = access_report2.borrow().as_ref() {
+                            report(None);
+                        }
                         let n = files.len();
                         for f in files {
                             store2.append(&glib::BoxedAnyObject::new(f));
                         }
                         status2.set_text(&format!("{n} file{} on disc", if n == 1 { "" } else { "s" }));
+                    }
+                    Err(DiscReadError::Access(sentence)) => {
+                        // Top-of-page banner, not the status line halfway down
+                        // the detail view: an access failure is about the whole
+                        // disc, and the views it would describe are hidden.
+                        if let Some(report) = access_report2.borrow().as_ref() {
+                            report(Some(sentence.clone()));
+                        }
+                        status2.set_text("");
                     }
                     Err(e) => status2.set_text(&gtk_safe(&e.into_status_text())),
                 }
@@ -1079,6 +1105,7 @@ pub(super) fn build(
         scroll: disc_files_stack,
         status_bar: disc_status_bar,
         load: load_disc_files,
+        access_report,
         add_to_library: add_disc_files_to_library,
     }
 }

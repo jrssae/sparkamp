@@ -512,6 +512,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Reload a device's tracks into the column store (tags re-read on a worker
     // thread). Used on device select and after a sync so changed values show
     // immediately.
+    // Shows or hides the search row, track list and file actions together.
+    // Assigned once those widgets are built (they come after this closure);
+    // see the holder comment inside `reload_device_store`.
+    let files_sections_visible: Rc<RefCell<Option<Rc<dyn Fn(bool)>>>> =
+        Rc::new(RefCell::new(None));
+
     let reload_device_store: Rc<dyn Fn(crate::devices::Device)> = {
         let store = dev_store.clone();
         let all_tracks = dev_all_tracks.clone();
@@ -523,6 +529,19 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let sel_backend = selected_dev_backend.clone();
         let pair_map = dev_pair_map.clone();
         let search = dev_search_entry.clone();
+        // The access verdict only exists once the scan has run, so the banner
+        // and the sections it replaces are driven from here rather than from
+        // the selection handler.
+        let nofs_banner_rl = dev_nofs_banner.clone();
+        let nofs_lbl_rl = dev_nofs_lbl.clone();
+        let pl_header_rl = dev_pl_header.clone();
+        let pl_scroll_rl = dev_pl_scroll.clone();
+        let pl_actions_rl = dev_pl_actions.clone();
+        // The search row, track list and file actions are built further down,
+        // after this closure. The same holder pattern the playlist rebuild and
+        // the burn panel already use bridges the gap: filled in once those
+        // widgets exist, called from here.
+        let files_visible_rl = files_sections_visible.clone();
         Rc::new(move |dev: crate::devices::Device| {
             counts_lbl.set_text("Reading device…");
             hint.set_text(""); // clear any stale copy status
@@ -549,6 +568,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let all_tracks_owner2 = all_tracks_owner.clone();
             let owner_id = dev.backend_id.clone();
             let counts_lbl2 = counts_lbl.clone();
+            let nofs_banner_rl2 = nofs_banner_rl.clone();
+            let nofs_lbl_rl2 = nofs_lbl_rl.clone();
+            let pl_header_rl2 = pl_header_rl.clone();
+            let pl_scroll_rl2 = pl_scroll_rl.clone();
+            let pl_actions_rl2 = pl_actions_rl.clone();
+            let files_visible_rl2 = files_visible_rl.clone();
             let state2 = state.clone();
             let pair_map2 = pair_map.clone();
             let mount = dev.mount_path.clone();
@@ -648,19 +673,36 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 for t in &tracks {
                     store2.append(&glib::BoxedAnyObject::new(t.clone()));
                 }
-                // A device we could not read reports why, in place of a count
-                // that would otherwise read as "this device is empty".
+                // A device we could not read explains itself in the banner
+                // that already exists for the no-filesystem case, with the
+                // playlist and file lists hidden behind it — otherwise an
+                // unreachable device is indistinguishable from an empty one.
+                // The counts label keeps a short summary, matching how "No
+                // visible filesystem" pairs a terse status with a long banner.
                 match crate::devices::mount_access::message(
                     access,
                     crate::devices::mount_access::in_flatpak(),
                     crate::devices::mount_access::Medium::Device,
                 ) {
                     Some(msg) => {
-                        counts_lbl2.set_text(&gtk_safe(&msg));
-                        counts_lbl2.add_css_class("broken");
+                        nofs_lbl_rl2.set_text(&gtk_safe(&format!("⚠ {msg}")));
+                        nofs_banner_rl2.set_visible(true);
+                        pl_header_rl2.set_visible(false);
+                        pl_scroll_rl2.set_visible(false);
+                        pl_actions_rl2.set_visible(false);
+                        if let Some(f) = files_visible_rl2.borrow().as_ref() {
+                            f(false);
+                        }
+                        counts_lbl2.set_text("No access");
                     }
                     None => {
-                        counts_lbl2.remove_css_class("broken");
+                        nofs_banner_rl2.set_visible(false);
+                        pl_header_rl2.set_visible(true);
+                        pl_scroll_rl2.set_visible(true);
+                        pl_actions_rl2.set_visible(true);
+                        if let Some(f) = files_visible_rl2.borrow().as_ref() {
+                            f(true);
+                        }
                         counts_lbl2.set_text(&format!(
                             "{} playlist{} - {} audio file{}",
                             pl_count,
@@ -1013,6 +1055,19 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     dev_file_actions.append(&dev_file_play);
     dev_file_actions.append(&dev_file_enqueue);
     dev_detail.append(&dev_file_actions);
+
+    // Fill the holder declared above `reload_device_store`, now that all three
+    // widgets exist.
+    {
+        let search_row = dev_search_row.clone();
+        let tracks_scroll = dev_tracks_scroll.clone();
+        let file_actions = dev_file_actions.clone();
+        *files_sections_visible.borrow_mut() = Some(Rc::new(move |visible: bool| {
+            search_row.set_visible(visible);
+            tracks_scroll.set_visible(visible);
+            file_actions.set_visible(visible);
+        }));
+    }
 
     // Quiet status line (G3) — Send to Disc Drive reports here instead of
     // a success modal; mirrors the files view's `files_status`.

@@ -831,6 +831,7 @@ mod tests {
     #[test]
     fn track_entries_round_trip() {
         let drive = OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(),
             label: "TEST".into(),
             media: crate::disc::MediaInfo {
@@ -888,6 +889,7 @@ mod tests {
         let out = DriveOut {
             media_summary: "Blank CD-R".into(),
             drive: OpticalDrive {
+                supports_writing: true,
                 id: "/dev/sr0".into(),
                 label: "TEST".into(),
                 media: crate::disc::MediaInfo {

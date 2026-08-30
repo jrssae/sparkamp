@@ -1155,6 +1155,7 @@ mod tests {
 
     fn drive(present: bool, blank: bool, rw: bool, kind: MediaKind) -> OpticalDrive {
         OpticalDrive {
+            supports_writing: true,
             id: "1".into(),
             label: "TEST".into(),
             media: MediaInfo {

@@ -55,6 +55,7 @@ pub mod mount;
 pub mod rip;
 pub mod source;
 pub mod tagstore;
+pub mod burn_gate;
 pub mod toc;
 /// udisks2 optical typing — the fallback when `cdrskin -minfo` finds the
 /// drive busy because the desktop mounted the disc. Linux only.
@@ -148,6 +149,17 @@ pub struct OpticalDrive {
     pub media: MediaInfo,
     /// TOC when an audio disc is loaded; `None` when blank, data-only or empty.
     pub toc: Option<DiscToc>,
+    /// Whether the drive itself can write, independent of any disc in it.
+    ///
+    /// A DVD-ROM answers `false` and no disc will ever change that, so its
+    /// burn panel is hidden outright rather than shown with permanently dead
+    /// buttons. Whether the *loaded medium* can be written is a separate and
+    /// much more changeable question — [`burn::erase_decision`]'s.
+    ///
+    /// Linux reads udisks2's `Drive.MediaCompatibility`. macOS has no
+    /// equivalent probe yet and defaults to `true`, which preserves the Mac
+    /// app's existing behaviour until `drutil` parsing lands.
+    pub supports_writing: bool,
     /// Where the disc's files are reachable, when the OS mounts it:
     /// macOS audio CDs mount as a volume of AIFF files (e.g.
     /// `/Volumes/Audio CD`); Linux audio CDs don't mount (playback goes
