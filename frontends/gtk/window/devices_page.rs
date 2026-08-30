@@ -542,6 +542,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // the burn panel already use bridges the gap: filled in once those
         // widgets exist, called from here.
         let files_visible_rl = files_sections_visible.clone();
+        let sync_btn_rl = dev_sync.clone();
         Rc::new(move |dev: crate::devices::Device| {
             counts_lbl.set_text("Reading device…");
             hint.set_text(""); // clear any stale copy status
@@ -574,6 +575,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let pl_scroll_rl2 = pl_scroll_rl.clone();
             let pl_actions_rl2 = pl_actions_rl.clone();
             let files_visible_rl2 = files_visible_rl.clone();
+            let sync_btn_rl2 = sync_btn_rl.clone();
             let state2 = state.clone();
             let pair_map2 = pair_map.clone();
             let mount = dev.mount_path.clone();
@@ -694,6 +696,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             f(false);
                         }
                         counts_lbl2.set_text("No access");
+                        // Syncing to a device whose contents cannot be
+                        // enumerated would be working blind — the same reason
+                        // the no-filesystem and unsupported-device branches
+                        // disable it. Scan stays live: it is the retry once
+                        // the permission is granted.
+                        sync_btn_rl2.set_sensitive(false);
                     }
                     None => {
                         nofs_banner_rl2.set_visible(false);
@@ -703,6 +711,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         if let Some(f) = files_visible_rl2.borrow().as_ref() {
                             f(true);
                         }
+                        sync_btn_rl2.set_sensitive(true);
                         counts_lbl2.set_text(&format!(
                             "{} playlist{} - {} audio file{}",
                             pl_count,
