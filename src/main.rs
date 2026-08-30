@@ -21,6 +21,10 @@ mod controller;
 #[cfg(target_os = "linux")]
 mod crash_log;
 mod dedupe;
+// Display-backend selection is a GTK/GDK concern; the macOS app bundle has no
+// such choice to make.
+#[cfg(target_os = "linux")]
+mod display_backend;
 mod disc;
 mod duration_cache;
 mod duration_probe;
@@ -90,6 +94,7 @@ mod tui;
 #[derive(Parser)]
 #[command(
     name = "sparkamp",
+    version,
     about = "A Winamp-style audio player for Linux/GNOME",
     long_about = "Sparkamp — a Winamp-style audio player for Linux/GNOME.\n\
 \n\
@@ -100,6 +105,17 @@ USAGE EXAMPLES:\n\
   sparkamp ~/music/                 Load a folder recursively, then open the GTK4 UI\n\
   sparkamp --tui ~/music/*.mp3      Shell-glob expansion into the TUI\n\
   sparkamp \"song.mp3,~/albums/rock\" Comma-separated file and folder in one argument\n\
+  sparkamp --backend=x11            Force X11 for this run\n\
+  sparkamp --renderer=cairo         Force software rendering for this run\n\
+\n\
+DISPLAY BACKEND AND RENDERER:\n\
+  Both flags override the saved Settings → Appearance → Graphics choice for a\n\
+  single run without changing it, so a setting that leaves you with no window\n\
+  can always be escaped from the command line.\n\
+    --backend   auto (default) | wayland | x11\n\
+    --renderer  auto (default) | ngl | vulkan | gl | cairo\n\
+  On auto, Sparkamp probes Wayland in a throwaway child process at startup and\n\
+  falls back to X11 if this compositor crashes GTK's Wayland backend.\n\
 \n\
 FILES:\n\
   Pass any number of audio files or folders as positional arguments.\n\
@@ -116,6 +132,20 @@ struct Args {
     #[arg(long)]
     tui: bool,
 
+    /// Force the GDK display backend for this run, overriding the saved setting.
+    #[arg(long, value_name = "BACKEND")]
+    backend: Option<config::DisplayBackend>,
+
+    /// Force the GSK renderer for this run, overriding the saved setting.
+    #[arg(long, value_name = "RENDERER")]
+    renderer: Option<config::RendererChoice>,
+
+    /// Internal: open a GDK display, then exit. Spawned by the parent process
+    /// to find out whether this compositor crashes GDK's Wayland backend, so
+    /// the crash lands in a throwaway child instead of the real app.
+    #[arg(long, hide = true)]
+    probe_display: bool,
+
     /// Audio files or folders to load at startup.
     ///
     /// Each argument may be a single file path, a folder path (scanned
@@ -129,11 +159,36 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    // The display probe: open a GDK display and exit, nothing else. This is a
+    // child of a real Sparkamp process, and the whole point is that it may die
+    // on a signal — so it returns before the crash handler is installed, which
+    // would otherwise record a crash we asked for.
+    #[cfg(target_os = "linux")]
+    if args.probe_display {
+        display_backend::run_probe_child();
+    }
+
     // Install panic + GLib log capture before anything else so a crash
     // during init or in a GTK/GStreamer callback still leaves a record
     // at ~/.config/sparkamp/crash.log instead of vanishing silently.
     #[cfg(target_os = "linux")]
     crash_log::install();
+
+    let mut config = config::Config::load()?;
+
+    // Pick the display backend and renderer before GStreamer initialises.
+    // `configure` writes GDK_BACKEND / GSK_RENDERER, and setting an environment
+    // variable is only sound while the process is single-threaded — GStreamer's
+    // init is the first thing here that spawns threads. The TUI has no display
+    // to choose, so it skips this entirely.
+    #[cfg(target_os = "linux")]
+    if !args.tui {
+        if display_backend::configure(args.backend, args.renderer, &mut config) {
+            // Only the probe verdict changed; a failure to persist it costs a
+            // probe on the next launch and nothing else.
+            let _ = config.save();
+        }
+    }
 
     // GStreamer must be initialised before any Player is created, regardless
     // of which UI frontend is used.
@@ -142,8 +197,6 @@ fn main() -> Result<()> {
     // does not corrupt the TUI alternate screen.  Actual errors are captured
     // via the GStreamer message bus and surfaced through the UI instead.
     gstreamer::log::set_default_threshold(gstreamer::DebugLevel::None);
-
-    let config = config::Config::load()?;
 
     // Build the initial playlist from any files / folders given on the command
     // line.  Each argument may itself be a comma-separated list so that users
@@ -223,5 +276,75 @@ fn main() -> Result<()> {
         tui::run(playlist, config)
     } else {
         gtk_ui::run(playlist, config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_visible_flag_carries_a_description_in_help() {
+        let cmd = Args::command();
+        for arg in cmd.get_arguments() {
+            if arg.is_hide_set() {
+                continue;
+            }
+            let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
+            assert!(
+                !help.trim().is_empty(),
+                "`{}` appears in --help with no description; give it a doc comment",
+                arg.get_id()
+            );
+        }
+    }
+
+    #[test]
+    fn help_lists_every_flag_a_user_is_expected_to_reach_for() {
+        let help = Args::command().render_long_help().to_string();
+        for flag in ["--tui", "--backend", "--renderer", "--help", "--version"] {
+            assert!(help.contains(flag), "--help is missing {flag}:\n{help}");
+        }
+    }
+
+    #[test]
+    fn help_lists_the_accepted_backend_and_renderer_values() {
+        let help = Args::command().render_long_help().to_string();
+        for value in ["auto", "wayland", "x11", "ngl", "vulkan", "gl", "cairo"] {
+            assert!(
+                help.contains(value),
+                "--help does not list the `{value}` value:\n{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_internal_probe_flag_stays_out_of_help() {
+        let help = Args::command().render_long_help().to_string();
+        assert!(
+            !help.contains("probe-display"),
+            "the probe flag is internal plumbing and must not be advertised"
+        );
+    }
+
+    #[test]
+    fn the_backend_and_renderer_flags_parse_into_the_config_types() {
+        let args = Args::parse_from(["sparkamp", "--backend", "x11", "--renderer", "cairo"]);
+        assert_eq!(args.backend, Some(config::DisplayBackend::X11));
+        assert_eq!(args.renderer, Some(config::RendererChoice::Cairo));
+    }
+
+    #[test]
+    fn a_misspelled_backend_is_rejected_rather_than_ignored() {
+        assert!(Args::try_parse_from(["sparkamp", "--backend", "waylnad"]).is_err());
+        assert!(Args::try_parse_from(["sparkamp", "--renderer", "opengl"]).is_err());
+    }
+
+    #[test]
+    fn omitting_the_flags_leaves_the_saved_settings_in_charge() {
+        let args = Args::parse_from(["sparkamp"]);
+        assert_eq!(args.backend, None);
+        assert_eq!(args.renderer, None);
     }
 }

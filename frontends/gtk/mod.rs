@@ -1,6 +1,7 @@
 //! GTK4 graphical user interface entry point.
 //!
-//! Launched when the user passes `--ui` on the command line.  All widget
+//! The default invocation — plain `sparkamp`, with `--tui` selecting the
+//! terminal UI instead.  All widget
 //! construction lives in [`window`]; this module's only job is to create the
 //! [`gtk4::Application`], hook its `activate` and `open` signals to
 //! [`window::build`], and hand control over to the GTK main loop.

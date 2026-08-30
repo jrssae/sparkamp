@@ -499,6 +499,47 @@ impl WindowConfig {
 // ---------------------------------------------------------------------------
 
 /// Visual-appearance preferences that live under `[appearance]` in the TOML.
+/// Which GDK display backend the GTK frontend should use.
+///
+/// `Auto` probes Wayland in a child process at startup and falls back to X11
+/// if the compositor crashes GDK's Wayland backend. The explicit values skip
+/// that probe — some users simply prefer one, and X11/XLibre sessions are
+/// first-class here, not a degraded mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum DisplayBackend {
+    #[default]
+    Auto,
+    Wayland,
+    X11,
+}
+
+/// Which GSK renderer the GTK frontend should ask for.
+///
+/// `Auto` leaves the choice to GSK. The rest map onto `GSK_RENDERER` values,
+/// with `Cairo` as the software path that works on anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum RendererChoice {
+    #[default]
+    Auto,
+    Ngl,
+    Vulkan,
+    Gl,
+    Cairo,
+}
+
+/// A remembered display-probe verdict.
+///
+/// `session` identifies the compositor and GTK build it was taken against, so
+/// a verdict never outlives the thing it describes — moving to a runtime with
+/// a fixed GTK re-probes on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProbeCache {
+    pub session: String,
+    pub crashed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearanceConfig {
     /// Name of the active skin — either a built-in (`"dark"` or
@@ -511,6 +552,18 @@ pub struct AppearanceConfig {
     /// Built-ins (`"dark"`, `"light"`) cannot appear here.
     #[serde(default)]
     pub hidden_skins: Vec<String>,
+
+    /// Which GDK display backend to use. Takes effect on the next launch.
+    #[serde(default)]
+    pub display_backend: DisplayBackend,
+
+    /// Which GSK renderer to ask for. Takes effect on the next launch.
+    #[serde(default)]
+    pub gsk_renderer: RendererChoice,
+
+    /// The last automatic probe verdict, if one has been taken.
+    #[serde(default)]
+    pub display_probe: Option<ProbeCache>,
 }
 
 fn default_active_skin() -> String {
@@ -522,6 +575,9 @@ impl Default for AppearanceConfig {
         AppearanceConfig {
             active_skin: default_active_skin(),
             hidden_skins: Vec::new(),
+            display_backend: DisplayBackend::default(),
+            gsk_renderer: RendererChoice::default(),
+            display_probe: None,
         }
     }
 }
@@ -1585,5 +1641,47 @@ rescan_on_startup = true
         assert!(rg_album_mode(RgSource::Album, true));
         assert!(rg_album_mode(RgSource::Automatic, false)); // sequential → album
         assert!(!rg_album_mode(RgSource::Automatic, true)); // shuffling → track
+    }
+
+    // ── Appearance: display backend / renderer ────────────────────────────────
+
+    #[test]
+    fn display_backend_and_renderer_default_to_auto_with_no_probe_recorded() {
+        let a = AppearanceConfig::default();
+        assert_eq!(a.display_backend, DisplayBackend::Auto);
+        assert_eq!(a.gsk_renderer, RendererChoice::Auto);
+        assert_eq!(a.display_probe, None);
+    }
+
+    #[test]
+    fn a_config_written_before_these_settings_existed_still_loads() {
+        let old = r#"
+            active_skin = "dark"
+            hidden_skins = []
+        "#;
+        let a: AppearanceConfig = toml::from_str(old).expect("old config must still parse");
+        assert_eq!(a.active_skin, "dark");
+        assert_eq!(a.display_backend, DisplayBackend::Auto);
+        assert_eq!(a.gsk_renderer, RendererChoice::Auto);
+    }
+
+    #[test]
+    fn the_backend_and_renderer_round_trip_through_toml_in_kebab_case() {
+        let mut a = AppearanceConfig::default();
+        a.display_backend = DisplayBackend::X11;
+        a.gsk_renderer = RendererChoice::Cairo;
+        a.display_probe = Some(ProbeCache {
+            session: "COSMIC|wayland|gtk4.16.13".into(),
+            crashed: true,
+        });
+
+        let text = toml::to_string(&a).expect("appearance config must serialise");
+        assert!(text.contains("x11"), "got: {text}");
+        assert!(text.contains("cairo"), "got: {text}");
+
+        let back: AppearanceConfig = toml::from_str(&text).expect("must round-trip");
+        assert_eq!(back.display_backend, DisplayBackend::X11);
+        assert_eq!(back.gsk_renderer, RendererChoice::Cairo);
+        assert_eq!(back.display_probe.unwrap().crashed, true);
     }
 }

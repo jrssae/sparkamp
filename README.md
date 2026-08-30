@@ -72,8 +72,8 @@ sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
 Build the main binary:
 ```bash
 cargo build --release
-./target/release/sparkamp --ui      # GTK4 graphical interface
-./target/release/sparkamp           # Terminal UI
+./target/release/sparkamp           # GTK4 graphical interface
+./target/release/sparkamp --tui     # Terminal UI
 ```
 
 **macOS — Standalone DMG (recommended, no dependencies):**
@@ -105,8 +105,37 @@ To build and run directly in Xcode, open `frontends/SparkampMac/SparkampMac.xcod
 
 For TUI mode:
 ```bash
-./target/release/sparkamp
+./target/release/sparkamp --tui
 ```
+
+---
+
+## Display backend and renderer
+
+Sparkamp runs on Wayland or X11, and X11/XLibre is a supported choice rather
+than a fallback of last resort. **Settings → Appearance → Graphics** shows which
+display backend and GSK renderer the running instance actually got, and lets you
+pick either for the next launch.
+
+The backend defaults to **Automatic**, which on a Wayland session starts a
+throwaway helper process that opens a display and exits. If that helper dies on
+a signal, Sparkamp uses X11 instead — some compositors crash GTK's Wayland
+backend outright (COSMIC 1.7.0 with GTK 4.16 segfaults during display setup),
+and a crash in a child is survivable where the same crash in the player is not.
+The verdict is remembered per compositor and GTK version, so the check runs once
+rather than on every launch, and re-runs by itself after a runtime upgrade.
+
+Both settings can be overridden for a single run, which is the way back from a
+choice that leaves you with no window to change it in:
+
+```bash
+sparkamp --backend=x11        # auto | wayland | x11
+sparkamp --renderer=cairo     # auto | ngl | vulkan | gl | cairo
+```
+
+Neither flag writes to the config file; use the Settings dropdowns to make a
+choice stick. `GDK_BACKEND` and `GSK_RENDERER` are honoured too, and are left
+alone unless one of the flags above is given.
 
 ---
 

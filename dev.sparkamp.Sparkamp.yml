@@ -8,9 +8,18 @@ sdk-extensions:
 command: sparkamp
 
 finish-args:
-  # Wayland and X11 display access
+  # Wayland and X11 display access.
+  #
+  # `--socket=x11`, not `--socket=fallback-x11`: flatpak resolves "fallback" to
+  # *nothing* whenever Wayland is present, so on a Wayland session there is no
+  # X11 socket in the sandbox at all. That is fine until GDK's Wayland backend
+  # is the thing that is broken — COSMIC 1.7.0 segfaults GTK 4.16 during display
+  # setup — at which point the X11 fallback has nowhere to connect and the app
+  # dies with "cannot open display". Binding X11 unconditionally is what makes
+  # `--backend=x11` and the automatic fallback work at all, and it is also what
+  # lets someone who simply prefers X11 or XLibre run Sparkamp there.
   - --socket=wayland
-  - --socket=fallback-x11
+  - --socket=x11
   - --share=ipc
   # GPU / DRI access — required for GTK4 rendering
   - --device=dri

@@ -74,8 +74,9 @@ pub(super) fn open_settings_window(
 
     // ── Tab 0: Appearance ─────────────────────────────────────────────────
     {
-        use gtk4::{Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation,
-                   PolicyType, ScrolledWindow, SelectionMode, FileDialog, FileFilter};
+        use gtk4::{Box as GtkBox, Button, DropDown, Grid, Label, ListBox, ListBoxRow,
+                   Orientation, PolicyType, ScrolledWindow, SelectionMode, Separator,
+                   FileDialog, FileFilter};
 
         let root = GtkBox::new(Orientation::Vertical, 10);
         root.set_margin_top(16);
@@ -360,6 +361,153 @@ pub(super) fn open_settings_window(
                     let Some(path) = file.path() else { return };
                     let _ = std::fs::write(&path, crate::skin::SKIN_GUIDE_MD);
                 });
+            });
+        }
+
+        // ── Graphics ──────────────────────────────────────────────────────
+        //
+        // Which display backend and GSK renderer Sparkamp runs on. This is a
+        // diagnostic surface first: "what am I actually using?" is otherwise
+        // unanswerable from inside the app, and it is the first question worth
+        // asking when the window renders wrongly or not at all.
+        //
+        // Both dropdowns only take effect on the next launch — GDK reads
+        // GDK_BACKEND and GSK_RENDERER once, during init, long before any of
+        // this exists. `sparkamp --backend=…` / `--renderer=…` override them
+        // for a single run, which is the way back from a choice that leaves no
+        // window to change the setting in.
+        let gfx_sep = Separator::new(Orientation::Horizontal);
+        gfx_sep.set_margin_top(8);
+        gfx_sep.set_margin_bottom(8);
+        root.append(&gfx_sep);
+
+        let gfx_header = Label::new(Some("Graphics"));
+        gfx_header.set_halign(Align::Start);
+        gfx_header.add_css_class("heading");
+        root.append(&gfx_header);
+
+        let gfx_grid = Grid::new();
+        gfx_grid.set_row_spacing(8);
+        gfx_grid.set_column_spacing(12);
+
+        let lbl_current = Label::new(Some("Current"));
+        lbl_current.set_halign(Align::Start);
+        gfx_grid.attach(&lbl_current, 0, 0, 1, 1);
+
+        // Filled in on map: a window has no renderer until it is realized.
+        let val_current = Label::new(Some("…"));
+        val_current.set_halign(Align::Start);
+        val_current.set_selectable(true);
+        val_current.add_css_class("dim-label");
+        gfx_grid.attach(&val_current, 1, 0, 1, 1);
+
+        let lbl_backend = Label::new(Some("Display backend"));
+        lbl_backend.set_halign(Align::Start);
+        lbl_backend.set_tooltip_text(Some(
+            "Automatic checks Wayland in a throwaway helper process at startup \
+             and falls back to X11 if this compositor crashes GTK. Pick Wayland \
+             or X11 to skip that check and always use one.",
+        ));
+        gfx_grid.attach(&lbl_backend, 0, 1, 1, 1);
+
+        let dd_backend = DropDown::from_strings(&["Automatic", "Wayland", "X11"]);
+        {
+            let current = state.borrow().config.appearance.display_backend;
+            dd_backend.set_selected(match current {
+                crate::config::DisplayBackend::Auto => 0,
+                crate::config::DisplayBackend::Wayland => 1,
+                crate::config::DisplayBackend::X11 => 2,
+            });
+        }
+        {
+            let state_rc = state.clone();
+            dd_backend.connect_selected_notify(move |d| {
+                let choice = match d.selected() {
+                    1 => crate::config::DisplayBackend::Wayland,
+                    2 => crate::config::DisplayBackend::X11,
+                    _ => crate::config::DisplayBackend::Auto,
+                };
+                state_rc.borrow_mut().config.appearance.display_backend = choice;
+            });
+        }
+        gfx_grid.attach(&dd_backend, 1, 1, 1, 1);
+
+        let lbl_renderer = Label::new(Some("Renderer"));
+        lbl_renderer.set_halign(Align::Start);
+        lbl_renderer.set_tooltip_text(Some(
+            "Automatic lets GTK choose. Cairo is software rendering — slower, \
+             but it works where the GPU drivers do not.",
+        ));
+        gfx_grid.attach(&lbl_renderer, 0, 2, 1, 1);
+
+        let dd_renderer = DropDown::from_strings(&[
+            "Automatic",
+            "ngl",
+            "vulkan",
+            "gl (legacy)",
+            "cairo (software)",
+        ]);
+        {
+            let current = state.borrow().config.appearance.gsk_renderer;
+            dd_renderer.set_selected(match current {
+                crate::config::RendererChoice::Auto => 0,
+                crate::config::RendererChoice::Ngl => 1,
+                crate::config::RendererChoice::Vulkan => 2,
+                crate::config::RendererChoice::Gl => 3,
+                crate::config::RendererChoice::Cairo => 4,
+            });
+        }
+        {
+            let state_rc = state.clone();
+            dd_renderer.connect_selected_notify(move |d| {
+                let choice = match d.selected() {
+                    1 => crate::config::RendererChoice::Ngl,
+                    2 => crate::config::RendererChoice::Vulkan,
+                    3 => crate::config::RendererChoice::Gl,
+                    4 => crate::config::RendererChoice::Cairo,
+                    _ => crate::config::RendererChoice::Auto,
+                };
+                state_rc.borrow_mut().config.appearance.gsk_renderer = choice;
+            });
+        }
+        gfx_grid.attach(&dd_renderer, 1, 2, 1, 1);
+        root.append(&gfx_grid);
+
+        let gfx_hint = Label::new(Some("Both take effect the next time Sparkamp starts."));
+        gfx_hint.set_halign(Align::Start);
+        gfx_hint.set_wrap(true);
+        gfx_hint.add_css_class("dim-label");
+        root.append(&gfx_hint);
+
+        // Why the read-out above may disagree with the dropdowns: a command-line
+        // override, or an automatic fallback. Nothing is shown in the ordinary
+        // case, so a line here always means something happened.
+        for note in crate::display_backend::status_notes(&crate::display_backend::status()) {
+            let lbl = Label::new(Some(&note));
+            lbl.set_halign(Align::Start);
+            lbl.set_wrap(true);
+            lbl.add_css_class("dim-label");
+            root.append(&lbl);
+        }
+
+        // The renderer exists only once the window has been realized, so the
+        // read-out is filled in on map rather than at construction time.
+        {
+            let val = val_current.clone();
+            win.connect_map(move |w| {
+                let backend = gtk4::prelude::WidgetExt::display(w)
+                    .type_()
+                    .name()
+                    .to_string();
+                let renderer = w
+                    .renderer()
+                    .map(|r| r.type_().name().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                val.set_text(&format!(
+                    "{} · {}",
+                    crate::display_backend::backend_display_name(&backend),
+                    crate::display_backend::renderer_display_name(&renderer),
+                ));
             });
         }
 

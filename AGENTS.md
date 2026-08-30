@@ -8,8 +8,8 @@ Working rules and conventions for this repository.
 
 Sparkamp is an open source Winamp-style audio player, currently for Linux/GNOME, written in Rust.
 
-- **TUI** (`sparkamp`): Ratatui + crossterm terminal interface
-- **GUI** (`sparkamp --ui`): GTK4 graphical interface
+- **TUI** (`sparkamp --tui`): Ratatui + crossterm terminal interface
+- **GUI** (`sparkamp`): GTK4 graphical interface
 - **Audio engine**: GStreamer `playbin` with optional `equalizer-10bands` + `volume` pre-amp
 - **Config**: TOML, saved to `~/.config/sparkamp/`
 - **Playlist**: saved/restored between sessions
