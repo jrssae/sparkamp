@@ -560,6 +560,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let tracks_scroll = disc_tracks_scroll.clone();
         let files_stack = data_browser.scroll.clone();
         let files_status = data_browser.status_bar.clone();
+        let add_all = disc_add_all_btn.clone();
         let burn_root = burn_ui.root.clone();
         let readable_flag = disc_mount_readable.clone();
         *data_browser.access_report.borrow_mut() = Some(Rc::new(
@@ -574,6 +575,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     tracks_scroll.set_visible(false);
                     files_stack.set_visible(false);
                     files_status.set_visible(false);
+                    // Nothing to copy from a disc we cannot read. Only hidden
+                    // here, never re-shown: the populate pass sets it from
+                    // `is_data_disc` on every drive selection, so a later disc
+                    // that reads fine gets it back without this knowing how.
+                    add_all.set_visible(false);
                     // A disc we cannot read is one we cannot burn to either.
                     burn_root.set_visible(false);
                 }
