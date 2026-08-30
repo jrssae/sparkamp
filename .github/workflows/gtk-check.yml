@@ -47,15 +47,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # GTK 4.12+ (the `v4_12` feature on the gtk4 crate) and the GStreamer
-      # headers for gstreamer-sys / -pbutils. rusqlite is `bundled`, so no
-      # system SQLite is needed, and zbus 5 is pure Rust — no libdbus.
-      # ubuntu-24.04 ships GTK 4.14, which satisfies v4_12.
+      # GTK 4.12+ (the `v4_12` feature on the gtk4 crate), libadwaita 1.5+
+      # (the `v1_5` feature on the adw crate) and the GStreamer headers for
+      # gstreamer-sys / -pbutils. rusqlite is `bundled`, so no system SQLite
+      # is needed, and zbus 5 is pure Rust — no libdbus.
+      #
+      # ubuntu-24.04 ships GTK 4.14 and libadwaita 1.5, satisfying both
+      # feature gates. Every crate here that links a system library needs its
+      # -dev package listed: libadwaita arrived with the toast and empty-state
+      # work and this list was not updated with it, so the job failed at
+      # libadwaita-sys' build script until now. Build Flatpak did not catch it
+      # — it builds against the GNOME runtime, which bundles libadwaita.
       - name: Install native dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libgtk-4-dev \
+            libadwaita-1-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             pkg-config
