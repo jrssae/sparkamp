@@ -159,6 +159,15 @@ pub struct OpticalDrive {
     /// Linux reads udisks2's `Drive.MediaCompatibility`. macOS has no
     /// equivalent probe yet and defaults to `true`, which preserves the Mac
     /// app's existing behaviour until `drutil` parsing lands.
+    ///
+    /// `#[serde(default)]` is load-bearing, not tidiness: this struct crosses
+    /// the C FFI, and the Swift app hands drive JSON back to entry points like
+    /// `sparkamp_disc_read_cdtext` that deserialize it. A required field makes
+    /// every payload written before it existed fail to parse, and those entry
+    /// points answer null — indistinguishable, to the caller, from "this disc
+    /// has no CD-TEXT". Defaulting true keeps such a drive's burn UI rather
+    /// than silently taking it away.
+    #[serde(default = "default_supports_writing")]
     pub supports_writing: bool,
     /// Where the disc's files are reachable, when the OS mounts it:
     /// macOS audio CDs mount as a volume of AIFF files (e.g.
@@ -186,6 +195,12 @@ pub fn disc_status_note(media: &MediaInfo) -> Option<&'static str> {
     } else {
         "Data disc — browse, play, and add its files to your library below."
     })
+}
+
+/// Absent from older payloads means "unknown", and an unknown drive keeps its
+/// burn UI — the panel's own buttons still refuse media that cannot take a burn.
+fn default_supports_writing() -> bool {
+    true
 }
 
 impl OpticalDrive {
@@ -373,5 +388,56 @@ mod status_note_tests {
     #[test]
     fn an_audio_cd_has_no_note_because_the_track_list_speaks_for_it() {
         assert_eq!(disc_status_note(&media(true, false, true)), None);
+    }
+}
+
+#[cfg(test)]
+mod optical_drive_wire_tests {
+    use super::*;
+
+    #[test]
+    fn drive_json_written_before_supports_writing_existed_still_parses() {
+        // The field crosses the C FFI: `sparkamp_disc_read_cdtext` and friends
+        // deserialize an OpticalDrive the Swift app hands back. Adding it as a
+        // required field broke every such payload silently — `json_in` returns
+        // None and the FFI answers null, which those entry points cannot
+        // distinguish from "no CD-TEXT on this disc".
+        let old = r#"{
+            "id": "/dev/sr0",
+            "label": "MATSHITA DVD-RAM UJ8C2",
+            "media": {
+                "present": true,
+                "is_audio_cd": true,
+                "is_blank": false,
+                "rewritable": false,
+                "kind": "Unknown",
+                "free_bytes": 0,
+                "capacity_bytes": 0
+            },
+            "toc": null,
+            "mount_path": null
+        }"#;
+        let d: OpticalDrive =
+            serde_json::from_str(old).expect("pre-existing drive JSON must still parse");
+        assert_eq!(d.id, "/dev/sr0");
+        // Defaults to true, matching what macOS reports until drutil parsing
+        // lands: a drive we know nothing about keeps its burn UI rather than
+        // losing it to a missing field.
+        assert!(d.supports_writing);
+    }
+
+    #[test]
+    fn a_drive_that_cannot_write_survives_the_round_trip() {
+        let d = OpticalDrive {
+            id: "/dev/sr1".into(),
+            label: "READER".into(),
+            media: MediaInfo::none(),
+            toc: None,
+            supports_writing: false,
+            mount_path: None,
+        };
+        let json = serde_json::to_string(&d).expect("serialise");
+        let back: OpticalDrive = serde_json::from_str(&json).expect("round-trip");
+        assert!(!back.supports_writing, "an explicit false must not be lost");
     }
 }
