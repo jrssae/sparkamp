@@ -68,6 +68,46 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.3.2" date="2026-08-29">
+      <description>
+        <p>An accessibility and desktop-integration release, with one data-loss
+        fix in the terminal UI.</p>
+        <p>Pressing "/" in the terminal UI no longer wipes your playlist. It
+        cleared every track in the playlist view while meaning "search" one
+        screen over in the Media Library. It searches in both places now, and
+        clearing has moved into the "o" ops popup as Remove All, beside the
+        other whole-playlist actions.</p>
+        <p>The keys other GNOME apps use now work: F1 for help, Ctrl+F to
+        search, Ctrl+? for the shortcut list, and Ctrl+, for Settings, which
+        replaces the non-standard Ctrl+ that came before it. Alt access keys
+        open the playlist window's menus and the Settings tabs, and where
+        several keys do the same thing the help window lists them one per line
+        instead of running them together.</p>
+        <p>Text follows your desktop's text size. Sizes render in points rather
+        than pixels, so GNOME's large-text accessibility setting actually
+        enlarges Sparkamp. Existing skins are untouched: they still declare
+        pixels and keep the sizes they set.</p>
+        <p>A screen reader can drive the player. Every icon-only button has a
+        real name instead of announcing its glyph, the Settings sliders are
+        labelled, and a track row reads as one sentence rather than a run of
+        disconnected cells.</p>
+        <p>Failures that do not need a decision no longer stop you: recoverable
+        errors appear as a toast you can ignore instead of a dialog you must
+        dismiss. Confirmations that really are destructive stay modal. Every
+        Media Library view that can be empty shows a placeholder with an icon
+        and a next step, including the disc overview, which was a single line
+        of grey text.</p>
+        <p>The album gallery reflows as you resize. It held five columns and
+        clipped the covers however narrow the window got; it drops to four,
+        three, two or one now. Its zoom-in button also drew an empty box rather
+        than a "+".</p>
+        <p>Buttons no longer fall off the edge of narrow windows. The playlist
+        editor's eleven-button row and the Files view's ten-button row were cut
+        off whenever the window was smaller than they were, taking "Play" and
+        "Remove" with them. Both wrap onto extra lines now, and every Media
+        Library view shrinks to fit instead of holding its widest layout.</p>
+      </description>
+    </release>
     <release version="1.3.1" date="2026-08-21">
       <description>
         <p>A bug-fix release, focused on performance and drag-and-drop.</p>
