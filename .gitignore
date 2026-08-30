@@ -30,6 +30,9 @@ frontends/SparkampMac/libsparkamp_macos.a
 /build-dir/
 /.flatpak-builder/
 /Sparkamp.flatpak
+# Test bundles exported for cross-distro checks (Sparkamp-crosslinux-test.flatpak
+# and friends) — build artefacts, rebuilt on demand, never committed.
+/Sparkamp-*.flatpak
 
 # Development / scratch files
 dev.txt
