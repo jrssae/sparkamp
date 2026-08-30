@@ -113,6 +113,15 @@ pub fn pipeline_desc(source: &RipSource, quality: Mp3Quality, out: &Path) -> Str
 /// thread), then write the tags onto the fresh MP3. Creates the destination
 /// directories. On any error the partial output file is removed.
 #[allow(dead_code)] // the frontends go through run_job; the FFI (lib only) rips per track
+/// **The caller must hold an exclusive-read scope** for the whole call when
+/// `source` is [`RipSource::Cdda`] — [`crate::disc::detect::begin_exclusive_read`]
+/// / `end_exclusive_read`. [`run_job`] does this for a whole run; anything
+/// calling a single track directly has to do it itself.
+///
+/// Without it the detector's drive polling opens the device mid-read and
+/// libcdio fails partway through the track with "cdio_read_audio_sector …
+/// No such device". The pipeline is fine; it just loses the drive underneath
+/// itself, and the error names neither the poll nor the cause.
 pub fn rip_track(
     source: &RipSource,
     out: &Path,
@@ -124,6 +133,8 @@ pub fn rip_track(
 
 /// [`rip_track`], reporting the pipeline position (seconds into the track)
 /// as the encode advances — the within-track progress feed for [`run_job`].
+///
+/// Carries the same exclusive-read requirement as [`rip_track`].
 pub fn rip_track_observed(
     source: &RipSource,
     out: &Path,
@@ -764,22 +775,14 @@ mod tests {
             return;
         };
 
-        // `DiscTrackEntry::path` is platform-shaped: on macOS the disc mounts
-        // and it is a real AIFF file, on Linux it is a `cdda://N?device=…`
-        // pseudo-URI that no file source can open. This test used to wrap it
-        // in `RipSource::File` unconditionally, which is why it failed on
-        // Linux with `filesrc … No such file "cdda://1?device=/dev/sr0"` —
-        // the production `pipeline_desc` had the branch right all along.
-        let source = if crate::model::is_disc_uri(std::path::Path::new(&entry.path)) {
-            RipSource::Cdda {
-                device: drive.id.clone(),
-                track: entry.number,
-            }
-        } else {
-            RipSource::File {
-                path: PathBuf::from(&entry.path),
-            }
-        };
+        // `DiscTrackEntry::path` is platform-shaped: a mounted AIFF file on
+        // macOS, a `cdda://N?device=…` pseudo-URI on Linux, where audio CDs do
+        // not mount. This test used to wrap it in `RipSource::File`
+        // unconditionally and failed with `filesrc … No such file
+        // "cdda://1?device=/dev/sr0"`. `source_for_entry` is the mapping
+        // production already uses, so going through it tests that too rather
+        // than a second copy of the same branch.
+        let source = source_for_entry(&entry);
         let dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
         let tags = tag_fields_for_track("Live Artist", "Live Album", "2026", "Rock", 1, 8, "Live Test");
         let out = dest_path(&dir, "Live Artist", "Live Album", 1, "Live Test");
