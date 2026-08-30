@@ -130,7 +130,7 @@ choice that leaves you with no window to change it in:
 
 ```bash
 sparkamp --backend=x11        # auto | wayland | x11
-sparkamp --renderer=cairo     # auto | ngl | vulkan | gl | cairo
+sparkamp --renderer=cairo     # auto | gl | vulkan | cairo
 ```
 
 Neither flag writes to the config file; use the Settings dropdowns to make a

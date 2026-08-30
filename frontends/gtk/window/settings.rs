@@ -442,29 +442,26 @@ pub(super) fn open_settings_window(
 
         let dd_renderer = DropDown::from_strings(&[
             "Automatic",
-            "ngl",
+            "gl",
             "vulkan",
-            "gl (legacy)",
             "cairo (software)",
         ]);
         {
             let current = state.borrow().config.appearance.gsk_renderer;
             dd_renderer.set_selected(match current {
                 crate::config::RendererChoice::Auto => 0,
-                crate::config::RendererChoice::Ngl => 1,
+                crate::config::RendererChoice::Gl => 1,
                 crate::config::RendererChoice::Vulkan => 2,
-                crate::config::RendererChoice::Gl => 3,
-                crate::config::RendererChoice::Cairo => 4,
+                crate::config::RendererChoice::Cairo => 3,
             });
         }
         {
             let state_rc = state.clone();
             dd_renderer.connect_selected_notify(move |d| {
                 let choice = match d.selected() {
-                    1 => crate::config::RendererChoice::Ngl,
+                    1 => crate::config::RendererChoice::Gl,
                     2 => crate::config::RendererChoice::Vulkan,
-                    3 => crate::config::RendererChoice::Gl,
-                    4 => crate::config::RendererChoice::Cairo,
+                    3 => crate::config::RendererChoice::Cairo,
                     _ => crate::config::RendererChoice::Auto,
                 };
                 state_rc.borrow_mut().config.appearance.gsk_renderer = choice;

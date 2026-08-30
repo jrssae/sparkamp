@@ -113,7 +113,7 @@ DISPLAY BACKEND AND RENDERER:\n\
   single run without changing it, so a setting that leaves you with no window\n\
   can always be escaped from the command line.\n\
     --backend   auto (default) | wayland | x11\n\
-    --renderer  auto (default) | ngl | vulkan | gl | cairo\n\
+    --renderer  auto (default) | gl | vulkan | cairo\n\
   On auto, Sparkamp probes Wayland in a throwaway child process at startup and\n\
   falls back to X11 if this compositor crashes GTK's Wayland backend.\n\
 \n\
@@ -346,5 +346,36 @@ mod tests {
         let args = Args::parse_from(["sparkamp"]);
         assert_eq!(args.backend, None);
         assert_eq!(args.renderer, None);
+    }
+
+    #[test]
+    fn the_renderer_flag_still_accepts_the_old_ngl_spelling_as_gl() {
+        // Kept as an alias, not a listed value: muscle memory and old scripts
+        // keep working, while --help stops advertising a name GTK rejects.
+        let args = Args::parse_from(["sparkamp", "--renderer", "ngl"]);
+        assert_eq!(args.renderer, Some(config::RendererChoice::Gl));
+    }
+
+    #[test]
+    fn the_renderer_flag_offers_exactly_the_names_gtk_422_accepts() {
+        // Checked against the argument's possible values rather than the help
+        // text: "ngl" is a substring of "single", which appears in the prose,
+        // so a text search answers a different question than the one asked.
+        let cmd = Args::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "renderer")
+            .expect("--renderer must exist");
+        let values: Vec<String> = arg
+            .get_possible_values()
+            .iter()
+            .map(|v| v.get_name().to_string())
+            .collect();
+
+        assert_eq!(values, ["auto", "vulkan", "gl", "cairo"]);
+        assert!(
+            !values.iter().any(|v| v == "ngl"),
+            "ngl is renamed in GTK 4.22 and must not be offered as a value"
+        );
     }
 }

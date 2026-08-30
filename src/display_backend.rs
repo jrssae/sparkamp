@@ -477,7 +477,6 @@ pub fn backend_value(b: DisplayBackend) -> &'static str {
 pub fn renderer_value(r: RendererChoice) -> &'static str {
     match r {
         RendererChoice::Auto => "auto",
-        RendererChoice::Ngl => "ngl",
         RendererChoice::Vulkan => "vulkan",
         RendererChoice::Gl => "gl",
         RendererChoice::Cairo => "cairo",
@@ -630,8 +629,8 @@ mod tests {
     fn the_saved_renderer_applies_when_nothing_outranks_it() {
         let env = SessionEnv::default();
         assert_eq!(
-            decide_renderer(None, RendererChoice::Ngl, &env),
-            RendererDecision::Force("ngl")
+            decide_renderer(None, RendererChoice::Gl, &env),
+            RendererDecision::Force("gl")
         );
         assert_eq!(
             decide_renderer(None, RendererChoice::Gl, &env),

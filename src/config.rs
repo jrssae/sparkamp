@@ -523,8 +523,14 @@ pub enum DisplayBackend {
 pub enum RendererChoice {
     #[default]
     Auto,
-    Ngl,
     Vulkan,
+    // GTK 4.22 renamed the new GL renderer from `ngl` to `gl` and warns when it
+    // sees the old spelling. `ngl` stays an alias so configs and scripts written
+    // before the GNOME 50 move keep working without a migration step. A plain
+    // comment, not a doc comment: clap renders doc comments as per-value help
+    // in `--help`, and this note is for readers of the code, not users.
+    #[serde(alias = "ngl")]
+    #[value(alias = "ngl")]
     Gl,
     Cairo,
 }
@@ -1683,5 +1689,18 @@ rescan_on_startup = true
         assert_eq!(back.display_backend, DisplayBackend::X11);
         assert_eq!(back.gsk_renderer, RendererChoice::Cairo);
         assert_eq!(back.display_probe.unwrap().crashed, true);
+    }
+
+    #[test]
+    fn a_saved_ngl_renderer_migrates_to_gl() {
+        // GTK 4.22 renamed the new GL renderer from "ngl" to "gl" and warns
+        // when it sees the old name. A config written before the GNOME 50
+        // move must land on the renderer it actually meant.
+        let old = r#"
+            active_skin = "dark"
+            gsk_renderer = "ngl"
+        "#;
+        let a: AppearanceConfig = toml::from_str(old).expect("old config must still parse");
+        assert_eq!(a.gsk_renderer, RendererChoice::Gl);
     }
 }
