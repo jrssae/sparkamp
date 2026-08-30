@@ -248,26 +248,6 @@ impl Track {
         }
     }
 
-    /// The (heading, body) pair a desktop notification shows for this track.
-    ///
-    /// Uses the same TPE1-then-TPE2 artist precedence as [`display_name`], so
-    /// the banner and the marquee never disagree about who the artist is.
-    /// The body is `None` rather than empty when neither tag is present — an
-    /// empty second line in a notification reads as a rendering bug.
-    pub fn notification_lines(&self) -> (String, Option<String>) {
-        let artist = if !self.artist.is_empty() {
-            self.artist.as_str()
-        } else {
-            self.album_artist.as_str()
-        };
-        let body = if artist.is_empty() {
-            None
-        } else {
-            Some(artist.to_string())
-        };
-        (self.title.clone(), body)
-    }
-
     /// Build a GStreamer-compatible `file://` URI for this track.
     ///
     /// Percent-encodes the characters most likely to appear in real-world
@@ -1455,61 +1435,6 @@ mod tests {
         assert_eq!(track.artist, "");
         assert_eq!(track.album, "");
         assert_eq!(track.duration, Some(Duration::from_secs_f64(60.0)));
-    }
-
-    #[test]
-    fn notification_lines_uses_title_and_artist() {
-        let t = Track {
-            path: PathBuf::from("/fake/song.mp3"),
-            title: "Dark Horse".into(),
-            artist: "Katy Perry".into(),
-            album_artist: String::new(),
-            album: String::new(),
-            duration: None,
-            broken: false,
-            read_only: false,
-            id: 0,
-        };
-        assert_eq!(
-            t.notification_lines(),
-            ("Dark Horse".to_string(), Some("Katy Perry".to_string()))
-        );
-    }
-
-    /// Same TPE1-then-TPE2 precedence as display_name, so the banner and the
-    /// marquee never disagree about who the artist is.
-    #[test]
-    fn notification_lines_falls_back_to_album_artist() {
-        let t = Track {
-            path: PathBuf::from("/fake/song.mp3"),
-            title: "Song".into(),
-            artist: String::new(),
-            album_artist: "Various Artists".into(),
-            album: String::new(),
-            duration: None,
-            broken: false,
-            read_only: false,
-            id: 0,
-        };
-        assert_eq!(t.notification_lines().1, Some("Various Artists".to_string()));
-    }
-
-    /// An untagged file has no artist at all. An empty second line reads as
-    /// a rendering bug, so the body is omitted rather than blank.
-    #[test]
-    fn notification_lines_omits_an_empty_body() {
-        let t = Track {
-            path: PathBuf::from("/fake/song.mp3"),
-            title: "song".into(),
-            artist: String::new(),
-            album_artist: String::new(),
-            album: String::new(),
-            duration: None,
-            broken: false,
-            read_only: false,
-            id: 0,
-        };
-        assert_eq!(t.notification_lines(), ("song".to_string(), None));
     }
 
     fn make_track(title: &str) -> Track {

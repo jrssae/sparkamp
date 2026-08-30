@@ -139,11 +139,6 @@ pub struct PlaybackConfig {
     /// short enough that a stop still feels like a stop.
     #[serde(default = "default_fadeout_secs")]
     pub fadeout_secs: u32,
-    /// Whether a desktop notification is posted on track change. Only fires
-    /// when no Sparkamp window is focused — a banner over the player you are
-    /// already looking at is why people turn music notifications off.
-    #[serde(default = "default_notify_track_change")]
-    pub notify_track_change: bool,
 }
 
 /// Default length of the stop-with-fadeout ramp, in seconds.
@@ -155,10 +150,6 @@ pub const FADEOUT_SECS_RANGE: std::ops::RangeInclusive<u32> = 1..=10;
 
 fn default_fadeout_secs() -> u32 {
     DEFAULT_FADEOUT_SECS
-}
-
-fn default_notify_track_change() -> bool {
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -996,7 +987,6 @@ impl Default for Config {
                 replaygain: ReplayGainConfig::default(),
                 play_stats: PlayStatsConfig::default(),
                 fadeout_secs: DEFAULT_FADEOUT_SECS,
-                notify_track_change: true,
             },
             visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),
@@ -1584,15 +1574,6 @@ rescan_on_startup = true
         assert_eq!(cfg.playback.fadeout_duration().as_secs(), 1);
         cfg.playback.fadeout_secs = 9_999;
         assert_eq!(cfg.playback.fadeout_duration().as_secs(), 10);
-    }
-
-    /// New fields must carry #[serde(default)] so a config written by an
-    /// older build still loads.
-    #[test]
-    fn playback_config_without_notify_field_loads() {
-        let older = "volume = 0.8\nstart_paused = false\n";
-        let back: PlaybackConfig = toml::from_str(older).expect("pre-notify config loads");
-        assert!(back.notify_track_change, "default is on");
     }
 
     #[test]

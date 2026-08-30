@@ -5,6 +5,11 @@ use super::*;
 /// it and a test asserts every bound key appears here, so the dialog can never
 /// silently drift from what the handlers actually do. Keep entries in sync with
 /// the mac `KeyboardShortcutsView.swift` sections.
+///
+/// Alternates for one action are separated by " / " — `"i / F1 / Ctrl+? /
+/// Ctrl+/"`. [`format_shortcut_keys`] breaks those onto separate lines. Keys
+/// that are not alternates but a pair of opposites ("← →" seeks backward and
+/// forward) are space-separated and stay on one line.
 #[allow(clippy::type_complexity)]
 pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
     &[
@@ -29,7 +34,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("n",          "Add file(s)"),
             ("Shift+N",    "Add folder"),
             ("m",          "Toggle Media Library window"),
-            ("j Ctrl+F",   "Jump / search"),
+            ("j / Ctrl+F", "Jump / search"),
             ("q",          "Play queue (Jump/Queue window, Queue mode)"),
             ("Ctrl+Q",     "Enqueue / dequeue selection (playlist or jump)"),
             ("↑ ↓",        "Browse up / down (playlist window)"),
@@ -78,10 +83,19 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             // Ctrl+/ is listed alongside Ctrl+? because both keyvals are
             // bound (see the CONTROL_MASK match arms in `build`): many
             // layouts report the unshifted keyval for Ctrl+Shift+/.
-            ("i F1 Ctrl+? Ctrl+/", "Toggle this help"),
+            ("i / F1 / Ctrl+? / Ctrl+/", "Toggle this help"),
             ("Esc",        "Quit (main window) / close child window"),
         ]),
     ]
+}
+
+/// Render one row's key column for the help window.
+///
+/// Four alternates run together on a single line ("i F1 Ctrl+? Ctrl+/") read as
+/// one long key, so each alternate gets its own line. The slash stays at the
+/// end of the line it follows, where it reads as the "or" it already is.
+pub(super) fn format_shortcut_keys(keys: &str) -> String {
+    keys.replace(" / ", " /\n")
 }
 
 /// Everything the main window and the playlist window both hang off, bundled
@@ -242,10 +256,7 @@ pub fn build(
     );
     // Use the dark Adwaita variant for built-in widgets whenever the
     // skin's window background is dark.
-    let initial_dark = initial_vars.background.luminance() < 0.5;
-    if let Some(gtk_settings) = gtk4::Settings::default() {
-        gtk_settings.set_gtk_application_prefer_dark_theme(initial_dark);
-    }
+    util::apply_color_scheme(initial_vars.background.luminance() < 0.5);
 
     // Cloned Rc references used by the Appearance tab handlers.
     let provider_for_settings = provider.clone();
@@ -677,9 +688,19 @@ pub fn build(
     marquee_frame.set_margin_start(8);
     marquee_frame.set_margin_end(8);
 
-    // Marquee label — no ellipsize; we manually slide the text window each tick.
-    // single_line_mode ensures overflow is hidden at the label boundary rather
-    // than wrapping to a second line.
+    // Marquee label. The tick loop slides a character window across the full
+    // "Title — Artist" text; this label only ever shows the slice.
+    //
+    // `ellipsize` + `max_width_chars` are what keep the marquee a marquee. A
+    // GtkLabel with neither reports its *minimum* width as the full width of
+    // its text, and a minimum propagates all the way up to the window — so a
+    // long title stretched the player window wider until the whole title fit,
+    // at which point it stopped scrolling. Ellipsizing drops the minimum to
+    // the width of an ellipsis and caps the natural width, so the row's width
+    // now drives the label instead of the other way round. `hexpand` still
+    // gives the label every spare pixel in the row, so nothing looks narrower.
+    // The ellipsis itself should never actually appear: the tick loop measures
+    // the slice against this label's own font before setting it.
     let title_label = Label::builder()
         .label("No track loaded")
         .halign(Align::Fill)
@@ -687,6 +708,8 @@ pub fn build(
         .hexpand(true)
         .margin_start(8) // aligns with the VOL label start in the row below
         .single_line_mode(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .max_width_chars(20)
         .css_classes(["np-title"])
         .build();
 
@@ -1191,78 +1214,6 @@ pub fn build(
         if let Some(t) = s.playlist.current() {
             set_track(&t.display_name());
         }
-    }
-
-    // Desktop notification on track change. MPRIS already publishes metadata,
-    // so the Shell's media widget is covered; this is the transient banner.
-    // Fires only when no Sparkamp window is focused — a banner over the
-    // player you are already looking at is why people disable these.
-    //
-    // "No Sparkamp window focused" is checked via
-    // gtk4::Window::list_toplevels(), not an enumeration of known windows.
-    // An earlier version listed AppState's tracked singletons plus the main
-    // and playlist windows by name, and went stale the moment a window was
-    // added outside that list: the Equalizer (kept in a local
-    // `Rc<RefCell<Option<Window>>>`, never stored on AppState) and Jump
-    // (`hide_on_close(true)`, so closing it just hides it — it stays alive
-    // and focusable) were both missed, banner-spamming anyone searching in
-    // Jump with the player unfocused. list_toplevels() returns every live
-    // GtkWindow in the process; since Sparkamp is the only GTK toolkit user
-    // in its own process, that set already is "windows belonging to this
-    // application" — no per-window bookkeeping to keep in sync as windows
-    // are added.
-    {
-        let state_rc = state.clone();
-        let app_rc = app.clone();
-        // Last path an actual banner was sent for. Explicit play-start
-        // callers (play/next/prev/z/b) re-fire the now-playing subscribers
-        // even when they replay the same path — Repeat-Song loop,
-        // Prev-restart ≥5s (see the comment on `last_np_key` in
-        // playlist_window.rs) — so without this, a looping track re-posts
-        // the banner every loop while unfocused. This only dedupes what
-        // this closure shows; it does not touch the shared subscriber seam,
-        // which other subscribers still need re-fired on every replay.
-        let last_notified: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
-        let cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)> = Rc::new(move |_info| {
-            let s = state_rc.borrow();
-            if !s.config.playback.notify_track_change {
-                return;
-            }
-            let focused = gtk4::Window::list_toplevels()
-                .into_iter()
-                .filter_map(|w| w.downcast::<gtk4::Window>().ok())
-                .any(|w| w.is_active());
-            if focused {
-                return;
-            }
-            // NowPlayingInfo carries curated (label, value) tag pairs re-read
-            // straight off disk for the panel/editor — it has no structured
-            // title/artist fields or TPE1→TPE2 fallback of its own. The
-            // playlist's Track already has both, via notification_lines(),
-            // so reading it from there keeps one source of truth instead of
-            // re-deriving artist precedence from the tag list.
-            let current = match s.playlist.current() {
-                Some(t) => t,
-                None => return,
-            };
-            if last_notified.borrow().as_deref() == Some(current.path.as_path()) {
-                return;
-            }
-            let (heading, body) = current.notification_lines();
-            let n = gio::Notification::new(&gtk_safe(&heading));
-            if let Some(b) = body {
-                n.set_body(Some(&gtk_safe(&b)));
-            }
-            // The app icon rather than the cover: a notification icon is
-            // rendered at ~48px, where album art is unreadable anyway, and
-            // this keeps the banner identifiably Sparkamp's.
-            n.set_icon(&gio::ThemedIcon::new("dev.sparkamp.Sparkamp"));
-            // A stable id replaces the previous banner instead of stacking
-            // one per track.
-            app_rc.send_notification(Some("sparkamp-track"), &n);
-            *last_notified.borrow_mut() = Some(current.path.clone());
-        });
-        state.borrow_mut().subscribe_now_playing(cb);
     }
 
     // Bundled here: everything below this point that was carved into its own
@@ -1771,13 +1722,17 @@ pub fn build(
 
             for (key, desc) in entries.iter() {
                 let key_lbl = gtk4::Label::builder()
-                    .label(*key)
+                    .label(format_shortcut_keys(key))
                     .halign(gtk4::Align::Start)
+                    .valign(gtk4::Align::Start)
+                    .xalign(0.0) // keep stacked alternates flush left
                     .css_classes(["info-key"])
                     .build();
                 let desc_lbl = gtk4::Label::builder()
                     .label(*desc)
                     .halign(gtk4::Align::Start)
+                    // Sits level with the first key line when the key wraps.
+                    .valign(gtk4::Align::Start)
                     .css_classes(["info-desc"])
                     .build();
                 grid.attach(&key_lbl,  0, row, 1, 1);
@@ -2281,7 +2236,27 @@ pub fn build(
 
 #[cfg(test)]
 mod shortcut_dialog_tests {
-    use super::shortcut_sections;
+    use super::{format_shortcut_keys, shortcut_sections};
+
+    /// Alternates go one per line so four of them can be read at a glance;
+    /// the slash stays at the end of the line it follows.
+    #[test]
+    fn alternates_are_split_one_per_line() {
+        assert_eq!(
+            format_shortcut_keys("i / F1 / Ctrl+? / Ctrl+/"),
+            "i /\nF1 /\nCtrl+? /\nCtrl+/"
+        );
+    }
+
+    /// "← →" is one row for two opposite actions, not two names for one — it
+    /// carries no separator and must stay on a single line. The trailing
+    /// "Ctrl+/" is the case a naive `replace("/", ...)` would break.
+    #[test]
+    fn non_alternates_and_slash_keys_are_left_alone() {
+        assert_eq!(format_shortcut_keys("← →"), "← →");
+        assert_eq!(format_shortcut_keys("Ctrl+/"), "Ctrl+/");
+        assert_eq!(format_shortcut_keys("Ctrl+,"), "Ctrl+,");
+    }
 
     /// The help window is the single source of truth for GTK bindings — every
     /// key the phase-6 handlers bind must appear in it, so the dialog can never
@@ -2302,9 +2277,9 @@ mod shortcut_dialog_tests {
     /// The shortcuts window is the only place a user discovers these, so a
     /// binding that exists in code but not in the dialog is invisible.
     ///
-    /// Alternates now share one row (e.g. "i F1 Ctrl+? Ctrl+/"), so this
-    /// splits each row's key column on whitespace and checks exact token
-    /// membership rather than a substring of the joined string — a
+    /// Alternates share one row, separated by " / " (e.g. "i / F1 / Ctrl+? /
+    /// Ctrl+/"), so this splits each row's key column on whitespace and checks
+    /// exact token membership rather than a substring of the joined string — a
     /// substring check here previously let e.g. "Ctrl+F12" satisfy a
     /// `contains("F1")` probe (review Minor #10).
     #[test]

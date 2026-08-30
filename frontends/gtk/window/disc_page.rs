@@ -1018,7 +1018,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             if ds.is_empty() {
                 if detecting.get() {
                     // Still running the first poll: show a working indicator.
+                    // Centred like the placeholder it is about to be replaced
+                    // by, so the view does not jump from a top-left line of
+                    // text to a centred page when detection finishes.
                     let row = GtkBox::new(Orientation::Horizontal, 8);
+                    row.set_halign(Align::Center);
+                    row.set_valign(Align::Center);
+                    row.set_vexpand(true);
                     let spinner = gtk4::Spinner::new();
                     spinner.start();
                     let lbl = Label::builder()
@@ -1031,13 +1037,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     row.append(&lbl);
                     list.append(&row);
                 } else {
-                    let empty = Label::builder()
-                        .label("No disc drives connected")
-                        .halign(Align::Start)
-                        .xalign(0.0)
-                        .build();
-                    empty.add_css_class("dim-label");
-                    list.append(&empty);
+                    // The same placeholder page the Devices overview uses when
+                    // nothing is plugged in — the two views sit next to each
+                    // other in the sidebar, so a bare dim label on one and a
+                    // full empty state on the other read as an oversight.
+                    list.append(&super::util::empty_state(
+                        "media-optical-symbolic",
+                        "No disc drives connected",
+                        Some("Connect an optical drive to play, rip or burn CDs"),
+                    ));
                 }
                 return;
             }

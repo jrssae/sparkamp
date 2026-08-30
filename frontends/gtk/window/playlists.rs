@@ -98,6 +98,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         s.set_hexpand(true);
         s.set_vexpand(true);
         s.set_transition_type(StackTransitionType::None);
+        // Same reason as the window's own page stack (`media_library.rs`): a
+        // homogeneous GtkStack sizes every page to the widest one, so the
+        // Manage list would set the editor's minimum width and vice versa
+        // whichever was showing.
+        s.set_hhomogeneous(false);
+        s.set_vhomogeneous(false);
         s
     });
 
@@ -859,10 +865,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             track_scroll.add_controller(dt);
         }
 
-        // Track editor controls
+        // Track editor controls.
+        //
+        // Eleven buttons in a plain horizontal box added up to a 1111 px
+        // minimum width, which the Media Library window then inherited: below
+        // that the row was clipped and "Play" fell off the end. Each half is a
+        // wrapping group instead (see `util::wrapping_btn_group`), so every
+        // button stays reachable down to a ~320 px page. The outer box and its
+        // spring stay — they are what keeps the commit half flush right while
+        // it all still fits on one line.
         let edit_btn_row = GtkBox::new(Orientation::Horizontal, 4);
         edit_btn_row.set_margin_start(4); edit_btn_row.set_margin_end(4);
         edit_btn_row.set_margin_top(4);  edit_btn_row.set_margin_bottom(4);
+
+        let edit_btn_add = super::util::wrapping_btn_group();
+        let edit_btn_commit = super::util::wrapping_btn_group();
 
         let btn_add_files_pl  = Button::with_label("+ Files");    btn_add_files_pl.add_css_class("pl-btn");
         let btn_add_folder_pl = Button::with_label("+ Folder");   btn_add_folder_pl.add_css_class("pl-btn");
@@ -884,17 +901,22 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         btn_send_to_ed.insert_action_group("ed", Some(&ed_action_group));
         let btn_play_pl       = Button::with_label("▶ Play");  btn_play_pl.add_css_class("pl-btn");
 
-        edit_btn_row.append(&btn_add_files_pl);
-        edit_btn_row.append(&btn_add_folder_pl);
-        edit_btn_row.append(&btn_remove_tracks);
-        edit_btn_row.append(&btn_delete_pl);
+        use super::util::flow_append;
+        flow_append(&edit_btn_add, &btn_add_files_pl);
+        flow_append(&edit_btn_add, &btn_add_folder_pl);
+        flow_append(&edit_btn_add, &btn_remove_tracks);
+        flow_append(&edit_btn_add, &btn_delete_pl);
+        edit_btn_add.set_max_children_per_line(4);
+        flow_append(&edit_btn_commit, &btn_revert_pl);
+        flow_append(&edit_btn_commit, &btn_save_as_pl);
+        flow_append(&edit_btn_commit, &btn_save_pl);
+        flow_append(&edit_btn_commit, &btn_enqueue_pl);
+        flow_append(&edit_btn_commit, &btn_send_to_ed);
+        flow_append(&edit_btn_commit, &btn_play_pl);
+        edit_btn_commit.set_max_children_per_line(6);
+        edit_btn_row.append(&edit_btn_add);
         edit_btn_row.append(&spring_pl);
-        edit_btn_row.append(&btn_revert_pl);
-        edit_btn_row.append(&btn_save_as_pl);
-        edit_btn_row.append(&btn_save_pl);
-        edit_btn_row.append(&btn_enqueue_pl);
-        edit_btn_row.append(&btn_send_to_ed);
-        edit_btn_row.append(&btn_play_pl);
+        edit_btn_row.append(&edit_btn_commit);
         edit_vbox.append(&ed_status);
         edit_vbox.append(&edit_btn_row);
 

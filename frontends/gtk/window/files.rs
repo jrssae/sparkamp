@@ -1232,21 +1232,37 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // drill-down had the two groups the other way round, so the button
         // in a given corner changed meaning as you moved between views.
         //
+        // Each half is a wrapping group (`util::wrapping_btn_group`) rather
+        // than a plain box: ten buttons in a row gave this page an 811 px
+        // minimum width that the Media Library window inherited, and below it
+        // "✕ Remove" was clipped off the end. The spring between the two halves
+        // still keeps the selection actions flush right while they fit on one
+        // line. `flow_append`, not `append` — four of these buttons are shown
+        // only while a scan or a drill-down is live, and a FlowBox would
+        // otherwise hold their cells open as gaps.
+        //
         // Play/Enqueue Album (Phase 11 A5) are hidden unless an album
         // drill-down filter is active — see `rebuild_files` above.
+        use super::util::flow_append;
+        let btn_manage = super::util::wrapping_btn_group();
+        let btn_actions = super::util::wrapping_btn_group();
         let spring = GtkBox::new(Orientation::Horizontal, 0);
         spring.set_hexpand(true);
-        btn_row.append(&btn_customize);
-        btn_row.append(&btn_add_folder);
-        btn_row.append(&btn_rescan);
-        btn_row.append(&btn_cancel);
-        btn_row.append(&btn_analyze_rg);
-        btn_row.append(&btn_cancel_rg);
+        flow_append(&btn_manage, &btn_customize);
+        flow_append(&btn_manage, &btn_add_folder);
+        flow_append(&btn_manage, &btn_rescan);
+        flow_append(&btn_manage, &btn_cancel);
+        flow_append(&btn_manage, &btn_analyze_rg);
+        flow_append(&btn_manage, &btn_cancel_rg);
+        btn_manage.set_max_children_per_line(6);
+        flow_append(&btn_actions, &btn_play_album);
+        flow_append(&btn_actions, &btn_enqueue_album);
+        flow_append(&btn_actions, &btn_send_to);
+        flow_append(&btn_actions, &btn_rm_from_ml);
+        btn_actions.set_max_children_per_line(4);
+        btn_row.append(&btn_manage);
         btn_row.append(&spring);
-        btn_row.append(&btn_play_album);
-        btn_row.append(&btn_enqueue_album);
-        btn_row.append(&btn_send_to);
-        btn_row.append(&btn_rm_from_ml);
+        btn_row.append(&btn_actions);
         files_vbox.append(&btn_row);
 
         // Play Album: replace the active playlist with the drilled-into

@@ -2504,9 +2504,11 @@ that would bring the frontends back level. None of it was attempted blind.
   re-baseline is applied.
 - [ ] **Shortcuts** — Cmd+, already matches GTK's new Ctrl+,. F1 and Cmd+F
   aliases are absent on macOS.
-- [ ] **Track-change notification** — GTK posts one when unfocused, with a
-  Settings toggle (`playback.notify_track_change`). macOS has no
-  equivalent; `UNUserNotificationCenter` is the natural fit.
+- [x] **Track-change notification** — dropped. GTK shipped one behind a
+  Settings toggle on the `gtk-hig-improvements` branch and it was removed
+  again before the branch landed: MPRIS already puts Sparkamp in the Shell's
+  media section, and the banner on top of that was unwanted. Nothing for
+  macOS to match.
 - [ ] **Toasts** — GTK demotes recoverable failures to `AdwToastOverlay`
   (all 29 `show_alert_parented` call sites were audited and converted;
   destructive confirmations and the unreadable-files report stayed modal).

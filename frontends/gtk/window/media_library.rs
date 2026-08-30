@@ -237,6 +237,15 @@ pub(super) fn open_media_library_window(
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     stack.set_transition_type(StackTransitionType::None);
+    // A GtkStack is homogeneous by default: every page is measured and
+    // allocated at the size of the *widest* page, whichever one is showing.
+    // The Playlists page asks for 1127 px, so the album gallery was handed
+    // 1127 px no matter how narrow the window got — its GridView saw a wide
+    // viewport, kept five columns, and the covers were clipped instead of
+    // reflowing. Sizing to the visible page instead lets each page shrink to
+    // what it actually needs, and the gallery wraps again.
+    stack.set_hhomogeneous(false);
+    stack.set_vhomogeneous(false);
 
     // Holders so close_request can save Files-tab state (col_view and all_cols are
     // defined inside the Files block scope below).

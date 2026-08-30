@@ -36,6 +36,29 @@ use super::{
     PLAYLIST_NAV_REFRESH_HOOK, ML_SEARCH_ENTRY_NAME,
 };
 
+/// One row of the Manage list: a playlist's name.
+///
+/// Ellipsized and hexpanding, because a playlist name is user data of any
+/// length and a plain `Label` reports its *minimum* width as the full width of
+/// its text. One 62-character name was enough to give the whole Playlists page
+/// a 566 px minimum, which the Media Library window then inherited. Filling the
+/// row rather than hugging the text also keeps the row's own drag gesture over
+/// the full width — the label is the row's only child, so a `halign(Start)`
+/// label would have shrunk what the pointer can hit.
+fn manage_row_label(name: &str) -> Label {
+    Label::builder()
+        .label(name)
+        .halign(Align::Fill)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(3)
+        .margin_bottom(3)
+        .build()
+}
+
 /// What the manager needs from the page around it.
 pub(super) struct ManageUi<'a> {
     /// The playlist sub-stack, so opening one switches to the editor.
@@ -333,12 +356,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 }
                 sub_rows_ref.borrow_mut().push(s_row);
 
-                let m_lbl = Label::builder()
-                    .label(&pl.name)
-                    .halign(Align::Start)
-                    .margin_start(8).margin_end(8)
-                    .margin_top(3).margin_bottom(3)
-                    .build();
+                let m_lbl = manage_row_label(&pl.name);
                 let m_row = ListBoxRow::new();
                 m_row.set_widget_name(&pl.id.to_string());
                 m_row.set_child(Some(&m_lbl));
@@ -434,12 +452,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             .and_then(|lib| lib.all_playlists().ok())
             .unwrap_or_default();
         for pl in &playlists_initial {
-            let lbl = Label::builder()
-                .label(&pl.name)
-                .halign(Align::Start)
-                .margin_start(8).margin_end(8)
-                .margin_top(3).margin_bottom(3)
-                .build();
+            let lbl = manage_row_label(&pl.name);
             let row = ListBoxRow::new();
             row.set_widget_name(&pl.id.to_string());
             row.set_child(Some(&lbl));
@@ -629,10 +642,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     };
 
                     // Add to manage list
-                    let row_lbl = Label::builder().label(&name)
-                        .halign(Align::Start)
-                        .margin_start(8).margin_end(8)
-                        .margin_top(3).margin_bottom(3).build();
+                    let row_lbl = manage_row_label(&name);
                     let manage_row = ListBoxRow::new();
                     manage_row.set_widget_name(&new_id.to_string());
                     manage_row.set_child(Some(&row_lbl));

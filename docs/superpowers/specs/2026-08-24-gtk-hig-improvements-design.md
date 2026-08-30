@@ -204,6 +204,12 @@ quits the app outright) but they were not selected for this branch.
 
 ## Item 9 — track-change notification
 
+> **Reverted before the branch landed.** Built as described below, then
+> removed at the user's request during manual testing: MPRIS already covers
+> the Shell's media section, and the banner on top of it was not wanted. No
+> notification code, config field or Settings toggle ships. The rest of this
+> section is kept as the record of what was tried.
+
 The GTK frontend sends no desktop notifications. MPRIS already publishes
 metadata, so GNOME Shell shows Sparkamp in its media section; what is
 missing is the transient banner on track change.

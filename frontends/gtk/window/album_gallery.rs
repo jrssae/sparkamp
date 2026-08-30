@@ -1,5 +1,15 @@
 use super::*;
 
+/// The zoom buttons' glyphs: U+2212 MINUS SIGN and a plain ASCII plus.
+///
+/// The plus was U+FF0B FULLWIDTH PLUS SIGN, from the Halfwidth and Fullwidth
+/// Forms block — a CJK range the GNOME UI fonts do not cover, so the button
+/// drew a tofu box instead of a "+". The window's other glyph buttons (✕, ▶,
+/// ⚙) sit in Dingbats and Geometric Shapes, which those fonts do cover; the
+/// fullwidth block is the one that does not.
+const ZOOM_OUT_GLYPH: &str = "\u{2212}";
+const ZOOM_IN_GLYPH: &str = "+";
+
 // Phase 11 A4: album gallery — a recycled-cell `GridView` of album cover
 // thumbnails, with a zoom control and a sort dropdown.
 //
@@ -565,11 +575,11 @@ pub(super) fn build_album_gallery(
     // at the new size; hidden once the in-flight generations drain.
     let zoom_spinner = gtk4::Spinner::new();
     zoom_spinner.set_visible(false);
-    let zoom_out = Button::with_label("−");
+    let zoom_out = Button::with_label(ZOOM_OUT_GLYPH);
     // The label is a fixed word, not the pixel size (users think in "bigger /
     // smaller", not exact px).
     let zoom_label = Label::new(Some("Zoom"));
-    let zoom_in = Button::with_label("＋");
+    let zoom_in = Button::with_label(ZOOM_IN_GLYPH);
     // The label text on both is a bare glyph — a screen reader needs a real
     // word.
     zoom_out.update_property(&[gtk4::accessible::Property::Label("Zoom out")]);
@@ -794,5 +804,27 @@ pub(super) fn gallery_sort_key(sort: crate::media_library::AlbumSort) -> &'stati
         crate::media_library::AlbumSort::Artist => "artist",
         crate::media_library::AlbumSort::Album => "album",
         crate::media_library::AlbumSort::Year => "year",
+    }
+}
+
+#[cfg(test)]
+mod zoom_glyph_tests {
+    use super::{ZOOM_IN_GLYPH, ZOOM_OUT_GLYPH};
+
+    /// A button label is only as good as the font's coverage of it. The
+    /// zoom-in button shipped U+FF0B and drew an empty box, so this rules out
+    /// the whole Halfwidth and Fullwidth Forms block for both glyphs — that is
+    /// the range the GNOME UI fonts do not cover, and the one a "+" or "−"
+    /// typed on a CJK input method lands in.
+    #[test]
+    fn zoom_glyphs_avoid_the_fullwidth_forms_block() {
+        for g in [ZOOM_OUT_GLYPH, ZOOM_IN_GLYPH] {
+            assert_eq!(g.chars().count(), 1, "{g:?} must be a single character");
+            let c = g.chars().next().unwrap() as u32;
+            assert!(
+                !(0xFF00..=0xFFEF).contains(&c),
+                "U+{c:04X} is a fullwidth form; the UI fonts have no glyph for it"
+            );
+        }
     }
 }

@@ -1351,39 +1351,6 @@ fn toast_overlay_is_found_only_when_the_root_is_wrapped() {
     assert!(super::util::toast_overlay_for(&wrapped).is_some());
 }
 
-// ── Notification focus gate ──────────────────────────────────────────────
-
-/// The track-change notification's focus gate walks
-/// `gtk4::Window::list_toplevels()` rather than a hand-enumerated list of
-/// AppState's tracked singletons: the enumeration went stale the moment a
-/// window existed outside that list (the Equalizer, kept in a local
-/// `Rc<RefCell<..>>` never stored on AppState; Jump, `hide_on_close` so it
-/// stays alive and focusable). Neither registers with a `gtk4::Application`
-/// via `.application(...)` — only the main and playlist windows do — so
-/// this guards the actual mechanism the fix depends on: a plain,
-/// unregistered `gtk4::Window` must still be discoverable.
-///
-/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
-/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
-#[gtk4::test]
-fn list_toplevels_finds_a_window_never_registered_with_an_application() {
-    let before = gtk4::Window::list_toplevels().len();
-    let w = gtk4::Window::new();
-
-    let toplevels = gtk4::Window::list_toplevels();
-    assert!(
-        toplevels.len() > before,
-        "a fresh, unregistered window must extend the toplevel list"
-    );
-    assert!(
-        toplevels
-            .iter()
-            .filter_map(|t| t.downcast_ref::<gtk4::Window>())
-            .any(|t| t == &w),
-        "the window itself must be findable by downcasting each toplevel"
-    );
-}
-
 // ── Empty-state stack ────────────────────────────────────────────────────
 
 /// The stack starts on the empty page: a view is empty until its model
@@ -1648,4 +1615,345 @@ fn disc_row_summary_strips_embedded_nul_bytes() {
 #[test]
 fn title_column_id_is_a_real_ml_column() {
     assert!(crate::ml_columns::by_id("title").is_some());
+}
+
+// ── Marquee sizing ───────────────────────────────────────────────────────
+
+/// The marquee slice must be measured, never estimated. A slice one character
+/// too wide makes the label ask for more room than the row has, and because a
+/// GtkLabel's request propagates to the window, the player window used to grow
+/// wider on every tick instead of the text scrolling.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — `create_pango_layout` needs a real
+/// widget with a resolved font, so this has to run on the GTK main context.
+#[gtk4::test]
+fn marquee_slice_never_overruns_the_label_width() {
+    let label = gtk4::Label::new(None);
+    let text: Vec<char> = "Some Artist — A Fairly Long Track Title Indeed".chars().collect();
+    // Narrow enough that only part of the text can fit.
+    let width = super::tick::text_width(&label, &text.iter().collect::<String>()) / 3;
+
+    let n = super::tick::chars_that_fit(&label, &text, width);
+    assert!(n > 0, "at least one character must fit a third of the full width");
+    assert!(n < text.len(), "a third of the width must not fit the whole string");
+    assert!(
+        super::tick::text_width(&label, &text[..n].iter().collect::<String>()) <= width,
+        "the returned prefix must fit"
+    );
+    assert!(
+        super::tick::text_width(&label, &text[..n + 1].iter().collect::<String>()) > width,
+        "one more character must not fit — otherwise the slice is shorter than it need be"
+    );
+}
+
+/// The whole string fits when the width is generous, so a short title shows in
+/// full rather than being clipped to a fixed column count.
+#[gtk4::test]
+fn marquee_slice_takes_everything_when_it_fits() {
+    let label = gtk4::Label::new(None);
+    let text: Vec<char> = "Short".chars().collect();
+    let full = super::tick::text_width(&label, &text.iter().collect::<String>());
+    assert_eq!(super::tick::chars_that_fit(&label, &text, full), text.len());
+}
+
+/// The bug this pair of label properties exists for: a `GtkLabel` with neither
+/// `ellipsize` nor `max_width_chars` reports its *minimum* width as the full
+/// width of its text, and a minimum propagates up through the row to the
+/// window. A long "Artist — Title" therefore stretched the player window wider
+/// and wider until the whole string fit, at which point the marquee had nothing
+/// left to scroll.
+///
+/// Asserting on `measure()` rather than on a real window keeps this a unit
+/// test: the size request is the thing that propagates, so it is the thing
+/// worth pinning.
+#[gtk4::test]
+fn a_long_title_cannot_widen_the_marquee_label() {
+    let label = gtk4::Label::builder()
+        .label("No track loaded")
+        .halign(gtk4::Align::Fill)
+        .xalign(0.0)
+        .hexpand(true)
+        .single_line_mode(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::End)
+        .max_width_chars(20)
+        .build();
+    let (short_min, _, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+
+    let long = "Some Extremely Long Artist Name — And An Equally Long Track Title".repeat(4);
+    let unconstrained = super::tick::text_width(&label, &long);
+    label.set_text(&long);
+    let (long_min, long_nat, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+
+    assert_eq!(
+        long_min, short_min,
+        "the minimum width must not depend on how long the title is"
+    );
+    assert!(
+        long_nat < unconstrained,
+        "max_width_chars must cap the natural width too ({long_nat} vs {unconstrained})"
+    );
+}
+
+// ── Media Library page sizing ────────────────────────────────────────────
+
+/// Open the Media Library at `width` with the user's own library left out of
+/// it, so the sizing tests below depend on no local data and stay fast.
+#[cfg(test)]
+fn open_test_ml_window(width: i32) -> gtk4::Window {
+    gstreamer::init().ok();
+    let mut config = crate::config::Config::default();
+    config.media_library.skip_db_load = true;
+    let state = std::rc::Rc::new(std::cell::RefCell::new(
+        super::AppState::new(crate::model::Playlist::new(), config).unwrap(),
+    ));
+    let host = super::media_library::MlHost {
+        state,
+        rebuild_playlist: std::rc::Rc::new(|| {}),
+        set_track: std::rc::Rc::new(|_: &str| {}),
+        current_drives: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        current_devices: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        burn_queues: std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
+        copy_files_holder: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        burn_refresh_holder: std::rc::Rc::new(std::cell::RefCell::new(None)),
+    };
+    super::media_library::open_media_library_window(None, host, width, 800)
+}
+
+/// The first descendant of `w` (or `w` itself) of type `T`.
+#[cfg(test)]
+fn descendant<T: gtk4::prelude::IsA<gtk4::Widget>>(w: &gtk4::Widget) -> Option<T> {
+    use gtk4::prelude::*;
+    if let Some(found) = w.downcast_ref::<T>() {
+        return Some(found.clone());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(found) = descendant::<T>(&c) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Run the main loop until the window has been mapped and laid out.
+#[cfg(test)]
+fn settle() {
+    for _ in 0..400 {
+        gtk4::glib::MainContext::default().iteration(false);
+    }
+}
+
+/// Every button-like control under `w`, paired with the label it shows.
+#[cfg(test)]
+fn labelled_buttons(w: &gtk4::Widget, out: &mut Vec<(String, gtk4::Widget)>) {
+    use gtk4::prelude::*;
+    let label = w
+        .downcast_ref::<gtk4::Button>()
+        .and_then(|b| b.label())
+        .or_else(|| w.downcast_ref::<gtk4::MenuButton>().and_then(|b| b.label()));
+    if let Some(l) = label {
+        out.push((l.to_string(), w.clone()));
+        return;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        labelled_buttons(&c, out);
+        child = c.next_sibling();
+    }
+}
+
+/// Assert that each of `wanted` is present on `page` and sits inside it.
+#[cfg(test)]
+fn assert_buttons_fit(page: &gtk4::Widget, wanted: &[&str]) {
+    use gtk4::prelude::*;
+    let page_right = page.allocated_width();
+    let mut found = Vec::new();
+    labelled_buttons(page, &mut found);
+    for label in wanted {
+        let (_, w) = found.iter().find(|(l, _)| l == label).unwrap_or_else(|| {
+            panic!(
+                "{label:?} is missing from the page; labels were {:?}",
+                found.iter().map(|(l, _)| l).collect::<Vec<_>>()
+            )
+        });
+        // `compute_bounds`, not the deprecated `translate_coordinates` — the
+        // latter returned coordinates off by the widget's own inset here and
+        // reported buttons outside a page they were plainly inside.
+        let bounds = w
+            .compute_bounds(page)
+            .unwrap_or_else(|| panic!("{label:?} has no bounds relative to the page"));
+        assert!(
+            bounds.width() > 0.0,
+            "{label:?} was allocated no width in a narrow window"
+        );
+        let right = (bounds.x() + bounds.width()) as i32;
+        assert!(
+            right <= page_right,
+            "{label:?} runs to {right} px, past the {page_right} px page — the row is clipping \
+             instead of wrapping"
+        );
+    }
+}
+
+/// A `GtkStack` is homogeneous by default: every page is measured *and
+/// allocated* at the size of the widest page, whichever one is showing. The
+/// Playlists page asks for a little over 1100 px, so the album gallery was
+/// handed that width no matter how narrow the window got — its `GridView` saw
+/// a wide viewport, kept five columns of covers, and clipped them instead of
+/// reflowing to fewer.
+///
+/// The window is built for real rather than a bare `Stack` being asserted on,
+/// because the property alone proves nothing: what matters is that the visible
+/// page actually tracks the window.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn the_album_page_narrows_with_the_media_library_window() {
+    use gtk4::prelude::*;
+
+    fn album_page_width(width: i32) -> (i32, bool) {
+        let win = open_test_ml_window(width);
+        let stack = descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref())
+            .expect("the window's content stack");
+        stack.set_visible_child_name("albums");
+        win.present();
+        settle();
+        let page_w = stack.visible_child().expect("albums page").allocated_width();
+        let homogeneous = stack.is_hhomogeneous();
+        win.destroy();
+        (page_w, homogeneous)
+    }
+
+    let (wide, homogeneous) = album_page_width(1400);
+    let (narrow, _) = album_page_width(500);
+
+    assert!(
+        !homogeneous,
+        "a homogeneous stack sizes every page to the widest one, which is the bug"
+    );
+    assert!(
+        narrow < wide,
+        "the album page must shrink with the window ({narrow} px at 500, {wide} px at 1400)"
+    );
+    assert!(
+        narrow < 600,
+        "at a 500 px window the album page must come down near its own minimum, not \
+         stay at the widest page's width (got {narrow} px)"
+    );
+}
+
+/// Eleven buttons in a plain horizontal box gave the playlist editor a 1111 px
+/// minimum width, which the Media Library window inherited: narrower than that
+/// and the row was clipped, so "Play" — the primary action — simply fell off
+/// the right-hand edge with no scrollbar and no way to reach it. The Files
+/// view's ten-button row had the same shape and an 811 px minimum.
+///
+/// Both are wrapping groups now. This checks the property that actually
+/// matters, at a width where neither old row could have held: every control is
+/// inside the page it lives on.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn every_media_library_button_fits_a_narrow_window() {
+    use gtk4::prelude::*;
+
+    // 700 px: comfortably under the 1111 px the un-wrapped editor row demanded.
+    // A page is only laid out once the window holding it is presented, so each
+    // page gets its own window with that page already selected — switching the
+    // visible child of a window already on screen leaves the new page
+    // unallocated for as long as this test is willing to pump the loop.
+    let win = open_test_ml_window(700);
+    let stack =
+        descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
+    stack.set_visible_child_name("playlists");
+    let playlists = stack.visible_child().expect("playlists page");
+    descendant::<gtk4::Stack>(&playlists)
+        .expect("the page's own edit/manage stack")
+        .set_visible_child_name("pl-edit");
+    win.present();
+    settle();
+    assert_buttons_fit(
+        &playlists,
+        &[
+            "+ Files",
+            "+ Folder",
+            "\u{2212} Remove",
+            "\u{1F5D1} Delete Playlist",
+            "\u{21BA} Revert",
+            "Save As\u{2026}",
+            "Save",
+            "Enqueue",
+            "Send to \u{25BE}",
+            "\u{25B6} Play",
+        ],
+    );
+    assert!(
+        playlists.measure(gtk4::Orientation::Horizontal, -1).0 < 600,
+        "the editor must not re-acquire a wide minimum; it was 1127 px when its button row \
+         could not wrap"
+    );
+
+    win.destroy();
+
+    let win = open_test_ml_window(700);
+    let stack =
+        descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
+    stack.set_visible_child_name("files");
+    let files = stack.visible_child().expect("files page");
+    win.present();
+    settle();
+    // Play/Enqueue Album are hidden unless an album drill-down is open, and
+    // the two Cancel buttons only while their job runs — so this is the set
+    // that is always on screen.
+    assert_buttons_fit(
+        &files,
+        &[
+            "\u{2699} Columns",
+            "+ Add Folder",
+            "\u{27F3} Rescan",
+            "Analyze ReplayGain",
+            "Send to \u{25BE}",
+            "\u{2715} Remove",
+        ],
+    );
+    assert!(
+        files.measure(gtk4::Orientation::Horizontal, -1).0 < 600,
+        "the Files view must not re-acquire a wide minimum; it was 811 px when its button row \
+         could not wrap"
+    );
+    win.destroy();
+}
+
+/// `flow_append` exists because a `GtkFlowBox` does not drop a hidden child the
+/// way a `GtkBox` does — it wraps every child in a cell of its own, and hiding
+/// the button inside leaves the cell behind as a gap. Four buttons in the Files
+/// row appear only while a scan or a drill-down is live, so the binding this
+/// asserts is what keeps the row from growing holes.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn a_hidden_button_takes_its_flow_box_cell_with_it() {
+    use gtk4::prelude::*;
+
+    let group = super::util::wrapping_btn_group();
+    let shown = gtk4::Button::with_label("Always");
+    let sometimes = gtk4::Button::with_label("Sometimes");
+    super::util::flow_append(&group, &shown);
+    super::util::flow_append(&group, &sometimes);
+
+    let cell = sometimes.parent().expect("the FlowBox wraps each child in a cell");
+    assert!(cell.is_visible(), "the cell starts visible with its button");
+
+    sometimes.set_visible(false);
+    assert!(
+        !cell.is_visible(),
+        "hiding the button must hide its cell too, or the row keeps an empty gap"
+    );
+
+    sometimes.set_visible(true);
+    assert!(cell.is_visible(), "showing the button must bring its cell back");
 }

@@ -996,6 +996,10 @@ does not govern TUIs, and the vim/less idiom here is already correct."
 
 ## Task 7: Track-change notification (item 9)
 
+> **Reverted.** Landed, then removed at the user's request during manual
+> testing of the branch — see the design doc's Item 9 note. Kept here as the
+> record of what was built.
+
 The GTK frontend sends no desktop notifications. MPRIS already publishes metadata, so GNOME Shell shows Sparkamp in its media section; what is missing is the transient banner on track change.
 
 **Files:**

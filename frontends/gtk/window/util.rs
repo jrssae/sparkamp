@@ -1,5 +1,70 @@
 use super::*;
 
+/// One half of a view's button row: a left-packed row of buttons that wraps
+/// onto more lines instead of running off the edge of a narrow window.
+///
+/// A plain `GtkBox` reports the sum of its children as its *minimum* width, and
+/// a minimum propagates to the window — eleven buttons in the playlist editor
+/// came to 1111 px, below which the row was clipped and the last button was
+/// simply unreachable. A `FlowBox` reports one button instead.
+///
+/// Pair two of these with a spring between them in a horizontal box to keep a
+/// right-hand group flush right while it still fits on one line, and call
+/// [`flow_append`] rather than `append` so hidden buttons leave no gap. Set
+/// `max_children_per_line` to the group's own child count once it is filled:
+/// left higher, the FlowBox's natural width overshoots one line and the
+/// right-hand group stops reaching the edge.
+pub(super) fn wrapping_btn_group() -> gtk4::FlowBox {
+    let f = gtk4::FlowBox::new();
+    f.set_selection_mode(gtk4::SelectionMode::None);
+    // Buttons keep their own widths; a homogeneous FlowBox would size every
+    // one of them to the widest label in the group.
+    f.set_homogeneous(false);
+    f.set_row_spacing(4);
+    f.set_column_spacing(4);
+    f.set_min_children_per_line(1);
+    f.set_valign(Align::Center);
+    f
+}
+
+/// Append `child` to a [`wrapping_btn_group`], keeping the wrapper cell in step
+/// with the child's own visibility.
+///
+/// A `GtkBox` drops a hidden child from its layout. A `GtkFlowBox` does not: it
+/// puts every child in a `GtkFlowBoxChild` of its own, and hiding the button
+/// inside leaves that wrapper behind as an empty cell with its spacing intact.
+/// Several of these buttons appear only while a scan is running or an album
+/// drill-down is open, so without this the row keeps holes where they were.
+pub(super) fn flow_append(flow: &gtk4::FlowBox, child: &impl IsA<gtk4::Widget>) {
+    flow.append(child);
+    let child = child.as_ref();
+    if let Some(cell) = child.parent() {
+        child
+            .bind_property("visible", &cell, "visible")
+            .sync_create()
+            .build();
+    }
+}
+
+/// Follow the skin into GTK's own widgets: a dark skin gets the dark Adwaita
+/// variant, a light skin the light one.
+///
+/// `GtkSettings:gtk-application-prefer-dark-theme` used to do this. libadwaita
+/// took theme selection over when it was linked in for toasts and empty states,
+/// and warns on every launch that the GtkSettings property is unsupported;
+/// `AdwStyleManager:color-scheme` is its replacement.
+///
+/// `Force*` rather than `Prefer*`: the skin is the user's explicit choice, so
+/// it overrides the desktop's own light/dark preference rather than deferring
+/// to it — which is what the old property did.
+pub(super) fn apply_color_scheme(dark: bool) {
+    adw::StyleManager::default().set_color_scheme(if dark {
+        adw::ColorScheme::ForceDark
+    } else {
+        adw::ColorScheme::ForceLight
+    });
+}
+
 /// Read the user's GNOME accent-colour choice from gsettings and return
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.

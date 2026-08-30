@@ -21,6 +21,35 @@ pub(super) fn format_playback_time(pos: Duration, dur: Option<Duration>, show_re
     }
 }
 
+/// Width in pixels of `text` rendered in `label`'s own font.
+///
+/// `create_pango_layout` inherits the widget's resolved font description, so
+/// this follows the skin's font size and the desktop text-scaling factor
+/// without either being read explicitly.
+pub(super) fn text_width(label: &Label, text: &str) -> i32 {
+    label.create_pango_layout(Some(text)).pixel_size().0
+}
+
+/// Length of the longest prefix of `text` that still fits `width` pixels.
+///
+/// Binary search rather than arithmetic: a proportional font has no constant
+/// per-character width, and the marquee needs an exact answer — one character
+/// too many and the label demands more room than the row has.
+pub(super) fn chars_that_fit(label: &Label, text: &[char], width: i32) -> usize {
+    let (mut lo, mut hi) = (0usize, text.len());
+    while lo < hi {
+        // Round up, so `mid` is always ≥ 1 and the loop cannot stall on lo.
+        let mid = (lo + hi).div_ceil(2);
+        let candidate: String = text[..mid].iter().collect();
+        if text_width(label, &candidate) <= width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
+}
+
 /// What the tick loop reads that is not already on [`PlayerCtx`]: the
 /// now-playing row's labels, the marquee's scroll state, the visualiser's
 /// widgets and render height, and the three probe/metadata receivers.
@@ -557,22 +586,26 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
             }
 
             // 3. Marquee / scrolling title.
-            // Display a sliding window into the full "Title — Artist" text.
-            // The window width is estimated from the label's allocated pixel
-            // width divided by 8 (conservative px-per-char for the 13 px font).
+            // Display a sliding window into the full "Title — Artist" text,
+            // sized by measuring the label's own font rather than by dividing
+            // its width by a fixed pixels-per-character constant. Skins render
+            // in points now, so glyph width follows the desktop text size and
+            // no single divisor is right on every system. Guessing too low
+            // handed the label a slice wider than the label, and the label's
+            // own width request then widened the player window instead of the
+            // text scrolling.
             {
                 let chars = marquee_chars.borrow();
-                // Fallback to 30 chars before the label is laid out (width = 0).
                 let label_w = title_label.allocated_width();
-                let display_cols = if label_w > 0 {
-                    (label_w / 8).max(10) as usize
-                } else {
-                    30
-                };
+                let full: String = chars.iter().collect();
 
-                if chars.len() <= display_cols {
+                if label_w <= 0 {
+                    // First tick, before the label has been allocated: there is
+                    // nothing to measure a slice against yet.
+                    title_label.set_text(&full);
+                } else if text_width(&title_label, &full) <= label_w {
                     // Short enough to fit without scrolling.
-                    title_label.set_text(&chars.iter().collect::<String>());
+                    title_label.set_text(&full);
                     marquee_offset.set(0);
                 } else {
                     // Advance offset every 3 ticks (≈ 300 ms, ~3 chars/second).
@@ -589,10 +622,12 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     let gap: Vec<char> = "     ".chars().collect();
                     let looped: Vec<char> = chars.iter().chain(gap.iter()).cloned().collect();
                     let loop_len = looped.len();
-                    let visible: String = (0..display_cols)
-                        .map(|i| *looped.get((offset + i) % loop_len).unwrap_or(&' '))
-                        .collect();
-                    title_label.set_text(&visible);
+                    // Rotate the whole loop to the current offset, then keep
+                    // only as much of it as actually fits.
+                    let window: Vec<char> =
+                        (0..loop_len).map(|i| looped[(offset + i) % loop_len]).collect();
+                    let n = chars_that_fit(&title_label, &window, label_w);
+                    title_label.set_text(&window[..n].iter().collect::<String>());
                 }
             }
 
