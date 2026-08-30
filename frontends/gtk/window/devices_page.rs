@@ -568,20 +568,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // worker thread for the blocking scan.
             let io = crate::devices::io::for_device(&dev);
             glib::spawn_future_local(async move {
-                let (mut tracks, pl_count) = gio::spawn_blocking(move || {
+                let (mut tracks, pl_count, access) = gio::spawn_blocking(move || {
+                    use crate::devices::mount_access::MountAccess;
                     if device_io_shutting_down() {
-                        return (Vec::new(), 0);
+                        // Shutting down is not an access failure; say nothing.
+                        return (Vec::new(), 0, MountAccess::Readable);
                     }
+                    // Ask whether the mount is readable before walking it. The
+                    // walk skips what it cannot read, so without this an
+                    // unreachable device is indistinguishable from an empty one.
+                    let access = io.access();
                     let tracks = io
                         .list_audio_files()
                         .iter()
                         .map(|p| crate::devices::browse::read_device_track(p))
                         .collect::<Vec<crate::media_library::LibTrack>>();
                     let pl_count = io.playlist_files().len();
-                    (tracks, pl_count)
+                    (tracks, pl_count, access)
                 })
                 .await
-                .unwrap_or_default();
+                .unwrap_or((Vec::new(), 0, crate::devices::mount_access::MountAccess::Readable));
 
                 // Stale-scan guard: bail if the user has since switched devices.
                 if sel_backend2.borrow().as_deref() != Some(backend.as_str()) {
@@ -642,13 +648,28 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 for t in &tracks {
                     store2.append(&glib::BoxedAnyObject::new(t.clone()));
                 }
-                counts_lbl2.set_text(&format!(
-                    "{} playlist{} - {} audio file{}",
-                    pl_count,
-                    if pl_count == 1 { "" } else { "s" },
-                    tracks.len(),
-                    if tracks.len() == 1 { "" } else { "s" }
-                ));
+                // A device we could not read reports why, in place of a count
+                // that would otherwise read as "this device is empty".
+                match crate::devices::mount_access::message(
+                    access,
+                    crate::devices::mount_access::in_flatpak(),
+                    crate::devices::mount_access::Medium::Device,
+                ) {
+                    Some(msg) => {
+                        counts_lbl2.set_text(&gtk_safe(&msg));
+                        counts_lbl2.add_css_class("broken");
+                    }
+                    None => {
+                        counts_lbl2.remove_css_class("broken");
+                        counts_lbl2.set_text(&format!(
+                            "{} playlist{} - {} audio file{}",
+                            pl_count,
+                            if pl_count == 1 { "" } else { "s" },
+                            tracks.len(),
+                            if tracks.len() == 1 { "" } else { "s" }
+                        ));
+                    }
+                }
             });
         })
     };

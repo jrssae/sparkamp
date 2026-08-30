@@ -21,6 +21,30 @@ use gtk4::{
     EventControllerKey, Label, MultiSelection, PolicyType, ScrolledWindow,
     SignalListItemFactory, SortListModel, Stack,
 };
+/// Why reading a disc's file list failed.
+///
+/// Two cases, because they want different presentation. `Mount` carries the
+/// terse fragments `ensure_mounted` produces, which read as a cause and need
+/// a sentence built around them. `Access` carries a finished sentence from
+/// [`crate::devices::mount_access`], which must be shown verbatim — prefixing
+/// it would produce "Couldn't read disc: Can't read this disc — …".
+///
+/// This was string-prefix matching first; a type is what stops a reworded
+/// message from silently reintroducing the doubled sentence.
+enum DiscReadError {
+    Mount(String),
+    Access(String),
+}
+
+impl DiscReadError {
+    fn into_status_text(self) -> String {
+        match self {
+            DiscReadError::Mount(cause) => format!("Couldn't read disc: {cause}"),
+            DiscReadError::Access(sentence) => sentence,
+        }
+    }
+}
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -502,8 +526,20 @@ pub(super) fn build(
             let drive_id = drive.id.clone();
             glib::spawn_future_local(async move {
                 let joined = gio::spawn_blocking(
-                    move || -> Result<Vec<crate::disc::mount::DiscFile>, String> {
-                        let mount = crate::disc::mount::ensure_mounted(&drive)?;
+                    move || -> Result<Vec<crate::disc::mount::DiscFile>, DiscReadError> {
+                        let mount = crate::disc::mount::ensure_mounted(&drive)
+                            .map_err(DiscReadError::Mount)?;
+                        // Mounting succeeding does not mean the mount can be
+                        // read: the walk skips directories it cannot open, so
+                        // an unreadable disc would otherwise list as an empty
+                        // one. Same check the device view makes.
+                        if let Some(msg) = crate::devices::mount_access::message(
+                            crate::devices::mount_access::check(&mount),
+                            crate::devices::mount_access::in_flatpak(),
+                            crate::devices::mount_access::Medium::Disc,
+                        ) {
+                            return Err(DiscReadError::Access(msg));
+                        }
                         Ok(crate::disc::mount::list_disc_files(&mount))
                     },
                 )
@@ -513,7 +549,9 @@ pub(super) fn build(
                 busy2.set(false);
                 let result = match joined {
                     Ok(inner) => inner,
-                    Err(_) => Err("internal error reading the disc".to_string()),
+                    Err(_) => Err(DiscReadError::Mount(
+                        "internal error reading the disc".to_string(),
+                    )),
                 };
                 // Discard a stale result — the user may have navigated to a
                 // different drive while the mount+walk was in flight.
@@ -529,7 +567,7 @@ pub(super) fn build(
                         }
                         status2.set_text(&format!("{n} file{} on disc", if n == 1 { "" } else { "s" }));
                     }
-                    Err(e) => status2.set_text(&gtk_safe(&format!("Couldn't read disc: {e}"))),
+                    Err(e) => status2.set_text(&gtk_safe(&e.into_status_text())),
                 }
             });
         })

@@ -83,7 +83,25 @@ modules:
       # Install the desktop entry.
       - install -Dm644 packaging/dev.sparkamp.Sparkamp.desktop
           /app/share/applications/dev.sparkamp.Sparkamp.desktop
-      # Install the application icon (use the square logo).
+      # Install the application icon at every size the icon themes look for.
+      #
+      # A single 512x512 PNG is enough for GNOME Shell, which scales down from
+      # the nearest size it can find, but not for every launcher: COSMIC's icon
+      # resolver does not do that fallback, so an app shipping only a 512px
+      # icon shows up blank in its app list and dock. The sizes come from the
+      # macOS iconset already in the repo, chosen by their real pixel
+      # dimensions rather than their filenames — icon_16x16@2x.png is 32x32,
+      # and icon_32x32@2x.png is what fills 64x64.
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_16x16.png
+          /app/share/icons/hicolor/16x16/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_32x32.png
+          /app/share/icons/hicolor/32x32/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_32x32@2x.png
+          /app/share/icons/hicolor/64x64/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_128x128.png
+          /app/share/icons/hicolor/128x128/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_256x256.png
+          /app/share/icons/hicolor/256x256/apps/dev.sparkamp.Sparkamp.png
       - install -Dm644 "square logo.png"
           /app/share/icons/hicolor/512x512/apps/dev.sparkamp.Sparkamp.png
       # Install the AppStream metainfo file.

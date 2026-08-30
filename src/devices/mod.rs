@@ -12,6 +12,8 @@ pub mod diagnostics;
 pub mod marker;
 // Listing the audio files on a device's mounted filesystem.
 pub mod browse;
+/// Whether a mount root can be read at all — see the module docs.
+pub mod mount_access;
 // Copying library files onto a device under a Music/Artist/Album layout.
 pub mod transfer;
 // Tag sync (text + rating + play count) between paired library/device files.

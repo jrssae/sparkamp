@@ -17,6 +17,14 @@ use std::path::{Path, PathBuf};
 /// Backend-specific filesystem operations on one device. `Send` so a backend
 /// handle can be moved onto a worker thread for a blocking copy/scan.
 pub trait DeviceIo: Send {
+    /// Whether the device's mount root can be read at all.
+    ///
+    /// Separate from [`Self::list_audio_files`] because that returns a plain
+    /// `Vec` and so cannot tell "no music here" from "no access here" — the
+    /// two look identical to the caller, and a sandbox with no grant for
+    /// `/run/media` produces the second while looking like the first.
+    fn access(&self) -> crate::devices::mount_access::MountAccess;
+
     /// All audio files on the device, in path order.
     fn list_audio_files(&self) -> Vec<PathBuf>;
     /// All playlist files (`.m3u` / `.m3u8`) on the device, in path order.
@@ -65,6 +73,13 @@ impl PosixIo {
 }
 
 impl DeviceIo for PosixIo {
+    fn access(&self) -> crate::devices::mount_access::MountAccess {
+        // The mount root, never `scan_roots()`: a music-scoped device with no
+        // Music folder is perfectly healthy, and judging it by a directory
+        // that is absent by design would report every such phone as broken.
+        crate::devices::mount_access::check(&self.mount)
+    }
+
     fn list_audio_files(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for root in self.scan_roots() {
@@ -154,6 +169,12 @@ fn music_scan_roots(mount: &Path) -> Vec<PathBuf> {
 pub struct NullIo;
 
 impl DeviceIo for NullIo {
+    fn access(&self) -> crate::devices::mount_access::MountAccess {
+        // Nothing is mounted to fail at: this backend declines to list files
+        // by design, not because a medium is unreachable.
+        crate::devices::mount_access::MountAccess::Readable
+    }
+
     fn list_audio_files(&self) -> Vec<PathBuf> {
         Vec::new()
     }
@@ -190,6 +211,40 @@ pub fn for_device(dev: &Device) -> Box<dyn DeviceIo> {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn posix_io_reports_a_readable_mount_as_readable() {
+        use crate::devices::mount_access::MountAccess;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let io = PosixIo::new(dir.path().to_path_buf());
+        assert_eq!(io.access(), MountAccess::Readable);
+    }
+
+    #[test]
+    fn posix_io_reports_a_mount_that_vanished() {
+        use crate::devices::mount_access::MountAccess;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let io = PosixIo::new(dir.path().join("gone"));
+        assert_eq!(io.access(), MountAccess::NotFound);
+    }
+
+    #[test]
+    fn a_music_scoped_mount_is_judged_by_its_root_not_its_music_folder() {
+        // MTP devices scan only Music/, but a missing Music folder is normal
+        // and must not read as a broken device.
+        use crate::devices::mount_access::MountAccess;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let io = PosixIo::music_scoped(dir.path().to_path_buf());
+        assert_eq!(io.access(), MountAccess::Readable);
+    }
+
+    #[test]
+    fn null_io_is_readable_because_it_has_nothing_to_fail_at() {
+        // An unsupported device lists nothing by design; reporting an access
+        // error for it would put a scary banner on a working phone.
+        use crate::devices::mount_access::MountAccess;
+        assert_eq!(NullIo.access(), MountAccess::Readable);
+    }
     #[test]
     fn null_io_lists_empty_and_refuses_writes() {
         let io = NullIo;
